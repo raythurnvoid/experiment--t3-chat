@@ -1,11 +1,23 @@
 import { Migrations } from "@convex-dev/migrations";
+import { getFunctionName } from "convex/server";
 import { v } from "convex/values";
 import { components, internal } from "./_generated/api.js";
 import type { DataModel, Doc, Id, TableNames } from "./_generated/dataModel.js";
-import { internalMutation, type MutationCtx } from "./_generated/server.js";
+import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import { quotas } from "../shared/quotas.ts";
 import { path_extract_segments_from } from "../shared/paths.ts";
+import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { access_control_db_ensure_organization_member_role } from "./access_control.ts";
+import { files_merge_contiguous_chunks } from "./files_nodes.ts";
+import {
+	plugins_data_MAX_COLLECTIONS,
+	plugins_data_db_ensure_scope_identity,
+	plugins_data_db_get_scope_access_state,
+	plugins_data_db_keep_scope_managed,
+	plugins_data_max_last_append,
+	plugins_data_parse_append_key_at,
+} from "./plugins_data.ts";
+import { plugins_PRIVATE_FOLDER_ROLLOVER_INDEX } from "./plugins_projections.ts";
 
 const app_migrations = new Migrations<DataModel>(components.migrations, {
 	internalMutation,
@@ -768,34 +780,41 @@ export const backfill_plugins_data_charged_to = app_migrations.define({
 			return;
 		}
 
-		await ctx.db.patch("plugins_data", document._id, { chargedTo: document.createdBy, machineBytes: 0 });
-
 		const existing = await ctx.db
 			.query("plugins_data_member_usage")
 			.withIndex("by_installation_user", (q) =>
 				q.eq("installationId", document.installationId).eq("userId", document.createdBy),
 			)
 			.unique();
+		let memberUsageId: Id<"plugins_data_member_usage">;
 		if (!existing) {
-			await ctx.db.insert("plugins_data_member_usage", {
+			memberUsageId = await ctx.db.insert("plugins_data_member_usage", {
 				organizationId: document.organizationId,
 				workspaceId: document.workspaceId,
 				installationId: document.installationId,
 				userId: document.createdBy,
+				generation: "document_bound",
 				usedBytes: document.byteSize,
 				usedDocuments: 1,
 				machineBytes: 0,
 				collectionNames: [document.collection],
 			});
-			return;
+		} else {
+			memberUsageId = existing._id;
+			await ctx.db.patch("plugins_data_member_usage", existing._id, {
+				generation: "document_bound",
+				usedBytes: existing.usedBytes + document.byteSize,
+				usedDocuments: existing.usedDocuments + 1,
+				collectionNames: existing.collectionNames.includes(document.collection)
+					? existing.collectionNames
+					: [...existing.collectionNames, document.collection],
+			});
 		}
 
-		await ctx.db.patch("plugins_data_member_usage", existing._id, {
-			usedBytes: existing.usedBytes + document.byteSize,
-			usedDocuments: existing.usedDocuments + 1,
-			collectionNames: existing.collectionNames.includes(document.collection)
-				? existing.collectionNames
-				: [...existing.collectionNames, document.collection],
+		await ctx.db.patch("plugins_data", document._id, {
+			chargedTo: document.createdBy,
+			chargedToMemberUsageId: memberUsageId,
+			machineBytes: 0,
 		});
 	},
 });
@@ -810,11 +829,19 @@ export const backfill_plugins_data_charged_to = app_migrations.define({
 export const remove_plugins_data_charged_to_and_machine_bytes = app_migrations.define({
 	table: "plugins_data",
 	migrateOne: async (ctx, document) => {
-		if (document.chargedTo === undefined && document.machineBytes === undefined) {
+		if (
+			document.chargedTo === undefined &&
+			document.chargedToMemberUsageId === undefined &&
+			document.machineBytes === undefined
+		) {
 			return;
 		}
 
-		await ctx.db.patch("plugins_data", document._id, { chargedTo: undefined, machineBytes: undefined });
+		await ctx.db.patch("plugins_data", document._id, {
+			chargedTo: undefined,
+			chargedToMemberUsageId: undefined,
+			machineBytes: undefined,
+		});
 	},
 });
 
@@ -827,6 +854,722 @@ export const delete_plugins_data_member_usage = app_migrations.define({
 	table: "plugins_data_member_usage",
 	migrateOne: async (ctx, usage) => {
 		await ctx.db.delete("plugins_data_member_usage", usage._id);
+	},
+});
+
+/**
+ * Drop counter rows from before documents named their exact counter generation. Their documents
+ * stay uncharged until a member writes them again, which safely starts a fresh generation.
+ */
+export const delete_legacy_plugins_data_member_usage = app_migrations.define({
+	table: "plugins_data_member_usage",
+	migrateOne: async (ctx, usage) => {
+		if (usage.generation === "document_bound") {
+			return;
+		}
+
+		await ctx.db.delete("plugins_data_member_usage", usage._id);
+	},
+});
+
+function migrations_plugin_scope_append_sequence_is_valid(
+	value: number | undefined,
+	minimum: number,
+): value is number {
+	return value !== undefined && Number.isSafeInteger(value) && value >= minimum;
+}
+
+function migrations_plugin_scope_append_state_is_defaulted(
+	scope: Pick<Doc<"plugins_data_scopes">, "lastAppend" | "appendSequence">,
+) {
+	if (scope.lastAppend === undefined) {
+		return false;
+	}
+	return scope.lastAppend === null
+		? scope.appendSequence === 0
+		: migrations_plugin_scope_append_sequence_is_valid(scope.appendSequence, 1);
+}
+
+/** Preserve the newest accepted scoped append before old scope rows receive a default marker. */
+export const backfill_plugin_scope_last_append_from_documents = app_migrations.define({
+	table: "plugins_data",
+	batchSize: 20,
+	migrateOne: async (ctx, document) => {
+		if (document.scopeId === undefined || document.userWriteRequestId === undefined) {
+			return;
+		}
+		const scopeId = document.scopeId;
+		const at = plugins_data_parse_append_key_at(document.key);
+		if (at === null) {
+			return;
+		}
+
+		// A released scope has no live row. Never turn retained private history into live activity.
+		const scopes = await ctx.db
+			.query("plugins_data_scopes")
+			.withIndex("by_installation_scope", (q) =>
+				q.eq("installationId", document.installationId).eq("scopeId", scopeId),
+			)
+			.take(plugins_data_MAX_COLLECTIONS);
+		const scope = scopes.find(
+			(row) => row.collection === document.collection && document.key.startsWith(row.keyPrefix),
+		);
+		if (!scope) {
+			return;
+		}
+
+		const lastAppend = plugins_data_max_last_append(scope.lastAppend, {
+			at,
+			key: document.key,
+			createdByUserId: document.createdBy,
+		});
+		// Old rows prove at least one append, but not the exact count. Never lower a live counter.
+		const appendSequence = migrations_plugin_scope_append_sequence_is_valid(scope.appendSequence, 1)
+			? scope.appendSequence
+			: 1;
+		if (lastAppend !== scope.lastAppend || appendSequence !== scope.appendSequence) {
+			await ctx.db.patch("plugins_data_scopes", scope._id, { lastAppend, appendSequence });
+		}
+	},
+});
+
+/** Give every old live scope row explicit append defaults after append history was preserved. */
+export const default_plugin_scope_last_append = app_migrations.define({
+	table: "plugins_data_scopes",
+	batchSize: 20,
+	migrateOne: async (ctx, scope) => {
+		const lastAppend = scope.lastAppend ?? null;
+		const appendSequence =
+			lastAppend === null
+				? 0
+				: migrations_plugin_scope_append_sequence_is_valid(scope.appendSequence, 1)
+					? scope.appendSequence
+					: 1;
+		if (lastAppend !== scope.lastAppend || appendSequence !== scope.appendSequence) {
+			await ctx.db.patch("plugins_data_scopes", scope._id, { lastAppend, appendSequence });
+		}
+	},
+});
+
+const CHITCHAT_PRIVATE_SCOPE_COLLECTIONS = new Set(["channels", "messages", "replies", "reactions"]);
+const CHITCHAT_PRIVATE_SCOPE_ID_PATTERN =
+	/^p\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+
+/**
+ * Recover private ranges from Chitchat documents left by the old scope delete.
+ *
+ * Chitchat uses its scope id as the exact key prefix in all four private collections. No other
+ * plugin contract proves a missing prefix, so an unknown orphan blocks this rollout for an explicit
+ * migrate-or-erase choice instead of guessing and exposing private history.
+ */
+export const recover_or_audit_orphan_plugin_scope_ranges = app_migrations.define({
+	table: "plugins_data",
+	batchSize: 20,
+	migrateOne: async (ctx, document) => {
+		if (document.scopeId === undefined) {
+			return;
+		}
+		const scopeId = document.scopeId;
+
+		const [liveScope, releasedFence] = await Promise.all([
+			ctx.db
+				.query("plugins_data_scopes")
+				.withIndex("by_installation_scope", (q) =>
+					q.eq("installationId", document.installationId).eq("scopeId", scopeId),
+				)
+				.first(),
+			ctx.db
+				.query("plugins_data_released_scope_ranges")
+				.withIndex("by_installation_scope", (q) =>
+					q.eq("installationId", document.installationId).eq("scopeId", scopeId),
+				)
+				.filter((q) =>
+					q.or(q.neq(q.field("collectionName"), ""), q.neq(q.field("keyPrefix"), "")),
+				)
+				.first(),
+		]);
+		if (liveScope) {
+			return;
+		}
+
+		const installation = await ctx.db.get("plugins_workspace_installations", document.installationId);
+		const isValidChitchatDocument =
+			installation?.pluginName === "chitchat" &&
+			document.pluginName === "chitchat" &&
+			document.organizationId === installation.organizationId &&
+			document.workspaceId === installation.workspaceId &&
+			CHITCHAT_PRIVATE_SCOPE_COLLECTIONS.has(document.collection) &&
+			CHITCHAT_PRIVATE_SCOPE_ID_PATTERN.test(scopeId) &&
+			(document.key === scopeId || document.key.startsWith(`${scopeId}:`));
+		// Keep auditing Chitchat after an earlier row recovered this scope. A later malformed row in
+		// the same migration page must still stop the rollout instead of hiding behind the new fence.
+		if (releasedFence) {
+			if (installation?.pluginName === "chitchat" && !isValidChitchatDocument) {
+				throw new Error(
+					"Plugin scope recovery blocked: choose how to migrate or erase a malformed Chitchat orphan",
+				);
+			}
+			return;
+		}
+		if (!installation || installation.pluginName !== "chitchat") {
+			throw new Error(
+				"Plugin scope recovery blocked: choose how to migrate or erase an orphan scoped document outside Chitchat",
+			);
+		}
+		if (!isValidChitchatDocument) {
+			throw new Error(
+				"Plugin scope recovery blocked: choose how to migrate or erase a malformed Chitchat orphan",
+			);
+		}
+
+		for (const collectionName of CHITCHAT_PRIVATE_SCOPE_COLLECTIONS) {
+			const existing = await ctx.db
+				.query("plugins_data_released_scope_ranges")
+				.withIndex("by_installation_collection_prefix", (q) =>
+					q
+						.eq("installationId", installation._id)
+						.eq("collectionName", collectionName)
+						.eq("keyPrefix", scopeId),
+				)
+				.first();
+			if (existing && existing.scopeId !== scopeId) {
+				throw new Error(
+					"Plugin scope recovery blocked: a Chitchat orphan range belongs to another scope id",
+				);
+			}
+			if (!existing) {
+				await ctx.db.insert("plugins_data_released_scope_ranges", {
+					organizationId: document.organizationId,
+					workspaceId: document.workspaceId,
+					installationId: document.installationId,
+					scopeId,
+					collectionName,
+					keyPrefix: scopeId,
+				});
+			}
+		}
+
+		await plugins_data_db_ensure_scope_identity(ctx, { ...document, scopeId });
+	},
+});
+
+/** Reserve every scope id that was live before scope creation started writing identity markers. */
+export const backfill_plugin_scope_identities_from_live_scopes = app_migrations.define({
+	table: "plugins_data_scopes",
+	batchSize: 20,
+	migrateOne: async (ctx, scope) => {
+		await plugins_data_db_ensure_scope_identity(ctx, scope);
+	},
+});
+
+/** Reserve every released scope id that predates the empty identity-marker row. */
+export const backfill_plugin_scope_identities_from_released_ranges = app_migrations.define({
+	table: "plugins_data_released_scope_ranges",
+	batchSize: 20,
+	migrateOne: async (ctx, releasedRange) => {
+		if (releasedRange.collectionName === "" && releasedRange.keyPrefix === "") {
+			return;
+		}
+
+		await plugins_data_db_ensure_scope_identity(ctx, releasedRange);
+	},
+});
+
+const PLUGIN_SCOPE_AUDIT_PAGE_SIZE = 20;
+
+async function migrations_plugin_scope_for_append(
+	ctx: QueryCtx,
+	document: Pick<
+		Doc<"plugins_data">,
+		"installationId" | "scopeId" | "collection" | "key"
+	>,
+) {
+	if (document.scopeId === undefined) {
+		return null;
+	}
+	const scopeId = document.scopeId;
+	const scopes = await ctx.db
+		.query("plugins_data_scopes")
+		.withIndex("by_installation_scope", (q) =>
+			q.eq("installationId", document.installationId).eq("scopeId", scopeId),
+		)
+		.take(plugins_data_MAX_COLLECTIONS);
+	return (
+		scopes.find((row) => row.collection === document.collection && document.key.startsWith(row.keyPrefix)) ?? null
+	);
+}
+
+function migrations_plugin_scope_installation_id(
+	ctx: QueryCtx | MutationCtx,
+	grant: Pick<Doc<"access_control_permission_grants">, "resourceKind" | "resourceId">,
+) {
+	if (grant.resourceKind !== "plugin_scope") {
+		return null;
+	}
+
+	const separator = grant.resourceId.indexOf(":");
+	if (separator < 1) {
+		return null;
+	}
+
+	// This is a whole-table walk, so malformed ids and unrelated grants must be harmless.
+	return ctx.db.normalizeId("plugins_workspace_installations", grant.resourceId.slice(0, separator));
+}
+
+/** Remove grants whose valid installation id no longer names an installation. */
+export const delete_orphan_plugin_scope_grants = app_migrations.define({
+	table: "access_control_permission_grants",
+	batchSize: PLUGIN_SCOPE_AUDIT_PAGE_SIZE,
+	migrateOne: async (ctx, grant) => {
+		const installationId = migrations_plugin_scope_installation_id(ctx, grant);
+		if (!installationId || (await ctx.db.get("plugins_workspace_installations", installationId))) {
+			return;
+		}
+
+		await ctx.db.delete("access_control_permission_grants", grant._id);
+	},
+});
+
+/** Remove dead-installation scopes, release empty scopes, and restore one active manager. */
+export const delete_stranded_plugin_data_scopes = app_migrations.define({
+	table: "plugins_data_scopes",
+	batchSize: PLUGIN_SCOPE_AUDIT_PAGE_SIZE,
+	migrateOne: async (ctx, scope) => {
+		// One logical scope may straddle two migration pages. Always load and change all collection
+		// rows together so a grant added between pages cannot leave half the scope live.
+		const scopes = await ctx.db
+			.query("plugins_data_scopes")
+			.withIndex("by_installation_scope", (q) =>
+				q.eq("installationId", scope.installationId).eq("scopeId", scope.scopeId),
+			)
+			.take(PLUGIN_SCOPE_AUDIT_PAGE_SIZE);
+		const [first] = scopes;
+		if (!first) {
+			return;
+		}
+
+		const installation = await ctx.db.get("plugins_workspace_installations", scope.installationId);
+		if (!installation) {
+			// No authorized write door remains, so a dead installation needs neither a fence nor a sync.
+			await Promise.all(scopes.map((scopeRow) => ctx.db.delete("plugins_data_scopes", scopeRow._id)));
+			return;
+		}
+
+		const managed = await plugins_data_db_keep_scope_managed(ctx, {
+			installation,
+			scopes,
+		});
+		if (managed.promoted) {
+			// Keep a healthy scope stable. Only a repair that changed access gets a new revision.
+			const membershipRevision = Math.max(Date.now(), ...scopes.map((scope) => scope.updatedAt + 1));
+			await Promise.all(
+				scopes.map((scope) => ctx.db.patch("plugins_data_scopes", scope._id, { updatedAt: membershipRevision })),
+			);
+		}
+	},
+});
+
+export const audit_orphan_plugin_scope_grants_page = internalQuery({
+	args: { cursor: v.union(v.null(), v.string()) },
+	returns: v.object({ candidateCount: v.number(), continueCursor: v.string(), isDone: v.boolean() }),
+	handler: async (ctx, args) => {
+		const page = await ctx.db
+			.query("access_control_permission_grants")
+			.paginate({ cursor: args.cursor, numItems: PLUGIN_SCOPE_AUDIT_PAGE_SIZE });
+		let candidateCount = 0;
+		for (const grant of page.page) {
+			const installationId = migrations_plugin_scope_installation_id(ctx, grant);
+			if (installationId && !(await ctx.db.get("plugins_workspace_installations", installationId))) {
+				candidateCount += 1;
+			}
+		}
+		return { candidateCount, continueCursor: page.continueCursor, isDone: page.isDone };
+	},
+});
+
+export const audit_stranded_plugin_data_scopes_page = internalQuery({
+	args: { cursor: v.union(v.null(), v.string()) },
+	returns: v.object({ candidateCount: v.number(), continueCursor: v.string(), isDone: v.boolean() }),
+	handler: async (ctx, args) => {
+		const page = await ctx.db
+			.query("plugins_data_scopes")
+			.paginate({ cursor: args.cursor, numItems: PLUGIN_SCOPE_AUDIT_PAGE_SIZE });
+		let candidateCount = 0;
+		for (const scope of page.page) {
+			const installation = await ctx.db.get("plugins_workspace_installations", scope.installationId);
+			if (!installation) {
+				candidateCount += 1;
+				continue;
+			}
+			const access = await plugins_data_db_get_scope_access_state(ctx, {
+				organizationId: scope.organizationId,
+				workspaceId: scope.workspaceId,
+				resourceId: `${scope.installationId}:${scope.scopeId}`,
+			});
+			if (access.activeUserIds.length === 0 || !access.hasActiveManager) {
+				candidateCount += 1;
+			}
+		}
+		return { candidateCount, continueCursor: page.continueCursor, isDone: page.isDone };
+	},
+});
+
+/** Find old append rows whose live collection marker still does not cover them. */
+export const audit_plugin_scope_append_activity_page = internalQuery({
+	args: { cursor: v.union(v.null(), v.string()) },
+	returns: v.object({ candidateCount: v.number(), continueCursor: v.string(), isDone: v.boolean() }),
+	handler: async (ctx, args) => {
+		const page = await ctx.db
+			.query("plugins_data")
+			.paginate({ cursor: args.cursor, numItems: PLUGIN_SCOPE_AUDIT_PAGE_SIZE });
+		let candidateCount = 0;
+		for (const document of page.page) {
+			if (document.scopeId === undefined || document.userWriteRequestId === undefined) {
+				continue;
+			}
+			const at = plugins_data_parse_append_key_at(document.key);
+			if (at === null) {
+				continue;
+			}
+			const scope = await migrations_plugin_scope_for_append(ctx, document);
+			if (
+				scope &&
+				(plugins_data_max_last_append(scope.lastAppend, {
+					at,
+					key: document.key,
+					createdByUserId: document.createdBy,
+				}) !== scope.lastAppend ||
+					!migrations_plugin_scope_append_sequence_is_valid(scope.appendSequence, 1))
+			) {
+				candidateCount += 1;
+			}
+		}
+		return { candidateCount, continueCursor: page.continueCursor, isDone: page.isDone };
+	},
+});
+
+/** Find live scope rows with missing, invalid, or inconsistent append defaults. */
+export const audit_plugin_scope_last_append_defaults_page = internalQuery({
+	args: { cursor: v.union(v.null(), v.string()) },
+	returns: v.object({ candidateCount: v.number(), continueCursor: v.string(), isDone: v.boolean() }),
+	handler: async (ctx, args) => {
+		const page = await ctx.db
+			.query("plugins_data_scopes")
+			.paginate({ cursor: args.cursor, numItems: PLUGIN_SCOPE_AUDIT_PAGE_SIZE });
+		return {
+			candidateCount: page.page.filter((scope) => !migrations_plugin_scope_append_state_is_defaulted(scope)).length,
+			continueCursor: page.continueCursor,
+			isDone: page.isDone,
+		};
+	},
+});
+
+/** Prove every surviving member counter uses exact document-bound generations. */
+export const audit_legacy_plugins_data_member_usage_page = internalQuery({
+	args: { cursor: v.union(v.null(), v.string()) },
+	returns: v.object({ candidateCount: v.number(), continueCursor: v.string(), isDone: v.boolean() }),
+	handler: async (ctx, args) => {
+		const page = await ctx.db
+			.query("plugins_data_member_usage")
+			.paginate({ cursor: args.cursor, numItems: PLUGIN_SCOPE_AUDIT_PAGE_SIZE });
+		return {
+			candidateCount: page.page.filter((usage) => usage.generation !== "document_bound").length,
+			continueCursor: page.continueCursor,
+			isDone: page.isDone,
+		};
+	},
+});
+
+/**
+ * Stop before changing any projection pointer when a private-folder map is not proved. The map is
+ * the only durable link to its mirrored file grants, so removing it would make later ACL cleanup
+ * unable to find the old folder.
+ */
+export const audit_projection_private_folder_authority = app_migrations.define({
+	table: "plugins_data_projection_files",
+	batchSize: 20,
+	migrateOne: async (ctx, projectionFile) => {
+		if (projectionFile.rolloverIndex !== plugins_PRIVATE_FOLDER_ROLLOVER_INDEX) {
+			return;
+		}
+
+		const installation = await ctx.db.get("plugins_workspace_installations", projectionFile.installationId);
+		const state = await ctx.db
+			.query("plugins_data_projection_states")
+			.withIndex("by_installation", (q) => q.eq("installationId", projectionFile.installationId))
+			.first();
+		const root = state?.rootFolderNodeId ? await ctx.db.get("files_nodes", state.rootFolderNodeId) : null;
+		const node = await ctx.db.get("files_nodes", projectionFile.fileNodeId);
+		const active = node
+			? await ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+						q
+							.eq("organizationId", projectionFile.organizationId)
+							.eq("workspaceId", projectionFile.workspaceId)
+							.eq("path", projectionFile.path)
+							.eq("archiveOperationId", undefined),
+					)
+					.first()
+			: null;
+		const trusted =
+			installation?.pluginName === "chitchat" &&
+			installation.organizationId === projectionFile.organizationId &&
+			installation.workspaceId === projectionFile.workspaceId &&
+			state?.pluginName === "chitchat" &&
+			state.organizationId === projectionFile.organizationId &&
+			state.workspaceId === projectionFile.workspaceId &&
+			root !== null &&
+			root.organizationId === projectionFile.organizationId &&
+			root.workspaceId === projectionFile.workspaceId &&
+			root.kind === "folder" &&
+			root.archiveOperationId === undefined &&
+			root.projectionPluginName === "chitchat" &&
+			root.readOnlyScopeNodeId === root._id &&
+			node !== null &&
+			active?._id === node._id &&
+			node.organizationId === projectionFile.organizationId &&
+			node.workspaceId === projectionFile.workspaceId &&
+			node.kind === "folder" &&
+			node.projectionPluginName === "chitchat" &&
+			node.readOnlyScopeNodeId === root._id &&
+			node.restrictedScopeNodeId === node._id;
+		if (!trusted) {
+			throw new Error(
+				"Projection cutover blocked: choose how to migrate or erase an unproved Chitchat private folder",
+			);
+		}
+	},
+});
+
+/**
+ * Keep only Chitchat roots already proved by the new producer stamp and direct lock. A legacy state
+ * pointer is not ownership: reset it so rebuild uses a collision path and leaves that folder live.
+ * Council roots are shared workspace folders and are never stamped.
+ */
+export const audit_projection_root_authority = app_migrations.define({
+	table: "plugins_data_projection_states",
+	batchSize: 20,
+	migrateOne: async (ctx, state) => {
+		if (state.pluginName !== "chitchat" || state.rootFolderNodeId === undefined) {
+			return;
+		}
+
+		const root = await ctx.db.get("files_nodes", state.rootFolderNodeId);
+		const trusted =
+			root !== null &&
+			root.organizationId === state.organizationId &&
+			root.workspaceId === state.workspaceId &&
+			root.kind === "folder" &&
+			root.archiveOperationId === undefined &&
+			root.projectionPluginName === "chitchat" &&
+			root.readOnlyScopeNodeId === root._id;
+		if (trusted) {
+			return;
+		}
+
+		console.error("Projection root authority audit reset an unproved Chitchat root", {
+			rootFolderNodeId: state.rootFolderNodeId,
+		});
+		await ctx.db.patch("plugins_data_projection_states", state._id, {
+			rootFolderNodeId: undefined,
+			cursors: {},
+			scanCursors: {},
+			reconcileAfterChannelKey: undefined,
+			dirty: true,
+			syncGeneration: state.syncGeneration + 1,
+			scheduledJobId: undefined,
+			updatedAt: Date.now(),
+		});
+	},
+});
+
+/** Drop any map row whose node was not already stamped and locked by the new producer. */
+export const audit_projection_file_authority = app_migrations.define({
+	table: "plugins_data_projection_files",
+	batchSize: 20,
+	migrateOne: async (ctx, projectionFile) => {
+		const installation = await ctx.db.get("plugins_workspace_installations", projectionFile.installationId);
+		if (!installation || (installation.pluginName !== "chitchat" && installation.pluginName !== "council")) {
+			console.error("Projection file authority audit removed a row for an unknown installation", {
+				installationId: projectionFile.installationId,
+			});
+			await ctx.db.delete("plugins_data_projection_files", projectionFile._id);
+			return;
+		}
+
+		const node = await ctx.db.get("files_nodes", projectionFile.fileNodeId);
+		const state = await ctx.db
+			.query("plugins_data_projection_states")
+			.withIndex("by_installation", (q) => q.eq("installationId", projectionFile.installationId))
+			.first();
+		const active = node
+			? await ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+						q
+							.eq("organizationId", projectionFile.organizationId)
+							.eq("workspaceId", projectionFile.workspaceId)
+							.eq("path", projectionFile.path)
+							.eq("archiveOperationId", undefined),
+					)
+					.first()
+			: null;
+		const correctLock =
+			node !== null && state?.rootFolderNodeId !== undefined
+				? installation.pluginName === "council"
+					? node.readOnlyScopeNodeId === node._id
+					: node.readOnlyScopeNodeId === state.rootFolderNodeId
+				: false;
+		const privateFolder = projectionFile.rolloverIndex === plugins_PRIVATE_FOLDER_ROLLOVER_INDEX;
+		const trusted =
+			node !== null &&
+			active?._id === node._id &&
+			node.organizationId === projectionFile.organizationId &&
+			node.workspaceId === projectionFile.workspaceId &&
+			node.projectionPluginName === installation.pluginName &&
+			correctLock &&
+			(privateFolder
+				? installation.pluginName === "chitchat" && node.kind === "folder" && node.restrictedScopeNodeId === node._id
+				: node.kind === "file" && node.nonCollaborative === true && node.assetId !== undefined);
+		if (!trusted) {
+			// Recheck private folders here because migration phases commit separately. If authority
+			// changed after the first audit, deleting this map would orphan its mirrored file grants.
+			if (privateFolder) {
+				throw new Error(
+					"Projection cutover blocked: choose how to migrate or erase an unproved Chitchat private folder",
+				);
+			}
+			console.error("Projection file authority audit removed an unproved map row", {
+				fileNodeId: projectionFile.fileNodeId,
+			});
+			await ctx.db.delete("plugins_data_projection_files", projectionFile._id);
+
+			// Queue the channel again. Council has no full cursor reset after this audit, so deleting
+			// its old map without durable dirty work would leave the missing projection file unseen.
+			if (state) {
+				const now = Date.now();
+				await ctx.db.patch("plugins_data_projection_states", state._id, {
+					dirty: true,
+					updatedAt: now,
+				});
+				const dirty = await ctx.db
+					.query("plugins_data_projection_dirty_channels")
+					.withIndex("by_installation_channelKey", (q) =>
+						q.eq("installationId", projectionFile.installationId).eq("channelKey", projectionFile.channelKey),
+					)
+					.first();
+				if (dirty) {
+					await ctx.db.patch("plugins_data_projection_dirty_channels", dirty._id, {
+						updatedAt: Math.max(now, dirty.updatedAt + 1),
+					});
+				} else {
+					await ctx.db.insert("plugins_data_projection_dirty_channels", {
+						organizationId: projectionFile.organizationId,
+						workspaceId: projectionFile.workspaceId,
+						installationId: projectionFile.installationId,
+						channelKey: projectionFile.channelKey,
+						queuedAt: now,
+						updatedAt: now,
+					});
+				}
+			}
+		}
+	},
+});
+
+/**
+ * Bind each projection file's normalized text hash to the asset that currently stores those bytes.
+ * Run this before resetting Chitchat cursors so the cutover rebuild can skip unchanged files.
+ */
+export const backfill_projection_file_content_pairs = app_migrations.define({
+	table: "plugins_data_projection_files",
+	batchSize: 1,
+	migrateOne: async (ctx, projectionFile) => {
+		if (projectionFile.rolloverIndex === plugins_PRIVATE_FOLDER_ROLLOVER_INDEX) {
+			return;
+		}
+
+		const fileNode = await ctx.db.get("files_nodes", projectionFile.fileNodeId);
+		const installation = await ctx.db.get("plugins_workspace_installations", projectionFile.installationId);
+		if (
+			!fileNode ||
+			!installation ||
+			fileNode.kind !== "file" ||
+			fileNode.assetId === undefined ||
+			fileNode.projectionPluginName !== installation.pluginName
+		) {
+			console.error("Projection content-pair backfill skipped a missing or non-file node", {
+				fileNodeId: projectionFile.fileNodeId,
+			});
+			return;
+		}
+
+		const asset = await ctx.db.get("files_r2_assets", fileNode.assetId);
+		if (
+			!asset ||
+			asset.organizationId !== projectionFile.organizationId ||
+			asset.workspaceId !== projectionFile.workspaceId
+		) {
+			console.error("Projection content-pair backfill skipped a missing or mismatched asset", {
+				fileNodeId: projectionFile.fileNodeId,
+			});
+			return;
+		}
+
+		const chunks = await ctx.db
+			.query("files_text_chunks")
+			.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
+				q
+					.eq("organizationId", projectionFile.organizationId)
+					.eq("workspaceId", projectionFile.workspaceId)
+					.eq("sourceKind", "committed")
+					.eq("fileNodeId", projectionFile.fileNodeId),
+			)
+			.collect();
+		const text = chunks.length > 0 ? files_merge_contiguous_chunks(chunks) : asset.size === 0 ? "" : null;
+		if (text === null) {
+			console.error("Projection content-pair backfill skipped missing or non-contiguous chunks", {
+				fileNodeId: projectionFile.fileNodeId,
+			});
+			return;
+		}
+
+		const contentHash = await crypto_sha256_hex(text);
+		if (projectionFile.contentHash === contentHash && projectionFile.contentAssetId === fileNode.assetId) {
+			return;
+		}
+
+		await ctx.db.patch("plugins_data_projection_files", projectionFile._id, {
+			contentHash,
+			contentAssetId: fileNode.assetId,
+		});
+	},
+});
+
+/**
+ * Backfill the opaque cursor map on every projection state. Also start one clean merged-feed
+ * and reconciliation cycle for Chitchat. The generation bump makes an older in-flight sync unable to clear its reset.
+ */
+export const reset_chitchat_projection_state_cursors = app_migrations.define({
+	table: "plugins_data_projection_states",
+	batchSize: 20,
+	migrateOne: async (ctx, state) => {
+		if (state.pluginName !== "chitchat") {
+			await ctx.db.patch("plugins_data_projection_states", state._id, {
+				scanCursors: {},
+			});
+			return;
+		}
+
+		await ctx.db.patch("plugins_data_projection_states", state._id, {
+			cursors: {},
+			scanCursors: {},
+			reconcileAfterChannelKey: undefined,
+			dirty: true,
+			syncGeneration: state.syncGeneration + 1,
+			scheduledJobId: undefined,
+		});
 	},
 });
 
@@ -1051,3 +1794,66 @@ export const run_remove_plugins_data_charged_to_and_machine_bytes = app_migratio
 export const run_delete_plugins_data_member_usage = app_migrations.runner(
 	internal.migrations.delete_plugins_data_member_usage,
 );
+export const run_delete_legacy_plugins_data_member_usage = app_migrations.runner(
+	internal.migrations.delete_legacy_plugins_data_member_usage,
+);
+const plugin_scope_append_activity_migrations = [
+	internal.migrations.backfill_plugin_scope_last_append_from_documents,
+	internal.migrations.default_plugin_scope_last_append,
+];
+export const run_backfill_plugin_scope_append_activity = app_migrations.runner(
+	plugin_scope_append_activity_migrations,
+);
+// Before this series, upgrade each affected pre-fence Chitchat install to a different reviewed
+// version, or get approval to uninstall, drain, and reinstall it. The same version does not revoke
+// old sessions, and an empty deleted scope leaves no row to recover. Close orphan ranges first.
+export const run_backfill_plugin_scope_identity_markers = app_migrations.runner([
+	internal.migrations.recover_or_audit_orphan_plugin_scope_ranges,
+	internal.migrations.backfill_plugin_scope_identities_from_live_scopes,
+	internal.migrations.backfill_plugin_scope_identities_from_released_ranges,
+]);
+export const run_delete_orphan_plugin_scope_grants = app_migrations.runner(
+	internal.migrations.delete_orphan_plugin_scope_grants,
+);
+export const run_delete_stranded_plugin_data_scopes = app_migrations.runner(
+	internal.migrations.delete_stranded_plugin_data_scopes,
+);
+export const run_audit_projection_private_folder_authority = app_migrations.runner(
+	internal.migrations.audit_projection_private_folder_authority,
+);
+export const run_audit_projection_root_authority = app_migrations.runner(
+	internal.migrations.audit_projection_root_authority,
+);
+export const run_audit_projection_file_authority = app_migrations.runner(
+	internal.migrations.audit_projection_file_authority,
+);
+// Prove private ACL cleanup remains reachable before changing any projection pointer.
+const projection_scaling_cutover_migrations = [
+	internal.migrations.audit_projection_private_folder_authority,
+	internal.migrations.audit_projection_root_authority,
+	internal.migrations.audit_projection_file_authority,
+	internal.migrations.backfill_projection_file_content_pairs,
+	internal.migrations.reset_chitchat_projection_state_cursors,
+];
+export const run_projection_scaling_cutover = app_migrations.runner(projection_scaling_cutover_migrations);
+
+if (process.env.NODE_ENV === "test" && import.meta.vitest) {
+	const { expect, test } = import.meta.vitest;
+
+	test("audits private folders before changing projection pointers", () => {
+		expect(projection_scaling_cutover_migrations.map(getFunctionName)).toEqual([
+			"migrations:audit_projection_private_folder_authority",
+			"migrations:audit_projection_root_authority",
+			"migrations:audit_projection_file_authority",
+			"migrations:backfill_projection_file_content_pairs",
+			"migrations:reset_chitchat_projection_state_cursors",
+		]);
+	});
+
+	test("preserves append activity and sequence before adding empty defaults", () => {
+		expect(plugin_scope_append_activity_migrations.map(getFunctionName)).toEqual([
+			"migrations:backfill_plugin_scope_last_append_from_documents",
+			"migrations:default_plugin_scope_last_append",
+		]);
+	});
+}

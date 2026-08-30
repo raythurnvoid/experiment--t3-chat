@@ -20,7 +20,6 @@ import {
 	ShieldCheck,
 	Trash2,
 	TriangleAlert,
-	UploadCloud,
 } from "lucide-react";
 import { editor as monaco_editor } from "monaco-editor";
 import { memo, useEffect, useRef, useState, type ClipboardEvent, type FormEvent } from "react";
@@ -77,6 +76,8 @@ import {
 	plugins_parse_env_text,
 	plugins_validate_secret_name,
 } from "../../../../../../shared/plugins.ts";
+import { PluginPublishConfirmationModal } from "./publisher/-plugin-publish-confirmation-modal.tsx";
+import { PluginPublishSessionProvider } from "./publisher/-plugin-publish-session.tsx";
 
 type RoutePlugins_Installation = app_convex_FunctionReturnType<
 	typeof app_convex_api.plugins.list_installations
@@ -1776,6 +1777,7 @@ function get_publisher_version(publisherPlugin: RoutePlugins_PublisherPlugin): R
 function RoutePluginsPlugin() {
 	const { pluginName } = Route.useParams();
 	const { membershipId, workspaceId } = AppTenantProvider.useContext();
+	const publishSessionManager = PluginPublishSessionProvider.useContext();
 	const organizationList = useQuery(app_convex_api.organizations.list);
 	const workspacePermissions = organizationList?.workspaceIdsPermissionsDict[workspaceId];
 	const canManagePlugins =
@@ -1791,25 +1793,29 @@ function RoutePluginsPlugin() {
 		canManagePlugins === true ? { membershipId } : "skip",
 	);
 	// Non-null only when the signed-in user owns this plugin's repository claim.
-	const publisherPlugin = useQuery(app_convex_api.plugins.get_publisher_plugin, { pluginName });
-	const canOpenPluginDetail = can_open_plugin_detail({ canManagePlugins, publisherPlugin });
+	const publisherPlugin = useQuery(app_convex_api.plugins.get_publisher_plugin, {
+		pluginName,
+	});
+	const canOpenPluginDetail = can_open_plugin_detail({
+		canManagePlugins,
+		publisherPlugin,
+	});
 	const [consenting, setConsenting] = useState(false);
 	const [installing, setInstalling] = useState(false);
 	const [uninstalling, setUninstalling] = useState(false);
-	const [publishing, setPublishing] = useState(false);
 	const [removing, setRemoving] = useState(false);
 	const [managingSecrets, setManagingSecrets] = useState(false);
-	// Arm the landing effects below: a finished install or claim removal reactively unmounts the
-	// control that held the focus, and the fallen focus needs a deliberate landing.
+	// Arm the install landing effect below when the reactive update removes its focused control.
 	const [focusHeroAfterInstall, setFocusHeroAfterInstall] = useState(false);
-	const [focusHeroAfterRemoveClaim, setFocusHeroAfterRemoveClaim] = useState(false);
 	// A focus target for a finished uninstall: the Uninstall button unmounts with its row, and the
 	// focus a removed element held falls to the page body. Send it to the plugin title instead.
 	const heroTitleRef = useRef<HTMLHeadingElement | null>(null);
 	// A publisher without workspace.plugins.manage who removes their claim loses the whole detail
 	// view, hero h1 included: the permission-denied block is the only landmark left, so the
-	// remove-claim landing effect falls back to it.
+	// stable management-action owner falls back to it.
 	const permissionDeniedRef = useRef<HTMLDivElement | null>(null);
+	const publishBusy = publishSessionManager.session !== null;
+	const managementBusy = publishSessionManager.managementAction !== null;
 
 	// Computed before the early returns because the install landing effect below reads
 	// `showInstall`; every input is null-safe while the queries are still loading.
@@ -1823,78 +1829,62 @@ function RoutePluginsPlugin() {
 	const showInstall =
 		plugin !== null && canManagePlugins === true && (!installedVersion || installedVersion.version !== plugin.version);
 
-	const handleUninstall = useFn((installation: RoutePlugins_Installation["installation"], button: HTMLButtonElement) => {
-		// The button stays enabled while the uninstall runs, so this guard, not a disabled button,
-		// stops a second press.
-		if (uninstalling) {
-			return;
-		}
+	const handleUninstall = useFn(
+		(installation: RoutePlugins_Installation["installation"], button: HTMLButtonElement) => {
+			// Keep this guard because a mock or programmatic event can still call a disabled handler.
+			// The button stays enabled during its own request so it can keep the focus.
+			if (publishBusy || installing || uninstalling || removing) {
+				return;
+			}
+			const actionVersion = publishSessionManager.beginManagementAction("uninstall");
+			if (actionVersion === null) {
+				return;
+			}
 
-		setUninstalling(true);
-		app_convex
-			.mutation(app_convex_api.plugins.uninstall_version, { membershipId, installationId: installation._id })
-			.then((result) => {
-				if (result._nay) {
-					toast.error(result._nay.message);
-					return;
-				}
+			setUninstalling(true);
+			app_convex
+				.mutation(app_convex_api.plugins.uninstall_version, { membershipId, installationId: installation._id })
+				.then((result) => {
+					if (result._nay) {
+						toast.error(result._nay.message);
+						return;
+					}
 
-				// No navigation: list_installations updates reactively, swapping the hero action back to Install.
-				toast.success(`Uninstalled ${installation.pluginName}`);
-				// The swap unmounts the pressed button and its focus would fall to the body. Send it
-				// to the plugin title, but only when the button was still holding it or it already fell.
-				if (document.activeElement === button || document.activeElement === document.body) {
-					heroTitleRef.current?.focus();
-				}
-			})
-			.catch((error) => {
-				console.error("[RoutePluginsPlugin.handleUninstall] Failed to uninstall plugin:", {
-					error,
-					installationId: installation._id,
+					// No navigation: list_installations updates reactively, swapping the hero action back to Install.
+					toast.success(`Uninstalled ${installation.pluginName}`);
+					// The swap unmounts the pressed button and its focus would fall to the body. Send it
+					// to the plugin title, but only when the button was still holding it or it already fell.
+					if (document.activeElement === button || document.activeElement === document.body) {
+						heroTitleRef.current?.focus();
+					}
+				})
+				.catch((error) => {
+					console.error("[RoutePluginsPlugin.handleUninstall] Failed to uninstall plugin:", {
+						error,
+						installationId: installation._id,
+					});
+					toast.error("Failed to uninstall plugin");
+				})
+				.finally(() => {
+					setUninstalling(false);
+					publishSessionManager.finishManagementAction(actionVersion);
 				});
-				toast.error("Failed to uninstall plugin");
-			})
-			.finally(() => {
-				setUninstalling(false);
-			});
-	});
-
-	const handlePublish = useFn(() => {
-		// The Publish button stays enabled while the publish runs, so this guard, not a disabled
-		// button, stops a second press.
-		if (!publisherPlugin || publishing || removing) {
-			return;
-		}
-
-		const repositoryId = publisherPlugin.repository._id;
-		setPublishing(true);
-		app_convex
-			.action(app_convex_api.plugins.publish_version, { repositoryId })
-			.then((result) => {
-				if (result._nay) {
-					toast.error(result._nay.message);
-					return;
-				}
-
-				toast.success(`Published commit ${result._yay.sourceCommitSha.slice(0, 8)}`);
-			})
-			.catch((error) => {
-				console.error("[RoutePluginsPlugin.handlePublish] Failed to publish plugin:", { error, repositoryId });
-				toast.error("Failed to publish plugin");
-			})
-			.finally(() => {
-				setPublishing(false);
-			});
-	});
+		},
+	);
 
 	const handleRemoveClaim = useFn(() => {
 		// The menu item disables itself while work runs, but this guard, like on every other
 		// handler on this route, is what stops a second activation from starting the work twice.
-		if (!publisherPlugin || removing || publishing) {
+		if (!publisherPlugin || publishBusy || installing || uninstalling || removing) {
+			return;
+		}
+		const actionVersion = publishSessionManager.beginManagementAction("remove_repository");
+		if (actionVersion === null) {
 			return;
 		}
 
 		const repositoryId = publisherPlugin.repository._id;
+		let removed = false;
 		setRemoving(true);
 		app_convex
 			.mutation(app_convex_api.plugins.remove_repository, { repositoryId })
@@ -1906,9 +1896,7 @@ function RoutePluginsPlugin() {
 
 				// No navigation: get_publisher_plugin goes null once the claim is gone, hiding the publisher UI.
 				toast.success("Repository claim removed");
-				// That unmount takes the menu trigger holding the focus with it, and the focus falls
-				// to the page body. Arm the landing effect below.
-				setFocusHeroAfterRemoveClaim(true);
+				removed = true;
 			})
 			.catch((error) => {
 				console.error("[RoutePluginsPlugin.handleRemoveClaim] Failed to remove repository claim:", {
@@ -1919,13 +1907,26 @@ function RoutePluginsPlugin() {
 			})
 			.finally(() => {
 				setRemoving(false);
+				// The provider outlives route remounts, so it can repair focus even when this
+				// component was replaced while the removal was running.
+				publishSessionManager.finishManagementAction(actionVersion, { repairFocusIfLost: removed });
 			});
 	});
 
 	const handleAcceptAndInstall = useFn((plugin: RoutePlugins_PublishedPlugin) => {
-		// The Accept button stays enabled while the install runs, so this guard, not a disabled
-		// button, stops a second press.
-		if (installing) {
+		// Keep this guard because a mock or programmatic event can still call a disabled handler.
+		if (
+			publishBusy ||
+			installing ||
+			uninstalling ||
+			removing ||
+			plugin.reviewStatus === "rejected" ||
+			plugin.reviewStatus === "flagged"
+		) {
+			return;
+		}
+		const actionVersion = publishSessionManager.beginManagementAction("install");
+		if (actionVersion === null) {
 			return;
 		}
 
@@ -1941,13 +1942,6 @@ function RoutePluginsPlugin() {
 			.then((result) => {
 				if (result._nay) {
 					toast.error(result._nay.message);
-					// An Escape pressed mid-install already closed the modal, and Ariakit's restore
-					// target — the Install button — was disabled, so the focus fell to the page body.
-					// On a failure nothing below closes the modal, and while it is open the focus is
-					// never on the body, so this check alone tells the two cases apart.
-					if (document.activeElement === document.body) {
-						heroTitleRef.current?.focus();
-					}
 					return;
 				}
 
@@ -1964,24 +1958,17 @@ function RoutePluginsPlugin() {
 					pluginVersionId: plugin.pluginVersionId,
 				});
 				toast.error("Failed to install plugin");
-				// Same Escape-mid-install landing as the refusal branch above.
-				if (document.activeElement === document.body) {
-					heroTitleRef.current?.focus();
-				}
 			})
 			.finally(() => {
 				setInstalling(false);
+				publishSessionManager.finishManagementAction(actionVersion);
 			});
 	});
 
 	// A finished install closes the consent modal, and Ariakit puts the modal's focus back on the
 	// Install button — which the reactive list_installations update then unmounts, dropping the
-	// focus to the page body. Land it on the plugin title instead. The body check also covers an
-	// Escape pressed mid-install when the install then succeeds: there the restore target was
-	// already unfocusable (disabled), so the focus fell the same way. When the install fails
-	// instead, the handler's failure branches above land the same fallen focus, because this
-	// effect stays gated on `!showInstall` and a failure keeps `showInstall` true. The body check
-	// skips a member who has already moved the focus elsewhere.
+	// focus to the page body. Land it on the plugin title instead. The body check skips a member
+	// who has already moved the focus elsewhere.
 	useEffect(() => {
 		if (!focusHeroAfterInstall || showInstall) {
 			return;
@@ -1992,24 +1979,12 @@ function RoutePluginsPlugin() {
 		}
 	}, [focusHeroAfterInstall, showInstall]);
 
-	// A finished claim removal unmounts the whole publisher UI, including the menu trigger that
-	// Ariakit had returned the closed menu's focus to, so the focus falls to the page body. Land
-	// it on the plugin title instead, unless the member has already moved it elsewhere.
 	useEffect(() => {
-		if (!focusHeroAfterRemoveClaim || publisherPlugin) {
-			return;
-		}
-		setFocusHeroAfterRemoveClaim(false);
-		if (document.activeElement === document.body) {
-			// A publisher without workspace.plugins.manage loses the whole detail view with the
-			// claim, so the hero h1 is gone; land on the permission-denied block instead.
-			if (heroTitleRef.current) {
-				heroTitleRef.current.focus();
-			} else {
-				permissionDeniedRef.current?.focus();
-			}
-		}
-	}, [focusHeroAfterRemoveClaim, publisherPlugin]);
+		// Let the stable publish owner repair focus after a route change removes A's trigger.
+		const routeKey = `${workspaceId}/plugins/${pluginName}`;
+		publishSessionManager.setRouteFocusTarget(heroTitleRef.current ?? permissionDeniedRef.current, routeKey);
+		return () => publishSessionManager.setRouteFocusTarget(null, routeKey);
+	});
 
 	const breadcrumb = <PluginsHeaderBreadcrumb trail={["plugins"]} current={pluginName} />;
 
@@ -2098,6 +2073,21 @@ function RoutePluginsPlugin() {
 	const installAction = installedVersion ? "Update" : "Install";
 	const installProgress = installAction === "Update" ? "Updating..." : "Installing...";
 	const installationBlocked = plugin.reviewStatus === "rejected" || plugin.reviewStatus === "flagged";
+	const handleOpenConsent = () => {
+		// Keep this guard because a mock or programmatic event can still call a disabled handler.
+		if (publishBusy || managementBusy || installing || uninstalling || removing || installationBlocked) {
+			return;
+		}
+
+		setConsenting(true);
+	};
+	const handleConsentOpenChange = (open: boolean) => {
+		// Keep the focused Accept button inside the modal until the install request settles.
+		if (!open && installing) {
+			return;
+		}
+		setConsenting(open);
+	};
 	// Upserts require plugin.secrets.read on the installed version, but listing and deleting deliberately
 	// do not — leftover secrets must stay reachable after an upgrade drops the capability.
 	const secretsInstallationId = installedItem ? installedItem.installation._id : null;
@@ -2177,24 +2167,23 @@ function RoutePluginsPlugin() {
 					<div className={"RoutePluginsPluginHero-actions" satisfies RoutePluginsPlugin_ClassNames}>
 						<div className={"RoutePluginsPluginHero-actions-buttons" satisfies RoutePluginsPlugin_ClassNames}>
 							{publisherPlugin ? (
-								<MyButton
-									variant={showInstall ? "outline" : "default"}
-									// `removing` is set from a menu item, never while this button holds the
-									// focus, so its disable cannot blur anyone. The publish itself keeps the
-									// button enabled and reports through `aria-busy`.
-									disabled={removing}
-									aria-busy={publishing}
-									onClick={handlePublish}
-								>
-									<UploadCloud aria-hidden />
-									{publishing ? "Publishing..." : "Publish"}
-								</MyButton>
+								<PluginPublishConfirmationModal
+									repositoryId={publisherPlugin.repository._id}
+									repositoryLabel={`${publisherPlugin.repository.owner}/${publisherPlugin.repository.repo}`}
+									buttonVariant={showInstall ? "outline" : "default"}
+									disabled={installing || uninstalling || removing}
+								/>
 							) : null}
 							{showInstall ? (
 								// `installing` can only be true while the consent modal holds the focus, so
 								// this disable never blurs a focused control; it only stops reopening the
 								// modal mid-install.
-								<MyButton disabled={installing || installationBlocked} onClick={() => setConsenting(true)}>
+								<MyButton
+									disabled={
+										publishBusy || managementBusy || installing || uninstalling || removing || installationBlocked
+									}
+									onClick={handleOpenConsent}
+								>
 									<Download aria-hidden />
 									{installAction}
 								</MyButton>
@@ -2202,6 +2191,7 @@ function RoutePluginsPlugin() {
 							{installedItem ? (
 								<MyButton
 									variant="ghost_destructive"
+									disabled={publishBusy || installing || removing || (managementBusy && !uninstalling)}
 									aria-busy={uninstalling}
 									onClick={(event) => handleUninstall(installedItem.installation, event.currentTarget)}
 								>
@@ -2224,7 +2214,11 @@ function RoutePluginsPlugin() {
 									</MyMenuTrigger>
 									<MyMenuPopover>
 										<MyMenuPopoverContent>
-											<MyMenuItem variant="destructive" disabled={publishing || removing} onClick={handleRemoveClaim}>
+											<MyMenuItem
+												variant="destructive"
+												disabled={publishBusy || managementBusy || installing || uninstalling || removing}
+												onClick={handleRemoveClaim}
+											>
 												<MyMenuItemContent>
 													<MyMenuItemContentIcon>
 														<Trash2 />
@@ -2294,7 +2288,7 @@ function RoutePluginsPlugin() {
 					<RoutePluginsInstalledRuns membershipId={membershipId} installationId={installedItem.installation._id} />
 				) : null}
 
-				<MyModal open={consenting} setOpen={setConsenting}>
+				<MyModal open={consenting} setOpen={handleConsentOpenChange}>
 					<MyModalPopover className={"RoutePluginsPluginConsentModal" satisfies RoutePluginsPlugin_ClassNames}>
 						<MyModalHeader>
 							<MyModalHeading>
@@ -2446,7 +2440,11 @@ function RoutePluginsPlugin() {
 							<MyButton variant="ghost" disabled={installing} onClick={() => setConsenting(false)}>
 								Cancel
 							</MyButton>
-							<MyButton aria-busy={installing} onClick={() => handleAcceptAndInstall(plugin)}>
+							<MyButton
+								disabled={publishBusy || (managementBusy && !installing)}
+								aria-busy={installing}
+								onClick={() => handleAcceptAndInstall(plugin)}
+							>
 								<Download aria-hidden />
 								{installing ? installProgress : `Accept and ${installAction.toLowerCase()}`}
 							</MyButton>
@@ -2460,6 +2458,13 @@ function RoutePluginsPlugin() {
 }
 
 const Route = createFileRoute("/w/$organizationName/$workspaceName/plugins/$pluginName")({
+	// Clear plugin-local dialogs and progress when this route moves to another tenant or plugin.
+	// The root provider keeps the shared action lock alive until the old request settles.
+	remountDeps: ({ params }) => ({
+		organizationName: params.organizationName,
+		workspaceName: params.workspaceName,
+		pluginName: params.pluginName,
+	}),
 	component: RoutePluginsPlugin,
 });
 

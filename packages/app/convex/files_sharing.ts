@@ -26,6 +26,7 @@ import {
 } from "./access_control.ts";
 import {
 	files_nodes_db_cascade_restricted_scope,
+	files_nodes_db_has_projection_authority,
 	files_nodes_db_resolve_parent_restricted_scope,
 } from "./files_nodes.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
@@ -106,9 +107,7 @@ const share_principal_validator = v.union(
 	}),
 );
 
-type FileSharePrincipal =
-	| { kind: "user"; userId: Id<"users"> }
-	| { kind: "role"; role: access_control_RoleRef };
+type FileSharePrincipal = { kind: "user"; userId: Id<"users"> } | { kind: "role"; role: access_control_RoleRef };
 
 /**
  * One string that stands for one principal, so entries can be grouped in a `Map`.
@@ -520,34 +519,38 @@ export const get_node_share_state = query({
 			return null;
 		}
 		const { membership, node, organization, defaultWorkspaceId } = authorized._yay;
+		const projectionManaged = await files_nodes_db_has_projection_authority(ctx, node);
 
-		const canManage = await access_control_db_has_permission(ctx, {
-			organizationId: organization._id,
-			workspaceId: membership.workspaceId,
-			defaultWorkspaceId,
-			organizationOwnerUserId: organization.ownerUserId,
-			resource: {
-				kind: "file",
-				id: String(node._id),
-				restrictedScopeNodeId: node.restrictedScopeNodeId ?? null,
-			},
-			permission: "content.permissions.manage",
-			userId: userAuth.id,
-		});
+		const canManage =
+			!projectionManaged &&
+			(await access_control_db_has_permission(ctx, {
+				organizationId: organization._id,
+				workspaceId: membership.workspaceId,
+				defaultWorkspaceId,
+				organizationOwnerUserId: organization.ownerUserId,
+				resource: {
+					kind: "file",
+					id: String(node._id),
+					restrictedScopeNodeId: node.restrictedScopeNodeId ?? null,
+				},
+				permission: "content.permissions.manage",
+				userId: userAuth.id,
+			}));
 
 		// Restricting writes the caller a `manage` grant, so it answers to the same ceiling
 		// `restrict_node` applies. Asked here so the dialog does not offer a button that always fails.
 		// The owner holds no grants and passes every check earlier than this one.
 		const canRestrict =
-			userAuth.id === organization.ownerUserId ||
-			(await caller_can_hand_out_level(ctx, {
-				organization,
-				defaultWorkspaceId,
-				workspaceId: membership.workspaceId,
-				node,
-				userId: userAuth.id,
-				level: "manage",
-			})) === null;
+			!projectionManaged &&
+			(userAuth.id === organization.ownerUserId ||
+				(await caller_can_hand_out_level(ctx, {
+					organization,
+					defaultWorkspaceId,
+					workspaceId: membership.workspaceId,
+					node,
+					userId: userAuth.id,
+					level: "manage",
+				})) === null);
 
 		// Same reason as `canRestrict`: do not offer a choice that always fails. Read at the default
 		// workspace, like the ceiling itself, because the question is what the caller's organization
@@ -560,14 +563,13 @@ export const get_node_share_state = query({
 			userId: userAuth.id,
 		});
 		const canShareWithRoles =
-			organizationPermissions === "all" || organizationPermissions.has("organization.roles.manage");
+			!projectionManaged &&
+			(organizationPermissions === "all" || organizationPermissions.has("organization.roles.manage"));
 
 		// A pointer at a node that was deleted, or that is no longer restricted, means this node uses
 		// workspace access again. Reading the scope node here, instead of trusting the pointer, keeps the
 		// dialog saying the same thing the permission check does.
-		const scopeNode = node.restrictedScopeNodeId
-			? await ctx.db.get("files_nodes", node.restrictedScopeNodeId)
-			: null;
+		const scopeNode = node.restrictedScopeNodeId ? await ctx.db.get("files_nodes", node.restrictedScopeNodeId) : null;
 		const scopeIsLive =
 			scopeNode !== null &&
 			scopeNode.restrictedScopeNodeId === scopeNode._id &&
@@ -644,6 +646,9 @@ export const restrict_node = mutation({
 			return authorized;
 		}
 		const { membership, node, organization, defaultWorkspaceId } = authorized._yay;
+		if (await files_nodes_db_has_projection_authority(ctx, node)) {
+			return Result({ _nay: { message: "Plugin-managed files cannot be shared." } });
+		}
 
 		if (node.restrictedScopeNodeId === node._id) {
 			// Already restricted. Answering yes keeps a double click, or two people clicking at once,
@@ -734,6 +739,9 @@ export const unrestrict_node = mutation({
 			return authorized;
 		}
 		const { membership, node } = authorized._yay;
+		if (await files_nodes_db_has_projection_authority(ctx, node)) {
+			return Result({ _nay: { message: "Plugin-managed files cannot be shared." } });
+		}
 
 		if (node.restrictedScopeNodeId !== node._id) {
 			return Result({ _nay: { message: "This is not restricted" } });
@@ -802,6 +810,9 @@ export const set_node_share_grant = mutation({
 			return authorized;
 		}
 		const { membership, node, organization, defaultWorkspaceId } = authorized._yay;
+		if (await files_nodes_db_has_projection_authority(ctx, node)) {
+			return Result({ _nay: { message: "Plugin-managed files cannot be shared." } });
+		}
 
 		if (node.restrictedScopeNodeId !== node._id) {
 			return Result({ _nay: { message: "Restrict this first, then choose who gets access" } });
@@ -875,7 +886,9 @@ export const set_node_share_grant = mutation({
 
 		if (!existingEntry && entries.length >= MAX_FILE_SHARE_PRINCIPALS) {
 			return Result({
-				_nay: { message: `One file or folder can be shared with at most ${MAX_FILE_SHARE_PRINCIPALS} people and roles` },
+				_nay: {
+					message: `One file or folder can be shared with at most ${MAX_FILE_SHARE_PRINCIPALS} people and roles`,
+				},
 			});
 		}
 
@@ -958,6 +971,9 @@ export const remove_node_share_grant = mutation({
 			return authorized;
 		}
 		const { membership, node, organization } = authorized._yay;
+		if (await files_nodes_db_has_projection_authority(ctx, node)) {
+			return Result({ _nay: { message: "Plugin-managed files cannot be shared." } });
+		}
 
 		if (node.restrictedScopeNodeId !== node._id) {
 			return Result({ _nay: { message: "This is not restricted" } });

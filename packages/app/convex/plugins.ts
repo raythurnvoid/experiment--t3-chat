@@ -61,7 +61,11 @@ import { files_nodes_db_delete_subtree_batch } from "./files_nodes.ts";
 import type { files_nodes_create_file_node_internal_Result } from "./files_nodes_content.ts";
 import { plugins_runtime_db_enqueue_manual_run } from "./plugins_runtime.ts";
 import { public_api_db_cleanup_file_write_stage } from "./public_api.ts";
-import { plugins_data_db_count_installation_docs, plugins_data_db_drain_batch } from "./plugins_data.ts";
+import {
+	plugins_data_db_count_installation_docs,
+	plugins_data_db_drain_batch,
+	type plugins_data_PreviewReadBudget,
+} from "./plugins_data.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -155,6 +159,7 @@ const PUBLISH_CLEANUP_GRACE_MS = 60 * 60 * 1000;
 const PUBLISH_CLEANUP_KEYS_PER_RUN = 10;
 const PUBLISH_CLEANUP_RETRY_MS = 5 * 60 * 1000;
 const PUBLISH_CLEANUP_CRON_BATCH_SIZE = 10;
+const PLUGIN_REGISTRY_DELETION_IN_PROGRESS_MESSAGE = "Plugin registry deletion is in progress";
 // Strip a leading BOM when parsing text formats such as the JSON manifest.
 const fatal_text_decoder = new TextDecoder("utf-8", { fatal: true });
 // Keep a leading BOM in reviewed source. The original bytes are uploaded after review, so coverage
@@ -438,10 +443,17 @@ export const upsert_plugin = internalMutation({
 	handler: async (ctx, args) => {
 		// The repository claim can be removed while GitHub, review, and R2 work is in flight. Bind
 		// registration to the exact claim that authorized this publish before creating any version.
-		const [user, repository] = await Promise.all([
+		const [user, repository, deletionFence] = await Promise.all([
 			ctx.db.get("users", args.createdBy),
 			ctx.db.get("plugins_publisher_repositories", args.repositoryId),
+			ctx.db
+				.query("plugins_registry_deletion_fences")
+				.withIndex("by_pluginName", (q) => q.eq("pluginName", args.name))
+				.first(),
 		]);
+		if (deletionFence) {
+			return Result({ _nay: { message: PLUGIN_REGISTRY_DELETION_IN_PROGRESS_MESSAGE } });
+		}
 		// Account deletion can start while the review and uploads are still running. Refuse the final
 		// write so an in-flight publish cannot recreate publisher data after the delete job passed it.
 		if (!user || user.deletedAt !== undefined) {
@@ -577,11 +589,18 @@ export const finalize_plugin_version = internalMutation({
 
 		// Visibility is the security boundary. Recheck the user and exact claim in this transaction.
 		// Account deletion or a remove-and-reclaim race may start while source files are uploading.
-		const [user, repository, review] = await Promise.all([
+		const [user, repository, review, deletionFence] = await Promise.all([
 			ctx.db.get("users", version.createdBy),
 			ctx.db.get("plugins_publisher_repositories", args.repositoryId),
 			version.reviewId ? ctx.db.get("plugins_version_reviews", version.reviewId) : null,
+			ctx.db
+				.query("plugins_registry_deletion_fences")
+				.withIndex("by_pluginName", (q) => q.eq("pluginName", version.name))
+				.first(),
 		]);
+		if (deletionFence) {
+			throw new Error(PLUGIN_REGISTRY_DELETION_IN_PROGRESS_MESSAGE);
+		}
 		if (!user || user.deletedAt !== undefined) {
 			throw new Error("Plugin publisher access changed while publishing; try again");
 		}
@@ -638,7 +657,15 @@ export const get_owned_publisher_repository = internalQuery({
 		}),
 	}),
 	handler: async (ctx, args) => {
-		const repository = await ctx.db.get("plugins_publisher_repositories", args.repositoryId);
+		const [user, repository] = await Promise.all([
+			ctx.db.get("users", args.userId),
+			ctx.db.get("plugins_publisher_repositories", args.repositoryId),
+		]);
+		// Clerk cleanup is best effort. Refuse a stale token before an action can spend shared GitHub,
+		// review, or artifact resources for an account whose local deletion already started.
+		if (!user || user.deletedAt !== undefined) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
 		if (!repository) {
 			return Result({ _nay: { message: "Not found" } });
 		}
@@ -685,7 +712,7 @@ export const preflight_publish_plugin_version = internalQuery({
 		}),
 	}),
 	handler: async (ctx, args) => {
-		const [existingNamed, existingVersion] = await Promise.all([
+		const [existingNamed, existingVersion, deletionFence] = await Promise.all([
 			ctx.db
 				.query("plugins_versions")
 				.withIndex("by_name", (q) => q.eq("name", args.name))
@@ -694,7 +721,15 @@ export const preflight_publish_plugin_version = internalQuery({
 				.query("plugins_versions")
 				.withIndex("by_name_version", (q) => q.eq("name", args.name).eq("version", args.version))
 				.first(),
+			ctx.db
+				.query("plugins_registry_deletion_fences")
+				.withIndex("by_pluginName", (q) => q.eq("pluginName", args.name))
+				.first(),
 		]);
+
+		if (deletionFence) {
+			return Result({ _nay: { message: PLUGIN_REGISTRY_DELETION_IN_PROGRESS_MESSAGE } });
+		}
 
 		if (existingNamed && existingNamed.createdBy !== args.userId) {
 			return Result({ _nay: { message: "Plugin name is already owned by another publisher" } });
@@ -1859,6 +1894,13 @@ export const upsert_version_review = internalMutation({
 		}),
 	}),
 	handler: async (ctx, args) => {
+		const deletionFence = await ctx.db
+			.query("plugins_registry_deletion_fences")
+			.withIndex("by_pluginName", (q) => q.eq("pluginName", args.pluginName))
+			.first();
+		if (deletionFence) {
+			return Result({ _nay: { message: PLUGIN_REGISTRY_DELETION_IN_PROGRESS_MESSAGE } });
+		}
 		// An action can cross a deploy and call this newer mutation with an older verdict policy.
 		if (args.reviewPolicyVersion !== plugins_REVIEW_POLICY_VERSION) {
 			return Result({
@@ -2652,10 +2694,20 @@ export const update_last_publish_attempt = internalMutation({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const { repositoryId, ...attempt } = args;
-		const [repository, review] = await Promise.all([
+		const pluginName = attempt.pluginName;
+		const [repository, review, deletionFence] = await Promise.all([
 			ctx.db.get("plugins_publisher_repositories", repositoryId),
 			attempt.reviewId ? ctx.db.get("plugins_version_reviews", attempt.reviewId) : null,
+			pluginName
+				? ctx.db
+						.query("plugins_registry_deletion_fences")
+						.withIndex("by_pluginName", (q) => q.eq("pluginName", pluginName))
+						.first()
+				: null,
 		]);
+		if (deletionFence) {
+			return null;
+		}
 		// remove_repository can delete the claim while a publish is still in flight; nothing to record then.
 		if (!repository) {
 			return null;
@@ -2813,7 +2865,16 @@ export const create_publish_artifact_cleanup_attempt = internalMutation({
 	},
 	returns: v.id("plugins_publish_artifact_cleanup_attempts"),
 	handler: async (ctx, args) => {
-		const repository = await ctx.db.get("plugins_publisher_repositories", args.repositoryId);
+		const [repository, deletionFence] = await Promise.all([
+			ctx.db.get("plugins_publisher_repositories", args.repositoryId),
+			ctx.db
+				.query("plugins_registry_deletion_fences")
+				.withIndex("by_pluginName", (q) => q.eq("pluginName", args.pluginName))
+				.first(),
+		]);
+		if (deletionFence) {
+			throw new Error(PLUGIN_REGISTRY_DELETION_IN_PROGRESS_MESSAGE);
+		}
 		if (!repository) {
 			throw new Error("Publisher repository claim changed before artifact upload");
 		}
@@ -2900,6 +2961,7 @@ async function publish_version_from_github(
 	args: {
 		repositoryId: Id<"plugins_publisher_repositories">;
 		source: NonNullable<get_owned_publisher_repository_Result["_yay"]>;
+		expectedSourceCommitSha: string;
 		/**
 		 * Traceability the caller records whether this publish succeeds or fails.
 		 *
@@ -2923,6 +2985,14 @@ async function publish_version_from_github(
 	}
 
 	const sourceCommitSha = head._yay.commitSha;
+	if (sourceCommitSha !== args.expectedSourceCommitSha) {
+		return Result({
+			_nay: {
+				name: "conflict",
+				message: "The repository changed after review. Review the new commit before publishing",
+			},
+		});
+	}
 
 	// dist/bonobo.plugin.json declares the plugin identity and describes the build output (backend,
 	// shipped files); it is the single file the publish reads besides what it lists.
@@ -3214,9 +3284,45 @@ async function publish_version_from_github(
 	});
 }
 
+export const get_publish_candidate_head = action({
+	args: {
+		repositoryId: v.id("plugins_publisher_repositories"),
+	},
+	returns: v_result({
+		_yay: v.object({ sourceCommitSha: v.string() }),
+	}),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth || userAuth.kind !== "signed_in") {
+			return Result({ _nay: { message: "Sign in to publish plugins" } });
+		}
+		// This read-only preflight still spends the shared GitHub token. Charge its own bucket so
+		// repeated clicks cannot drain the management token needed by the immediate publish.
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "plugins_publish_preflight", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+		const authorized = (await ctx.runQuery(internal.plugins.get_owned_publisher_repository, {
+			userId: userAuth.id,
+			repositoryId: args.repositoryId,
+		})) as get_owned_publisher_repository_Result;
+		if (authorized._nay) {
+			return Result({ _nay: { message: authorized._nay.message } });
+		}
+
+		const head = await github_fetch_repo_head({ owner: authorized._yay.owner, repo: authorized._yay.repo });
+		if (head._nay) {
+			return Result({ _nay: { message: head._nay.message } });
+		}
+
+		return Result({ _yay: { sourceCommitSha: head._yay.commitSha } });
+	},
+});
+
 export const publish_version = action({
 	args: {
 		repositoryId: v.id("plugins_publisher_repositories"),
+		expectedSourceCommitSha: v.string(),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -3241,6 +3347,9 @@ export const publish_version = action({
 		if (authorized._nay) {
 			return Result({ _nay: { message: authorized._nay.message } });
 		}
+		if (!/^[0-9a-f]{40}$/u.test(args.expectedSourceCommitSha)) {
+			return Result({ _nay: { message: "Reviewed commit SHA must be 40 lowercase hexadecimal characters" } });
+		}
 
 		const attempt: {
 			pluginName: string | null;
@@ -3256,6 +3365,7 @@ export const publish_version = action({
 			published = await publish_version_from_github(ctx, {
 				repositoryId: args.repositoryId,
 				source: authorized._yay,
+				expectedSourceCommitSha: args.expectedSourceCommitSha,
 				attempt,
 			});
 		} catch (error) {
@@ -3904,6 +4014,14 @@ export const install_version = mutation({
 			organizationId: authorization._yay.membership.organizationId,
 			workspaceId: authorization._yay.membership.workspaceId,
 		};
+		const workspace = await ctx.db.get("organizations_workspaces", installationScope.workspaceId);
+		if (!workspace) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		// Keep both a new install and a disabled-install re-enable closed through every bounded purge pass.
+		if (workspace.pluginDataPurgeStartedAt !== undefined) {
+			return Result({ _nay: { message: "Workspace cleanup is in progress" } });
+		}
 
 		const pluginVersion = await ctx.db.get("plugins_versions", args.pluginVersionId);
 		if (!pluginVersion) {
@@ -3914,6 +4032,13 @@ export const install_version = mutation({
 		}
 		if (pluginVersion.reviewStatus !== "passed") {
 			return Result({ _nay: { message: "Plugin version failed review and cannot be installed" } });
+		}
+		const deletionFence = await ctx.db
+			.query("plugins_registry_deletion_fences")
+			.withIndex("by_pluginName", (q) => q.eq("pluginName", pluginVersion.name))
+			.first();
+		if (deletionFence) {
+			return Result({ _nay: { message: PLUGIN_REGISTRY_DELETION_IN_PROGRESS_MESSAGE } });
 		}
 
 		// Consent must exactly cover what the version declares; anything else is a stale or partial consent screen.
@@ -4152,9 +4277,9 @@ export const uninstall_version = mutation({
 		}
 
 		// Event runs and run calls stay as history; the admin hard-delete flow sweeps them.
-		// UI sessions are deleted together with their installation. Their tokens already stopped
-		// working (the resolver rechecks the installation on every call); this just removes the docs.
-		const [handlers, secrets, uiSessions] = await Promise.all([
+		// Deleting the installation revokes every UI session now. The bounded background drain removes
+		// their docs, because one installation can have more sessions than one transaction may read.
+		const [handlers, secrets] = await Promise.all([
 			ctx.db
 				.query("plugins_workspace_event_handlers")
 				.withIndex("by_installation", (q) => q.eq("installationId", installation._id))
@@ -4163,15 +4288,10 @@ export const uninstall_version = mutation({
 				.query("plugins_workspace_installation_secrets")
 				.withIndex("by_installation_name", (q) => q.eq("installationId", installation._id))
 				.collect(),
-			ctx.db
-				.query("plugins_ui_sessions")
-				.withIndex("by_installation", (q) => q.eq("installationId", installation._id))
-				.collect(),
 		]);
 		await Promise.all([
 			...handlers.map((handler) => ctx.db.delete("plugins_workspace_event_handlers", handler._id)),
 			...secrets.map((secret) => ctx.db.delete("plugins_workspace_installation_secrets", secret._id)),
-			...uiSessions.map((session) => ctx.db.delete("plugins_ui_sessions", session._id)),
 			ctx.db.delete("plugins_workspace_installations", installation._id),
 		]);
 
@@ -4696,6 +4816,24 @@ export const get_secret_for_runtime = internalMutation({
 		v.null(),
 	),
 	handler: async (ctx, args) => {
+		const [installation, workspace] = await Promise.all([
+			ctx.db.get("plugins_workspace_installations", args.installationId),
+			ctx.db.get("organizations_workspaces", args.workspaceId),
+		]);
+		// Recheck the run's workspace in this mutation. A deletion fence can land after the
+		// host route authenticates but before it asks for the encrypted secret.
+		if (
+			!installation ||
+			!workspace ||
+			workspace.organizationId !== args.organizationId ||
+			workspace.pluginDataPurgeStartedAt !== undefined ||
+			installation.status !== "enabled" ||
+			installation.organizationId !== args.organizationId ||
+			installation.workspaceId !== args.workspaceId
+		) {
+			return null;
+		}
+
 		const installationSecret = await ctx.db
 			.query("plugins_workspace_installation_secrets")
 			.withIndex("by_installation_name", (q) => q.eq("installationId", args.installationId).eq("name", args.name))
@@ -4710,14 +4848,6 @@ export const get_secret_for_runtime = internalMutation({
 			return { tier: "installation" as const, secret: installationSecret };
 		}
 
-		const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
-		if (
-			!installation ||
-			installation.organizationId !== args.organizationId ||
-			installation.workspaceId !== args.workspaceId
-		) {
-			return null;
-		}
 		const version = await ctx.db.get("plugins_versions", installation.pluginVersionId);
 		if (!version) {
 			return null;
@@ -5287,7 +5417,11 @@ export const run_installation_on_files = internalMutation({
 			// Backfill stays stored-upload-only by decision: a converted editable document (even one
 			// born by upload) is no longer the stored blob a plugin run would read, so the refusal
 			// names the supported input instead of hinting the node is broken.
-			if (fileNode.kind !== "file" || fileNode.assetId === undefined || files_node_has_editable_text_content(fileNode)) {
+			if (
+				fileNode.kind !== "file" ||
+				fileNode.assetId === undefined ||
+				files_node_has_editable_text_content(fileNode)
+			) {
 				runs.push({ nodeId, runId: null, message: "Plugin backfill supports stored upload blobs only" });
 				continue;
 			}
@@ -5375,11 +5509,39 @@ export const delete_plugin_source_tree_batch = internalMutation({
 	},
 });
 
+/** Large registry docs share one cap; their stored manifest or review payload can be tens of KiB. */
+const REGISTRY_PREVIEW_LARGE_DOC_LIMIT = 50;
+/** Child rows are smaller, but every nested query still shares one transaction-wide cap. */
+const REGISTRY_PREVIEW_CHILD_DOC_LIMIT = 320;
+/** One staged body plus one sentinel stays byte-safe even when the plugin has many installations. */
+const REGISTRY_PREVIEW_STAGED_FILE_READ_LIMIT = 2;
+
+async function plugins_db_take_registry_preview_docs<T>(
+	budget: plugins_data_PreviewReadBudget,
+	read: (limit: number) => Promise<T[]>,
+) {
+	if (budget.remaining === 0) {
+		budget.truncated = true;
+		return { docs: [], truncated: true };
+	}
+
+	const limit = Math.min(100, budget.remaining);
+	const docs = await read(limit + 1);
+	budget.remaining = Math.max(0, budget.remaining - docs.length);
+	const truncated = docs.length > limit;
+	budget.truncated ||= truncated;
+	return { docs: docs.slice(0, limit), truncated };
+}
+
 export const preview_hard_delete_registered_plugin = internalQuery({
 	args: {
 		pluginName: v.string(),
 	},
 	returns: v.object({
+		deletionFenced: v.boolean(),
+		// True means at least one count is a lower bound. Registry history and nested child rows share
+		// fixed read budgets, so a large plugin can never make this required preview unanswerable.
+		previewTruncated: v.boolean(),
 		versions: v.number(),
 		versionReviews: v.number(),
 		sourceFileNodes: v.number(),
@@ -5391,14 +5553,37 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 		pluginDataDocuments: v.number(),
 		pluginDataLiveReservations: v.number(),
 		pluginDataTombstones: v.number(),
+		pluginDataProjectionDirtyChannels: v.number(),
+		pluginDataProjectionDirtyChannelsTruncated: v.boolean(),
+		pluginDataProjectionChitchatItems: v.number(),
+		pluginDataProjectionChitchatItemsTruncated: v.boolean(),
+		pluginDataProjectionChitchatReactions: v.number(),
+		pluginDataProjectionChitchatReactionsTruncated: v.boolean(),
+		pluginDataProjectionChitchatAuthors: v.number(),
+		pluginDataProjectionChitchatAuthorsTruncated: v.boolean(),
+		pluginDataProjectionChitchatFiles: v.number(),
+		pluginDataProjectionChitchatFilesTruncated: v.boolean(),
+		pluginDataProjectionChitchatBuilds: v.number(),
+		pluginDataProjectionChitchatBuildsTruncated: v.boolean(),
+		pluginDataProjectionFiles: v.number(),
+		pluginDataProjectionFilesTruncated: v.boolean(),
+		pluginDataProjectionStates: v.number(),
+		pluginDataProjectionStatesTruncated: v.boolean(),
 		// One row per member who holds something in an installation. It carries a user id, so an
 		// operator must see it in the readback before an irreversible delete.
 		pluginDataMemberUsage: v.number(),
+		pluginDataMemberUsageTruncated: v.boolean(),
 		pluginServiceGrants: v.number(),
 		// True when at least one installation held more grants than the count helper reads. An
 		// outside service decides how many grants it mints, so the count is bounded on purpose and
 		// the operator must see `100+` instead of a number that looks exact.
 		pluginServiceGrantsTruncated: v.boolean(),
+		pluginScopeGrants: v.number(),
+		pluginScopeGrantsTruncated: v.boolean(),
+		pluginDataScopeRows: v.number(),
+		pluginDataScopeRowsTruncated: v.boolean(),
+		releasedScopeRangeRows: v.number(),
+		releasedScopeRangeRowsTruncated: v.boolean(),
 		eventRuns: v.number(),
 		eventRunCalls: v.number(),
 		runActivities: v.number(),
@@ -5408,20 +5593,46 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 		r2ObjectKeys: v.number(),
 	}),
 	handler: async (ctx, args) => {
-		const [versions, reviews, cleanupAttempts] = await Promise.all([
-			ctx.db
-				.query("plugins_versions")
-				.withIndex("by_name", (q) => q.eq("name", args.pluginName))
-				.collect(),
-			ctx.db
-				.query("plugins_version_reviews")
-				.withIndex("by_pluginName", (q) => q.eq("pluginName", args.pluginName))
-				.collect(),
-			ctx.db
-				.query("plugins_publish_artifact_cleanup_attempts")
-				.withIndex("by_pluginName", (q) => q.eq("pluginName", args.pluginName))
-				.collect(),
-		]);
+		const deletionFence = await ctx.db
+			.query("plugins_registry_deletion_fences")
+			.withIndex("by_pluginName", (q) => q.eq("pluginName", args.pluginName))
+			.first();
+		const largeDocBudget: plugins_data_PreviewReadBudget = {
+			remaining: REGISTRY_PREVIEW_LARGE_DOC_LIMIT,
+			truncated: false,
+		};
+		const childDocBudget: plugins_data_PreviewReadBudget = {
+			remaining: REGISTRY_PREVIEW_CHILD_DOC_LIMIT,
+			truncated: false,
+			stagedFiles: {
+				remainingCount: 1,
+				remainingReads: REGISTRY_PREVIEW_STAGED_FILE_READ_LIMIT,
+			},
+		};
+		const versions = (
+			await plugins_db_take_registry_preview_docs(largeDocBudget, (limit) =>
+				ctx.db
+					.query("plugins_versions")
+					.withIndex("by_name", (q) => q.eq("name", args.pluginName))
+					.take(limit),
+			)
+		).docs;
+		const reviews = (
+			await plugins_db_take_registry_preview_docs(largeDocBudget, (limit) =>
+				ctx.db
+					.query("plugins_version_reviews")
+					.withIndex("by_pluginName", (q) => q.eq("pluginName", args.pluginName))
+					.take(limit),
+			)
+		).docs;
+		const cleanupAttempts = (
+			await plugins_db_take_registry_preview_docs(largeDocBudget, (limit) =>
+				ctx.db
+					.query("plugins_publish_artifact_cleanup_attempts")
+					.withIndex("by_pluginName", (q) => q.eq("pluginName", args.pluginName))
+					.take(limit),
+			)
+		).docs;
 
 		const r2ObjectKeys = new Set<string>();
 		for (const attempt of cleanupAttempts) {
@@ -5437,9 +5648,32 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 		let pluginDataDocuments = 0;
 		let pluginDataLiveReservations = 0;
 		let pluginDataTombstones = 0;
+		let pluginDataProjectionDirtyChannels = 0;
+		let pluginDataProjectionDirtyChannelsTruncated = false;
+		let pluginDataProjectionChitchatItems = 0;
+		let pluginDataProjectionChitchatItemsTruncated = false;
+		let pluginDataProjectionChitchatReactions = 0;
+		let pluginDataProjectionChitchatReactionsTruncated = false;
+		let pluginDataProjectionChitchatAuthors = 0;
+		let pluginDataProjectionChitchatAuthorsTruncated = false;
+		let pluginDataProjectionChitchatFiles = 0;
+		let pluginDataProjectionChitchatFilesTruncated = false;
+		let pluginDataProjectionChitchatBuilds = 0;
+		let pluginDataProjectionChitchatBuildsTruncated = false;
+		let pluginDataProjectionFiles = 0;
+		let pluginDataProjectionFilesTruncated = false;
+		let pluginDataProjectionStates = 0;
+		let pluginDataProjectionStatesTruncated = false;
 		let pluginDataMemberUsage = 0;
+		let pluginDataMemberUsageTruncated = false;
 		let pluginServiceGrants = 0;
 		let pluginServiceGrantsTruncated = false;
+		let pluginScopeGrants = 0;
+		let pluginScopeGrantsTruncated = false;
+		let pluginDataScopeRows = 0;
+		let pluginDataScopeRowsTruncated = false;
+		let releasedScopeRangeRows = 0;
+		let releasedScopeRangeRowsTruncated = false;
 		let eventRuns = 0;
 		let eventRunCalls = 0;
 		let runActivities = 0;
@@ -5449,106 +5683,179 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 				r2ObjectKeys.add(r2Key);
 			}
 			// Runs and calls remain version-owned history after uninstall or upgrade.
-			const [versionRuns, versionCalls] = await Promise.all([
-				ctx.db
-					.query("plugins_event_runs")
-					.withIndex("by_pluginVersion", (q) => q.eq("pluginVersionId", version._id))
-					.collect(),
-				ctx.db
-					.query("plugins_event_run_calls")
-					.withIndex("by_pluginVersion", (q) => q.eq("pluginVersionId", version._id))
-					.collect(),
-			]);
+			const versionRuns = (
+				await plugins_db_take_registry_preview_docs(childDocBudget, (limit) =>
+					ctx.db
+						.query("plugins_event_runs")
+						.withIndex("by_pluginVersion", (q) => q.eq("pluginVersionId", version._id))
+						.take(limit),
+				)
+			).docs;
+			const versionCalls = (
+				await plugins_db_take_registry_preview_docs(childDocBudget, (limit) =>
+					ctx.db
+						.query("plugins_event_run_calls")
+						.withIndex("by_pluginVersion", (q) => q.eq("pluginVersionId", version._id))
+						.take(limit),
+				)
+			).docs;
 			eventRuns += versionRuns.length;
 			eventRunCalls += versionCalls.length;
 			// Only a run that opted in has an activity, so this walks the runs rather than the feed.
-			const runActivityDocs = await Promise.all(
-				versionRuns.map((run) =>
+			for (const run of versionRuns) {
+				const activities = (
+					await plugins_db_take_registry_preview_docs(childDocBudget, (limit) =>
+						ctx.db
+							.query("activities")
+							.withIndex("by_source_id", (q) => q.eq("source.id", run._id))
+							.take(Math.min(limit, 1)),
+					)
+				).docs;
+				runActivities += activities.length;
+			}
+			const sourceNodes = (
+				await plugins_db_take_registry_preview_docs(childDocBudget, (limit) =>
 					ctx.db
-						.query("activities")
-						.withIndex("by_source_id", (q) => q.eq("source.id", run._id))
-						.first(),
-				),
-			);
-			runActivities += runActivityDocs.filter((activity) => activity !== null).length;
-			const sourceNodes = await ctx.db
-				.query("files_nodes")
-				.withIndex("by_organization_workspace_treePath", (q) =>
-					q
-						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
-						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
-						.gte("treePath", `/${version._id}/`)
-						.lt("treePath", `/${version._id}/\uffff`),
+						.query("files_nodes")
+						.withIndex("by_organization_workspace_treePath", (q) =>
+							q
+								.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+								.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+								.gte("treePath", `/${version._id}/`)
+								.lt("treePath", `/${version._id}/\uffff`),
+						)
+						.take(limit),
 				)
-				.collect();
+			).docs;
 			sourceFileNodes += sourceNodes.length;
-			const versionInstallations = await ctx.db
-				.query("plugins_workspace_installations")
-				.withIndex("by_pluginVersion", (q) => q.eq("pluginVersionId", version._id))
-				.collect();
+			const versionInstallations = (
+				await plugins_db_take_registry_preview_docs(childDocBudget, (limit) =>
+					ctx.db
+						.query("plugins_workspace_installations")
+						.withIndex("by_pluginVersion", (q) => q.eq("pluginVersionId", version._id))
+						.take(limit),
+				)
+			).docs;
 			installations += versionInstallations.length;
 			for (const installation of versionInstallations) {
-				const handlers = await ctx.db
-					.query("plugins_workspace_event_handlers")
-					.withIndex("by_installation", (q) => q.eq("installationId", installation._id))
-					.collect();
+				const handlers = (
+					await plugins_db_take_registry_preview_docs(childDocBudget, (limit) =>
+						ctx.db
+							.query("plugins_workspace_event_handlers")
+							.withIndex("by_installation", (q) => q.eq("installationId", installation._id))
+							.take(limit),
+					)
+				).docs;
 				eventHandlers += handlers.length;
-				const secrets = await ctx.db
-					.query("plugins_workspace_installation_secrets")
-					.withIndex("by_installation_name", (q) => q.eq("installationId", installation._id))
-					.collect();
+				const secrets = (
+					await plugins_db_take_registry_preview_docs(childDocBudget, (limit) =>
+						ctx.db
+							.query("plugins_workspace_installation_secrets")
+							.withIndex("by_installation_name", (q) => q.eq("installationId", installation._id))
+							.take(limit),
+					)
+				).docs;
 				installationSecrets += secrets.length;
-				const sessions = await ctx.db
-					.query("plugins_ui_sessions")
-					.withIndex("by_installation", (q) => q.eq("installationId", installation._id))
-					.collect();
+				const sessions = (
+					await plugins_db_take_registry_preview_docs(childDocBudget, (limit) =>
+						ctx.db
+							.query("plugins_ui_sessions")
+							.withIndex("by_installation", (q) => q.eq("installationId", installation._id))
+							.take(limit),
+					)
+				).docs;
 				uiSessions += sessions.length;
-				const pluginData = await plugins_data_db_count_installation_docs(ctx, {
-					organizationId: installation.organizationId,
-					workspaceId: installation.workspaceId,
-					installationId: installation._id,
-				});
+				const pluginData = await plugins_data_db_count_installation_docs(
+					ctx,
+					{
+						organizationId: installation.organizationId,
+						workspaceId: installation.workspaceId,
+						installationId: installation._id,
+						includeProjectionRows: true,
+					},
+					childDocBudget,
+				);
 				pluginDataUsageDocs += pluginData.usageDocs;
 				pluginDataDocuments += pluginData.documents;
 				pluginDataLiveReservations += pluginData.liveReservations;
 				pluginDataTombstones += pluginData.tombstones;
+				pluginDataProjectionDirtyChannels += pluginData.projectionDirtyChannels;
+				pluginDataProjectionDirtyChannelsTruncated ||= pluginData.projectionDirtyChannelsTruncated;
+				pluginDataProjectionChitchatItems += pluginData.projectionChitchatItems;
+				pluginDataProjectionChitchatItemsTruncated ||= pluginData.projectionChitchatItemsTruncated;
+				pluginDataProjectionChitchatReactions += pluginData.projectionChitchatReactions;
+				pluginDataProjectionChitchatReactionsTruncated ||= pluginData.projectionChitchatReactionsTruncated;
+				pluginDataProjectionChitchatAuthors += pluginData.projectionChitchatAuthors;
+				pluginDataProjectionChitchatAuthorsTruncated ||= pluginData.projectionChitchatAuthorsTruncated;
+				pluginDataProjectionChitchatFiles += pluginData.projectionChitchatFiles;
+				pluginDataProjectionChitchatFilesTruncated ||= pluginData.projectionChitchatFilesTruncated;
+				pluginDataProjectionChitchatBuilds += pluginData.projectionChitchatBuilds;
+				pluginDataProjectionChitchatBuildsTruncated ||= pluginData.projectionChitchatBuildsTruncated;
+				pluginDataProjectionFiles += pluginData.projectionFiles;
+				pluginDataProjectionFilesTruncated ||= pluginData.projectionFilesTruncated;
+				pluginDataProjectionStates += pluginData.projectionStates;
+				pluginDataProjectionStatesTruncated ||= pluginData.projectionStatesTruncated;
 				pluginDataMemberUsage += pluginData.memberUsageDocs;
+				pluginDataMemberUsageTruncated ||= pluginData.memberUsageDocsTruncated;
 				pluginServiceGrants += pluginData.serviceGrants;
 				// One capped installation makes the whole sum a lower bound, and several installations
 				// hide that twice over. Carry the flag up so the sum is never read as exact.
 				pluginServiceGrantsTruncated ||= pluginData.serviceGrantsTruncated;
+				pluginScopeGrants += pluginData.pluginScopeGrants;
+				pluginScopeGrantsTruncated ||= pluginData.pluginScopeGrantsTruncated;
+				pluginDataScopeRows += pluginData.pluginDataScopeRows;
+				pluginDataScopeRowsTruncated ||= pluginData.pluginDataScopeRowsTruncated;
+				releasedScopeRangeRows += pluginData.releasedScopeRangeRows;
+				releasedScopeRangeRowsTruncated ||= pluginData.releasedScopeRangeRowsTruncated;
 			}
 		}
 
 		let publisherRepositoryClaims = 0;
 		let publisherSecrets = 0;
 		for (const repositoryUrl of repositoryUrls) {
-			const repositoryVersions = await ctx.db
-				.query("plugins_versions")
-				.withIndex("by_sourceRepositoryUrl", (q) => q.eq("sourceRepositoryUrl", repositoryUrl))
-				.collect();
+			const repositoryVersionsResult = await plugins_db_take_registry_preview_docs(largeDocBudget, (limit) =>
+				ctx.db
+					.query("plugins_versions")
+					.withIndex("by_sourceRepositoryUrl", (q) => q.eq("sourceRepositoryUrl", repositoryUrl))
+					.take(limit),
+			);
+			const repositoryVersions = repositoryVersionsResult.docs;
 			// Name-scoped deletion keeps a shared repository claim while another
-			// plugin name still uses it.
-			if (repositoryVersions.some((version) => version.name !== args.pluginName)) {
+			// plugin name still uses it. A partial read cannot prove exclusive ownership, so omit the
+			// claim count and let `previewTruncated` tell the operator this preview is a lower bound.
+			if (
+				repositoryVersionsResult.truncated ||
+				repositoryVersions.some((version) => version.name !== args.pluginName)
+			) {
 				continue;
 			}
 			const creator = versions.find((version) => version.sourceRepositoryUrl === repositoryUrl)?.createdBy;
-			const claims = await ctx.db
-				.query("plugins_publisher_repositories")
-				.withIndex("by_repositoryUrl", (q) => q.eq("repositoryUrl", repositoryUrl))
-				.collect();
+			const claims = (
+				await plugins_db_take_registry_preview_docs(childDocBudget, (limit) =>
+					ctx.db
+						.query("plugins_publisher_repositories")
+						.withIndex("by_repositoryUrl", (q) => q.eq("repositoryUrl", repositoryUrl))
+						.take(limit),
+				)
+			).docs;
 			const ownedClaims = claims.filter((claim) => claim.ownerUserId === creator);
 			publisherRepositoryClaims += ownedClaims.length;
 			for (const claim of ownedClaims) {
-				const secrets = await ctx.db
-					.query("plugins_publisher_repository_secrets")
-					.withIndex("by_repository_name", (q) => q.eq("repositoryId", claim._id))
-					.collect();
+				const secrets = (
+					await plugins_db_take_registry_preview_docs(childDocBudget, (limit) =>
+						ctx.db
+							.query("plugins_publisher_repository_secrets")
+							.withIndex("by_repository_name", (q) => q.eq("repositoryId", claim._id))
+							.take(limit),
+					)
+				).docs;
 				publisherSecrets += secrets.length;
 			}
 		}
 
 		return {
+			deletionFenced: deletionFence !== null,
+			previewTruncated: largeDocBudget.truncated || childDocBudget.truncated,
 			versions: versions.length,
 			versionReviews: reviews.length,
 			sourceFileNodes,
@@ -5560,9 +5867,32 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 			pluginDataDocuments,
 			pluginDataLiveReservations,
 			pluginDataTombstones,
+			pluginDataProjectionDirtyChannels,
+			pluginDataProjectionDirtyChannelsTruncated,
+			pluginDataProjectionChitchatItems,
+			pluginDataProjectionChitchatItemsTruncated,
+			pluginDataProjectionChitchatReactions,
+			pluginDataProjectionChitchatReactionsTruncated,
+			pluginDataProjectionChitchatAuthors,
+			pluginDataProjectionChitchatAuthorsTruncated,
+			pluginDataProjectionChitchatFiles,
+			pluginDataProjectionChitchatFilesTruncated,
+			pluginDataProjectionChitchatBuilds,
+			pluginDataProjectionChitchatBuildsTruncated,
+			pluginDataProjectionFiles,
+			pluginDataProjectionFilesTruncated,
+			pluginDataProjectionStates,
+			pluginDataProjectionStatesTruncated,
 			pluginDataMemberUsage,
+			pluginDataMemberUsageTruncated,
 			pluginServiceGrants,
 			pluginServiceGrantsTruncated,
+			pluginScopeGrants,
+			pluginScopeGrantsTruncated,
+			pluginDataScopeRows,
+			pluginDataScopeRowsTruncated,
+			releasedScopeRangeRows,
+			releasedScopeRangeRowsTruncated,
 			eventRuns,
 			eventRunCalls,
 			runActivities,
@@ -5585,6 +5915,54 @@ export const hard_delete_plugin_from_registry = internalMutation({
 	}),
 	handler: async (ctx, args) => {
 		const budget = Math.max(1, Math.min(args._test_batchSize ?? 100, 100));
+		const deletionFence = await ctx.db
+			.query("plugins_registry_deletion_fences")
+			.withIndex("by_pluginName", (q) => q.eq("pluginName", args.pluginName))
+			.first();
+		if (!deletionFence) {
+			await ctx.db.insert("plugins_registry_deletion_fences", {
+				pluginName: args.pluginName,
+				createdAt: Date.now(),
+			});
+		}
+		// Stop every producer before the first drain pass. The disabled status is durable, and every
+		// page, run, and service door reads it in the same transaction as its write. Keep this phase
+		// bounded; when more installations remain, a later call continues quiescing before deletion.
+		const enabledInstallations = await ctx.db
+			.query("plugins_workspace_installations")
+			.withIndex("by_pluginName_status", (q) => q.eq("pluginName", args.pluginName).eq("status", "enabled"))
+			.take(budget);
+		const quiescedAt = Date.now();
+		for (const installation of enabledInstallations) {
+			await ctx.db.patch("plugins_workspace_installations", installation._id, {
+				status: "disabled",
+				updatedAt: quiescedAt,
+			});
+		}
+		if (enabledInstallations.length > 0) {
+			const anotherEnabledInstallation = await ctx.db
+				.query("plugins_workspace_installations")
+				.withIndex("by_pluginName_status", (q) => q.eq("pluginName", args.pluginName).eq("status", "enabled"))
+				.first();
+			if (anotherEnabledInstallation) {
+				return { done: false, deleted: enabledInstallations.length };
+			}
+		}
+
+		// Keep the publish action's lease until its grace deadline. It can still upload after this
+		// mutation returns, so deleting its keys, review, source tree, version, or attempt now could
+		// leave a late upload orphaned. The scheduled cleanup owns interrupted work once the lease ends.
+		const now = Date.now();
+		const activePublishCleanupLease = await ctx.db
+			.query("plugins_publish_artifact_cleanup_attempts")
+			.withIndex("by_pluginName_cleanupAt", (q) =>
+				q.eq("pluginName", args.pluginName).gt("cleanupAt", now),
+			)
+			.first();
+		if (activePublishCleanupLease) {
+			return { done: false, deleted: enabledInstallations.length };
+		}
+
 		const version = await ctx.db
 			.query("plugins_versions")
 			.withIndex("by_name", (q) => q.eq("name", args.pluginName))
@@ -5694,11 +6072,19 @@ export const hard_delete_plugin_from_registry = internalMutation({
 				.withIndex("by_sourceRepositoryUrl", (q) => q.eq("sourceRepositoryUrl", version.sourceRepositoryUrl))
 				.take(2);
 			const otherVersion = repositoryVersions.find((candidate) => candidate._id !== version._id);
-			if (!otherVersion) {
-				const claim = await ctx.db
+			const claim = !otherVersion
+				? await ctx.db
 					.query("plugins_publisher_repositories")
 					.withIndex("by_repositoryUrl", (q) => q.eq("repositoryUrl", version.sourceRepositoryUrl))
-					.first();
+					.first()
+				: null;
+			const activeSharedPublish = claim
+				? await ctx.db
+						.query("plugins_publish_artifact_cleanup_attempts")
+						.withIndex("by_repository_cleanupAt", (q) => q.eq("repositoryId", claim._id).gt("cleanupAt", now))
+						.first()
+				: null;
+			if (!otherVersion && !activeSharedPublish) {
 				if (claim?.ownerUserId === version.createdBy) {
 					const secret = await ctx.db
 						.query("plugins_publisher_repository_secrets")
@@ -5715,11 +6101,7 @@ export const hard_delete_plugin_from_registry = internalMutation({
 			// remain durable owners of every exact key until an idempotent retry succeeds.
 			for (const r2Key of version_r2_keys(version)) await r2_delete_object(ctx, r2Key);
 
-			if (!otherVersion) {
-				const claim = await ctx.db
-					.query("plugins_publisher_repositories")
-					.withIndex("by_repositoryUrl", (q) => q.eq("repositoryUrl", version.sourceRepositoryUrl))
-					.first();
+			if (!otherVersion && !activeSharedPublish) {
 				if (claim?.ownerUserId === version.createdBy) {
 					await plugins_db_delete_publisher_repository(ctx, claim);
 				}
@@ -5772,7 +6154,69 @@ export const hard_delete_plugin_from_registry = internalMutation({
 			return { done: false, deleted: Math.max(1, keys.length) };
 		}
 
+		// A shared repository claim can outlive this plugin name. Clear a pre-review failure too,
+		// because it has no review id and would block later feedback for another name on the claim.
+		const namedAttempt = await ctx.db
+			.query("plugins_publisher_repositories")
+			.withIndex("by_lastPublishAttempt_pluginName", (q) => q.eq("lastPublishAttempt.pluginName", args.pluginName))
+			.first();
+		if (namedAttempt) {
+			await ctx.db.patch("plugins_publisher_repositories", namedAttempt._id, {
+				lastPublishAttempt: undefined,
+			});
+			return { done: false, deleted: 1 };
+		}
+
 		return { done: true, deleted: 0 };
+	},
+});
+
+/**
+ * Reopens one deleted plugin name after an operator has also let old publish actions finish.
+ *
+ * The hard delete keeps its fence after `done:true`. A publish action can spend minutes in review
+ * without holding one database transaction, so removing the fence automatically would let that old
+ * action resume after the drain and recreate the version. This explicit step is the recovery point.
+ */
+export const clear_plugin_registry_deletion_fence = internalMutation({
+	args: { pluginName: v.string() },
+	returns: v.object({ cleared: v.boolean() }),
+	handler: async (ctx, args) => {
+		const [fence, version, installation, review, cleanupAttempt, namedAttempt] = await Promise.all([
+			ctx.db
+				.query("plugins_registry_deletion_fences")
+				.withIndex("by_pluginName", (q) => q.eq("pluginName", args.pluginName))
+				.first(),
+			ctx.db
+				.query("plugins_versions")
+				.withIndex("by_name", (q) => q.eq("name", args.pluginName))
+				.first(),
+			ctx.db
+				.query("plugins_workspace_installations")
+				.withIndex("by_pluginName", (q) => q.eq("pluginName", args.pluginName))
+				.first(),
+			ctx.db
+				.query("plugins_version_reviews")
+				.withIndex("by_pluginName", (q) => q.eq("pluginName", args.pluginName))
+				.first(),
+			ctx.db
+				.query("plugins_publish_artifact_cleanup_attempts")
+				.withIndex("by_pluginName", (q) => q.eq("pluginName", args.pluginName))
+				.first(),
+			ctx.db
+				.query("plugins_publisher_repositories")
+				.withIndex("by_lastPublishAttempt_pluginName", (q) => q.eq("lastPublishAttempt.pluginName", args.pluginName))
+				.first(),
+		]);
+		if (!fence) {
+			return { cleared: false };
+		}
+		if (version || installation || review || cleanupAttempt || namedAttempt) {
+			throw new Error("Plugin registry deletion is not complete");
+		}
+
+		await ctx.db.delete("plugins_registry_deletion_fences", fence._id);
+		return { cleared: true };
 	},
 });
 

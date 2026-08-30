@@ -66,6 +66,16 @@ const UPLOAD_COMPLETED_EVENT_TYPE = "files.upload.completed" as const;
 const RUN_REQUESTED_EVENT_TYPE = "files.run.requested" as const;
 const ACCOUNT_DELETED_EVENT_TYPE = "users.account.deleted" as const;
 
+async function db_plugin_workspace_is_live(
+	ctx: MutationCtx,
+	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> },
+) {
+	const workspace = await ctx.db.get("organizations_workspaces", args.workspaceId);
+	return (
+		workspace?.organizationId === args.organizationId && workspace.pluginDataPurgeStartedAt === undefined
+	);
+}
+
 /**
  * Finite attempts on purpose: the executor catches everything and finishes the run failed, so a
  * retry only fires on a genuine crash (OOM/timeout) — the retried attempt then fails fast because
@@ -175,6 +185,9 @@ export async function plugins_runtime_db_enqueue_upload_completed_runs(
 		organizations_is_reserved_workspace_id(workspaceId) ||
 		createdBy === users_SYSTEM_AUTHOR
 	) {
+		return { enqueued: 0 };
+	}
+	if (!(await db_plugin_workspace_is_live(ctx, { organizationId, workspaceId }))) {
 		return { enqueued: 0 };
 	}
 
@@ -331,6 +344,12 @@ export async function plugins_runtime_db_enqueue_manual_run(
 		installation: Doc<"plugins_workspace_installations">;
 	},
 ) {
+	if (
+		args.installation.status !== "enabled" ||
+		!(await db_plugin_workspace_is_live(ctx, args.installation))
+	) {
+		return Result({ _nay: { message: "Not found" } });
+	}
 	const version = await ctx.db.get("plugins_versions", args.installation.pluginVersionId);
 	if (!version) {
 		return Result({ _nay: { message: "Not found" } });
@@ -422,6 +441,9 @@ export const enqueue_account_deleted_runs = internalMutation({
 
 		const now = Date.now();
 		for (const membership of memberships) {
+			if (!(await db_plugin_workspace_is_live(ctx, membership))) {
+				continue;
+			}
 			// The event carries no file, so its handler rows carry no content type. That is an ordinary
 			// equality on the same dispatch index, not a scan.
 			const handlers = await ctx.db
@@ -506,13 +528,22 @@ export const start_event_run = internalMutation({
 			return Result({ _nay: { message: "Run expired" } });
 		}
 
-		const [asset, fileNode, installation, version] = await Promise.all([
+		const [asset, fileNode, installation, version, workspace] = await Promise.all([
 			pluginRun.assetId ? ctx.db.get("files_r2_assets", pluginRun.assetId) : null,
 			pluginRun.fileNodeId ? ctx.db.get("files_nodes", pluginRun.fileNodeId) : null,
 			ctx.db.get("plugins_workspace_installations", pluginRun.installationId),
 			ctx.db.get("plugins_versions", pluginRun.pluginVersionId),
+			ctx.db.get("organizations_workspaces", pluginRun.workspaceId),
 		]);
-		if (!installation || !version || !version.backendEntrypointFile) {
+		if (
+			!installation ||
+			!workspace ||
+			workspace.organizationId !== pluginRun.organizationId ||
+			workspace.pluginDataPurgeStartedAt !== undefined ||
+			installation.status !== "enabled" ||
+			!version ||
+			!version.backendEntrypointFile
+		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
 		// A file event whose file is gone has nothing to run on. An event that never named a file is
@@ -1075,9 +1106,15 @@ export const consume_run_api_call = internalMutation({
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 
-		const installation = await ctx.db.get("plugins_workspace_installations", pluginRun.installationId);
+		const [installation, workspace] = await Promise.all([
+			ctx.db.get("plugins_workspace_installations", pluginRun.installationId),
+			ctx.db.get("organizations_workspaces", pluginRun.workspaceId),
+		]);
 		if (
 			!installation ||
+			!workspace ||
+			workspace.organizationId !== pluginRun.organizationId ||
+			workspace.pluginDataPurgeStartedAt !== undefined ||
 			installation.status !== "enabled" ||
 			installation.pluginVersionId !== pluginRun.pluginVersionId
 		) {

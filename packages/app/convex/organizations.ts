@@ -1,7 +1,14 @@
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import { internal } from "./_generated/api.js";
-import { internalQuery, mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
+import {
+	internalMutation,
+	internalQuery,
+	mutation,
+	query,
+	type MutationCtx,
+	type QueryCtx,
+} from "./_generated/server.js";
 import type { Id } from "./_generated/dataModel";
 import { server_convex_get_user_fallback_to_anonymous, should_never_happen } from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
@@ -30,6 +37,7 @@ import {
 } from "../shared/access-control.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
+import { plugins_data_db_get_scope_cleanup_pairs } from "./plugins_data.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -46,6 +54,60 @@ function organizations_validate_name(name: string) {
 
 function organizations_validate_description(raw: string) {
 	return organizations_description_normalize(raw);
+}
+
+const ORGANIZATION_MEMBER_GRANT_DRAIN_BATCH_SIZE = 100;
+
+async function organizations_db_drain_member_direct_grants_batch(
+	ctx: MutationCtx,
+	args: { organizationId: Id<"organizations">; userId: Id<"users"> },
+) {
+	const grants = await ctx.db
+		.query("access_control_permission_grants")
+		.withIndex("by_organization_user_workspace_resource_permission", (q) =>
+			q.eq("organizationId", args.organizationId).eq("userId", args.userId),
+		)
+		.take(ORGANIZATION_MEMBER_GRANT_DRAIN_BATCH_SIZE);
+	await Promise.all(grants.map((grant) => ctx.db.delete("access_control_permission_grants", grant._id)));
+
+	const scopeCleanupPairs = plugins_data_db_get_scope_cleanup_pairs(ctx, grants);
+	if (scopeCleanupPairs.length > 0) {
+		// Run after this batch commits, so cleanup reads the grants that remain.
+		await ctx.scheduler.runAfter(0, internal.plugins_data.cleanup_stranded_scopes, {
+			scopes: scopeCleanupPairs,
+		});
+	}
+
+	return { drainedAny: grants.length > 0 };
+}
+
+async function organizations_db_drain_member_plugin_service_grants_batch(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		userId: Id<"users">;
+		workspaceIds: readonly Id<"organizations_workspaces">[];
+	},
+) {
+	let remaining = ORGANIZATION_MEMBER_GRANT_DRAIN_BATCH_SIZE;
+
+	// An organization has at most six workspaces. Walk those small ranges while keeping one total batch.
+	for (const workspaceId of args.workspaceIds) {
+		if (remaining === 0) {
+			break;
+		}
+
+		const grants = await ctx.db
+			.query("plugin_service_grants")
+			.withIndex("by_organization_workspace_actorUser", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", workspaceId).eq("actorUserId", args.userId),
+			)
+			.take(remaining);
+		await Promise.all(grants.map((grant) => ctx.db.delete("plugin_service_grants", grant._id)));
+		remaining -= grants.length;
+	}
+
+	return { drainedAny: remaining < ORGANIZATION_MEMBER_GRANT_DRAIN_BATCH_SIZE };
 }
 
 /**
@@ -918,6 +980,24 @@ export const invite_user_to_organization_workspace = mutation({
 			return Result({ _nay: { message: "User to add not found" } });
 		}
 
+		const pendingRemovalMemberships = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_user_organization_workspace_active", (q) =>
+				q.eq("userId", userIdToAdd).eq("organizationId", organization._id),
+			)
+			.collect();
+		const pendingRemovalMembership = pendingRemovalMemberships.find(
+			(membership) => membership.pendingOrganizationRemoval === true,
+		);
+		if (pendingRemovalMembership) {
+			// Restart the bounded drain when an earlier one-shot continuation was lost.
+			await ctx.scheduler.runAfter(0, internal.organizations.continue_remove_user_from_organization, {
+				organizationId: organization._id,
+				userId: userIdToAdd,
+			});
+			return Result({ _nay: { message: "Member removal is still running" } });
+		}
+
 		// Check if the user is already in the default workspace and in the requested workspace.
 		const [existingHomeMembership, existingWorkspaceMembership] = await Promise.all([
 			isDefaultWorkspace
@@ -1178,6 +1258,48 @@ export const invite_user_to_organization_workspace = mutation({
 	},
 });
 
+export const continue_remove_user_from_organization = internalMutation({
+	args: {
+		organizationId: v.id("organizations"),
+		userId: v.id("users"),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const memberships = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_user_organization_workspace_active", (q) =>
+				q.eq("userId", args.userId).eq("organizationId", args.organizationId),
+			)
+			.collect();
+		const pendingMemberships = memberships.filter((membership) => membership.pendingOrganizationRemoval === true);
+		if (pendingMemberships.length === 0) {
+			return null;
+		}
+
+		const drainedPermissionGrants = await organizations_db_drain_member_direct_grants_batch(ctx, args);
+		if (drainedPermissionGrants.drainedAny) {
+			await ctx.scheduler.runAfter(0, internal.organizations.continue_remove_user_from_organization, args);
+			return null;
+		}
+
+		const drainedPluginServiceGrants = await organizations_db_drain_member_plugin_service_grants_batch(ctx, {
+			...args,
+			workspaceIds: pendingMemberships.map((membership) => membership.workspaceId),
+		});
+		if (drainedPluginServiceGrants.drainedAny) {
+			await ctx.scheduler.runAfter(0, internal.organizations.continue_remove_user_from_organization, args);
+			return null;
+		}
+
+		// Delete only the memberships this organization-removal flow marked. Ordinary inactive
+		// memberships still belong to account-deletion retention and recovery.
+		await Promise.all(
+			pendingMemberships.map((membership) => ctx.db.delete("organizations_workspaces_users", membership._id)),
+		);
+		return null;
+	},
+});
+
 export const remove_user_from_organization = mutation({
 	args: {
 		organizationId: v.id("organizations"),
@@ -1208,7 +1330,7 @@ export const remove_user_from_organization = mutation({
 		const defaultWorkspaceId = organization.defaultWorkspaceId;
 
 		const userToRemoveIsOwner = organization.ownerUserId === args.userIdToRemove;
-		const [currentHomeMembership, canManageMembers] = await Promise.all([
+		const [currentHomeMembership, canManageMembers, memberships] = await Promise.all([
 			ctx.db
 				.query("organizations_workspaces_users")
 				.withIndex("by_active_user_organization_workspace", (q) =>
@@ -1228,8 +1350,19 @@ export const remove_user_from_organization = mutation({
 				permission: "organization.members.manage",
 				userId: userAuth.id,
 			}),
+			// Include inactive memberships. A bounded member removal keeps these docs as its durable
+			// retry marker until every direct grant and service grant is gone.
+			ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_user_organization_workspace_active", (q) =>
+					q.eq("userId", args.userIdToRemove).eq("organizationId", organization._id),
+				)
+				.collect(),
 		]);
-		if (!currentHomeMembership) {
+		const isPendingSelfRemoval =
+			userAuth.id === args.userIdToRemove &&
+			memberships.some((membership) => membership.pendingOrganizationRemoval === true);
+		if (!currentHomeMembership && !isPendingSelfRemoval) {
 			return Result({ _nay: { message: "Not found" } });
 		}
 
@@ -1251,17 +1384,27 @@ export const remove_user_from_organization = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
+		if (isPendingSelfRemoval) {
+			// The first leave made this membership inactive. Its durable marker keeps this retry eligible
+			// while the rate limit prevents repeated retries from filling the scheduler.
+			await ctx.scheduler.runAfter(0, internal.organizations.continue_remove_user_from_organization, {
+				organizationId: organization._id,
+				userId: args.userIdToRemove,
+			});
+			return Result({ _yay: null });
+		}
+
 		const now = Date.now();
 
-		// We include inactive memberships on purpose. A user whose account is being deleted has all of
-		// their memberships turned off. Skipping those would leave the membership, the API keys, and
-		// the quota docs in place, so restoring the account would put them back in this organization.
-		const memberships = await ctx.db
-			.query("organizations_workspaces_users")
-			.withIndex("by_user_organization_workspace_active", (q) =>
-				q.eq("userId", args.userIdToRemove).eq("organizationId", organization._id),
-			)
-			.collect();
+		if (memberships.some((membership) => membership.pendingOrganizationRemoval === true)) {
+			// A prior call already consumed credentials, quotas, and sessions. Restart only the durable
+			// grant drain so a retry stays idempotent.
+			await ctx.scheduler.runAfter(0, internal.organizations.continue_remove_user_from_organization, {
+				organizationId: organization._id,
+				userId: args.userIdToRemove,
+			});
+			return Result({ _yay: null });
+		}
 		const apiCredentialsPromise = Promise.all(
 			memberships.map((membership) =>
 				ctx.db
@@ -1303,19 +1446,6 @@ export const remove_user_from_organization = mutation({
 					.collect(),
 			),
 		);
-		const pluginServiceGrantsPromise = Promise.all(
-			memberships.map((membership) =>
-				ctx.db
-					.query("plugin_service_grants")
-					.withIndex("by_organization_workspace_actorUser", (q) =>
-						q
-							.eq("organizationId", organization._id)
-							.eq("workspaceId", membership.workspaceId)
-							.eq("actorUserId", args.userIdToRemove),
-					)
-					.collect(),
-			),
-		);
 		const pluginDataMemberUsagePromise = Promise.all(
 			memberships.map((membership) =>
 				ctx.db
@@ -1339,9 +1469,29 @@ export const remove_user_from_organization = mutation({
 				}),
 			),
 		);
+		const drainedPermissionGrants = await organizations_db_drain_member_direct_grants_batch(ctx, {
+			organizationId: organization._id,
+			userId: args.userIdToRemove,
+		});
+		const drainedPluginServiceGrants = drainedPermissionGrants.drainedAny
+			? { drainedAny: false }
+			: await organizations_db_drain_member_plugin_service_grants_batch(ctx, {
+					organizationId: organization._id,
+					userId: args.userIdToRemove,
+					workspaceIds: memberships.map((membership) => membership.workspaceId),
+				});
+		const cleanupPending = drainedPermissionGrants.drainedAny || drainedPluginServiceGrants.drainedAny;
 
 		await Promise.all([
-			...memberships.map((membership) => ctx.db.delete("organizations_workspaces_users", membership._id)),
+			...memberships.map((membership) =>
+				cleanupPending
+					? ctx.db.patch("organizations_workspaces_users", membership._id, {
+							active: false,
+							pendingOrganizationRemoval: true,
+							updatedAt: now,
+						})
+					: ctx.db.delete("organizations_workspaces_users", membership._id),
+			),
 			// Re-inviting this user must never restore credentials from the membership being removed.
 			apiCredentialsPromise.then((apiCredentials) =>
 				Promise.all(
@@ -1350,17 +1500,12 @@ export const remove_user_from_organization = mutation({
 						.map((apiCredential) => ctx.db.patch("api_credentials", apiCredential._id, { revokedAt: now })),
 				),
 			),
-			// Re-inviting this user must not restore public API grants, plugin UI sessions, or the service
-			// grants those sessions were exchanged for. A service grant lives 24 hours, so without this a
-			// removal reversed the same day would hand the service its old authority back.
+			// Re-inviting this user must not restore public API grants or plugin UI sessions.
 			publicApiGrantsPromise.then((grants) =>
 				Promise.all(grants.flat().map((grant) => ctx.db.delete("public_api_grants", grant._id))),
 			),
 			pluginUiSessionsPromise.then((sessions) =>
 				Promise.all(sessions.flat().map((session) => ctx.db.delete("plugins_ui_sessions", session._id))),
-			),
-			pluginServiceGrantsPromise.then((grants) =>
-				Promise.all(grants.flat().map((grant) => ctx.db.delete("plugin_service_grants", grant._id))),
 			),
 			// A per-member plugin storage row names the member, so it must not outlive their membership.
 			// The documents it counted stay: they belong to the workspace, and the counters they fed are
@@ -1389,14 +1534,16 @@ export const remove_user_from_organization = mutation({
 				)
 				.collect()
 				.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)))),
-			ctx.db
-				.query("access_control_permission_grants")
-				.withIndex("by_organization_user_workspace_resource_permission", (q) =>
-					q.eq("organizationId", organization._id).eq("userId", args.userIdToRemove),
-				)
-				.collect()
-				.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)))),
 		]);
+
+		if (cleanupPending) {
+			// Keep the marked memberships until every grant is gone. Invite can use the marker to
+			// restart this drain, and account recovery knows not to reactivate them.
+			await ctx.scheduler.runAfter(0, internal.organizations.continue_remove_user_from_organization, {
+				organizationId: organization._id,
+				userId: args.userIdToRemove,
+			});
+		}
 
 		return Result({ _yay: null });
 	},
@@ -1894,6 +2041,13 @@ export const delete_organization = mutation({
 				.then((organizationWorkspaces) =>
 					Promise.all(
 						organizationWorkspaces.map(async (workspace) => {
+							// Organization structure stays through retention. Fence each workspace now so its
+							// plugin sessions, runs, services, store, and scheduled projections stop immediately.
+							if (workspace.pluginDataPurgeStartedAt === undefined) {
+								await ctx.db.patch("organizations_workspaces", workspace._id, {
+									pluginDataPurgeStartedAt: now,
+								});
+							}
 							const workspaceUsers = await ctx.db
 								.query("organizations_workspaces_users")
 								.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", workspace._id))

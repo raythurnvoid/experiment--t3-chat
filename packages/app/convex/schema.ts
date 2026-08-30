@@ -743,6 +743,11 @@ const app_convex_schema = defineSchema({
 		 * The exact service target that created this node's direct lock. Never returned to clients.
 		 */
 		readOnlyPluginServiceTargetId: v.optional(v.id("plugin_service_storage_targets")),
+		/**
+		 * Internal ownership stamp for a file projection. Public file doors cannot set this field.
+		 * Keep the plugin name, not an installation id, so frozen output can be adopted on reinstall.
+		 */
+		projectionPluginName: v.optional(v.union(v.literal("chitchat"), v.literal("council"))),
 		/** Created by user ID. SYSTEM is the pseudo user ID for reserved global-organization content. */
 		createdBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
 		/** Updated by user ID. SYSTEM is the pseudo user ID for reserved global-organization content. */
@@ -1222,6 +1227,7 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_ownerUser_repositoryUrl", ["ownerUserId", "repositoryUrl"])
 		.index("by_repositoryUrl", ["repositoryUrl"])
+		.index("by_lastPublishAttempt_pluginName", ["lastPublishAttempt.pluginName"])
 		.index("by_lastPublishAttempt_reviewId", ["lastPublishAttempt.reviewId"]),
 
 	/**
@@ -1443,6 +1449,15 @@ const app_convex_schema = defineSchema({
 		.index("by_createdBy_pluginName", ["createdBy", "pluginName"])
 		.index("by_pluginName", ["pluginName"]),
 
+	/**
+	 * Durable stop sign for one plugin name while its registry docs drain in bounded passes.
+	 * A failed or lost delete pass leaves the fence in place so publishing and installs stay closed.
+	 */
+	plugins_registry_deletion_fences: defineTable({
+		pluginName: v.string(),
+		createdAt: v.number(),
+	}).index("by_pluginName", ["pluginName"]),
+
 	plugins_workspace_installations: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
@@ -1473,6 +1488,7 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace_pluginName", ["organizationId", "workspaceId", "pluginName"])
 		.index("by_organization_workspace_pluginVersion", ["organizationId", "workspaceId", "pluginVersionId"])
 		.index("by_pluginVersion", ["pluginVersionId"])
+		.index("by_pluginName_status", ["pluginName", "status"])
 		.index("by_pluginName", ["pluginName"]),
 
 	plugins_workspace_installation_secrets: defineTable({
@@ -1652,6 +1668,8 @@ const app_convex_schema = defineSchema({
 		updatedAt: v.number(),
 	})
 		.index("by_cleanupAt", ["cleanupAt"])
+		.index("by_repository_cleanupAt", ["repositoryId", "cleanupAt"])
+		.index("by_pluginName_cleanupAt", ["pluginName", "cleanupAt"])
 		.index("by_pluginName", ["pluginName"]),
 
 	/**
@@ -1699,6 +1717,8 @@ const app_convex_schema = defineSchema({
 		 * answers with the stored key; a different digest under the same request id is refused.
 		 */
 		userWriteRequestFingerprint: v.optional(v.string()),
+		/** Original append byte size, kept so a delete can preserve the exact lost-response answer. */
+		userWriteResultByteSize: v.optional(v.number()),
 		createdBy: v.id("users"),
 		updatedBy: v.id("users"),
 		updatedAt: v.number(),
@@ -1707,9 +1727,12 @@ const app_convex_schema = defineSchema({
 		 * document is charged to the installation only, which is what every row written before the
 		 * per-member ceilings existed looks like. A frame door or an API key charges its writer; a
 		 * plugin backend charges nobody. The field moves with the document: a frame patch by another
-		 * member credits the old member and charges the new one.
+		 * member credits the old member and charges the new one. The generation id below decides which
+		 * exact counter row receives that credit after a member leaves and later rejoins.
 		 */
 		chargedTo: v.optional(v.id("users")),
+		/** Exact member counter generation that owns this document's share. Absent legacy docs are uncharged. */
+		chargedToMemberUsageId: v.optional(v.id("plugins_data_member_usage")),
 		/**
 		 * How many of this document's current bytes a plugin backend wrote. A backend write or patch
 		 * sets it to the document's new `byteSize`; a write by a member — through a frame door or an
@@ -1761,18 +1784,46 @@ const app_convex_schema = defineSchema({
 		 * of a new-messages catch-up read. `watch_changes` exists for that "what changed since X"
 		 * question. Soft-delete `put`s stay in the table and move here; a physical delete does not.
 		 */
-		.index("by_installation_collection_scope_updatedAt", [
-			"installationId",
-			"collection",
-			"scopeId",
-			"updatedAt",
-		])
+		.index("by_installation_collection_scope_updatedAt", ["installationId", "collection", "scopeId", "updatedAt"])
+		/**
+		 * Projection jobs scan every scope together in update order. No member-facing read door may use
+		 * this index because it has no `scopeId` equality and therefore crosses private scope boundaries.
+		 */
+		.index("by_installation_collection_updatedAt", ["installationId", "collection", "updatedAt"])
 		.index("by_installation_collection_createdBy_requestId", [
 			"installationId",
 			"collection",
 			"createdBy",
 			"userWriteRequestId",
 		])
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
+
+	/**
+	 * Keeps an append's exact answer after its document is deleted. Without this receipt, retrying a
+	 * request whose first response was lost would recreate content that another page already deleted.
+	 */
+	plugins_data_append_replay_receipts: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		pluginName: v.string(),
+		collection: v.string(),
+		createdBy: v.id("users"),
+		requestId: v.string(),
+		requestFingerprint: v.string(),
+		result: v.object({ key: v.string(), revision: v.number(), byteSize: v.number() }),
+		/** The exact member counter row whose held slot this receipt owns. */
+		memberUsageId: v.optional(v.id("plugins_data_member_usage")),
+		expiresAt: v.number(),
+	})
+		.index("by_installation_collection_createdBy_requestId", [
+			"installationId",
+			"collection",
+			"createdBy",
+			"requestId",
+		])
+		.index("by_createdBy", ["createdBy"])
+		.index("by_expiresAt", ["expiresAt"])
 		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
 
 	/**
@@ -1790,9 +1841,10 @@ const app_convex_schema = defineSchema({
 		usedBytes: v.number(),
 		/** Bytes promised to live reservations that no stored value has claimed yet. */
 		reservedBytes: v.number(),
+		/** Live documents. A deleted append moves its slot to `tombstoneDocuments`. */
 		usedDocuments: v.number(),
 		reservedDocuments: v.number(),
-		/** Released or expired reservations and revision tombstones still inside their retry horizon. */
+		/** Released reservations, revision tombstones, and deleted-append receipts inside their retry horizon. */
 		tombstoneDocuments: v.number(),
 		/**
 		 * Every collection that currently holds a document or a live reservation. It is bounded by the
@@ -1820,9 +1872,11 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.id("organizations_workspaces"),
 		installationId: v.id("plugins_workspace_installations"),
 		userId: v.id("users"),
+		/** Present on rows whose documents point back to this exact counter generation. */
+		generation: v.optional(v.literal("document_bound")),
 		/** Sum of `plugins_data.byteSize` for the documents charged to this member. */
 		usedBytes: v.number(),
-		/** How many documents are charged to this member. */
+		/** Live documents plus deleted-append receipts charged to this member. */
 		usedDocuments: v.number(),
 		/**
 		 * Sum of `plugins_data.machineBytes` over the same documents. The member ceiling compares
@@ -1954,8 +2008,8 @@ const app_convex_schema = defineSchema({
 	 *
 	 * Who may read it is not stored here. It is stored as ordinary permission grants on
 	 * `access_control_permission_grants`, with `resourceKind: "plugin_scope"` and
-	 * `resourceId: "<installationId>:<scopeId>"`, so removing a member from the workspace revokes
-	 * their private channels for free.
+	 * `resourceId: "<installationId>:<scopeId>"`. Removing a member revokes those grants in the same
+	 * transaction, then schedules bounded cleanup for any scope whose last grant disappeared.
 	 */
 	plugins_data_scopes: defineTable({
 		organizationId: v.id("organizations"),
@@ -1968,14 +2022,44 @@ const app_convex_schema = defineSchema({
 		/** The member who created the scope. They receive the first `manage` grant on it. */
 		createdByUserId: v.id("users"),
 		createdAt: v.number(),
+		/** Durable last accepted append in this collection. Optional while old rows are backfilled. */
+		lastAppend: v.optional(
+			v.union(
+				v.null(),
+				v.object({ at: v.number(), key: v.string(), createdByUserId: v.id("users") }),
+			),
+		),
+		/** Count accepted appends in this collection. Optional while old rows are backfilled. */
+		appendSequence: v.optional(v.number()),
+		/** Shared by every row of one scope. Increase it for each accepted membership change. */
 		updatedAt: v.number(),
 	})
 		.index("by_installation_scope", ["installationId", "scopeId"])
 		// Resolves a write's key to its scope. Read `keyPrefix` downwards from the key and stop at the
 		// first row the key starts with: that row is the longest matching prefix.
 		.index("by_installation_collection_prefix", ["installationId", "collection", "keyPrefix"])
-		// Counts what one member owns, for the per-member cap, and finds what to delete when they go.
-		.index("by_installation_creator", ["installationId", "createdByUserId"]),
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
+
+	/**
+	 * Durable private-scope lifecycle records. One row whose `collectionName` and `keyPrefix` are both
+	 * empty reserves each scope id for this installation's lifetime. Creation stops at 1,000 identity
+	 * rows, so these durable records stay bounded. Real collection names and key prefixes cannot be
+	 * empty, so that identity row can never fence a write. Other rows keep every released key range
+	 * closed, including an empty scope: an old frame may still send private data
+	 * after deletion, and that write must not become public. Scope creation refuses parent or child
+	 * overlap with those real range rows, so the greatest-prefix lookup stays exact.
+	 */
+	plugins_data_released_scope_ranges: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		scopeId: v.string(),
+		collectionName: v.string(),
+		keyPrefix: v.string(),
+	})
+		.index("by_installation_scope", ["installationId", "scopeId"])
+		.index("by_installation_collection_prefix", ["installationId", "collectionName", "keyPrefix"])
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
 
 	/**
 	 * One doc per plugin installation that projects store documents into workspace files.
@@ -1990,6 +2074,8 @@ const app_convex_schema = defineSchema({
 		/** Organization owner at ensure-time. File `createdBy` / `updatedBy` use this stamp. */
 		writerUserId: v.id("users"),
 		rootFolderNodeId: v.optional(v.id("files_nodes")),
+		/** Exclusive channel-key cursor for the bounded projection-file reconcile pass. */
+		reconcileAfterChannelKey: v.optional(v.string()),
 		/**
 		 * Per-collection inclusive fence. A missing key means "never scanned". Convex cannot pass
 		 * a scheduled-function id into that job's args, so `syncGeneration` is the CAS token:
@@ -2005,6 +2091,21 @@ const app_convex_schema = defineSchema({
 				lastCreationTime: v.optional(v.number()),
 				lastId: v.id("plugins_data"),
 			}),
+		),
+		/**
+		 * Opaque Convex page cursors for a bounded change-feed scan that has not finished yet.
+		 * Keep this optional until the projection cursor reset migration has been audited in every
+		 * deployment. Then tighten it to a required record.
+		 */
+		scanCursors: v.optional(
+			v.record(
+				v.string(),
+				v.object({
+					cursor: v.string(),
+					fromUpdatedAt: v.optional(v.number()),
+					throughUpdatedAt: v.number(),
+				}),
+			),
 		),
 		syncGeneration: v.number(),
 		scheduledJobId: v.optional(v.id("_scheduled_functions")),
@@ -2028,6 +2129,10 @@ const app_convex_schema = defineSchema({
 		/** 0 is the newest main file. 1 is `slug.001.md` (oldest), then 2, 3, … */
 		rolloverIndex: v.number(),
 		path: v.string(),
+		/** Hash of the normalized text stored in the mapped file. */
+		contentHash: v.optional(v.string()),
+		/** Asset that the hash describes. A matching hash alone is not a safe no-write signal. */
+		contentAssetId: v.optional(v.id("files_r2_assets")),
 		updatedAt: v.number(),
 	})
 		.index("by_installation_channelKey_rolloverIndex", ["installationId", "channelKey", "rolloverIndex"])
@@ -2044,9 +2149,120 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.id("organizations_workspaces"),
 		installationId: v.id("plugins_workspace_installations"),
 		channelKey: v.string(),
+		/** Claim time used for fair oldest-first retry order. Optional for existing queued docs. */
+		queuedAt: v.optional(v.number()),
 		updatedAt: v.number(),
 	})
 		.index("by_installation_channelKey", ["installationId", "channelKey"])
+		.index("by_installation_queuedAt", ["installationId", "queuedAt"])
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
+
+	/** One resumable Chitchat channel build. The projection-state id is its install lifecycle token. */
+	plugins_data_projection_chitchat_builds: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		lifecycleStateId: v.id("plugins_data_projection_states"),
+		channelKey: v.string(),
+		dirtyUpdatedAt: v.number(),
+		channelName: v.string(),
+		topic: v.union(v.string(), v.null()),
+		isPrivate: v.boolean(),
+		slug: v.string(),
+		header: v.string(),
+		phase: v.union(
+			v.literal("scan_messages"),
+			v.literal("scan_replies"),
+			v.literal("scan_reactions"),
+			v.literal("render_select_message"),
+			v.literal("render_select_reply"),
+			v.literal("render_scan_reactions"),
+			v.literal("render_emit"),
+			v.literal("publish"),
+			v.literal("finalize"),
+			v.literal("archive"),
+			v.literal("cleanup"),
+		),
+		scanAfterKey: v.optional(v.string()),
+		messageCursor: v.optional(v.string()),
+		currentRootKey: v.optional(v.string()),
+		replyCursor: v.optional(v.string()),
+		currentItemKey: v.optional(v.string()),
+		currentItemKind: v.optional(v.union(v.literal("message"), v.literal("reply"))),
+		reactionCursor: v.optional(v.string()),
+		reactionCounts: v.optional(v.record(v.string(), v.number())),
+		outputFileIndex: v.number(),
+		publishFileIndex: v.optional(v.number()),
+		/** Small publish receipt list. Keep staged file bodies out of finalization reads. */
+		publishedFiles: v.array(v.object({ rolloverIndex: v.number(), path: v.string() })),
+		channelFolderPath: v.optional(v.string()),
+		createdAt: v.number(),
+		updatedAt: v.number(),
+	})
+		.index("by_installation_channelKey", ["installationId", "channelKey"])
+		.index("by_installation", ["installationId"])
+		.index("by_installation_phase", ["installationId", "phase"])
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
+
+	/** Bounded message/reply staging for a resumable Chitchat build. */
+	plugins_data_projection_chitchat_items: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		buildId: v.id("plugins_data_projection_chitchat_builds"),
+		collection: v.union(v.literal("messages"), v.literal("replies")),
+		key: v.string(),
+		rootKey: v.optional(v.string()),
+		createdAt: v.number(),
+		createdBy: v.string(),
+		text: v.string(),
+		attachments: v.array(v.object({ name: v.string() })),
+		editedAt: v.union(v.number(), v.null()),
+		deletedAt: v.union(v.number(), v.null()),
+	})
+		.index("by_build_collection_key", ["buildId", "collection", "key"])
+		.index("by_build_collection_createdAt_key", ["buildId", "collection", "createdAt", "key"])
+		.index("by_build_root_createdAt_key", ["buildId", "rootKey", "createdAt", "key"])
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
+
+	/** Bounded reaction staging keyed by the exact message or reply it decorates. */
+	plugins_data_projection_chitchat_reactions: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		buildId: v.id("plugins_data_projection_chitchat_builds"),
+		key: v.string(),
+		targetKey: v.string(),
+		token: v.string(),
+		removed: v.boolean(),
+	})
+		.index("by_build_key", ["buildId", "key"])
+		.index("by_build_target_key", ["buildId", "targetKey", "key"])
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
+
+	/** One stable, sanitized author label per user and build. */
+	plugins_data_projection_chitchat_authors: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		buildId: v.id("plugins_data_projection_chitchat_builds"),
+		userId: v.string(),
+		label: v.union(v.string(), v.null()),
+	})
+		.index("by_build_userId", ["buildId", "userId"])
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
+
+	/** One staged rollover file. Index zero is the newest main file. */
+	plugins_data_projection_chitchat_files: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		buildId: v.id("plugins_data_projection_chitchat_builds"),
+		fileIndex: v.number(),
+		body: v.string(),
+		updatedAt: v.number(),
+	})
+		.index("by_build_fileIndex", ["buildId", "fileIndex"])
 		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
 
 	/**
@@ -2087,6 +2303,7 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_tokenHash", ["tokenHash"])
 		.index("by_expiresAt", ["expiresAt"])
+		.index("by_actorUser", ["actorUserId"])
 		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"])
 		// Removing a member deletes their grants by this index, the same way it deletes their public API
 		// grants and plugin UI sessions.
@@ -2340,6 +2557,7 @@ const app_convex_schema = defineSchema({
 		.index("by_user_scope", ["userId", "scope"])
 		.index("by_organization_scope", ["organizationId", "scope"])
 		.index("by_organization_workspace_scope", ["organizationId", "workspaceId", "scope"])
+		.index("by_user_eligibleAt", ["userId", "eligibleAt"])
 		.index("by_user", ["userId"]),
 	// #endregion data deletion
 
@@ -2430,6 +2648,16 @@ const app_convex_schema = defineSchema({
 			"principalKind",
 			"permission",
 		])
+		// Count one `content.read` row per private scope without reading every permission row.
+		.index("by_user_org_workspace_kind_principal_permission_resource", [
+			"userId",
+			"organizationId",
+			"workspaceId",
+			"resourceKind",
+			"principalKind",
+			"permission",
+			"resourceId",
+		])
 		.index("by_organization_workspace_resource_user_permission", [
 			"organizationId",
 			"workspaceId",
@@ -2487,6 +2715,8 @@ const app_convex_schema = defineSchema({
 		name: v.string(),
 		description: v.string(),
 		default: v.boolean(),
+		/** Keep every plugin authority door closed across delayed or bounded workspace purge. */
+		pluginDataPurgeStartedAt: v.optional(v.number()),
 		updatedAt: v.number(),
 	}).index("by_organization_default", ["organizationId", "default"]),
 
@@ -2500,6 +2730,11 @@ const app_convex_schema = defineSchema({
 		 * `true` for normal active membership.
 		 */
 		active: v.boolean(),
+		/**
+		 * `true` while organization removal drains this member's direct grants. Account recovery must
+		 * not reactivate this membership. Optional while older stored memberships have no marker.
+		 */
+		pendingOrganizationRemoval: v.optional(v.boolean()),
 	})
 		.index("by_workspace_user_active", ["workspaceId", "userId", "active"])
 		.index("by_user_organization_workspace_active", ["userId", "organizationId", "workspaceId", "active"])
@@ -2597,6 +2832,8 @@ const app_convex_schema = defineSchema({
 		defaultWorkspaceId: v.optional(v.id("organizations_workspaces")),
 		anagraphic: v.optional(v.id("users_anagraphics")),
 		deletedAt: v.optional(v.number()),
+		/** Block account recovery while destructive deletion spans more than one transaction. */
+		deletionFinalizationStartedAt: v.optional(v.number()),
 	}).index("by_clerkUser", ["clerkUserId"]),
 
 	users_anagraphics: defineTable({

@@ -345,6 +345,93 @@ describe("service upload authorization", () => {
 		expect(await read_targets(t)).toHaveLength(0);
 	});
 
+	test("does not restore an old grant after hard deletion, same-email recovery, and reinvite", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const actor = await t.run(async (ctx) => {
+			const seeded = await test_mocks_fill_db_with.membership(ctx, {
+				organizationName: "deleted-actor",
+			});
+			const anagraphicId = await ctx.db.insert("users_anagraphics", {
+				userId: seeded.userId,
+				displayName: "Deleted Service Actor",
+				email: "deleted-service-actor@test.local",
+				updatedAt: Date.now(),
+			});
+			await ctx.db.patch("users", seeded.userId, {
+				clerkUserId: "clerk-deleted-service-actor",
+				anagraphic: anagraphicId,
+			});
+			return seeded;
+		});
+		const owner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: fixture.userId,
+			name: "Service Owner",
+		});
+		expect(
+			await owner.mutation(api.organizations.invite_user_to_organization_workspace, {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				userIdToAdd: actor.userId,
+			}),
+		).toEqual({ _yay: null });
+
+		const oldGrant = await seal_token(t, fixture, "/meetings", actor.userId);
+		const created = await call(t, CREATE_TARGET_PATH, oldGrant, target_body());
+		expect(created.status).toBe(200);
+
+		let prepared = false;
+		for (let pass = 0; pass < 20 && !prepared; pass += 1) {
+			prepared = await t.run((ctx) =>
+				ctx.runMutation(internal.data_deletion.prepare_user_for_hard_deletion, {
+					userId: actor.userId,
+					_test_batchSize: 1,
+				}),
+			);
+		}
+		expect(prepared).toBe(true);
+
+		let finalized = false;
+		for (let pass = 0; pass < 30 && !finalized; pass += 1) {
+			finalized = await t.run((ctx) =>
+				ctx.runMutation(internal.data_deletion.finalize_user_deletion_data, {
+					userId: actor.userId,
+					deleteUserAuth: true,
+					_test_batchSize: 1,
+				}),
+			);
+		}
+		expect(finalized).toBe(true);
+		expect(
+			await t.run(async (ctx) =>
+				ctx.db
+					.query("plugin_service_grants")
+					.withIndex("by_actorUser", (q) => q.eq("actorUserId", actor.userId))
+					.first(),
+			),
+		).toBeNull();
+
+		const recovered = await t.run((ctx) =>
+			ctx.runMutation(internal.users.resolve_user, {
+				clerkUserId: "clerk-deleted-service-actor-again",
+				email: "deleted-service-actor@test.local",
+				displayName: "Deleted Service Actor Again",
+			}),
+		);
+		expect(recovered._yay?.userId).toBe(actor.userId);
+		expect(
+			await owner.mutation(api.organizations.invite_user_to_organization_workspace, {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				userIdToAdd: actor.userId,
+			}),
+		).toEqual({ _yay: null });
+
+		const replay = await call(t, CREATE_TARGET_PATH, oldGrant, target_body());
+		expect(replay.status).toBe(401);
+	});
+
 	test("refuses an expired processing grant", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);

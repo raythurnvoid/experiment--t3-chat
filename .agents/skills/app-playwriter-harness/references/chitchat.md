@@ -440,10 +440,16 @@ the only practical way to drive scope membership from the browser:
 
 ```js
 await frame.evaluate(async ({ key, userId }) => {
-	await window.__ccClient.scopes.setPrincipal({ scopeId: key, userId, level: "member" });
-	return window.__ccClient.scopes.listPrincipals({ scopeId: key });
+	const write = await window.__ccClient.scopes.setPrincipal({ scopeId: key, userId, level: "member" });
+	if ("_nay" in write) throw new Error(write._nay.message);
+	const read = await window.__ccClient.scopes.listPrincipals({ scopeId: key });
+	if ("_nay" in read) throw new Error(read._nay.message);
+	return read._yay;
 }, { key: privateChannelKey, userId: otherUserId });
 ```
+
+An exact `null` result means the scope is absent or no longer readable. A `_nay unavailable` result
+means the read failed, so retry it instead of treating the member as removed.
 
 Adding and removing a principal must change the other browser's sidebar **live**, with no reload —
 that is what the `scopes.watchMine` subscription is for, so read the other session's sidebar without
@@ -609,4 +615,3 @@ Proven live 2026-08-28 on the dev deployment with an owner tab plus a scratch-br
   A stale public-channel file conflict (`This file changed while you were saving...`) can therefore
   delay a `p/` channel's first projection; any later message retries the run, and the hourly cron is
   the backstop. Send a second message before diagnosing a missing private folder.
-

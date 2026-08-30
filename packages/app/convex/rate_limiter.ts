@@ -108,7 +108,8 @@ const rate_limiter_CONFIG = {
 	files_snapshot_write: STRICT_WRITE,
 	files_tree_write: BULK_FILES_WRITE,
 	files_yjs_push_update: STRICT_WRITE,
-	// A member writing plugin data from a plugin frame, one document per call. The name says "page",
+	// A member writing plugin data from a plugin frame. Most calls change one document; atomic private
+	// setup creates its scope, grants, and first document under one charge. The name says "page",
 	// but both frame kinds charge here: a plugin page and a file view. Nothing in `plugins_data.ts`
 	// reads the session's `fileNodeId`, so a file view writes exactly as a page does. Chat-like use
 	// is bursty — a few messages or reactions in a row — so the capacity covers a short burst and
@@ -121,6 +122,9 @@ const rate_limiter_CONFIG = {
 		capacity: 10,
 	},
 	plugins_manage: STRICT_AUTH_OR_BILLING,
+	// Reading the candidate branch HEAD spends the shared GitHub token but must not consume the
+	// management token that the immediate publish needs. Keep a separate short retry burst here.
+	plugins_publish_preflight: STRICT_AUTH_OR_BILLING,
 	// Two kinds of charge share this bucket. A plugin page mints here. Every token rotation also
 	// charges here, because `refresh_ui_session` serves both frame kinds: a plugin page and a file
 	// view. Only the file-view mint goes to the separate bucket below. Rotations stay rare. The token

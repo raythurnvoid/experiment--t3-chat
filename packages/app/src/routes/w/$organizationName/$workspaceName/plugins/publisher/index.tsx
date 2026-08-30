@@ -3,8 +3,8 @@ import "./index.css";
 import { useClerk } from "@clerk/clerk-react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
-import { GitBranch, LogIn, Plus, Store, Trash2, UploadCloud } from "lucide-react";
-import { memo, useState, type FormEvent } from "react";
+import { GitBranch, LogIn, Plus, Store, Trash2 } from "lucide-react";
+import { memo, useEffect, useRef, useState, type FormEvent } from "react";
 import { toast } from "sonner";
 
 import { AppAuthProvider } from "@/components/app-auth.tsx";
@@ -24,6 +24,8 @@ import { app_convex, app_convex_api, type app_convex_FunctionReturnType } from "
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 import { RoutePluginsPublisherLastAttempt } from "./-publisher-last-attempt.tsx";
+import { PluginPublishConfirmationModal } from "./-plugin-publish-confirmation-modal.tsx";
+import { PluginPublishSessionProvider } from "./-plugin-publish-session.tsx";
 
 type Repositories = app_convex_FunctionReturnType<typeof app_convex_api.plugins.list_user_published_repositories>;
 
@@ -83,40 +85,28 @@ type RoutePluginsPublisherPlugins_ClassNames =
 
 type RoutePluginsPublisherUnpublishedCard_Props = {
 	repository: Repositories[number]["repository"];
+	onPublished: () => void;
+	onRemoved: () => void;
 };
 
 const RoutePluginsPublisherUnpublishedCard = memo(function RoutePluginsPublisherUnpublishedCard(
 	props: RoutePluginsPublisherUnpublishedCard_Props,
 ) {
-	const { repository } = props;
-	const [publishing, setPublishing] = useState(false);
+	const { repository, onPublished, onRemoved } = props;
+	const publishSessionManager = PluginPublishSessionProvider.useContext();
+	const publishBusy = publishSessionManager.session !== null;
+	const managementBusy = publishSessionManager.managementAction !== null;
 	const [removing, setRemoving] = useState(false);
 
-	const handlePublish = useFn(() => {
-		setPublishing(true);
-		app_convex
-			.action(app_convex_api.plugins.publish_version, { repositoryId: repository._id })
-			.then((result) => {
-				if (result._nay) {
-					toast.error(result._nay.message);
-					return;
-				}
-
-				toast.success(`Published commit ${result._yay.sourceCommitSha.slice(0, 8)}`);
-			})
-			.catch((error) => {
-				console.error("[RoutePluginsPublisher.handlePublish] Failed to publish plugin:", {
-					error,
-					repositoryId: repository._id,
-				});
-				toast.error("Failed to publish plugin");
-			})
-			.finally(() => {
-				setPublishing(false);
-			});
-	});
-
 	const handleRemove = useFn(() => {
+		if (removing || publishBusy) {
+			return;
+		}
+		const actionVersion = publishSessionManager.beginManagementAction("remove_repository");
+		if (actionVersion === null) {
+			return;
+		}
+
 		setRemoving(true);
 		app_convex
 			.mutation(app_convex_api.plugins.remove_repository, { repositoryId: repository._id })
@@ -127,6 +117,7 @@ const RoutePluginsPublisherUnpublishedCard = memo(function RoutePluginsPublisher
 				}
 
 				toast.success("Repository claim removed");
+				onRemoved();
 			})
 			.catch((error) => {
 				console.error("[RoutePluginsPublisher.handleRemove] Failed to remove repository claim:", {
@@ -137,6 +128,7 @@ const RoutePluginsPublisherUnpublishedCard = memo(function RoutePluginsPublisher
 			})
 			.finally(() => {
 				setRemoving(false);
+				publishSessionManager.finishManagementAction(actionVersion);
 			});
 	});
 
@@ -170,15 +162,18 @@ const RoutePluginsPublisherUnpublishedCard = memo(function RoutePluginsPublisher
 				Never published. Publish builds and registers the first version from the default branch.
 			</span>
 			<span className={"RoutePluginsPublisherUnpublishedCard-footer" satisfies RoutePluginsPublisherPlugins_ClassNames}>
-				<MyButton disabled={publishing || removing} onClick={handlePublish}>
-					<UploadCloud aria-hidden />
-					{publishing ? "Publishing..." : "Publish"}
-				</MyButton>
+				<PluginPublishConfirmationModal
+					repositoryId={repository._id}
+					repositoryLabel={`${repository.owner}/${repository.repo}`}
+					disabled={removing}
+					onPublished={onPublished}
+				/>
 				<MyButton
 					variant="ghost_destructive"
-					aria-label={`Remove claim on ${repository.owner}/${repository.repo}`}
+					aria-label={`${removing ? "Removing" : "Remove"} claim on ${repository.owner}/${repository.repo}`}
+					aria-busy={removing}
 					tooltip="Remove claim"
-					disabled={publishing || removing}
+					disabled={publishBusy || (managementBusy && !removing)}
 					onClick={handleRemove}
 				>
 					<Trash2 aria-hidden />
@@ -196,12 +191,42 @@ const RoutePluginsPublisherPlugins = memo(function RoutePluginsPublisherPlugins(
 	props: RoutePluginsPublisherPlugins_Props,
 ) {
 	const { repositories } = props;
+	const publishSessionManager = PluginPublishSessionProvider.useContext();
+	const repositoryInputRef = useRef<HTMLInputElement>(null);
+	const claimButtonRef = useRef<HTMLButtonElement>(null);
 	const [repositoryUrl, setRepositoryUrl] = useState("");
 	const [claiming, setClaiming] = useState(false);
+	const [focusAfterChange, setFocusAfterChange] = useState<{
+		repositoryId: Repositories[number]["repository"]["_id"];
+		change: "published" | "removed";
+	} | null>(null);
+
+	useEffect(() => {
+		if (!focusAfterChange || claiming) {
+			return;
+		}
+		const repository = repositories.find(({ repository }) => repository._id === focusAfterChange.repositoryId);
+		const changeArrived =
+			focusAfterChange.change === "removed" ? repository === undefined : Boolean(repository?.readyVersions.length);
+		if (!changeArrived) {
+			return;
+		}
+
+		// Repair focus only when the changed card left it on the document. Do not pull focus away if the
+		// person moved to another control while the publish, removal, or claim was still running.
+		if (document.activeElement === document.body) {
+			repositoryInputRef.current?.focus();
+		}
+		setFocusAfterChange(null);
+	}, [claiming, focusAfterChange, repositories]);
 
 	const handleClaim = useFn((event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
-		if (!repositoryUrl.trim()) {
+		if (!repositoryUrl.trim() || claiming || publishSessionManager.session) {
+			return;
+		}
+		const actionVersion = publishSessionManager.beginManagementAction("claim_repository");
+		if (actionVersion === null) {
 			return;
 		}
 
@@ -215,6 +240,10 @@ const RoutePluginsPublisherPlugins = memo(function RoutePluginsPublisherPlugins(
 				}
 
 				toast.success(`Claimed ${result._yay.repositoryUrl}`);
+				// Move submit focus to the cleared field, but keep any explicit focus move made during the request.
+				if (document.activeElement === claimButtonRef.current || document.activeElement === document.body) {
+					repositoryInputRef.current?.focus();
+				}
 				setRepositoryUrl("");
 			})
 			.catch((error) => {
@@ -226,8 +255,11 @@ const RoutePluginsPublisherPlugins = memo(function RoutePluginsPublisherPlugins(
 			})
 			.finally(() => {
 				setClaiming(false);
+				publishSessionManager.finishManagementAction(actionVersion);
 			});
 	});
+	const publishBusy = publishSessionManager.session !== null;
+	const managementBusy = publishSessionManager.managementAction !== null;
 
 	return (
 		<section className={"RoutePluginsPublisherPlugins" satisfies RoutePluginsPublisherPlugins_ClassNames}>
@@ -240,17 +272,25 @@ const RoutePluginsPublisherPlugins = memo(function RoutePluginsPublisherPlugins(
 					<MyInputBackground />
 					<MyInputArea>
 						<MyInputControl
+							ref={repositoryInputRef}
 							value={repositoryUrl}
 							placeholder="https://github.com/owner/plugin-repo"
 							inputMode="url"
-							disabled={claiming}
+							disabled={publishBusy || (managementBusy && !claiming)}
+							readOnly={claiming}
+							aria-busy={claiming}
 							required
 							onChange={(event) => setRepositoryUrl(event.currentTarget.value)}
 						/>
 					</MyInputArea>
 					<MyInputBox />
 				</MyInput>
-				<MyButton type="submit" disabled={claiming || !repositoryUrl.trim()}>
+				<MyButton
+					ref={claimButtonRef}
+					type="submit"
+					disabled={publishBusy || (managementBusy && !claiming) || !repositoryUrl.trim()}
+					aria-busy={claiming}
+				>
 					<Plus aria-hidden />
 					{claiming ? "Claiming..." : "Claim"}
 				</MyButton>
@@ -268,7 +308,11 @@ const RoutePluginsPublisherPlugins = memo(function RoutePluginsPublisherPlugins(
 							className={"RoutePluginsPublisherRepositoryItem" satisfies RoutePluginsPublisherPlugins_ClassNames}
 						>
 							{readyVersions.length === 0 ? (
-								<RoutePluginsPublisherUnpublishedCard repository={repository} />
+								<RoutePluginsPublisherUnpublishedCard
+									repository={repository}
+									onPublished={() => setFocusAfterChange({ repositoryId: repository._id, change: "published" })}
+									onRemoved={() => setFocusAfterChange({ repositoryId: repository._id, change: "removed" })}
+								/>
 							) : (
 								readyVersions.map((readyVersion) => (
 									<PluginsGalleryCard

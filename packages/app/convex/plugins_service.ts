@@ -182,9 +182,15 @@ export const get_installation_capabilities = internalQuery({
 		}),
 	}),
 	handler: async (ctx, args) => {
-		const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
+		const [installation, workspace] = await Promise.all([
+			ctx.db.get("plugins_workspace_installations", args.installationId),
+			ctx.db.get("organizations_workspaces", args.workspaceId),
+		]);
 		if (
 			!installation ||
+			!workspace ||
+			workspace.organizationId !== args.organizationId ||
+			workspace.pluginDataPurgeStartedAt !== undefined ||
 			installation.status !== "enabled" ||
 			installation.organizationId !== args.organizationId ||
 			installation.workspaceId !== args.workspaceId

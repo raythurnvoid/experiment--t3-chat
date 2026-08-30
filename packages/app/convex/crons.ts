@@ -63,7 +63,7 @@ crons.cron("cleanup old plugin event runs", "30 6 * * *", internal.plugins_runti
 crons.cron("cleanup expired plugin ui sessions", "45 6 * * *", internal.plugins_ui.cleanup_expired_ui_sessions, {});
 
 // Once hourly — release plugin-data reservations a crashed producer never released, then delete the
-// retry records, delete tombstones, and delete expired service grants. Hourly, not daily: a retry
+// retry records, delete tombstones and append receipts, and delete expired service grants. Hourly, not daily: a retry
 // record only becomes deletable 24 hours after its release, so a daily pass would often miss the
 // rows that just became eligible and hold their slots for another day.
 crons.cron("cleanup expired plugin data", "20 * * * *", internal.plugins_data.cleanup_expired_plugin_data, {});

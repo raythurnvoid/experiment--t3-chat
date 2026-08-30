@@ -67,8 +67,10 @@ afterEach(async () => {
 	}
 });
 
-export function test_convex() {
-	const t = convexTest(schema, convex_test_modules);
+export function test_convex(options: {
+	transactionLimits?: Parameters<typeof convexTest>[0]["transactionLimits"];
+} = {}) {
+	const t = convexTest({ schema, modules: convex_test_modules, transactionLimits: options.transactionLimits });
 	test_convex_instances.push(t);
 	const withIdentity = t.withIdentity.bind(t);
 	t.withIdentity = ((identity) => {

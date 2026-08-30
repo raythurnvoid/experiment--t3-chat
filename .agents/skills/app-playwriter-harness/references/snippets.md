@@ -497,11 +497,19 @@ Args survive `vp env exec` best as JSON5 with single-quoted strings inside one d
 
 ⚠ `convex run` carries an **admin key, not a user identity**, so `ctx.auth.getUserIdentity()` is null by default and any handler that resolves a current user refuses it. There is no single `require_identity` helper to grep for — the shape is `server_convex_get_user_fallback_to_anonymous(ctx)` (from `server/server-utils.ts`) followed by a `throw convex_error({ message: "Unauthenticated" })` when it answers null. Grep for that helper name to find the gated handlers. Pass `--identity '<json>'` to supply a fake identity when you need one; the admin key still authorizes the call, so this reaches internal functions too.
 
-To act as a real app user, pass `external_id` as that user's Convex `users` `_id`. Dummy `subject` / `email` values are enough — the helper keys signed-in users on `external_id`, not on the email string. `email` still has to be present, or the helper throws `Email required for signed-in users`. Use a Clerk-like issuer (not the anonymous JWT issuer), or `create_organization` and other signed-in-only doors answer `Unauthenticated`. Do not `gh auth switch` to "fix" this, and do not print a real email. From `packages/app`, JSON5 args, Git Bash:
+To act as a real app user, pass `external_id` as that user's Convex `users` `_id`. Dummy `subject` / `email` values are enough — the helper keys signed-in users on `external_id`, not on the email string. `email` still has to be present, or the helper throws `Email required for signed-in users`. Use a Clerk-like issuer (not the anonymous JWT issuer), or `create_organization` and other signed-in-only doors answer `Unauthenticated`. Do not `gh auth switch` to "fix" this, and do not print a real email. From `packages/app`, JSON5 args, Git Bash, first read the candidate HEAD:
 
 ```bash
 vp env exec -- node node_modules/convex/bin/main.js run --typecheck disable --codegen disable \
-  plugins:publish_version "{repositoryId:'<plugins_publisher_repositories id>'}" \
+  plugins:get_publish_candidate_head "{repositoryId:'<plugins_publisher_repositories id>'}" \
+  --identity "{subject:'cli-publisher',issuer:'https://clerk.example',email:'qa-publisher@example.com',external_id:'<users id>'}"
+```
+
+Check the returned 40-character SHA against the repository HEAD with an independent source. Do not reuse a SHA you read only from this Convex result. After that review, publish that exact SHA:
+
+```bash
+vp env exec -- node node_modules/convex/bin/main.js run --typecheck disable --codegen disable \
+  plugins:publish_version "{repositoryId:'<plugins_publisher_repositories id>',expectedSourceCommitSha:'<reviewed 40-character SHA>'}" \
   --identity "{subject:'cli-publisher',issuer:'https://clerk.example',email:'qa-publisher@example.com',external_id:'<users id>'}"
 ```
 

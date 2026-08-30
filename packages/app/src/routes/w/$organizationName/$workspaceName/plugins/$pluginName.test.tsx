@@ -6,17 +6,18 @@
  * They must say the same thing about the same surfaces, so a warning added to one and missed on the
  * other is the failure these tests exist to catch.
  */
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render as testingRender, screen, waitFor } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ComponentProps, ReactNode, Ref } from "react";
+import type { ComponentProps, ReactElement, ReactNode, Ref } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-const { paramsMock, tenantContextMock, useQueryMock, mutationMock, toastErrorMock } = vi.hoisted(() => ({
+const { paramsMock, tenantContextMock, useQueryMock, mutationMock, actionMock, toastErrorMock } = vi.hoisted(() => ({
 	paramsMock: vi.fn(),
 	tenantContextMock: vi.fn(),
 	useQueryMock: vi.fn(),
 	mutationMock: vi.fn(),
+	actionMock: vi.fn(),
 	toastErrorMock: vi.fn(),
 }));
 
@@ -36,7 +37,7 @@ vi.mock("sonner", () => ({
 }));
 
 vi.mock("@/lib/app-convex-client.ts", () => ({
-	app_convex: { mutation: mutationMock, action: vi.fn() },
+	app_convex: { mutation: mutationMock, action: actionMock },
 	app_convex_api: {
 		organizations: { list: "organizations.list" },
 		plugins: {
@@ -51,6 +52,8 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			update_installation_configuration: "plugins.update_installation_configuration",
 			install_version: "plugins.install_version",
 			remove_repository: "plugins.remove_repository",
+			get_publish_candidate_head: "plugins.get_publish_candidate_head",
+			publish_version: "plugins.publish_version",
 		},
 	},
 }));
@@ -105,8 +108,8 @@ vi.mock("@/components/my-badge.tsx", () => ({
 }));
 
 // The real popover is an Ariakit dialog that portals and traps focus. Honor `open` so the test still
-// has to click Install to see the consent copy, and render a close button while open so a test can
-// close the modal mid-flight the way an Escape does in the real app.
+// has to click Install to see the consent copy, and render a close button while open so tests can
+// drive the same open-state callback that Escape uses in the real app.
 vi.mock("@/components/my-modal.tsx", () => ({
 	MyModal: function MyModal(props: { open?: boolean; setOpen?: (open: boolean) => void; children?: ReactNode }) {
 		return props.open ? (
@@ -132,6 +135,9 @@ vi.mock("@/components/my-modal.tsx", () => ({
 	},
 	MyModalHeading: function MyModalHeading(props: { children?: ReactNode }) {
 		return <h2>{props.children}</h2>;
+	},
+	MyModalFooter: function MyModalFooter(props: { children?: ReactNode }) {
+		return <div>{props.children}</div>;
 	},
 	MyModalScrollableArea: function MyModalScrollableArea(props: { children?: ReactNode }) {
 		return <div>{props.children}</div>;
@@ -193,8 +199,33 @@ vi.mock("@/components/my-menu.tsx", () => ({
 }));
 
 import { Route } from "./$pluginName.tsx";
+import { PluginPublishSessionProvider } from "./publisher/-plugin-publish-session.tsx";
 
 const PageComponent = Route.options.component as () => JSX.Element;
+
+function render(ui: ReactElement) {
+	return testingRender(ui, { wrapper: PluginPublishSessionProvider });
+}
+
+function route_remount_key() {
+	const remountDeps = Route.options.remountDeps;
+	if (!remountDeps) {
+		throw new Error("Plugin detail route must remount when its identity changes");
+	}
+
+	return JSON.stringify(
+		remountDeps({
+			routeId: "/w/$organizationName/$workspaceName/plugins/$pluginName",
+			loaderDeps: {},
+			params: paramsMock(),
+			search: {},
+		} as Parameters<typeof remountDeps>[0]),
+	);
+}
+
+function RemountingPageComponent() {
+	return <PageComponent key={route_remount_key()} />;
+}
 
 function published_plugin(overrides: {
 	name: string;
@@ -289,7 +320,7 @@ function setQueries(
 	installations: unknown[] = [],
 	publisherPlugin: unknown = null,
 ) {
-	paramsMock.mockReturnValue({ pluginName: plugin.name });
+	paramsMock.mockReturnValue({ organizationName: "team", workspaceName: "home", pluginName: plugin.name });
 	useQueryMock.mockImplementation((query: string) => {
 		switch (query) {
 			case "organizations.list":
@@ -739,6 +770,353 @@ describe("RoutePluginsPlugin", () => {
 		vi.clearAllMocks();
 	});
 
+	test("remounts plugin-local state when any route identity changes", () => {
+		const remountKeys = [
+			{ organizationName: "team", workspaceName: "home", pluginName: "media" },
+			{ organizationName: "other-team", workspaceName: "home", pluginName: "media" },
+			{ organizationName: "team", workspaceName: "other-workspace", pluginName: "media" },
+			{ organizationName: "team", workspaceName: "home", pluginName: "other-plugin" },
+		].map((params) => {
+			paramsMock.mockReturnValue(params);
+			return route_remount_key();
+		});
+
+		expect(new Set(remountKeys).size).toBe(remountKeys.length);
+	});
+
+	test("does not show plugin A install progress or dialog on plugin B", async () => {
+		const pluginA = published_plugin({ name: "media-a", canProcessFiles: true });
+		const pluginB = published_plugin({ name: "media-b", canProcessFiles: true });
+		let resolveInstall!: (value: unknown) => void;
+		mutationMock.mockReturnValue(
+			new Promise((resolve) => {
+				resolveInstall = resolve;
+			}),
+		);
+		setQueries(pluginA, [], publisher_plugin_fixture());
+		const view = render(<RemountingPageComponent />);
+
+		fireEvent.click(screen.getByRole("button", { name: "Install" }));
+		fireEvent.click(screen.getByRole("button", { name: "Accept and install" }));
+
+		setQueries(pluginB, [], publisher_plugin_fixture());
+		view.rerender(<RemountingPageComponent />);
+
+		expect(screen.queryByRole("dialog")).toBeNull();
+		const installButton = screen.getByRole("button", { name: "Install" }) as HTMLButtonElement;
+		expect(installButton.disabled).toBe(true);
+		expect(installButton.getAttribute("aria-busy")).toBeNull();
+		expect(
+			(screen.getByRole("button", { name: "Publish ray/bonobo-plugin-media" }) as HTMLButtonElement).disabled,
+		).toBe(true);
+		expect(screen.getByRole("menuitem", { name: "Remove claim" }).getAttribute("aria-disabled")).toBe("true");
+
+		const destinationControl = screen.getByRole("button", { name: "More actions" });
+		act(() => destinationControl.focus());
+		await act(async () => resolveInstall({ _yay: null }));
+
+		await waitFor(() => expect(installButton.disabled).toBe(false));
+		expect(document.activeElement).toBe(destinationControl);
+	});
+
+	test("does not show plugin A uninstall progress or move focus on plugin B", async () => {
+		const pluginA = published_plugin({ name: "media-a", canProcessFiles: true });
+		const pluginB = published_plugin({ name: "media-b", canProcessFiles: true });
+		let resolveUninstall!: (value: unknown) => void;
+		mutationMock.mockReturnValue(
+			new Promise((resolve) => {
+				resolveUninstall = resolve;
+			}),
+		);
+		setQueries(pluginA, [installed_item(pluginA)], publisher_plugin_fixture());
+		const view = render(<RemountingPageComponent />);
+
+		fireEvent.click(screen.getByRole("button", { name: "Uninstall" }));
+		setQueries(pluginB, [installed_item(pluginB)], publisher_plugin_fixture());
+		view.rerender(<RemountingPageComponent />);
+
+		const uninstallButton = screen.getByRole("button", { name: "Uninstall" }) as HTMLButtonElement;
+		expect(uninstallButton.disabled).toBe(true);
+		expect(uninstallButton.getAttribute("aria-busy")).toBe("false");
+
+		const destinationControl = screen.getByRole("button", { name: "More actions" });
+		act(() => destinationControl.focus());
+		await act(async () => resolveUninstall({ _yay: null }));
+
+		await waitFor(() => expect(uninstallButton.disabled).toBe(false));
+		expect(document.activeElement).toBe(destinationControl);
+	});
+
+	test("repairs remove-claim focus after leaving and returning to the plugin", async () => {
+		const pluginA = published_plugin({ name: "media-a", canProcessFiles: true });
+		const pluginB = published_plugin({ name: "media-b", canProcessFiles: true });
+		let resolveRemove!: (value: unknown) => void;
+		mutationMock.mockReturnValue(
+			new Promise((resolve) => {
+				resolveRemove = resolve;
+			}),
+		);
+		setQueries(pluginA, [], publisher_plugin_fixture());
+		const view = render(<RemountingPageComponent />);
+
+		fireEvent.click(screen.getByRole("menuitem", { name: "Remove claim" }));
+		setQueries(pluginB);
+		view.rerender(<RemountingPageComponent />);
+		setQueries(pluginA, [], publisher_plugin_fixture());
+		view.rerender(<RemountingPageComponent />);
+
+		const replacementTrigger = screen.getByRole("button", { name: "More actions" });
+		act(() => replacementTrigger.focus());
+		await act(async () => resolveRemove({ _yay: null }));
+		setQueries(pluginA);
+		view.rerender(<RemountingPageComponent />);
+
+		const title = screen.getByRole("heading", { level: 1, name: "media-a" });
+		await waitFor(() => expect(document.activeElement).toBe(title));
+	});
+
+	test("shows current plugin B while retrying the exact repository A publish", async () => {
+		const headSha = "fedcba9876543210fedcba9876543210fedcba98";
+		const nextHeadSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+		const pluginA = published_plugin({ name: "media-a", canProcessFiles: true });
+		const pluginB = published_plugin({ name: "media-b", canProcessFiles: true });
+		const publisherA = publisher_plugin_fixture();
+		const publisherB = {
+			...publisherA,
+			repository: {
+				...publisherA.repository,
+				_id: "repository_2",
+				owner: "fork",
+				repo: "bonobo-plugin-media-b",
+				repositoryUrl: "https://github.com/fork/bonobo-plugin-media-b",
+			},
+		};
+		let finishHead!: (result: { _yay: { sourceCommitSha: string } }) => void;
+		let finishPublish!: (result: { _nay: { name: string; message: string } }) => void;
+		actionMock
+			.mockReturnValueOnce(
+				new Promise<{ _yay: { sourceCommitSha: string } }>((resolve) => {
+					finishHead = resolve;
+				}),
+			)
+			.mockReturnValueOnce(
+				new Promise<{ _nay: { name: string; message: string } }>((resolve) => {
+					finishPublish = resolve;
+				}),
+			)
+			.mockResolvedValueOnce({ _yay: { sourceCommitSha: nextHeadSha } })
+			.mockResolvedValueOnce({ _yay: { sourceCommitSha: nextHeadSha } });
+		setQueries(pluginA, [], publisherA);
+		const view = render(<PageComponent />);
+
+		fireEvent.click(screen.getByRole("button", { name: "Publish ray/bonobo-plugin-media" }));
+		setQueries(pluginB, [], publisherB);
+		view.rerender(<PageComponent />);
+		expect(screen.getByRole("heading", { level: 1, name: "media-b" })).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Publish ray/bonobo-plugin-media" })).toBeNull();
+		expect(
+			(screen.getByRole("button", { name: "Publish fork/bonobo-plugin-media-b" }) as HTMLButtonElement).disabled,
+		).toBe(true);
+		expect(screen.getByRole("dialog").textContent).toContain("Checking repository commit...");
+
+		await act(async () => finishHead({ _yay: { sourceCommitSha: headSha } }));
+		const reviewedCommit = await screen.findByRole("textbox");
+		expect(screen.getByRole("dialog").textContent).toContain("Publish ray/bonobo-plugin-media");
+		fireEvent.change(reviewedCommit, { target: { value: headSha } });
+		fireEvent.click(screen.getByRole("button", { name: "Publish reviewed commit" }));
+
+		await act(async () => {
+			finishPublish({ _nay: { name: "conflict", message: "Repository A changed after review" } });
+		});
+		expect((await screen.findByRole("alert")).textContent).toBe("Repository A changed after review");
+		const nextReviewedCommit = await screen.findByRole("textbox");
+		expect((nextReviewedCommit as HTMLInputElement).value).toBe("");
+		expect(screen.getByRole("dialog").textContent).toContain(nextHeadSha);
+		fireEvent.change(nextReviewedCommit, { target: { value: nextHeadSha } });
+		fireEvent.click(screen.getByRole("button", { name: "Publish reviewed commit" }));
+
+		await waitFor(() =>
+			expect(actionMock).toHaveBeenNthCalledWith(4, "plugins.publish_version", {
+				repositoryId: "repository_1",
+				expectedSourceCommitSha: nextHeadSha,
+			}),
+		);
+		await waitFor(() => expect(screen.getByRole("heading", { level: 1, name: "media-b" })).toBeTruthy());
+		expect(screen.getByRole("button", { name: "Publish fork/bonobo-plugin-media-b" })).toBeTruthy();
+	});
+
+	test("shows current permission loss below the repository publish dialog", async () => {
+		const headSha = "fedcba9876543210fedcba9876543210fedcba98";
+		const plugin = published_plugin({ name: "media", canProcessFiles: true });
+		let finishHead!: (result: { _yay: { sourceCommitSha: string } }) => void;
+		actionMock.mockReturnValueOnce(
+			new Promise<{ _yay: { sourceCommitSha: string } }>((resolve) => {
+				finishHead = resolve;
+			}),
+		);
+		setQueries(plugin, [], publisher_plugin_fixture());
+		const view = render(<PageComponent />);
+
+		fireEvent.click(screen.getByRole("button", { name: "Publish ray/bonobo-plugin-media" }));
+		useQueryMock.mockImplementation((query: string) => {
+			switch (query) {
+				case "organizations.list":
+					return { workspaceIdsPermissionsDict: { workspace_1: [] } };
+				case "plugins.get_publisher_plugin":
+					return null;
+				default:
+					return undefined;
+			}
+		});
+		view.rerender(<PageComponent />);
+
+		expect(screen.queryByText("Loading plugin...")).toBeNull();
+		expect(screen.getByText("You don't have permission to manage plugins in this workspace.")).toBeTruthy();
+		expect(screen.getByRole("dialog").textContent).toContain("Checking repository commit...");
+
+		await act(async () => finishHead({ _yay: { sourceCommitSha: headSha } }));
+		await screen.findByRole("dialog");
+		fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+		const denied = await screen.findByRole("alert");
+		expect(denied.textContent).toContain("You don't have permission");
+		await waitFor(() => expect(document.activeElement).toBe(denied));
+	});
+
+	test("keeps a thrown A publish error visible after navigation and releases B on Cancel", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const headSha = "fedcba9876543210fedcba9876543210fedcba98";
+		const pluginA = published_plugin({ name: "media-a", canProcessFiles: true });
+		const pluginB = published_plugin({ name: "media-b", canProcessFiles: true });
+		const publisherA = publisher_plugin_fixture();
+		const publisherB = {
+			...publisherA,
+			repository: {
+				...publisherA.repository,
+				_id: "repository_2",
+				owner: "fork",
+				repo: "bonobo-plugin-media-b",
+				repositoryUrl: "https://github.com/fork/bonobo-plugin-media-b",
+			},
+		};
+		let rejectPublish!: (error: unknown) => void;
+		actionMock.mockResolvedValueOnce({ _yay: { sourceCommitSha: headSha } }).mockReturnValueOnce(
+			new Promise((_resolve, reject) => {
+				rejectPublish = reject;
+			}),
+		);
+		setQueries(pluginA, [], publisherA);
+		const view = render(<PageComponent />);
+
+		fireEvent.click(screen.getByRole("button", { name: "Publish ray/bonobo-plugin-media" }));
+		fireEvent.change(await screen.findByRole("textbox"), { target: { value: headSha } });
+		fireEvent.click(screen.getByRole("button", { name: "Publish reviewed commit" }));
+
+		setQueries(pluginB, [], publisherB);
+		view.rerender(<PageComponent />);
+		await act(async () => rejectPublish(new Error("network down")));
+		expect((await screen.findByRole("alert")).textContent).toBe("Failed to publish plugin");
+		expect(screen.getByRole("heading", { level: 1, name: "media-b" })).toBeTruthy();
+
+		fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+		await screen.findByRole("heading", { level: 1, name: "media-b" });
+		expect(screen.getByRole("button", { name: "Publish fork/bonobo-plugin-media-b" })).toBeTruthy();
+		expect(errorSpy).toHaveBeenCalled();
+		errorSpy.mockRestore();
+	});
+
+	test("a publish HEAD check blocks install, uninstall, and claim removal", async () => {
+		const plugin = published_plugin({ name: "media", canProcessFiles: true });
+		const installedItem = installed_item(plugin);
+		installedItem.version.version = "0.1.0";
+		setQueries(plugin, [installedItem], publisher_plugin_fixture());
+		let resolveHead!: (value: unknown) => void;
+		actionMock.mockReturnValue(
+			new Promise((resolve) => {
+				resolveHead = resolve;
+			}),
+		);
+
+		render(<PageComponent />);
+		fireEvent.click(screen.getByRole("button", { name: "Publish ray/bonobo-plugin-media" }));
+
+		const updateButton = screen.getByRole("button", { name: "Update" }) as HTMLButtonElement;
+		const uninstallButton = screen.getByRole("button", { name: "Uninstall" }) as HTMLButtonElement;
+		const removeItem = screen.getByRole("menuitem", { name: "Remove claim" });
+		expect(updateButton.disabled).toBe(true);
+		expect(uninstallButton.disabled).toBe(true);
+		expect(removeItem.getAttribute("aria-disabled")).toBe("true");
+
+		fireEvent.click(updateButton);
+		fireEvent.click(uninstallButton);
+		// The menu mock still calls a disabled item's handler, which proves the handler guard too.
+		fireEvent.click(removeItem);
+		expect(screen.getByRole("dialog")).toBeTruthy();
+		expect(mutationMock).not.toHaveBeenCalled();
+
+		await act(async () => {
+			resolveHead({ _nay: { name: "nay", message: "HEAD unavailable" } });
+		});
+	});
+
+	test("an install in flight keeps its own control enabled and blocks publish and claim removal", async () => {
+		const plugin = published_plugin({ name: "media", canProcessFiles: true });
+		setQueries(plugin, [], publisher_plugin_fixture());
+		let resolveInstall!: (value: unknown) => void;
+		mutationMock.mockReturnValue(
+			new Promise((resolve) => {
+				resolveInstall = resolve;
+			}),
+		);
+
+		render(<PageComponent />);
+		fireEvent.click(screen.getByRole("button", { name: "Install" }));
+		const acceptButton = screen.getByRole("button", { name: "Accept and install" }) as HTMLButtonElement;
+		fireEvent.click(acceptButton);
+
+		const publishButton = screen.getByRole("button", {
+			name: "Publish ray/bonobo-plugin-media",
+		}) as HTMLButtonElement;
+		expect(acceptButton.disabled).toBe(false);
+		expect(publishButton.disabled).toBe(true);
+		expect(screen.getByRole("menuitem", { name: "Remove claim" }).getAttribute("aria-disabled")).toBe("true");
+		fireEvent.click(publishButton);
+		expect(actionMock).not.toHaveBeenCalled();
+
+		await act(async () => {
+			resolveInstall({ _nay: { name: "nay", message: "Install refused" } });
+		});
+	});
+
+	test("an uninstall in flight keeps its button enabled and blocks publish and claim removal", async () => {
+		const plugin = published_plugin({ name: "media", canProcessFiles: true });
+		setQueries(plugin, [installed_item(plugin)], publisher_plugin_fixture());
+		let resolveUninstall!: (value: unknown) => void;
+		mutationMock.mockReturnValue(
+			new Promise((resolve) => {
+				resolveUninstall = resolve;
+			}),
+		);
+
+		render(<PageComponent />);
+		const uninstallButton = screen.getByRole("button", { name: "Uninstall" }) as HTMLButtonElement;
+		fireEvent.click(uninstallButton);
+
+		const publishButton = screen.getByRole("button", {
+			name: "Publish ray/bonobo-plugin-media",
+		}) as HTMLButtonElement;
+		expect(uninstallButton.disabled).toBe(false);
+		expect(uninstallButton.getAttribute("aria-busy")).toBe("true");
+		expect(publishButton.disabled).toBe(true);
+		expect(screen.getByRole("menuitem", { name: "Remove claim" }).getAttribute("aria-disabled")).toBe("true");
+		fireEvent.click(publishButton);
+		expect(actionMock).not.toHaveBeenCalled();
+
+		await act(async () => {
+			resolveUninstall({ _nay: { name: "nay", message: "Uninstall refused" } });
+		});
+	});
+
 	test("a finished install lands the fallen focus on the plugin title", async () => {
 		const plugin = published_plugin({ name: "media", canProcessFiles: true });
 		setQueries(plugin);
@@ -781,6 +1159,7 @@ describe("RoutePluginsPlugin", () => {
 		);
 
 		const { rerender } = render(<PageComponent />);
+		expect(screen.getByRole("button", { name: "Publish ray/bonobo-plugin-media" })).toBeTruthy();
 		const removeItem = screen.getByRole("menuitem", { name: "Remove claim" });
 		fireEvent.click(removeItem);
 
@@ -805,7 +1184,7 @@ describe("RoutePluginsPlugin", () => {
 		setQueries(plugin, [], null);
 		rerender(<PageComponent />);
 
-		expect(document.activeElement).toBe(screen.getByRole("heading", { level: 1, name: "media" }));
+		await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("heading", { level: 1, name: "media" })));
 	});
 
 	test("a publisher without manage who removes their claim lands the focus on the denied notice", async () => {
@@ -850,10 +1229,10 @@ describe("RoutePluginsPlugin", () => {
 
 		const denied = screen.getByRole("alert");
 		expect(denied.textContent).toContain("You don't have permission");
-		expect(document.activeElement).toBe(denied);
+		await waitFor(() => expect(document.activeElement).toBe(denied));
 	});
 
-	test("an install the backend refuses lands the Escape-fallen focus on the plugin title", async () => {
+	test("an install the backend refuses keeps the consent modal open while the request runs", async () => {
 		const plugin = published_plugin({ name: "media", canProcessFiles: true });
 		setQueries(plugin);
 		let resolveInstall!: (value: unknown) => void;
@@ -865,24 +1244,25 @@ describe("RoutePluginsPlugin", () => {
 
 		render(<PageComponent />);
 		fireEvent.click(screen.getByRole("button", { name: "Install" }));
-		fireEvent.click(screen.getByRole("button", { name: "Accept and install" }));
+		const accept = screen.getByRole("button", { name: "Accept and install" });
+		accept.focus();
+		fireEvent.click(accept);
 
-		// An Escape mid-install closes the consent modal in the real app; the mocked close button
-		// stands in for it. Ariakit then aims its focus restore at the Install button, which is
-		// disabled mid-install and cannot take the focus, so the focus falls to the page body —
-		// where jsdom already has it, so this test pins the app's own landing, not the Ariakit
-		// step before it.
+		// Escape asks the controlled modal to close. Ignore it until the request settles so Ariakit
+		// never tries to restore focus to the disabled Install trigger behind the modal.
 		fireEvent.click(screen.getByRole("button", { name: "Close modal" }));
-		expect(document.activeElement).toBe(document.body);
+		expect(screen.getByRole("dialog")).toBeTruthy();
+		expect(document.activeElement).toBe(accept);
 
 		await act(async () => {
 			resolveInstall({ _nay: { name: "nay", message: "Install refused" } });
 		});
 
-		expect(document.activeElement).toBe(screen.getByRole("heading", { level: 1, name: "media" }));
+		expect(screen.getByRole("dialog")).toBeTruthy();
+		expect(document.activeElement).toBe(accept);
 	});
 
-	test("an install that fails outright lands the Escape-fallen focus the same way", async () => {
+	test("an install that fails outright keeps the consent modal and its focus the same way", async () => {
 		const plugin = published_plugin({ name: "media", canProcessFiles: true });
 		setQueries(plugin);
 		let rejectInstall!: (error: unknown) => void;
@@ -894,17 +1274,21 @@ describe("RoutePluginsPlugin", () => {
 
 		render(<PageComponent />);
 		fireEvent.click(screen.getByRole("button", { name: "Install" }));
-		fireEvent.click(screen.getByRole("button", { name: "Accept and install" }));
+		const accept = screen.getByRole("button", { name: "Accept and install" });
+		accept.focus();
+		fireEvent.click(accept);
 
-		// Same Escape stand-in and jsdom honesty note as the refusal test above.
+		// Same Escape stand-in as the refusal test above.
 		fireEvent.click(screen.getByRole("button", { name: "Close modal" }));
-		expect(document.activeElement).toBe(document.body);
+		expect(screen.getByRole("dialog")).toBeTruthy();
+		expect(document.activeElement).toBe(accept);
 
 		await act(async () => {
 			rejectInstall(new Error("network down"));
 		});
 
-		expect(document.activeElement).toBe(screen.getByRole("heading", { level: 1, name: "media" }));
+		expect(screen.getByRole("dialog")).toBeTruthy();
+		expect(document.activeElement).toBe(accept);
 	});
 });
 

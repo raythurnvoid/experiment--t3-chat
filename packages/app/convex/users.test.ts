@@ -636,16 +636,59 @@ describe("/api/auth/resolve-user", () => {
 		}
 	});
 
+	test("returns 400 while deletion finalization is in progress", async () => {
+		const t = test_convex();
+		const existingUser = await t.run((ctx) =>
+			users_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-resolve-finalizing",
+				displayName: "Finalizing User",
+				email: "resolve-finalizing@test.local",
+			}),
+		);
+		await t.run((ctx) =>
+			ctx.db.patch("users", existingUser.userId, {
+				deletedAt: 10_001,
+				deletionFinalizationStartedAt: 10_002,
+			}),
+		);
+
+		const fetchSpy = vi.spyOn(globalThis, "fetch");
+		try {
+			const asUser = t.withIdentity({
+				issuer: "https://clerk.test",
+				subject: "clerk-user-resolve-finalizing-again",
+				name: "Finalizing User Again",
+				email: "resolve-finalizing@test.local",
+			});
+
+			const response = await asUser.fetch("/api/auth/resolve-user", {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({}),
+			});
+			const body = await response.json();
+			const after = await t.run((ctx) => ctx.db.get("users", existingUser.userId));
+
+			expect(response.status).toBe(400);
+			expect(body._nay?.message).toBe("Account deletion is being finalized");
+			expect(after?.deletedAt).toBe(10_001);
+			expect(after?.deletionFinalizationStartedAt).toBe(10_002);
+			expect(after?.clerkUserId).toBe("clerk-user-resolve-finalizing");
+			expect(fetchSpy).not.toHaveBeenCalled();
+		} finally {
+			fetchSpy.mockRestore();
+		}
+	});
+
 	test("refuses anonymous and plugin-session identities with 401", async () => {
 		const t = test_convex();
 
 		// Both custom issuers must be refused at the door. Before the explicit guard, an
 		// anonymous token fell through to resolve_user and failed only because it carries no
 		// email — an accident, not a boundary.
-		for (const issuer of [
-			process.env.VITE_CONVEX_HTTP_URL!,
-			`${process.env.VITE_CONVEX_HTTP_URL!}/plugins-ui`,
-		]) {
+		for (const issuer of [process.env.VITE_CONVEX_HTTP_URL!, `${process.env.VITE_CONVEX_HTTP_URL!}/plugins-ui`]) {
 			const asToken = t.withIdentity({
 				issuer,
 				subject: "resolve-user-custom-issuer-subject",
@@ -2728,6 +2771,179 @@ describe("delete_current_user_account", () => {
 		}
 	});
 
+	test("does not restore a membership that organization removal is still draining", async () => {
+		vi.useFakeTimers();
+		try {
+			const t = test_convex();
+			const seeded = await t.run(async (ctx) => {
+				const owner = await users_test_bootstrap_user(ctx, {
+					clerkUserId: "clerk-pending-removal-owner",
+					displayName: "Pending Removal Owner",
+					email: "pending-removal-owner@test.local",
+				});
+				const member = await users_test_bootstrap_user(ctx, {
+					clerkUserId: "clerk-pending-removal-member",
+					displayName: "Pending Removal Member",
+					email: "pending-removal-member@test.local",
+				});
+				const organization = await organizations_db_create(ctx, {
+					userId: owner.userId,
+					name: "pending-remove",
+					description: "",
+					now: Date.now(),
+				});
+				if (organization._nay) {
+					throw new Error(organization._nay.message);
+				}
+
+				const now = Date.now();
+				await ctx.db.insert("organizations_workspaces_users", {
+					organizationId: organization._yay.organizationId,
+					workspaceId: organization._yay.defaultWorkspaceId,
+					userId: member.userId,
+					active: true,
+					updatedAt: now,
+				});
+				await quotas_db_ensure(ctx, {
+					quotaName: "active_api_credentials",
+					userId: member.userId,
+					organizationId: organization._yay.organizationId,
+					workspaceId: organization._yay.defaultWorkspaceId,
+					now,
+				});
+				await access_control_db_ensure_role_assignment(ctx, {
+					organizationId: organization._yay.organizationId,
+					workspaceId: organization._yay.defaultWorkspaceId,
+					userId: member.userId,
+					role: "member",
+					now,
+				});
+				for (let index = 0; index < 101; index += 1) {
+					await ctx.db.insert("access_control_permission_grants", {
+						organizationId: organization._yay.organizationId,
+						workspaceId: organization._yay.defaultWorkspaceId,
+						resourceKind: "file",
+						resourceId: `restore-drain-file-${String(index).padStart(3, "0")}`,
+						principalKind: "user",
+						userId: member.userId,
+						permission: "content.read",
+						createdAt: now,
+						updatedAt: now,
+					});
+				}
+
+				const memberships = await ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_user_organization_workspace_active", (q) => q.eq("userId", member.userId))
+					.collect();
+				await Promise.all([
+					ctx.db.patch("users", member.userId, { deletedAt: now }),
+					...memberships.map((membership) =>
+						ctx.db.patch("organizations_workspaces_users", membership._id, {
+							active: false,
+							updatedAt: now,
+						}),
+					),
+				]);
+				await test_mocks_cancel_pending_home_file_seeds(ctx);
+
+				return {
+					owner,
+					member,
+					organizationId: organization._yay.organizationId,
+					workspaceId: organization._yay.defaultWorkspaceId,
+				};
+			});
+			const asOwner = t.withIdentity({
+				issuer: "https://clerk.test",
+				external_id: seeded.owner.userId,
+				name: "Pending Removal Owner",
+				email: "pending-removal-owner@test.local",
+			});
+
+			const removeResult = await asOwner.mutation(api.organizations.remove_user_from_organization, {
+				organizationId: seeded.organizationId,
+				userIdToRemove: seeded.member.userId,
+			});
+			expect(removeResult._yay).toBeNull();
+
+			const restoreResult = await t.run((ctx) =>
+				ctx.runMutation(internal.users.resolve_user, {
+					clerkUserId: "clerk-pending-removal-member-restored",
+					email: "pending-removal-member@test.local",
+					displayName: "Pending Removal Member Restored",
+				}),
+			);
+			expect(restoreResult._nay).toBeUndefined();
+
+			const duringDrain = await t.run(async (ctx) => {
+				const memberships = await ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_user_organization_workspace_active", (q) => q.eq("userId", seeded.member.userId))
+					.collect();
+				return {
+					personalMembership: memberships.find(
+						(membership) => membership.organizationId === seeded.member.defaultOrganizationId,
+					),
+					removedMembership: memberships.find((membership) => membership.organizationId === seeded.organizationId),
+					removedRole: await ctx.db
+						.query("access_control_role_assignments")
+						.withIndex("by_organization_user_workspace", (q) =>
+							q.eq("organizationId", seeded.organizationId).eq("userId", seeded.member.userId),
+						)
+						.first(),
+					grants: await ctx.db
+						.query("access_control_permission_grants")
+						.withIndex("by_organization_user_workspace_resource_permission", (q) =>
+							q.eq("organizationId", seeded.organizationId).eq("userId", seeded.member.userId),
+						)
+						.collect(),
+				};
+			});
+			expect(duringDrain.personalMembership?.active).toBe(true);
+			expect(duringDrain.removedMembership).toMatchObject({
+				active: false,
+				pendingOrganizationRemoval: true,
+			});
+			expect(duringDrain.removedRole).toBeNull();
+			expect(duringDrain.grants).toHaveLength(1);
+
+			await t.finishAllScheduledFunctions(vi.runAllTimers);
+			const afterDrain = await t.run(async (ctx) => ({
+				user: await ctx.db.get("users", seeded.member.userId),
+				memberships: await ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_user_organization_workspace_active", (q) => q.eq("userId", seeded.member.userId))
+					.collect(),
+				roles: await ctx.db
+					.query("access_control_role_assignments")
+					.withIndex("by_organization_user_workspace", (q) =>
+						q.eq("organizationId", seeded.organizationId).eq("userId", seeded.member.userId),
+					)
+					.collect(),
+				grants: await ctx.db
+					.query("access_control_permission_grants")
+					.withIndex("by_organization_user_workspace_resource_permission", (q) =>
+						q.eq("organizationId", seeded.organizationId).eq("userId", seeded.member.userId),
+					)
+					.collect(),
+			}));
+			expect(afterDrain.user?.deletedAt).toBeUndefined();
+			expect(afterDrain.memberships.some((membership) => membership.organizationId === seeded.organizationId)).toBe(
+				false,
+			);
+			expect(
+				afterDrain.memberships.some(
+					(membership) => membership.organizationId === seeded.member.defaultOrganizationId && membership.active,
+				),
+			).toBe(true);
+			expect(afterDrain.roles).toHaveLength(0);
+			expect(afterDrain.grants).toHaveLength(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	test("leaves the Clerk link in place when Clerk cleanup fails, so the account stays reclaimable", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>
@@ -3390,10 +3606,7 @@ describe("hard_delete_user_now", () => {
 			});
 
 			expect(fetchSpy).not.toHaveBeenCalled();
-			expect(cancelSpy).toHaveBeenCalledWith(
-				expect.anything(),
-				"work_hard_delete_cancellation_failure_existing",
-			);
+			expect(cancelSpy).toHaveBeenCalledWith(expect.anything(), "work_hard_delete_cancellation_failure_existing");
 			expect(after.user?.deletedAt).toBeTypeOf("number");
 			expect(after.user?.clerkUserId).toBe("clerk-user-hard-delete-cancellation-failure");
 			expect(after.billingJob?.jobId).toBe("work_hard_delete_cancellation_failure_existing");

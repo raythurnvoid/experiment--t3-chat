@@ -462,9 +462,15 @@ export const create_plugin_service_grant = internalMutation({
 		}),
 	}),
 	handler: async (ctx, args) => {
-		const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
+		const [installation, workspace] = await Promise.all([
+			ctx.db.get("plugins_workspace_installations", args.installationId),
+			ctx.db.get("organizations_workspaces", args.workspaceId),
+		]);
 		if (
 			!installation ||
+			!workspace ||
+			workspace.organizationId !== args.organizationId ||
+			workspace.pluginDataPurgeStartedAt !== undefined ||
 			installation.status !== "enabled" ||
 			installation.organizationId !== args.organizationId ||
 			installation.workspaceId !== args.workspaceId
@@ -610,9 +616,15 @@ export const rotate_plugin_service_grant = internalMutation({
 		// The same liveness the mint asks for, because a renewal is a fresh 24 hours of access. A dead
 		// installation or a departed actor would be caught again at every use, but refusing here means
 		// the service learns now instead of holding a token that answers 401 on its next real call.
-		const installation = await ctx.db.get("plugins_workspace_installations", grant.installationId);
+		const [installation, workspace] = await Promise.all([
+			ctx.db.get("plugins_workspace_installations", grant.installationId),
+			ctx.db.get("organizations_workspaces", grant.workspaceId),
+		]);
 		if (
 			!installation ||
+			!workspace ||
+			workspace.organizationId !== grant.organizationId ||
+			workspace.pluginDataPurgeStartedAt !== undefined ||
 			installation.status !== "enabled" ||
 			installation.pluginVersionId !== grant.pluginVersionId ||
 			installation.organizationId !== grant.organizationId ||
@@ -1092,12 +1104,17 @@ export const resolve_principal = internalQuery({
 			}
 
 			// A run's authority dies with its installation. Uninstalling deletes the installation doc,
-			// and upgrading to another version writes a different pluginVersionId. The check below sees
-			// either change and refuses every live run token. `disabled` is a reserved state: nothing in
-			// the app writes it today, so keep the status refusal for the day a disable control lands.
-			const installation = await ctx.db.get("plugins_workspace_installations", pluginRun.installationId);
+			// upgrading writes a different pluginVersionId, and workspace purge disables the installation.
+			// Keep all three checks in this live-token door.
+			const [installation, workspace] = await Promise.all([
+				ctx.db.get("plugins_workspace_installations", pluginRun.installationId),
+				ctx.db.get("organizations_workspaces", pluginRun.workspaceId),
+			]);
 			if (
 				!installation ||
+				!workspace ||
+				workspace.organizationId !== pluginRun.organizationId ||
+				workspace.pluginDataPurgeStartedAt !== undefined ||
 				installation.status !== "enabled" ||
 				installation.pluginVersionId !== pluginRun.pluginVersionId ||
 				installation.organizationId !== pluginRun.organizationId ||
@@ -1185,13 +1202,17 @@ export const resolve_principal = internalQuery({
 			}
 
 			// A UI session is only valid while its installation stays as it was. Uninstalling deletes the
-			// installation doc, and upgrading to another version writes a different pluginVersionId. The
-			// check below sees either change and refuses every outstanding UI token. `disabled` is a
-			// reserved state: nothing in the app writes it today, so keep the status refusal for the day
-			// a disable control lands.
-			const installation = await ctx.db.get("plugins_workspace_installations", session.installationId);
+			// installation doc, upgrading writes a different pluginVersionId, and workspace purge disables
+			// the installation. Keep all three checks in this live-token door.
+			const [installation, workspace] = await Promise.all([
+				ctx.db.get("plugins_workspace_installations", session.installationId),
+				ctx.db.get("organizations_workspaces", session.workspaceId),
+			]);
 			if (
 				!installation ||
+				!workspace ||
+				workspace.organizationId !== session.organizationId ||
+				workspace.pluginDataPurgeStartedAt !== undefined ||
 				installation.status !== "enabled" ||
 				installation.pluginVersionId !== session.pluginVersionId ||
 				installation.organizationId !== session.organizationId ||
@@ -1271,16 +1292,20 @@ export const resolve_principal = internalQuery({
 			// installation doc, and upgrading to another version writes a different pluginVersionId. The
 			// check below sees either change and refuses the grant on its next call.
 			//
-			// `disabled` is a reserved state, not a third way to revoke a grant today. `install_version`
-			// writes `status: "enabled"` in both of its branches, and nothing else in the app writes that
-			// field, so nothing can produce a disabled installation. Keep the status refusal for the day
-			// a disable control lands. It is not dead code.
+			// Workspace purge writes `disabled` before it drains grants and installations, so reject that
+			// state here even while the grant doc still exists.
 			//
 			// The connect capability is rechecked for the same reason the scopes are below: taking it
 			// away on upgrade must stop the outside server now, not when the grant expires.
-			const installation = await ctx.db.get("plugins_workspace_installations", grant.installationId);
+			const [installation, workspace] = await Promise.all([
+				ctx.db.get("plugins_workspace_installations", grant.installationId),
+				ctx.db.get("organizations_workspaces", grant.workspaceId),
+			]);
 			if (
 				!installation ||
+				!workspace ||
+				workspace.organizationId !== grant.organizationId ||
+				workspace.pluginDataPurgeStartedAt !== undefined ||
 				installation.status !== "enabled" ||
 				installation.pluginVersionId !== grant.pluginVersionId ||
 				installation.organizationId !== grant.organizationId ||
@@ -1593,9 +1618,15 @@ async function db_revalidate_file_write_principal(
 		) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
-		const installation = await ctx.db.get("plugins_workspace_installations", pluginRun.installationId);
+		const [installation, workspace] = await Promise.all([
+			ctx.db.get("plugins_workspace_installations", pluginRun.installationId),
+			ctx.db.get("organizations_workspaces", pluginRun.workspaceId),
+		]);
 		if (
 			!installation ||
+			!workspace ||
+			workspace.organizationId !== pluginRun.organizationId ||
+			workspace.pluginDataPurgeStartedAt !== undefined ||
 			installation.status !== "enabled" ||
 			installation.pluginVersionId !== pluginRun.pluginVersionId
 		) {
@@ -2757,7 +2788,7 @@ export const start_run_activity = internalMutation({
 		) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
-		const [installation, version, fileNode, actorMembership] = await Promise.all([
+		const [installation, version, fileNode, actorMembership, workspace] = await Promise.all([
 			ctx.db.get("plugins_workspace_installations", pluginRun.installationId),
 			ctx.db.get("plugins_versions", pluginRun.pluginVersionId),
 			pluginRun.fileNodeId ? ctx.db.get("files_nodes", pluginRun.fileNodeId) : null,
@@ -2771,11 +2802,15 @@ export const start_run_activity = internalMutation({
 						.eq("workspaceId", pluginRun.workspaceId),
 				)
 				.first(),
+			ctx.db.get("organizations_workspaces", pluginRun.workspaceId),
 		]);
 		// Recheck durable authority in this mutation. Removing the actor, changing the installation,
 		// or archiving the source can happen after the route consumes its API call but before this write.
 		if (
 			!installation ||
+			!workspace ||
+			workspace.organizationId !== pluginRun.organizationId ||
+			workspace.pluginDataPurgeStartedAt !== undefined ||
 			installation.status !== "enabled" ||
 			installation.pluginVersionId !== pluginRun.pluginVersionId ||
 			installation.organizationId !== pluginRun.organizationId ||

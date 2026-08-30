@@ -22,6 +22,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.useRealTimers();
 	vi.restoreAllMocks();
 });
 
@@ -266,6 +267,82 @@ async function organizations_test_seed_workspace_scoped_rows(
 		createdBy: args.userId,
 		content: `${args.tag} chat`,
 	});
+}
+
+async function organizations_test_seed_live_plugin_authority(
+	ctx: MutationCtx,
+	args: {
+		userId: Id<"users">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		tag: string;
+	},
+) {
+	const now = Date.now();
+	const pluginVersionId = await ctx.db.insert("plugins_versions", {
+		name: "chitchat",
+		displayName: "Chitchat",
+		version: "0.1.0",
+		description: "Deletion authority fixture",
+		reviewStatus: "passed",
+		reviewId: null,
+		isLatest: true,
+		artifactHash: `sha256:${args.tag.padEnd(64, "a").slice(0, 64)}`,
+		sourceRepositoryUrl: "https://github.com/bonobo/deletion-authority-fixture",
+		sourceOwner: "bonobo",
+		sourceRepo: "deletion-authority-fixture",
+		sourceCommitSha: args.tag.padEnd(40, "0").slice(0, 40),
+		manifestR2Key: `plugins/deletion-authority/${args.tag}/manifest.json`,
+		backendEntrypointFile: null,
+		configuration: null,
+		events: [],
+		pages: [],
+		fileViews: [],
+		capabilities: [],
+		outboundOrigins: [],
+		uiOutboundOrigins: [],
+		files: [],
+		sourceStatus: "ready",
+		sourceLastError: null,
+		createdBy: args.userId,
+		updatedAt: now,
+	});
+	const installationId = await ctx.db.insert("plugins_workspace_installations", {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		pluginVersionId,
+		pluginName: "chitchat",
+		status: "enabled",
+		configurationYaml: null,
+		acceptedCapabilities: [],
+		capabilitiesAcceptedAt: now,
+		acceptedOutboundOrigins: [],
+		acceptedUiOutboundOrigins: [],
+		outboundOriginsAcceptedAt: now,
+		installedBy: args.userId,
+		updatedBy: args.userId,
+		updatedAt: now,
+	});
+	const runId = await ctx.db.insert("plugins_event_runs", {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		actorUserId: args.userId,
+		installationId,
+		pluginVersionId,
+		event: "users.account.deleted",
+		eventId: `plugin:deletion-authority:${args.tag}`,
+		status: "running",
+		acceptedCapabilities: [],
+		expiresAt: now + 30 * 60 * 1000,
+		apiTokenHash: args.tag.padEnd(64, "b").slice(0, 64),
+		apiTokenExpiresAt: now + 30 * 60 * 1000,
+		apiCallCount: 0,
+		outputWriteCount: 0,
+		errorMessage: null,
+		updatedAt: now,
+	});
+
+	return { installationId, runId };
 }
 
 describe("create_organization", () => {
@@ -2484,7 +2561,7 @@ describe("remove_user_from_organization", () => {
 		expect(otherMemberMemberships).toHaveLength(1);
 	});
 
-	test("revokes only the removed member's credentials, grants, and plugin sessions", async () => {
+	test("revokes only the removed member's credentials and drains service grants in bounded passes", async () => {
 		const t = test_convex();
 		const [ownerId, memberId, otherMemberId] = await t.run(async (ctx) =>
 			Promise.all([
@@ -2778,6 +2855,24 @@ describe("remove_user_from_organization", () => {
 						updatedAt: now,
 					}),
 				]);
+			for (let index = 0; index < 100; index += 1) {
+				const inProjectWorkspace = index % 2 === 0;
+				await ctx.db.insert("plugin_service_grants", {
+					organizationId: organization._yay!.organizationId,
+					workspaceId: inProjectWorkspace ? workspace._yay!.workspaceId : organization._yay!.defaultWorkspaceId,
+					installationId: inProjectWorkspace ? projectInstallationId : removedInstallationId,
+					pluginVersionId,
+					pluginName: "media",
+					actorUserId: memberId,
+					tokenHash: (index + 10).toString(16).padStart(64, "0"),
+					scopes: ["plugin_data:read"],
+					principalKey: `removal-test-service-batch-${index}`,
+					phase: "interactive",
+					destinationPathPrefix: null,
+					expiresAt: now + 24 * 60 * 60 * 1000,
+					updatedAt: now,
+				});
+			}
 
 			const [
 				removedHomeMemberUsageId,
@@ -2851,6 +2946,11 @@ describe("remove_user_from_organization", () => {
 			userIdToRemove: memberId,
 		});
 		expect(removeResult._yay).toBeNull();
+		const retryRemoveResult = await owner.mutation(api.organizations.remove_user_from_organization, {
+			organizationId: organization._yay!.organizationId,
+			userIdToRemove: memberId,
+		});
+		expect(retryRemoveResult._yay).toBeNull();
 
 		const afterRemove = await t.run(async (ctx) =>
 			Promise.all([
@@ -2876,9 +2976,85 @@ describe("remove_user_from_organization", () => {
 		expect(afterRemove[6]?._id).toBe(seededAccess.keptGrantId);
 		expect(afterRemove[7]).toBeNull();
 		expect(afterRemove[8]?._id).toBe(seededAccess.keptSessionId);
-		// A service grant lives 24 hours, so leaving it would hand the service its authority back on re-invite.
-		expect(afterRemove[9]).toBeNull();
 		expect(afterRemove[10]?._id).toBe(seededAccess.keptServiceGrantId);
+
+		const readServiceGrantDrainState = () =>
+			t.run(async (ctx) => {
+				const [memberships, homeGrants, projectGrants, jobs] = await Promise.all([
+					ctx.db
+						.query("organizations_workspaces_users")
+						.withIndex("by_user_organization_workspace_active", (q) =>
+							q.eq("userId", memberId).eq("organizationId", organization._yay!.organizationId),
+						)
+						.collect(),
+					ctx.db
+						.query("plugin_service_grants")
+						.withIndex("by_organization_workspace_actorUser", (q) =>
+							q
+								.eq("organizationId", organization._yay!.organizationId)
+								.eq("workspaceId", organization._yay!.defaultWorkspaceId)
+								.eq("actorUserId", memberId),
+						)
+						.collect(),
+					ctx.db
+						.query("plugin_service_grants")
+						.withIndex("by_organization_workspace_actorUser", (q) =>
+							q
+								.eq("organizationId", organization._yay!.organizationId)
+								.eq("workspaceId", workspace._yay!.workspaceId)
+								.eq("actorUserId", memberId),
+						)
+						.collect(),
+					ctx.db.system.query("_scheduled_functions").collect(),
+				]);
+				const continuationJobs = jobs.filter(
+					(job) => job.state.kind === "pending" && job.name.includes("continue_remove_user_from_organization"),
+				);
+				await Promise.all(continuationJobs.map((job) => ctx.scheduler.cancel(job._id)));
+				return {
+					memberships,
+					serviceGrantCount: homeGrants.length + projectGrants.length,
+					continuationCount: continuationJobs.length,
+				};
+			});
+
+		const afterFirstBatch = await readServiceGrantDrainState();
+		expect(afterFirstBatch.serviceGrantCount).toBe(1);
+		expect(afterFirstBatch.continuationCount).toBe(2);
+		expect(afterFirstBatch.memberships).toHaveLength(2);
+		expect(
+			afterFirstBatch.memberships.every(
+				(membership) => membership.active === false && membership.pendingOrganizationRemoval === true,
+			),
+		).toBe(true);
+
+		await t.run((ctx) =>
+			ctx.runMutation(internal.organizations.continue_remove_user_from_organization, {
+				organizationId: organization._yay!.organizationId,
+				userId: memberId,
+			}),
+		);
+		const afterSecondBatch = await readServiceGrantDrainState();
+		expect(afterSecondBatch.serviceGrantCount).toBe(0);
+		expect(afterSecondBatch.continuationCount).toBe(1);
+		expect(afterSecondBatch.memberships).toHaveLength(2);
+		expect(
+			afterSecondBatch.memberships.every(
+				(membership) => membership.active === false && membership.pendingOrganizationRemoval === true,
+			),
+		).toBe(true);
+
+		await t.run((ctx) =>
+			ctx.runMutation(internal.organizations.continue_remove_user_from_organization, {
+				organizationId: organization._yay!.organizationId,
+				userId: memberId,
+			}),
+		);
+		const afterZeroPass = await readServiceGrantDrainState();
+		expect(afterZeroPass.serviceGrantCount).toBe(0);
+		expect(afterZeroPass.continuationCount).toBe(0);
+		expect(afterZeroPass.memberships).toHaveLength(0);
+		expect(await t.run((ctx) => ctx.db.get("plugin_service_grants", seededAccess.removedServiceGrantId))).toBeNull();
 
 		// A plugin storage share names the member, so it must not outlive their membership. The member
 		// was charged in both of this organization's workspaces, and removal takes every membership, so
@@ -2908,6 +3084,10 @@ describe("remove_user_from_organization", () => {
 			quotaDocsAfterRemove.some((quotaDoc) => quotaDoc.organizationId === otherOrganization._yay!.organizationId),
 		).toBe(true);
 
+		await t.mutation(components.rate_limiter.lib.resetRateLimit, {
+			name: "organizations_write",
+			key: ownerId,
+		});
 		const reinviteResult = await owner.mutation(api.organizations.invite_user_to_organization_workspace, {
 			organizationId: organization._yay!.organizationId,
 			workspaceId: organization._yay!.defaultWorkspaceId,
@@ -2950,8 +3130,10 @@ describe("remove_user_from_organization", () => {
 		);
 	});
 
-	test("allows a member to leave the organization", async () => {
+	test("lets a member leave and resume their own bounded removal", async () => {
 		const t = test_convex();
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-01-01T00:00:00Z"));
 		const [ownerId, memberId] = await t.run(async (ctx) =>
 			Promise.all([
 				ctx.db.insert("users", { clerkUserId: "clerk-user-leave-owner" }),
@@ -2959,12 +3141,19 @@ describe("remove_user_from_organization", () => {
 			]),
 		);
 		await organizations_test_bootstrap_users(t, { userIds: [ownerId, memberId] });
+		await t.run(async (ctx) => await test_mocks_cancel_pending_home_file_seeds(ctx));
 
 		const member = t.withIdentity({
 			issuer: "https://clerk.test",
 			external_id: memberId,
 			name: "Member",
 			email: "leave-member@test.local",
+		});
+		const owner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: ownerId,
+			name: "Owner",
+			email: "leave-owner@test.local",
 		});
 		const created = await t.run((ctx) =>
 			organizations_db_create(ctx, {
@@ -2976,7 +3165,7 @@ describe("remove_user_from_organization", () => {
 		);
 		expect(created._yay).toBeTruthy();
 
-		const apiCredentialId = await t.run(async (ctx) => {
+		const seeded = await t.run(async (ctx) => {
 			const now = Date.now();
 			await ctx.db.insert("organizations_workspaces_users", {
 				organizationId: created._yay!.organizationId,
@@ -2999,13 +3188,109 @@ describe("remove_user_from_organization", () => {
 				now,
 			});
 
-			return await organizations_test_seed_api_credential(ctx, {
+			const apiCredentialId = await organizations_test_seed_api_credential(ctx, {
 				organizationId: created._yay!.organizationId,
 				workspaceId: created._yay!.defaultWorkspaceId,
 				userId: memberId,
 				tag: "6",
 			});
+
+			const pluginVersionId = await ctx.db.insert("plugins_versions", {
+				name: "organization-scope-cleanup",
+				displayName: "Organization scope cleanup",
+				version: "0.1.0",
+				description: "Scope cleanup fixture",
+				reviewStatus: "passed",
+				reviewId: null,
+				isLatest: true,
+				artifactHash: `sha256:${"a".repeat(64)}`,
+				sourceRepositoryUrl: "https://github.com/bonobo/organization-scope-cleanup",
+				sourceOwner: "bonobo",
+				sourceRepo: "organization-scope-cleanup",
+				sourceCommitSha: "1234567890abcdef1234567890abcdef12345678",
+				manifestR2Key: "plugins/organization-scope-cleanup/manifest.json",
+				backendEntrypointFile: null,
+				configuration: null,
+				events: [],
+				pages: [],
+				fileViews: [],
+				capabilities: [],
+				outboundOrigins: [],
+				uiOutboundOrigins: [],
+				files: [],
+				sourceStatus: "ready",
+				sourceLastError: null,
+				createdBy: ownerId,
+				updatedAt: now,
+			});
+			const installationId = await ctx.db.insert("plugins_workspace_installations", {
+				organizationId: created._yay!.organizationId,
+				workspaceId: created._yay!.defaultWorkspaceId,
+				pluginVersionId,
+				pluginName: "organization-scope-cleanup",
+				status: "enabled",
+				configurationYaml: null,
+				acceptedCapabilities: [],
+				capabilitiesAcceptedAt: now,
+				acceptedOutboundOrigins: [],
+				acceptedUiOutboundOrigins: [],
+				outboundOriginsAcceptedAt: now,
+				installedBy: ownerId,
+				updatedBy: ownerId,
+				updatedAt: now,
+			});
+			for (const scopeId of ["sole", "shared"]) {
+				await ctx.db.insert("plugins_data_scopes", {
+					organizationId: created._yay!.organizationId,
+					workspaceId: created._yay!.defaultWorkspaceId,
+					installationId,
+					scopeId,
+					collection: "messages",
+					keyPrefix: `${scopeId}/`,
+					createdByUserId: memberId,
+					createdAt: now,
+					updatedAt: now,
+				});
+				await ctx.db.insert("access_control_permission_grants", {
+					organizationId: created._yay!.organizationId,
+					workspaceId: created._yay!.defaultWorkspaceId,
+					resourceKind: "plugin_scope",
+					resourceId: `${installationId}:${scopeId}`,
+					principalKind: "user",
+					userId: memberId,
+					permission: "content.read",
+					createdAt: now,
+					updatedAt: now,
+				});
+			}
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: created._yay!.organizationId,
+				workspaceId: created._yay!.defaultWorkspaceId,
+				resourceKind: "plugin_scope",
+				resourceId: `${installationId}:shared`,
+				principalKind: "user",
+				userId: ownerId,
+				permission: "content.read",
+				createdAt: now,
+				updatedAt: now,
+			});
+			for (let index = 0; index < 100; index += 1) {
+				await ctx.db.insert("access_control_permission_grants", {
+					organizationId: created._yay!.organizationId,
+					workspaceId: created._yay!.defaultWorkspaceId,
+					resourceKind: "file",
+					resourceId: `departing-file-${String(index).padStart(3, "0")}`,
+					principalKind: "user",
+					userId: memberId,
+					permission: "content.read",
+					createdAt: now,
+					updatedAt: now,
+				});
+			}
+
+			return { apiCredentialId, installationId, membershipRevision: now };
 		});
+		await t.run(async (ctx) => await test_mocks_cancel_pending_home_file_seeds(ctx));
 
 		const leaveResult = await member.mutation(api.organizations.remove_user_from_organization, {
 			organizationId: created._yay!.organizationId,
@@ -3014,11 +3299,17 @@ describe("remove_user_from_organization", () => {
 		expect(leaveResult._yay).toBeNull();
 
 		const afterLeave = await t.run(async (ctx) => {
-			const [memberships, roleAssignments, apiCredential] = await Promise.all([
+			const [memberships, inactiveMemberships, roleAssignments, directGrants, apiCredential] = await Promise.all([
 				ctx.db
 					.query("organizations_workspaces_users")
 					.withIndex("by_active_user_organization_workspace", (q) =>
 						q.eq("active", true).eq("userId", memberId).eq("organizationId", created._yay!.organizationId),
+					)
+					.collect(),
+				ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_active_user_organization_workspace", (q) =>
+						q.eq("active", false).eq("userId", memberId).eq("organizationId", created._yay!.organizationId),
 					)
 					.collect(),
 				ctx.db
@@ -3027,13 +3318,109 @@ describe("remove_user_from_organization", () => {
 						q.eq("organizationId", created._yay!.organizationId).eq("userId", memberId),
 					)
 					.collect(),
-				ctx.db.get("api_credentials", apiCredentialId),
+				ctx.db
+					.query("access_control_permission_grants")
+					.withIndex("by_organization_user_workspace_resource_permission", (q) =>
+						q.eq("organizationId", created._yay!.organizationId).eq("userId", memberId),
+					)
+					.collect(),
+				ctx.db.get("api_credentials", seeded.apiCredentialId),
 			]);
-			return { memberships, roleAssignments, apiCredential };
+			return { memberships, inactiveMemberships, roleAssignments, directGrants, apiCredential };
 		});
 		expect(afterLeave.memberships).toHaveLength(0);
+		expect(afterLeave.inactiveMemberships).toHaveLength(1);
+		expect(afterLeave.inactiveMemberships[0]?.pendingOrganizationRemoval).toBe(true);
 		expect(afterLeave.roleAssignments).toHaveLength(0);
+		expect(afterLeave.directGrants).toHaveLength(2);
 		expect(afterLeave.apiCredential?.revokedAt).toEqual(expect.any(Number));
+
+		// Lose the first one-shot continuation. A repeated self-leave must restart it from the durable marker.
+		const cancelledJobs = await t.run(async (ctx) => {
+			const jobs = await ctx.db.system.query("_scheduled_functions").collect();
+			const pendingJobs = jobs.filter((job) => job.state.kind === "pending");
+			await Promise.all(pendingJobs.map((job) => ctx.scheduler.cancel(job._id)));
+			return pendingJobs.length;
+		});
+		expect(cancelledJobs).toBeGreaterThan(0);
+
+		const retryLeave = await member.mutation(api.organizations.remove_user_from_organization, {
+			organizationId: created._yay!.organizationId,
+			userIdToRemove: memberId,
+		});
+		expect(retryLeave._yay).toBeNull();
+		const countPendingRemovalJobs = () =>
+			t.run(async (ctx) => {
+				const jobs = await ctx.db.system.query("_scheduled_functions").collect();
+				return jobs.filter(
+					(job) => job.state.kind === "pending" && job.name.includes("continue_remove_user_from_organization"),
+				).length;
+			});
+		expect(await countPendingRemovalJobs()).toBe(1);
+
+		const rateLimitedRetry = await member.mutation(api.organizations.remove_user_from_organization, {
+			organizationId: created._yay!.organizationId,
+			userIdToRemove: memberId,
+		});
+		expect(rateLimitedRetry).toEqual({ _nay: { message: "Rate limit exceeded" } });
+		expect(await countPendingRemovalJobs()).toBe(1);
+
+		const reinviteWhileDraining = await owner.mutation(api.organizations.invite_user_to_organization_workspace, {
+			organizationId: created._yay!.organizationId,
+			workspaceId: created._yay!.defaultWorkspaceId,
+			userIdToAdd: memberId,
+		});
+		expect(reinviteWhileDraining).toEqual({ _nay: { message: "Member removal is still running" } });
+
+		// Drive the cleanup through the real producer's scheduled call. The sole scope is released;
+		// the shared scope stays and promotes its remaining active member to manager.
+		await t.finishAllScheduledFunctions(vi.runAllTimers);
+		const scopeState = await t.run(async (ctx) => ({
+			memberships: await ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_user_organization_workspace_active", (q) =>
+					q.eq("userId", memberId).eq("organizationId", created._yay!.organizationId),
+				)
+				.collect(),
+			scopes: (await ctx.db.query("plugins_data_scopes").collect())
+				.map((doc) => ({ scopeId: doc.scopeId, membershipRevision: doc.updatedAt }))
+				.sort((left, right) => left.scopeId.localeCompare(right.scopeId)),
+			fences: (await ctx.db.query("plugins_data_released_scope_ranges").collect()).map((doc) => doc.scopeId),
+			grants: (await ctx.db.query("access_control_permission_grants").collect())
+				.filter((grant) => grant.resourceId.startsWith(`${seeded.installationId}:`))
+				.map((grant) => ({ resourceId: grant.resourceId, userId: grant.userId, permission: grant.permission }))
+				.sort((left, right) => left.permission.localeCompare(right.permission)),
+		}));
+		expect(scopeState.memberships).toHaveLength(0);
+		expect(scopeState.scopes).toEqual([{ scopeId: "shared", membershipRevision: seeded.membershipRevision + 1 }]);
+		expect(scopeState.fences).toEqual(["sole", "sole"]);
+		expect(scopeState.grants).toEqual(
+			["content.permissions.manage", "content.read", "content.write"].map((permission) => ({
+				resourceId: `${seeded.installationId}:shared`,
+				userId: ownerId,
+				permission,
+			})),
+		);
+
+		const reinviteAfterDrain = await owner.mutation(api.organizations.invite_user_to_organization_workspace, {
+			organizationId: created._yay!.organizationId,
+			workspaceId: created._yay!.defaultWorkspaceId,
+			userIdToAdd: memberId,
+		});
+		expect(reinviteAfterDrain._yay).toBeNull();
+		const restoredMembership = await t.run((ctx) =>
+			ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", memberId)
+						.eq("organizationId", created._yay!.organizationId)
+						.eq("workspaceId", created._yay!.defaultWorkspaceId),
+				)
+				.first(),
+		);
+		expect(restoredMembership?.pendingOrganizationRemoval).not.toBe(true);
 	});
 });
 
@@ -4731,6 +5118,56 @@ describe("delete_workspace", () => {
 		expect(ok._yay).toBeNull();
 	});
 
+	test("revokes a live plugin run when workspace deletion removes its workspace", async () => {
+		const t = test_convex();
+		const userId = await t.run((ctx) =>
+			ctx.db.insert("users", { clerkUserId: "clerk-user-delete-live-plugin-workspace" }),
+		);
+		await organizations_test_bootstrap_user(t, { userId });
+		const owner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: userId,
+			name: "Owner",
+			email: "delete-live-plugin-workspace@test.local",
+		});
+		const organization = await owner.mutation(api.organizations.create_organization, {
+			name: "plugin-ws-delete",
+			description: "",
+		});
+		expect(organization._yay).toBeTruthy();
+		const workspace = await owner.mutation(api.organizations.create_workspace, {
+			organizationId: organization._yay!.organizationId,
+			name: "plugin-workspace",
+			description: "",
+		});
+		expect(workspace._yay).toBeTruthy();
+
+		const fixture = await t.run((ctx) =>
+			organizations_test_seed_live_plugin_authority(ctx, {
+				userId,
+				organizationId: organization._yay!.organizationId,
+				workspaceId: workspace._yay!.workspaceId,
+				tag: "workspace-delete",
+			}),
+		);
+		await t.mutation(components.rate_limiter.lib.resetRateLimit, {
+			name: "organizations_write",
+			key: userId,
+		});
+		const deleted = await owner.mutation(api.organizations.delete_workspace, {
+			workspaceId: workspace._yay!.workspaceId,
+		});
+		expect(deleted._yay).toBeNull();
+
+		const consumed = await t.mutation(internal.plugins_runtime.consume_run_api_call, {
+			runId: fixture.runId,
+			kind: "api_request",
+			route: "/api/v1/plugin-data/read",
+		});
+		expect(consumed).toEqual({ _nay: { message: "Unauthenticated" } });
+		expect(await t.run((ctx) => ctx.db.query("plugins_event_run_calls").collect())).toHaveLength(0);
+	});
+
 	test("queues tenant-scoped purge work and keeps the user's personal/home default", async () => {
 		const t = test_convex();
 		const userId = await t.run(async (ctx) =>
@@ -5085,6 +5522,66 @@ describe("delete_organization", () => {
 
 		const organizationAfter = await t.run((ctx) => ctx.db.get("organizations", created._yay!.organizationId));
 		expect(organizationAfter).not.toBeNull();
+	});
+
+	test("fences a scheduled plugin projection during organization retention", async () => {
+		const t = test_convex();
+		const ownerId = await t.run((ctx) =>
+			ctx.db.insert("users", { clerkUserId: "clerk-user-delete-scheduled-plugin-organization" }),
+		);
+		await organizations_test_bootstrap_user(t, { userId: ownerId });
+		const owner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: ownerId,
+			name: "Owner",
+			email: "delete-scheduled-plugin-organization@test.local",
+		});
+		const organization = await owner.mutation(api.organizations.create_organization, {
+			name: "plugin-org-delete",
+			description: "",
+		});
+		expect(organization._yay).toBeTruthy();
+		const fixture = await t.run((ctx) =>
+			organizations_test_seed_live_plugin_authority(ctx, {
+				userId: ownerId,
+				organizationId: organization._yay!.organizationId,
+				workspaceId: organization._yay!.defaultWorkspaceId,
+				tag: "organization-delete",
+			}),
+		);
+		await t.mutation(internal.plugins_projections.schedule_sync, {
+			installationId: fixture.installationId,
+		});
+		const projectionState = await t.run((ctx) =>
+			ctx.db
+				.query("plugins_data_projection_states")
+				.withIndex("by_installation", (q) => q.eq("installationId", fixture.installationId))
+				.unique(),
+		);
+		expect(projectionState).not.toBeNull();
+
+		const deleted = await owner.mutation(api.organizations.delete_organization, {
+			organizationId: organization._yay!.organizationId,
+		});
+		expect(deleted._yay).toBeNull();
+		expect(
+			await t.run((ctx) => ctx.db.get("organizations_workspaces", organization._yay!.defaultWorkspaceId)),
+		).toMatchObject({ pluginDataPurgeStartedAt: expect.any(Number) });
+
+		const projected = await t.mutation(internal.plugins_projections.ensure_projection_root, {
+			installationId: fixture.installationId,
+			syncGeneration: projectionState!.syncGeneration,
+		});
+		expect(projected).toEqual({ _nay: { message: "Not found" } });
+		const projectedFiles = await t.run(async (ctx) =>
+			(await ctx.db.query("files_nodes").collect()).filter(
+				(node) =>
+					node.organizationId === organization._yay!.organizationId &&
+					node.workspaceId === organization._yay!.defaultWorkspaceId &&
+					node.projectionPluginName === "chitchat",
+			),
+		);
+		expect(projectedFiles).toHaveLength(0);
 	});
 
 	test("queues organization-scope purge, drops memberships immediately, keeps structure until cron, then purge removes content and structure", async () => {

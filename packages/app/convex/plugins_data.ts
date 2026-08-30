@@ -32,7 +32,10 @@ import {
 	type plugins_Capability,
 } from "../shared/plugins.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
-import { plugins_projections_is_registered } from "./plugins_projections_registry.ts";
+import {
+	plugins_projections_channel_key_for_store_document,
+	plugins_projections_is_registered,
+} from "./plugins_projections_registry.ts";
 
 // #region limits
 
@@ -53,7 +56,8 @@ const MAX_VALUE_BYTES = 16 * 1024;
  * first. 13 digits cover every epoch millisecond until the year 2286.
  */
 const APPEND_KEY_MS_CEILING = 9_999_999_999_999;
-const MAX_COLLECTIONS = 16;
+export const plugins_data_MAX_COLLECTIONS = 16;
+const MAX_COLLECTIONS = plugins_data_MAX_COLLECTIONS;
 /** Stored value bytes plus bytes promised to live reservations, per installation. */
 const MAX_INSTALLATION_BYTES = 16 * 1024 * 1024;
 /**
@@ -109,6 +113,18 @@ const MAX_MEMBER_LIST_PAGE_SIZE = 100;
 /** How many people one private scope may name. Same size as a file share list. */
 const MAX_SCOPE_PRINCIPALS = 50;
 /**
+ * How many scope ids one installation may mint before reinstalling.
+ *
+ * A scope id can never be reused, even after its live rows are deleted. Keep one small identity
+ * marker per id and cap those markers so repeated create/delete cycles cannot grow storage forever.
+ */
+const MAX_SCOPE_IDS_PER_INSTALLATION = 1_000;
+/**
+ * Real collection names and key prefixes cannot be empty. One empty pair in the released-range
+ * table is therefore an identity marker and can never act as a key-range fence.
+ */
+const SCOPE_IDENTITY_MARKER = "";
+/**
  * How many scopes one member may be named in, per workspace.
  *
  * The cap exists because removing a member from the organization collects every grant they hold in
@@ -152,6 +168,34 @@ export type plugins_data_RefusalName = "conflict" | "storage_full";
 
 const REFUSAL_CONFLICT: plugins_data_RefusalName = "conflict";
 const REFUSAL_STORAGE_FULL: plugins_data_RefusalName = "storage_full";
+
+export type plugins_data_LastAppend = {
+	at: number;
+	key: string;
+	createdByUserId: Id<"users">;
+};
+
+/** Read only the exact timestamp suffix the append door creates. */
+export function plugins_data_parse_append_key_at(key: string) {
+	const match = key.match(/([0-9]{13}):[0-9a-f]{4}$/u);
+	if (!match) {
+		return null;
+	}
+
+	const at = APPEND_KEY_MS_CEILING - Number(match[1]);
+	return Number.isSafeInteger(at) && at >= 0 ? at : null;
+}
+
+/** Pick one durable append marker. A lexical key maximum breaks equal-time ties. */
+export function plugins_data_max_last_append(
+	current: plugins_data_LastAppend | null | undefined,
+	candidate: plugins_data_LastAppend,
+) {
+	if (!current || candidate.at > current.at || (candidate.at === current.at && candidate.key > current.key)) {
+		return candidate;
+	}
+	return current;
+}
 
 // #endregion limits
 
@@ -219,7 +263,9 @@ function validate_key_prefix(raw: string) {
 		return Result({ _nay: { message: "Key prefixes must not be empty" } });
 	}
 	if (raw.length > plugins_data_MAX_KEY_PREFIX_LENGTH) {
-		return Result({ _nay: { message: `Key prefixes must be at most ${plugins_data_MAX_KEY_PREFIX_LENGTH} characters` } });
+		return Result({
+			_nay: { message: `Key prefixes must be at most ${plugins_data_MAX_KEY_PREFIX_LENGTH} characters` },
+		});
 	}
 	if (!/^[\x21-\x7e]+$/.test(raw)) {
 		return Result({ _nay: { message: "Key prefixes must contain only printable ASCII characters" } });
@@ -374,7 +420,12 @@ async function db_authorize(
 		ctx.db.get("organizations", args.principal.organizationId),
 		ctx.db.get("organizations_workspaces", args.principal.workspaceId),
 	]);
-	if (!organization?.defaultWorkspaceId || !workspace || workspace.organizationId !== organization._id) {
+	if (
+		!organization?.defaultWorkspaceId ||
+		!workspace ||
+		workspace.organizationId !== organization._id ||
+		workspace.pluginDataPurgeStartedAt !== undefined
+	) {
 		return Result({ _nay: { message: "Not found" } });
 	}
 
@@ -504,13 +555,14 @@ async function db_create_usage(
  * Patch the accounting doc, and warn once when this write is what crosses 80% of a ceiling.
  *
  * The comparison lives here and not in `check_capacity`. That function is pure and runs before the
- * write is accepted, so from there it would warn for writes that are then refused for another
+	 * write is accepted, so from there it would warn for writes that are then refused for another
  * reason, and again on every optimistic-concurrency retry of the same logical write. This runs in
  * the transaction that commits the crossing, so one crossing is one line.
  *
  * The thresholds are 80% of the two aggregates `check_capacity` refuses on, not of `usedBytes` and
  * `usedDocuments` alone. Three callers never touch those two fields: a reservation moves
- * `reservedBytes` and `reservedDocuments`, and a revision tombstone moves `tombstoneDocuments`.
+	 * `reservedBytes` and `reservedDocuments`, while revision tombstones and deleted-append receipts
+	 * move `tombstoneDocuments`.
  * Those are the doors that fill the store fastest, so a threshold over the stored halves alone would
  * never fire for them and the installation would meet its ceiling unannounced.
  *
@@ -639,7 +691,7 @@ function check_capacity(
 	return Result({ _yay: null });
 }
 
-async function db_get_member_usage(
+async function db_get_member_usage_row(
 	ctx: QueryCtx,
 	args: { installationId: Id<"plugins_workspace_installations">; userId: Id<"users"> },
 ) {
@@ -647,6 +699,14 @@ async function db_get_member_usage(
 		.query("plugins_data_member_usage")
 		.withIndex("by_installation_user", (q) => q.eq("installationId", args.installationId).eq("userId", args.userId))
 		.first();
+}
+
+async function db_get_member_usage(
+	ctx: QueryCtx,
+	args: { installationId: Id<"plugins_workspace_installations">; userId: Id<"users"> },
+) {
+	const usage = await db_get_member_usage_row(ctx, args);
+	return usage?.generation === "document_bound" ? usage : null;
 }
 
 /**
@@ -662,13 +722,43 @@ async function db_patch_member_usage(
 	args: {
 		installation: Doc<"plugins_workspace_installations">;
 		userId: Id<"users">;
+		/** `current` charges this membership generation; an id credits only that exact generation. */
+		targetUsageId: "current" | Id<"plugins_data_member_usage"> | null;
 		addedBytes: number;
 		addedSlots: number;
 		addedMachineBytes: number;
 		addedCollections: string[];
 	},
 ) {
-	const existing = await db_get_member_usage(ctx, { installationId: args.installation._id, userId: args.userId });
+	if (args.targetUsageId === null) {
+		return null;
+	}
+
+	let existing =
+		args.targetUsageId === "current"
+			? await db_get_member_usage_row(ctx, { installationId: args.installation._id, userId: args.userId })
+			: await ctx.db.get("plugins_data_member_usage", args.targetUsageId);
+	if (
+		existing &&
+		(existing.installationId !== args.installation._id || existing.userId !== args.userId)
+	) {
+		const errorMessage = "Plugin document points at the wrong member usage row";
+		const errorData = { memberUsageId: existing._id, installationId: args.installation._id, userId: args.userId };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+	// An exact old generation may already be pruned. Never redirect its credit into the current row.
+	if (!existing && args.targetUsageId !== "current") {
+		return null;
+	}
+	if (existing && existing.generation !== "document_bound") {
+		if (args.targetUsageId !== "current") {
+			return null;
+		}
+		// Rows from before exact document binding cannot be updated safely after leave and rejoin.
+		await ctx.db.delete("plugins_data_member_usage", existing._id);
+		existing = null;
+	}
 
 	const collectionNames = existing ? [...existing.collectionNames] : [];
 	for (const name of args.addedCollections) {
@@ -688,26 +778,27 @@ async function db_patch_member_usage(
 		// one of those still names them. Writing a row here would store counters for a user who is
 		// gone, and a delete's counters are negative.
 		if (args.addedSlots <= 0) {
-			return;
+			return null;
 		}
 
-		await ctx.db.insert("plugins_data_member_usage", {
+		const memberUsageId = await ctx.db.insert("plugins_data_member_usage", {
 			organizationId: args.installation.organizationId,
 			workspaceId: args.installation.workspaceId,
 			installationId: args.installation._id,
 			userId: args.userId,
+			generation: "document_bound",
 			usedBytes,
 			usedDocuments,
 			machineBytes,
 			collectionNames,
 		});
-		return;
+		return memberUsageId;
 	}
 
 	// A stored zero would keep one row per member who ever wrote, so the table would grow with churn.
 	if (usedBytes === 0 && usedDocuments === 0 && machineBytes === 0 && collectionNames.length === 0) {
 		await ctx.db.delete("plugins_data_member_usage", existing._id);
-		return;
+		return null;
 	}
 
 	await ctx.db.patch("plugins_data_member_usage", existing._id, {
@@ -716,6 +807,7 @@ async function db_patch_member_usage(
 		machineBytes,
 		collectionNames,
 	});
+	return existing._id;
 }
 
 /**
@@ -773,6 +865,7 @@ async function db_drop_member_collection(
 function member_usage_deltas(args: {
 	/** The member the write is charged to, or null for a plugin backend. */
 	writer: Id<"users"> | null;
+	currentMemberUsageId: Id<"plugins_data_member_usage"> | undefined;
 	existing: Doc<"plugins_data"> | null;
 	collection: string;
 	/** True when this write is what puts the collection on the installation's list. */
@@ -793,6 +886,7 @@ function member_usage_deltas(args: {
 		return [
 			{
 				userId: storedChargedTo,
+				targetUsageId: args.existing?.chargedToMemberUsageId ?? null,
 				addedBytes: args.byteSize - storedBytes,
 				addedSlots: 0,
 				addedMachineBytes: args.byteSize - storedMachineBytes,
@@ -802,11 +896,15 @@ function member_usage_deltas(args: {
 	}
 
 	const deltas = [];
-	// Credit whoever held the document before, unless it is the writer: then the charge only moves
-	// from the old size to the new one.
-	if (storedChargedTo !== null && storedChargedTo !== args.writer) {
+	const writerHeldIt =
+		storedChargedTo === args.writer &&
+		args.currentMemberUsageId !== undefined &&
+		args.existing?.chargedToMemberUsageId === args.currentMemberUsageId;
+	// Credit the exact old generation unless this writer's current generation already owns it.
+	if (storedChargedTo !== null && !writerHeldIt) {
 		deltas.push({
 			userId: storedChargedTo,
+			targetUsageId: args.existing?.chargedToMemberUsageId ?? null,
 			addedBytes: -storedBytes,
 			addedSlots: -1,
 			addedMachineBytes: -storedMachineBytes,
@@ -814,9 +912,9 @@ function member_usage_deltas(args: {
 		});
 	}
 
-	const writerHeldIt = storedChargedTo === args.writer;
 	deltas.push({
 		userId: args.writer,
+		targetUsageId: "current" as const,
 		addedBytes: args.byteSize - (writerHeldIt ? storedBytes : 0),
 		addedSlots: writerHeldIt ? 0 : 1,
 		// The member composed the value that is now stored, so the document's machine share is gone.
@@ -837,11 +935,15 @@ function member_usage_deltas(args: {
 function member_capacity_change(args: {
 	existing: Doc<"plugins_data"> | null;
 	writer: Id<"users">;
+	currentMemberUsageId: Id<"plugins_data_member_usage"> | undefined;
 	/** True when this write is what puts the collection on the installation's list. */
 	addsCollection: boolean;
 	byteSize: number;
 }) {
-	const writerHeldIt = (args.existing?.chargedTo ?? null) === args.writer;
+	const writerHeldIt =
+		(args.existing?.chargedTo ?? null) === args.writer &&
+		args.currentMemberUsageId !== undefined &&
+		args.existing?.chargedToMemberUsageId === args.currentMemberUsageId;
 	const heldOwnBytes = writerHeldIt ? (args.existing?.byteSize ?? 0) - (args.existing?.machineBytes ?? 0) : 0;
 
 	return {
@@ -857,7 +959,12 @@ function member_capacity_change(args: {
  */
 async function db_credit_member_for_delete(
 	ctx: MutationCtx,
-	args: { installation: Doc<"plugins_workspace_installations">; document: Doc<"plugins_data"> },
+	args: {
+		installation: Doc<"plugins_workspace_installations">;
+		document: Doc<"plugins_data">;
+		/** Keep the slot while a deleted append receipt can still answer a retry. */
+		keepSlot?: boolean;
+	},
 ) {
 	if (!args.document.chargedTo) {
 		return;
@@ -866,8 +973,9 @@ async function db_credit_member_for_delete(
 	await db_patch_member_usage(ctx, {
 		installation: args.installation,
 		userId: args.document.chargedTo,
+		targetUsageId: args.document.chargedToMemberUsageId ?? null,
 		addedBytes: -args.document.byteSize,
-		addedSlots: -1,
+		addedSlots: args.keepSlot ? 0 : -1,
 		addedMachineBytes: -(args.document.machineBytes ?? 0),
 		addedCollections: [],
 	});
@@ -1418,6 +1526,7 @@ export const read_document = internalQuery({
 			!(await db_can_use_scope(ctx, {
 				installation,
 				scopeId: document.scopeId,
+				collection: collection._yay,
 				userId: args.principal.actorUserId,
 				permission: "content.read",
 			}))
@@ -1568,6 +1677,8 @@ async function db_write_document(
 		ownership?: "shared" | "owned";
 		/** Only the user-write door's append sets this, for replay dedup. */
 		userWrite?: { requestId: string; requestFingerprint: string };
+		/** Only putOwned uses this to replace a shared squat with a fresh owned lifetime. */
+		replaceExisting?: true;
 		/**
 		 * The member whose share holds this document after the write, or null when a plugin backend
 		 * wrote it. A backend's insert is charged to the installation only; a backend's patch leaves
@@ -1586,26 +1697,31 @@ async function db_write_document(
 		key: args.key,
 	});
 
-	if (args.existing) {
+	if (args.existing && !args.replaceExisting) {
 		await ctx.db.patch("plugins_data", args.existing._id, {
 			value: args.value,
 			byteSize: args.byteSize,
 			revision: args.existing.revision + 1,
 			updatedBy: args.actorUserId,
 			updatedAt: args.now,
-			// The binding is authoritative, so the stamp is rewritten on every write. Deleting a scope
-			// clears it again the next time the document is touched.
-			scopeId: scope?.scopeId,
+			// A released scope keeps its documents. Keep their old stamp too, or a future internal path
+			// that misses the range fence could turn a private document into a public one.
+			scopeId: scope?.scopeId ?? args.existing.scopeId,
 			// A member's write takes the document over and zeroes its machine share, because the
 			// member composed the value that is now stored. A backend's patch changes only the size.
-			...(args.chargedTo === null
-				? { machineBytes: args.byteSize }
-				: { chargedTo: args.chargedTo, machineBytes: 0 }),
+			...(args.chargedTo === null ? { machineBytes: args.byteSize } : { chargedTo: args.chargedTo, machineBytes: 0 }),
 		});
-		return;
+		return {
+			documentId: args.existing._id,
+			scopeId: scope?.scopeId ?? args.existing.scopeId,
+			revision: args.existing.revision + 1,
+		};
+	}
+	if (args.existing) {
+		await ctx.db.delete("plugins_data", args.existing._id);
 	}
 
-	await ctx.db.insert("plugins_data", {
+	const documentId = await ctx.db.insert("plugins_data", {
 		scopeId: scope?.scopeId,
 		organizationId: args.installation.organizationId,
 		workspaceId: args.installation.workspaceId,
@@ -1621,12 +1737,14 @@ async function db_write_document(
 		ownership: args.ownership ?? "shared",
 		userWriteRequestId: args.userWrite?.requestId,
 		userWriteRequestFingerprint: args.userWrite?.requestFingerprint,
+		userWriteResultByteSize: args.userWrite ? args.byteSize : undefined,
 		createdBy: args.actorUserId,
 		updatedBy: args.actorUserId,
 		updatedAt: args.now,
 		chargedTo: args.chargedTo ?? undefined,
 		machineBytes: args.chargedTo === null ? args.byteSize : 0,
 	});
+	return { documentId, scopeId: scope?.scopeId, revision: 1 };
 }
 
 export const write_document = internalMutation({
@@ -1703,6 +1821,70 @@ async function db_schedule_projection_sync_if_registered(
 	await ctx.scheduler.runAfter(0, internal.plugins_projections.schedule_sync, {
 		installationId: installation._id,
 	});
+}
+
+/** Mark exact projection channels without moving an existing channel to the back of the queue. */
+async function db_upsert_projection_dirty_channels(
+	ctx: MutationCtx,
+	installation: Pick<Doc<"plugins_workspace_installations">, "_id" | "pluginName" | "organizationId" | "workspaceId">,
+	channelKeys: Iterable<string>,
+) {
+	if (!plugins_projections_is_registered(installation.pluginName)) {
+		return false;
+	}
+
+	const uniqueChannelKeys = new Set(channelKeys);
+	if (uniqueChannelKeys.size === 0) {
+		return false;
+	}
+
+	const now = Date.now();
+	for (const channelKey of uniqueChannelKeys) {
+		const existing = await ctx.db
+			.query("plugins_data_projection_dirty_channels")
+			.withIndex("by_installation_channelKey", (q) =>
+				q.eq("installationId", installation._id).eq("channelKey", channelKey),
+			)
+			.first();
+		if (existing) {
+			// Keep FIFO order while making every same-millisecond change visible to completion.
+			await ctx.db.patch("plugins_data_projection_dirty_channels", existing._id, {
+				updatedAt: Math.max(now, existing.updatedAt + 1),
+			});
+			continue;
+		}
+
+		await ctx.db.insert("plugins_data_projection_dirty_channels", {
+			organizationId: installation.organizationId,
+			workspaceId: installation.workspaceId,
+			installationId: installation._id,
+			channelKey,
+			queuedAt: now,
+			updatedAt: now,
+		});
+	}
+
+	return true;
+}
+
+/** Derive, dedupe, and mark the projected channels changed by accepted store writes. */
+async function db_mark_projection_store_documents_dirty_and_schedule(
+	ctx: MutationCtx,
+	installation: Doc<"plugins_workspace_installations">,
+	documents: { collection: string; key: string; scopeId: string | undefined }[],
+) {
+	const channelKeys = documents.flatMap((document) => {
+		const channelKey = plugins_projections_channel_key_for_store_document({
+			pluginName: installation.pluginName,
+			...document,
+		});
+		return channelKey === null ? [] : [channelKey];
+	});
+	if (!(await db_upsert_projection_dirty_channels(ctx, installation, channelKeys))) {
+		return;
+	}
+
+	await db_schedule_projection_sync_if_registered(ctx, installation);
 }
 
 async function db_write_documents(
@@ -1842,6 +2024,7 @@ async function db_write_documents(
 			const memberChange = member_capacity_change({
 				existing,
 				writer,
+				currentMemberUsageId: memberUsage?._id,
 				addsCollection,
 				byteSize: byteSize._yay,
 			});
@@ -1886,8 +2069,9 @@ async function db_write_documents(
 
 	// Past this line the batch is accepted, so the writes below run together and the accounting doc
 	// is created if this is the installation's first document.
+	const projectedDocuments: { collection: string; key: string; scopeId: string | undefined }[] = [];
 	for (const document of prepared) {
-		await db_write_document(ctx, {
+		const stored = await db_write_document(ctx, {
 			actorUserId: args.principal.actorUserId,
 			installation,
 			existing: document.existing,
@@ -1898,14 +2082,23 @@ async function db_write_documents(
 			chargedTo: writer,
 			now,
 		});
+		projectedDocuments.push({ collection: document.collection, key: document.key, scopeId: stored.scopeId });
+		let chargedToMemberUsageId: Id<"plugins_data_member_usage"> | null = null;
 		for (const delta of member_usage_deltas({
 			writer,
+			currentMemberUsageId: memberUsage?._id,
 			existing: document.existing,
 			collection: document.collection,
 			addsCollection: document.addsCollection,
 			byteSize: document.byteSize,
 		})) {
-			await db_patch_member_usage(ctx, { installation, ...delta });
+			const changedUsageId = await db_patch_member_usage(ctx, { installation, ...delta });
+			if (delta.targetUsageId === "current") {
+				chargedToMemberUsageId = changedUsageId;
+			}
+		}
+		if (writer && chargedToMemberUsageId) {
+			await ctx.db.patch("plugins_data", stored.documentId, { chargedToMemberUsageId });
 		}
 	}
 	const storedUsage = usage ?? (await db_create_usage(ctx, { installation, now }));
@@ -1920,7 +2113,7 @@ async function db_write_documents(
 		maxDocumentSlots,
 	});
 
-	await db_schedule_projection_sync_if_registered(ctx, installation);
+	await db_mark_projection_store_documents_dirty_and_schedule(ctx, installation, projectedDocuments);
 
 	return Result({
 		_yay: {
@@ -2006,8 +2199,13 @@ export const delete_document = internalMutation({
 		}
 		const maxDocumentSlots = await db_resolve_document_slot_cap(ctx, { organization });
 
+		const appendReplayReceipt = await db_preserve_append_replay_receipt(ctx, { document: existing, now });
 		await ctx.db.delete("plugins_data", existing._id);
-		await db_credit_member_for_delete(ctx, { installation, document: existing });
+		await db_credit_member_for_delete(ctx, {
+			installation,
+			document: existing,
+			keepSlot: appendReplayReceipt !== null,
+		});
 		const collectionNames = await db_drop_collection_if_empty(ctx, { usage, collection: collection._yay });
 		await db_drop_member_collection(ctx, {
 			installationId: installation._id,
@@ -2020,13 +2218,16 @@ export const delete_document = internalMutation({
 			next: {
 				usedBytes: usage.usedBytes - existing.byteSize,
 				usedDocuments: usage.usedDocuments - 1,
+				tombstoneDocuments: usage.tombstoneDocuments + (appendReplayReceipt ? 1 : 0),
 				collectionNames,
 			},
 			now,
 			maxDocumentSlots,
 		});
 
-		await db_schedule_projection_sync_if_registered(ctx, installation);
+		await db_mark_projection_store_documents_dirty_and_schedule(ctx, installation, [
+			{ collection: existing.collection, key: existing.key, scopeId: existing.scopeId },
+		]);
 
 		return Result({ _yay: { deleted: true } });
 	},
@@ -2069,9 +2270,9 @@ async function db_authorize_page_write(
 	ctx: MutationCtx,
 	args: {
 		/**
-		 * Append charges the bucket itself, after its replay lookup: a replayed request already
-		 * paid on its first call, and a retry refused by the bucket would report a delivered
-		 * write as failed.
+		 * Replayable writes charge the bucket themselves, after their replay lookup: a replayed
+		 * request already paid on its first call, and a retry refused by the bucket would report
+		 * a delivered write as failed.
 		 */
 		skipRateLimit?: true;
 	} = {},
@@ -2139,7 +2340,12 @@ async function db_authorize_page_write(
 		ctx.db.get("organizations", session.organizationId),
 		ctx.db.get("organizations_workspaces", session.workspaceId),
 	]);
-	if (!organization?.defaultWorkspaceId || !workspace || workspace.organizationId !== organization._id) {
+	if (
+		!organization?.defaultWorkspaceId ||
+		!workspace ||
+		workspace.organizationId !== organization._id ||
+		workspace.pluginDataPurgeStartedAt !== undefined
+	) {
 		return Result({ _nay: { message: "Not found" } });
 	}
 	const allowed = await access_control_db_has_permission(ctx, {
@@ -2223,11 +2429,10 @@ function refuse_revision_mismatch(existing: Doc<"plugins_data"> | null, expected
 }
 
 /**
- * One accepted door write: price it, store it, and update the accounting doc in this transaction.
- * The caller has already authorized the member and refused every conflicting key state, so this
- * only enforces the capacity ceilings.
+ * Price one member document write before anything else in a larger transaction is changed.
+ * Atomic scope creation uses this first so a storage refusal cannot leave scope rows behind.
  */
-async function db_user_write_document(
+async function db_preflight_user_write_document(
 	ctx: MutationCtx,
 	args: {
 		installation: Doc<"plugins_workspace_installations">;
@@ -2235,14 +2440,9 @@ async function db_user_write_document(
 		userId: Id<"users">;
 		existing: Doc<"plugins_data"> | null;
 		collection: string;
-		key: string;
-		value: Record<string, unknown>;
 		byteSize: number;
-		ownership: "shared" | "owned";
-		userWrite?: { requestId: string; requestFingerprint: string };
 	},
 ) {
-	const now = Date.now();
 	const usage = await db_get_usage(ctx, args.installation._id);
 	const addsCollection = !(usage?.collectionNames ?? []).includes(args.collection);
 	const memberUsage = await db_get_member_usage(ctx, {
@@ -2263,6 +2463,7 @@ async function db_user_write_document(
 			change: member_capacity_change({
 				existing: args.existing,
 				writer: args.userId,
+				currentMemberUsageId: memberUsage?._id,
 				addsCollection,
 				byteSize: args.byteSize,
 			}),
@@ -2271,8 +2472,39 @@ async function db_user_write_document(
 	if (capacity._nay) {
 		return capacity;
 	}
+	return Result({ _yay: { usage, memberUsage, addsCollection, maxDocumentSlots } });
+}
 
-	await db_write_document(ctx, {
+/**
+ * Commit one member document write after its capacity was priced in this transaction.
+ * Atomic scope creation runs this only after every refusal check has passed.
+ */
+async function db_commit_user_write_document(
+	ctx: MutationCtx,
+	args: {
+		installation: Doc<"plugins_workspace_installations">;
+		organization: Pick<Doc<"organizations">, "default" | "billingMode" | "ownerUserId">;
+		userId: Id<"users">;
+		existing: Doc<"plugins_data"> | null;
+		collection: string;
+		key: string;
+		value: Record<string, unknown>;
+		byteSize: number;
+		ownership: "shared" | "owned";
+		userWrite?: { requestId: string; requestFingerprint: string };
+		replaceExisting?: true;
+		pricing: {
+			usage: Doc<"plugins_data_usage"> | null;
+			memberUsage: Doc<"plugins_data_member_usage"> | null;
+			addsCollection: boolean;
+			maxDocumentSlots: number;
+		};
+	},
+) {
+	const { usage, memberUsage, addsCollection, maxDocumentSlots } = args.pricing;
+	const now = Date.now();
+
+	const stored = await db_write_document(ctx, {
 		actorUserId: args.userId,
 		installation: args.installation,
 		existing: args.existing,
@@ -2282,19 +2514,32 @@ async function db_user_write_document(
 		byteSize: args.byteSize,
 		ownership: args.ownership,
 		userWrite: args.userWrite,
+		...(args.replaceExisting ? { replaceExisting: true as const } : {}),
 		chargedTo: args.userId,
 		now,
 	});
 
+	let chargedToMemberUsageId: Id<"plugins_data_member_usage"> | null = null;
 	for (const delta of member_usage_deltas({
 		writer: args.userId,
+		currentMemberUsageId: memberUsage?._id,
 		existing: args.existing,
 		collection: args.collection,
 		addsCollection,
 		byteSize: args.byteSize,
 	})) {
-		await db_patch_member_usage(ctx, { installation: args.installation, ...delta });
+		const changedUsageId = await db_patch_member_usage(ctx, { installation: args.installation, ...delta });
+		if (delta.targetUsageId === "current") {
+			chargedToMemberUsageId = changedUsageId;
+		}
 	}
+	if (!chargedToMemberUsageId) {
+		const errorMessage = "Member write did not keep a member usage row";
+		const errorData = { installationId: args.installation._id, userId: args.userId };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+	await ctx.db.patch("plugins_data", stored.documentId, { chargedToMemberUsageId });
 
 	const storedUsage = usage ?? (await db_create_usage(ctx, { installation: args.installation, now }));
 	await db_patch_usage(ctx, {
@@ -2302,17 +2547,107 @@ async function db_user_write_document(
 		next: {
 			usedBytes: storedUsage.usedBytes + args.byteSize - (args.existing?.byteSize ?? 0),
 			usedDocuments: storedUsage.usedDocuments + (args.existing ? 0 : 1),
-			collectionNames: addsCollection
-				? [...storedUsage.collectionNames, args.collection]
-				: storedUsage.collectionNames,
+			collectionNames: addsCollection ? [...storedUsage.collectionNames, args.collection] : storedUsage.collectionNames,
 		},
 		now,
 		maxDocumentSlots,
 	});
 
-	await db_schedule_projection_sync_if_registered(ctx, args.installation);
+	await db_mark_projection_store_documents_dirty_and_schedule(ctx, args.installation, [
+		{ collection: args.collection, key: args.key, scopeId: stored.scopeId },
+	]);
 
-	return Result({ _yay: { revision: (args.existing?.revision ?? 0) + 1, byteSize: args.byteSize } });
+	return { revision: stored.revision, byteSize: args.byteSize };
+}
+
+/**
+ * One accepted door write: price it, store it, and update the accounting doc in this transaction.
+ * The caller has already authorized the member and refused every conflicting key state.
+ */
+async function db_user_write_document(
+	ctx: MutationCtx,
+	args: {
+		installation: Doc<"plugins_workspace_installations">;
+		organization: Pick<Doc<"organizations">, "default" | "billingMode" | "ownerUserId">;
+		userId: Id<"users">;
+		existing: Doc<"plugins_data"> | null;
+		collection: string;
+		key: string;
+		value: Record<string, unknown>;
+		byteSize: number;
+		ownership: "shared" | "owned";
+		userWrite?: { requestId: string; requestFingerprint: string };
+		replaceExisting?: true;
+	},
+) {
+	const priced = await db_preflight_user_write_document(ctx, args);
+	if (priced._nay) {
+		return priced;
+	}
+
+	return Result({ _yay: await db_commit_user_write_document(ctx, { ...args, pricing: priced._yay }) });
+}
+
+async function db_get_append_replay_receipt(
+	ctx: QueryCtx,
+	args: {
+		installationId: Id<"plugins_workspace_installations">;
+		collection: string;
+		createdBy: Id<"users">;
+		requestId: string;
+	},
+) {
+	return await ctx.db
+		.query("plugins_data_append_replay_receipts")
+		.withIndex("by_installation_collection_createdBy_requestId", (q) =>
+			q
+				.eq("installationId", args.installationId)
+				.eq("collection", args.collection)
+				.eq("createdBy", args.createdBy)
+				.eq("requestId", args.requestId),
+		)
+		.first();
+}
+
+/** Keep a deleted append's first answer long enough for a lost-response retry. */
+async function db_preserve_append_replay_receipt(
+	ctx: MutationCtx,
+	args: { document: Doc<"plugins_data">; now: number },
+) {
+	const requestId = args.document.userWriteRequestId;
+	const requestFingerprint = args.document.userWriteRequestFingerprint;
+	if (!requestId || !requestFingerprint) {
+		return null;
+	}
+
+	const existing = await db_get_append_replay_receipt(ctx, {
+		installationId: args.document.installationId,
+		collection: args.document.collection,
+		createdBy: args.document.createdBy,
+		requestId,
+	});
+	if (existing) {
+		return existing;
+	}
+
+	const receiptId = await ctx.db.insert("plugins_data_append_replay_receipts", {
+		organizationId: args.document.organizationId,
+		workspaceId: args.document.workspaceId,
+		installationId: args.document.installationId,
+		pluginName: args.document.pluginName,
+		collection: args.document.collection,
+		createdBy: args.document.createdBy,
+		requestId,
+		requestFingerprint,
+		result: {
+			key: args.document.key,
+			revision: 1,
+			byteSize: args.document.userWriteResultByteSize ?? args.document.byteSize,
+		},
+		memberUsageId: args.document.chargedToMemberUsageId,
+		expiresAt: args.now + RETRY_HORIZON_MS,
+	});
+	return await ctx.db.get("plugins_data_append_replay_receipts", receiptId);
 }
 
 /**
@@ -2338,8 +2673,13 @@ async function db_user_delete_document(
 		throw should_never_happen(errorMessage, errorData);
 	}
 
+	const appendReplayReceipt = await db_preserve_append_replay_receipt(ctx, { document: args.existing, now });
 	await ctx.db.delete("plugins_data", args.existing._id);
-	await db_credit_member_for_delete(ctx, { installation: args.installation, document: args.existing });
+	await db_credit_member_for_delete(ctx, {
+		installation: args.installation,
+		document: args.existing,
+		keepSlot: appendReplayReceipt !== null,
+	});
 	const collectionNames = await db_drop_collection_if_empty(ctx, { usage, collection: args.existing.collection });
 	await db_drop_member_collection(ctx, {
 		installationId: args.installation._id,
@@ -2352,13 +2692,16 @@ async function db_user_delete_document(
 		next: {
 			usedBytes: usage.usedBytes - args.existing.byteSize,
 			usedDocuments: usage.usedDocuments - 1,
+			tombstoneDocuments: usage.tombstoneDocuments + (appendReplayReceipt ? 1 : 0),
 			collectionNames,
 		},
 		now,
 		maxDocumentSlots: await db_resolve_document_slot_cap(ctx, { organization: args.organization }),
 	});
 
-	await db_schedule_projection_sync_if_registered(ctx, args.installation);
+	await db_mark_projection_store_documents_dirty_and_schedule(ctx, args.installation, [
+		{ collection: args.existing.collection, key: args.existing.key, scopeId: args.existing.scopeId },
+	]);
 }
 
 export const user_append_document = mutation({
@@ -2405,6 +2748,28 @@ export const user_append_document = mutation({
 				value: args.value,
 			}),
 		);
+		const deletedReplay = await db_get_append_replay_receipt(ctx, {
+			installationId: installation._id,
+			collection: collection._yay,
+			createdBy: userId,
+			requestId: clientRequestId._yay,
+		});
+		if (deletedReplay) {
+			if (deletedReplay.expiresAt <= Date.now()) {
+				await plugins_data_db_delete_append_replay_receipt(ctx, deletedReplay);
+			} else {
+				if (deletedReplay.requestFingerprint !== requestFingerprint) {
+					return Result({
+						_nay: {
+							name: REFUSAL_CONFLICT,
+							message: "This idempotency key was already used for a different write",
+						},
+					});
+				}
+
+				return Result({ _yay: deletedReplay.result });
+			}
+		}
 		const replay = await ctx.db
 			.query("plugins_data")
 			.withIndex("by_installation_collection_createdBy_requestId", (q) =>
@@ -2422,7 +2787,9 @@ export const user_append_document = mutation({
 				});
 			}
 
-			return Result({ _yay: { key: replay.key, revision: replay.revision, byteSize: replay.byteSize } });
+			return Result({
+				_yay: { key: replay.key, revision: 1, byteSize: replay.userWriteResultByteSize ?? replay.byteSize },
+			});
 		}
 
 		// Only a genuinely new append charges the bucket; the replay above answered without paying
@@ -2438,7 +2805,8 @@ export const user_append_document = mutation({
 		// Two appends in the same millisecond can draw the same suffix, and a duplicate key would
 		// break the one-doc-per-key rule every `.first()` lookup relies on. So probe the candidate
 		// and draw a fresh suffix on a hit. A key a service producer holds is avoided the same way.
-		const invertedMs = String(APPEND_KEY_MS_CEILING - Date.now()).padStart(13, "0");
+		const appendAt = Date.now();
+		const invertedMs = String(APPEND_KEY_MS_CEILING - appendAt).padStart(13, "0");
 		let key: string | null = null;
 		for (let attempt = 0; attempt < 3 && key === null; attempt += 1) {
 			const candidate = `${keyPrefix._yay}${invertedMs}:${crypto_random_hex(2)}`;
@@ -2484,6 +2852,18 @@ export const user_append_document = mutation({
 		});
 		if (written._nay) {
 			return written;
+		}
+		if (scopedWrite._yay) {
+			const lastAppend = plugins_data_max_last_append(scopedWrite._yay.lastAppend, {
+				at: appendAt,
+				key,
+				createdByUserId: userId,
+			});
+			// Keep append activity separate from the membership revision stored in `updatedAt`.
+			await ctx.db.patch("plugins_data_scopes", scopedWrite._yay._id, {
+				lastAppend,
+				appendSequence: (scopedWrite._yay.appendSequence ?? 0) + 1,
+			});
 		}
 
 		return Result({ _yay: { key, revision: written._yay.revision, byteSize: written._yay.byteSize } });
@@ -2676,7 +3056,9 @@ export const user_put_owned_document = mutation({
 		const storedKey = `${key._yay}:${userId}`;
 		if (storedKey.length > plugins_data_MAX_NAME_LENGTH) {
 			return Result({
-				_nay: { message: `Keys must be at most ${plugins_data_MAX_NAME_LENGTH} characters after the writer id is appended` },
+				_nay: {
+					message: `Keys must be at most ${plugins_data_MAX_NAME_LENGTH} characters after the writer id is appended`,
+				},
 			});
 		}
 
@@ -2695,13 +3077,15 @@ export const user_put_owned_document = mutation({
 			collection: collection._yay,
 			key: storedKey,
 		});
-		// Only the member's own owned doc may sit at the composed key. Anything else there — a shared
-		// doc squatting the key, a service doc, another creator's doc — refuses.
-		if (existing && (existing.ownership !== "owned" || existing.createdBy !== userId)) {
+		// A create-only owned write may reclaim a normal shared squat at its server-composed key.
+		// Versioned producer docs and another member's owned doc still refuse before the revision check.
+		const replacesSharedSquat =
+			existing?.ownership === "shared" && existing.writeMode === "normal" && args.expectedRevision === 0;
+		if (existing && !replacesSharedSquat && (existing.ownership !== "owned" || existing.createdBy !== userId)) {
 			return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This document belongs to another writer" } });
 		}
 		// CAS after ownership, like the put above.
-		const revisionMismatch = refuse_revision_mismatch(existing, args.expectedRevision);
+		const revisionMismatch = refuse_revision_mismatch(replacesSharedSquat ? null : existing, args.expectedRevision);
 		if (revisionMismatch._nay) {
 			return revisionMismatch;
 		}
@@ -2726,6 +3110,7 @@ export const user_put_owned_document = mutation({
 			value: args.value,
 			byteSize: byteSize._yay,
 			ownership: "owned",
+			...(replacesSharedSquat ? { replaceExisting: true as const } : {}),
 		});
 		if (written._nay) {
 			return written;
@@ -2761,7 +3146,9 @@ export const user_remove_owned_document = mutation({
 		const storedKey = `${key._yay}:${userId}`;
 		if (storedKey.length > plugins_data_MAX_NAME_LENGTH) {
 			return Result({
-				_nay: { message: `Keys must be at most ${plugins_data_MAX_NAME_LENGTH} characters after the writer id is appended` },
+				_nay: {
+					message: `Keys must be at most ${plugins_data_MAX_NAME_LENGTH} characters after the writer id is appended`,
+				},
 			});
 		}
 
@@ -2842,6 +3229,71 @@ async function db_resolve_scope(
 	return candidate && args.key.startsWith(candidate.keyPrefix) ? candidate : null;
 }
 
+/** The released scope range a key falls in, or null when the key was never private. */
+async function db_resolve_released_scope_range(
+	ctx: QueryCtx | MutationCtx,
+	args: { installationId: Id<"plugins_workspace_installations">; collection: string; key: string },
+) {
+	const candidate = await ctx.db
+		.query("plugins_data_released_scope_ranges")
+		.withIndex("by_installation_collection_prefix", (q) =>
+			q.eq("installationId", args.installationId).eq("collectionName", args.collection).lte("keyPrefix", args.key),
+		)
+		.order("desc")
+		.first();
+
+	return candidate && args.key.startsWith(candidate.keyPrefix) ? candidate : null;
+}
+
+/** The durable identity marker for one live or released scope id. */
+async function db_get_scope_identity(
+	ctx: QueryCtx | MutationCtx,
+	args: { installationId: Id<"plugins_workspace_installations">; scopeId: string },
+) {
+	return await ctx.db
+		.query("plugins_data_released_scope_ranges")
+		.withIndex("by_installation_scope", (q) => q.eq("installationId", args.installationId).eq("scopeId", args.scopeId))
+		.filter((q) =>
+			q.and(q.eq(q.field("collectionName"), SCOPE_IDENTITY_MARKER), q.eq(q.field("keyPrefix"), SCOPE_IDENTITY_MARKER)),
+		)
+		.first();
+}
+
+/** Add the durable identity marker when a live or released scope predates marker writes. */
+export async function plugins_data_db_ensure_scope_identity(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		installationId: Id<"plugins_workspace_installations">;
+		scopeId: string;
+	},
+) {
+	if (await db_get_scope_identity(ctx, args)) {
+		return;
+	}
+
+	await ctx.db.insert("plugins_data_released_scope_ranges", {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		installationId: args.installationId,
+		scopeId: args.scopeId,
+		collectionName: SCOPE_IDENTITY_MARKER,
+		keyPrefix: SCOPE_IDENTITY_MARKER,
+	});
+}
+
+/** Any durable record that proves a scope id was already used, including older range-only rows. */
+async function db_get_scope_lifecycle_record(
+	ctx: QueryCtx | MutationCtx,
+	args: { installationId: Id<"plugins_workspace_installations">; scopeId: string },
+) {
+	return await ctx.db
+		.query("plugins_data_released_scope_ranges")
+		.withIndex("by_installation_scope", (q) => q.eq("installationId", args.installationId).eq("scopeId", args.scopeId))
+		.first();
+}
+
 /**
  * Another scope whose key range touches this one, or null when the range is free.
  *
@@ -2874,6 +3326,32 @@ async function db_find_overlapping_scope(
 		.first();
 }
 
+/** A released scope range that touches this one, or null when the range was never private. */
+async function db_find_overlapping_released_scope_range(
+	ctx: QueryCtx | MutationCtx,
+	args: { installationId: Id<"plugins_workspace_installations">; collection: string; keyPrefix: string },
+) {
+	const above = await db_resolve_released_scope_range(ctx, {
+		installationId: args.installationId,
+		collection: args.collection,
+		key: args.keyPrefix,
+	});
+	if (above) {
+		return above;
+	}
+
+	return await ctx.db
+		.query("plugins_data_released_scope_ranges")
+		.withIndex("by_installation_collection_prefix", (q) =>
+			q
+				.eq("installationId", args.installationId)
+				.eq("collectionName", args.collection)
+				.gte("keyPrefix", args.keyPrefix)
+				.lt("keyPrefix", key_prefix_upper_bound(args.keyPrefix)),
+		)
+		.first();
+}
+
 /**
  * Whether one member may read or write inside one scope.
  *
@@ -2886,10 +3364,26 @@ async function db_can_use_scope(
 	args: {
 		installation: Doc<"plugins_workspace_installations">;
 		scopeId: string;
+		collection?: string;
 		userId: Id<"users">;
 		permission: access_control_Permission;
 	},
 ) {
+	if (args.collection !== undefined) {
+		// A grant is scope-wide, but retained documents stay stamped after one collection is
+		// released. Require the live collection row before that grant can expose its old documents.
+		const liveScope = await ctx.db
+			.query("plugins_data_scopes")
+			.withIndex("by_installation_scope", (q) =>
+				q.eq("installationId", args.installation._id).eq("scopeId", args.scopeId),
+			)
+			.filter((q) => q.eq(q.field("collection"), args.collection))
+			.first();
+		if (!liveScope) {
+			return false;
+		}
+	}
+
 	const organization = await ctx.db.get("organizations", args.installation.organizationId);
 	if (!organization?.defaultWorkspaceId) {
 		return false;
@@ -2935,6 +3429,16 @@ async function db_refuse_scoped_write(
 		key: args.key,
 	});
 	if (!scope) {
+		// A released scope keeps its documents. Keep its old range closed too, or a stale writer
+		// could patch a private document and make it public after the live scope doc is gone.
+		const releasedRange = await db_resolve_released_scope_range(ctx, {
+			installationId: args.installation._id,
+			collection: args.collection,
+			key: args.key,
+		});
+		if (releasedRange) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
 		return Result({ _yay: null });
 	}
 
@@ -2948,7 +3452,7 @@ async function db_refuse_scoped_write(
 		return Result({ _nay: { message: "Permission denied" } });
 	}
 
-	return Result({ _yay: null });
+	return Result({ _yay: scope });
 }
 
 /**
@@ -2992,6 +3496,74 @@ function db_scope_grants(
 		.take(MAX_SCOPE_PRINCIPALS * SCOPE_LEVEL_PERMISSIONS.manage.length + 1);
 }
 
+type plugins_data_ScopeAccessState = {
+	activeUserIds: Id<"users">[];
+	hasActiveManager: boolean;
+};
+
+/** Keep only grant holders who can still use this exact workspace. */
+async function db_active_scope_user_ids(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		grants: readonly Doc<"access_control_permission_grants">[];
+		excludeUserId?: Id<"users">;
+	},
+) {
+	const principalIds = [
+		...new Set(
+			args.grants.flatMap((grant) =>
+				grant.userId !== undefined && grant.userId !== args.excludeUserId ? [grant.userId] : [],
+			),
+		),
+	];
+	return (
+		await Promise.all(
+			principalIds.map(async (userId) => {
+				const [user, membership] = await Promise.all([
+					ctx.db.get("users", userId),
+					ctx.db
+						.query("organizations_workspaces_users")
+						.withIndex("by_active_user_organization_workspace", (q) =>
+							q
+								.eq("active", true)
+								.eq("userId", userId)
+								.eq("organizationId", args.organizationId)
+								.eq("workspaceId", args.workspaceId),
+						)
+						.first(),
+				]);
+				return user && user.deletedAt === undefined && membership ? userId : null;
+			}),
+		)
+	).filter((userId): userId is Id<"users"> => userId !== null);
+}
+
+/** Read only principals who can still use this exact workspace. */
+export async function plugins_data_db_get_scope_access_state(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		resourceId: string;
+		excludeUserId?: Id<"users">;
+	},
+): Promise<plugins_data_ScopeAccessState> {
+	const grants = await db_scope_grants(ctx, args);
+	const activeUserIds = await db_active_scope_user_ids(ctx, { ...args, grants });
+	const activeManagers = new Set(
+		grants.flatMap((grant) =>
+			grant.permission === "content.permissions.manage" && grant.userId !== undefined ? [grant.userId] : [],
+		),
+	);
+
+	return {
+		activeUserIds,
+		hasActiveManager: activeUserIds.some((userId) => activeManagers.has(userId)),
+	};
+}
+
 /**
  * Refuse when one member is already named in as many scopes as they may hold.
  *
@@ -3006,18 +3578,21 @@ async function db_refuse_member_scope_cap(
 		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
 		exceptResourceId?: string;
+		self: boolean;
 	},
 ) {
 	const grants = await ctx.db
 		.query("access_control_permission_grants")
-		.withIndex("by_user_organization_workspace_resource_permission", (q) =>
+		.withIndex("by_user_org_workspace_kind_principal_permission_resource", (q) =>
 			q
 				.eq("userId", args.userId)
 				.eq("organizationId", args.organizationId)
 				.eq("workspaceId", args.workspaceId)
-				.eq("resourceKind", "plugin_scope"),
+				.eq("resourceKind", "plugin_scope")
+				.eq("principalKind", "user")
+				.eq("permission", "content.read"),
 		)
-		.take(MAX_SCOPES_PER_MEMBER * SCOPE_LEVEL_PERMISSIONS.manage.length + 1);
+		.take(MAX_SCOPES_PER_MEMBER + 1);
 
 	const scopes = new Set(grants.map((grant) => grant.resourceId));
 	if (args.exceptResourceId !== undefined) {
@@ -3026,7 +3601,9 @@ async function db_refuse_member_scope_cap(
 	if (scopes.size >= MAX_SCOPES_PER_MEMBER) {
 		return Result({
 			_nay: {
-				message: `This member is already in ${MAX_SCOPES_PER_MEMBER} private scopes, which is the most they can be in. Delete one first.`,
+				message: args.self
+					? `You are already in ${MAX_SCOPES_PER_MEMBER} private spaces, which is the most you can be in. Leave one first.`
+					: `This member is already in ${MAX_SCOPES_PER_MEMBER} private spaces, which is the most they can be in. Ask them to leave one first.`,
 			},
 		});
 	}
@@ -3097,8 +3674,46 @@ async function db_set_scope_principal(
  * documents, so once they are gone nothing can find the leftover grants to remove them, and they
  * would count against their holders' cap forever.
  */
-async function db_delete_scope(ctx: MutationCtx, scopes: Doc<"plugins_data_scopes">[]) {
-	const first = scopes[0];
+export async function plugins_data_db_delete_scope(ctx: MutationCtx, scopes: Doc<"plugins_data_scopes">[]) {
+	const [first] = scopes;
+	if (!first) {
+		return;
+	}
+
+	// Older live scopes may predate identity markers. Add the marker before their rows disappear so
+	// this id can never be used for another private area.
+	await plugins_data_db_ensure_scope_identity(ctx, {
+		organizationId: first.organizationId,
+		workspaceId: first.workspaceId,
+		installationId: first.installationId,
+		scopeId: first.scopeId,
+	});
+
+	// Keep every old collection fenced even when the scope never stored a document. A stale frame may
+	// still send private data after this deletion; without the range fence that write would become a
+	// public document. The lifetime identity cap bounds these permanent rows to 17 per scope id.
+	for (const scope of scopes) {
+		const existingFence = await ctx.db
+			.query("plugins_data_released_scope_ranges")
+			.withIndex("by_installation_collection_prefix", (q) =>
+				q
+					.eq("installationId", scope.installationId)
+					.eq("collectionName", scope.collection)
+					.eq("keyPrefix", scope.keyPrefix),
+			)
+			.first();
+		if (!existingFence) {
+			await ctx.db.insert("plugins_data_released_scope_ranges", {
+				organizationId: scope.organizationId,
+				workspaceId: scope.workspaceId,
+				installationId: scope.installationId,
+				scopeId: scope.scopeId,
+				collectionName: scope.collection,
+				keyPrefix: scope.keyPrefix,
+			});
+		}
+	}
+
 	const grants = await db_scope_grants(ctx, {
 		organizationId: first.organizationId,
 		workspaceId: first.workspaceId,
@@ -3120,7 +3735,7 @@ async function db_delete_scope(ctx: MutationCtx, scopes: Doc<"plugins_data_scope
  * must close the projected file at once, not after the sync debounce. Additions ride the
  * debounced sync instead — showing up late is safe, staying readable late is not.
  */
-async function db_sync_scope_projection_acl(
+export async function plugins_data_db_sync_scope_projection_acl(
 	ctx: MutationCtx,
 	args: {
 		installation: Doc<"plugins_workspace_installations">;
@@ -3134,30 +3749,7 @@ async function db_sync_scope_projection_acl(
 		return;
 	}
 
-	const now = Date.now();
-	const existingDirty = await ctx.db
-		.query("plugins_data_projection_dirty_channels")
-		.withIndex("by_installation_channelKey", (q) =>
-			q.eq("installationId", args.installation._id).eq("channelKey", args.scopeId),
-		)
-		.first();
-	if (existingDirty) {
-		// Step past the stored stamp instead of writing the clock. `complete_dirty_channel` compares
-		// it to decide whether a change landed mid-rebuild, and a scope change shares a millisecond
-		// with the rebuild often enough to matter — it writes no store document, so a dropped dirty
-		// row is the only record of it and no cursor can find it again.
-		await ctx.db.patch("plugins_data_projection_dirty_channels", existingDirty._id, {
-			updatedAt: Math.max(now, existingDirty.updatedAt + 1),
-		});
-	} else {
-		await ctx.db.insert("plugins_data_projection_dirty_channels", {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			installationId: args.installation._id,
-			channelKey: args.scopeId,
-			updatedAt: now,
-		});
-	}
+	await db_upsert_projection_dirty_channels(ctx, args.installation, [args.scopeId]);
 	await db_schedule_projection_sync_if_registered(ctx, args.installation);
 
 	if (args.removeGrantsFor === null) {
@@ -3198,6 +3790,148 @@ async function db_sync_scope_projection_acl(
 	}
 }
 
+/** Delete an empty live scope, or make its lowest active member the manager. */
+export async function plugins_data_db_keep_scope_managed(
+	ctx: MutationCtx,
+	args: {
+		installation: Doc<"plugins_workspace_installations">;
+		scopes: Doc<"plugins_data_scopes">[];
+		excludeUserId?: Id<"users">;
+		deleteIfEmpty?: boolean;
+	},
+) {
+	const [first] = args.scopes;
+	if (!first) {
+		return { deleted: false, hasActivePrincipal: false, promoted: false };
+	}
+
+	const resourceId = scope_resource_id(first.installationId, first.scopeId);
+	const access = await plugins_data_db_get_scope_access_state(ctx, {
+		organizationId: first.organizationId,
+		workspaceId: first.workspaceId,
+		resourceId,
+		excludeUserId: args.excludeUserId,
+	});
+	if (access.activeUserIds.length === 0) {
+		// A demotion checks for a successor before it changes grants. Leave the scope intact so that
+		// mutation can refuse instead of turning a permission change into scope deletion.
+		if (args.deleteIfEmpty === false) {
+			return { deleted: false, hasActivePrincipal: false, promoted: false };
+		}
+		await plugins_data_db_delete_scope(ctx, args.scopes);
+		await plugins_data_db_sync_scope_projection_acl(ctx, {
+			installation: args.installation,
+			organizationId: first.organizationId,
+			workspaceId: first.workspaceId,
+			scopeId: first.scopeId,
+			removeGrantsFor: "all",
+		});
+		return { deleted: true, hasActivePrincipal: false, promoted: false };
+	}
+
+	if (!access.hasActiveManager) {
+		// Stable IDs make concurrent retries choose the same live successor.
+		const [successor] = access.activeUserIds.sort((left, right) => (left < right ? -1 : left > right ? 1 : 0));
+		if (!successor) {
+			throw should_never_happen("Plugin scope has no active successor", { resourceId });
+		}
+		await db_set_scope_principal(ctx, {
+			organizationId: first.organizationId,
+			workspaceId: first.workspaceId,
+			resourceId,
+			userId: successor,
+			level: "manage",
+			now: Date.now(),
+		});
+		return { deleted: false, hasActivePrincipal: true, promoted: true };
+	}
+
+	return { deleted: false, hasActivePrincipal: true, promoted: false };
+}
+
+type plugins_data_ScopeCleanupPair = {
+	installationId: Id<"plugins_workspace_installations">;
+	scopeId: string;
+};
+
+/** Find the unique private scopes named by a departing user's direct grants. */
+export function plugins_data_db_get_scope_cleanup_pairs(
+	ctx: QueryCtx | MutationCtx,
+	grants: readonly Pick<Doc<"access_control_permission_grants">, "resourceKind" | "resourceId">[],
+) {
+	const pairs: plugins_data_ScopeCleanupPair[] = [];
+	const seen = new Set<string>();
+	for (const grant of grants) {
+		if (grant.resourceKind !== "plugin_scope" || seen.has(grant.resourceId)) {
+			continue;
+		}
+		seen.add(grant.resourceId);
+
+		const separator = grant.resourceId.indexOf(":");
+		if (separator < 1 || separator === grant.resourceId.length - 1) {
+			continue;
+		}
+		const installationId = ctx.db.normalizeId("plugins_workspace_installations", grant.resourceId.slice(0, separator));
+		if (!installationId) {
+			continue;
+		}
+		pairs.push({ installationId, scopeId: grant.resourceId.slice(separator + 1) });
+	}
+	return pairs;
+}
+
+/** Keep one cleanup transaction small while still draining every scope a departing user named. */
+const SCOPE_CLEANUP_BATCH_SIZE = 10;
+
+export const cleanup_stranded_scopes = internalMutation({
+	args: {
+		scopes: v.array(v.object({ installationId: v.id("plugins_workspace_installations"), scopeId: v.string() })),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		for (const pair of args.scopes.slice(0, SCOPE_CLEANUP_BATCH_SIZE)) {
+			const scopes = await ctx.db
+				.query("plugins_data_scopes")
+				.withIndex("by_installation_scope", (q) =>
+					q.eq("installationId", pair.installationId).eq("scopeId", pair.scopeId),
+				)
+				.take(MAX_COLLECTIONS + 1);
+			const [first] = scopes;
+			if (!first) {
+				continue;
+			}
+
+			const installation = await ctx.db.get("plugins_workspace_installations", pair.installationId);
+			// The uninstall drain owns both fences and projections after the installation is gone. Only
+			// remove the leaked live scope docs in that case; the installation-scoped drain does the rest.
+			if (!installation) {
+				await Promise.all(scopes.map((scope) => ctx.db.delete("plugins_data_scopes", scope._id)));
+				continue;
+			}
+
+			const managed = await plugins_data_db_keep_scope_managed(ctx, {
+				installation,
+				scopes,
+			});
+			if (!managed.deleted) {
+				// This job follows a removed direct grant, so even a scope that still had another
+				// manager needs a new membership revision.
+				const membershipRevision = Math.max(Date.now(), ...scopes.map((scope) => scope.updatedAt + 1));
+				await Promise.all(
+					scopes.map((scope) => ctx.db.patch("plugins_data_scopes", scope._id, { updatedAt: membershipRevision })),
+				);
+			}
+		}
+
+		const remaining = args.scopes.slice(SCOPE_CLEANUP_BATCH_SIZE);
+		if (remaining.length > 0) {
+			await ctx.scheduler.runAfter(0, internal.plugins_data.cleanup_stranded_scopes, { scopes: remaining });
+		}
+
+		return null;
+	},
+});
+
 /**
  * Create a private scope, change who is in it, or delete it.
  *
@@ -3212,8 +3946,9 @@ async function db_sync_scope_projection_acl(
  *
  * Who may do what: creating a scope needs the same workspace write the other member doors need, and
  * the creator gets the first `manage` grant. Everything after that needs a `manage` grant on that
- * exact scope. A role's own permissions give nothing here — that is what makes the scope private —
- * so an admin who was never named cannot add themselves.
+ * exact scope, except that any named member may remove themselves. A sole manager's leave promotes
+ * one remaining member in the same mutation. A role's own permissions give nothing here — that is
+ * what makes the scope private — so an admin who was never named cannot add themselves.
  *
  * The organization owner still passes every check. That is deliberate, and it is the plugin's job to
  * say so in its own copy: a feature that says "private" while the owner reads everything is a
@@ -3233,79 +3968,263 @@ export const user_manage_scope = mutation({
 				keyPrefix: v.string(),
 			}),
 			v.object({
+				kind: v.literal("create_with_document"),
+				scopeId: v.string(),
+				collections: v.array(v.string()),
+				keyPrefix: v.string(),
+				principals: v.array(
+					v.object({ userId: v.id("users"), level: v.union(v.literal("member"), v.literal("manage")) }),
+				),
+				document: v.object({
+					collection: v.string(),
+					key: v.string(),
+					value: v.record(v.string(), v.any()),
+				}),
+			}),
+			v.object({
 				kind: v.literal("set_principal"),
 				scopeId: v.string(),
 				userId: v.id("users"),
 				level: v.union(v.literal("member"), v.literal("manage")),
 			}),
-			v.object({ kind: v.literal("remove_principal"), scopeId: v.string(), userId: v.id("users") }),
-			v.object({ kind: v.literal("delete"), scopeId: v.string() }),
+			v.object({
+				kind: v.literal("remove_principal"),
+				scopeId: v.string(),
+				userId: v.id("users"),
+				expectedPrincipalCount: v.optional(v.number()),
+			}),
+			v.object({ kind: v.literal("delete"), scopeId: v.string(), expectedPrincipalCount: v.optional(v.number()) }),
 		),
 	},
-	returns: v_result({ _yay: v.object({ scopeId: v.string() }) }),
+	returns: v_result({
+		_yay: v.object({ scopeId: v.string(), deleted: v.boolean(), membershipRevision: v.number() }),
+	}),
 	handler: async (ctx, args) => {
-		const authorized = await db_authorize_page_write(ctx);
+		const creating = args.action.kind === "create" || args.action.kind === "create_with_document";
+		const authorized = await db_authorize_page_write(ctx, creating ? { skipRateLimit: true } : {});
 		if (authorized._nay) {
 			return authorized;
 		}
 		const { installation, userId, organization, workspace } = authorized._yay;
+		let creatingRateLimitChecked = false;
+		const chargeCreatingAttempt = async () => {
+			if (creatingRateLimitChecked) {
+				return null;
+			}
+
+			creatingRateLimitChecked = true;
+			const rateLimit = await rate_limiter_limit_by_key(ctx, {
+				name: "plugins_data_page_user_write",
+				key: `${userId}:${installation._id}`,
+			});
+			return rateLimit ? Result({ _nay: { message: rateLimit.message } }) : null;
+		};
 		const defaultWorkspaceId = organization.defaultWorkspaceId;
 		if (!defaultWorkspaceId) {
-			return Result({ _nay: { message: "Not found" } });
+			const refusal = Result({ _nay: { message: "Not found" } });
+			return creating ? ((await chargeCreatingAttempt()) ?? refusal) : refusal;
 		}
 
 		const scopeId = validate_name(args.action.scopeId, "Scope ids");
 		if (scopeId._nay) {
-			return scopeId;
+			return creating ? ((await chargeCreatingAttempt()) ?? scopeId) : scopeId;
 		}
 
-		const existing = await ctx.db
-			.query("plugins_data_scopes")
-			.withIndex("by_installation_scope", (q) => q.eq("installationId", installation._id).eq("scopeId", scopeId._yay))
-			.take(MAX_COLLECTIONS + 1);
+		const [existing, scopeLifecycleRecord] = await Promise.all([
+			ctx.db
+				.query("plugins_data_scopes")
+				.withIndex("by_installation_scope", (q) => q.eq("installationId", installation._id).eq("scopeId", scopeId._yay))
+				.take(MAX_COLLECTIONS + 1),
+			db_get_scope_lifecycle_record(ctx, { installationId: installation._id, scopeId: scopeId._yay }),
+		]);
 
 		const now = Date.now();
 		const resourceId = scope_resource_id(installation._id, scopeId._yay);
+		if (creating && existing.length === 0) {
+			// Protect every fresh setup before its validation and database preflight. Existing setups
+			// continue below so an exact lost-response retry can return without paying twice.
+			const rateLimit = await chargeCreatingAttempt();
+			if (rateLimit) {
+				return rateLimit;
+			}
+		}
 
-		if (args.action.kind === "create") {
+		if (args.action.kind === "create" || args.action.kind === "create_with_document") {
+			if (existing.length === 0 && scopeLifecycleRecord) {
+				return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This scope id is unavailable" } });
+			}
+
 			// Held in a local because the checks below read it inside callbacks, where TypeScript no
 			// longer remembers which branch of the action union this is.
 			const requestedPrefix = args.action.keyPrefix;
 			const requested = [...new Set(args.action.collections)].sort();
 			if (requested.length === 0) {
-				return Result({ _nay: { message: "Name at least one collection for this scope" } });
+				return (
+					(await chargeCreatingAttempt()) ??
+					Result({ _nay: { message: "Name at least one collection for this scope" } })
+				);
 			}
 			if (requested.length > MAX_COLLECTIONS) {
-				return Result({ _nay: { message: `One scope can cover at most ${MAX_COLLECTIONS} collections` } });
-			}
-
-			// Creating the same scope twice is what a retried request looks like, so answer yes instead
-			// of an error. The same id over a different key range is a real mistake and is refused.
-			if (existing.length > 0) {
-				const covered = [...new Set(existing.map((scope) => scope.collection))].sort();
-				const sameRange =
-					existing.every((scope) => scope.keyPrefix === requestedPrefix) &&
-					covered.length === requested.length &&
-					covered.every((collection, index) => collection === requested[index]);
-				if (!sameRange) {
-					return Result({
-						_nay: { name: REFUSAL_CONFLICT, message: "This scope id already covers a different key range" },
-					});
-				}
-				return Result({ _yay: { scopeId: scopeId._yay } });
+				return (
+					(await chargeCreatingAttempt()) ??
+					Result({ _nay: { message: `One scope can cover at most ${MAX_COLLECTIONS} collections` } })
+				);
 			}
 
 			const collections: string[] = [];
 			for (const raw of requested) {
 				const collection = validate_name(raw, "Collection names");
 				if (collection._nay) {
-					return collection;
+					return (await chargeCreatingAttempt()) ?? collection;
 				}
 				collections.push(collection._yay);
 			}
 			const keyPrefix = validate_key_prefix(requestedPrefix);
 			if (keyPrefix._nay) {
-				return keyPrefix;
+				return (await chargeCreatingAttempt()) ?? keyPrefix;
+			}
+
+			let setup: {
+				principals: { userId: Id<"users">; level: plugins_data_ScopeLevel }[];
+				document: { collection: string; key: string; value: Record<string, unknown>; byteSize: number };
+			} | null = null;
+			let documentPricing: {
+				usage: Doc<"plugins_data_usage"> | null;
+				memberUsage: Doc<"plugins_data_member_usage"> | null;
+				addsCollection: boolean;
+				maxDocumentSlots: number;
+			} | null = null;
+			if (args.action.kind === "create_with_document") {
+				if (args.action.principals.length + 1 > MAX_SCOPE_PRINCIPALS) {
+					return (
+						(await chargeCreatingAttempt()) ??
+						Result({ _nay: { message: `One private space can name at most ${MAX_SCOPE_PRINCIPALS} people.` } })
+					);
+				}
+				const seenPrincipals = new Set<string>();
+				for (const principal of args.action.principals) {
+					if (principal.userId === userId) {
+						return (
+							(await chargeCreatingAttempt()) ??
+							Result({ _nay: { message: "The creator is already included with manage access" } })
+						);
+					}
+					if (seenPrincipals.has(principal.userId)) {
+						return (
+							(await chargeCreatingAttempt()) ?? Result({ _nay: { message: "Name each private-space member once" } })
+						);
+					}
+					seenPrincipals.add(principal.userId);
+				}
+
+				const documentCollection = validate_name(args.action.document.collection, "Collection names");
+				if (documentCollection._nay) {
+					return (await chargeCreatingAttempt()) ?? documentCollection;
+				}
+				const documentKey = validate_name(args.action.document.key, "Keys");
+				if (documentKey._nay) {
+					return (await chargeCreatingAttempt()) ?? documentKey;
+				}
+				if (!collections.includes(documentCollection._yay) || !documentKey._yay.startsWith(keyPrefix._yay)) {
+					return (
+						(await chargeCreatingAttempt()) ??
+						Result({ _nay: { message: "The first document must be inside the new scope" } })
+					);
+				}
+				const byteSize = validate_value(args.action.document.value);
+				if (byteSize._nay) {
+					return (await chargeCreatingAttempt()) ?? byteSize;
+				}
+				setup = {
+					principals: args.action.principals,
+					document: {
+						collection: documentCollection._yay,
+						key: documentKey._yay,
+						value: args.action.document.value,
+						byteSize: byteSize._yay,
+					},
+				};
+			}
+
+			// Creating the same scope twice is what a retried request looks like. Atomic retries must
+			// match the full setup; an existing range alone is not proof that its principals or document
+			// are the request the caller lost the answer for.
+			if (existing.length > 0) {
+				const membershipRevision = Math.max(...existing.map((scope) => scope.updatedAt));
+				const canUseExisting = await db_can_use_scope(ctx, {
+					installation,
+					scopeId: scopeId._yay,
+					userId,
+					permission: "content.read",
+				});
+				// Use the same answer as a released id. Do not reveal the range, members, or first document
+				// of a private scope that this page cannot read.
+				if (!canUseExisting) {
+					return (
+						(await chargeCreatingAttempt()) ??
+						Result({ _nay: { name: REFUSAL_CONFLICT, message: "This scope id is unavailable" } })
+					);
+				}
+				const covered = [...new Set(existing.map((scope) => scope.collection))].sort();
+				const sameRange =
+					existing.every((scope) => scope.keyPrefix === requestedPrefix) &&
+					covered.length === requested.length &&
+					covered.every((collection, index) => collection === requested[index]);
+				if (!sameRange) {
+					return (
+						(await chargeCreatingAttempt()) ??
+						Result({
+							_nay: { name: REFUSAL_CONFLICT, message: "This scope id already covers a different key range" },
+						})
+					);
+				}
+				if (setup === null) {
+					return Result({ _yay: { scopeId: scopeId._yay, deleted: false, membershipRevision } });
+				}
+
+				const [storedDocument, storedGrants] = await Promise.all([
+					db_get_document(ctx, {
+						installationId: installation._id,
+						collection: setup.document.collection,
+						key: setup.document.key,
+					}),
+					db_scope_grants(ctx, {
+						organizationId: organization._id,
+						workspaceId: workspace._id,
+						resourceId,
+					}),
+				]);
+				const storedLevels = new Map<Id<"users">, plugins_data_ScopeLevel>();
+				for (const grant of storedGrants) {
+					if (!grant.userId) {
+						continue;
+					}
+					if (grant.permission === "content.permissions.manage") {
+						storedLevels.set(grant.userId, "manage");
+					} else if (!storedLevels.has(grant.userId)) {
+						storedLevels.set(grant.userId, "member");
+					}
+				}
+				const requestedLevels = new Map<Id<"users">, plugins_data_ScopeLevel>([
+					[userId, "manage"],
+					...setup.principals.map((principal) => [principal.userId, principal.level] as const),
+				]);
+				const samePrincipals =
+					storedLevels.size === requestedLevels.size &&
+					[...requestedLevels].every(([targetUserId, level]) => storedLevels.get(targetUserId) === level);
+				const sameDocument =
+					storedDocument?.scopeId === scopeId._yay &&
+					storedDocument.ownership === "shared" &&
+					canonical_json(storedDocument.value) === canonical_json(setup.document.value);
+				if (!samePrincipals || !sameDocument) {
+					return (
+						(await chargeCreatingAttempt()) ??
+						Result({
+							_nay: { name: REFUSAL_CONFLICT, message: "This scope id already has a different setup" },
+						})
+					);
+				}
+				return Result({ _yay: { scopeId: scopeId._yay, deleted: false, membershipRevision } });
 			}
 
 			for (const collection of collections) {
@@ -3319,8 +4238,32 @@ export const user_manage_scope = mutation({
 					keyPrefix: keyPrefix._yay,
 				});
 				if (overlapping) {
+					const canReadOverlappingScope = await db_can_use_scope(ctx, {
+						installation,
+						scopeId: overlapping.scopeId,
+						collection,
+						userId,
+						permission: "content.read",
+					});
 					return Result({
-						_nay: { name: REFUSAL_CONFLICT, message: "Another scope already covers part of this key range" },
+						_nay: {
+							name: REFUSAL_CONFLICT,
+							message: canReadOverlappingScope
+								? "Another scope already covers part of this key range"
+								: "This key range is unavailable",
+						},
+					});
+				}
+				// Released ranges must not overlap either. Otherwise the greatest-prefix lookup could stop
+				// at a nested fence and miss the released parent range that still owns the key.
+				const releasedOverlap = await db_find_overlapping_released_scope_range(ctx, {
+					installationId: installation._id,
+					collection,
+					keyPrefix: keyPrefix._yay,
+				});
+				if (releasedOverlap) {
+					return Result({
+						_nay: { name: REFUSAL_CONFLICT, message: "This key range is unavailable" },
 					});
 				}
 
@@ -3329,19 +4272,46 @@ export const user_manage_scope = mutation({
 				// claims to be private. It also closes the way back in after a delete: the scope's old
 				// documents are still there, so the same range cannot be claimed again and handed to
 				// somebody else.
-				const occupant = await ctx.db
-					.query("plugins_data")
-					.withIndex("by_installation_collection_key", (q) =>
-						q
-							.eq("installationId", installation._id)
-							.eq("collection", collection)
-							.gte("key", keyPrefix._yay)
-							.lt("key", key_prefix_upper_bound(keyPrefix._yay)),
-					)
-					.first();
-				if (occupant) {
+				const upperBound = key_prefix_upper_bound(keyPrefix._yay);
+				const [occupant, liveReservation, tombstone] = await Promise.all([
+					ctx.db
+						.query("plugins_data")
+						.withIndex("by_installation_collection_key", (q) =>
+							q
+								.eq("installationId", installation._id)
+								.eq("collection", collection)
+								.gte("key", keyPrefix._yay)
+								.lt("key", upperBound),
+						)
+						.first(),
+					ctx.db
+						.query("plugins_data_reservations")
+						.withIndex("by_installation_state_collection_key", (q) =>
+							q
+								.eq("installationId", installation._id)
+								.eq("state", "live")
+								.eq("collection", collection)
+								.gte("key", keyPrefix._yay)
+								.lt("key", upperBound),
+						)
+						.first(),
+					ctx.db
+						.query("plugins_data_revision_tombstones")
+						.withIndex("by_installation_collection_key", (q) =>
+							q
+								.eq("installationId", installation._id)
+								.eq("collection", collection)
+								.gte("key", keyPrefix._yay)
+								.lt("key", upperBound),
+						)
+						.first(),
+				]);
+				// A reservation promises the service that its later write will work. A tombstone keeps
+				// the same key owned through the retry horizon. Read both full ranges here so a scope
+				// create also conflicts with a concurrent service reservation.
+				if (occupant || liveReservation || tombstone) {
 					return Result({
-						_nay: { name: REFUSAL_CONFLICT, message: "This key range already holds documents" },
+						_nay: { name: REFUSAL_CONFLICT, message: "This key range is already in use" },
 					});
 				}
 			}
@@ -3350,13 +4320,87 @@ export const user_manage_scope = mutation({
 				organizationId: organization._id,
 				workspaceId: workspace._id,
 				userId,
+				self: true,
 			});
 			if (capReached._nay) {
 				return capReached;
 			}
 
-			await Promise.all(
-				collections.map((collection) =>
+			const scopeIdentities = await ctx.db
+				.query("plugins_data_released_scope_ranges")
+				.withIndex("by_installation_collection_prefix", (q) =>
+					q
+						.eq("installationId", installation._id)
+						.eq("collectionName", SCOPE_IDENTITY_MARKER)
+						.eq("keyPrefix", SCOPE_IDENTITY_MARKER),
+				)
+				.take(MAX_SCOPE_IDS_PER_INSTALLATION);
+			if (scopeIdentities.length >= MAX_SCOPE_IDS_PER_INSTALLATION) {
+				return Result({
+					_nay: {
+						name: REFUSAL_STORAGE_FULL,
+						message: `This plugin has already created ${MAX_SCOPE_IDS_PER_INSTALLATION} private spaces, which is its lifetime limit. Reinstall it to start over.`,
+					},
+				});
+			}
+
+			if (setup !== null) {
+				const targetChecks = await Promise.all(
+					setup.principals.map(async (principal) => {
+						const [targetUser, targetMembership, targetCap] = await Promise.all([
+							ctx.db.get("users", principal.userId),
+							ctx.db
+								.query("organizations_workspaces_users")
+								.withIndex("by_active_user_organization_workspace", (q) =>
+									q
+										.eq("active", true)
+										.eq("userId", principal.userId)
+										.eq("organizationId", installation.organizationId)
+										.eq("workspaceId", installation.workspaceId),
+								)
+								.first(),
+							db_refuse_member_scope_cap(ctx, {
+								organizationId: organization._id,
+								workspaceId: workspace._id,
+								userId: principal.userId,
+								self: false,
+							}),
+						]);
+						if (!targetUser || targetUser.deletedAt != null || !targetMembership) {
+							return Result({ _nay: { message: "Not found" } });
+						}
+						return targetCap;
+					}),
+				);
+				const refusedTarget = targetChecks.find((result) => result._nay !== undefined);
+				if (refusedTarget?._nay) {
+					return refusedTarget;
+				}
+
+				const documentCapacity = await db_preflight_user_write_document(ctx, {
+					installation,
+					organization,
+					userId,
+					existing: null,
+					collection: setup.document.collection,
+					byteSize: setup.document.byteSize,
+				});
+				if (documentCapacity._nay) {
+					return documentCapacity;
+				}
+				documentPricing = documentCapacity._yay;
+			}
+
+			await Promise.all([
+				ctx.db.insert("plugins_data_released_scope_ranges", {
+					organizationId: organization._id,
+					workspaceId: workspace._id,
+					installationId: installation._id,
+					scopeId: scopeId._yay,
+					collectionName: SCOPE_IDENTITY_MARKER,
+					keyPrefix: SCOPE_IDENTITY_MARKER,
+				}),
+				...collections.map((collection) =>
 					ctx.db.insert("plugins_data_scopes", {
 						organizationId: organization._id,
 						workspaceId: workspace._id,
@@ -3366,10 +4410,12 @@ export const user_manage_scope = mutation({
 						keyPrefix: keyPrefix._yay,
 						createdByUserId: userId,
 						createdAt: now,
+						lastAppend: null,
+						appendSequence: 0,
 						updatedAt: now,
 					}),
 				),
-			);
+			]);
 			// The creator has to stay in. A role gives nothing inside a scope, so without this the
 			// member would create a private channel and lose it in the same call.
 			await db_set_scope_principal(ctx, {
@@ -3380,16 +4426,109 @@ export const user_manage_scope = mutation({
 				level: "manage",
 				now,
 			});
-			return Result({ _yay: { scopeId: scopeId._yay } });
+			if (setup !== null) {
+				for (const principal of setup.principals) {
+					await db_set_scope_principal(ctx, {
+						organizationId: organization._id,
+						workspaceId: workspace._id,
+						resourceId,
+						userId: principal.userId,
+						level: principal.level,
+						now,
+					});
+				}
+				await db_commit_user_write_document(ctx, {
+					installation,
+					organization,
+					userId,
+					existing: null,
+					collection: setup.document.collection,
+					key: setup.document.key,
+					value: setup.document.value,
+					byteSize: setup.document.byteSize,
+					ownership: "shared",
+					// Every atomic setup returns above when pricing is refused, so the commit always has it.
+					pricing: documentPricing!,
+				});
+			}
+			return Result({ _yay: { scopeId: scopeId._yay, deleted: false, membershipRevision: now } });
 		}
 
 		if (existing.length === 0) {
 			return Result({ _nay: { message: "Not found" } });
 		}
+		const canUseExisting = await db_can_use_scope(ctx, {
+			installation,
+			scopeId: scopeId._yay,
+			userId,
+			permission: "content.read",
+		});
+		if (!canUseExisting) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		// Membership revisions must move even when two accepted changes share one clock millisecond.
+		const membershipRevision = Math.max(now, ...existing.map((scope) => scope.updatedAt + 1));
 
-		// Everything below changes who is in the scope, so it needs a `manage` grant on this exact
-		// scope. For a `plugin_scope` resource that answer comes from the grant alone, so holding the
-		// workspace-wide permission is not enough.
+		const grants = await db_scope_grants(ctx, {
+			organizationId: organization._id,
+			workspaceId: workspace._id,
+			resourceId,
+		});
+		const storedPrincipals = new Set(grants.flatMap((grant) => (grant.userId ? [grant.userId] : [])));
+		const principals = new Set(
+			await db_active_scope_user_ids(ctx, {
+				organizationId: organization._id,
+				workspaceId: workspace._id,
+				grants,
+			}),
+		);
+
+		if (args.action.kind === "remove_principal" && args.action.userId === userId) {
+			// Check the active grant holders directly. The normal permission helper lets an organization owner pass
+			// without a grant, which would let an owner delete somebody else's last-principal scope.
+			if (!principals.has(userId)) {
+				return Result({ _nay: { message: "Permission denied" } });
+			}
+			// Check the frozen dialog count only after authority. Doing it earlier would let a workspace
+			// member guess how many people are in a private scope they cannot use.
+			if (args.action.expectedPrincipalCount !== undefined && args.action.expectedPrincipalCount !== principals.size) {
+				return Result({
+					_nay: { name: REFUSAL_CONFLICT, message: "The private space membership changed. Try again." },
+				});
+			}
+
+			const managed = await plugins_data_db_keep_scope_managed(ctx, {
+				installation,
+				scopes: existing,
+				excludeUserId: userId,
+			});
+			if (managed.deleted) {
+				return Result({ _yay: { scopeId: scopeId._yay, deleted: true, membershipRevision } });
+			}
+
+			await db_set_scope_principal(ctx, {
+				organizationId: organization._id,
+				workspaceId: workspace._id,
+				resourceId,
+				userId,
+				level: null,
+				now,
+			});
+			await plugins_data_db_sync_scope_projection_acl(ctx, {
+				installation,
+				organizationId: organization._id,
+				workspaceId: workspace._id,
+				scopeId: scopeId._yay,
+				removeGrantsFor: [userId],
+			});
+			await Promise.all(
+				existing.map((scope) => ctx.db.patch("plugins_data_scopes", scope._id, { updatedAt: membershipRevision })),
+			);
+			return Result({ _yay: { scopeId: scopeId._yay, deleted: false, membershipRevision } });
+		}
+
+		// Changing another principal, or deleting a scope that may contain others, needs `manage` on
+		// this exact scope. A role gives nothing here, but the organization owner still passes.
 		const canManage = await access_control_db_has_permission(ctx, {
 			organizationId: organization._id,
 			workspaceId: workspace._id,
@@ -3402,26 +4541,45 @@ export const user_manage_scope = mutation({
 		if (!canManage) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
+		// Keep the count binding behind the permission check so it cannot reveal private membership.
+		if (
+			(args.action.kind === "delete" || args.action.kind === "remove_principal") &&
+			args.action.expectedPrincipalCount !== undefined &&
+			args.action.expectedPrincipalCount !== principals.size
+		) {
+			return Result({
+				_nay: { name: REFUSAL_CONFLICT, message: "The private space membership changed. Try again." },
+			});
+		}
 
 		if (args.action.kind === "delete") {
-			await db_delete_scope(ctx, existing);
-			await db_sync_scope_projection_acl(ctx, {
+			await plugins_data_db_delete_scope(ctx, existing);
+			await plugins_data_db_sync_scope_projection_acl(ctx, {
 				installation,
 				organizationId: organization._id,
 				workspaceId: workspace._id,
 				scopeId: scopeId._yay,
 				removeGrantsFor: "all",
 			});
-			return Result({ _yay: { scopeId: scopeId._yay } });
+			return Result({ _yay: { scopeId: scopeId._yay, deleted: true, membershipRevision } });
 		}
 
 		const target = args.action.userId;
 
 		if (args.action.kind === "remove_principal") {
-			// A scope with nobody left in it can never be reached again, and nothing could delete it.
-			// So the last manager deletes the scope instead of removing their own grants.
-			if (target === userId) {
-				return Result({ _nay: { message: "Delete the scope instead of removing yourself from it" } });
+			// An owner can manage a scope without being one of its principals. Do not let that special
+			// authority remove the one remaining principal and strand a scope nobody can reach.
+			if (principals.size === 1 && principals.has(target)) {
+				return Result({ _nay: { message: "The last person must leave this private space themselves" } });
+			}
+			const managed = await plugins_data_db_keep_scope_managed(ctx, {
+				installation,
+				scopes: existing,
+				excludeUserId: target,
+				deleteIfEmpty: false,
+			});
+			if (!managed.hasActivePrincipal) {
+				return Result({ _nay: { message: "The last person must leave this private space themselves" } });
 			}
 			await db_set_scope_principal(ctx, {
 				organizationId: organization._id,
@@ -3431,14 +4589,23 @@ export const user_manage_scope = mutation({
 				level: null,
 				now,
 			});
-			await db_sync_scope_projection_acl(ctx, {
+			await plugins_data_db_sync_scope_projection_acl(ctx, {
 				installation,
 				organizationId: organization._id,
 				workspaceId: workspace._id,
 				scopeId: scopeId._yay,
 				removeGrantsFor: [target],
 			});
-			return Result({ _yay: { scopeId: scopeId._yay } });
+			await Promise.all(
+				existing.map((scope) => ctx.db.patch("plugins_data_scopes", scope._id, { updatedAt: membershipRevision })),
+			);
+			return Result({ _yay: { scopeId: scopeId._yay, deleted: false, membershipRevision } });
+		}
+
+		// Refuse self-demotion outright because a sole manager could not undo it. Re-asserting
+		// `manage` is safe and remains allowed.
+		if (target === userId && args.action.level === "member") {
+			return Result({ _nay: { message: "You cannot lower your own private space access" } });
 		}
 
 		// Only a live member of this workspace may be named. Otherwise a frame could hand a scope to
@@ -3457,14 +4624,8 @@ export const user_manage_scope = mutation({
 			return Result({ _nay: { message: "Not found" } });
 		}
 
-		const grants = await db_scope_grants(ctx, {
-			organizationId: organization._id,
-			workspaceId: workspace._id,
-			resourceId,
-		});
-		const principals = new Set(grants.map((grant) => grant.userId));
-		if (!principals.has(target) && principals.size >= MAX_SCOPE_PRINCIPALS) {
-			return Result({ _nay: { message: `One scope can name at most ${MAX_SCOPE_PRINCIPALS} people` } });
+		if (!storedPrincipals.has(target) && storedPrincipals.size >= MAX_SCOPE_PRINCIPALS) {
+			return Result({ _nay: { message: `One private space can name at most ${MAX_SCOPE_PRINCIPALS} people.` } });
 		}
 
 		const targetCap = await db_refuse_member_scope_cap(ctx, {
@@ -3472,9 +4633,22 @@ export const user_manage_scope = mutation({
 			workspaceId: workspace._id,
 			userId: target,
 			exceptResourceId: resourceId,
+			self: target === userId,
 		});
 		if (targetCap._nay) {
 			return targetCap;
+		}
+
+		if (args.action.level === "member") {
+			const managed = await plugins_data_db_keep_scope_managed(ctx, {
+				installation,
+				scopes: existing,
+				excludeUserId: target,
+				deleteIfEmpty: false,
+			});
+			if (!managed.hasActivePrincipal) {
+				return Result({ _nay: { message: "Add another person before lowering the last manager's access" } });
+			}
 		}
 
 		await db_set_scope_principal(ctx, {
@@ -3485,19 +4659,22 @@ export const user_manage_scope = mutation({
 			level: args.action.level,
 			now,
 		});
-		await db_sync_scope_projection_acl(ctx, {
+		await plugins_data_db_sync_scope_projection_acl(ctx, {
 			installation,
 			organizationId: organization._id,
 			workspaceId: workspace._id,
 			scopeId: scopeId._yay,
 			removeGrantsFor: null,
 		});
-		return Result({ _yay: { scopeId: scopeId._yay } });
+		await Promise.all(
+			existing.map((scope) => ctx.db.patch("plugins_data_scopes", scope._id, { updatedAt: membershipRevision })),
+		);
+		return Result({ _yay: { scopeId: scopeId._yay, deleted: false, membershipRevision } });
 	},
 });
 
 /**
- * Who is in one private scope.
+ * Which active workspace members are in one private scope.
  *
  * The plugin's own share dialog needs this. Without a read door a member can add somebody to a
  * private channel and can never see or change the list afterwards, which is the append-only shape
@@ -3535,7 +4712,14 @@ export const watch_scope_principals = query({
 		if (!scope) {
 			return null;
 		}
-		if (!(await db_can_use_scope(ctx, { installation, scopeId: scopeId._yay, userId: authorized.userId, permission: "content.read" }))) {
+		if (
+			!(await db_can_use_scope(ctx, {
+				installation,
+				scopeId: scopeId._yay,
+				userId: authorized.userId,
+				permission: "content.read",
+			}))
+		) {
 			return null;
 		}
 
@@ -3544,13 +4728,21 @@ export const watch_scope_principals = query({
 			workspaceId: scope.workspaceId,
 			resourceId: scope_resource_id(installation._id, scopeId._yay),
 		});
+		const activeUserIds = new Set(
+			await db_active_scope_user_ids(ctx, {
+				organizationId: scope.organizationId,
+				workspaceId: scope.workspaceId,
+				grants,
+			}),
+		);
 
 		// One grant row per permission, so fold the rows back into the level that issued them. Manage
 		// is the only permission `member` does not carry, so it decides the level whichever order the
-		// rows arrive in.
+		// rows arrive in. Retained grants for inactive members stay hidden so this count matches the
+		// leave mutation's active-principal count.
 		const levels = new Map<Id<"users">, "member" | "manage">();
 		for (const grant of grants) {
-			if (!grant.userId) {
+			if (!grant.userId || !activeUserIds.has(grant.userId)) {
 				continue;
 			}
 			if (grant.permission === "content.permissions.manage") {
@@ -3590,7 +4782,11 @@ export const watch_my_scopes = query({
 				scopeId: v.string(),
 				keyPrefix: v.string(),
 				collections: v.array(v.string()),
+				appendActivity: v.array(
+					v.object({ collection: v.string(), at: v.number(), createdByUserId: v.string(), sequence: v.number() }),
+				),
 				level: v.union(v.literal("member"), v.literal("manage")),
+				membershipRevision: v.number(),
 			}),
 		),
 		v.null(),
@@ -3634,14 +4830,12 @@ export const watch_my_scopes = query({
 			[...levels].map(async ([scopeId, level]) => {
 				const rows = await ctx.db
 					.query("plugins_data_scopes")
-					.withIndex("by_installation_scope", (q) =>
-						q.eq("installationId", installation._id).eq("scopeId", scopeId),
-					)
+					.withIndex("by_installation_scope", (q) => q.eq("installationId", installation._id).eq("scopeId", scopeId))
 					.take(MAX_COLLECTIONS);
 				const [first] = rows;
 				if (!first) {
-					// A grant lives exactly as long as its scope rows: `db_delete_scope` removes both in
-					// the same mutation. So this only answers TypeScript.
+					// The list starts from grants. Supported cleanup either removes grants and rows together or
+					// removes grants first, so no supported flow leaves a grant without its scope rows.
 					return null;
 				}
 
@@ -3650,7 +4844,22 @@ export const watch_my_scopes = query({
 					scopeId,
 					keyPrefix: first.keyPrefix,
 					collections: rows.map((row) => row.collection).sort(),
+					appendActivity: rows
+						.flatMap((row) =>
+							row.lastAppend === null || row.lastAppend === undefined
+								? []
+								: [
+										{
+											collection: row.collection,
+											at: row.lastAppend.at,
+											createdByUserId: String(row.lastAppend.createdByUserId),
+											sequence: row.appendSequence ?? 1,
+										},
+									],
+						)
+						.sort((left, right) => left.collection.localeCompare(right.collection)),
 					level,
+					membershipRevision: Math.max(...rows.map((row) => row.updatedAt)),
 				};
 			}),
 		);
@@ -3738,7 +4947,12 @@ async function db_authorize_page_read(ctx: QueryCtx) {
 		ctx.db.get("organizations", session.organizationId),
 		ctx.db.get("organizations_workspaces", session.workspaceId),
 	]);
-	if (!organization?.defaultWorkspaceId || !workspace || workspace.organizationId !== organization._id) {
+	if (
+		!organization?.defaultWorkspaceId ||
+		!workspace ||
+		workspace.organizationId !== organization._id ||
+		workspace.pluginDataPurgeStartedAt !== undefined
+	) {
 		return null;
 	}
 	const allowed = await access_control_db_has_permission(ctx, {
@@ -3983,7 +5197,13 @@ export const watch_recent = query({
 		}
 		if (
 			args.scopeId !== undefined &&
-			!(await db_can_use_scope(ctx, { installation, scopeId: args.scopeId, userId: authorized.userId, permission: "content.read" }))
+			!(await db_can_use_scope(ctx, {
+				installation,
+				scopeId: args.scopeId,
+				collection: collection._yay,
+				userId: authorized.userId,
+				permission: "content.read",
+			}))
 		) {
 			return null;
 		}
@@ -4075,6 +5295,7 @@ export const watch_changes = query({
 			!(await db_can_use_scope(ctx, {
 				installation,
 				scopeId: args.scopeId,
+				collection: collection._yay,
 				userId: authorized.userId,
 				permission: "content.read",
 			}))
@@ -4285,7 +5506,6 @@ export const write_versioned_document = internalMutation({
 			return Result({ _nay: { message: "A revision is a whole number from 1" } });
 		}
 
-
 		const scopedWrite = await db_refuse_scoped_write(ctx, {
 			installation,
 			userId: args.principal.actorUserId,
@@ -4378,8 +5598,8 @@ export const write_versioned_document = internalMutation({
 		}
 
 		// A producer's outbox key can land inside a private range like any other key, so it carries the
-		// same stamp. Without it the projection would be the one document in a private channel that
-		// the whole workspace can read.
+		// same stamp. A released scope keeps that stamp for good, or a later service patch could make
+		// the private document readable by the whole workspace.
 		const scope = await db_resolve_scope(ctx, {
 			installationId: installation._id,
 			collection: collection._yay,
@@ -4393,7 +5613,7 @@ export const write_versioned_document = internalMutation({
 				revision: args.revision,
 				updatedBy: args.principal.actorUserId,
 				updatedAt: now,
-				scopeId: scope?.scopeId,
+				scopeId: scope?.scopeId ?? existing.scopeId,
 			});
 		} else {
 			await ctx.db.insert("plugins_data", {
@@ -4440,9 +5660,11 @@ export const write_versioned_document = internalMutation({
 			maxDocumentSlots,
 		});
 
-		// Council meetings arrive on this door, not through iframe appends. An unregistered
-		// plugin still returns before any projection table is read.
-		await db_schedule_projection_sync_if_registered(ctx, installation);
+		// Council meetings arrive on this door, not through iframe appends. Record the exact meeting
+		// before the merged cursor feed runs, so a same-millisecond patch cannot fall behind its fence.
+		await db_mark_projection_store_documents_dirty_and_schedule(ctx, installation, [
+			{ collection: collection._yay, key: key._yay, scopeId: scope?.scopeId ?? existing?.scopeId },
+		]);
 
 		return Result({ _yay: { revision: args.revision, byteSize: byteSize._yay } });
 	},
@@ -4491,7 +5713,6 @@ export const delete_versioned_document = internalMutation({
 		if (!Number.isInteger(args.revision) || args.revision < 1) {
 			return Result({ _nay: { message: "A revision is a whole number from 1" } });
 		}
-
 
 		const scopedWrite = await db_refuse_scoped_write(ctx, {
 			installation,
@@ -4653,7 +5874,11 @@ export const delete_versioned_document = internalMutation({
 		});
 		await db_patch_usage(ctx, { usage: afterWrites, next: { collectionNames }, now, maxDocumentSlots });
 
-		await db_schedule_projection_sync_if_registered(ctx, installation);
+		if (existing) {
+			await db_mark_projection_store_documents_dirty_and_schedule(ctx, installation, [
+				{ collection: existing.collection, key: existing.key, scopeId: existing.scopeId },
+			]);
+		}
 
 		return Result({ _yay: { deleted: existing != null, revision: args.revision } });
 	},
@@ -4673,13 +5898,11 @@ export type plugins_data_delete_versioned_document_Result =
 const DELETION_BATCH_SIZE = 100;
 
 /**
- * Delete one bounded batch of stored plugin data, for one installation or for a whole workspace.
+ * Delete one bounded batch of installation-owned data, for one installation or for a whole workspace.
  *
- * None of these six tables points at another, so the order between them is free. What is not free is
- * stopping early: the caller must keep calling until `done`, because one pass deletes at most
- * `batchSize` docs. The accounting doc goes last so that it is never the survivor: while the drain is
- * unfinished the counters are wrong either way, and a leftover accounting doc with no documents left
- * would look like a real installation to anything that reads it.
+ * The caller must keep calling until `done`, because one pass deletes at most `batchSize` docs. Most
+ * tables are independent. Scope grants, live scope docs, and released-range fences are the exception:
+ * that fail-closed order keeps private history hidden during a workspace drain.
  */
 export async function plugins_data_db_drain_batch(
 	ctx: MutationCtx,
@@ -4691,6 +5914,20 @@ export async function plugins_data_db_drain_batch(
 		batchSize: number;
 	},
 ) {
+	// The caller already deleted or disabled this installation, which revoked these sessions. Drain
+	// them first because an installation has no session cap and uninstall cannot read them all safely.
+	const installationId = args.installationId;
+	if (installationId) {
+		const uiSessions = await ctx.db
+			.query("plugins_ui_sessions")
+			.withIndex("by_installation", (q) => q.eq("installationId", installationId))
+			.take(args.batchSize);
+		if (uiSessions.length > 0) {
+			await Promise.all(uiSessions.map((doc) => ctx.db.delete("plugins_ui_sessions", doc._id)));
+			return { done: false, deletedCount: uiSessions.length };
+		}
+	}
+
 	// Projection tables first (children, then state). Uninstall must not write files_nodes.
 	const dirtyChannels = await ctx.db
 		.query("plugins_data_projection_dirty_channels")
@@ -4702,6 +5939,69 @@ export async function plugins_data_db_drain_batch(
 	if (dirtyChannels.length > 0) {
 		await Promise.all(dirtyChannels.map((doc) => ctx.db.delete("plugins_data_projection_dirty_channels", doc._id)));
 		return { done: false, deletedCount: dirtyChannels.length };
+	}
+
+	const chitchatItems = await ctx.db
+		.query("plugins_data_projection_chitchat_items")
+		.withIndex("by_organization_workspace_installation", (q) => {
+			const tenant = q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId);
+			return args.installationId ? tenant.eq("installationId", args.installationId) : tenant;
+		})
+		.take(args.batchSize);
+	if (chitchatItems.length > 0) {
+		await Promise.all(chitchatItems.map((doc) => ctx.db.delete("plugins_data_projection_chitchat_items", doc._id)));
+		return { done: false, deletedCount: chitchatItems.length };
+	}
+
+	const chitchatReactions = await ctx.db
+		.query("plugins_data_projection_chitchat_reactions")
+		.withIndex("by_organization_workspace_installation", (q) => {
+			const tenant = q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId);
+			return args.installationId ? tenant.eq("installationId", args.installationId) : tenant;
+		})
+		.take(args.batchSize);
+	if (chitchatReactions.length > 0) {
+		await Promise.all(
+			chitchatReactions.map((doc) => ctx.db.delete("plugins_data_projection_chitchat_reactions", doc._id)),
+		);
+		return { done: false, deletedCount: chitchatReactions.length };
+	}
+
+	const chitchatAuthors = await ctx.db
+		.query("plugins_data_projection_chitchat_authors")
+		.withIndex("by_organization_workspace_installation", (q) => {
+			const tenant = q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId);
+			return args.installationId ? tenant.eq("installationId", args.installationId) : tenant;
+		})
+		.take(args.batchSize);
+	if (chitchatAuthors.length > 0) {
+		await Promise.all(chitchatAuthors.map((doc) => ctx.db.delete("plugins_data_projection_chitchat_authors", doc._id)));
+		return { done: false, deletedCount: chitchatAuthors.length };
+	}
+
+	// A staged body can approach the file byte cap. Read and delete only one body per transaction.
+	const chitchatFiles = await ctx.db
+		.query("plugins_data_projection_chitchat_files")
+		.withIndex("by_organization_workspace_installation", (q) => {
+			const tenant = q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId);
+			return args.installationId ? tenant.eq("installationId", args.installationId) : tenant;
+		})
+		.take(1);
+	if (chitchatFiles.length > 0) {
+		await Promise.all(chitchatFiles.map((doc) => ctx.db.delete("plugins_data_projection_chitchat_files", doc._id)));
+		return { done: false, deletedCount: chitchatFiles.length };
+	}
+
+	const chitchatBuilds = await ctx.db
+		.query("plugins_data_projection_chitchat_builds")
+		.withIndex("by_organization_workspace_installation", (q) => {
+			const tenant = q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId);
+			return args.installationId ? tenant.eq("installationId", args.installationId) : tenant;
+		})
+		.take(args.batchSize);
+	if (chitchatBuilds.length > 0) {
+		await Promise.all(chitchatBuilds.map((doc) => ctx.db.delete("plugins_data_projection_chitchat_builds", doc._id)));
+		return { done: false, deletedCount: chitchatBuilds.length };
 	}
 
 	const projectionFiles = await ctx.db
@@ -4728,8 +6028,8 @@ export async function plugins_data_db_drain_batch(
 		return { done: false, deletedCount: projectionStates.length };
 	}
 
-	// Every one of these six tables carries the same three scope fields in the same index, so each
-	// pass narrows to the workspace and, when the caller named one, to the single installation.
+	// Every store table below carries the same three tenant fields in the same index, so each pass
+	// narrows to the workspace and, when the caller named one, to the single installation.
 	const reservations = await ctx.db
 		.query("plugins_data_reservations")
 		.withIndex("by_organization_workspace_installation", (q) => {
@@ -4740,6 +6040,20 @@ export async function plugins_data_db_drain_batch(
 	if (reservations.length > 0) {
 		await Promise.all(reservations.map((doc) => ctx.db.delete("plugins_data_reservations", doc._id)));
 		return { done: false, deletedCount: reservations.length };
+	}
+
+	const appendReplayReceipts = await ctx.db
+		.query("plugins_data_append_replay_receipts")
+		.withIndex("by_organization_workspace_installation", (q) => {
+			const tenant = q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId);
+			return args.installationId ? tenant.eq("installationId", args.installationId) : tenant;
+		})
+		.take(args.batchSize);
+	if (appendReplayReceipts.length > 0) {
+		await Promise.all(
+			appendReplayReceipts.map((doc) => ctx.db.delete("plugins_data_append_replay_receipts", doc._id)),
+		);
+		return { done: false, deletedCount: appendReplayReceipts.length };
 	}
 
 	const tombstones = await ctx.db
@@ -4776,6 +6090,51 @@ export async function plugins_data_db_drain_batch(
 	if (grants.length > 0) {
 		await Promise.all(grants.map((doc) => ctx.db.delete("plugin_service_grants", doc._id)));
 		return { done: false, deletedCount: grants.length };
+	}
+
+	// Keep this slot after the document and projection passes. Grants go before scope docs so a
+	// partial drain fails closed. Released fences go last so stale writers stay refused until both the
+	// documents and their live scope docs are gone.
+	const scopeResourcePrefix = args.installationId ? `${args.installationId}:` : null;
+	const scopeGrants = await ctx.db
+		.query("access_control_permission_grants")
+		.withIndex("by_organization_workspace_resource_user_permission", (q) => {
+			const tenant = q
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("resourceKind", "plugin_scope");
+			return scopeResourcePrefix
+				? tenant.gte("resourceId", scopeResourcePrefix).lt("resourceId", key_prefix_upper_bound(scopeResourcePrefix))
+				: tenant;
+		})
+		.take(args.batchSize);
+	if (scopeGrants.length > 0) {
+		await Promise.all(scopeGrants.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)));
+		return { done: false, deletedCount: scopeGrants.length };
+	}
+
+	const scopeDocs = await ctx.db
+		.query("plugins_data_scopes")
+		.withIndex("by_organization_workspace_installation", (q) => {
+			const tenant = q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId);
+			return args.installationId ? tenant.eq("installationId", args.installationId) : tenant;
+		})
+		.take(args.batchSize);
+	if (scopeDocs.length > 0) {
+		await Promise.all(scopeDocs.map((doc) => ctx.db.delete("plugins_data_scopes", doc._id)));
+		return { done: false, deletedCount: scopeDocs.length };
+	}
+
+	const releasedScopeRanges = await ctx.db
+		.query("plugins_data_released_scope_ranges")
+		.withIndex("by_organization_workspace_installation", (q) => {
+			const tenant = q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId);
+			return args.installationId ? tenant.eq("installationId", args.installationId) : tenant;
+		})
+		.take(args.batchSize);
+	if (releasedScopeRanges.length > 0) {
+		await Promise.all(releasedScopeRanges.map((doc) => ctx.db.delete("plugins_data_released_scope_ranges", doc._id)));
+		return { done: false, deletedCount: releasedScopeRanges.length };
 	}
 
 	// The service upload targets live in their own module because they charge a workspace quota,
@@ -4849,8 +6208,70 @@ export const drain_uninstalled_installation = internalMutation({
 	},
 });
 
-/** How many service grants one installation's preview counts before it answers "this many or more". */
-const SERVICE_GRANT_COUNT_LIMIT = 100;
+/** How many docs without counters one installation preview reads before it answers "this many or more". */
+const PREVIEW_DOC_COUNT_LIMIT = 100;
+/** A staged body can be close to the file limit, so the preview reads at most two to prove `1+`. */
+const PREVIEW_STAGED_FILE_COUNT_LIMIT = 1;
+
+/** Shared read budget used by a larger preview that walks several installations. */
+export type plugins_data_PreviewReadBudget = {
+	remaining: number;
+	truncated: boolean;
+	/** Count at most one large staged body, with one extra read to prove the `1+` lower bound. */
+	stagedFiles?: {
+		remainingCount: number;
+		remainingReads: number;
+	};
+};
+
+async function db_take_preview_docs<T>(
+	read: (limit: number) => Promise<T[]>,
+	budget?: plugins_data_PreviewReadBudget,
+	countLimit = PREVIEW_DOC_COUNT_LIMIT,
+) {
+	if (budget?.remaining === 0) {
+		budget.truncated = true;
+		return { docs: [], truncated: true };
+	}
+
+	const limit = Math.min(countLimit, budget?.remaining ?? countLimit);
+	const docs = await read(limit + 1);
+	if (budget) {
+		budget.remaining = Math.max(0, budget.remaining - docs.length);
+	}
+	const truncated = docs.length > limit;
+	if (truncated && budget) {
+		budget.truncated = true;
+	}
+	return { docs: docs.slice(0, limit), truncated };
+}
+
+async function db_take_staged_file_preview_docs<T>(
+	read: (limit: number) => Promise<T[]>,
+	budget?: plugins_data_PreviewReadBudget,
+) {
+	const stagedFiles = budget?.stagedFiles;
+	if (!budget || !stagedFiles) {
+		return await db_take_preview_docs(read, budget, PREVIEW_STAGED_FILE_COUNT_LIMIT);
+	}
+	if (budget.remaining === 0 || stagedFiles.remainingReads === 0) {
+		budget.truncated = true;
+		return { docs: [], truncated: true };
+	}
+
+	// Share both the one counted body and its truncation sentinel across every installation. Without
+	// this separate byte budget, many `limit + 1` reads can exceed the transaction read limit.
+	const wantedReads = stagedFiles.remainingCount + 1;
+	const readLimit = Math.min(wantedReads, budget.remaining, stagedFiles.remainingReads);
+	const docs = await read(readLimit);
+	budget.remaining -= docs.length;
+	stagedFiles.remainingReads -= docs.length;
+	const counted = docs.slice(0, stagedFiles.remainingCount);
+	stagedFiles.remainingCount -= counted.length;
+	const truncated = docs.length > counted.length || (docs.length === readLimit && readLimit < wantedReads);
+	budget.truncated ||= truncated;
+	return { docs: counted, truncated };
+}
 
 /**
  * How much stored data one installation still holds. The admin deletion preview reports it.
@@ -4860,18 +6281,16 @@ const SERVICE_GRANT_COUNT_LIMIT = 100;
  * how many there are would exceed what one Convex query may read. The counters are maintained in the
  * same transaction as every write, so they are the same answer for one read.
  *
- * `tombstones` therefore covers released reservation records and delete tombstones together, because
- * one counter pays for both of their slots.
+	 * `tombstones` therefore covers released reservation records, revision tombstones, and deleted-append
+	 * receipts together, because one counter pays for all of their slots.
  *
- * The per-member share rows have no counter either, and they are bounded by the workspace's member
- * count, so they are counted by reading them.
- *
- * Service grants have no such counter, so they are the one number here that is found by reading docs.
- * That read is bounded: an outside service decides how many grants it mints, and this query is the
- * required first step of registry deletion, so a service that mints too many must not be able to make
- * the preview unanswerable. Past `SERVICE_GRANT_COUNT_LIMIT` the count stops there and
- * `serviceGrantsTruncated` is true, which the reader should show as `100+` rather than as an exact
- * number.
+ * Projection rows, per-member share rows, service grants, private-scope grants, live scope docs,
+ * and released-range fences have no counters. Each registry-preview read is bounded. Past
+ * `PREVIEW_DOC_COUNT_LIMIT`, its flag tells the reader to show `100+` instead of an exact number.
+ * Staged file bodies use a smaller `1+` limit because one body can approach the file byte cap. A
+ * registry-wide caller also passes one shared budget so many small installation reads cannot add
+ * up to one unbounded query. Keep projection reads opt-in because the normal usage query does not
+ * need them.
  */
 export async function plugins_data_db_count_installation_docs(
 	ctx: QueryCtx,
@@ -4879,28 +6298,206 @@ export async function plugins_data_db_count_installation_docs(
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		installationId: Id<"plugins_workspace_installations">;
+		includeProjectionRows?: boolean;
 	},
+	previewBudget?: plugins_data_PreviewReadBudget,
 ) {
-	const [usage, memberUsage, serviceGrants] = await Promise.all([
-		db_get_usage(ctx, args.installationId),
-		ctx.db
-			.query("plugins_data_member_usage")
-			.withIndex("by_installation_user", (q) => q.eq("installationId", args.installationId))
-			.collect(),
-		ctx.db
-			.query("plugin_service_grants")
-			.withIndex("by_organization_workspace_installation", (q) =>
-				q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("installationId", args.installationId),
-			)
-			// Read one past the bound so the answer can say whether more grants are there. The extra
-			// doc never leaves the server.
-			.take(SERVICE_GRANT_COUNT_LIMIT + 1),
-	]);
+	const scopeResourcePrefix = `${args.installationId}:`;
+	let usage: Doc<"plugins_data_usage"> | null = null;
+	if (previewBudget?.remaining === 0) {
+		previewBudget.truncated = true;
+	} else {
+		usage = await db_get_usage(ctx, args.installationId);
+		if (previewBudget) {
+			// Reserve one read even when no accounting row exists. This keeps the shared ceiling simple.
+			previewBudget.remaining -= 1;
+		}
+	}
 
-	const serviceGrantsTruncated = serviceGrants.length > SERVICE_GRANT_COUNT_LIMIT;
+	const projectionDirtyChannels = args.includeProjectionRows
+		? await db_take_preview_docs(
+				(limit) =>
+					ctx.db
+						.query("plugins_data_projection_dirty_channels")
+						.withIndex("by_organization_workspace_installation", (q) =>
+							q
+								.eq("organizationId", args.organizationId)
+								.eq("workspaceId", args.workspaceId)
+								.eq("installationId", args.installationId),
+						)
+						.take(limit),
+				previewBudget,
+			)
+		: null;
+	const projectionChitchatItems = args.includeProjectionRows
+		? await db_take_preview_docs(
+				(limit) =>
+					ctx.db
+						.query("plugins_data_projection_chitchat_items")
+						.withIndex("by_organization_workspace_installation", (q) =>
+							q
+								.eq("organizationId", args.organizationId)
+								.eq("workspaceId", args.workspaceId)
+								.eq("installationId", args.installationId),
+						)
+						.take(limit),
+				previewBudget,
+			)
+		: null;
+	const projectionChitchatReactions = args.includeProjectionRows
+		? await db_take_preview_docs(
+				(limit) =>
+					ctx.db
+						.query("plugins_data_projection_chitchat_reactions")
+						.withIndex("by_organization_workspace_installation", (q) =>
+							q
+								.eq("organizationId", args.organizationId)
+								.eq("workspaceId", args.workspaceId)
+								.eq("installationId", args.installationId),
+						)
+						.take(limit),
+				previewBudget,
+			)
+		: null;
+	const projectionChitchatAuthors = args.includeProjectionRows
+		? await db_take_preview_docs(
+				(limit) =>
+					ctx.db
+						.query("plugins_data_projection_chitchat_authors")
+						.withIndex("by_organization_workspace_installation", (q) =>
+							q
+								.eq("organizationId", args.organizationId)
+								.eq("workspaceId", args.workspaceId)
+								.eq("installationId", args.installationId),
+						)
+						.take(limit),
+				previewBudget,
+			)
+		: null;
+	const projectionChitchatFiles = args.includeProjectionRows
+		? await db_take_staged_file_preview_docs(
+				(limit) =>
+					ctx.db
+						.query("plugins_data_projection_chitchat_files")
+						.withIndex("by_organization_workspace_installation", (q) =>
+							q
+								.eq("organizationId", args.organizationId)
+								.eq("workspaceId", args.workspaceId)
+								.eq("installationId", args.installationId),
+						)
+						.take(limit),
+				previewBudget,
+			)
+		: null;
+	const projectionChitchatBuilds = args.includeProjectionRows
+		? await db_take_preview_docs(
+				(limit) =>
+					ctx.db
+						.query("plugins_data_projection_chitchat_builds")
+						.withIndex("by_organization_workspace_installation", (q) =>
+							q
+								.eq("organizationId", args.organizationId)
+								.eq("workspaceId", args.workspaceId)
+								.eq("installationId", args.installationId),
+						)
+						.take(limit),
+				previewBudget,
+			)
+		: null;
+	const projectionFiles = args.includeProjectionRows
+		? await db_take_preview_docs(
+				(limit) =>
+					ctx.db
+						.query("plugins_data_projection_files")
+						.withIndex("by_organization_workspace_installation", (q) =>
+							q
+								.eq("organizationId", args.organizationId)
+								.eq("workspaceId", args.workspaceId)
+								.eq("installationId", args.installationId),
+						)
+						.take(limit),
+				previewBudget,
+			)
+		: null;
+	const projectionStates = args.includeProjectionRows
+		? await db_take_preview_docs(
+				(limit) =>
+					ctx.db
+						.query("plugins_data_projection_states")
+						.withIndex("by_organization_workspace_installation", (q) =>
+							q
+								.eq("organizationId", args.organizationId)
+								.eq("workspaceId", args.workspaceId)
+								.eq("installationId", args.installationId),
+						)
+						.take(limit),
+				previewBudget,
+			)
+		: null;
+
+	const memberUsage = await db_take_preview_docs(
+		(limit) =>
+			ctx.db
+				.query("plugins_data_member_usage")
+				.withIndex("by_installation_user", (q) => q.eq("installationId", args.installationId))
+				.take(limit),
+		previewBudget,
+	);
+	const serviceGrants = await db_take_preview_docs(
+		(limit) =>
+			ctx.db
+				.query("plugin_service_grants")
+				.withIndex("by_organization_workspace_installation", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("installationId", args.installationId),
+				)
+				.take(limit),
+		previewBudget,
+	);
+	const pluginScopeGrants = await db_take_preview_docs(
+		(limit) =>
+			ctx.db
+				.query("access_control_permission_grants")
+				.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("resourceKind", "plugin_scope")
+						.gte("resourceId", scopeResourcePrefix)
+						.lt("resourceId", key_prefix_upper_bound(scopeResourcePrefix)),
+				)
+				.take(limit),
+		previewBudget,
+	);
+	const pluginDataScopeRows = await db_take_preview_docs(
+		(limit) =>
+			ctx.db
+				.query("plugins_data_scopes")
+				.withIndex("by_organization_workspace_installation", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("installationId", args.installationId),
+				)
+				.take(limit),
+		previewBudget,
+	);
+	const releasedScopeRangeRows = await db_take_preview_docs(
+		(limit) =>
+			ctx.db
+				.query("plugins_data_released_scope_ranges")
+				.withIndex("by_organization_workspace_installation", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("installationId", args.installationId),
+				)
+				.take(limit),
+		previewBudget,
+	);
+
 	return {
 		usageDocs: usage ? 1 : 0,
 		documents: usage?.usedDocuments ?? 0,
@@ -4908,9 +6505,32 @@ export async function plugins_data_db_count_installation_docs(
 		liveReservations: usage?.reservedDocuments ?? 0,
 		tombstones: usage?.tombstoneDocuments ?? 0,
 		collectionNames: usage?.collectionNames ?? [],
-		memberUsageDocs: memberUsage.length,
-		serviceGrants: serviceGrantsTruncated ? SERVICE_GRANT_COUNT_LIMIT : serviceGrants.length,
-		serviceGrantsTruncated,
+		projectionDirtyChannels: projectionDirtyChannels?.docs.length ?? 0,
+		projectionDirtyChannelsTruncated: projectionDirtyChannels?.truncated ?? false,
+		projectionChitchatItems: projectionChitchatItems?.docs.length ?? 0,
+		projectionChitchatItemsTruncated: projectionChitchatItems?.truncated ?? false,
+		projectionChitchatReactions: projectionChitchatReactions?.docs.length ?? 0,
+		projectionChitchatReactionsTruncated: projectionChitchatReactions?.truncated ?? false,
+		projectionChitchatAuthors: projectionChitchatAuthors?.docs.length ?? 0,
+		projectionChitchatAuthorsTruncated: projectionChitchatAuthors?.truncated ?? false,
+		projectionChitchatFiles: projectionChitchatFiles?.docs.length ?? 0,
+		projectionChitchatFilesTruncated: projectionChitchatFiles?.truncated ?? false,
+		projectionChitchatBuilds: projectionChitchatBuilds?.docs.length ?? 0,
+		projectionChitchatBuildsTruncated: projectionChitchatBuilds?.truncated ?? false,
+		projectionFiles: projectionFiles?.docs.length ?? 0,
+		projectionFilesTruncated: projectionFiles?.truncated ?? false,
+		projectionStates: projectionStates?.docs.length ?? 0,
+		projectionStatesTruncated: projectionStates?.truncated ?? false,
+		memberUsageDocs: memberUsage.docs.length,
+		memberUsageDocsTruncated: memberUsage.truncated,
+		serviceGrants: serviceGrants.docs.length,
+		serviceGrantsTruncated: serviceGrants.truncated,
+		pluginScopeGrants: pluginScopeGrants.docs.length,
+		pluginScopeGrantsTruncated: pluginScopeGrants.truncated,
+		pluginDataScopeRows: pluginDataScopeRows.docs.length,
+		pluginDataScopeRowsTruncated: pluginDataScopeRows.truncated,
+		releasedScopeRangeRows: releasedScopeRangeRows.docs.length,
+		releasedScopeRangeRowsTruncated: releasedScopeRangeRows.truncated,
 	};
 }
 
@@ -5016,7 +6636,20 @@ async function run_expiry_pass(ctx: MutationCtx) {
 		return { done: false, releasedCount: 0, deletedCount: staleTombstones.length };
 	}
 
-	// Pass 4: expired service grants. Their tokens already stopped resolving, so this only removes
+	// Pass 4: a deleted append's reply, once the page cannot retry that delete race anymore.
+	const staleAppendReplayReceipts = await ctx.db
+		.query("plugins_data_append_replay_receipts")
+		.withIndex("by_expiresAt", (q) => q.lte("expiresAt", now))
+		.take(DELETION_BATCH_SIZE);
+	if (staleAppendReplayReceipts.length > 0) {
+		for (const receipt of staleAppendReplayReceipts) {
+			await plugins_data_db_delete_append_replay_receipt(ctx, receipt);
+		}
+
+		return { done: false, releasedCount: 0, deletedCount: staleAppendReplayReceipts.length };
+	}
+
+	// Pass 5: expired service grants. Their tokens already stopped resolving, so this only removes
 	// the docs.
 	const staleGrants = await ctx.db
 		.query("plugin_service_grants")
@@ -5028,6 +6661,33 @@ async function run_expiry_pass(ctx: MutationCtx) {
 	}
 
 	return { done: true, releasedCount: 0, deletedCount: 0 };
+}
+
+/** Delete one append receipt and release the installation and exact member slots it owns. */
+export async function plugins_data_db_delete_append_replay_receipt(
+	ctx: MutationCtx,
+	receipt: Doc<"plugins_data_append_replay_receipts">,
+) {
+	await db_return_tombstone_slot(ctx, { installationId: receipt.installationId, now: Date.now() });
+
+	if (receipt.memberUsageId) {
+		const memberUsage = await ctx.db.get("plugins_data_member_usage", receipt.memberUsageId);
+		if (memberUsage?.generation === "document_bound") {
+			const usedDocuments = Math.max(0, memberUsage.usedDocuments - 1);
+			if (
+				memberUsage.usedBytes === 0 &&
+				usedDocuments === 0 &&
+				memberUsage.machineBytes === 0 &&
+				memberUsage.collectionNames.length === 0
+			) {
+				await ctx.db.delete("plugins_data_member_usage", memberUsage._id);
+			} else {
+				await ctx.db.patch("plugins_data_member_usage", memberUsage._id, { usedDocuments });
+			}
+		}
+	}
+
+	await ctx.db.delete("plugins_data_append_replay_receipts", receipt._id);
 }
 
 /**

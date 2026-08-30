@@ -39,7 +39,7 @@ After a successful publish, the publisher card turns into a link to the plugin d
 
 The claim form's submit button is named `Claim` (`exact: true`) — there is no button named "Claim repository".
 
-**Publish when the QA Edge profile is signed out of Clerk (verified 2026-08-25).** Only the claim owner sees `Publish` on the detail page. An anonymous tab minted in that profile cannot publish. Do not sign the user into Clerk there. Run the real `plugins:publish_version` action from the Convex CLI with `--identity` whose `external_id` is the claim's `ownerUserId` (recipe in `snippets.md`). That path still reviews, uploads to R2, and marks the version `ready` / `passed`. After it returns a `pluginVersionId`, wait until `sourceStatus` is `ready` and `reviewStatus` is `passed` before installing. A publisher-rate-limit wait is not needed when the installer is a different user than the publisher.
+**Publish when the QA Edge profile is signed out of Clerk (verified 2026-08-25).** Only the claim owner sees `Publish` on the detail page. An anonymous tab minted in that profile cannot publish. Do not sign the user into Clerk there. Use the Convex CLI recipe in `snippets.md` with `--identity` whose `external_id` is the claim's `ownerUserId`. First read the candidate HEAD. Check that exact SHA through an independent source, then pass it to `plugins:publish_version` as `expectedSourceCommitSha`. That path still reviews, uploads to R2, and marks the version `ready` / `passed`. After it returns a `pluginVersionId`, wait until `sourceStatus` is `ready` and `reviewStatus` is `passed` before installing. A publisher-rate-limit wait is not needed when the installer is a different user than the publisher.
 
 A CLI `install_version` does not refresh an already-open plugin frame. Reload the plugin page tab, then wait for `/plugins-ui/` again. Verified 2026-08-27 on Council after upgrading `0.2.0` to `0.2.1`.
 
@@ -251,20 +251,33 @@ await input.setInputFiles({ name: "fixture.mp4", mimeType: "video/mp4", buffer: 
 
 ## Publishing a plugin from a repository, end to end
 
-The publisher route is `/w/<org>/<workspace>/plugins/publisher`. Claiming and publishing are two
-separate steps and both are one click:
+The publisher route is `/w/<org>/<workspace>/plugins/publisher`. Claiming and publishing are separate
+steps. Claim the repository, then open the reviewed-commit dialog:
 
 ```js
 await state.page.getByRole("textbox", { name: /GitHub repository URL/i }).fill(repoUrl);
 await state.page.getByRole("button", { name: "Claim", exact: true }).click();
-// The claimed card appears in the same list; its Publish button is the first one on the page.
-await state.page.getByRole("button", { name: "Publish", exact: true }).first().click();
+// The button's accessible name includes the repository, for example `Publish octo/new-plugin`.
+await state.page.getByRole("button", { name: /^Publish / }).first().click();
 ```
 
-Keep the click in its own short eval and return immediately. A publish takes 60–120 seconds, and an
-eval that polls for the result inside the browser crashes the relay (see `known-hazards.md`). Read the
-outcome from the CLI instead — `lastPublishAttempt` on the repository row carries `status`, `message`,
-`commitSha`, `artifactHash` and `reviewId`:
+The app reads the candidate default-branch HEAD before it opens `Publish <owner>/<repo>`. Initial
+focus is on `Cancel`. Paste the exact lowercase 40-character SHA shown under `Current default-branch
+HEAD`. A wrong SHA shows an alert and keeps `Publish reviewed commit` disabled. The exact SHA enables
+it.
+
+Opening and filling the dialog is read-only. Do not click `Publish reviewed commit` in a live QA run
+unless the release is approved. A safe routed-bundle fixture may hold the publish call open to check
+the pending state. While it is pending, `Cancel`, `Close`, the SHA field, and the publish action must
+be disabled. `Escape` and an outside click must not close the dialog, and keyboard focus must stay
+inside it. On the plugin detail page, that pending publish must also disable Install/Update,
+Uninstall, and Remove claim. A pending install or uninstall must disable Publish and Remove claim;
+the active action's own control stays enabled so focus is not lost.
+
+When a real release is approved, keep the final click in its own short eval and return immediately. A
+publish takes 60–120 seconds, and an eval that polls for the result inside the browser crashes the
+relay (see `known-hazards.md`). Read the outcome from the CLI instead — `lastPublishAttempt` on the
+repository row carries `status`, `message`, `commitSha`, `artifactHash` and `reviewId`:
 
 ```powershell
 vp env exec pnpx convex data plugins_publisher_repositories --limit 5

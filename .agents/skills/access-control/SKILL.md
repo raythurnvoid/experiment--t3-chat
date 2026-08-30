@@ -132,15 +132,21 @@ channel next syncs, not on every sync, so a hand-added grant on a quiet channel'
 until the next message or membership change there. Only the owner can add one: `content.read` is all
 the mirror hands out, and every `files_sharing.ts` writer needs `content.permissions.manage` on the
 node. Removals are applied synchronously inside `user_manage_scope`
-(`db_sync_scope_projection_acl` in `plugins_data.ts`), so a removed member loses the folder in the
+(`plugins_data_db_sync_scope_projection_acl` in `plugins_data.ts`), so a removed member loses the folder in the
 same transaction; adds wait for the next sync. Archiving the channel deletes the mirrored grants
 outright (`archive_projection_channel`), because the folder map row it deletes is the only way back
-to them.
+to them. Uninstall is the deliberate exception: it removes projection map rows but leaves the frozen
+workspace files and their `file` grants. Member removal and workspace purge can still find those grants
+without the projection map and remove them through their own tenant indexes.
 
 `plugins_data.user_manage_scope` writes the `plugin_scope` grants. `resourceId` is
 `"<installationId>:<scopeId>"` — the installation is part of it because two installations may mint the
 same scope id, and a grant must never cross from one to the other. Two levels, one doc per permission:
 `member` gets `content.read` and `content.write`, `manage` adds `content.permissions.manage`.
+Any principal may leave. The same mutation ignores deleted and inactive members, then promotes the
+remaining active user with the lowest stable ID when no active manager would remain. If no active user
+remains, it releases the scope. Bounded member-removal cleanup applies the same repair after each grant
+batch. This keeps the scope repairable without blocking a member from leaving.
 
 `plugins_data.watch_my_scopes` reads those grants back the other way, so a member can find the private
 ranges they are in. It walks the caller's own grants on `by_user_organization_workspace_resource_permission`,
@@ -164,6 +170,7 @@ Pick the index that matches the principal kind:
 - `by_organization_workspace_resource_public_permission`
 - `by_organization_user_workspace_resource_permission`
 - `by_user_organization_workspace_resource_permission`
+- `by_user_org_workspace_kind_principal_permission_resource` — count one `content.read` doc per private scope for the member cap.
 - `by_organization_role_workspace_resource` — every grant that names one role (`delete_role`).
 
 # Permission catalog
@@ -435,10 +442,13 @@ product decision, so record the answer here before changing the behaviour. An en
   "Show N items archived" toggle whose rows carry a Restore action. Known property, not a bug: while
   the folder sits in the archive nobody can open its share dialog, so restore it first to manage
   sharing.
-- **Removing a member performs unbounded cleanup in one mutation.** `remove_user_from_organization`
-  collects every role assignment, permission grant, public API grant, and plugin UI session for the
-  user in the organization and deletes them together, with no page limit. A member with thousands of
-  these docs could exceed the mutation write limit and become impossible to remove.
+- **Removing a member drains direct grants in bounded passes.** `remove_user_from_organization`
+  deletes the first indexed batch and writes `pendingOrganizationRemoval: true` while making the
+  member's memberships inactive when more grants remain. A scheduled continuation drains the rest
+  before deleting only those marked memberships. A repeated self-leave reads this marker before its
+  active-membership guard and restarts the continuation. Invite does the same but refuses while the
+  marker remains, so a lost job or quick re-invite cannot restore grants that have not been deleted yet.
+  The other member cleanup stays in the first mutation and is bounded by existing tenant and token caps.
 - **A batch download re-checks the bearer, not every file.** `/api/v1/files/download-urls` reads each
   node through `get_data_for_public_download_url`, which filters per node, then materializes, then
   re-resolves the principal before signing. The re-resolve is a workspace question, and only the nodes
@@ -583,8 +593,9 @@ non-owner. Production writers are few on purpose:
   check guards only the assignment, so an owner can get a repaired membership but never a role.
 - Both backfills are safe to re-run, and both skip **inactive** memberships, so neither repairs an
   account that was in retention when they ran; `users.resolve_user` covers that on the way back in.
-- `users.resolve_user` — reclaiming a deleted account reactivates its memberships, so it ensures a
-  `member` assignment on each reactivated default-workspace membership, skipping owners. `ensure`
+- `users.resolve_user` — reclaiming a deleted account reactivates its ordinary inactive memberships,
+  but skips memberships marked `pendingOrganizationRemoval` because that separate drain still owns
+  them. It ensures a `member` assignment on each membership it did reactivate, skipping owners. `ensure`
   leaves a surviving assignment alone whatever its role, so this only fills a hole — and after the
   `delete_role` demotion above, the only hole left is a legacy membership the backfill skipped, which
   is exactly the case `member` is right for.

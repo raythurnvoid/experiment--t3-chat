@@ -25,8 +25,9 @@
  */
 import { ConvexError, v } from "convex/values";
 import { SignJWT } from "jose";
-import { internalMutation, internalQuery, mutation, query, type ActionCtx } from "./_generated/server.js";
+import { internalMutation, internalQuery, mutation, query, type ActionCtx, type QueryCtx } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
+import type { Id } from "./_generated/dataModel.js";
 import { Result } from "common/errors-as-values-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
@@ -49,6 +50,16 @@ export const experimental_reuseContext = true;
 // dies fast. On top of this, the resolver rechecks the installation and membership on every call.
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const SESSION_CLEANUP_BATCH_SIZE = 100;
+
+async function db_plugin_workspace_is_live(
+	ctx: QueryCtx,
+	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> },
+) {
+	const workspace = await ctx.db.get("organizations_workspaces", args.workspaceId);
+	return (
+		workspace?.organizationId === args.organizationId && workspace.pluginDataPurgeStartedAt === undefined
+	);
+}
 
 // Plugin-session JWTs (minted by the /plugins-ui/session-jwt exchange below) stay much shorter
 // than the session. The plugin-facing doors load the session doc on every call, so the JWT lifetime only
@@ -185,6 +196,9 @@ export const mint_page_session = mutation({
 		if (!membership) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
+		if (!(await db_plugin_workspace_is_live(ctx, membership))) {
+			return Result({ _nay: { message: "Not found" } });
+		}
 
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "plugins_ui_session_mint", key: userAuth.id });
 		if (rateLimit) {
@@ -280,6 +294,9 @@ export const mint_file_view_session = mutation({
 		});
 		if (!membership) {
 			return Result({ _nay: { message: "Unauthorized" } });
+		}
+		if (!(await db_plugin_workspace_is_live(ctx, membership))) {
+			return Result({ _nay: { message: "Not found" } });
 		}
 
 		// File views mint on every file switch and every details/view toggle, so they get their own
@@ -410,6 +427,9 @@ export const refresh_ui_session = mutation({
 		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
+		if (!(await db_plugin_workspace_is_live(ctx, session))) {
+			return Result({ _nay: { message: "Not found" } });
+		}
 		const rateLimit = await rate_limiter_limit_by_key(ctx, {
 			name: "plugins_ui_session_mint",
 			key: userAuth.id,
@@ -529,6 +549,9 @@ export const list_ui_pages = query({
 		if (!membership) {
 			return [];
 		}
+		if (!(await db_plugin_workspace_is_live(ctx, membership))) {
+			return [];
+		}
 
 		// Which plugins a workspace runs counts as workspace content, like the activity feed.
 		const authorized = await access_control_db_authorize_membership(ctx, {
@@ -604,6 +627,9 @@ export const list_file_views = query({
 			membershipId: args.membershipId,
 		});
 		if (!membership) {
+			return [];
+		}
+		if (!(await db_plugin_workspace_is_live(ctx, membership))) {
 			return [];
 		}
 

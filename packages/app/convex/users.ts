@@ -24,7 +24,10 @@ import { quotas_db_ensure } from "./quotas.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { server_fetch_json } from "../server/server-fetch.ts";
-import { PLUGINS_UI_SESSIONS_JWT_ISSUER, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import {
+	PLUGINS_UI_SESSIONS_JWT_ISSUER,
+	server_convex_get_user_fallback_to_anonymous,
+} from "../server/server-utils.ts";
 import { organizations_db_ensure_default_organization_and_workspace_for_user } from "./organizations.ts";
 import { access_control_db_ensure_organization_member_role } from "./access_control.ts";
 import {
@@ -111,6 +114,7 @@ const ANONYMOUS_USERS_REFRESH_JWT_EXPIRY = "30d";
 const USERS_RESOLVE_USER_BAD_REQUEST_MESSAGES = [
 	"Signed-in user email is required",
 	"Email is already linked to another user",
+	"Account deletion is being finalized",
 ] as const;
 
 /**
@@ -697,6 +701,12 @@ export const resolve_user = internalMutation({
 		}
 
 		if (deletedUser) {
+			// A bounded finalization can span several transactions. Do not restore the account after
+			// one destructive batch has committed and before the remaining batches finish.
+			if (deletedUser.deletionFinalizationStartedAt != null) {
+				return Result({ _nay: { message: "Account deletion is being finalized" } });
+			}
+
 			const [memberships, deletionRequests] = await Promise.all([
 				ctx.db
 					.query("organizations_workspaces_users")
@@ -708,7 +718,11 @@ export const resolve_user = internalMutation({
 					.collect(),
 			]);
 
-			const reactivatedMemberships = memberships.filter((membership) => membership.active === false);
+			// Organization removal uses its own marker and drain. Do not restore those memberships or
+			// recreate their roles while that separate cleanup still owns them.
+			const reactivatedMemberships = memberships.filter(
+				(membership) => membership.active === false && membership.pendingOrganizationRemoval !== true,
+			);
 
 			await Promise.all([
 				ctx.db.patch("users", deletedUser._id, {
@@ -1512,23 +1526,38 @@ export const hard_delete_user_now = internalAction({
 			}
 		}
 
-		await ctx.runMutation(internal.data_deletion.finalize_user_deletion_data, {
-			userId: user._id,
-			deleteUserAuth: true,
-			deleteBillingState: purgeUserRecord,
-		});
-		const hasDeletionRequests = await ctx.runQuery(internal.data_deletion.has_deletion_requests_for_user, {
-			userId: user._id,
-		});
-		if (hasDeletionRequests && !args._test_disableReschedule) {
-			// The Workpool is the only owner once tenant cleanup has been queued.
-			await ctx.runAction(internal.data_deletion.enqueue_deletion_requests_processing, {});
-		}
-
-		if (purgeUserRecord) {
-			await ctx.runMutation(internal.users.purge_deleted_user_tombstone, {
-				userId: args.userId,
+		let finalized = false;
+		for (let step = 0; step < 25; step += 1) {
+			finalized = await ctx.runMutation(internal.data_deletion.finalize_user_deletion_data, {
+				userId: user._id,
+				deleteUserAuth: true,
+				deleteBillingState: purgeUserRecord,
+				deleteUserRecord: purgeUserRecord,
+				_test_batchSize: args._test_batchSize,
+				_test_disableReschedule: args._test_disableReschedule,
 			});
+			if (finalized) {
+				break;
+			}
+		}
+		if (!finalized) {
+			if (!args._test_disableReschedule) {
+				// Provider deletes are idempotent. Retry them before the next bounded local finalization pass.
+				await ctx.scheduler.runAfter(0, internal.users.hard_delete_user_now, {
+					userId: user._id,
+					purgeUserMod,
+				});
+			}
+			return null;
+		}
+		if (!purgeUserRecord) {
+			const hasDeletionRequests = await ctx.runQuery(internal.data_deletion.has_deletion_requests_for_user, {
+				userId: user._id,
+			});
+			if (hasDeletionRequests && !args._test_disableReschedule) {
+				// The Workpool is the only owner once tenant cleanup has been queued.
+				await ctx.runAction(internal.data_deletion.enqueue_deletion_requests_processing, {});
+			}
 		}
 
 		return null;

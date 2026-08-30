@@ -1,4 +1,6 @@
 import { compareValues, v } from "convex/values";
+import { sha256 } from "@noble/hashes/sha256";
+import { bytesToHex } from "@noble/hashes/utils";
 import {
 	internalAction,
 	internalMutation,
@@ -14,10 +16,10 @@ import { files_get_utf8_byte_size, files_normalize_markdown_name } from "../shar
 import { plugins_data_MAX_LIST_PAGE_SIZE } from "../shared/plugins.ts";
 import { v_result } from "../server/convex-utils.ts";
 import {
-	plugins_PROJECTION_CHANGE_TIE_EXTRA,
 	plugins_projections_next_cursor,
 	plugins_projections_skip_already_applied,
 } from "./plugins_projections_cursor.ts";
+import { plugins_projections_files_are_current } from "./plugins_projections.ts";
 import { plugins_projections_is_registered } from "./plugins_projections_registry.ts";
 
 /**
@@ -43,8 +45,27 @@ const README_CHANNEL_KEY = "__readme__";
 const README_FILE_NAME = "README.md";
 const ROLLOVER_MAX_BYTES = 600_000;
 const CHANNELS_PER_SYNC = 3;
+// Cap each collection at 25 pages. One hop can read 100 pages across all four feeds and then
+// continues at 0 ms. Lowering this makes every continuation repay the sync setup work.
+const CHANGE_PAGES_PER_SYNC = 25;
+// Keep this under the transaction row and scheduled-function limits after rollover rows are read.
+const RECONCILE_KEYS_PER_SYNC = 200;
 const CHANGE_COLLECTIONS = ["channels", "messages", "replies", "reactions"] as const;
-const SCOPES_PER_PAGE = 64;
+const CHANNEL_BUILD_DOCS_PER_HOP = 50;
+// Resolve at most four profiles per render hop. Each profile can approach Convex's 1 MiB doc
+// limit. Keep labels at 128 bytes so 100,000 store keys, 16 MiB of values, and fixed block text
+// still fit inside the 128 rollover files below.
+const CHANNEL_BUILD_NAMES_PER_HOP = 4;
+const CHANNEL_BUILD_AUTHOR_NAME_MAX_BYTES = 128;
+const CHANNEL_BUILD_BLOCKS_PER_HOP = 20;
+const CHANNEL_BUILD_BYTES_PER_HOP = 400_000;
+const CHANNEL_BUILD_FILES_PER_HOP = 2;
+const CHANNEL_BUILD_CLEANUP_DOCS_PER_HOP = 50;
+const CHANNEL_FILE_ARCHIVE_DOCS_PER_HOP = 8;
+// This bound is safe only while the key, value, document-count, and author-label caps above hold.
+const CHANNEL_BUILD_MAX_FILES = 128;
+// Leave room for the largest rollover suffix (`.127.md`) inside a short file-system segment.
+const COLLISION_SLUG_MAX_LENGTH = 120;
 
 /**
  * Copied from the Chitchat plugin's `chat_PRIVATE_CHANNEL_DISCLOSURE`, same rule as
@@ -135,6 +156,26 @@ function author_label(userId: string, displayNames: Map<string, string | null>) 
 	return MISSING_NAME;
 }
 
+function bounded_author_name(name: string | null) {
+	if (name === null) {
+		return null;
+	}
+	const safeName = name
+		.replace(/[\p{Cc}\p{Cf}]+/gu, " ")
+		.replace(/\\/g, "\\\\")
+		.replace(/\*/g, "\\*")
+		.trim();
+	if (safeName === "") {
+		return null;
+	}
+	if (files_get_utf8_byte_size(safeName) <= CHANNEL_BUILD_AUTHOR_NAME_MAX_BYTES) {
+		return safeName;
+	}
+
+	const bytes = new TextEncoder().encode(safeName).slice(0, CHANNEL_BUILD_AUTHOR_NAME_MAX_BYTES);
+	return new TextDecoder().decode(bytes).replace(/\uFFFD$/, "");
+}
+
 function slug_channel_name(channelName: string) {
 	const normalized = files_normalize_markdown_name(`${channelName}.md`);
 	if (normalized._nay) {
@@ -146,12 +187,20 @@ function slug_channel_name(channelName: string) {
 	return baseName || "channel";
 }
 
+function channel_key_digest(channelKey: string) {
+	return bytesToHex(sha256(new TextEncoder().encode(channelKey)));
+}
+
 function collision_slug(channelName: string, channelKey: string) {
 	const base = slug_channel_name(channelName);
-	const suffix = channelKey.replace(/[^a-zA-Z0-9]/g, "").slice(0, 8) || "channel";
-	const normalized = files_normalize_markdown_name(`${base}-${suffix}.md`);
+	// Hash the full key. UUID prefixes collide at large channel counts, while this fixed digest keeps
+	// public file names and private folder names stable and bounded.
+	const suffix = channel_key_digest(channelKey);
+	const boundedBase =
+		base.slice(0, COLLISION_SLUG_MAX_LENGTH - suffix.length - 1).replace(/[._-]+$/u, "") || "channel";
+	const normalized = files_normalize_markdown_name(`${boundedBase}-${suffix}.md`);
 	if (normalized._nay) {
-		return `${base}-channel`;
+		return `channel-${suffix}`;
 	}
 
 	const fileName = normalized._yay;
@@ -168,8 +217,15 @@ function format_reaction_line(reactions: ProjectionReaction[]) {
 		counts.set(reaction.token, (counts.get(reaction.token) ?? 0) + 1);
 	}
 
+	return format_reaction_counts_line(counts);
+}
+
+function format_reaction_counts_line(counts: ReadonlyMap<string, number>) {
 	const parts: string[] = [];
 	for (const [token, count] of counts) {
+		if (count <= 0) {
+			continue;
+		}
 		const emoji = REACTION_EMOJI[token] ?? token;
 		parts.push(`${emoji} ${count}`);
 	}
@@ -185,9 +241,10 @@ function format_message_block(args: {
 	message: ProjectionMessage;
 	indent: string;
 	displayNames: Map<string, string | null>;
-	reactions: ProjectionReaction[];
+	reactions?: ProjectionReaction[];
+	reactionCounts?: ReadonlyMap<string, number>;
 }) {
-	const { message, indent, displayNames, reactions } = args;
+	const { message, indent, displayNames } = args;
 	const edited = message.value.editedAt !== null;
 	const deleted = message.value.deletedAt !== null;
 	const flags = [edited ? "(edited)" : null, deleted ? "(message deleted)" : null].filter(
@@ -209,12 +266,38 @@ function format_message_block(args: {
 		}
 	}
 
-	const reactionLine = format_reaction_line(reactions);
+	const reactionLine = args.reactionCounts
+		? format_reaction_counts_line(args.reactionCounts)
+		: format_reaction_line(args.reactions ?? []);
 	if (reactionLine !== null) {
 		lines.push(`${indent}${reactionLine}`);
 	}
 
 	return lines.join("\n");
+}
+
+function format_staged_item_block(
+	item: Doc<"plugins_data_projection_chitchat_items">,
+	kind: "message" | "reply",
+	authorName: string | null,
+	counts: ReadonlyMap<string, number>,
+) {
+	return format_message_block({
+		message: {
+			key: item.key,
+			createdAt: item.createdAt,
+			createdBy: item.createdBy,
+			value: {
+				text: item.text,
+				attachments: item.attachments,
+				editedAt: item.editedAt,
+				deletedAt: item.deletedAt,
+			},
+		},
+		indent: kind === "reply" ? "  " : "",
+		displayNames: new Map([[item.createdBy, authorName]]),
+		reactionCounts: counts,
+	});
 }
 
 function sort_messages(messages: ProjectionMessage[]) {
@@ -295,9 +378,7 @@ export function plugins_projections_chitchat_split_rollover(args: {
 	let currentIsMain = true;
 
 	const push_block = (block: string) => {
-		const candidate = currentIsMain
-			? [header, ...current, block].join("\n\n")
-			: [...current, block].join("\n\n");
+		const candidate = currentIsMain ? [header, ...current, block].join("\n\n") : [...current, block].join("\n\n");
 		if (current.length > 0 && files_get_utf8_byte_size(candidate) > maxBytes) {
 			files.push([]);
 			current = files[files.length - 1]!;
@@ -335,6 +416,16 @@ function rollover_path(folderPath: string, slug: string, rolloverIndex: number) 
 	}
 
 	return `${folderPath}/${slug}.${String(rolloverIndex).padStart(3, "0")}.md`;
+}
+
+function rollover_index_for_staged_file(outputFileIndex: number, stagedFileIndex: number) {
+	if (stagedFileIndex === 0) {
+		return 0;
+	}
+
+	// Rendering walks newest to oldest. Number archived files in the opposite direction so .001
+	// is the oldest transcript and higher numbers move forward toward the main file.
+	return outputFileIndex - stagedFileIndex + 1;
 }
 
 function readme_markdown() {
@@ -562,6 +653,17 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	});
 
 	describe("plugins_projections_chitchat_split_rollover", () => {
+		test("the rollover bound covers the paid 100,000-document store shape", () => {
+			// Store keys are 128 bytes. The capped author and the rest of one block add at most
+			// another 256 bytes. Newline-heavy reply text can expand stored JSON by at most 1.5x.
+			const maximumBlockOverhead = 100_000 * 384;
+			const maximumRenderedValues = 16 * 1024 * 1024 * 1.5;
+			const maximumReactionOverhead = 100_000 * 24;
+			expect(CHANNEL_BUILD_MAX_FILES * ROLLOVER_MAX_BYTES).toBeGreaterThan(
+				maximumBlockOverhead + maximumRenderedValues + maximumReactionOverhead,
+			);
+		});
+
 		test("puts oldest messages in slug.001 and the newest tail in the main file", () => {
 			const blocks = ["<!-- chitchat:msg:old -->\nold", "<!-- chitchat:msg:new -->\nnew"];
 			const files = plugins_projections_chitchat_split_rollover({
@@ -664,6 +766,7 @@ async function run_chitchat_sync(
 	ctx: ActionCtx,
 	args: { installationId: Id<"plugins_workspace_installations">; syncGeneration: number },
 ) {
+	const runStartMs = Date.now();
 	const prepared = (await ctx.runMutation(internal.plugins_projections_chitchat.prepare_sync, {
 		installationId: args.installationId,
 		syncGeneration: args.syncGeneration,
@@ -671,9 +774,14 @@ async function run_chitchat_sync(
 	if (prepared._nay) {
 		return;
 	}
+	// Recover cleanup even when its dirty row was removed atomically before a scheduled cleanup failed.
+	await ctx.runMutation(internal.plugins_projections_chitchat.cleanup_cancelled_builds, {
+		installationId: args.installationId,
+	});
 
 	const root = (await ctx.runMutation(internal.plugins_projections.ensure_projection_root, {
 		installationId: args.installationId,
+		syncGeneration: args.syncGeneration,
 	})) as { _yay?: { folderPath: string }; _nay?: { message: string } };
 	if (root._nay || !root._yay) {
 		return;
@@ -681,20 +789,28 @@ async function run_chitchat_sync(
 
 	const folderPath = root._yay.folderPath;
 
-	await ctx.runAction(internal.plugins_projections.write_projection_markdown, {
+	const dirtyAtHopStart = (await ctx.runQuery(internal.plugins_projections_chitchat.has_dirty_channel, {
 		installationId: args.installationId,
+	})) as boolean;
+	const readme = await ctx.runAction(internal.plugins_projections.write_projection_markdown, {
+		installationId: args.installationId,
+		syncGeneration: args.syncGeneration,
 		path: `${folderPath}/${README_FILE_NAME}`,
 		text: readme_markdown(),
 		channelKey: README_CHANNEL_KEY,
 		rolloverIndex: 0,
 	});
 
+	let scanTruncated = false;
 	for (const collection of CHANGE_COLLECTIONS) {
 		let more = true;
-		while (more) {
+		let pageCount = 0;
+		while (more && pageCount < CHANGE_PAGES_PER_SYNC) {
 			const page = (await ctx.runMutation(internal.plugins_projections_chitchat.advance_collection_cursor, {
 				installationId: args.installationId,
+				syncGeneration: args.syncGeneration,
 				collection,
+				runStartMs,
 			})) as { _yay?: { truncated: boolean }; _nay?: { message: string } };
 			const pageYay = page._yay;
 			if (page._nay || pageYay === undefined) {
@@ -702,100 +818,129 @@ async function run_chitchat_sync(
 			}
 
 			more = pageYay.truncated;
+			pageCount += 1;
+		}
+		if (more) {
+			scanTruncated = true;
 		}
 	}
 
-	// Scoped changes never enter the unscoped pass above, so every private channel keeps its own
-	// fence per collection. An idle scope costs one small indexed read per collection here.
-	let afterScopeId: string | undefined;
-	for (;;) {
-		const scopePage = (await ctx.runQuery(internal.plugins_projections_chitchat.list_scope_ids, {
+	let reconcilePending = dirtyAtHopStart;
+	if (!scanTruncated && !dirtyAtHopStart) {
+		reconcilePending = (await ctx.runMutation(internal.plugins_projections_chitchat.reconcile_channels, {
 			installationId: args.installationId,
-			afterScopeId,
-		})) as { scopeIds: string[]; continueAfter: string | null };
-		for (const scopeId of scopePage.scopeIds) {
-			for (const collection of CHANGE_COLLECTIONS) {
-				let more = true;
-				while (more) {
-					const page = (await ctx.runMutation(internal.plugins_projections_chitchat.advance_collection_cursor, {
-						installationId: args.installationId,
-						collection,
-						scopeId,
-					})) as { _yay?: { truncated: boolean }; _nay?: { message: string } };
-					const pageYay = page._yay;
-					if (page._nay || pageYay === undefined) {
-						return;
-					}
-
-					more = pageYay.truncated;
-				}
-			}
-		}
-
-		if (scopePage.continueAfter === null) {
-			break;
-		}
-		afterScopeId = scopePage.continueAfter;
+			syncGeneration: args.syncGeneration,
+		})) as boolean;
 	}
-
-	await ctx.runMutation(internal.plugins_projections_chitchat.reconcile_public_channels, {
-		installationId: args.installationId,
-	});
-	await ctx.runMutation(internal.plugins_projections_chitchat.reconcile_private_channels, {
-		installationId: args.installationId,
-	});
 
 	let processed = 0;
 	while (processed < CHANNELS_PER_SYNC) {
-		const channel = (await ctx.runQuery(internal.plugins_projections_chitchat.peek_dirty_channel, {
+		const channel = (await ctx.runMutation(internal.plugins_projections_chitchat.peek_dirty_channel, {
 			installationId: args.installationId,
+			syncGeneration: args.syncGeneration,
 		})) as { channelKey: string; updatedAt: number } | null;
 		if (channel === null) {
 			break;
 		}
 
-		const built = (await ctx.runQuery(internal.plugins_projections_chitchat.load_channel_projection, {
+		const step = (await ctx.runMutation(internal.plugins_projections_chitchat.advance_channel_build, {
 			installationId: args.installationId,
+			syncGeneration: args.syncGeneration,
 			channelKey: channel.channelKey,
-		})) as { header: string; blocks: string[]; slug: string } | null;
-		if (built === null) {
-			await ctx.runMutation(internal.plugins_projections.archive_projection_channel, {
+			dirtyUpdatedAt: channel.updatedAt,
+		})) as ChannelBuildAdvance;
+		if (step.kind === "archive") {
+			const archived = (await ctx.runMutation(internal.plugins_projections_chitchat.advance_channel_file_cleanup, {
 				installationId: args.installationId,
+				syncGeneration: args.syncGeneration,
+				expectedProjectionStateId: step.lifecycleStateId,
 				channelKey: channel.channelKey,
-			});
-			await ctx.runMutation(internal.plugins_projections_chitchat.complete_dirty_channel, {
-				installationId: args.installationId,
-				channelKey: channel.channelKey,
-				updatedAt: channel.updatedAt,
-			});
+				keepCount: 0,
+				archiveFolder: true,
+			})) as boolean;
+			if (archived) {
+				const finished = (await ctx.runMutation(internal.plugins_projections_chitchat.mark_archive_build_finished, {
+					installationId: args.installationId,
+					syncGeneration: args.syncGeneration,
+					buildId: step.buildId,
+				})) as boolean;
+				if (finished) {
+					await ctx.runMutation(internal.plugins_projections_chitchat.complete_dirty_channel, {
+						installationId: args.installationId,
+						syncGeneration: args.syncGeneration,
+						expectedProjectionStateId: step.lifecycleStateId,
+						channelKey: channel.channelKey,
+						updatedAt: channel.updatedAt,
+						files: [],
+					});
+				}
+			}
 			processed += 1;
 			continue;
 		}
+		if (step.kind === "publish") {
+			let channelFolderPath = step.channelFolderPath ?? folderPath;
+			if (step.isPrivate) {
+				const preferredPath = `${folderPath}/${PRIVATE_FOLDER_NAME}/${step.slug}`;
+				const collisionPath = `${folderPath}/${PRIVATE_FOLDER_NAME}/${collision_slug(step.slug, channel.channelKey)}`;
+				const ensured = (await ctx.runMutation(internal.plugins_projections.ensure_private_channel_folder, {
+					installationId: args.installationId,
+					syncGeneration: args.syncGeneration,
+					expectedProjectionStateId: step.lifecycleStateId,
+					channelKey: channel.channelKey,
+					folderPath: preferredPath,
+					collisionFolderPath: collisionPath,
+				})) as { _yay?: { folderPath: string }; _nay?: { message: string } };
+				if (ensured._nay || !ensured._yay) {
+					console.error("Failed to ensure private channel folder", {
+						message: ensured._nay?.message,
+						installationId: args.installationId,
+						channelKey: channel.channelKey,
+					});
+					await ctx.runMutation(internal.plugins_projections.finish_sync, {
+						installationId: args.installationId,
+						syncGeneration: args.syncGeneration,
+						continueImmediately: false,
+					});
+					if (scanTruncated) {
+						await ctx.runMutation(internal.plugins_projections.schedule_sync, {
+							installationId: args.installationId,
+							expectedSyncGeneration: args.syncGeneration,
+						});
+					}
+					return;
+				}
 
-		const files = plugins_projections_chitchat_split_rollover({
-			header: built.header,
-			blocks: built.blocks,
-			maxBytes: ROLLOVER_MAX_BYTES,
-		});
+				channelFolderPath = ensured._yay.folderPath;
+				const folderSaved = (await ctx.runMutation(internal.plugins_projections_chitchat.set_build_folder, {
+					installationId: args.installationId,
+					syncGeneration: args.syncGeneration,
+					buildId: step.buildId,
+					folderPath: channelFolderPath,
+				})) as boolean;
+				if (!folderSaved) {
+					return;
+				}
+				await ctx.runMutation(internal.plugins_projections.reconcile_private_folder_grants, {
+					installationId: args.installationId,
+					syncGeneration: args.syncGeneration,
+					expectedProjectionStateId: step.lifecycleStateId,
+					channelKey: channel.channelKey,
+					phase: "remove_extra",
+				});
+			}
 
-		// A private channel writes into its own restricted folder. Grants come in two phases
-		// around the file writes: extras are removed before new content lands (an adopted
-		// leftover folder must not show the new channel to the old channel's readers), and
-		// missing members are added only after a successful write (a failed write must not open
-		// stale content to new members).
-		let channelFolderPath = folderPath;
-		if (is_private_key(channel.channelKey)) {
-			const preferredPath = `${folderPath}/${PRIVATE_FOLDER_NAME}/${built.slug}`;
-			const collisionPath = `${folderPath}/${PRIVATE_FOLDER_NAME}/${collision_slug(built.slug, channel.channelKey)}`;
-			const ensured = (await ctx.runMutation(internal.plugins_projections.ensure_private_channel_folder, {
+			const resolvedSlug = await resolve_staged_projection_slug(ctx, {
 				installationId: args.installationId,
+				syncGeneration: args.syncGeneration,
+				expectedProjectionStateId: step.lifecycleStateId,
+				buildId: step.buildId,
 				channelKey: channel.channelKey,
-				folderPath: preferredPath,
-				collisionFolderPath: collisionPath,
-			})) as { _yay?: { folderPath: string }; _nay?: { message: string } };
-			if (ensured._nay || !ensured._yay) {
-				console.error("Failed to ensure private channel folder", {
-					message: ensured._nay?.message,
+				folderPath: channelFolderPath,
+			});
+			if (resolvedSlug._nay) {
+				console.error("Failed to resolve projection channel file name", {
+					message: resolvedSlug._nay.message,
 					installationId: args.installationId,
 					channelKey: channel.channelKey,
 				});
@@ -804,63 +949,276 @@ async function run_chitchat_sync(
 					syncGeneration: args.syncGeneration,
 					continueImmediately: false,
 				});
+				if (scanTruncated) {
+					await ctx.runMutation(internal.plugins_projections.schedule_sync, {
+						installationId: args.installationId,
+						expectedSyncGeneration: args.syncGeneration,
+					});
+				}
 				return;
 			}
 
-			channelFolderPath = ensured._yay.folderPath;
-			await ctx.runMutation(internal.plugins_projections.reconcile_private_folder_grants, {
-				installationId: args.installationId,
-				channelKey: channel.channelKey,
-				phase: "remove_extra",
-			});
-		}
-
-		const written = await ctx.runAction(internal.plugins_projections.write_projection_channel_files, {
-			installationId: args.installationId,
-			channelKey: channel.channelKey,
-			slug: built.slug,
-			folderPath: channelFolderPath,
-			texts: files,
-		});
-		if (written._nay) {
-			console.error("Failed to write projection channel files", {
-				message: written._nay.message,
-				installationId: args.installationId,
-				channelKey: channel.channelKey,
-			});
-			await ctx.runMutation(internal.plugins_projections.finish_sync, {
+			const written = await write_staged_projection_file(ctx, {
 				installationId: args.installationId,
 				syncGeneration: args.syncGeneration,
-				continueImmediately: false,
-			});
-			return;
-		}
-
-		if (is_private_key(channel.channelKey)) {
-			await ctx.runMutation(internal.plugins_projections.reconcile_private_folder_grants, {
-				installationId: args.installationId,
+				expectedProjectionStateId: step.lifecycleStateId,
 				channelKey: channel.channelKey,
-				phase: "add_missing",
+				slug: resolvedSlug._yay.slug,
+				folderPath: channelFolderPath,
+				rolloverIndex: step.rolloverIndex,
+				text:
+					step.rolloverIndex === 0 && step.body !== ""
+						? `${step.header}\n\n${step.body}`
+						: step.rolloverIndex === 0
+							? step.header
+							: step.body,
+			});
+			if (written._nay) {
+				console.error("Failed to write projection channel file", {
+					message: written._nay.message,
+					installationId: args.installationId,
+					channelKey: channel.channelKey,
+				});
+				await ctx.runMutation(internal.plugins_projections.finish_sync, {
+					installationId: args.installationId,
+					syncGeneration: args.syncGeneration,
+					continueImmediately: false,
+				});
+				if (scanTruncated) {
+					await ctx.runMutation(internal.plugins_projections.schedule_sync, {
+						installationId: args.installationId,
+						expectedSyncGeneration: args.syncGeneration,
+					});
+				}
+				return;
+			}
+
+			const finishedPublishing = (await ctx.runMutation(
+				internal.plugins_projections_chitchat.mark_build_file_published,
+				{
+					installationId: args.installationId,
+					syncGeneration: args.syncGeneration,
+					buildId: step.buildId,
+					fileIndex: step.fileIndex,
+					path: written._yay.path,
+				},
+			)) as boolean;
+			if (finishedPublishing) {
+				await finalize_channel_build(ctx, {
+					installationId: args.installationId,
+					syncGeneration: args.syncGeneration,
+					buildId: step.buildId,
+				});
+			}
+		} else if (step.kind === "finalize") {
+			await finalize_channel_build(ctx, {
+				installationId: args.installationId,
+				syncGeneration: args.syncGeneration,
+				buildId: step.buildId,
 			});
 		}
-
-		await ctx.runMutation(internal.plugins_projections_chitchat.complete_dirty_channel, {
-			installationId: args.installationId,
-			channelKey: channel.channelKey,
-			updatedAt: channel.updatedAt,
-		});
 		processed += 1;
 	}
 
-	const moreDirty = (await ctx.runQuery(internal.plugins_projections_chitchat.peek_dirty_channel, {
+	const moreDirty = (await ctx.runQuery(internal.plugins_projections_chitchat.has_dirty_channel, {
 		installationId: args.installationId,
-	})) as { channelKey: string; updatedAt: number } | null;
+	})) as boolean;
 
 	await ctx.runMutation(internal.plugins_projections.finish_sync, {
 		installationId: args.installationId,
 		syncGeneration: args.syncGeneration,
-		continueImmediately: moreDirty !== null,
+		continueImmediately: moreDirty || scanTruncated || reconcilePending,
+		continueIfDirty: true,
+		keepDirty: readme._nay !== undefined || readme._yay === undefined,
+		...(readme._yay
+			? {
+					expectedFiles: {
+						channelKey: README_CHANNEL_KEY,
+						files: [{ rolloverIndex: 0, path: readme._yay.path }],
+					},
+				}
+			: {}),
 	});
+}
+
+type StagedWritePreflight = {
+	_yay?: {
+		occupant:
+			| { mapped: true; channelKey: string; rolloverIndex: number }
+			| { mapped: false; adoptable: boolean }
+			| null;
+	};
+	_nay?: { message: string };
+};
+
+function staged_write_path_conflicts(
+	occupant: NonNullable<NonNullable<StagedWritePreflight["_yay"]>["occupant"]> | null,
+	channelKey: string,
+	rolloverIndex: number,
+) {
+	return (
+		occupant !== null &&
+		((occupant.mapped === false && occupant.adoptable !== true) ||
+			(occupant.mapped === true &&
+				(occupant.channelKey !== channelKey || occupant.rolloverIndex !== rolloverIndex)))
+	);
+}
+
+async function resolve_staged_projection_slug(
+	ctx: ActionCtx,
+	args: {
+		installationId: Id<"plugins_workspace_installations">;
+		syncGeneration: number;
+		expectedProjectionStateId: Id<"plugins_data_projection_states">;
+		buildId: Id<"plugins_data_projection_chitchat_builds">;
+		channelKey: string;
+		folderPath: string;
+	},
+) {
+	const resolution = (await ctx.runQuery(internal.plugins_projections_chitchat.get_build_slug_resolution, {
+		installationId: args.installationId,
+		syncGeneration: args.syncGeneration,
+		expectedProjectionStateId: args.expectedProjectionStateId,
+		buildId: args.buildId,
+	})) as { slug: string; outputFileIndex: number; hasPublishedFiles: boolean; updatedAt: number } | null;
+	if (!resolution) {
+		return Result({ _nay: { message: "Projection build is no longer current" } });
+	}
+	if (resolution.hasPublishedFiles) {
+		return Result({ _yay: { slug: resolution.slug } });
+	}
+
+	let slug = resolution.slug;
+	let resolved = false;
+	for (let candidateIndex = 0; candidateIndex < 2; candidateIndex += 1) {
+		let conflicts = false;
+		let ownsPath = false;
+		// Keep the 128-file family check out of one large Convex transaction.
+		for (let rolloverIndex = 0; rolloverIndex <= resolution.outputFileIndex; rolloverIndex += 1) {
+			const preflight = (await ctx.runQuery(internal.plugins_projections.get_write_preflight, {
+				installationId: args.installationId,
+				syncGeneration: args.syncGeneration,
+				expectedProjectionStateId: args.expectedProjectionStateId,
+				path: rollover_path(args.folderPath, slug, rolloverIndex),
+			})) as StagedWritePreflight;
+			if (preflight._nay || !preflight._yay) {
+				return Result({ _nay: preflight._nay ?? { message: "Projection slug check failed" } });
+			}
+			const occupant = preflight._yay.occupant;
+			ownsPath ||=
+				occupant?.mapped === true &&
+				occupant.channelKey === args.channelKey &&
+				occupant.rolloverIndex === rolloverIndex;
+			conflicts ||= staged_write_path_conflicts(occupant, args.channelKey, rolloverIndex);
+		}
+		if (!conflicts) {
+			resolved = true;
+			break;
+		}
+		// Keep an existing channel family stable. A new conflicting rollover must not move its main file.
+		if (candidateIndex === 0 && !ownsPath) {
+			slug = collision_slug(slug, args.channelKey);
+			continue;
+		}
+		break;
+	}
+	if (!resolved) {
+		return Result({ _nay: { message: "Projection channel file names are occupied" } });
+	}
+
+	// Save one name before the oldest rollover is written. Every later file must use this name.
+	const savedSlug = (await ctx.runMutation(internal.plugins_projections_chitchat.set_build_slug, {
+		installationId: args.installationId,
+		syncGeneration: args.syncGeneration,
+		expectedProjectionStateId: args.expectedProjectionStateId,
+		buildId: args.buildId,
+		expectedUpdatedAt: resolution.updatedAt,
+		slug,
+	})) as string | null;
+	if (savedSlug === null) {
+		return Result({ _nay: { message: "Projection build is no longer current" } });
+	}
+	return Result({ _yay: { slug: savedSlug } });
+}
+
+async function write_staged_projection_file(
+	ctx: ActionCtx,
+	args: {
+		installationId: Id<"plugins_workspace_installations">;
+		syncGeneration: number;
+		expectedProjectionStateId: Id<"plugins_data_projection_states">;
+		channelKey: string;
+		slug: string;
+		folderPath: string;
+		rolloverIndex: number;
+		text: string;
+	},
+) {
+	let written: { _yay?: { nodeId: Id<"files_nodes">; path: string }; _nay?: { message: string } };
+	try {
+		written = (await ctx.runAction(internal.plugins_projections.write_projection_markdown, {
+			installationId: args.installationId,
+			syncGeneration: args.syncGeneration,
+			expectedProjectionStateId: args.expectedProjectionStateId,
+			path: rollover_path(args.folderPath, args.slug, args.rolloverIndex),
+			text: args.text,
+			channelKey: args.channelKey,
+			rolloverIndex: args.rolloverIndex,
+		})) as { _yay?: { nodeId: Id<"files_nodes">; path: string }; _nay?: { message: string } };
+	} catch {
+		// Keep capped change scans moving after an uncertain storage failure.
+		return Result({ _nay: { message: "Projection write threw" } });
+	}
+	if (written._nay) {
+		return Result({ _nay: written._nay });
+	}
+	if (!written._yay) {
+		return Result({ _nay: { message: "Projection write failed" } });
+	}
+	return Result({ _yay: written._yay });
+}
+
+async function finalize_channel_build(
+	ctx: ActionCtx,
+	args: {
+		installationId: Id<"plugins_workspace_installations">;
+		syncGeneration: number;
+		buildId: Id<"plugins_data_projection_chitchat_builds">;
+	},
+) {
+	const ready = (await ctx.runQuery(internal.plugins_projections_chitchat.get_build_finalize, args)) as {
+		channelKey: string;
+		dirtyUpdatedAt: number;
+		isPrivate: boolean;
+		channelFolderPath?: string;
+		lifecycleStateId: Id<"plugins_data_projection_states">;
+		files: { rolloverIndex: number; path: string }[];
+	} | null;
+	if (!ready) {
+		return false;
+	}
+
+	const trimmed = (await ctx.runMutation(internal.plugins_projections_chitchat.advance_channel_file_cleanup, {
+		installationId: args.installationId,
+		syncGeneration: args.syncGeneration,
+		expectedProjectionStateId: ready.lifecycleStateId,
+		channelKey: ready.channelKey,
+		keepCount: ready.files.length,
+		archiveFolder: false,
+	})) as boolean;
+	if (!trimmed) {
+		return false;
+	}
+	if (ready.isPrivate) {
+		await ctx.runMutation(internal.plugins_projections.reconcile_private_folder_grants, {
+			installationId: args.installationId,
+			syncGeneration: args.syncGeneration,
+			expectedProjectionStateId: ready.lifecycleStateId,
+			channelKey: ready.channelKey,
+			phase: "add_missing",
+		});
+	}
+	return (await ctx.runMutation(internal.plugins_projections_chitchat.mark_build_finalized, args)) as boolean;
 }
 
 export const prepare_sync = internalMutation({
@@ -872,7 +1230,9 @@ export const prepare_sync = internalMutation({
 	handler: async (ctx, args) => {
 		const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
 		if (!installation || installation.status === "disabled") {
-			await drain_projection_tables(ctx, args.installationId);
+			await ctx.scheduler.runAfter(0, internal.plugins_projections_chitchat.cleanup_cancelled_builds, {
+				installationId: args.installationId,
+			});
 			return Result({ _nay: { message: "Installation gone" } });
 		}
 		if (!plugins_projections_is_registered(installation.pluginName)) {
@@ -894,9 +1254,9 @@ export const prepare_sync = internalMutation({
 export const advance_collection_cursor = internalMutation({
 	args: {
 		installationId: v.id("plugins_workspace_installations"),
+		syncGeneration: v.number(),
 		collection: CHANGE_COLLECTIONS_VALIDATOR,
-		/** A private channel's scope. Every doc in it belongs to the channel whose key is this id. */
-		scopeId: v.optional(v.string()),
+		runStartMs: v.number(),
 		pageSize: v.optional(v.number()),
 	},
 	returns: v_result({ _yay: v.object({ truncated: v.boolean() }) }),
@@ -905,64 +1265,42 @@ export const advance_collection_cursor = internalMutation({
 		if (!state) {
 			return Result({ _nay: { message: "Missing projection state" } });
 		}
-
-		// A scoped pass keeps its own fence per scope, so a deleted scope's keys can be cleaned up
-		// without touching the public fences.
-		const cursorKey = args.scopeId === undefined ? args.collection : scope_cursor_key(args.scopeId, args.collection);
-		const cursor = state.cursors[cursorKey] ?? null;
-		const pageSize = args.pageSize ?? plugins_data_MAX_LIST_PAGE_SIZE;
-		const takeSize = pageSize + plugins_PROJECTION_CHANGE_TIE_EXTRA + 1;
-		const raw = await ctx.db
-			.query("plugins_data")
-			.withIndex("by_installation_collection_scope_updatedAt", (q) => {
-				const base = q
-					.eq("installationId", args.installationId)
-					.eq("collection", args.collection)
-					.eq("scopeId", args.scopeId);
-				return cursor === null ? base : base.gte("updatedAt", cursor.updatedAt);
-			})
-			.order("asc")
-			.take(takeSize);
-
-		const fresh = plugins_projections_skip_already_applied(raw, cursor);
-		const page = fresh.slice(0, pageSize);
-		if (fresh.length === 0) {
-			if (raw.length > 0) {
-				const lastRaw = raw[raw.length - 1];
-				const alreadyAtFence =
-					cursor !== null && lastRaw !== undefined && lastRaw._id === cursor.lastId && lastRaw.updatedAt === cursor.updatedAt;
-				if (lastRaw !== undefined && !alreadyAtFence) {
-					await ctx.db.patch("plugins_data_projection_states", state._id, {
-						cursors: {
-							...state.cursors,
-							[cursorKey]: {
-								updatedAt: lastRaw.updatedAt,
-								lastCreationTime: lastRaw._creationTime,
-								lastId: lastRaw._id,
-							},
-						},
-						updatedAt: Date.now(),
-					});
-				}
-			}
-
-			return Result({ _yay: { truncated: false } });
+		if (state.syncGeneration !== args.syncGeneration) {
+			return Result({ _nay: { message: "Stale sync generation" } });
 		}
 
-		const truncated = fresh.length > pageSize || raw.length === takeSize;
+		const cursor = state.cursors[args.collection] ?? null;
+		const scanCursors = state.scanCursors ?? {};
+		const activeScan = scanCursors[args.collection];
+		const fromUpdatedAt = activeScan ? activeScan.fromUpdatedAt : cursor?.updatedAt;
+		const throughUpdatedAt = activeScan?.throughUpdatedAt ?? args.runStartMs;
+		const pageSize = args.pageSize ?? plugins_data_MAX_LIST_PAGE_SIZE;
+		// Use Convex's opaque cursor inside one frozen upper bound. A custom `updatedAt` fence cannot
+		// move past an arbitrarily large tie without rereading the whole tie in one transaction.
+		const rawPage = await ctx.db
+			.query("plugins_data")
+			.withIndex("by_installation_collection_updatedAt", (q) => {
+				const base = q.eq("installationId", args.installationId).eq("collection", args.collection);
+				return fromUpdatedAt === undefined
+					? base.lte("updatedAt", throughUpdatedAt)
+					: base.gte("updatedAt", fromUpdatedAt).lte("updatedAt", throughUpdatedAt);
+			})
+			.order("asc")
+			.paginate({ cursor: activeScan?.cursor ?? null, numItems: pageSize });
+		const page = plugins_projections_skip_already_applied(rawPage.page, cursor);
 
 		for (const doc of page) {
 			let channelKey: string | null;
-			if (args.scopeId === undefined) {
+			if (doc.scopeId === undefined) {
 				channelKey = plugins_projections_chitchat_channel_key(args.collection, doc.key);
-			} else if (args.collection === "channels" && doc.key !== args.scopeId) {
+			} else if (args.collection === "channels" && doc.key !== doc.scopeId) {
 				// The `channels` collection inside a scope also holds each member's private read
 				// cursor, stored as `<channelKey>:read:<userId>`. That is not channel content, and
 				// rebuilding the whole file every time somebody opens the channel is pure churn.
 				channelKey = null;
 			} else {
 				// Otherwise no key parsing is needed inside a scope: the scope id is the channel key.
-				channelKey = args.scopeId;
+				channelKey = doc.scopeId;
 			}
 			if (channelKey === null) {
 				continue;
@@ -978,260 +1316,188 @@ export const advance_collection_cursor = internalMutation({
 
 		const lastApplied = page[page.length - 1] ?? null;
 		const next = plugins_projections_next_cursor(lastApplied, cursor);
-		// An empty page must not write `lastApplied!._id`. Keep the previous fence so a later
-		// retry does not restart the collection, and so a null last-applied cannot throw.
-		if (next !== null && lastApplied !== null) {
+		const { [args.collection]: _finishedScan, ...otherScans } = scanCursors;
+		const cursors =
+			next !== null && lastApplied !== null
+				? {
+						...state.cursors,
+						[args.collection]: {
+							updatedAt: next.updatedAt,
+							lastCreationTime: next.lastCreationTime,
+							lastId: next.lastId as Id<"plugins_data">,
+						},
+					}
+				: state.cursors;
+		if (!rawPage.isDone) {
 			await ctx.db.patch("plugins_data_projection_states", state._id, {
-				cursors: {
-					...state.cursors,
-					[cursorKey]: {
-						updatedAt: next.updatedAt,
-						lastCreationTime: next.lastCreationTime,
-						lastId: next.lastId as Id<"plugins_data">,
+				cursors,
+				scanCursors: {
+					...otherScans,
+					[args.collection]: {
+						cursor: rawPage.continueCursor,
+						...(fromUpdatedAt !== undefined ? { fromUpdatedAt } : {}),
+						throughUpdatedAt,
 					},
 				},
 				updatedAt: Date.now(),
 			});
+			return Result({ _yay: { truncated: true } });
 		}
 
-		return Result({ _yay: { truncated } });
+		await ctx.db.patch("plugins_data_projection_states", state._id, {
+			cursors,
+			scanCursors: otherScans,
+			updatedAt: Date.now(),
+		});
+		// A newer sync may have inherited an older unfinished scan. Finish that frozen page set,
+		// then start another scan through this run's own fence before declaring exhaustion.
+		return Result({ _yay: { truncated: throughUpdatedAt < args.runStartMs } });
 	},
 });
 
 /**
- * Cursor-record key of one scope's fence in one collection. Scope ids may contain `:`, but the
- * collection suffix comes from the fixed `CHANGE_COLLECTIONS` list, so two different
- * (scope, collection) pairs can never build the same key.
+ * Page mapped channel keys and archive dead projections. This is garbage collection; interactive
+ * scope deletion also marks its channel dirty, so the normal drain owns the user-visible update.
  */
-function scope_cursor_key(scopeId: string, collection: string) {
-	return `${scopeId}:${collection}`;
-}
-
-/**
- * Page the installation's scope ids for the scoped cursor pass. One `plugins_data_scopes` row
- * exists per collection, all sharing the scope id, so adjacent duplicates collapse here.
- */
-export const list_scope_ids = internalQuery({
+export const reconcile_channels = internalMutation({
 	args: {
 		installationId: v.id("plugins_workspace_installations"),
-		afterScopeId: v.optional(v.string()),
+		syncGeneration: v.number(),
 	},
-	returns: v.object({
-		scopeIds: v.array(v.string()),
-		continueAfter: v.union(v.string(), v.null()),
-	}),
-	handler: async (ctx, args) => {
-		const rows = await ctx.db
-			.query("plugins_data_scopes")
-			.withIndex("by_installation_scope", (q) => {
-				const base = q.eq("installationId", args.installationId);
-				return args.afterScopeId === undefined ? base : base.gt("scopeId", args.afterScopeId);
-			})
-			.take(SCOPES_PER_PAGE);
-
-		const scopeIds: string[] = [];
-		for (const row of rows) {
-			if (scopeIds[scopeIds.length - 1] !== row.scopeId) {
-				scopeIds.push(row.scopeId);
-			}
-		}
-
-		const last = rows[rows.length - 1];
-		return {
-			scopeIds,
-			continueAfter: rows.length === SCOPES_PER_PAGE && last !== undefined ? last.scopeId : null,
-		};
-	},
-});
-
-export const reconcile_public_channels = internalMutation({
-	args: {
-		installationId: v.id("plugins_workspace_installations"),
-	},
-	returns: v.null(),
+	returns: v.boolean(),
 	handler: async (ctx, args) => {
 		const state = await db_get_projection_state(ctx, args.installationId);
-		if (!state) {
-			return null;
+		if (!state || state.syncGeneration !== args.syncGeneration) {
+			return false;
 		}
 
-		const liveKeys = new Set<string>();
-		let keyStartExclusive: string | undefined;
-		for (;;) {
-			const page = await ctx.db
-				.query("plugins_data")
-				.withIndex("by_installation_collection_scope_key", (q) => {
-					const base = q
-						.eq("installationId", args.installationId)
-						.eq("collection", "channels")
-						.eq("scopeId", undefined);
-					return keyStartExclusive === undefined ? base : base.gt("key", keyStartExclusive);
+		const mappedKeys = new Set<string>();
+		let afterChannelKey = state.reconcileAfterChannelKey;
+		let exhausted = false;
+		while (mappedKeys.size < RECONCILE_KEYS_PER_SYNC) {
+			const rows = await ctx.db
+				.query("plugins_data_projection_files")
+				.withIndex("by_installation_channelKey_rolloverIndex", (q) => {
+					const base = q.eq("installationId", args.installationId);
+					return afterChannelKey === undefined ? base : base.gt("channelKey", afterChannelKey);
 				})
 				.take(plugins_data_MAX_LIST_PAGE_SIZE);
-			if (page.length === 0) {
+			if (rows.length === 0) {
+				exhausted = true;
 				break;
 			}
 
-			for (const doc of page) {
-				if (is_private_key(doc.key)) {
-					continue;
+			let lastAddedChannelKey: string | undefined;
+			for (const row of rows) {
+				if (mappedKeys.size === RECONCILE_KEYS_PER_SYNC) {
+					break;
 				}
-
-				const value = as_channel_value(doc.value);
-				if (value === null) {
-					continue;
-				}
-
-				if (value.archivedAt !== null) {
-					continue;
-				}
-
-				liveKeys.add(doc.key);
+				mappedKeys.add(row.channelKey);
+				lastAddedChannelKey = row.channelKey;
 			}
-
-			keyStartExclusive = page[page.length - 1]?.key;
-			if (page.length < plugins_data_MAX_LIST_PAGE_SIZE) {
+			afterChannelKey =
+				mappedKeys.size === RECONCILE_KEYS_PER_SYNC ? lastAddedChannelKey : rows[rows.length - 1]?.channelKey;
+			if (mappedKeys.size === RECONCILE_KEYS_PER_SYNC) {
+				break;
+			}
+			if (rows.length < plugins_data_MAX_LIST_PAGE_SIZE) {
+				exhausted = true;
 				break;
 			}
 		}
 
-		const mapped = await ctx.db
-			.query("plugins_data_projection_files")
-			.withIndex("by_organization_workspace_installation", (q) =>
-				q
-					.eq("organizationId", state.organizationId)
-					.eq("workspaceId", state.workspaceId)
-					.eq("installationId", args.installationId),
-			)
-			.collect();
-		const mappedKeys = new Set(mapped.map((doc) => doc.channelKey));
 		for (const channelKey of mappedKeys) {
 			if (channelKey === README_CHANNEL_KEY) {
 				continue;
 			}
 
-			// Private channels never enter `liveKeys` (the scan is unscoped), so this pass would
-			// archive every one of them. Their own reconcile below owns their lifecycle.
-			if (is_private_key(channelKey)) {
-				continue;
-			}
-
-			if (!liveKeys.has(channelKey)) {
-				await ctx.scheduler.runAfter(0, internal.plugins_projections.archive_projection_channel, {
-					installationId: args.installationId,
-					channelKey,
-				});
-			}
-		}
-
-		return null;
-	},
-});
-
-/**
- * Archive mapped private channels whose scope is gone or whose channel doc is archived, and
- * drop a deleted scope's cursor fences so the cursor record does not grow forever.
- *
- * `archive_projection_channel` archives every mapped node of the channel, and the folder map
- * row (`rolloverIndex` -1) makes the restricted folder one of them. It takes the folder's
- * mirrored grants with it: after the map row is gone nothing could reach them again, so somebody
- * dropped from the channel later would keep reading the archived copy. The archived copy stays
- * readable to the organization owner, like every other archived file.
- */
-export const reconcile_private_channels = internalMutation({
-	args: {
-		installationId: v.id("plugins_workspace_installations"),
-	},
-	returns: v.null(),
-	handler: async (ctx, args) => {
-		const state = await db_get_projection_state(ctx, args.installationId);
-		if (!state) {
-			return null;
-		}
-
-		const mapped = await ctx.db
-			.query("plugins_data_projection_files")
-			.withIndex("by_organization_workspace_installation", (q) =>
-				q
-					.eq("organizationId", state.organizationId)
-					.eq("workspaceId", state.workspaceId)
-					.eq("installationId", args.installationId),
-			)
-			.collect();
-		const mappedKeys = new Set(mapped.map((doc) => doc.channelKey));
-		const deadScopeIds: string[] = [];
-		for (const channelKey of mappedKeys) {
-			if (!is_private_key(channelKey)) {
-				continue;
-			}
-
-			const scopeRow = await ctx.db
-				.query("plugins_data_scopes")
-				.withIndex("by_installation_scope", (q) =>
-					q.eq("installationId", args.installationId).eq("scopeId", channelKey),
+			const isPrivate = is_private_key(channelKey);
+			const scopeRow = isPrivate
+				? await ctx.db
+						.query("plugins_data_scopes")
+						.withIndex("by_installation_scope", (q) =>
+							q.eq("installationId", args.installationId).eq("scopeId", channelKey),
+						)
+						.first()
+				: null;
+			const channelDoc = await ctx.db
+				.query("plugins_data")
+				.withIndex("by_installation_collection_key", (q) =>
+					q.eq("installationId", args.installationId).eq("collection", "channels").eq("key", channelKey),
 				)
 				.first();
-			const channelDoc =
-				scopeRow === null
-					? null
-					: await ctx.db
-							.query("plugins_data")
-							.withIndex("by_installation_collection_key", (q) =>
-								q.eq("installationId", args.installationId).eq("collection", "channels").eq("key", channelKey),
-							)
-							.first();
 			const channelValue =
-				channelDoc !== null && channelDoc.scopeId === channelKey ? as_channel_value(channelDoc.value) : null;
+				channelDoc !== null &&
+				(isPrivate ? channelDoc.scopeId === channelKey : channelDoc.scopeId === undefined) &&
+				(!isPrivate || scopeRow !== null)
+					? as_channel_value(channelDoc.value)
+					: null;
 			const alive = channelValue !== null && channelValue.archivedAt === null;
 			if (alive) {
 				continue;
 			}
 
-			await ctx.scheduler.runAfter(0, internal.plugins_projections.archive_projection_channel, {
+			// Put dead mappings on the durable FIFO queue. A delayed archive tied to this generation
+			// could be refused after the cursor moved past this key, leaving the mapping forever.
+			await db_mark_channel_dirty(ctx, {
+				organizationId: state.organizationId,
+				workspaceId: state.workspaceId,
 				installationId: args.installationId,
 				channelKey,
 			});
-
-			// Drop the fences only when the scope itself is gone. An archived channel keeps its scope,
-			// so the scoped pass still lists it every run, and a dropped fence would make the next run
-			// re-read the channel's whole history from the start.
-			if (scopeRow === null) {
-				deadScopeIds.push(channelKey);
-			}
 		}
 
-		if (deadScopeIds.length > 0) {
-			const cursors = { ...state.cursors };
-			for (const scopeId of deadScopeIds) {
-				for (const collection of CHANGE_COLLECTIONS) {
-					delete cursors[scope_cursor_key(scopeId, collection)];
-				}
-			}
-			await ctx.db.patch("plugins_data_projection_states", state._id, {
-				cursors,
-				updatedAt: Date.now(),
-			});
-		}
+		await ctx.db.patch("plugins_data_projection_states", state._id, {
+			reconcileAfterChannelKey: exhausted ? undefined : afterChannelKey,
+			updatedAt: Date.now(),
+		});
 
-		return null;
+		return !exhausted;
 	},
 });
 
-export const peek_dirty_channel = internalQuery({
+/**
+ * Claim the oldest row before the action attempts it. The claim writes because a failed or thrown
+ * rebuild must move behind other channels.
+ */
+export const peek_dirty_channel = internalMutation({
 	args: {
 		installationId: v.id("plugins_workspace_installations"),
+		syncGeneration: v.number(),
 	},
 	returns: v.union(v.object({ channelKey: v.string(), updatedAt: v.number() }), v.null()),
 	handler: async (ctx, args) => {
+		const state = await db_get_projection_state(ctx, args.installationId);
+		if (!state || state.syncGeneration !== args.syncGeneration) {
+			return null;
+		}
+
 		const dirty = await ctx.db
 			.query("plugins_data_projection_dirty_channels")
-			.withIndex("by_installation_channelKey", (q) => q.eq("installationId", args.installationId))
+			.withIndex("by_installation_queuedAt", (q) => q.eq("installationId", args.installationId))
 			.first();
 		if (!dirty) {
 			return null;
 		}
 
+		await ctx.db.patch("plugins_data_projection_dirty_channels", dirty._id, {
+			queuedAt: Math.max(Date.now(), (dirty.queuedAt ?? 0) + 1),
+		});
 		return { channelKey: dirty.channelKey, updatedAt: dirty.updatedAt };
+	},
+});
+
+export const has_dirty_channel = internalQuery({
+	args: {
+		installationId: v.id("plugins_workspace_installations"),
+	},
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const dirty = await ctx.db
+			.query("plugins_data_projection_dirty_channels")
+			.withIndex("by_installation_channelKey", (q) => q.eq("installationId", args.installationId))
+			.first();
+		return dirty !== null;
 	},
 });
 
@@ -1246,18 +1512,39 @@ export const peek_dirty_channel = internalQuery({
 export const complete_dirty_channel = internalMutation({
 	args: {
 		installationId: v.id("plugins_workspace_installations"),
+		syncGeneration: v.number(),
+		expectedProjectionStateId: v.optional(v.id("plugins_data_projection_states")),
 		channelKey: v.string(),
 		updatedAt: v.number(),
+		files: v.array(v.object({ rolloverIndex: v.number(), path: v.string() })),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
+		const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
+		const state = await db_get_projection_state(ctx, args.installationId);
+		if (
+			!installation ||
+			installation.status === "disabled" ||
+			!state ||
+			state.syncGeneration !== args.syncGeneration ||
+			(args.expectedProjectionStateId !== undefined && state._id !== args.expectedProjectionStateId)
+		) {
+			return null;
+		}
+
 		const dirty = await ctx.db
 			.query("plugins_data_projection_dirty_channels")
 			.withIndex("by_installation_channelKey", (q) =>
 				q.eq("installationId", args.installationId).eq("channelKey", args.channelKey),
 			)
 			.first();
-		if (dirty && dirty.updatedAt === args.updatedAt) {
+		const filesCurrent = await plugins_projections_files_are_current(ctx, {
+			installationId: args.installationId,
+			channelKey: args.channelKey,
+			files: args.files,
+			expectedProjectionStateId: args.expectedProjectionStateId,
+		});
+		if (dirty && dirty.updatedAt === args.updatedAt && filesCurrent) {
 			await ctx.db.delete("plugins_data_projection_dirty_channels", dirty._id);
 		}
 
@@ -1265,217 +1552,1297 @@ export const complete_dirty_channel = internalMutation({
 	},
 });
 
-export const load_channel_projection = internalQuery({
+export const get_channel_projection_metadata = internalQuery({
 	args: {
 		installationId: v.id("plugins_workspace_installations"),
+		syncGeneration: v.number(),
 		channelKey: v.string(),
 	},
 	returns: v.union(
 		v.object({
-			header: v.string(),
-			blocks: v.array(v.string()),
+			channelName: v.string(),
+			topic: v.union(v.string(), v.null()),
+			isPrivate: v.boolean(),
 			slug: v.string(),
 		}),
 		v.null(),
 	),
 	handler: async (ctx, args) => {
-		const isPrivate = is_private_key(args.channelKey);
+		if (!(await db_projection_loader_is_current(ctx, args.installationId, args.syncGeneration))) {
+			return null;
+		}
 
-		const channelDoc = await ctx.db
-			.query("plugins_data")
-			.withIndex("by_installation_collection_key", (q) =>
-				q.eq("installationId", args.installationId).eq("collection", "channels").eq("key", args.channelKey),
+		return await db_get_channel_projection_metadata(ctx, args.installationId, args.channelKey);
+	},
+});
+
+async function db_get_channel_projection_metadata(
+	ctx: QueryCtx | MutationCtx,
+	installationId: Id<"plugins_workspace_installations">,
+	channelKey: string,
+) {
+	const liveChannel = await db_get_live_channel(ctx, installationId, channelKey);
+	if (liveChannel === null) {
+		return null;
+	}
+	const { channelValue, isPrivate } = liveChannel;
+
+	const mapped = await ctx.db
+		.query("plugins_data_projection_files")
+		.withIndex("by_installation_channelKey_rolloverIndex", (q) =>
+			q.eq("installationId", installationId).eq("channelKey", channelKey).eq("rolloverIndex", 0),
+		)
+		.first();
+	const defaultSlug = slug_channel_name(channelValue.name);
+	let slug = defaultSlug;
+	if (mapped) {
+		const fileName = mapped.path.slice(mapped.path.lastIndexOf("/") + 1);
+		if (fileName.endsWith(".md")) {
+			// This map is rollover zero, so a numeric suffix belongs to the main file's real slug.
+			slug = fileName.slice(0, -3) || defaultSlug;
+		}
+	}
+
+	return { channelName: channelValue.name, topic: channelValue.topic ?? null, isPrivate, slug };
+}
+
+async function db_get_live_channel(
+	ctx: QueryCtx | MutationCtx,
+	installationId: Id<"plugins_workspace_installations">,
+	channelKey: string,
+) {
+	const isPrivate = is_private_key(channelKey);
+	const channelDoc = await ctx.db
+		.query("plugins_data")
+		.withIndex("by_installation_collection_key", (q) =>
+			q.eq("installationId", installationId).eq("collection", "channels").eq("key", channelKey),
+		)
+		.first();
+	if (!channelDoc || (isPrivate ? channelDoc.scopeId !== channelKey : channelDoc.scopeId !== undefined)) {
+		return null;
+	}
+
+	// Released private documents stay stored. Only a live scope can still project them.
+	if (isPrivate) {
+		const scope = await ctx.db
+			.query("plugins_data_scopes")
+			.withIndex("by_installation_scope", (q) => q.eq("installationId", installationId).eq("scopeId", channelKey))
+			.first();
+		if (!scope) {
+			return null;
+		}
+	}
+
+	const channelValue = as_channel_value(channelDoc.value);
+	if (channelValue === null || channelValue.archivedAt !== null) {
+		return null;
+	}
+
+	return { channelValue, isPrivate };
+}
+
+// Read this inside file-write mutations so archive and scope-delete transactions conflict safely.
+export async function plugins_projections_chitchat_db_channel_is_live(
+	ctx: QueryCtx | MutationCtx,
+	installationId: Id<"plugins_workspace_installations">,
+	channelKey: string,
+) {
+	return (await db_get_live_channel(ctx, installationId, channelKey)) !== null;
+}
+
+type ChannelBuildAdvance =
+	| { kind: "building" }
+	| {
+			kind: "archive";
+			buildId: Id<"plugins_data_projection_chitchat_builds">;
+			lifecycleStateId: Id<"plugins_data_projection_states">;
+	  }
+	| {
+			kind: "publish";
+			buildId: Id<"plugins_data_projection_chitchat_builds">;
+			lifecycleStateId: Id<"plugins_data_projection_states">;
+			isPrivate: boolean;
+			slug: string;
+			header: string;
+			fileIndex: number;
+			rolloverIndex: number;
+			body: string;
+			channelFolderPath?: string;
+	  }
+	| {
+			kind: "finalize";
+			buildId: Id<"plugins_data_projection_chitchat_builds">;
+			lifecycleStateId: Id<"plugins_data_projection_states">;
+	  }
+	| { kind: "done" };
+
+export const advance_channel_build = internalMutation({
+	args: {
+		installationId: v.id("plugins_workspace_installations"),
+		syncGeneration: v.number(),
+		channelKey: v.string(),
+		dirtyUpdatedAt: v.number(),
+	},
+	returns: v.union(
+		v.object({ kind: v.literal("building") }),
+		v.object({
+			kind: v.literal("archive"),
+			buildId: v.id("plugins_data_projection_chitchat_builds"),
+			lifecycleStateId: v.id("plugins_data_projection_states"),
+		}),
+		v.object({
+			kind: v.literal("publish"),
+			buildId: v.id("plugins_data_projection_chitchat_builds"),
+			lifecycleStateId: v.id("plugins_data_projection_states"),
+			isPrivate: v.boolean(),
+			slug: v.string(),
+			header: v.string(),
+			fileIndex: v.number(),
+			rolloverIndex: v.number(),
+			body: v.string(),
+			channelFolderPath: v.optional(v.string()),
+		}),
+		v.object({
+			kind: v.literal("finalize"),
+			buildId: v.id("plugins_data_projection_chitchat_builds"),
+			lifecycleStateId: v.id("plugins_data_projection_states"),
+		}),
+		v.object({ kind: v.literal("done") }),
+	),
+	handler: async (ctx, args): Promise<ChannelBuildAdvance> => {
+		const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
+		const state = await db_get_projection_state(ctx, args.installationId);
+		if (!installation || installation.status === "disabled" || !state || state.syncGeneration !== args.syncGeneration) {
+			return { kind: "done" };
+		}
+
+		let build = await ctx.db
+			.query("plugins_data_projection_chitchat_builds")
+			.withIndex("by_installation_channelKey", (q) =>
+				q.eq("installationId", args.installationId).eq("channelKey", args.channelKey),
 			)
 			.first();
-		if (!channelDoc) {
+		if (build && build.lifecycleStateId !== state._id) {
+			const cleaned = await cleanup_build_rows(ctx, build, CHANNEL_BUILD_CLEANUP_DOCS_PER_HOP);
+			return { kind: cleaned ? "done" : "building" };
+		}
+
+		if (build && build.phase !== "cleanup") {
+			const liveChannel = await db_get_live_channel(ctx, args.installationId, args.channelKey);
+			if (build.phase === "archive" && liveChannel !== null) {
+				// Cancel a stale archive. Keep the dirty row so a new build can replace this drained one.
+				const updatedAt = Date.now();
+				await ctx.db.patch("plugins_data_projection_chitchat_builds", build._id, {
+					phase: "cleanup",
+					updatedAt,
+				});
+				build = { ...build, phase: "cleanup", updatedAt };
+			} else if (build.phase !== "archive" && liveChannel === null) {
+				const updatedAt = Date.now();
+				await ctx.db.patch("plugins_data_projection_chitchat_builds", build._id, {
+					phase: "archive",
+					updatedAt,
+				});
+				return { kind: "archive", buildId: build._id, lifecycleStateId: build.lifecycleStateId };
+			}
+		}
+
+		if (!build) {
+			const metadata = await db_get_channel_projection_metadata(ctx, args.installationId, args.channelKey);
+			if (metadata === null) {
+				const now = Date.now();
+				const buildId = await ctx.db.insert("plugins_data_projection_chitchat_builds", {
+					organizationId: state.organizationId,
+					workspaceId: state.workspaceId,
+					installationId: args.installationId,
+					lifecycleStateId: state._id,
+					channelKey: args.channelKey,
+					dirtyUpdatedAt: args.dirtyUpdatedAt,
+					channelName: "",
+					topic: null,
+					isPrivate: is_private_key(args.channelKey),
+					slug: "",
+					header: "",
+					phase: "archive",
+					outputFileIndex: 0,
+					publishedFiles: [],
+					createdAt: now,
+					updatedAt: now,
+				});
+				return { kind: "archive", buildId, lifecycleStateId: state._id };
+			}
+
+			const now = Date.now();
+			const buildId = await ctx.db.insert("plugins_data_projection_chitchat_builds", {
+				organizationId: state.organizationId,
+				workspaceId: state.workspaceId,
+				installationId: args.installationId,
+				lifecycleStateId: state._id,
+				channelKey: args.channelKey,
+				dirtyUpdatedAt: args.dirtyUpdatedAt,
+				channelName: metadata.channelName,
+				topic: metadata.topic,
+				isPrivate: metadata.isPrivate,
+				slug: metadata.slug,
+				header: channel_header(metadata.channelName, metadata.topic, metadata.isPrivate),
+				phase: "scan_messages",
+				outputFileIndex: 0,
+				publishedFiles: [],
+				createdAt: now,
+				updatedAt: now,
+			});
+			build = await ctx.db.get("plugins_data_projection_chitchat_builds", buildId);
+			if (!build) {
+				throw new Error("Chitchat projection build missing after insert");
+			}
+		}
+		if (!build) {
+			throw new Error("Chitchat projection build is missing");
+		}
+		const buildId = build._id;
+		const buildOrganizationId = build.organizationId;
+		const buildWorkspaceId = build.workspaceId;
+		const buildInstallationId = build.installationId;
+
+		if (build.phase === "archive") {
+			return { kind: "archive", buildId: build._id, lifecycleStateId: build.lifecycleStateId };
+		}
+		if (build.phase === "cleanup") {
+			const cleaned = await cleanup_build_rows(ctx, build, CHANNEL_BUILD_CLEANUP_DOCS_PER_HOP);
+			return { kind: cleaned ? "done" : "building" };
+		}
+		if (build.phase === "finalize") {
+			return { kind: "finalize", buildId: build._id, lifecycleStateId: build.lifecycleStateId };
+		}
+		if (build.phase === "publish") {
+			const fileIndex = build.publishFileIndex;
+			if (fileIndex === undefined) {
+				return { kind: "finalize", buildId: build._id, lifecycleStateId: build.lifecycleStateId };
+			}
+			const file = await ctx.db
+				.query("plugins_data_projection_chitchat_files")
+				.withIndex("by_build_fileIndex", (q) => q.eq("buildId", buildId).eq("fileIndex", fileIndex))
+				.first();
+			if (!file) {
+				throw new Error("Chitchat staged projection file is missing");
+			}
+			return {
+				kind: "publish",
+				buildId: build._id,
+				lifecycleStateId: build.lifecycleStateId,
+				isPrivate: build.isPrivate,
+				slug: build.slug,
+				header: build.header,
+				fileIndex,
+				rolloverIndex: rollover_index_for_staged_file(build.outputFileIndex, fileIndex),
+				body: file.body,
+				...(build.channelFolderPath ? { channelFolderPath: build.channelFolderPath } : {}),
+			};
+		}
+
+		let docsRead = 0;
+		let blocksEmitted = 0;
+		let bytesEmitted = 0;
+		let filesCreated = 0;
+		let namesResolved = 0;
+		let transitions = 0;
+		while (docsRead < CHANNEL_BUILD_DOCS_PER_HOP && transitions < 200) {
+			transitions += 1;
+			if (build.phase === "scan_messages" || build.phase === "scan_replies" || build.phase === "scan_reactions") {
+				const collection: "messages" | "replies" | "reactions" =
+					build.phase === "scan_messages" ? "messages" : build.phase === "scan_replies" ? "replies" : "reactions";
+				const pageSize = CHANNEL_BUILD_DOCS_PER_HOP - docsRead;
+				const docs = await db_list_channel_prefix_page(ctx, {
+					installationId: args.installationId,
+					collection,
+					keyPrefix: `${args.channelKey}:`,
+					scopeId: build.isPrivate ? args.channelKey : undefined,
+					afterKey: build.scanAfterKey,
+					pageSize,
+				});
+				docsRead += docs.length;
+
+				if (collection === "reactions") {
+					await Promise.all(
+						docs.flatMap((doc) => {
+							const parsed = reaction_target_and_token(doc.key);
+							return parsed === null
+								? []
+								: [
+										ctx.db.insert("plugins_data_projection_chitchat_reactions", {
+											organizationId: buildOrganizationId,
+											workspaceId: buildWorkspaceId,
+											installationId: buildInstallationId,
+											buildId,
+											key: doc.key,
+											targetKey: parsed.targetKey,
+											token: parsed.token,
+											removed: as_reaction_removed(doc.value),
+										}),
+									];
+						}),
+					);
+				} else {
+					const parsed = docs.flatMap((doc) => {
+						const value = as_message_value(doc.value);
+						const rootKey = collection === "replies" ? reply_root_key(doc.key) : null;
+						return value === null || (collection === "replies" && rootKey === null)
+							? []
+							: [{ doc, value, ...(rootKey !== null ? { rootKey } : {}) }];
+					});
+					await Promise.all(
+						parsed.map((entry) =>
+							ctx.db.insert("plugins_data_projection_chitchat_items", {
+								organizationId: buildOrganizationId,
+								workspaceId: buildWorkspaceId,
+								installationId: buildInstallationId,
+								buildId,
+								collection,
+								key: entry.doc.key,
+								...(entry.rootKey !== undefined ? { rootKey: entry.rootKey } : {}),
+								createdAt: entry.doc._creationTime,
+								createdBy: entry.doc.createdBy,
+								text: entry.value.text,
+								attachments: entry.value.attachments,
+								editedAt: entry.value.editedAt,
+								deletedAt: entry.value.deletedAt,
+							}),
+						),
+					);
+				}
+
+				if (docs.length === pageSize) {
+					const scanAfterKey = docs[docs.length - 1]?.key;
+					await ctx.db.patch("plugins_data_projection_chitchat_builds", build._id, {
+						scanAfterKey,
+						updatedAt: Date.now(),
+					});
+					return { kind: "building" };
+				}
+
+				const phase: Doc<"plugins_data_projection_chitchat_builds">["phase"] =
+					collection === "messages"
+						? "scan_replies"
+						: collection === "replies"
+							? "scan_reactions"
+							: "render_select_message";
+				await ctx.db.patch("plugins_data_projection_chitchat_builds", build._id, {
+					phase,
+					scanAfterKey: undefined,
+					updatedAt: Date.now(),
+				});
+				build = { ...build, phase, scanAfterKey: undefined, updatedAt: Date.now() };
+				continue;
+			}
+
+			if (build.phase === "render_select_message") {
+				const page: {
+					page: Doc<"plugins_data_projection_chitchat_items">[];
+					isDone: boolean;
+					continueCursor: string;
+				} = await ctx.db
+					.query("plugins_data_projection_chitchat_items")
+					.withIndex("by_build_collection_createdAt_key", (q) => q.eq("buildId", buildId).eq("collection", "messages"))
+					.order("desc")
+					.paginate({ cursor: build.messageCursor ?? null, numItems: 1 });
+				const message = page.page[0];
+				if (!message) {
+					let output = await ctx.db
+						.query("plugins_data_projection_chitchat_files")
+						.withIndex("by_build_fileIndex", (q) => q.eq("buildId", buildId).eq("fileIndex", 0))
+						.first();
+					if (!output) {
+						const outputId = await ctx.db.insert("plugins_data_projection_chitchat_files", {
+							organizationId: buildOrganizationId,
+							workspaceId: buildWorkspaceId,
+							installationId: buildInstallationId,
+							buildId,
+							fileIndex: 0,
+							body: "",
+							updatedAt: Date.now(),
+						});
+						output = await ctx.db.get("plugins_data_projection_chitchat_files", outputId);
+					}
+					await ctx.db.patch("plugins_data_projection_chitchat_builds", build._id, {
+						phase: "publish",
+						publishFileIndex: build.outputFileIndex,
+						updatedAt: Date.now(),
+					});
+					return {
+						kind: "publish",
+						buildId: build._id,
+						lifecycleStateId: build.lifecycleStateId,
+						isPrivate: build.isPrivate,
+						slug: build.slug,
+						header: build.header,
+						fileIndex: build.outputFileIndex,
+						rolloverIndex: rollover_index_for_staged_file(build.outputFileIndex, build.outputFileIndex),
+						body: output?.body ?? "",
+						...(build.channelFolderPath ? { channelFolderPath: build.channelFolderPath } : {}),
+					};
+				}
+
+				docsRead += 1;
+				await ctx.db.patch("plugins_data_projection_chitchat_builds", build._id, {
+					phase: "render_select_reply",
+					messageCursor: page.continueCursor,
+					currentRootKey: message.key,
+					replyCursor: undefined,
+					updatedAt: Date.now(),
+				});
+				build = {
+					...build,
+					phase: "render_select_reply",
+					messageCursor: page.continueCursor,
+					currentRootKey: message.key,
+					replyCursor: undefined,
+					updatedAt: Date.now(),
+				};
+				continue;
+			}
+
+			if (build.phase === "render_select_reply") {
+				const rootKey: string | undefined = build.currentRootKey;
+				if (!rootKey) {
+					throw new Error("Chitchat projection build has no current root message");
+				}
+				const page: {
+					page: Doc<"plugins_data_projection_chitchat_items">[];
+					isDone: boolean;
+					continueCursor: string;
+				} = await ctx.db
+					.query("plugins_data_projection_chitchat_items")
+					.withIndex("by_build_root_createdAt_key", (q) => q.eq("buildId", buildId).eq("rootKey", rootKey))
+					.order("desc")
+					.paginate({ cursor: build.replyCursor ?? null, numItems: 1 });
+				const reply: Doc<"plugins_data_projection_chitchat_items"> | undefined = page.page[0];
+				docsRead += reply ? 1 : 0;
+				const currentItemKey: string = reply?.key ?? rootKey;
+				const currentItemKind = reply ? "reply" : "message";
+				await ctx.db.patch("plugins_data_projection_chitchat_builds", build._id, {
+					phase: "render_scan_reactions",
+					...(reply ? { replyCursor: page.continueCursor } : {}),
+					currentItemKey,
+					currentItemKind,
+					reactionCursor: undefined,
+					reactionCounts: {},
+					updatedAt: Date.now(),
+				});
+				build = {
+					...build,
+					phase: "render_scan_reactions",
+					...(reply ? { replyCursor: page.continueCursor } : {}),
+					currentItemKey,
+					currentItemKind,
+					reactionCursor: undefined,
+					reactionCounts: {},
+					updatedAt: Date.now(),
+				};
+				continue;
+			}
+
+			if (build.phase === "render_scan_reactions") {
+				const itemKey: string | undefined = build.currentItemKey;
+				if (!itemKey) {
+					throw new Error("Chitchat projection build has no current item");
+				}
+				const page = await ctx.db
+					.query("plugins_data_projection_chitchat_reactions")
+					.withIndex("by_build_target_key", (q) => q.eq("buildId", buildId).eq("targetKey", itemKey))
+					.order("asc")
+					.paginate({
+						cursor: build.reactionCursor ?? null,
+						numItems: CHANNEL_BUILD_DOCS_PER_HOP - docsRead,
+					});
+				docsRead += page.page.length;
+				const reactionCounts: Record<string, number> = { ...(build.reactionCounts ?? {}) };
+				for (const reaction of page.page) {
+					if (!reaction.removed) {
+						reactionCounts[reaction.token] = (reactionCounts[reaction.token] ?? 0) + 1;
+					}
+				}
+				const phase: Doc<"plugins_data_projection_chitchat_builds">["phase"] = page.isDone
+					? "render_emit"
+					: "render_scan_reactions";
+				await ctx.db.patch("plugins_data_projection_chitchat_builds", build._id, {
+					phase,
+					reactionCursor: page.isDone ? undefined : page.continueCursor,
+					reactionCounts,
+					updatedAt: Date.now(),
+				});
+				build = {
+					...build,
+					phase,
+					reactionCursor: page.isDone ? undefined : page.continueCursor,
+					reactionCounts,
+					updatedAt: Date.now(),
+				};
+				if (!page.isDone) {
+					return { kind: "building" };
+				}
+				continue;
+			}
+
+			if (build.phase === "render_emit") {
+				const itemKey = build.currentItemKey;
+				const itemKind: "message" | "reply" | undefined = build.currentItemKind;
+				if (!itemKey || !itemKind) {
+					throw new Error("Chitchat projection build has no item to emit");
+				}
+				const collection = itemKind === "reply" ? "replies" : "messages";
+				const item = await ctx.db
+					.query("plugins_data_projection_chitchat_items")
+					.withIndex("by_build_collection_key", (q) =>
+						q.eq("buildId", buildId).eq("collection", collection).eq("key", itemKey),
+					)
+					.first();
+				if (!item) {
+					throw new Error("Chitchat staged projection item is missing");
+				}
+				const cachedAuthor = await ctx.db
+					.query("plugins_data_projection_chitchat_authors")
+					.withIndex("by_build_userId", (q) => q.eq("buildId", buildId).eq("userId", item.createdBy))
+					.first();
+				let authorName: string | null;
+				if (cachedAuthor) {
+					authorName = cachedAuthor.label;
+				} else {
+					if (namesResolved >= CHANNEL_BUILD_NAMES_PER_HOP) {
+						return { kind: "building" };
+					}
+					const user = await ctx.db.get("users", item.createdBy as Id<"users">);
+					const anagraphic = user?.anagraphic ? await ctx.db.get("users_anagraphics", user.anagraphic) : null;
+					namesResolved += 1;
+					authorName = bounded_author_name(anagraphic?.displayName ?? null);
+					// Freeze one label per user. A long build must not mix names after a profile rename.
+					await ctx.db.insert("plugins_data_projection_chitchat_authors", {
+						organizationId: buildOrganizationId,
+						workspaceId: buildWorkspaceId,
+						installationId: buildInstallationId,
+						buildId,
+						userId: item.createdBy,
+						label: authorName,
+					});
+				}
+				const block = format_staged_item_block(
+					item,
+					itemKind,
+					authorName,
+					new Map(Object.entries(build.reactionCounts ?? {})),
+				);
+				const blockBytes = files_get_utf8_byte_size(block);
+				if (
+					blocksEmitted >= CHANNEL_BUILD_BLOCKS_PER_HOP ||
+					(blocksEmitted > 0 && bytesEmitted + blockBytes > CHANNEL_BUILD_BYTES_PER_HOP)
+				) {
+					return { kind: "building" };
+				}
+
+				const appended = await append_staged_block(ctx, build, block, filesCreated);
+				if (!appended.emitted) {
+					return { kind: "building" };
+				}
+				filesCreated = appended.filesCreated;
+				blocksEmitted += 1;
+				bytesEmitted += blockBytes;
+				const phase: Doc<"plugins_data_projection_chitchat_builds">["phase"] =
+					itemKind === "reply" ? "render_select_reply" : "render_select_message";
+				await ctx.db.patch("plugins_data_projection_chitchat_builds", build._id, {
+					phase,
+					outputFileIndex: appended.outputFileIndex,
+					...(itemKind === "message" ? { currentRootKey: undefined, replyCursor: undefined } : {}),
+					currentItemKey: undefined,
+					currentItemKind: undefined,
+					reactionCursor: undefined,
+					reactionCounts: undefined,
+					updatedAt: Date.now(),
+				});
+				build = {
+					...build,
+					phase,
+					outputFileIndex: appended.outputFileIndex,
+					...(itemKind === "message" ? { currentRootKey: undefined, replyCursor: undefined } : {}),
+					currentItemKey: undefined,
+					currentItemKind: undefined,
+					reactionCursor: undefined,
+					reactionCounts: undefined,
+					updatedAt: Date.now(),
+				};
+				continue;
+			}
+		}
+
+		return { kind: "building" };
+	},
+});
+
+async function append_staged_block(
+	ctx: MutationCtx,
+	build: Doc<"plugins_data_projection_chitchat_builds">,
+	block: string,
+	filesCreated: number,
+) {
+	const current = await ctx.db
+		.query("plugins_data_projection_chitchat_files")
+		.withIndex("by_build_fileIndex", (q) => q.eq("buildId", build._id).eq("fileIndex", build.outputFileIndex))
+		.first();
+	const currentBody = current?.body ?? "";
+	const candidateBody = currentBody === "" ? block : `${block}\n\n${currentBody}`;
+	const candidateText = build.outputFileIndex === 0 ? `${build.header}\n\n${candidateBody}` : candidateBody;
+	if (currentBody !== "" && files_get_utf8_byte_size(candidateText) > ROLLOVER_MAX_BYTES) {
+		if (filesCreated >= CHANNEL_BUILD_FILES_PER_HOP) {
+			return { emitted: false as const, filesCreated, outputFileIndex: build.outputFileIndex };
+		}
+		if (build.outputFileIndex + 1 >= CHANNEL_BUILD_MAX_FILES) {
+			throw new Error("Chitchat projection build exceeded its bounded rollover file count");
+		}
+
+		const outputFileIndex = build.outputFileIndex + 1;
+		await ctx.db.insert("plugins_data_projection_chitchat_files", {
+			organizationId: build.organizationId,
+			workspaceId: build.workspaceId,
+			installationId: build.installationId,
+			buildId: build._id,
+			fileIndex: outputFileIndex,
+			body: block,
+			updatedAt: Date.now(),
+		});
+		return { emitted: true as const, filesCreated: filesCreated + 1, outputFileIndex };
+	}
+
+	if (current) {
+		await ctx.db.patch("plugins_data_projection_chitchat_files", current._id, {
+			body: candidateBody,
+			updatedAt: Date.now(),
+		});
+		return { emitted: true as const, filesCreated, outputFileIndex: build.outputFileIndex };
+	}
+
+	if (filesCreated >= CHANNEL_BUILD_FILES_PER_HOP) {
+		return { emitted: false as const, filesCreated, outputFileIndex: build.outputFileIndex };
+	}
+	await ctx.db.insert("plugins_data_projection_chitchat_files", {
+		organizationId: build.organizationId,
+		workspaceId: build.workspaceId,
+		installationId: build.installationId,
+		buildId: build._id,
+		fileIndex: build.outputFileIndex,
+		body: block,
+		updatedAt: Date.now(),
+	});
+	return { emitted: true as const, filesCreated: filesCreated + 1, outputFileIndex: build.outputFileIndex };
+}
+
+async function cleanup_build_rows(
+	ctx: MutationCtx,
+	build: Doc<"plugins_data_projection_chitchat_builds">,
+	limit: number,
+) {
+	let remaining = limit;
+	const items = await ctx.db
+		.query("plugins_data_projection_chitchat_items")
+		.withIndex("by_build_collection_key", (q) => q.eq("buildId", build._id))
+		.take(remaining);
+	await Promise.all(items.map((item) => ctx.db.delete("plugins_data_projection_chitchat_items", item._id)));
+	remaining -= items.length;
+	if (remaining === 0) {
+		return false;
+	}
+
+	const reactions = await ctx.db
+		.query("plugins_data_projection_chitchat_reactions")
+		.withIndex("by_build_key", (q) => q.eq("buildId", build._id))
+		.take(remaining);
+	await Promise.all(
+		reactions.map((reaction) => ctx.db.delete("plugins_data_projection_chitchat_reactions", reaction._id)),
+	);
+	remaining -= reactions.length;
+	if (remaining === 0) {
+		return false;
+	}
+
+	const authors = await ctx.db
+		.query("plugins_data_projection_chitchat_authors")
+		.withIndex("by_build_userId", (q) => q.eq("buildId", build._id))
+		.take(remaining);
+	await Promise.all(authors.map((author) => ctx.db.delete("plugins_data_projection_chitchat_authors", author._id)));
+	remaining -= authors.length;
+	if (remaining === 0) {
+		return false;
+	}
+
+	// A staged body can be close to the file limit. Never read two bodies in one cleanup mutation.
+	const file = await ctx.db
+		.query("plugins_data_projection_chitchat_files")
+		.withIndex("by_build_fileIndex", (q) => q.eq("buildId", build._id))
+		.first();
+	if (file) {
+		await ctx.db.delete("plugins_data_projection_chitchat_files", file._id);
+		return false;
+	}
+
+	await ctx.db.delete("plugins_data_projection_chitchat_builds", build._id);
+	return true;
+}
+
+export const cleanup_cancelled_builds = internalMutation({
+	args: {
+		installationId: v.id("plugins_workspace_installations"),
+		buildId: v.optional(v.id("plugins_data_projection_chitchat_builds")),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
+		// A build-specific cleanup owns only one completed build. Installation cleanup may remove
+		// every build only after the installation is gone or disabled.
+		const build = args.buildId
+			? await ctx.db.get("plugins_data_projection_chitchat_builds", args.buildId)
+			: !installation || installation.status === "disabled"
+				? await ctx.db
+						.query("plugins_data_projection_chitchat_builds")
+						.withIndex("by_installation", (q) => q.eq("installationId", args.installationId))
+						.first()
+				: await ctx.db
+						.query("plugins_data_projection_chitchat_builds")
+						.withIndex("by_installation_phase", (q) =>
+							q.eq("installationId", args.installationId).eq("phase", "cleanup"),
+						)
+						.first();
+		if (!build) {
+			return null;
+		}
+		if (
+			build.installationId !== args.installationId ||
+			(args.buildId !== undefined && build.phase !== "cleanup") ||
+			(installation?.status === "enabled" && build.phase !== "cleanup")
+		) {
 			return null;
 		}
 
-		// A public channel doc is unscoped. A private channel's doc sits inside its own scope,
-		// whose id is the channel key. Any other pairing is not a projectable channel.
-		if (isPrivate ? channelDoc.scopeId !== args.channelKey : channelDoc.scopeId !== undefined) {
-			return null;
+		const done = await cleanup_build_rows(ctx, build, CHANNEL_BUILD_CLEANUP_DOCS_PER_HOP);
+		const another = args.buildId
+			? done
+				? null
+				: build
+			: done
+				? installation?.status === "enabled"
+					? await ctx.db
+							.query("plugins_data_projection_chitchat_builds")
+							.withIndex("by_installation_phase", (q) =>
+								q.eq("installationId", args.installationId).eq("phase", "cleanup"),
+							)
+							.first()
+					: await ctx.db
+							.query("plugins_data_projection_chitchat_builds")
+							.withIndex("by_installation", (q) => q.eq("installationId", args.installationId))
+							.first()
+				: build;
+		if (another) {
+			await ctx.scheduler.runAfter(0, internal.plugins_projections_chitchat.cleanup_cancelled_builds, {
+				installationId: args.installationId,
+				...(args.buildId ? { buildId: args.buildId } : {}),
+			});
+		}
+		return null;
+	},
+});
+
+export const advance_channel_file_cleanup = internalMutation({
+	args: {
+		installationId: v.id("plugins_workspace_installations"),
+		syncGeneration: v.number(),
+		expectedProjectionStateId: v.id("plugins_data_projection_states"),
+		channelKey: v.string(),
+		keepCount: v.number(),
+		archiveFolder: v.boolean(),
+	},
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
+		const state = await db_get_projection_state(ctx, args.installationId);
+		if (
+			!installation ||
+			installation.status === "disabled" ||
+			!plugins_projections_is_registered(installation.pluginName) ||
+			!state ||
+			state._id !== args.expectedProjectionStateId ||
+			state.syncGeneration !== args.syncGeneration
+		) {
+			return false;
+		}
+		// Read the source in this transaction so a recreate or unarchive conflicts with file cleanup.
+		if (args.archiveFolder && (await db_get_live_channel(ctx, args.installationId, args.channelKey)) !== null) {
+			return false;
 		}
 
-		// Deleting a scope leaves its documents in place so nobody can claim the key range again, so
-		// the channel doc alone still looks alive. Read the scope row too. Without it there is no
-		// membership list to mirror, and the dirty row the delete leaves behind would rebuild the
-		// whole transcript into a folder that `reconcile_private_channels` just archived.
-		if (isPrivate) {
-			const scopeRow = await ctx.db
-				.query("plugins_data_scopes")
-				.withIndex("by_installation_scope", (q) =>
-					q.eq("installationId", args.installationId).eq("scopeId", args.channelKey),
+		for (let cleanedMappings = 0; cleanedMappings < CHANNEL_FILE_ARCHIVE_DOCS_PER_HOP; cleanedMappings += 1) {
+			let mapped = await ctx.db
+				.query("plugins_data_projection_files")
+				.withIndex("by_installation_channelKey_rolloverIndex", (q) =>
+					q
+						.eq("installationId", args.installationId)
+						.eq("channelKey", args.channelKey)
+						.gte("rolloverIndex", args.keepCount),
 				)
 				.first();
-			if (!scopeRow) {
-				return null;
+			if (!mapped && args.archiveFolder) {
+				mapped = await ctx.db
+					.query("plugins_data_projection_files")
+					.withIndex("by_installation_channelKey_rolloverIndex", (q) =>
+						q.eq("installationId", args.installationId).eq("channelKey", args.channelKey).eq("rolloverIndex", -1),
+					)
+					.first();
 			}
+			if (!mapped) {
+				return true;
+			}
+
+			// The private-folder map is the only durable pointer to its mirrored grants. Drain those
+			// grants before removing a stale map too, or an archived channel could leave access behind.
+			if (mapped.rolloverIndex === -1) {
+				const grants = await ctx.db
+					.query("access_control_permission_grants")
+					.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+						q
+							.eq("organizationId", state.organizationId)
+							.eq("workspaceId", state.workspaceId)
+							.eq("resourceKind", "file")
+							.eq("resourceId", String(mapped.fileNodeId)),
+					)
+					.take(CHANNEL_FILE_ARCHIVE_DOCS_PER_HOP);
+				if (grants.length > 0) {
+					await Promise.all(grants.map((grant) => ctx.db.delete("access_control_permission_grants", grant._id)));
+					return false;
+				}
+			}
+
+			const node = await ctx.db.get("files_nodes", mapped.fileNodeId);
+			const archiveOperationId = `chitchat-projection:${mapped._id}`;
+			if (node?.archiveOperationId !== archiveOperationId) {
+				const active = await ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+						q
+							.eq("organizationId", state.organizationId)
+							.eq("workspaceId", state.workspaceId)
+							.eq("path", mapped.path)
+							.eq("archiveOperationId", undefined),
+					)
+					.first();
+				if (active?._id !== mapped.fileNodeId || node?.projectionPluginName !== installation.pluginName) {
+					await ctx.db.delete("plugins_data_projection_files", mapped._id);
+					continue;
+				}
+
+				// Archive the node first so a member cannot move it while its denormalized search docs drain.
+				await ctx.db.patch("files_nodes", node._id, {
+					archiveOperationId,
+					updatedBy: state.writerUserId,
+					updatedAt: Date.now(),
+				});
+				return false;
+			}
+
+			if (node.kind === "file") {
+				const chunks = await ctx.db
+					.query("files_plain_text_chunks")
+					.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+						q
+							.eq("organizationId", state.organizationId)
+							.eq("workspaceId", state.workspaceId)
+							.eq("fileNodeId", node._id),
+					)
+					.filter((q) => q.neq(q.field("archiveOperationId"), archiveOperationId))
+					.take(CHANNEL_FILE_ARCHIVE_DOCS_PER_HOP);
+				if (chunks.length > 0) {
+					await Promise.all(
+						chunks.map((chunk) => ctx.db.patch("files_plain_text_chunks", chunk._id, { archiveOperationId })),
+					);
+					return false;
+				}
+
+				const metadataDocs = await ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_organization_workspace_fileNode_qualifiedField", (q) =>
+						q
+							.eq("organizationId", state.organizationId)
+							.eq("workspaceId", state.workspaceId)
+							.eq("fileNodeId", node._id),
+					)
+					.filter((q) => q.neq(q.field("archiveOperationId"), archiveOperationId))
+					.take(CHANNEL_FILE_ARCHIVE_DOCS_PER_HOP);
+				if (metadataDocs.length > 0) {
+					await Promise.all(
+						metadataDocs.map((doc) => ctx.db.patch("files_metadata_docs", doc._id, { archiveOperationId })),
+					);
+					return false;
+				}
+			}
+
+			await ctx.db.delete("plugins_data_projection_files", mapped._id);
+		}
+		return false;
+	},
+});
+
+export const mark_archive_build_finished = internalMutation({
+	args: {
+		installationId: v.id("plugins_workspace_installations"),
+		syncGeneration: v.number(),
+		buildId: v.id("plugins_data_projection_chitchat_builds"),
+	},
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const state = await db_get_projection_state(ctx, args.installationId);
+		const build = await ctx.db.get("plugins_data_projection_chitchat_builds", args.buildId);
+		if (
+			!state ||
+			state.syncGeneration !== args.syncGeneration ||
+			!build ||
+			build.installationId !== args.installationId ||
+			build.lifecycleStateId !== state._id ||
+			build.phase !== "archive"
+		) {
+			return false;
 		}
 
-		const channelValue = as_channel_value(channelDoc.value);
-		if (channelValue === null || channelValue.archivedAt !== null) {
+		// Start the bounded staging drain only after the archive phase hid every mapped file.
+		await ctx.db.patch("plugins_data_projection_chitchat_builds", build._id, {
+			phase: "cleanup",
+			updatedAt: Date.now(),
+		});
+		await ctx.scheduler.runAfter(0, internal.plugins_projections_chitchat.cleanup_cancelled_builds, {
+			installationId: args.installationId,
+			buildId: build._id,
+		});
+		return true;
+	},
+});
+
+export const set_build_folder = internalMutation({
+	args: {
+		installationId: v.id("plugins_workspace_installations"),
+		syncGeneration: v.number(),
+		buildId: v.id("plugins_data_projection_chitchat_builds"),
+		folderPath: v.string(),
+	},
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
+		const state = await db_get_projection_state(ctx, args.installationId);
+		const build = await ctx.db.get("plugins_data_projection_chitchat_builds", args.buildId);
+		if (
+			!installation ||
+			installation.status === "disabled" ||
+			!state ||
+			state.syncGeneration !== args.syncGeneration ||
+			!build ||
+			build.installationId !== args.installationId ||
+			build.lifecycleStateId !== state._id
+		) {
+			return false;
+		}
+
+		await ctx.db.patch("plugins_data_projection_chitchat_builds", build._id, {
+			channelFolderPath: args.folderPath,
+			updatedAt: Date.now(),
+		});
+		return true;
+	},
+});
+
+export const get_build_slug_resolution = internalQuery({
+	args: {
+		installationId: v.id("plugins_workspace_installations"),
+		syncGeneration: v.number(),
+		expectedProjectionStateId: v.id("plugins_data_projection_states"),
+		buildId: v.id("plugins_data_projection_chitchat_builds"),
+	},
+	returns: v.union(
+		v.object({
+			slug: v.string(),
+			outputFileIndex: v.number(),
+			hasPublishedFiles: v.boolean(),
+			updatedAt: v.number(),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		if (!(await db_projection_loader_is_current(ctx, args.installationId, args.syncGeneration))) {
 			return null;
 		}
-
-		const prefix = `${args.channelKey}:`;
-		const messages: ProjectionMessage[] = [];
-		const repliesByRootKey = new Map<string, ProjectionMessage[]>();
-		const reactionsByTargetKey = new Map<string, ProjectionReaction[]>();
-		const userIds = new Set<string>();
-
-		const messageDocs = await db_list_channel_prefix(ctx, {
-			installationId: args.installationId,
-			collection: "messages",
-			keyPrefix: prefix,
-			scopeId: isPrivate ? args.channelKey : undefined,
-		});
-		for (const doc of messageDocs) {
-			const value = as_message_value(doc.value);
-			if (value === null) {
-				continue;
-			}
-
-			userIds.add(doc.createdBy);
-			messages.push({
-				key: doc.key,
-				createdAt: doc._creationTime,
-				createdBy: doc.createdBy,
-				value,
-			});
-		}
-
-		const replyDocs = await db_list_channel_prefix(ctx, {
-			installationId: args.installationId,
-			collection: "replies",
-			keyPrefix: prefix,
-			scopeId: isPrivate ? args.channelKey : undefined,
-		});
-		for (const doc of replyDocs) {
-			const value = as_message_value(doc.value);
-			const rootKey = reply_root_key(doc.key);
-			if (value === null || rootKey === null) {
-				continue;
-			}
-
-			userIds.add(doc.createdBy);
-			const list = repliesByRootKey.get(rootKey) ?? [];
-			list.push({
-				key: doc.key,
-				createdAt: doc._creationTime,
-				createdBy: doc.createdBy,
-				value,
-			});
-			repliesByRootKey.set(rootKey, list);
-		}
-
-		const reactionDocs = await db_list_channel_prefix(ctx, {
-			installationId: args.installationId,
-			collection: "reactions",
-			keyPrefix: prefix,
-			scopeId: isPrivate ? args.channelKey : undefined,
-		});
-		for (const doc of reactionDocs) {
-			const parsed = reaction_target_and_token(doc.key);
-			if (parsed === null) {
-				continue;
-			}
-
-			const list = reactionsByTargetKey.get(parsed.targetKey) ?? [];
-			list.push({
-				targetKey: parsed.targetKey,
-				token: parsed.token,
-				removed: as_reaction_removed(doc.value),
-			});
-			reactionsByTargetKey.set(parsed.targetKey, list);
-		}
-
-		const displayNames = new Map<string, string | null>();
-		for (const userId of userIds) {
-			const user = await ctx.db.get("users", userId as Id<"users">);
-			if (!user?.anagraphic) {
-				displayNames.set(userId, null);
-				continue;
-			}
-
-			const anagraphic = await ctx.db.get("users_anagraphics", user.anagraphic);
-			displayNames.set(userId, anagraphic?.displayName ?? null);
-		}
-
-		const built = plugins_projections_chitchat_build_markdown({
-			channelKey: args.channelKey,
-			channelName: channelValue.name,
-			topic: channelValue.topic ?? null,
-			isPrivate,
-			messages,
-			repliesByRootKey,
-			reactionsByTargetKey,
-			displayNames,
-		});
-
-		const mapped = await ctx.db
-			.query("plugins_data_projection_files")
-			.withIndex("by_installation_channelKey_rolloverIndex", (q) =>
-				q.eq("installationId", args.installationId).eq("channelKey", args.channelKey).eq("rolloverIndex", 0),
-			)
+		const state = await ctx.db
+			.query("plugins_data_projection_states")
+			.withIndex("by_installation", (q) => q.eq("installationId", args.installationId))
 			.first();
-		const defaultSlug = slug_channel_name(channelValue.name);
-		let slug = defaultSlug;
-		if (mapped) {
-			const fileName = mapped.path.slice(mapped.path.lastIndexOf("/") + 1);
-			if (fileName.endsWith(".md")) {
-				slug = fileName.slice(0, -3).replace(/\.\d{3}$/, "") || defaultSlug;
-			}
+		const build = await ctx.db.get("plugins_data_projection_chitchat_builds", args.buildId);
+		if (
+			!state ||
+			state._id !== args.expectedProjectionStateId ||
+			!build ||
+			build.installationId !== args.installationId ||
+			build.lifecycleStateId !== state._id ||
+			build.phase !== "publish"
+		) {
+			return null;
+		}
+		if ((await db_get_live_channel(ctx, args.installationId, build.channelKey)) === null) {
+			return null;
 		}
 
 		return {
-			header: built.header,
-			blocks: built.blocks,
-			slug,
+			slug: build.slug,
+			outputFileIndex: build.outputFileIndex,
+			hasPublishedFiles: build.publishedFiles.length > 0,
+			updatedAt: build.updatedAt,
 		};
 	},
 });
 
-async function db_list_channel_prefix(
+export const set_build_slug = internalMutation({
+	args: {
+		installationId: v.id("plugins_workspace_installations"),
+		syncGeneration: v.number(),
+		expectedProjectionStateId: v.id("plugins_data_projection_states"),
+		buildId: v.id("plugins_data_projection_chitchat_builds"),
+		expectedUpdatedAt: v.number(),
+		slug: v.string(),
+	},
+	returns: v.union(v.string(), v.null()),
+	handler: async (ctx, args) => {
+		const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
+		const state = await db_get_projection_state(ctx, args.installationId);
+		const build = await ctx.db.get("plugins_data_projection_chitchat_builds", args.buildId);
+		if (
+			!installation ||
+			installation.status === "disabled" ||
+			!state ||
+			state.syncGeneration !== args.syncGeneration ||
+			state._id !== args.expectedProjectionStateId ||
+			!build ||
+			build.installationId !== args.installationId ||
+			build.lifecycleStateId !== state._id ||
+			build.phase !== "publish"
+		) {
+			return null;
+		}
+		// A concurrent publisher may have saved the first file after the name check. Never rename
+		// the rest of that family after one path is visible.
+		if (build.publishedFiles.length > 0 || build.updatedAt !== args.expectedUpdatedAt) {
+			return build.slug;
+		}
+
+		await ctx.db.patch("plugins_data_projection_chitchat_builds", build._id, {
+			slug: args.slug,
+			updatedAt: Math.max(Date.now(), build.updatedAt + 1),
+		});
+		return args.slug;
+	},
+});
+
+export const mark_build_file_published = internalMutation({
+	args: {
+		installationId: v.id("plugins_workspace_installations"),
+		syncGeneration: v.number(),
+		buildId: v.id("plugins_data_projection_chitchat_builds"),
+		fileIndex: v.number(),
+		path: v.string(),
+	},
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
+		const state = await db_get_projection_state(ctx, args.installationId);
+		const build = await ctx.db.get("plugins_data_projection_chitchat_builds", args.buildId);
+		if (
+			!installation ||
+			installation.status === "disabled" ||
+			!state ||
+			state.syncGeneration !== args.syncGeneration ||
+			!build ||
+			build.installationId !== args.installationId ||
+			build.lifecycleStateId !== state._id ||
+			build.phase !== "publish" ||
+			build.publishFileIndex !== args.fileIndex
+		) {
+			return false;
+		}
+		// Keep publication bookkeeping in the same live-source transaction as the build check.
+		if ((await db_get_live_channel(ctx, args.installationId, build.channelKey)) === null) {
+			return false;
+		}
+
+		const file = await ctx.db
+			.query("plugins_data_projection_chitchat_files")
+			.withIndex("by_build_fileIndex", (q) => q.eq("buildId", build._id).eq("fileIndex", args.fileIndex))
+			.first();
+		if (!file) {
+			return false;
+		}
+		const finished = args.fileIndex === 0;
+		const rolloverIndex = rollover_index_for_staged_file(build.outputFileIndex, args.fileIndex);
+		await ctx.db.patch("plugins_data_projection_chitchat_builds", build._id, {
+			phase: finished ? "finalize" : "publish",
+			publishFileIndex: finished ? undefined : args.fileIndex - 1,
+			publishedFiles: [...build.publishedFiles, { rolloverIndex, path: args.path }],
+			updatedAt: Date.now(),
+		});
+		return finished;
+	},
+});
+
+export const get_build_finalize = internalQuery({
+	args: {
+		installationId: v.id("plugins_workspace_installations"),
+		syncGeneration: v.number(),
+		buildId: v.id("plugins_data_projection_chitchat_builds"),
+	},
+	returns: v.union(
+		v.object({
+			channelKey: v.string(),
+			dirtyUpdatedAt: v.number(),
+			lifecycleStateId: v.id("plugins_data_projection_states"),
+			isPrivate: v.boolean(),
+			channelFolderPath: v.optional(v.string()),
+			files: v.array(v.object({ rolloverIndex: v.number(), path: v.string() })),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		if (!(await db_projection_loader_is_current(ctx, args.installationId, args.syncGeneration))) {
+			return null;
+		}
+		const state = await ctx.db
+			.query("plugins_data_projection_states")
+			.withIndex("by_installation", (q) => q.eq("installationId", args.installationId))
+			.first();
+		const build = await ctx.db.get("plugins_data_projection_chitchat_builds", args.buildId);
+		if (
+			!state ||
+			!build ||
+			build.installationId !== args.installationId ||
+			build.lifecycleStateId !== state._id ||
+			build.phase !== "finalize"
+		) {
+			return null;
+		}
+
+		const files = build.publishedFiles;
+		if (files.length !== build.outputFileIndex + 1 || files.length > CHANNEL_BUILD_MAX_FILES) {
+			return null;
+		}
+		const indexes = new Set(files.map((file) => file.rolloverIndex));
+		for (let index = 0; index <= build.outputFileIndex; index += 1) {
+			if (!indexes.has(index)) {
+				return null;
+			}
+		}
+		return {
+			channelKey: build.channelKey,
+			dirtyUpdatedAt: build.dirtyUpdatedAt,
+			lifecycleStateId: build.lifecycleStateId,
+			isPrivate: build.isPrivate,
+			...(build.channelFolderPath ? { channelFolderPath: build.channelFolderPath } : {}),
+			files,
+		};
+	},
+});
+
+export const mark_build_finalized = internalMutation({
+	args: {
+		installationId: v.id("plugins_workspace_installations"),
+		syncGeneration: v.number(),
+		buildId: v.id("plugins_data_projection_chitchat_builds"),
+	},
+	returns: v.boolean(),
+	handler: async (ctx, args) => {
+		const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
+		const state = await db_get_projection_state(ctx, args.installationId);
+		const build = await ctx.db.get("plugins_data_projection_chitchat_builds", args.buildId);
+		if (
+			!installation ||
+			installation.status === "disabled" ||
+			!state ||
+			state.syncGeneration !== args.syncGeneration ||
+			!build ||
+			build.installationId !== args.installationId ||
+			build.lifecycleStateId !== state._id ||
+			build.phase !== "finalize"
+		) {
+			return false;
+		}
+
+		const dirty = await ctx.db
+			.query("plugins_data_projection_dirty_channels")
+			.withIndex("by_installation_channelKey", (q) =>
+				q.eq("installationId", args.installationId).eq("channelKey", build.channelKey),
+			)
+			.first();
+		const filesCurrent = await plugins_projections_files_are_current(ctx, {
+			installationId: args.installationId,
+			channelKey: build.channelKey,
+			files: build.publishedFiles,
+			expectedProjectionStateId: build.lifecycleStateId,
+		});
+		// Delete this build's dirty version and close the build in one transaction. A crash can no
+		// longer leave a finalizable build whose dirty row was already removed.
+		if (dirty && dirty.updatedAt === build.dirtyUpdatedAt && filesCurrent) {
+			await ctx.db.delete("plugins_data_projection_dirty_channels", dirty._id);
+		}
+		await ctx.db.patch("plugins_data_projection_chitchat_builds", build._id, {
+			phase: "cleanup",
+			updatedAt: Date.now(),
+		});
+		await ctx.scheduler.runAfter(0, internal.plugins_projections_chitchat.cleanup_cancelled_builds, {
+			installationId: args.installationId,
+			buildId: build._id,
+		});
+		return true;
+	},
+});
+
+async function db_list_channel_prefix_page(
 	ctx: QueryCtx | MutationCtx,
 	args: {
 		installationId: Id<"plugins_workspace_installations">;
 		collection: string;
 		keyPrefix: string;
-		/** Set for a private channel: its docs sit inside the scope whose id is the channel key. */
 		scopeId: string | undefined;
+		afterKey: string | undefined;
+		pageSize: number;
 	},
 ) {
-	const docs: Doc<"plugins_data">[] = [];
-	let keyStartExclusive: string | undefined;
 	const upper = key_prefix_upper_bound(args.keyPrefix);
-	for (;;) {
-		const page = await ctx.db
-			.query("plugins_data")
-			.withIndex("by_installation_collection_scope_key", (q) => {
-				const scoped = q
-					.eq("installationId", args.installationId)
-					.eq("collection", args.collection)
-					.eq("scopeId", args.scopeId);
-				if (keyStartExclusive === undefined) {
-					return scoped.gte("key", args.keyPrefix).lt("key", upper);
-				}
+	return await ctx.db
+		.query("plugins_data")
+		.withIndex("by_installation_collection_scope_key", (q) => {
+			const scoped = q
+				.eq("installationId", args.installationId)
+				.eq("collection", args.collection)
+				.eq("scopeId", args.scopeId);
+			if (args.afterKey === undefined) {
+				return scoped.gte("key", args.keyPrefix).lt("key", upper);
+			}
 
-				return scoped.gt("key", keyStartExclusive).lt("key", upper);
-			})
-			.take(plugins_data_MAX_LIST_PAGE_SIZE);
-		if (page.length === 0) {
-			break;
-		}
+			return scoped.gt("key", args.afterKey).lt("key", upper);
+		})
+		.take(args.pageSize);
+}
 
-		docs.push(...page);
-		keyStartExclusive = page[page.length - 1]?.key;
-		if (page.length < plugins_data_MAX_LIST_PAGE_SIZE) {
-			break;
-		}
+async function db_projection_loader_is_current(
+	ctx: QueryCtx,
+	installationId: Id<"plugins_workspace_installations">,
+	syncGeneration: number,
+) {
+	const installation = await ctx.db.get("plugins_workspace_installations", installationId);
+	if (!installation || installation.status === "disabled") {
+		return false;
 	}
 
-	return docs;
+	const state = await ctx.db
+		.query("plugins_data_projection_states")
+		.withIndex("by_installation", (q) => q.eq("installationId", installationId))
+		.first();
+	return state?.syncGeneration === syncGeneration;
 }
 
 function key_prefix_upper_bound(keyPrefix: string) {
@@ -1520,39 +2887,9 @@ async function db_mark_channel_dirty(
 		workspaceId: args.workspaceId,
 		installationId: args.installationId,
 		channelKey: args.channelKey,
+		queuedAt: Date.now(),
 		updatedAt: Date.now(),
 	});
-}
-
-async function drain_projection_tables(ctx: MutationCtx, installationId: Id<"plugins_workspace_installations">) {
-	for (;;) {
-		const dirty = await ctx.db
-			.query("plugins_data_projection_dirty_channels")
-			.withIndex("by_installation_channelKey", (q) => q.eq("installationId", installationId))
-			.take(32);
-		if (dirty.length === 0) {
-			break;
-		}
-
-		await Promise.all(dirty.map((doc) => ctx.db.delete("plugins_data_projection_dirty_channels", doc._id)));
-	}
-
-	for (;;) {
-		const files = await ctx.db
-			.query("plugins_data_projection_files")
-			.withIndex("by_installation_channelKey_rolloverIndex", (q) => q.eq("installationId", installationId))
-			.take(32);
-		if (files.length === 0) {
-			break;
-		}
-
-		await Promise.all(files.map((doc) => ctx.db.delete("plugins_data_projection_files", doc._id)));
-	}
-
-	const state = await db_get_projection_state(ctx, installationId);
-	if (state) {
-		await ctx.db.delete("plugins_data_projection_states", state._id);
-	}
 }
 
 export { ROOT_FOLDER_PATH, README_CHANNEL_KEY, collision_slug, rollover_path, slug_channel_name };

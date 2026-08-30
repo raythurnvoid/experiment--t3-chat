@@ -121,6 +121,7 @@ async function register_media_plugin(
 		outboundOrigins?: string[];
 		uiOutboundOrigins?: string[];
 		capabilities?: plugins_Capability[];
+		pages?: Doc<"plugins_versions">["pages"];
 		secrets?: Array<{ name: string; description: string; optional: boolean }>;
 		sourceFiles?: Array<{ path: string; rawText: string }>;
 	} = {},
@@ -185,7 +186,7 @@ async function register_media_plugin(
 				filters: args.configurable === false ? [] : media_event_filters,
 			},
 		],
-		pages: [],
+		pages: args.pages ?? [],
 		fileViews: [],
 		capabilities: args.capabilities ?? ["plugin.secrets.read", "outbound.fetch"],
 		outboundOrigins: args.outboundOrigins ?? [],
@@ -250,7 +251,7 @@ async function drain_plugin_registry_delete(
 		});
 		if (result.done) return;
 		if (result.deleted === 0) {
-			throw new Error(`Hard delete of plugin "${pluginName}" is waiting for an active run`);
+			throw new Error(`Hard delete of plugin "${pluginName}" is waiting for active work`);
 		}
 	}
 	throw new Error(`Hard delete of plugin "${pluginName}" did not finish`);
@@ -680,6 +681,20 @@ describe("plugins Phase 0", () => {
 
 		const decrypted = await t.action(internal.plugins.decrypt_secret_for_runtime, { resolved });
 		expect(decrypted).toEqual({ _yay: "sk-plugin-secret" });
+
+		await t.run((ctx) =>
+			ctx.db.patch("organizations_workspaces", membership.workspaceId, {
+				pluginDataPurgeStartedAt: Date.now(),
+			}),
+		);
+		expect(
+			await t.mutation(internal.plugins.get_secret_for_runtime, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				installationId: installed._yay.installationId,
+				name: "OPENAI_API_KEY",
+			}),
+		).toBeNull();
 	});
 
 	test("stores .env secret batches with a single plugin-management mutation", async () => {
@@ -3632,6 +3647,31 @@ describe("plugins Phase 0", () => {
 		expect(run?.apiTokenExpiresAt).toBe(expiresAt);
 	});
 
+	test("refuses a queued run after its installation is disabled", async () => {
+		const t = test_convex();
+		const fixture = await install_plugin_with_upload_asset(t);
+		const runId = await insert_event_run(t, fixture, {
+			eventId: "plugin:disabled-before-start",
+			status: "queued",
+			expiresAt: Date.now() + 30 * 60 * 1000,
+		});
+		await t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
+				status: "disabled",
+			}),
+		);
+
+		const started = await t.mutation(internal.plugins_runtime.start_event_run, {
+			runId,
+			apiTokenHash: await crypto_sha256_hex(`plr_${"9".repeat(64)}`),
+		});
+
+		expect(started).toEqual({ _nay: { message: "Not found" } });
+		expect(await t.run((ctx) => ctx.db.get("plugins_event_runs", runId))).toMatchObject({
+			status: "queued",
+		});
+	});
+
 	test("marks a retried run as interrupted", async () => {
 		const t = test_convex();
 		const fixture = await install_plugin_with_upload_asset(t);
@@ -4011,7 +4051,10 @@ describe("plugins publisher", () => {
 		const removed = await asAnonymous.mutation(api.plugins.remove_repository, { repositoryId });
 		expect(removed).toEqual({ _nay: { message: "Sign in to publish plugins" } });
 
-		const published = await asAnonymous.action(api.plugins.publish_version, { repositoryId });
+		const published = await asAnonymous.action(api.plugins.publish_version, {
+			repositoryId,
+			expectedSourceCommitSha: "fedcba9876543210fedcba9876543210fedcba98",
+		});
 		expect(published).toEqual({ _nay: { message: "Sign in to publish plugins" } });
 
 		const authorizedSignedIn = await t.query(internal.plugins.get_owned_publisher_repository, {
@@ -5091,7 +5134,10 @@ describe("plugins get_installation_storage_usage", () => {
 		// resolved by id alone, so without the tenant comparison this caller would read the first
 		// workspace's byte totals.
 		const foreign = await t.run((ctx) =>
-			test_mocks_fill_db_with.membership(ctx, { organizationName: "other-organization", workspaceName: "other-workspace" }),
+			test_mocks_fill_db_with.membership(ctx, {
+				organizationName: "other-organization",
+				workspaceName: "other-workspace",
+			}),
 		);
 		const foreignManager = await seed_manager(t, {
 			organizationId: foreign.organizationId,
@@ -5750,6 +5796,12 @@ describe("plugins manifest limits", () => {
 });
 
 describe("plugins publish_version", () => {
+	const defaultPublishCommitSha = "fedcba9876543210fedcba9876543210fedcba98";
+	const publishArgs = (
+		repositoryId: Id<"plugins_publisher_repositories">,
+		expectedSourceCommitSha = defaultPublishCommitSha,
+	) => ({ repositoryId, expectedSourceCommitSha });
+
 	async function insert_claimed_repository(
 		t: ReturnType<typeof test_convex>,
 		args: { ownerUserId: Id<"users">; owner?: string; repo?: string },
@@ -5970,7 +6022,7 @@ describe("plugins publish_version", () => {
 			manifestBom?: boolean;
 		} = {},
 	) {
-		const commitSha = args.commitSha ?? "fedcba9876543210fedcba9876543210fedcba98";
+		const commitSha = args.commitSha ?? defaultPublishCommitSha;
 		const owner = args.owner ?? "bonobo";
 		const repo = args.repo ?? "media-plugin";
 		const pluginName = args.pluginName ?? "media";
@@ -6444,6 +6496,103 @@ describe("plugins publish_version", () => {
 		});
 	});
 
+	test("reads the publish candidate HEAD without changing publisher or artifact state", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const github = await mock_publish_github_fetch();
+		const repositoryBefore = await t.run((ctx) => ctx.db.get("plugins_publisher_repositories", repositoryId));
+
+		const candidate = await asOwner.action(api.plugins.get_publish_candidate_head, { repositoryId });
+
+		expect(candidate).toEqual({ _yay: { sourceCommitSha: github.commitSha } });
+		expect(await t.run((ctx) => ctx.db.get("plugins_publisher_repositories", repositoryId))).toEqual(repositoryBefore);
+		expect(await t.run((ctx) => ctx.db.query("plugins_versions").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("plugins_publish_artifact_cleanup_attempts").collect())).toEqual([]);
+		expect(github.uploadUrls).toEqual([]);
+		expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("raw.githubusercontent.com"))).toBe(
+			false,
+		);
+	});
+
+	test.each(["deleted", "missing"] as const)(
+		"refuses a %s publisher before reading the candidate HEAD",
+		async (userState) => {
+			const t = test_convex();
+			const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+			const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
+			const asOwner = t.withIdentity(user_identity(membership.userId));
+			await mock_publish_github_fetch();
+			await t.run(async (ctx) => {
+				if (userState === "deleted") {
+					await ctx.db.patch("users", membership.userId, { deletedAt: Date.now() });
+				} else {
+					await ctx.db.delete("users", membership.userId);
+				}
+			});
+
+			const candidate = await asOwner.action(api.plugins.get_publish_candidate_head, { repositoryId });
+
+			expect(candidate).toEqual({ _nay: { message: "Unauthorized" } });
+			expect(vi.mocked(fetch)).not.toHaveBeenCalled();
+		},
+	);
+
+	test("rate limits publish candidate HEAD reads without spending the management bucket", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		await mock_publish_github_fetch();
+
+		for (let call = 0; call < 2; call += 1) {
+			const result = await asOwner.action(api.plugins.get_publish_candidate_head, { repositoryId });
+			expect(result._yay?.sourceCommitSha).toBe(defaultPublishCommitSha);
+		}
+		expect(await asOwner.mutation(api.plugins.remove_repository, { repositoryId })).toEqual({ _yay: null });
+		const fetchCount = vi.mocked(fetch).mock.calls.length;
+
+		const refused = await asOwner.action(api.plugins.get_publish_candidate_head, { repositoryId });
+
+		expect(refused._nay?.message).toBe("Rate limit exceeded");
+		expect(vi.mocked(fetch)).toHaveBeenCalledTimes(fetchCount);
+	});
+
+	test("refuses a moved repository HEAD before reading or writing plugin facts", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const movedHead = "1234567890abcdef1234567890abcdef12345678";
+		const github = await mock_publish_github_fetch({ commitSha: movedHead });
+
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
+
+		expect(published).toEqual({
+			_nay: {
+				name: "conflict",
+				message: "The repository changed after review. Review the new commit before publishing",
+			},
+		});
+		expect(await t.run((ctx) => ctx.db.query("plugins_versions").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("plugins_publish_artifact_cleanup_attempts").collect())).toEqual([]);
+		expect(github.uploadUrls).toEqual([]);
+		expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("raw.githubusercontent.com"))).toBe(
+			false,
+		);
+		const repository = await t.run((ctx) => ctx.db.get("plugins_publisher_repositories", repositoryId));
+		expect(repository?.lastPublishAttempt).toMatchObject({
+			status: "failed",
+			commitSha: null,
+			pluginName: null,
+			artifactHash: null,
+			reviewId: null,
+		});
+	});
+
 	test("publishes a bundled plugin from GitHub, writes R2 artifacts, and registers with the review verdict", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -6452,7 +6601,7 @@ describe("plugins publish_version", () => {
 		const github = await mock_publish_github_fetch();
 		const aiReview = mock_ai_review();
 
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 		if (published._nay) {
 			throw new Error(published._nay.message);
 		}
@@ -6538,7 +6687,7 @@ describe("plugins publish_version", () => {
 		const aiReview = mock_ai_review();
 
 		const first = await mock_publish_github_fetch({ version: "0.2.0" });
-		const firstPublish = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const firstPublish = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 		if (firstPublish._nay) {
 			throw new Error(firstPublish._nay.message);
 		}
@@ -6546,7 +6695,7 @@ describe("plugins publish_version", () => {
 		// Same worker source, same capabilities, same everything except the version number. The
 		// manifest text differs, so `artifactHash` differs, but the review subject does not.
 		const second = await mock_publish_github_fetch({ version: "0.3.0" });
-		const secondPublish = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const secondPublish = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 		if (secondPublish._nay) {
 			throw new Error(secondPublish._nay.message);
 		}
@@ -6583,7 +6732,7 @@ describe("plugins publish_version", () => {
 		const aiReview = mock_ai_review();
 
 		await mock_publish_github_fetch({ version: "0.2.0" });
-		const firstPublish = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const firstPublish = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 		if (firstPublish._nay) {
 			throw new Error(firstPublish._nay.message);
 		}
@@ -6591,7 +6740,7 @@ describe("plugins publish_version", () => {
 		// Only the worker source changes, which changes a file hash inside the manifest. That is a
 		// security-relevant field, so it must force a fresh review even though the version is the same.
 		await mock_publish_github_fetch({ version: "0.3.0", workerSource: "export default { fetch: () => fetch('x') };" });
-		const secondPublish = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const secondPublish = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 		if (secondPublish._nay) {
 			throw new Error(secondPublish._nay.message);
 		}
@@ -6618,7 +6767,7 @@ describe("plugins publish_version", () => {
 		});
 		const aiReview = mock_ai_review();
 
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 		if (published._nay) throw new Error(published._nay.message);
 
 		expect(aiReview).toHaveBeenCalledTimes(1);
@@ -6646,7 +6795,7 @@ describe("plugins publish_version", () => {
 		});
 		const aiReview = mock_ai_review();
 
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 		if (published._nay) throw new Error(published._nay.message);
 
 		// A file view entry is always reviewable text/html, so the artifact must reach the AI review
@@ -6671,7 +6820,7 @@ describe("plugins publish_version", () => {
 		});
 		const aiReview = mock_ai_review();
 
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 
 		expect(published).toEqual({ _nay: { message: 'Plugin file view "player" entry must be a listed file' } });
 		expect(aiReview).not.toHaveBeenCalled();
@@ -6696,7 +6845,7 @@ describe("plugins publish_version", () => {
 		});
 		const aiReview = mock_ai_review();
 
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 
 		expect(published._nay?.message).toContain("does not match its html extension");
 		expect(aiReview).not.toHaveBeenCalled();
@@ -6720,7 +6869,7 @@ describe("plugins publish_version", () => {
 		});
 		const aiReview = mock_ai_review();
 
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 
 		expect(published._nay?.message).toContain(
 			'Plugin backend entry "dist/backend/plugin.txt" must be a reviewable JavaScript file',
@@ -6746,7 +6895,7 @@ describe("plugins publish_version", () => {
 		});
 		const aiReview = mock_ai_review();
 
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 
 		expect(published._nay?.message).toContain('"dist/ui/index.html" is not valid UTF-8');
 		expect(aiReview).not.toHaveBeenCalled();
@@ -6760,7 +6909,7 @@ describe("plugins publish_version", () => {
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const github = await mock_publish_github_fetch({ artifactBytesDelta: 1 });
 
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 
 		expect(published).toEqual({ _nay: { message: 'Artifact file byte size mismatch for "dist/backend/worker.js"' } });
 		expect(github.uploadUrls).toEqual([]);
@@ -6774,7 +6923,7 @@ describe("plugins publish_version", () => {
 		// The delta pushes the declared per-file bytes over the 900,000 cap.
 		const github = await mock_publish_github_fetch({ artifactBytesDelta: 900_001 });
 
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 
 		expect(published).toMatchObject({ _nay: { message: expect.any(String) } });
 		const workerFetches = vi.mocked(fetch).mock.calls.filter(([url]) => String(url).includes("dist/backend/worker.js"));
@@ -6816,7 +6965,7 @@ describe("plugins publish_version", () => {
 			return base(input, init);
 		});
 
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 
 		expect(published).toEqual({ _nay: { message: 'GitHub file "dist/backend/worker.js" is too large' } });
 		expect(cancelled).toBe(true);
@@ -6843,7 +6992,7 @@ describe("plugins publish_version", () => {
 			delayMs: 5,
 		});
 
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 		if (published._nay) {
 			throw new Error(published._nay.message);
 		}
@@ -6875,7 +7024,7 @@ describe("plugins publish_version", () => {
 		});
 		const aiReview = mock_ai_review();
 
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 
 		expect(published).toMatchObject({ _yay: { sourceCommitSha: github.commitSha } });
 		expect(aiReview).toHaveBeenCalledOnce();
@@ -6913,7 +7062,7 @@ describe("plugins publish_version", () => {
 			],
 		});
 
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 
 		expect(published._yay).toBeDefined();
 		// TextDecoder drops this marker by default. Keeping it proves coverage uses the same UTF-8 bytes
@@ -6936,7 +7085,7 @@ describe("plugins publish_version", () => {
 		const github = await mock_publish_github_fetch({ manifestBom: true });
 		mock_ai_review();
 
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 
 		expect(published).toMatchObject({ _yay: { sourceCommitSha: github.commitSha } });
 		expect(github.manifestText.startsWith("\uFEFF")).toBe(true);
@@ -6962,7 +7111,7 @@ describe("plugins publish_version", () => {
 			return base(input, init);
 		});
 
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 
 		expect(published).toMatchObject({ _nay: { message: expect.any(String) } });
 		const attempts = await t.run((ctx) => ctx.db.query("plugins_publish_artifact_cleanup_attempts").collect());
@@ -7004,10 +7153,10 @@ describe("plugins publish_version", () => {
 			return base(input, init);
 		});
 
-		expect(await asOwner.action(api.plugins.publish_version, { repositoryId })).toMatchObject({
+		expect(await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId))).toMatchObject({
 			_nay: { message: expect.any(String) },
 		});
-		expect(await asOwner.action(api.plugins.publish_version, { repositoryId })).toMatchObject({
+		expect(await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId))).toMatchObject({
 			_nay: { message: expect.any(String) },
 		});
 		const attempts = await t.run((ctx) => ctx.db.query("plugins_publish_artifact_cleanup_attempts").collect());
@@ -7040,7 +7189,7 @@ describe("plugins publish_version", () => {
 		mock_ai_review();
 		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
 
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 		if (published._nay) {
 			throw new Error(published._nay.message);
 		}
@@ -7057,7 +7206,7 @@ describe("plugins publish_version", () => {
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const github = await mock_publish_github_fetch({ manifestPublisher: "gorilla" });
 
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 
 		expect(published._nay?.message).toContain("publisher");
 		expect(github.uploadUrls).toEqual([]);
@@ -7078,7 +7227,7 @@ describe("plugins publish_version", () => {
 		const github = await mock_publish_github_fetch();
 		const aiReview = mock_ai_review();
 
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 
 		expect(published).toEqual({ _nay: { message: "Plugin name is already owned by another publisher" } });
 		expect(aiReview).not.toHaveBeenCalled();
@@ -7107,7 +7256,7 @@ describe("plugins publish_version", () => {
 		const firstGithub = await mock_publish_github_fetch();
 		const aiReview = mock_ai_review();
 
-		const first = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const first = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 		if (first._nay) {
 			throw new Error(first._nay.message);
 		}
@@ -7118,7 +7267,7 @@ describe("plugins publish_version", () => {
 		const laterGithub = await mock_publish_github_fetch({
 			commitSha: "1234567890abcdef1234567890abcdef12345678",
 		});
-		const second = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const second = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId, laterGithub.commitSha));
 		if (second._nay) {
 			throw new Error(second._nay.message);
 		}
@@ -8628,7 +8777,7 @@ describe("plugins publish_version", () => {
 		const github = await mock_publish_github_fetch({ workerSource: hidingWorker });
 		const aiReview = mock_ai_review();
 
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 
 		expect(published._nay?.message).toContain("Plugin review rejected this version");
 		expect(published._nay?.message).toContain("base64");
@@ -8661,7 +8810,7 @@ describe("plugins publish_version", () => {
 		await mock_publish_github_fetch({ workerSource: minifiedWorker });
 		const aiReview = mock_ai_review();
 
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 
 		if (published._nay) {
 			throw new Error(published._nay.message);
@@ -8682,7 +8831,7 @@ describe("plugins publish_version", () => {
 		await mock_publish_github_fetch();
 		mock_ai_review({ verdict: "flagged", findings: ["Module-level mutable state outlives a run"] });
 
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 		expect(published._nay?.message).toBe(
 			"Plugin review flagged this version: Module-level mutable state outlives a run. " +
 				"Change the reviewed content and publish again.",
@@ -8710,7 +8859,7 @@ describe("plugins publish_version", () => {
 			findings: ["Sends secret values to attacker.example", "Obfuscated eval chain"],
 		});
 
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 
 		expect(published._nay?.message).toBe(
 			"Plugin review rejected this version: Sends secret values to attacker.example | Obfuscated eval chain",
@@ -8735,8 +8884,8 @@ describe("plugins publish_version", () => {
 		await mock_publish_github_fetch();
 		const aiReview = mock_ai_review({ verdict: "flagged", findings: ["Module-level mutable state outlives a run"] });
 
-		const first = await asOwner.action(api.plugins.publish_version, { repositoryId });
-		const second = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const first = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
+		const second = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 
 		expect(aiReview).toHaveBeenCalledTimes(1);
 		expect(first._nay?.message).toContain("Plugin review flagged this version");
@@ -8763,11 +8912,11 @@ describe("plugins publish_version", () => {
 			{ verdict: "passed", findings: [] },
 		]);
 
-		const first = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const first = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 		expect(first._nay?.message).toContain("Plugin review rejected this version");
 		expect(aiReview).toHaveBeenCalledTimes(1);
 
-		const second = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const second = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 		expect(second._nay?.message).toContain("Plugin review rejected this version");
 		expect(aiReview).toHaveBeenCalledTimes(1);
 
@@ -8785,7 +8934,7 @@ describe("plugins publish_version", () => {
 		const github = await mock_publish_github_fetch();
 		mock_ai_review();
 
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 		if (published._nay) {
 			throw new Error(published._nay.message);
 		}
@@ -8805,7 +8954,7 @@ describe("plugins publish_version", () => {
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		await mock_publish_github_fetch({ artifactBytesDelta: 1 });
 
-		const failed = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const failed = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 		expect(failed._nay?.message).toBe('Artifact file byte size mismatch for "dist/backend/worker.js"');
 		const afterFailed = await t.run((ctx) => ctx.db.get("plugins_publisher_repositories", repositoryId));
 		expect(afterFailed?.lastPublishAttempt).toMatchObject({
@@ -8818,7 +8967,7 @@ describe("plugins publish_version", () => {
 		// split, so this fixture has to carry a content finding to reach the rejected branch.
 		const hidingWorker = `export default{fetch:()=>new Response(${JSON.stringify("x".repeat(1200))})};`;
 		await mock_publish_github_fetch({ workerSource: hidingWorker });
-		const rejected = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const rejected = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 		expect(rejected._nay?.message).toContain("Plugin review rejected this version");
 		const afterRejected = await t.run((ctx) => ctx.db.get("plugins_publisher_repositories", repositoryId));
 		expect(afterRejected?.lastPublishAttempt).toMatchObject({ status: "rejected", commitSha: null });
@@ -8833,7 +8982,7 @@ describe("plugins publish_version", () => {
 		await mock_publish_github_fetch();
 		mock_ai_review();
 
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 		if (published._nay) {
 			throw new Error(published._nay.message);
 		}
@@ -8849,7 +8998,7 @@ describe("plugins publish_version", () => {
 		// A failure before the manifest could be read and hashed knows neither fact, and must not
 		// borrow the previous attempt's.
 		await mock_publish_github_fetch({ manifestPublisher: "someone-else" });
-		const refused = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const refused = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 		expect(refused._nay).toBeDefined();
 		const afterRefused = await t.run((ctx) => ctx.db.get("plugins_publisher_repositories", repositoryId));
 		expect(afterRefused?.lastPublishAttempt?.status).toBe("failed");
@@ -9083,7 +9232,7 @@ describe("plugins publish_version", () => {
 		const github = await mock_publish_github_fetch();
 		vi.spyOn(plugins_ai_review, "generate_verdict").mockRejectedValue(new Error("model unreachable"));
 
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 
 		expect(published).toEqual({
 			_nay: { message: "Plugin review verdict failed; try again" },
@@ -9111,7 +9260,7 @@ describe("plugins publish_version", () => {
 			},
 		});
 
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 
 		expect(published).toEqual({
 			_nay: { message: "Plugin review verdict failed; try again" },
@@ -9160,7 +9309,7 @@ describe("plugins publish_version", () => {
 			}
 		}
 
-		const published = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const published = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 
 		expect(published._nay?.message).toMatch(/^Plugin AI review rate limit exceeded; try again in \d+s$/);
 		expect(aiReview).toHaveBeenCalledTimes(5);
@@ -9177,7 +9326,7 @@ describe("plugins publish_version", () => {
 		await mock_publish_github_fetch();
 		const aiReview = mock_ai_review();
 
-		const first = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const first = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 		if (first._nay) {
 			throw new Error(first._nay.message);
 		}
@@ -9193,7 +9342,7 @@ describe("plugins publish_version", () => {
 		const drained = await request_fresh_review(t, { requestedBy: membership.userId, repositoryId, hashChar: "5" });
 		expect(drained._nay?.message).toContain("Plugin AI review rate limit exceeded");
 
-		const second = await asOwner.action(api.plugins.publish_version, { repositoryId });
+		const second = await asOwner.action(api.plugins.publish_version, publishArgs(repositoryId));
 		if (second._nay) {
 			throw new Error(second._nay.message);
 		}
@@ -9242,6 +9391,7 @@ describe("plugins publish_version", () => {
 
 		const foreign = await asOwner.action(api.plugins.publish_version, {
 			repositoryId: foreignRepositoryId,
+			expectedSourceCommitSha: defaultPublishCommitSha,
 		});
 		expect(foreign).toEqual({ _nay: { message: "Unauthorized" } });
 		// Pre-authorization failures never touch the claim's publish feedback.
@@ -9252,6 +9402,7 @@ describe("plugins publish_version", () => {
 		await t.run((ctx) => ctx.db.delete("plugins_publisher_repositories", removedRepositoryId));
 		const missing = await asOwner.action(api.plugins.publish_version, {
 			repositoryId: removedRepositoryId,
+			expectedSourceCommitSha: defaultPublishCommitSha,
 		});
 		expect(missing).toEqual({ _nay: { message: "Not found" } });
 	});
@@ -10750,7 +10901,6 @@ describe("plugins run_installation_on_files", () => {
 	});
 });
 
-
 describe("plugins users.account.deleted dispatch", () => {
 	test("fans out one run per workspace the deleted member belonged to, and nowhere else", async () => {
 		const t = test_convex();
@@ -10830,9 +10980,7 @@ describe("plugins users.account.deleted dispatch", () => {
 
 		const runs = await t.run((ctx) => ctx.db.query("plugins_event_runs").collect());
 		const accountRuns = runs.filter((run) => run.event === "users.account.deleted");
-		expect(accountRuns.map((run) => run.workspaceId).sort()).toEqual(
-			[tenantA.workspaceId, tenantB.workspaceId].sort(),
-		);
+		expect(accountRuns.map((run) => run.workspaceId).sort()).toEqual([tenantA.workspaceId, tenantB.workspaceId].sort());
 		// C has the same plugin installed and produced nothing: the fan-out follows the member, not the
 		// installation.
 		expect(accountRuns.map((run) => run.actorUserId)).toEqual([departingUserId, departingUserId]);
@@ -10945,7 +11093,7 @@ describe("plugins admin hard delete", () => {
 		expect(await t.run((ctx) => ctx.db.get("plugins_version_reviews", seeded.otherReviewId))).not.toBeNull();
 	});
 
-	test("hard-deletes an interrupted upload with no registered version", async () => {
+	test("waits for an interrupted upload lease before deleting its review or keys", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const seeded = await t.run(async (ctx) => {
@@ -10963,6 +11111,21 @@ describe("plugins admin hard delete", () => {
 				repo: "interrupted-other",
 			});
 			const keys = ["plugins/interrupted-only/a", "plugins/interrupted-only/b"];
+			const targetReviewId = await ctx.db.insert("plugins_version_reviews", {
+				createdBy: membership.userId,
+				artifactHash: `sha256:${"3".repeat(64)}`,
+				reviewSubjectHash: `subject:${"3".repeat(64)}`,
+				reviewPolicyVersion: "1",
+				pluginName: "interrupted-only",
+				version: "0.1.0",
+				status: "passed",
+				mechanicalFindings: [],
+				mechanicalAdvisoryFindings: [],
+				aiFindings: [],
+				capabilityMap: [],
+				model: "none",
+				updatedAt: now,
+			});
 			const targetAttemptId = await ctx.db.insert("plugins_publish_artifact_cleanup_attempts", {
 				repositoryId: targetRepositoryId,
 				pluginName: "interrupted-only",
@@ -10983,23 +11146,39 @@ describe("plugins admin hard delete", () => {
 				cleanupAt: now + 60 * 60 * 1000,
 				updatedAt: now,
 			});
-			return { keys, targetAttemptId, otherAttemptId };
+			return { keys, targetReviewId, targetAttemptId, otherAttemptId };
 		});
-		const deleteObject = vi.spyOn(R2.prototype, "deleteObject").mockRejectedValueOnce(new Error("R2 unavailable"));
+		const deleteObject = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
 
 		const before = await t.query(internal.plugins.preview_hard_delete_registered_plugin, {
 			pluginName: "interrupted-only",
 		});
 		expect(before.publishCleanupAttempts).toBe(1);
 		expect(before.r2ObjectKeys).toBe(2);
-		await expect(
-			t.mutation(internal.plugins.hard_delete_plugin_from_registry, { pluginName: "interrupted-only" }),
-		).rejects.toThrow("R2 unavailable");
+		expect(
+			await t.mutation(internal.plugins.hard_delete_plugin_from_registry, { pluginName: "interrupted-only" }),
+		).toEqual({ done: false, deleted: 0 });
+		expect(
+			(
+				await t.query(internal.plugins.preview_hard_delete_registered_plugin, {
+					pluginName: "interrupted-only",
+				})
+			).deletionFenced,
+		).toBe(true);
+		expect(deleteObject).not.toHaveBeenCalled();
 		expect(
 			(await t.run((ctx) => ctx.db.get("plugins_publish_artifact_cleanup_attempts", seeded.targetAttemptId)))?.r2Keys,
 		).toEqual(seeded.keys);
+		expect(await t.run((ctx) => ctx.db.get("plugins_version_reviews", seeded.targetReviewId))).not.toBeNull();
 
-		deleteObject.mockResolvedValue(undefined);
+		await t.run((ctx) =>
+			ctx.db.patch("plugins_publish_artifact_cleanup_attempts", seeded.targetAttemptId, { cleanupAt: 0 }),
+		);
+		expect(
+			await t.mutation(internal.plugins.run_publish_artifact_cleanup_attempt, {
+				attemptId: seeded.targetAttemptId,
+			}),
+		).toEqual({ done: true, deletedCount: 2 });
 		await drain_plugin_registry_delete(t, "interrupted-only");
 		expect(
 			await t.run((ctx) => ctx.db.get("plugins_publish_artifact_cleanup_attempts", seeded.targetAttemptId)),
@@ -11010,6 +11189,170 @@ describe("plugins admin hard delete", () => {
 		for (const key of seeded.keys) {
 			expect(deleteObject).toHaveBeenCalledWith(expect.anything(), key);
 		}
+		expect(await t.run((ctx) => ctx.db.get("plugins_version_reviews", seeded.targetReviewId))).toBeNull();
+	});
+
+	test("finds an active upload lease without scanning expired attempts", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const seeded = await t.run(async (ctx) => {
+			const now = Date.now();
+			const repositoryId = await ctx.db.insert("plugins_publisher_repositories", {
+				ownerUserId: membership.userId,
+				repositoryUrl: "https://github.com/bonobo/many-expired-attempts",
+				owner: "bonobo",
+				repo: "many-expired-attempts",
+			});
+			const reviewId = await ctx.db.insert("plugins_version_reviews", {
+				createdBy: membership.userId,
+				artifactHash: `sha256:${"5".repeat(64)}`,
+				reviewSubjectHash: `subject:${"5".repeat(64)}`,
+				reviewPolicyVersion: "1",
+				pluginName: "many-expired-attempts",
+				version: "0.1.0",
+				status: "passed",
+				mechanicalFindings: [],
+				mechanicalAdvisoryFindings: [],
+				aiFindings: [],
+				capabilityMap: [],
+				model: "none",
+				updatedAt: now,
+			});
+			for (let index = 0; index < 150; index += 1) {
+				await ctx.db.insert("plugins_publish_artifact_cleanup_attempts", {
+					repositoryId,
+					pluginName: "many-expired-attempts",
+					version: "0.1.0",
+					artifactHash: `sha256:${"6".repeat(64)}`,
+					uploadId: `expired-${index}`,
+					r2Keys: [`plugins/many-expired-attempts/expired-${index}`],
+					cleanupAt: now - 1,
+					updatedAt: now,
+				});
+			}
+			const activeAttemptId = await ctx.db.insert("plugins_publish_artifact_cleanup_attempts", {
+				repositoryId,
+				pluginName: "many-expired-attempts",
+				version: "0.1.0",
+				artifactHash: `sha256:${"7".repeat(64)}`,
+				uploadId: "active",
+				r2Keys: ["plugins/many-expired-attempts/active"],
+				cleanupAt: now + 60 * 60 * 1000,
+				updatedAt: now,
+			});
+			return { activeAttemptId, reviewId };
+		});
+
+		expect(
+			await t.mutation(internal.plugins.hard_delete_plugin_from_registry, {
+				pluginName: "many-expired-attempts",
+			}),
+		).toEqual({ done: false, deleted: 0 });
+		expect(await t.run((ctx) => ctx.db.get("plugins_version_reviews", seeded.reviewId))).not.toBeNull();
+
+		await t.run((ctx) =>
+			ctx.db.patch("plugins_publish_artifact_cleanup_attempts", seeded.activeAttemptId, { cleanupAt: 0 }),
+		);
+		expect(
+			await t.mutation(internal.plugins.hard_delete_plugin_from_registry, {
+				pluginName: "many-expired-attempts",
+			}),
+		).toEqual({ done: false, deleted: 1 });
+		expect(await t.run((ctx) => ctx.db.get("plugins_version_reviews", seeded.reviewId))).toBeNull();
+	});
+
+	test("keeps a preparing version and source tree while its upload lease is live", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const registered = await register_media_plugin(t, membership.userId, { name: "preparing-lease" });
+		const uploadId = "preparing-lease-upload";
+		const manifestR2Key = `plugins/preparing-lease/0.1.0/${uploadId}/dist/bonobo.plugin.json`;
+		const seeded = await t.run(async (ctx) => {
+			const version = await ctx.db.get("plugins_versions", registered.pluginVersionId);
+			if (!version) {
+				throw new Error("Expected preparing version fixture");
+			}
+			const r2Keys = [manifestR2Key, ...version.files.map((file) => file.r2Key)];
+			await ctx.db.patch("plugins_versions", version._id, {
+				manifestR2Key,
+				isLatest: false,
+				sourceStatus: "preparing",
+				sourceLastError: null,
+			});
+			const attemptId = await ctx.db.insert("plugins_publish_artifact_cleanup_attempts", {
+				repositoryId: registered.repositoryId,
+				pluginName: "preparing-lease",
+				version: "0.1.0",
+				artifactHash: version.artifactHash,
+				uploadId,
+				r2Keys,
+				cleanupAt: Date.now() + 60 * 60 * 1000,
+				updatedAt: Date.now(),
+			});
+			const sourceNodeIds = (
+				await ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_treePath", (q) =>
+						q
+							.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+							.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+							.gte("treePath", `/${version._id}/`)
+							.lt("treePath", `/${version._id}/\uffff`),
+					)
+					.collect()
+			).map((node) => node._id);
+			return { attemptId, sourceNodeIds };
+		});
+		expect(seeded.sourceNodeIds.length).toBeGreaterThan(0);
+		const deleteObject = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+
+		expect(
+			await t.mutation(internal.plugins.hard_delete_plugin_from_registry, { pluginName: "preparing-lease" }),
+		).toEqual({ done: false, deleted: 0 });
+		expect(deleteObject).not.toHaveBeenCalled();
+		expect(await t.run((ctx) => ctx.db.get("plugins_versions", registered.pluginVersionId))).not.toBeNull();
+		expect(
+			await t.run((ctx) => ctx.db.get("plugins_publish_artifact_cleanup_attempts", seeded.attemptId)),
+		).not.toBeNull();
+		expect(
+			await t.run(async (ctx) =>
+				(
+					await ctx.db
+						.query("files_nodes")
+						.withIndex("by_organization_workspace_treePath", (q) =>
+							q
+								.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+								.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+								.gte("treePath", `/${registered.pluginVersionId}/`)
+								.lt("treePath", `/${registered.pluginVersionId}/\uffff`),
+						)
+						.collect()
+				).map((node) => node._id),
+			),
+		).toEqual(seeded.sourceNodeIds);
+
+		await t.run((ctx) => ctx.db.patch("plugins_publish_artifact_cleanup_attempts", seeded.attemptId, { cleanupAt: 0 }));
+		expect(
+			await t.mutation(internal.plugins.run_publish_artifact_cleanup_attempt, {
+				attemptId: seeded.attemptId,
+			}),
+		).toEqual({ done: true, deletedCount: 2 });
+		expect(await t.run((ctx) => ctx.db.get("plugins_versions", registered.pluginVersionId))).toBeNull();
+		expect(await t.run((ctx) => ctx.db.get("plugins_publish_artifact_cleanup_attempts", seeded.attemptId))).toBeNull();
+		expect(
+			await t.run((ctx) =>
+				ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_treePath", (q) =>
+						q
+							.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+							.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
+							.gte("treePath", `/${registered.pluginVersionId}/`)
+							.lt("treePath", `/${registered.pluginVersionId}/\uffff`),
+					)
+					.collect(),
+			),
+		).toEqual([]);
 	});
 
 	test("does not delete a repository claim reclaimed by another user", async () => {
@@ -11133,6 +11476,127 @@ describe("plugins admin hard delete", () => {
 		await drain_plugin_registry_delete(t, "shared-name-two");
 		expect(await t.run((ctx) => ctx.db.get("plugins_publisher_repositories", first.repositoryId))).toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("plugins_publisher_repository_secrets", seeded.secretId))).toBeNull();
+	});
+
+	test("keeps a repository claim for another plugin name's active publish", async () => {
+		const t = test_convex();
+		const publisher = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: null }));
+		const sourceRepositoryUrl = "https://github.com/bonobo/shared-active-publish";
+		const registered = await register_media_plugin(t, publisher, {
+			name: "published-name",
+			sourceRepositoryUrl,
+			sourceRepo: "shared-active-publish",
+		});
+		const seeded = await t.run(async (ctx) => {
+			const secretId = await ctx.db.insert("plugins_publisher_repository_secrets", {
+				ownerUserId: publisher,
+				repositoryId: registered.repositoryId,
+				name: "OPENAI_API_KEY",
+				ciphertext: new TextEncoder().encode("shared").buffer,
+				nonce: new TextEncoder().encode("nonce").buffer,
+				valuePreview: "configured",
+				updatedAt: Date.now(),
+			});
+			const attemptId = await ctx.db.insert("plugins_publish_artifact_cleanup_attempts", {
+				repositoryId: registered.repositoryId,
+				pluginName: "publishing-name",
+				version: "0.1.0",
+				artifactHash: `sha256:${"9".repeat(64)}`,
+				uploadId: "publishing-name-upload",
+				r2Keys: ["plugins/publishing-name/pending"],
+				cleanupAt: Date.now() + 60 * 60 * 1000,
+				updatedAt: Date.now(),
+			});
+			return { attemptId, secretId };
+		});
+
+		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		await drain_plugin_registry_delete(t, "published-name");
+		expect(await t.run((ctx) => ctx.db.get("plugins_versions", registered.pluginVersionId))).toBeNull();
+		expect(await t.run((ctx) => ctx.db.get("plugins_publisher_repositories", registered.repositoryId))).not.toBeNull();
+		expect(await t.run((ctx) => ctx.db.get("plugins_publisher_repository_secrets", seeded.secretId))).not.toBeNull();
+		expect(
+			await t.run((ctx) => ctx.db.get("plugins_publish_artifact_cleanup_attempts", seeded.attemptId)),
+		).not.toBeNull();
+
+		await t.mutation(internal.plugins.update_last_publish_attempt, {
+			repositoryId: registered.repositoryId,
+			pluginName: "publishing-name",
+			status: "failed",
+			message: "The active publish still owns this repository",
+			commitSha: null,
+			artifactHash: `sha256:${"9".repeat(64)}`,
+			reviewId: null,
+		});
+		expect(
+			(await t.run((ctx) => ctx.db.get("plugins_publisher_repositories", registered.repositoryId)))
+				?.lastPublishAttempt,
+		).toMatchObject({ pluginName: "publishing-name" });
+	});
+
+	test("clears a deleted name's pre-review failure from a shared repository claim", async () => {
+		const t = test_convex();
+		const publisher = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: null }));
+		const sourceRepositoryUrl = "https://github.com/bonobo/shared-attempt-repository";
+		const first = await register_media_plugin(t, publisher, {
+			name: "shared-attempt-one",
+			sourceRepositoryUrl,
+			sourceRepo: "shared-attempt-repository",
+		});
+		const second = await register_media_plugin(t, publisher, {
+			repositoryId: first.repositoryId,
+			name: "shared-attempt-two",
+			sourceRepositoryUrl,
+			sourceRepo: "shared-attempt-repository",
+			artifactHash: `sha256:${"6".repeat(64)}`,
+		});
+		await t.run((ctx) =>
+			ctx.db.patch("plugins_publisher_repositories", first.repositoryId, {
+				lastPublishAttempt: {
+					at: Date.now(),
+					pluginName: "shared-attempt-one",
+					status: "failed",
+					message: "Failed before review",
+					commitSha: null,
+					artifactHash: `sha256:${"7".repeat(64)}`,
+					reviewId: null,
+				},
+			}),
+		);
+
+		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		let firstVersion = await t.run((ctx) => ctx.db.get("plugins_versions", first.pluginVersionId));
+		for (let step = 0; step < 20 && firstVersion !== null; step += 1) {
+			await t.mutation(internal.plugins.hard_delete_plugin_from_registry, { pluginName: "shared-attempt-one" });
+			firstVersion = await t.run((ctx) => ctx.db.get("plugins_versions", first.pluginVersionId));
+		}
+		expect(await t.run((ctx) => ctx.db.get("plugins_versions", first.pluginVersionId))).toBeNull();
+		expect(await t.run((ctx) => ctx.db.get("plugins_versions", second.pluginVersionId))).not.toBeNull();
+		await expect(
+			t.mutation(internal.plugins.clear_plugin_registry_deletion_fence, { pluginName: "shared-attempt-one" }),
+		).rejects.toThrow("Plugin registry deletion is not complete");
+		expect(
+			await t.mutation(internal.plugins.hard_delete_plugin_from_registry, { pluginName: "shared-attempt-one" }),
+		).toEqual({ done: false, deleted: 1 });
+		expect(
+			await t.mutation(internal.plugins.hard_delete_plugin_from_registry, { pluginName: "shared-attempt-one" }),
+		).toEqual({ done: true, deleted: 0 });
+		expect(
+			(await t.run((ctx) => ctx.db.get("plugins_publisher_repositories", first.repositoryId)))?.lastPublishAttempt,
+		).toBeUndefined();
+
+		await t.mutation(internal.plugins.update_last_publish_attempt, {
+			repositoryId: first.repositoryId,
+			pluginName: "shared-attempt-two",
+			status: "failed",
+			message: "Second name feedback",
+			commitSha: null,
+			artifactHash: `sha256:${"8".repeat(64)}`,
+			reviewId: null,
+		});
+		expect(
+			(await t.run((ctx) => ctx.db.get("plugins_publisher_repositories", first.repositoryId)))?.lastPublishAttempt,
+		).toMatchObject({ pluginName: "shared-attempt-two", message: "Second name feedback" });
 	});
 
 	test("keeps the version and repository owner when R2 deletion fails, then retries idempotently", async () => {
@@ -11331,6 +11795,15 @@ describe("plugins admin hard delete", () => {
 			});
 		}
 		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const firstPass = await t.mutation(internal.plugins.hard_delete_plugin_from_registry, {
+			pluginName: "large-delete",
+			_test_batchSize: 10,
+		});
+		expect(firstPass).toEqual({ done: false, deleted: 10 });
+		const afterFirstPass = await t.run((ctx) => ctx.db.query("plugins_workspace_installations").collect());
+		// A partial quiesce pass must not drain one version while another installation can still write.
+		expect(afterFirstPass).toHaveLength(101);
+		expect(afterFirstPass.filter((installation) => installation.status === "disabled")).toHaveLength(10);
 
 		let done = false;
 		for (let step = 0; step < 250 && !done; step += 1) {
@@ -11352,7 +11825,353 @@ describe("plugins admin hard delete", () => {
 		expect(await t.run((ctx) => ctx.db.query("plugins_workspace_installations").first())).toBeNull();
 	}, 30_000);
 
-	test("lets executor work and terminal bookkeeping drain while hard deletion waits", async () => {
+	test("keeps installs and publishing fenced until explicit recovery", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const otherMembership = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, {
+				organizationName: "fence-other",
+				workspaceName: "fence-other",
+			}),
+		);
+		const media = await register_media_plugin(t, membership.userId);
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const asOtherOwner = t.withIdentity(user_identity(otherMembership.userId));
+		const installed = await asOwner.mutation(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: media.pluginVersionId,
+			...media_plugin_consent,
+		});
+		if (installed._nay) {
+			throw new Error(installed._nay.message);
+		}
+		expect(
+			(await t.query(internal.plugins.preview_hard_delete_registered_plugin, { pluginName: "media" })).deletionFenced,
+		).toBe(false);
+
+		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const firstDelete = await t.mutation(internal.plugins.hard_delete_plugin_from_registry, {
+			pluginName: "media",
+			_test_batchSize: 1,
+		});
+		expect(firstDelete.done).toBe(false);
+		expect(
+			(await t.query(internal.plugins.preview_hard_delete_registered_plugin, { pluginName: "media" })).deletionFenced,
+		).toBe(true);
+		await expect(
+			t.mutation(internal.plugins.clear_plugin_registry_deletion_fence, { pluginName: "media" }),
+		).rejects.toThrow("Plugin registry deletion is not complete");
+
+		// The old installation still exists, but the fence must stop install_version from enabling it.
+		expect(
+			(
+				await asOwner.mutation(api.plugins.install_version, {
+					membershipId: membership.membershipId,
+					pluginVersionId: media.pluginVersionId,
+					...media_plugin_consent,
+				})
+			)._nay?.message,
+		).toBe("Plugin registry deletion is in progress");
+		expect(
+			await t.run((ctx) => ctx.db.get("plugins_workspace_installations", installed._yay.installationId)),
+		).toMatchObject({ status: "disabled" });
+
+		let installationDeleted = false;
+		for (let step = 0; step < 20 && !installationDeleted; step += 1) {
+			const result = await t.mutation(internal.plugins.hard_delete_plugin_from_registry, {
+				pluginName: "media",
+			});
+			if (result.done) {
+				throw new Error("Hard delete finished before the installation interleaving check");
+			}
+			installationDeleted =
+				(await t.run((ctx) => ctx.db.get("plugins_workspace_installations", installed._yay.installationId))) === null;
+		}
+		expect(installationDeleted).toBe(true);
+		expect(await t.run((ctx) => ctx.db.get("plugins_versions", media.pluginVersionId))).not.toBeNull();
+
+		// With the old installation gone, the same call would create a fresh one without the fence.
+		expect(
+			(
+				await asOtherOwner.mutation(api.plugins.install_version, {
+					membershipId: otherMembership.membershipId,
+					pluginVersionId: media.pluginVersionId,
+					...media_plugin_consent,
+				})
+			)._nay?.message,
+		).toBe("Plugin registry deletion is in progress");
+		expect(await t.run((ctx) => ctx.db.query("plugins_workspace_installations").collect())).toEqual([]);
+
+		expect(
+			(
+				await t.query(internal.plugins.preflight_publish_plugin_version, {
+					userId: membership.userId,
+					name: "media",
+					version: "0.2.0",
+					artifactHash: `sha256:${"c".repeat(64)}`,
+				})
+			)._nay?.message,
+		).toBe("Plugin registry deletion is in progress");
+		expect(
+			(
+				await t.mutation(internal.plugins.upsert_version_review, {
+					createdBy: membership.userId,
+					repositoryId: media.repositoryId,
+					reviewPolicyVersion: plugins_REVIEW_POLICY_VERSION,
+					artifactHash: `sha256:${"c".repeat(64)}`,
+					reviewSubjectHash: `sha256:${"d".repeat(64)}`,
+					pluginName: "media",
+					version: "0.2.0",
+					status: "passed",
+					mechanicalFindings: [],
+					mechanicalAdvisoryFindings: [],
+					aiFindings: [],
+					capabilityMap: [],
+					model: "gpt-5.4-mini",
+				})
+			)._nay?.message,
+		).toBe("Plugin registry deletion is in progress");
+		await t.mutation(internal.plugins.update_last_publish_attempt, {
+			repositoryId: media.repositoryId,
+			pluginName: "media",
+			status: "failed",
+			message: "Late fenced publish",
+			commitSha: null,
+			artifactHash: `sha256:${"c".repeat(64)}`,
+			reviewId: null,
+		});
+		expect(
+			(await t.run((ctx) => ctx.db.get("plugins_publisher_repositories", media.repositoryId)))?.lastPublishAttempt,
+		).toBeUndefined();
+		await expect(
+			t.mutation(internal.plugins.create_publish_artifact_cleanup_attempt, {
+				repositoryId: media.repositoryId,
+				pluginName: "media",
+				version: "0.2.0",
+				artifactHash: `sha256:${"c".repeat(64)}`,
+				uploadId: "delete-fence-upload",
+				r2Keys: ["plugins/media/delete-fence/manifest.json"],
+			}),
+		).rejects.toThrow("Plugin registry deletion is in progress");
+		await expect(
+			t.mutation(internal.plugins.finalize_plugin_version, {
+				repositoryId: media.repositoryId,
+				pluginVersionId: media.pluginVersionId,
+			}),
+		).rejects.toThrow("Plugin registry deletion is in progress");
+		await expect(
+			register_media_plugin(t, membership.userId, {
+				name: "media",
+				version: "0.2.0",
+				artifactHash: `sha256:${"c".repeat(64)}`,
+			}),
+		).rejects.toThrow("Plugin registry deletion is in progress");
+
+		await drain_plugin_registry_delete(t, "media");
+		expect(
+			(await t.query(internal.plugins.preview_hard_delete_registered_plugin, { pluginName: "media" })).deletionFenced,
+		).toBe(true);
+		await expect(
+			register_media_plugin(t, membership.userId, {
+				name: "media",
+				version: "0.2.0",
+				artifactHash: `sha256:${"c".repeat(64)}`,
+			}),
+		).rejects.toThrow("Plugin registry deletion is in progress");
+		expect(await t.mutation(internal.plugins.clear_plugin_registry_deletion_fence, { pluginName: "media" })).toEqual({
+			cleared: true,
+		});
+		expect(
+			(await t.query(internal.plugins.preview_hard_delete_registered_plugin, { pluginName: "media" })).deletionFenced,
+		).toBe(false);
+		expect(await t.run((ctx) => ctx.db.query("plugins_registry_deletion_fences").collect())).toEqual([]);
+
+		// Clearing the fence is the recovery point. The same name may now start a new lifecycle.
+		const replacement = await register_media_plugin(t, membership.userId, {
+			name: "media",
+			version: "0.2.0",
+			artifactHash: `sha256:${"c".repeat(64)}`,
+		});
+		expect(
+			(
+				await asOtherOwner.mutation(api.plugins.install_version, {
+					membershipId: otherMembership.membershipId,
+					pluginVersionId: replacement.pluginVersionId,
+					...media_plugin_consent,
+				})
+			)._nay,
+		).toBeUndefined();
+	}, 30_000);
+
+	test("refuses producers after hard deletion starts so the drain can finish", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const capabilities = [
+			"plugin.data.read",
+			"plugin.data.write",
+			"plugin.data.user-write",
+			"plugin.service.connect",
+		] satisfies plugins_Capability[];
+		const media = await register_media_plugin(t, membership.userId, {
+			capabilities,
+			pages: [{ id: "main", title: "Media", entry: "dist/page.html", navItem: null }],
+		});
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const installed = await asOwner.mutation(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: media.pluginVersionId,
+			acceptedCapabilities: capabilities,
+			acceptedOutboundOrigins: [],
+			acceptedUiOutboundOrigins: [],
+		});
+		if (installed._nay) {
+			throw new Error(installed._nay.message);
+		}
+		const pageSession = await asOwner.mutation(api.plugins_ui.mint_page_session, {
+			membershipId: membership.membershipId,
+			pluginName: "media",
+		});
+		if (pageSession._nay) {
+			throw new Error(pageSession._nay.message);
+		}
+		const asPage = t.withIdentity({
+			issuer: `${process.env.VITE_CONVEX_HTTP_URL!}/plugins-ui`,
+			subject: pageSession._yay.sessionId,
+		});
+		const serviceGrant = await t.mutation(internal.public_api.create_plugin_service_grant, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			installationId: installed._yay.installationId,
+			actorUserId: membership.userId,
+			requestedScopes: ["plugin_data:read", "plugin_data:write"],
+			destinationPathPrefix: null,
+			phase: "interactive",
+			now: Date.now(),
+		});
+		if (serviceGrant._nay) {
+			throw new Error(serviceGrant._nay.message);
+		}
+		const servicePrincipal = {
+			kind: "plugin_service" as const,
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			installationId: installed._yay.installationId,
+			actorUserId: membership.userId,
+			principalKey: serviceGrant._yay.principalKey,
+		};
+		const pageWrite = await asPage.mutation(api.plugins_data.user_append_document, {
+			collection: "messages",
+			keyPrefix: "general:",
+			value: { text: "before deletion" },
+			clientRequestId: "before-delete-page",
+		});
+		if (pageWrite._nay) {
+			throw new Error(pageWrite._nay.message);
+		}
+		const serviceWrite = await t.mutation(internal.plugins_data.write_document, {
+			principal: servicePrincipal,
+			collection: "messages",
+			key: "service-before-delete",
+			value: { text: "before deletion" },
+		});
+		if (serviceWrite._nay) {
+			throw new Error(serviceWrite._nay.message);
+		}
+
+		const firstDelete = await t.mutation(internal.plugins.hard_delete_plugin_from_registry, {
+			pluginName: "media",
+			_test_batchSize: 1,
+		});
+		expect(firstDelete).toEqual({ done: false, deleted: 1 });
+		expect(
+			await t.run((ctx) => ctx.db.get("plugins_workspace_installations", installed._yay.installationId)),
+		).toMatchObject({ status: "disabled" });
+		expect(
+			(
+				await asOwner.mutation(api.plugins_ui.mint_page_session, {
+					membershipId: membership.membershipId,
+					pluginName: "media",
+				})
+			)._nay?.message,
+		).toBe("Not found");
+		expect(
+			(
+				await asPage.mutation(api.plugins_data.user_append_document, {
+					collection: "messages",
+					keyPrefix: "general:",
+					value: { text: "after deletion started" },
+					clientRequestId: "after-delete-page",
+				})
+			)._nay?.message,
+		).toBe("Unauthorized");
+		expect(
+			(
+				await t.mutation(internal.public_api.create_plugin_service_grant, {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					installationId: installed._yay.installationId,
+					actorUserId: membership.userId,
+					requestedScopes: ["plugin_data:read", "plugin_data:write"],
+					destinationPathPrefix: null,
+					phase: "interactive",
+					now: Date.now(),
+				})
+			)._nay?.message,
+		).toBe("Not found");
+		expect(
+			(
+				await t.mutation(internal.public_api.rotate_plugin_service_grant, {
+					presented: serviceGrant._yay.token,
+					now: Date.now(),
+				})
+			)._nay?.message,
+		).toBe("Unauthenticated");
+		expect(
+			(
+				await t.mutation(internal.plugins_data.write_document, {
+					principal: servicePrincipal,
+					collection: "messages",
+					key: "service-after-delete",
+					value: { text: "after deletion started" },
+				})
+			)._nay?.message,
+		).toBe("Not found");
+
+		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		let done = false;
+		for (let step = 0; step < 1_000 && !done; step += 1) {
+			// Keep both producers active between every drain pass. They must never replace rows that a
+			// previous pass removed, or the registry delete could run forever.
+			expect(
+				await asPage.mutation(api.plugins_data.user_append_document, {
+					collection: "messages",
+					keyPrefix: "general:",
+					value: { step },
+					clientRequestId: `delete-page-${step}`,
+				}),
+			).toHaveProperty("_nay");
+			expect(
+				await t.mutation(internal.plugins_data.write_document, {
+					principal: servicePrincipal,
+					collection: "messages",
+					key: `delete-service-${step}`,
+					value: { step },
+				}),
+			).toHaveProperty("_nay");
+			done = (
+				await t.mutation(internal.plugins.hard_delete_plugin_from_registry, {
+					pluginName: "media",
+					// An asset and its file node are one indivisible two-unit delete.
+					_test_batchSize: 3,
+				})
+			).done;
+		}
+		expect(done).toBe(true);
+		expect(await t.run((ctx) => ctx.db.query("plugins_data").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("plugins_workspace_installations").collect())).toEqual([]);
+	}, 30_000);
+
+	test("refuses executor work but lets terminal bookkeeping drain while hard deletion waits", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const media = await register_media_plugin(t, membership.userId);
@@ -11411,10 +12230,7 @@ describe("plugins admin hard delete", () => {
 			kind: "api_request",
 			route: "/api/v1/files/list",
 		});
-		if (consumed._nay) {
-			throw new Error(consumed._nay.message);
-		}
-		expect(consumed._yay.sequence).toBe(1);
+		expect(consumed._nay?.message).toBe("Unauthenticated");
 
 		await t.mutation(internal.plugins_runtime.finish_event_run, {
 			runId,
@@ -11523,6 +12339,97 @@ describe("plugins admin hard delete", () => {
 				createdAt: now,
 				expiresAt: now + 30 * 60 * 1000,
 			});
+			const projectionStateId = await ctx.db.insert("plugins_data_projection_states", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				installationId: installedMedia._yay.installationId,
+				pluginName: "media",
+				writerUserId: membership.userId,
+				cursors: {},
+				scanCursors: {},
+				syncGeneration: 1,
+				dirty: true,
+				updatedAt: now,
+			});
+			const projectionBuildId = await ctx.db.insert("plugins_data_projection_chitchat_builds", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				installationId: installedMedia._yay.installationId,
+				lifecycleStateId: projectionStateId,
+				channelKey: "hard-delete-channel",
+				dirtyUpdatedAt: now,
+				channelName: "Hard delete",
+				topic: null,
+				isPrivate: false,
+				slug: "hard-delete",
+				header: "# Hard delete",
+				phase: "cleanup",
+				outputFileIndex: 0,
+				publishedFiles: [],
+				createdAt: now,
+				updatedAt: now,
+			});
+			await Promise.all([
+				ctx.db.insert("plugins_data_projection_dirty_channels", {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					installationId: installedMedia._yay.installationId,
+					channelKey: "hard-delete-channel",
+					queuedAt: now,
+					updatedAt: now,
+				}),
+				ctx.db.insert("plugins_data_projection_chitchat_items", {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					installationId: installedMedia._yay.installationId,
+					buildId: projectionBuildId,
+					collection: "messages",
+					key: "hard-delete-message",
+					createdAt: now,
+					createdBy: String(membership.userId),
+					text: "Staged message",
+					attachments: [],
+					editedAt: null,
+					deletedAt: null,
+				}),
+				ctx.db.insert("plugins_data_projection_chitchat_reactions", {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					installationId: installedMedia._yay.installationId,
+					buildId: projectionBuildId,
+					key: "hard-delete-reaction",
+					targetKey: "hard-delete-message",
+					token: "thumbs-up",
+					removed: false,
+				}),
+				ctx.db.insert("plugins_data_projection_chitchat_authors", {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					installationId: installedMedia._yay.installationId,
+					buildId: projectionBuildId,
+					userId: String(membership.userId),
+					label: "Owner",
+				}),
+				ctx.db.insert("plugins_data_projection_chitchat_files", {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					installationId: installedMedia._yay.installationId,
+					buildId: projectionBuildId,
+					fileIndex: 0,
+					body: "Staged body",
+					updatedAt: now,
+				}),
+				ctx.db.insert("plugins_data_projection_files", {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					installationId: installedMedia._yay.installationId,
+					channelKey: "hard-delete-channel",
+					fileNodeId: upload._yay.nodeId,
+					rolloverIndex: 0,
+					path: "/hard-delete.png",
+					updatedAt: now,
+				}),
+			]);
 			// The plugin's document store. The counters live in the accounting doc, and the preview
 			// reports them from there, so seed both together the way a real write would leave them.
 			await ctx.db.insert("plugins_data", {
@@ -11615,6 +12522,66 @@ describe("plugins admin hard delete", () => {
 				expiresAt: now + 60 * 60 * 1000,
 				updatedAt: now,
 			});
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				resourceKind: "plugin_scope",
+				resourceId: `${installedMedia._yay.installationId}:hard-delete-scope`,
+				principalKind: "user",
+				userId: membership.userId,
+				permission: "content.read",
+				createdAt: now,
+				updatedAt: now,
+			});
+			await ctx.db.insert("plugins_data_scopes", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				installationId: installedMedia._yay.installationId,
+				scopeId: "hard-delete-scope",
+				collection: "meetings",
+				keyPrefix: "private/",
+				createdByUserId: membership.userId,
+				createdAt: now,
+				updatedAt: now,
+			});
+			await ctx.db.insert("plugins_data_released_scope_ranges", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				installationId: installedMedia._yay.installationId,
+				scopeId: "released-hard-delete-scope",
+				collectionName: "meetings",
+				keyPrefix: "released/",
+			});
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				resourceKind: "plugin_scope",
+				resourceId: `${installedAlternate._yay.installationId}:hard-delete-sibling`,
+				principalKind: "user",
+				userId: membership.userId,
+				permission: "content.read",
+				createdAt: now,
+				updatedAt: now,
+			});
+			await ctx.db.insert("plugins_data_scopes", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				installationId: installedAlternate._yay.installationId,
+				scopeId: "hard-delete-sibling",
+				collection: "meetings",
+				keyPrefix: "sibling-private/",
+				createdByUserId: membership.userId,
+				createdAt: now,
+				updatedAt: now,
+			});
+			await ctx.db.insert("plugins_data_released_scope_ranges", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				installationId: installedAlternate._yay.installationId,
+				scopeId: "released-hard-delete-sibling",
+				collectionName: "meetings",
+				keyPrefix: "sibling-released/",
+			});
 			const runId = await ctx.db.insert("plugins_event_runs", {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
@@ -11676,6 +12643,8 @@ describe("plugins admin hard delete", () => {
 			pluginName: "media",
 		});
 		expect(previewBefore).toEqual({
+			deletionFenced: false,
+			previewTruncated: false,
 			versions: 1,
 			versionReviews: 1,
 			// Version root folder + dist + dist/backend + worker.js in GLOBAL/PLUGINS.
@@ -11688,9 +12657,32 @@ describe("plugins admin hard delete", () => {
 			pluginDataDocuments: 1,
 			pluginDataLiveReservations: 1,
 			pluginDataTombstones: 1,
+			pluginDataProjectionDirtyChannels: 1,
+			pluginDataProjectionDirtyChannelsTruncated: false,
+			pluginDataProjectionChitchatItems: 1,
+			pluginDataProjectionChitchatItemsTruncated: false,
+			pluginDataProjectionChitchatReactions: 1,
+			pluginDataProjectionChitchatReactionsTruncated: false,
+			pluginDataProjectionChitchatAuthors: 1,
+			pluginDataProjectionChitchatAuthorsTruncated: false,
+			pluginDataProjectionChitchatFiles: 1,
+			pluginDataProjectionChitchatFilesTruncated: false,
+			pluginDataProjectionChitchatBuilds: 1,
+			pluginDataProjectionChitchatBuildsTruncated: false,
+			pluginDataProjectionFiles: 1,
+			pluginDataProjectionFilesTruncated: false,
+			pluginDataProjectionStates: 1,
+			pluginDataProjectionStatesTruncated: false,
 			pluginDataMemberUsage: 2,
+			pluginDataMemberUsageTruncated: false,
 			pluginServiceGrants: 1,
 			pluginServiceGrantsTruncated: false,
+			pluginScopeGrants: 1,
+			pluginScopeGrantsTruncated: false,
+			pluginDataScopeRows: 1,
+			pluginDataScopeRowsTruncated: false,
+			releasedScopeRangeRows: 1,
+			releasedScopeRangeRowsTruncated: false,
 			eventRuns: 1,
 			eventRunCalls: 2,
 			runActivities: 1,
@@ -11698,6 +12690,17 @@ describe("plugins admin hard delete", () => {
 			publisherSecrets: 1,
 			publishCleanupAttempts: 0,
 			r2ObjectKeys: 2,
+		});
+		const alternateScopePreviewBefore = await t.query(internal.plugins.preview_hard_delete_registered_plugin, {
+			pluginName: "media-alt",
+		});
+		expect(alternateScopePreviewBefore).toMatchObject({
+			pluginScopeGrants: 1,
+			pluginScopeGrantsTruncated: false,
+			pluginDataScopeRows: 1,
+			pluginDataScopeRowsTruncated: false,
+			releasedScopeRangeRows: 1,
+			releasedScopeRangeRowsTruncated: false,
 		});
 
 		const deleteObjectSpy = vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
@@ -11708,6 +12711,8 @@ describe("plugins admin hard delete", () => {
 			pluginName: "media",
 		});
 		expect(previewAfter).toEqual({
+			deletionFenced: true,
+			previewTruncated: false,
 			versions: 0,
 			versionReviews: 0,
 			sourceFileNodes: 0,
@@ -11719,9 +12724,32 @@ describe("plugins admin hard delete", () => {
 			pluginDataDocuments: 0,
 			pluginDataLiveReservations: 0,
 			pluginDataTombstones: 0,
+			pluginDataProjectionDirtyChannels: 0,
+			pluginDataProjectionDirtyChannelsTruncated: false,
+			pluginDataProjectionChitchatItems: 0,
+			pluginDataProjectionChitchatItemsTruncated: false,
+			pluginDataProjectionChitchatReactions: 0,
+			pluginDataProjectionChitchatReactionsTruncated: false,
+			pluginDataProjectionChitchatAuthors: 0,
+			pluginDataProjectionChitchatAuthorsTruncated: false,
+			pluginDataProjectionChitchatFiles: 0,
+			pluginDataProjectionChitchatFilesTruncated: false,
+			pluginDataProjectionChitchatBuilds: 0,
+			pluginDataProjectionChitchatBuildsTruncated: false,
+			pluginDataProjectionFiles: 0,
+			pluginDataProjectionFilesTruncated: false,
+			pluginDataProjectionStates: 0,
+			pluginDataProjectionStatesTruncated: false,
 			pluginDataMemberUsage: 0,
+			pluginDataMemberUsageTruncated: false,
 			pluginServiceGrants: 0,
 			pluginServiceGrantsTruncated: false,
+			pluginScopeGrants: 0,
+			pluginScopeGrantsTruncated: false,
+			pluginDataScopeRows: 0,
+			pluginDataScopeRowsTruncated: false,
+			releasedScopeRangeRows: 0,
+			releasedScopeRangeRowsTruncated: false,
 			eventRuns: 0,
 			eventRunCalls: 0,
 			runActivities: 0,
@@ -11729,6 +12757,17 @@ describe("plugins admin hard delete", () => {
 			publisherSecrets: 0,
 			publishCleanupAttempts: 0,
 			r2ObjectKeys: 0,
+		});
+		const alternateScopePreviewAfter = await t.query(internal.plugins.preview_hard_delete_registered_plugin, {
+			pluginName: "media-alt",
+		});
+		expect(alternateScopePreviewAfter).toMatchObject({
+			pluginScopeGrants: 1,
+			pluginScopeGrantsTruncated: false,
+			pluginDataScopeRows: 1,
+			pluginDataScopeRowsTruncated: false,
+			releasedScopeRangeRows: 1,
+			releasedScopeRangeRowsTruncated: false,
 		});
 
 		const versions = await t.run((ctx) => ctx.db.query("plugins_versions").collect());
@@ -11764,6 +12803,27 @@ describe("plugins admin hard delete", () => {
 		expect(await t.run((ctx) => ctx.db.query("plugins_data_reservations").collect())).toEqual([]);
 		expect(await t.run((ctx) => ctx.db.query("plugins_data_revision_tombstones").collect())).toEqual([]);
 		expect(await t.run((ctx) => ctx.db.query("plugin_service_grants").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("plugins_data_projection_dirty_channels").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("plugins_data_projection_chitchat_items").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("plugins_data_projection_chitchat_reactions").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("plugins_data_projection_chitchat_authors").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("plugins_data_projection_chitchat_files").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("plugins_data_projection_chitchat_builds").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("plugins_data_projection_files").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("plugins_data_projection_states").collect())).toEqual([]);
+		expect(
+			(await t.run((ctx) => ctx.db.query("access_control_permission_grants").collect()))
+				.filter((grant) => grant.resourceKind === "plugin_scope")
+				.map((grant) => grant.resourceId),
+		).toEqual([`${installedAlternate._yay.installationId}:hard-delete-sibling`]);
+		expect((await t.run((ctx) => ctx.db.query("plugins_data_scopes").collect())).map((scope) => scope.scopeId)).toEqual(
+			["hard-delete-sibling"],
+		);
+		expect(
+			(await t.run((ctx) => ctx.db.query("plugins_data_released_scope_ranges").collect())).map(
+				(scope) => scope.scopeId,
+			),
+		).toEqual(["released-hard-delete-sibling"]);
 		expect(await t.run((ctx) => ctx.db.query("plugins_event_runs").collect())).toEqual([]);
 		expect(await t.run((ctx) => ctx.db.query("plugins_event_run_calls").collect())).toEqual([]);
 		const claims = await t.run((ctx) => ctx.db.query("plugins_publisher_repositories").collect());
@@ -11781,6 +12841,427 @@ describe("plugins admin hard delete", () => {
 		expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), "plugins/media/manifest.json");
 		expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), "plugins/media/backend/worker.js");
 		expect(deleteObjectSpy).not.toHaveBeenCalledWith(expect.anything(), "plugins/media-alt/manifest.json");
+	});
+
+	test.each([99, 100, 101])("bounds scope rows in the registry preview at %i per installation", async (rowCount) => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const media = await register_media_plugin(t, membership.userId, { name: "media" });
+		const alternate = await register_media_plugin(t, membership.userId, { name: "media-alt" });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const installedMedia = await asOwner.mutation(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: media.pluginVersionId,
+			...media_plugin_consent,
+		});
+		const installedAlternate = await asOwner.mutation(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: alternate.pluginVersionId,
+			...media_plugin_consent,
+		});
+		if (installedMedia._nay) {
+			throw new Error(installedMedia._nay.message);
+		}
+		if (installedAlternate._nay) {
+			throw new Error(installedAlternate._nay.message);
+		}
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			for (let index = 0; index < rowCount; index += 1) {
+				await ctx.db.insert("access_control_permission_grants", {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					resourceKind: "plugin_scope",
+					resourceId: `${installedMedia._yay.installationId}:scope-${index}`,
+					principalKind: "user",
+					userId: membership.userId,
+					permission: "content.read",
+					createdAt: now,
+					updatedAt: now,
+				});
+				await ctx.db.insert("plugins_data_scopes", {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					installationId: installedMedia._yay.installationId,
+					scopeId: `scope-${index}`,
+					collection: "messages",
+					keyPrefix: `scope/${index}/`,
+					createdByUserId: membership.userId,
+					createdAt: now,
+					updatedAt: now,
+				});
+				await ctx.db.insert("plugins_data_released_scope_ranges", {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					installationId: installedMedia._yay.installationId,
+					scopeId: `released-${index}`,
+					collectionName: "messages",
+					keyPrefix: `released/${index}/`,
+				});
+			}
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				resourceKind: "plugin_scope",
+				resourceId: `${installedAlternate._yay.installationId}:sibling`,
+				principalKind: "user",
+				userId: membership.userId,
+				permission: "content.read",
+				createdAt: now,
+				updatedAt: now,
+			});
+			await ctx.db.insert("plugins_data_scopes", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				installationId: installedAlternate._yay.installationId,
+				scopeId: "sibling",
+				collection: "messages",
+				keyPrefix: "sibling/",
+				createdByUserId: membership.userId,
+				createdAt: now,
+				updatedAt: now,
+			});
+			await ctx.db.insert("plugins_data_released_scope_ranges", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				installationId: installedAlternate._yay.installationId,
+				scopeId: "sibling",
+				collectionName: "messages",
+				keyPrefix: "sibling/",
+			});
+		});
+
+		const expectedCount = Math.min(rowCount, 100);
+		const truncated = rowCount > 100;
+		const preview = await t.query(internal.plugins.preview_hard_delete_registered_plugin, { pluginName: "media" });
+		expect(preview).toMatchObject({
+			pluginScopeGrants: expectedCount,
+			pluginScopeGrantsTruncated: truncated,
+			pluginDataScopeRows: expectedCount,
+			pluginDataScopeRowsTruncated: truncated,
+			releasedScopeRangeRows: expectedCount,
+			releasedScopeRangeRowsTruncated: truncated,
+		});
+		const siblingPreview = await t.query(internal.plugins.preview_hard_delete_registered_plugin, {
+			pluginName: "media-alt",
+		});
+		expect(siblingPreview).toMatchObject({
+			pluginScopeGrants: 1,
+			pluginScopeGrantsTruncated: false,
+			pluginDataScopeRows: 1,
+			pluginDataScopeRowsTruncated: false,
+			releasedScopeRangeRows: 1,
+			releasedScopeRangeRowsTruncated: false,
+		});
+	});
+
+	test.each([
+		{
+			kind: "dirty" as const,
+			countField: "pluginDataProjectionDirtyChannels" as const,
+			truncatedField: "pluginDataProjectionDirtyChannelsTruncated" as const,
+			rowCount: 101,
+			expectedCount: 100,
+		},
+		{
+			kind: "items" as const,
+			countField: "pluginDataProjectionChitchatItems" as const,
+			truncatedField: "pluginDataProjectionChitchatItemsTruncated" as const,
+			rowCount: 101,
+			expectedCount: 100,
+		},
+		{
+			kind: "reactions" as const,
+			countField: "pluginDataProjectionChitchatReactions" as const,
+			truncatedField: "pluginDataProjectionChitchatReactionsTruncated" as const,
+			rowCount: 101,
+			expectedCount: 100,
+		},
+		{
+			kind: "authors" as const,
+			countField: "pluginDataProjectionChitchatAuthors" as const,
+			truncatedField: "pluginDataProjectionChitchatAuthorsTruncated" as const,
+			rowCount: 101,
+			expectedCount: 100,
+		},
+		{
+			kind: "staged files" as const,
+			countField: "pluginDataProjectionChitchatFiles" as const,
+			truncatedField: "pluginDataProjectionChitchatFilesTruncated" as const,
+			rowCount: 2,
+			expectedCount: 1,
+		},
+		{
+			kind: "builds" as const,
+			countField: "pluginDataProjectionChitchatBuilds" as const,
+			truncatedField: "pluginDataProjectionChitchatBuildsTruncated" as const,
+			rowCount: 101,
+			expectedCount: 100,
+		},
+		{
+			kind: "file maps" as const,
+			countField: "pluginDataProjectionFiles" as const,
+			truncatedField: "pluginDataProjectionFilesTruncated" as const,
+			rowCount: 101,
+			expectedCount: 100,
+		},
+		{
+			kind: "states" as const,
+			countField: "pluginDataProjectionStates" as const,
+			truncatedField: "pluginDataProjectionStatesTruncated" as const,
+			rowCount: 101,
+			expectedCount: 100,
+		},
+	])("bounds projection $kind in the registry preview", async (testCase) => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const media = await register_media_plugin(t, membership.userId, { name: "media" });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const installed = await asOwner.mutation(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: media.pluginVersionId,
+			...media_plugin_consent,
+		});
+		if (installed._nay) {
+			throw new Error(installed._nay.message);
+		}
+
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			const tenant = {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				installationId: installed._yay.installationId,
+			};
+			const insertState = async (index: number) =>
+				await ctx.db.insert("plugins_data_projection_states", {
+					...tenant,
+					pluginName: "media",
+					writerUserId: membership.userId,
+					cursors: {},
+					scanCursors: {},
+					syncGeneration: index,
+					dirty: true,
+					updatedAt: now,
+				});
+			const insertBuild = async (stateId: Awaited<ReturnType<typeof insertState>>, index: number) =>
+				await ctx.db.insert("plugins_data_projection_chitchat_builds", {
+					...tenant,
+					lifecycleStateId: stateId,
+					channelKey: `channel-${index}`,
+					dirtyUpdatedAt: now,
+					channelName: `Channel ${index}`,
+					topic: null,
+					isPrivate: false,
+					slug: `channel-${index}`,
+					header: `# Channel ${index}`,
+					phase: "cleanup",
+					outputFileIndex: 0,
+					publishedFiles: [],
+					createdAt: now,
+					updatedAt: now,
+				});
+
+			if (testCase.kind === "dirty") {
+				for (let index = 0; index < testCase.rowCount; index += 1) {
+					await ctx.db.insert("plugins_data_projection_dirty_channels", {
+						...tenant,
+						channelKey: `channel-${index}`,
+						queuedAt: now + index,
+						updatedAt: now,
+					});
+				}
+				return;
+			}
+			if (testCase.kind === "states") {
+				for (let index = 0; index < testCase.rowCount; index += 1) {
+					await insertState(index);
+				}
+				return;
+			}
+			if (testCase.kind === "file maps") {
+				const fileNode = await ctx.db.query("files_nodes").first();
+				if (!fileNode) {
+					throw new Error("Expected a registered plugin source node");
+				}
+				for (let index = 0; index < testCase.rowCount; index += 1) {
+					await ctx.db.insert("plugins_data_projection_files", {
+						...tenant,
+						channelKey: `channel-${index}`,
+						fileNodeId: fileNode._id,
+						rolloverIndex: 0,
+						path: `/projection-${index}.md`,
+						updatedAt: now,
+					});
+				}
+				return;
+			}
+
+			const stateId = await insertState(0);
+			if (testCase.kind === "builds") {
+				for (let index = 0; index < testCase.rowCount; index += 1) {
+					await insertBuild(stateId, index);
+				}
+				return;
+			}
+			const buildId = await insertBuild(stateId, 0);
+			for (let index = 0; index < testCase.rowCount; index += 1) {
+				if (testCase.kind === "items") {
+					await ctx.db.insert("plugins_data_projection_chitchat_items", {
+						...tenant,
+						buildId,
+						collection: "messages",
+						key: `message-${index}`,
+						createdAt: now + index,
+						createdBy: String(membership.userId),
+						text: `Message ${index}`,
+						attachments: [],
+						editedAt: null,
+						deletedAt: null,
+					});
+				} else if (testCase.kind === "reactions") {
+					await ctx.db.insert("plugins_data_projection_chitchat_reactions", {
+						...tenant,
+						buildId,
+						key: `reaction-${index}`,
+						targetKey: "message-0",
+						token: "thumbs-up",
+						removed: false,
+					});
+				} else if (testCase.kind === "authors") {
+					await ctx.db.insert("plugins_data_projection_chitchat_authors", {
+						...tenant,
+						buildId,
+						userId: `user-${index}`,
+						label: `User ${index}`,
+					});
+				} else {
+					await ctx.db.insert("plugins_data_projection_chitchat_files", {
+						...tenant,
+						buildId,
+						fileIndex: index,
+						body: `Staged body ${index}`,
+						updatedAt: now,
+					});
+				}
+			}
+		});
+
+		const preview = await t.query(internal.plugins.preview_hard_delete_registered_plugin, {
+			pluginName: "media",
+		});
+		expect(preview[testCase.countField]).toBe(testCase.expectedCount);
+		expect(preview[testCase.truncatedField]).toBe(true);
+		expect(preview.previewTruncated).toBe(true);
+	});
+
+	test("shares the staged-file byte budget across installations", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const media = await register_media_plugin(t, membership.userId, { name: "media" });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const installed = await asOwner.mutation(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: media.pluginVersionId,
+			...media_plugin_consent,
+		});
+		if (installed._nay) {
+			throw new Error(installed._nay.message);
+		}
+
+		const stagedBody = "x".repeat(590_000);
+		for (let index = 0; index < 16; index += 1) {
+			await t.run(async (ctx) => {
+				let installationId = installed._yay.installationId;
+				if (index > 0) {
+					const source = await ctx.db.get("plugins_workspace_installations", installed._yay.installationId);
+					if (!source) {
+						throw new Error("Installed plugin missing");
+					}
+					const { _id: _sourceId, _creationTime: _sourceCreationTime, ...fields } = source;
+					installationId = await ctx.db.insert("plugins_workspace_installations", fields);
+				}
+
+				const now = Date.now();
+				const tenant = {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					installationId,
+				};
+				const stateId = await ctx.db.insert("plugins_data_projection_states", {
+					...tenant,
+					pluginName: "media",
+					writerUserId: membership.userId,
+					cursors: {},
+					scanCursors: {},
+					syncGeneration: 1,
+					dirty: true,
+					updatedAt: now,
+				});
+				const buildId = await ctx.db.insert("plugins_data_projection_chitchat_builds", {
+					...tenant,
+					lifecycleStateId: stateId,
+					channelKey: `channel-${index}`,
+					dirtyUpdatedAt: now,
+					channelName: `Channel ${index}`,
+					topic: null,
+					isPrivate: false,
+					slug: `channel-${index}`,
+					header: `# Channel ${index}`,
+					phase: "cleanup",
+					outputFileIndex: 1,
+					publishedFiles: [],
+					createdAt: now,
+					updatedAt: now,
+				});
+				for (let fileIndex = 0; fileIndex < 2; fileIndex += 1) {
+					await ctx.db.insert("plugins_data_projection_chitchat_files", {
+						...tenant,
+						buildId,
+						fileIndex,
+						body: stagedBody,
+						updatedAt: now,
+					});
+				}
+			});
+		}
+
+		const preview = await t.query(internal.plugins.preview_hard_delete_registered_plugin, {
+			pluginName: "media",
+		});
+		expect(preview).toMatchObject({
+			installations: 16,
+			pluginDataProjectionChitchatFiles: 1,
+			pluginDataProjectionChitchatFilesTruncated: true,
+			previewTruncated: true,
+		});
+	});
+
+	test("bounds the full registry preview when one plugin has a long release history", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const media = await register_media_plugin(t, membership.userId, { name: "media" });
+
+		await t.run(async (ctx) => {
+			const baseVersion = await ctx.db.get("plugins_versions", media.pluginVersionId);
+			if (!baseVersion) {
+				throw new Error("registered plugin version missing");
+			}
+			const { _id: _baseId, _creationTime: _baseCreationTime, ...versionFields } = baseVersion;
+			for (let index = 1; index <= 100; index += 1) {
+				await ctx.db.insert("plugins_versions", {
+					...versionFields,
+					version: `preview-${index}`,
+					isLatest: false,
+				});
+			}
+		});
+
+		const preview = await t.query(internal.plugins.preview_hard_delete_registered_plugin, {
+			pluginName: "media",
+		});
+		expect(preview.versions).toBe(50);
+		expect(preview.previewTruncated).toBe(true);
 	});
 
 	test("says the service-grant count is a lower bound when one installation holds more than the preview reads", async () => {
@@ -11827,5 +13308,6 @@ describe("plugins admin hard delete", () => {
 		// not read as exactly 100.
 		expect(preview.pluginServiceGrants).toBe(100);
 		expect(preview.pluginServiceGrantsTruncated).toBe(true);
+		expect(preview.previewTruncated).toBe(true);
 	});
 });

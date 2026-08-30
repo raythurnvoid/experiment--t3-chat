@@ -1384,19 +1384,104 @@ describe("plugin ui sessions", () => {
 		expect((await list_with(expired)).status).toBe(401);
 	});
 
-	test("uninstall deletes the installation's ui sessions", async () => {
-		const t = test_convex();
+	test("uninstall revokes an unbounded session set and drains it in installation-scoped pages", async () => {
+		const t = test_convex({ transactionLimits: { bytesRead: 100_000 } });
 		const fixture = await install_gallery_plugin(t);
-		await seed_session_token(t, fixture, "5");
+		const siblingInstallationId = await t.run(async (ctx) => {
+			const now = Date.now();
+			const installationId = await ctx.db.insert("plugins_workspace_installations", {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				pluginVersionId: fixture.pluginVersionId,
+				pluginName: "gallery-sibling",
+				status: "enabled",
+				configurationYaml: null,
+				acceptedCapabilities: ["workspace.files.read"],
+				capabilitiesAcceptedAt: now,
+				acceptedOutboundOrigins: [],
+				acceptedUiOutboundOrigins: [],
+				outboundOriginsAcceptedAt: now,
+				installedBy: fixture.membership.userId,
+				updatedBy: fixture.membership.userId,
+				updatedAt: now,
+			});
+			for (let index = 0; index < 300; index += 1) {
+				await ctx.db.insert("plugins_ui_sessions", {
+					organizationId: fixture.membership.organizationId,
+					workspaceId: fixture.membership.workspaceId,
+					installationId: fixture.installationId,
+					pluginVersionId: fixture.pluginVersionId,
+					userId: fixture.membership.userId,
+					tokenHash: `${"t".repeat(64)}-${index}`,
+					createdAt: now,
+					expiresAt: now + 30 * 60 * 1000,
+				});
+			}
+			for (let index = 0; index < 3; index += 1) {
+				await ctx.db.insert("plugins_ui_sessions", {
+					organizationId: fixture.membership.organizationId,
+					workspaceId: fixture.membership.workspaceId,
+					installationId,
+					pluginVersionId: fixture.pluginVersionId,
+					userId: fixture.membership.userId,
+					tokenHash: `${"s".repeat(64)}-${index}`,
+					createdAt: now,
+					expiresAt: now + 30 * 60 * 1000,
+				});
+			}
+			return installationId;
+		});
+
+		// This proves the old uninstall-time collect cannot fit under this test's transaction limit.
+		await expect(
+			t.run((ctx) =>
+				ctx.db
+					.query("plugins_ui_sessions")
+					.withIndex("by_installation", (q) => q.eq("installationId", fixture.installationId))
+					.collect(),
+			),
+		).rejects.toThrow();
 
 		const uninstalled = await fixture.asOwner.mutation(api.plugins.uninstall_version, {
 			membershipId: fixture.membership.membershipId,
 			installationId: fixture.installationId,
 		});
 		expect(uninstalled._nay).toBeUndefined();
+		expect(await t.run((ctx) => ctx.db.get("plugins_workspace_installations", fixture.installationId))).toBeNull();
 
-		const sessions = await t.run((ctx) => ctx.db.query("plugins_ui_sessions").collect());
-		expect(sessions).toHaveLength(0);
+		for (const deletedCount of [100, 100, 100]) {
+			expect(
+				await t.mutation(internal.plugins_data.drain_uninstalled_installation, {
+					organizationId: fixture.membership.organizationId,
+					workspaceId: fixture.membership.workspaceId,
+					installationId: fixture.installationId,
+					_test_disableReschedule: true,
+				}),
+			).toEqual({ done: false, deletedCount });
+		}
+		expect(
+			await t.mutation(internal.plugins_data.drain_uninstalled_installation, {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				installationId: fixture.installationId,
+				_test_disableReschedule: true,
+			}),
+		).toEqual({ done: true, deletedCount: 0 });
+
+		const remaining = await t.run(async (ctx) => ({
+			siblingInstallation: await ctx.db.get("plugins_workspace_installations", siblingInstallationId),
+			siblingSessions: await ctx.db
+				.query("plugins_ui_sessions")
+				.withIndex("by_installation", (q) => q.eq("installationId", siblingInstallationId))
+				.collect(),
+			targetSession: await ctx.db
+				.query("plugins_ui_sessions")
+				.withIndex("by_installation", (q) => q.eq("installationId", fixture.installationId))
+				.first(),
+		}));
+		expect(remaining.siblingInstallation?._id).toBe(siblingInstallationId);
+		expect(remaining.siblingSessions).toHaveLength(3);
+		expect(remaining.targetSession).toBeNull();
 	});
 
 	test("cleanup cron deletes expired sessions in batches and keeps live ones", async () => {

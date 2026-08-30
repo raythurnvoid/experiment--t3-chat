@@ -19,7 +19,11 @@ import {
 } from "../shared/organizations.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { public_api_db_cleanup_file_write_stage } from "./public_api.ts";
-import { plugins_data_db_drain_batch } from "./plugins_data.ts";
+import {
+	plugins_data_db_delete_append_replay_receipt,
+	plugins_data_db_drain_batch,
+	plugins_data_db_get_scope_cleanup_pairs,
+} from "./plugins_data.ts";
 import { plugins_db_delete_anonymized_review_if_unlinked } from "./plugins.ts";
 import { files_nodes_db_hard_delete_node, files_nodes_db_is_eager_node_safe_to_hard_delete } from "./files_nodes.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
@@ -211,6 +215,13 @@ async function db_purge_organization_workspace_content_batch(
 	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; batchSize: number },
 ) {
 	const { organizationId, workspaceId, batchSize } = args;
+
+	// Close every plugin door before the first bounded purge step. A data-only reset keeps the
+	// workspace doc, so later calls must see this fence while non-plugin families are still draining.
+	const workspace = await ctx.db.get("organizations_workspaces", workspaceId);
+	if (workspace?.organizationId === organizationId && workspace.pluginDataPurgeStartedAt === undefined) {
+		await ctx.db.patch("organizations_workspaces", workspace._id, { pluginDataPurgeStartedAt: Date.now() });
+	}
 
 	// Paged pending-state families and their operation scaffolding go before the pending-update
 	// parent docs: pages before state docs, text inputs before their operation batches.
@@ -440,6 +451,25 @@ async function db_purge_organization_workspace_content_batch(
 			await public_api_db_cleanup_file_write_stage(ctx, stage);
 		}
 		return { done: false, deletedCount: fileWriteStages.length };
+	}
+
+	// Disable installs before any plugin-owned family drains. Keep the disabled status until the
+	// later session and installation passes remove these records.
+	const enabledPluginInstallations = await ctx.db
+		.query("plugins_workspace_installations")
+		.withIndex("by_organization_workspace_status_pluginName", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId).eq("status", "enabled"),
+		)
+		.take(batchSize);
+	if (enabledPluginInstallations.length > 0) {
+		const disabledAt = Date.now();
+		for (const installation of enabledPluginInstallations) {
+			await ctx.db.patch("plugins_workspace_installations", installation._id, {
+				status: "disabled",
+				updatedAt: disabledAt,
+			});
+		}
+		return { done: false, deletedCount: enabledPluginInstallations.length };
 	}
 
 	const pluginRunCalls = await ctx.db
@@ -1080,6 +1110,13 @@ async function db_queue_organization_deletion_for_owner_account_deletion(
 			.then((organizationWorkspaces) =>
 				Promise.all(
 					organizationWorkspaces.map(async (workspace) => {
+						// Keep delayed purge from leaving live plugin authority after account deletion
+						// removes every member from this retained workspace.
+						if (workspace.pluginDataPurgeStartedAt === undefined) {
+							await ctx.db.patch("organizations_workspaces", workspace._id, {
+								pluginDataPurgeStartedAt: args.now,
+							});
+						}
 						const workspaceUsers = await ctx.db
 							.query("organizations_workspaces_users")
 							.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", workspace._id))
@@ -1270,281 +1307,63 @@ async function db_drain_user_notifications_batch(ctx: MutationCtx, args: { userI
 }
 
 /**
- * Phase 2 for a tombstoned user.
- *
- * This removes user-scoped docs that can be deleted after retention. It can also
- * remove auth docs and billing snapshots when the caller is doing a full purge.
- * Organization/workspace content is not deleted here. Instead, this returns the
- * organization ids that became empty so the caller can queue or run organization purge
- * with its own request bookkeeping.
+ * Deletes one indexed batch of direct grants before finalization. A plugin-scope grant also queues
+ * the existing scope cleanup so its private projection ACL follows the surviving principals.
  */
-async function db_finalize_deleted_user(
+async function db_drain_user_direct_permission_grants_batch(
 	ctx: MutationCtx,
-	args: {
-		userId: Id<"users">;
-		now: number;
-		deleteUserAuth?: boolean;
-		deleteBillingState?: boolean;
-	},
+	args: { userId: Id<"users">; batchSize: number },
 ) {
-	const user = await ctx.db.get("users", args.userId);
-	// Only tombstoned users can be finalized. Missing users or non-deleted users
-	// are no-ops for this helper.
-	if (!user || user.deletedAt == null) {
-		return;
-	}
+	const grants = await ctx.db
+		.query("access_control_permission_grants")
+		.withIndex("by_user_organization_workspace_resource_permission", (q) => q.eq("userId", args.userId))
+		.take(args.batchSize);
+	await Promise.all(grants.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)));
 
-	const userIdString = String(user._id);
-	// Pending-update parent docs have cleanup-task, chunk, and metadata
-	// children. Gather those children before deletion so they can be deleted before their parent docs.
-	const pendingUpdatesPromise = ctx.db
-		.query("files_pending_updates")
-		.withIndex("by_user_fileNode", (q) => q.eq("userId", userIdString))
-		.collect();
-	// Load all user-scoped docs needed for finalization before deleting them.
-	// Auth and billing docs are conditional because data-only and auth-preserving
-	// deletion paths must keep those docs.
-	const [
-		membershipsAll,
-		accessRoleAssignments,
-		anonymousAuthTokens,
-		pendingUpdates,
-		pendingUpdateCleanupTasks,
-		pendingTextChunks,
-		pendingPlainTextChunks,
-		pendingMetadataDocs,
-		lastSequenceSaved,
-		apiCredentials,
-		publicApiGrants,
-		billingUsageSnapshots,
-	] = await Promise.all([
-		ctx.db
-			.query("organizations_workspaces_users")
-			.withIndex("by_user_organization_workspace_active", (q) => q.eq("userId", user._id))
-			.collect(),
-		ctx.db
-			.query("access_control_role_assignments")
-			.withIndex("by_user_organization_workspace", (q) => q.eq("userId", user._id))
-			.collect(),
-		args.deleteUserAuth
-			? ctx.db
-					.query("users_anon_tokens")
-					.withIndex("by_user", (q) => q.eq("userId", user._id))
-					.collect()
-			: Promise.resolve([] as Array<Doc<"users_anon_tokens">>),
-		pendingUpdatesPromise,
-		// These child lookups depend on the parent docs, but each child table can
-		// be collected independently once `pendingUpdatesPromise` resolves.
-		pendingUpdatesPromise.then(async (docs) =>
-			(
-				await Promise.all(
-					docs.map((doc) =>
-						ctx.db
-							.query("files_pending_updates_cleanup_tasks")
-							.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", doc._id))
-							.collect(),
-					),
-				)
-			).flat(),
-		),
-		pendingUpdatesPromise.then(async (docs) =>
-			(
-				await Promise.all(
-					docs.map((doc) =>
-						ctx.db
-							.query("files_text_chunks")
-							.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", doc._id))
-							.collect(),
-					),
-				)
-			).flat(),
-		),
-		pendingUpdatesPromise.then(async (docs) =>
-			(
-				await Promise.all(
-					docs.map((doc) =>
-						ctx.db
-							.query("files_plain_text_chunks")
-							.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", doc._id))
-							.collect(),
-					),
-				)
-			).flat(),
-		),
-		pendingUpdatesPromise.then(async (docs) =>
-			(
-				await Promise.all(
-					docs.map((doc) =>
-						ctx.db
-							.query("files_metadata_docs")
-							.withIndex("by_pendingUpdate_qualifiedField", (q) => q.eq("pendingUpdateId", doc._id))
-							.collect(),
-					),
-				)
-			).flat(),
-		),
-		ctx.db
-			.query("files_pending_updates_last_sequence_saved")
-			.withIndex("by_user_fileNode", (q) => q.eq("userId", userIdString))
-			.collect(),
-		ctx.db
-			.query("api_credentials")
-			.withIndex("by_user", (q) => q.eq("userId", user._id))
-			.collect(),
-		ctx.db
-			.query("public_api_grants")
-			.withIndex("by_user", (q) => q.eq("userId", user._id))
-			.collect(),
-		args.deleteBillingState
-			? ctx.db
-					.query("billing_usage_snapshots")
-					.withIndex("by_user", (q) => q.eq("userId", user._id))
-					.collect()
-			: Promise.resolve([] as Array<Doc<"billing_usage_snapshots">>),
-	]);
-
-	/**
-	 * Organization ids captured before deleting memberships and roles, used after cleanup
-	 * to detect organizations that no longer have any active members.
-	 */
-	const affectedOrganizationIds = new Set<Id<"organizations">>();
-	if (user.defaultOrganizationId) {
-		affectedOrganizationIds.add(user.defaultOrganizationId);
-	}
-	for (const membership of membershipsAll) {
-		affectedOrganizationIds.add(membership.organizationId);
-	}
-	for (const assignment of accessRoleAssignments) {
-		affectedOrganizationIds.add(assignment.organizationId);
-	}
-
-	// Delete pending-update children before parent pending-update docs. The by-user drain below
-	// covers this user's paged state families in every ownership (active, temporary, retired),
-	// so the per-pending-doc family lookup is not repeated here.
-	const [directPermissionGrants, userQuotaDocs] = await Promise.all([
-		ctx.db
-			.query("access_control_permission_grants")
-			.withIndex("by_user_organization_workspace_resource_permission", (q) => q.eq("userId", user._id))
-			.collect(),
-		ctx.db
-			.query("quotas")
-			.withIndex("by_user_quotaName", (q) => q.eq("userId", user._id))
-			.collect(),
-		ctx.db
-			.query("files_pending_update_yjs_states")
-			.withIndex("by_user", (q) => q.eq("userId", userIdString))
-			.collect()
-			.then((stateDocs) =>
-				Promise.all(
-					stateDocs.map(async (stateDoc) => {
-						const pages = await ctx.db
-							.query("files_pending_update_yjs_state_pages")
-							.withIndex("by_state_pageIndex", (q) => q.eq("stateId", stateDoc._id))
-							.collect();
-						await Promise.all(pages.map((page) => ctx.db.delete("files_pending_update_yjs_state_pages", page._id)));
-						await ctx.db.delete("files_pending_update_yjs_states", stateDoc._id);
-					}),
-				),
-			),
-		ctx.db
-			.query("files_pending_update_text_inputs")
-			.withIndex("by_user", (q) => q.eq("userId", userIdString))
-			.collect()
-			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("files_pending_update_text_inputs", doc._id)))),
-		ctx.db
-			.query("files_pending_update_operation_batches")
-			.withIndex("by_user", (q) => q.eq("userId", userIdString))
-			.collect()
-			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("files_pending_update_operation_batches", doc._id)))),
-		ctx.db
-			.query("files_yjs_trusted_update_stages")
-			.withIndex("by_user", (q) => q.eq("userId", user._id))
-			.collect()
-			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("files_yjs_trusted_update_stages", doc._id)))),
-		// A per-member plugin storage row names the user, so finalization must remove it in every
-		// workspace, not only the ones this path still has a membership for. The documents it counted
-		// belong to the workspace and stay; a later credit naming this user finds no row and does nothing.
-		ctx.db
-			.query("plugins_data_member_usage")
-			.withIndex("by_user", (q) => q.eq("userId", user._id))
-			.collect()
-			.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("plugins_data_member_usage", doc._id)))),
-		Promise.all([
-			...pendingPlainTextChunks.map((doc) => ctx.db.delete("files_plain_text_chunks", doc._id)),
-			...pendingUpdateCleanupTasks.map((doc) => ctx.db.delete("files_pending_updates_cleanup_tasks", doc._id)),
-			...pendingTextChunks.map((doc) => ctx.db.delete("files_text_chunks", doc._id)),
-			...pendingMetadataDocs.map((doc) => ctx.db.delete("files_metadata_docs", doc._id)),
-		]),
-	]);
-
-	// Eager rows (write_file/cp onto a new path) point at an eagerly-created destination node.
-	// While the node is still the untouched eager creation, remove it entirely instead of
-	// stranding an empty file; otherwise the node became a real file and only the row is deleted below.
-	const hardDeletedNodeIds = new Set<Id<"files_nodes">>();
-	for (const pendingUpdate of pendingUpdates) {
-		if (!pendingUpdate.eagerCreated) {
-			continue;
-		}
-		const safeToHardDelete = await files_nodes_db_is_eager_node_safe_to_hard_delete(ctx, {
-			organizationId: pendingUpdate.organizationId,
-			workspaceId: pendingUpdate.workspaceId,
-			nodeId: pendingUpdate.fileNodeId,
-			pendingUpdate,
+	const scopeCleanupPairs = plugins_data_db_get_scope_cleanup_pairs(ctx, grants);
+	if (scopeCleanupPairs.length > 0) {
+		// Run after this batch commits, so cleanup sees every grant that survived this indexed pass.
+		await ctx.scheduler.runAfter(0, internal.plugins_data.cleanup_stranded_scopes, {
+			scopes: scopeCleanupPairs,
 		});
-		if (!safeToHardDelete) {
-			continue;
-		}
-		await files_nodes_db_hard_delete_node(ctx, {
-			organizationId: pendingUpdate.organizationId,
-			workspaceId: pendingUpdate.workspaceId,
-			nodeId: pendingUpdate.fileNodeId,
-		});
-		hardDeletedNodeIds.add(pendingUpdate.fileNodeId);
 	}
 
-	await Promise.all([
-		...lastSequenceSaved
-			.filter((doc) => !hardDeletedNodeIds.has(doc.fileNodeId))
-			.map((doc) => ctx.db.delete("files_pending_updates_last_sequence_saved", doc._id)),
-		...pendingUpdates
-			.filter((doc) => !hardDeletedNodeIds.has(doc.fileNodeId))
-			.map((doc) => ctx.db.delete("files_pending_updates", doc._id)),
-		// Remove membership and role docs so the finalized user no longer has access
-		// to any workspace or organization.
-		...membershipsAll.map((doc) => ctx.db.delete("organizations_workspaces_users", doc._id)),
-		...accessRoleAssignments.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)),
-		// Remove direct permission grants for this user. Role grants are handled by
-		// organization/workspace cleanup; this query targets user-principal grants.
-		...directPermissionGrants.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)),
-		...apiCredentials.map((doc) => ctx.db.delete("api_credentials", doc._id)),
-		...publicApiGrants.map((doc) => ctx.db.delete("public_api_grants", doc._id)),
-		// Keep auth identifiers for auth-preserving deletion finalization; auth purges
-		// remove both the external Clerk pointer and the anonymous token that can mint sessions.
-		...(args.deleteUserAuth ? anonymousAuthTokens.map((doc) => ctx.db.delete("users_anon_tokens", doc._id)) : []),
-		// Delete this user's `extra_organizations` and active API credential quota docs during finalization.
-		...userQuotaDocs.map((doc) => ctx.db.delete("quotas", doc._id)),
-		// Only full user-record purge paths pass `deleteBillingState`. Account
-		// reset and auth-preserving deletion keep snapshots because billing
-		// recovery and root billing bootstrap still need them.
-		...(args.deleteBillingState
-			? billingUsageSnapshots.map((doc) => ctx.db.delete("billing_usage_snapshots", doc._id))
-			: []),
-		// Leave a tombstone doc behind unless the caller later deletes the user doc.
-		// Clear default tenant pointers because those tenant docs may be purged after
-		// finalization. Clear auth pointers only for auth-removing paths.
-		ctx.db.patch("users", user._id, {
-			...(args.deleteUserAuth ? { clerkUserId: null, anonymousAuthToken: undefined } : {}),
-			defaultOrganizationId: undefined,
-			defaultWorkspaceId: undefined,
-			deletedAt: user.deletedAt ?? args.now,
-		}),
-	]);
+	return grants.length;
+}
 
-	const organizationsToDelete = [];
+/** Deletes one bounded batch of service grants owned by the deleting user. */
+async function db_drain_user_plugin_service_grants_batch(
+	ctx: MutationCtx,
+	args: { userId: Id<"users">; batchSize: number },
+) {
+	const grants = await ctx.db
+		.query("plugin_service_grants")
+		.withIndex("by_actorUser", (q) => q.eq("actorUserId", args.userId))
+		.take(args.batchSize);
+	await Promise.all(grants.map((doc) => ctx.db.delete("plugin_service_grants", doc._id)));
+	return grants.length;
+}
 
-	// Return fully empty organizations to the caller for purge. Shared organizations
-	// stay in place, and ownership moves here before the deleted owner disappears.
-	for (const organizationId of affectedOrganizationIds) {
+/**
+ * Drains one bounded membership or ownership-transfer batch.
+ *
+ * Keep organization decisions next to the membership rows. Once those rows are gone, a later
+ * transaction can no longer find every organization that this user left.
+ */
+async function db_drain_user_memberships_batch(
+	ctx: MutationCtx,
+	args: { userId: Id<"users">; now: number; batchSize: number },
+) {
+	const memberships = await ctx.db
+		.query("organizations_workspaces_users")
+		.withIndex("by_user_organization_workspace_active", (q) => q.eq("userId", args.userId))
+		.take(args.batchSize);
+	if (memberships.length === 0) {
+		return 0;
+	}
+
+	const organizationIds = new Set(memberships.map((membership) => membership.organizationId));
+	for (const organizationId of organizationIds) {
 		const organization = await ctx.db.get("organizations", organizationId);
 		if (!organization) {
 			continue;
@@ -1558,8 +1377,6 @@ async function db_finalize_deleted_user(
 			throw should_never_happen(errorMessage, errorData);
 		}
 
-		// Organization membership lives on the default workspace. This one lookup
-		// tells us whether the organization is empty and who can become its owner.
 		const remainingMembership = await ctx.db
 			.query("organizations_workspaces_users")
 			.withIndex("by_active_organization_workspace_user", (q) =>
@@ -1567,43 +1384,39 @@ async function db_finalize_deleted_user(
 			)
 			.first();
 		if (!remainingMembership) {
-			organizationsToDelete.push({
+			// Queue the tenant before deleting its last membership, so the decision survives this pass.
+			await data_deletion_db_request(ctx, {
+				userId: args.userId,
 				organizationId: organization._id,
+				scope: "organization",
+				eligibleAt: args.now,
 			});
 			continue;
 		}
 
-		if (!organization.default && organization.ownerUserId === user._id) {
-			const [nextOwnerQuota, nextOwnerAssignments] = await Promise.all([
-				quotas_db_get(ctx, {
-					quotaName: "extra_organizations",
-					userId: remainingMembership.userId,
-				}),
-				// Delete the new owner's role docs in every workspace, not only the default one — same
-				// reason as in `transfer_organization_ownership`.
+		if (!organization.default && organization.ownerUserId === args.userId) {
+			// An owner has no role row. The six-workspace cap in `shared/quotas.ts` bounds this collect,
+			// so remove every chosen-successor role and transfer ownership in the same transaction.
+			const [nextOwnerAssignments, nextOwnerQuota] = await Promise.all([
 				ctx.db
 					.query("access_control_role_assignments")
 					.withIndex("by_organization_user_workspace", (q) =>
 						q.eq("organizationId", organization._id).eq("userId", remainingMembership.userId),
 					)
 					.collect(),
+				quotas_db_get(ctx, {
+					quotaName: "extra_organizations",
+					userId: remainingMembership.userId,
+				}),
 			]);
-
-			await Promise.all(
-				nextOwnerAssignments.map((assignment) => ctx.db.delete("access_control_role_assignments", assignment._id)),
-			);
 			await Promise.all([
+				...nextOwnerAssignments.map((assignment) => ctx.db.delete("access_control_role_assignments", assignment._id)),
 				ctx.db.patch("organizations", organization._id, {
 					ownerUserId: remainingMembership.userId,
-					// Nobody chose this new owner: it is simply the first member the index returned.
-					// For an `organization_owner` organization, `billing_pick_billed_user_id` sends the
-					// bill to `ownerUserId`. If we left the mode alone, this person would quietly start
-					// paying for everyone else. As the new owner they can set it back.
+					// Do not silently make the chosen member pay for the whole organization.
 					billingMode: "user",
 					updatedAt: args.now,
 				}),
-				// The deleted owner's quota doc is already gone. Charge the organization
-				// to the surviving owner so persisted quota usage remains accurate.
 				ctx.db.patch("quotas", nextOwnerQuota._id, {
 					usedCount: nextOwnerQuota.usedCount + 1,
 					updatedAt: args.now,
@@ -1612,7 +1425,299 @@ async function db_finalize_deleted_user(
 		}
 	}
 
-	return { organizationsToDelete };
+	await Promise.all(memberships.map((membership) => ctx.db.delete("organizations_workspaces_users", membership._id)));
+	return memberships.length;
+}
+
+/** Deletes one pending-update child family, then its parent in a later pass. */
+async function db_drain_user_pending_updates_batch(ctx: MutationCtx, args: { userId: Id<"users">; batchSize: number }) {
+	const pendingUpdates = await ctx.db
+		.query("files_pending_updates")
+		.withIndex("by_user_fileNode", (q) => q.eq("userId", String(args.userId)))
+		.take(args.batchSize);
+	const pendingUpdate = pendingUpdates[0];
+	if (!pendingUpdate) {
+		return 0;
+	}
+
+	const cleanupTasks = await ctx.db
+		.query("files_pending_updates_cleanup_tasks")
+		.withIndex("by_pendingUpdate", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
+		.take(args.batchSize);
+	if (cleanupTasks.length > 0) {
+		await Promise.all(cleanupTasks.map((doc) => ctx.db.delete("files_pending_updates_cleanup_tasks", doc._id)));
+		return cleanupTasks.length;
+	}
+
+	const plainTextChunks = await ctx.db
+		.query("files_plain_text_chunks")
+		.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
+		.take(args.batchSize);
+	if (plainTextChunks.length > 0) {
+		await Promise.all(plainTextChunks.map((doc) => ctx.db.delete("files_plain_text_chunks", doc._id)));
+		return plainTextChunks.length;
+	}
+
+	const textChunks = await ctx.db
+		.query("files_text_chunks")
+		.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
+		.take(args.batchSize);
+	if (textChunks.length > 0) {
+		await Promise.all(textChunks.map((doc) => ctx.db.delete("files_text_chunks", doc._id)));
+		return textChunks.length;
+	}
+
+	const metadataDocs = await ctx.db
+		.query("files_metadata_docs")
+		.withIndex("by_pendingUpdate_qualifiedField", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
+		.take(args.batchSize);
+	if (metadataDocs.length > 0) {
+		await Promise.all(metadataDocs.map((doc) => ctx.db.delete("files_metadata_docs", doc._id)));
+		return metadataDocs.length;
+	}
+
+	// Remove an untouched eager file with its proposal. A file that was saved stays.
+	if (
+		pendingUpdate.eagerCreated &&
+		(await files_nodes_db_is_eager_node_safe_to_hard_delete(ctx, {
+			organizationId: pendingUpdate.organizationId,
+			workspaceId: pendingUpdate.workspaceId,
+			nodeId: pendingUpdate.fileNodeId,
+			pendingUpdate,
+		}))
+	) {
+		await files_nodes_db_hard_delete_node(ctx, {
+			organizationId: pendingUpdate.organizationId,
+			workspaceId: pendingUpdate.workspaceId,
+			nodeId: pendingUpdate.fileNodeId,
+		});
+		return 1;
+	}
+
+	await ctx.db.delete("files_pending_updates", pendingUpdate._id);
+	return 1;
+}
+
+/** Deletes one Yjs page batch, then its state parent in a later pass. */
+async function db_drain_user_pending_yjs_states_batch(
+	ctx: MutationCtx,
+	args: { userId: Id<"users">; batchSize: number },
+) {
+	const states = await ctx.db
+		.query("files_pending_update_yjs_states")
+		.withIndex("by_user", (q) => q.eq("userId", String(args.userId)))
+		.take(args.batchSize);
+	const state = states[0];
+	if (!state) {
+		return 0;
+	}
+
+	const pages = await ctx.db
+		.query("files_pending_update_yjs_state_pages")
+		.withIndex("by_state_pageIndex", (q) => q.eq("stateId", state._id))
+		.take(args.batchSize);
+	if (pages.length > 0) {
+		await Promise.all(pages.map((page) => ctx.db.delete("files_pending_update_yjs_state_pages", page._id)));
+		return pages.length;
+	}
+
+	await ctx.db.delete("files_pending_update_yjs_states", state._id);
+	return 1;
+}
+
+/** Deletes the first non-empty user-scoped finalization family. */
+async function db_drain_user_finalization_batch(
+	ctx: MutationCtx,
+	args: { userId: Id<"users">; now: number; batchSize: number },
+) {
+	const serviceGrantCount = await db_drain_user_plugin_service_grants_batch(ctx, args);
+	if (serviceGrantCount > 0) {
+		return serviceGrantCount;
+	}
+
+	const membershipCount = await db_drain_user_memberships_batch(ctx, args);
+	if (membershipCount > 0) {
+		return membershipCount;
+	}
+
+	const roleAssignments = await ctx.db
+		.query("access_control_role_assignments")
+		.withIndex("by_user_organization_workspace", (q) => q.eq("userId", args.userId))
+		.take(args.batchSize);
+	if (roleAssignments.length > 0) {
+		await Promise.all(roleAssignments.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)));
+		return roleAssignments.length;
+	}
+
+	const pendingUpdateCount = await db_drain_user_pending_updates_batch(ctx, args);
+	if (pendingUpdateCount > 0) {
+		return pendingUpdateCount;
+	}
+
+	const lastSequenceRows = await ctx.db
+		.query("files_pending_updates_last_sequence_saved")
+		.withIndex("by_user_fileNode", (q) => q.eq("userId", String(args.userId)))
+		.take(args.batchSize);
+	if (lastSequenceRows.length > 0) {
+		await Promise.all(
+			lastSequenceRows.map((doc) => ctx.db.delete("files_pending_updates_last_sequence_saved", doc._id)),
+		);
+		return lastSequenceRows.length;
+	}
+
+	const yjsStateCount = await db_drain_user_pending_yjs_states_batch(ctx, args);
+	if (yjsStateCount > 0) {
+		return yjsStateCount;
+	}
+
+	const textInputs = await ctx.db
+		.query("files_pending_update_text_inputs")
+		.withIndex("by_user", (q) => q.eq("userId", String(args.userId)))
+		.take(args.batchSize);
+	if (textInputs.length > 0) {
+		await Promise.all(textInputs.map((doc) => ctx.db.delete("files_pending_update_text_inputs", doc._id)));
+		return textInputs.length;
+	}
+
+	const operationBatches = await ctx.db
+		.query("files_pending_update_operation_batches")
+		.withIndex("by_user", (q) => q.eq("userId", String(args.userId)))
+		.take(args.batchSize);
+	if (operationBatches.length > 0) {
+		await Promise.all(operationBatches.map((doc) => ctx.db.delete("files_pending_update_operation_batches", doc._id)));
+		return operationBatches.length;
+	}
+
+	const trustedStages = await ctx.db
+		.query("files_yjs_trusted_update_stages")
+		.withIndex("by_user", (q) => q.eq("userId", args.userId))
+		.take(args.batchSize);
+	if (trustedStages.length > 0) {
+		await Promise.all(trustedStages.map((doc) => ctx.db.delete("files_yjs_trusted_update_stages", doc._id)));
+		return trustedStages.length;
+	}
+
+	const appendReplayReceipts = await ctx.db
+		.query("plugins_data_append_replay_receipts")
+		.withIndex("by_createdBy", (q) => q.eq("createdBy", args.userId))
+		.take(args.batchSize);
+	if (appendReplayReceipts.length > 0) {
+		for (const receipt of appendReplayReceipts) {
+			await plugins_data_db_delete_append_replay_receipt(ctx, receipt);
+		}
+		return appendReplayReceipts.length;
+	}
+
+	const pluginMemberUsage = await ctx.db
+		.query("plugins_data_member_usage")
+		.withIndex("by_user", (q) => q.eq("userId", args.userId))
+		.take(args.batchSize);
+	if (pluginMemberUsage.length > 0) {
+		await Promise.all(pluginMemberUsage.map((doc) => ctx.db.delete("plugins_data_member_usage", doc._id)));
+		return pluginMemberUsage.length;
+	}
+
+	const quotaRows = await ctx.db
+		.query("quotas")
+		.withIndex("by_user_quotaName", (q) => q.eq("userId", args.userId))
+		.take(args.batchSize);
+	if (quotaRows.length > 0) {
+		await Promise.all(quotaRows.map((doc) => ctx.db.delete("quotas", doc._id)));
+		return quotaRows.length;
+	}
+
+	const apiCredentials = await ctx.db
+		.query("api_credentials")
+		.withIndex("by_user", (q) => q.eq("userId", args.userId))
+		.take(args.batchSize);
+	if (apiCredentials.length > 0) {
+		await Promise.all(apiCredentials.map((doc) => ctx.db.delete("api_credentials", doc._id)));
+		return apiCredentials.length;
+	}
+
+	const publicApiGrants = await ctx.db
+		.query("public_api_grants")
+		.withIndex("by_user", (q) => q.eq("userId", args.userId))
+		.take(args.batchSize);
+	await Promise.all(publicApiGrants.map((doc) => ctx.db.delete("public_api_grants", doc._id)));
+	return publicApiGrants.length;
+}
+
+/** Makes one bounded batch of this user's retained tenant requests ready for the worker. */
+async function db_make_user_deletion_requests_eligible_batch(
+	ctx: MutationCtx,
+	args: { userId: Id<"users">; now: number; batchSize: number },
+) {
+	const requests = await ctx.db
+		.query("data_deletion_requests")
+		.withIndex("by_user_eligibleAt", (q) => q.eq("userId", args.userId).gt("eligibleAt", args.now))
+		.take(args.batchSize);
+	await Promise.all(
+		requests.map((request) => ctx.db.patch("data_deletion_requests", request._id, { eligibleAt: args.now })),
+	);
+	return requests.length;
+}
+
+/**
+ * Finishes phase 2 after every growing user-scoped family has been drained.
+ *
+ * The remaining auth and billing tables have one-row user invariants. This final transaction
+ * either clears the recovery fence or removes the user record and its anagraphic.
+ */
+async function db_finalize_deleted_user(
+	ctx: MutationCtx,
+	args: {
+		userId: Id<"users">;
+		now: number;
+		deleteUserAuth?: boolean;
+		deleteBillingState?: boolean;
+		deleteUserRecord?: boolean;
+	},
+) {
+	const user = await ctx.db.get("users", args.userId);
+	if (!user || user.deletedAt == null) {
+		return;
+	}
+
+	const [anonymousAuthToken, billingUsageSnapshot] = await Promise.all([
+		args.deleteUserAuth
+			? ctx.db
+					.query("users_anon_tokens")
+					.withIndex("by_user", (q) => q.eq("userId", user._id))
+					.first()
+			: Promise.resolve(null),
+		args.deleteBillingState
+			? ctx.db
+					.query("billing_usage_snapshots")
+					.withIndex("by_user", (q) => q.eq("userId", user._id))
+					.first()
+			: Promise.resolve(null),
+	]);
+
+	const dependentDeletes = [
+		...(anonymousAuthToken ? [ctx.db.delete("users_anon_tokens", anonymousAuthToken._id)] : []),
+		...(billingUsageSnapshot ? [ctx.db.delete("billing_usage_snapshots", billingUsageSnapshot._id)] : []),
+	];
+
+	if (args.deleteUserRecord) {
+		await Promise.all([
+			...dependentDeletes,
+			...(user.anagraphic ? [ctx.db.delete("users_anagraphics", user.anagraphic)] : []),
+			ctx.db.delete("users", user._id),
+		]);
+		return;
+	}
+
+	await Promise.all([
+		...dependentDeletes,
+		ctx.db.patch("users", user._id, {
+			...(args.deleteUserAuth ? { clerkUserId: null, anonymousAuthToken: undefined } : {}),
+			defaultOrganizationId: undefined,
+			defaultWorkspaceId: undefined,
+			deletedAt: user.deletedAt ?? args.now,
+			deletionFinalizationStartedAt: undefined,
+		}),
+	]);
 }
 
 /**
@@ -1781,16 +1886,50 @@ export const process_user_deletion_request = internalMutation({
 		const user = await ctx.db.get("users", request.userId);
 
 		// The user doc can be purged manually or by an admin path before the queued
-		// request runs. Still clear quota docs from the request's user id.
+		// request runs. Keep the same bounded drain order so its tenant cleanup still survives.
 		if (!user) {
-			await Promise.all([
-				ctx.db
-					.query("quotas")
-					.withIndex("by_user_quotaName", (q) => q.eq("userId", request.userId))
-					.collect()
-					.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("quotas", doc._id)))),
-				ctx.db.delete("data_deletion_requests", request._id),
-			]);
+			const drainedSessions = await db_drain_user_plugin_ui_sessions_batch(ctx, {
+				userId: request.userId,
+				batchSize: batch_size(args),
+			});
+			if (drainedSessions > 0) {
+				return { done: false, deletedCount: drainedSessions };
+			}
+
+			const drainedPublisherDocs = await db_drain_user_plugin_publisher_docs_batch(ctx, {
+				userId: request.userId,
+				batchSize: batch_size(args),
+			});
+			if (drainedPublisherDocs > 0) {
+				return { done: false, deletedCount: drainedPublisherDocs };
+			}
+
+			const drainedNotifications = await db_drain_user_notifications_batch(ctx, {
+				userId: request.userId,
+				batchSize: batch_size(args),
+			});
+			if (drainedNotifications > 0) {
+				return { done: false, deletedCount: drainedNotifications };
+			}
+
+			const drainedPermissionGrants = await db_drain_user_direct_permission_grants_batch(ctx, {
+				userId: request.userId,
+				batchSize: batch_size(args),
+			});
+			if (drainedPermissionGrants > 0) {
+				return { done: false, deletedCount: drainedPermissionGrants };
+			}
+
+			const drainedFinalizationDocs = await db_drain_user_finalization_batch(ctx, {
+				userId: request.userId,
+				now,
+				batchSize: batch_size(args),
+			});
+			if (drainedFinalizationDocs > 0) {
+				return { done: false, deletedCount: drainedFinalizationDocs };
+			}
+
+			await ctx.db.delete("data_deletion_requests", request._id);
 			return { done: true, deletedCount: 1 };
 		}
 
@@ -1802,6 +1941,14 @@ export const process_user_deletion_request = internalMutation({
 				requestId: request._id,
 			});
 			return { done: false, deletedCount: 0 };
+		}
+
+		// Fence recovery in the same transaction as the first destructive batch. Recovery may
+		// resume only after the whole finalization succeeds and clears this field.
+		if (user.deletionFinalizationStartedAt == null) {
+			await ctx.db.patch("users", user._id, {
+				deletionFinalizationStartedAt: now,
+			});
 		}
 
 		// A user can have any number of plugin UI sessions, so delete one batch per pass and keep
@@ -1831,27 +1978,29 @@ export const process_user_deletion_request = internalMutation({
 			return { done: false, deletedCount: drainedNotifications };
 		}
 
-		// Finalize the user first to delete the remaining user-owned docs and to
-		// compute which organizations became fully empty at the retention boundary.
-		const deleteUserRes = await db_finalize_deleted_user(ctx, {
+		const drainedPermissionGrants = await db_drain_user_direct_permission_grants_batch(ctx, {
 			userId: user._id,
-			now: now,
+			batchSize: batch_size(args),
 		});
-
-		// Queue immediate organization deletions for organizations that became empty while
-		// finalizing this user.
-		if (deleteUserRes?.organizationsToDelete) {
-			for (const organization of deleteUserRes.organizationsToDelete) {
-				await data_deletion_db_request(ctx, {
-					userId: request.userId,
-					organizationId: organization.organizationId,
-					scope: "organization",
-					eligibleAt: now,
-				});
-			}
+		if (drainedPermissionGrants > 0) {
+			return { done: false, deletedCount: drainedPermissionGrants };
 		}
 
-		// User finalization and follow-up organization queueing are complete.
+		const drainedFinalizationDocs = await db_drain_user_finalization_batch(ctx, {
+			userId: user._id,
+			now,
+			batchSize: batch_size(args),
+		});
+		if (drainedFinalizationDocs > 0) {
+			return { done: false, deletedCount: drainedFinalizationDocs };
+		}
+
+		await db_finalize_deleted_user(ctx, {
+			userId: user._id,
+			now,
+		});
+
+		// User finalization and organization queueing are complete.
 		await ctx.db.delete("data_deletion_requests", request._id);
 
 		return { done: true, deletedCount: 1 };
@@ -2159,6 +2308,7 @@ export const hard_delete_user_data = internalMutation({
 				defaultOrganizationId: defaultTenant.organizationId,
 				defaultWorkspaceId: defaultTenant.defaultWorkspaceId,
 				deletedAt: undefined,
+				deletionFinalizationStartedAt: undefined,
 			}),
 			// Cancel the user-scope deletion request. Resource-scope requests must stay
 			// queued until this reset either consumes them or proves they target the
@@ -2510,13 +2660,22 @@ export const hard_delete_user_data = internalMutation({
 			}
 		}
 
+		// The preserved home workspace is usable again only after its store, sessions, and installations
+		// are gone. Real workspace deletion removes this fence with the workspace doc instead.
+		const resetWorkspace = await ctx.db.get("organizations_workspaces", defaultTenant.defaultWorkspaceId);
+		if (resetWorkspace?.pluginDataPurgeStartedAt !== undefined) {
+			await ctx.db.patch("organizations_workspaces", resetWorkspace._id, {
+				pluginDataPurgeStartedAt: undefined,
+			});
+		}
+
 		// No reset-owned data was left to delete.
 		return { done: true, deletedCount: 0 };
 	},
 });
 
 /**
- * Tombstones a user and advances bounded plugin UI session and publisher-doc cleanup.
+ * Tombstones a user and advances the bounded cleanup that must finish before provider writes.
  *
  * The admin action repeats this mutation before calling external providers. This keeps the
  * local account authoritative and ensures no user-owned session or publisher doc is left.
@@ -2533,10 +2692,18 @@ export const prepare_user_for_hard_deletion = internalMutation({
 			return true;
 		}
 
+		const now = Date.now();
 		if (user.deletedAt == null) {
 			await db_prepare_user_for_deletion(ctx, {
 				user,
-				now: Date.now(),
+				now,
+			});
+		}
+		// Keep this marker through bounded continuations and provider retries. The final local
+		// mutation clears it only after every destructive step succeeds.
+		if (user.deletionFinalizationStartedAt == null) {
+			await ctx.db.patch("users", user._id, {
+				deletionFinalizationStartedAt: now,
 			});
 		}
 
@@ -2545,7 +2712,7 @@ export const prepare_user_for_hard_deletion = internalMutation({
 			userId: args.userId,
 			batchSize,
 		});
-		if (deletedSessionCount >= batchSize) {
+		if (deletedSessionCount > 0) {
 			return false;
 		}
 
@@ -2563,29 +2730,38 @@ export const prepare_user_for_hard_deletion = internalMutation({
 			userId: args.userId,
 			batchSize,
 		});
-		return deletedNotificationCount === 0;
+		if (deletedNotificationCount > 0) {
+			return false;
+		}
+
+		const deletedPermissionGrantCount = await db_drain_user_direct_permission_grants_batch(ctx, {
+			userId: args.userId,
+			batchSize,
+		});
+		return deletedPermissionGrantCount === 0;
 	},
 });
 
 /**
  * Internal admin finalization entrypoint for auth-removing hard-delete modes.
  *
- * This runs the user tombstone and finalization immediately instead of waiting
- * for the retained user-scope queue doc. It may preserve or remove auth and
- * billing state depending on the caller's mode, then queues any newly empty
- * organizations for immediate phase-2 purge.
+ * This advances bounded local finalization after the admin caller finishes provider deletion.
+ * It may preserve or remove auth and billing state depending on the caller's mode.
  */
 export const finalize_user_deletion_data = internalMutation({
 	args: {
 		userId: v.id("users"),
 		deleteUserAuth: v.optional(v.boolean()),
 		deleteBillingState: v.optional(v.boolean()),
+		deleteUserRecord: v.optional(v.boolean()),
+		_test_batchSize: v.optional(v.number()),
+		_test_disableReschedule: v.optional(v.boolean()),
 	},
-	returns: v.null(),
+	returns: v.boolean(),
 	handler: async (ctx, args) => {
 		const user = await ctx.db.get("users", args.userId);
 		if (!user) {
-			return null;
+			return true;
 		}
 
 		const now = Date.now();
@@ -2594,43 +2770,63 @@ export const finalize_user_deletion_data = internalMutation({
 			user,
 			now,
 		});
-		const deleteUserRes = await db_finalize_deleted_user(ctx, {
-			userId: user._id,
-			now: now,
-			deleteUserAuth: args.deleteUserAuth,
-			deleteBillingState: args.deleteBillingState,
-		});
-
-		// Queue immediate organization deletions for organizations that became empty
-		// while finalizing this user.
-		if (deleteUserRes?.organizationsToDelete) {
-			for (const organization of deleteUserRes.organizationsToDelete) {
-				await data_deletion_db_request(ctx, {
-					userId: user._id,
-					organizationId: organization.organizationId,
-					scope: "organization",
-					eligibleAt: now,
-				});
-			}
+		// This entrypoint now has bounded continuations of its own, so fence recovery before its first pass.
+		if (user.deletionFinalizationStartedAt == null) {
+			await ctx.db.patch("users", user._id, {
+				deletionFinalizationStartedAt: now,
+			});
 		}
 
-		// This admin path is immediate. Remove its user request and make every
-		// already-queued organization or workspace purge eligible for the worker now.
-		const deletionRequests = await ctx.db
-			.query("data_deletion_requests")
-			.withIndex("by_user", (q) => q.eq("userId", user._id))
-			.collect();
-		await Promise.all(
-			deletionRequests.flatMap((request) =>
-				request.scope === "user"
-					? [ctx.db.delete("data_deletion_requests", request._id)]
-					: request.eligibleAt > now
-						? [ctx.db.patch("data_deletion_requests", request._id, { eligibleAt: now })]
-						: [],
-			),
-		);
+		const batchSize = batch_size(args);
+		const drainedFinalizationDocs = await db_drain_user_finalization_batch(ctx, {
+			userId: user._id,
+			now,
+			batchSize,
+		});
+		if (drainedFinalizationDocs > 0) {
+			return false;
+		}
 
-		return null;
+		// Provider deletion has succeeded before this mutation runs. Only now make retained tenant
+		// requests immediate, one indexed batch at a time.
+		const eligibleRequestCount = await db_make_user_deletion_requests_eligible_batch(ctx, {
+			userId: user._id,
+			now,
+			batchSize,
+		});
+		if (eligibleRequestCount > 0) {
+			return false;
+		}
+
+		const userDeletionRequest = await ctx.db
+			.query("data_deletion_requests")
+			.withIndex("by_user_scope", (q) => q.eq("userId", user._id).eq("scope", "user"))
+			.first();
+		if (userDeletionRequest) {
+			await ctx.db.delete("data_deletion_requests", userDeletionRequest._id);
+		}
+
+		const remainingDeletionRequest = args.deleteUserRecord
+			? await ctx.db
+					.query("data_deletion_requests")
+					.withIndex("by_user", (q) => q.eq("userId", user._id))
+					.first()
+			: null;
+		if (remainingDeletionRequest && !args._test_disableReschedule) {
+			// Schedule the tenant worker in the same transaction that removes the user. A retry cannot
+			// discover these requests after the user record is gone.
+			await ctx.scheduler.runAfter(0, internal.data_deletion.enqueue_deletion_requests_processing, {});
+		}
+
+		await db_finalize_deleted_user(ctx, {
+			userId: user._id,
+			now,
+			deleteUserAuth: args.deleteUserAuth,
+			deleteBillingState: args.deleteBillingState,
+			deleteUserRecord: args.deleteUserRecord,
+		});
+
+		return true;
 	},
 });
 

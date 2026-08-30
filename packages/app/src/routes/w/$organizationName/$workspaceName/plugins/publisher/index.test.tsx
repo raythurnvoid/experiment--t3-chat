@@ -1,12 +1,23 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ComponentProps, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-const { authMock, useQueryMock } = vi.hoisted(() => ({
+const {
+	authMock,
+	beginManagementActionMock,
+	finishManagementActionMock,
+	mutationMock,
+	publishSessionMock,
+	useQueryMock,
+} = vi.hoisted(() => ({
 	authMock: vi.fn(),
+	beginManagementActionMock: vi.fn(),
+	finishManagementActionMock: vi.fn(),
+	mutationMock: vi.fn(),
+	publishSessionMock: vi.fn(),
 	useQueryMock: vi.fn(),
 }));
 
@@ -27,7 +38,7 @@ vi.mock("@/components/app-auth.tsx", () => ({
 vi.mock("@/lib/app-convex-client.ts", () => ({
 	app_convex: {
 		action: vi.fn(),
-		mutation: vi.fn(),
+		mutation: (...args: unknown[]) => mutationMock(...args),
 	},
 	app_convex_api: {
 		plugins: {
@@ -87,11 +98,102 @@ vi.mock("@/components/plugins-header-breadcrumb.tsx", () => ({
 	},
 }));
 
+vi.mock("./-plugin-publish-confirmation-modal.tsx", () => ({
+	PluginPublishConfirmationModal: function PluginPublishConfirmationModal(props: {
+		repositoryLabel: string;
+		onPublished?: () => void;
+	}) {
+		return (
+			<button aria-label={`Publish ${props.repositoryLabel}`} onClick={props.onPublished}>
+				Publish
+			</button>
+		);
+	},
+}));
+
+vi.mock("./-plugin-publish-session.tsx", () => ({
+	PluginPublishSessionProvider: {
+		useContext: () => publishSessionMock(),
+	},
+}));
+
 import { Route } from "./index.tsx";
 
 const PageComponent = Route.options.component as () => JSX.Element;
 
-function setRepositories() {
+type RepositoryFixture = {
+	repository: {
+		_id: string;
+		owner: string;
+		repo: string;
+		repositoryUrl: string;
+		lastPublishAttempt: {
+			at: number;
+			pluginName: string | null;
+			status: string;
+			message: string;
+		};
+	};
+	readyVersions: Array<{
+		name: string;
+		displayName: string;
+		description: string;
+		version: string;
+		reviewStatus: string;
+	}>;
+};
+
+function makeRepositories(): RepositoryFixture[] {
+	return [
+		{
+			repository: {
+				_id: "repository_published",
+				owner: "octo",
+				repo: "plugins",
+				repositoryUrl: "https://github.com/octo/plugins",
+				lastPublishAttempt: {
+					at: Date.UTC(2026, 7, 15, 12, 0),
+					pluginName: "previous-plugin",
+					status: "failed",
+					message: "Artifact file hash mismatch",
+				},
+			},
+			readyVersions: [
+				{
+					name: "current-plugin",
+					displayName: "Current Plugin",
+					description: "Current release",
+					version: "1.0.0",
+					reviewStatus: "passed",
+				},
+				{
+					name: "gallery-plugin",
+					displayName: "Gallery Plugin",
+					description: "Gallery release",
+					version: "0.2.0",
+					reviewStatus: "passed",
+				},
+			],
+		},
+		{
+			repository: {
+				_id: "repository_unpublished",
+				owner: "octo",
+				repo: "new-plugin",
+				repositoryUrl: "https://github.com/octo/new-plugin",
+				lastPublishAttempt: {
+					at: Date.UTC(2026, 7, 15, 12, 0),
+					pluginName: null,
+					status: "failed",
+					message: "Plugin manifest is invalid JSON",
+				},
+			},
+			readyVersions: [],
+		},
+	];
+}
+
+function setRepositories(repositories: ReturnType<typeof makeRepositories> = makeRepositories()) {
 	useQueryMock.mockImplementation((query: string) => {
 		if (query === "users.get_anagraphic") {
 			return null;
@@ -100,59 +202,20 @@ function setRepositories() {
 			return undefined;
 		}
 
-		return [
-			{
-				repository: {
-					_id: "repository_published",
-					owner: "octo",
-					repo: "plugins",
-					repositoryUrl: "https://github.com/octo/plugins",
-					lastPublishAttempt: {
-						at: Date.UTC(2026, 7, 15, 12, 0),
-						pluginName: "previous-plugin",
-						status: "failed",
-						message: "Artifact file hash mismatch",
-					},
-				},
-				readyVersions: [
-					{
-						name: "current-plugin",
-						displayName: "Current Plugin",
-						description: "Current release",
-						version: "1.0.0",
-						reviewStatus: "passed",
-					},
-					{
-						name: "gallery-plugin",
-						displayName: "Gallery Plugin",
-						description: "Gallery release",
-						version: "0.2.0",
-						reviewStatus: "passed",
-					},
-				],
-			},
-			{
-				repository: {
-					_id: "repository_unpublished",
-					owner: "octo",
-					repo: "new-plugin",
-					repositoryUrl: "https://github.com/octo/new-plugin",
-					lastPublishAttempt: {
-						at: Date.UTC(2026, 7, 15, 12, 0),
-						pluginName: null,
-						status: "failed",
-						message: "Plugin manifest is invalid JSON",
-					},
-				},
-				readyVersions: [],
-			},
-		];
+		return repositories;
 	});
 }
 
 describe("RoutePluginsPublisher", () => {
 	beforeEach(() => {
 		authMock.mockReturnValue({ isAnonymous: false, userId: "user_1" });
+		beginManagementActionMock.mockReturnValue(1);
+		publishSessionMock.mockReturnValue({
+			session: null,
+			managementAction: null,
+			beginManagementAction: beginManagementActionMock,
+			finishManagementAction: finishManagementActionMock,
+		});
 		setRepositories();
 	});
 
@@ -180,6 +243,9 @@ describe("RoutePluginsPublisher", () => {
 		const repositoryName = screen.getByText("octo/new-plugin");
 		const unpublishedCard = repositoryName.closest(".RoutePluginsPublisherUnpublishedCard");
 		expect(unpublishedCard).not.toBeNull();
+		expect(
+			within(unpublishedCard as HTMLElement).getByRole("button", { name: "Publish octo/new-plugin" }),
+		).toBeTruthy();
 		const repositoryItem = unpublishedCard?.closest(".RoutePluginsPublisherRepositoryItem");
 		expect(repositoryItem).not.toBeNull();
 		expect(unpublishedCard?.parentElement).toBe(repositoryItem);
@@ -187,6 +253,45 @@ describe("RoutePluginsPublisher", () => {
 		expect(failure.textContent).toContain("Plugin manifest is invalid JSON");
 		expect(unpublishedCard?.contains(failure)).toBe(false);
 		expect(failure.closest(".RoutePluginsPublisherLastAttempt")?.parentElement).toBe(repositoryItem);
+	});
+
+	test("passes distinct owner and repository labels to two unpublished fork actions", () => {
+		const unpublished = makeRepositories()[1];
+		setRepositories([
+			unpublished,
+			{
+				...unpublished,
+				repository: {
+					...unpublished.repository,
+					_id: "repository_fork",
+					owner: "fork",
+					repositoryUrl: "https://github.com/fork/new-plugin",
+				},
+			},
+		]);
+		render(<PageComponent />);
+
+		expect(screen.getByRole("button", { name: "Publish octo/new-plugin" })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "Publish fork/new-plugin" })).toBeTruthy();
+	});
+
+	test("keeps Remove locked after the card remounts during its publish session", () => {
+		publishSessionMock.mockReturnValue({
+			session: { repositoryId: "repository_unpublished" },
+			managementAction: null,
+			beginManagementAction: beginManagementActionMock,
+			finishManagementAction: finishManagementActionMock,
+		});
+		const firstView = render(<PageComponent />);
+		expect(
+			(screen.getByRole("button", { name: "Remove claim on octo/new-plugin" }) as HTMLButtonElement).disabled,
+		).toBe(true);
+
+		firstView.unmount();
+		render(<PageComponent />);
+		expect(
+			(screen.getByRole("button", { name: "Remove claim on octo/new-plugin" }) as HTMLButtonElement).disabled,
+		).toBe(true);
 	});
 
 	test("shows one card per ready plugin name on the same repository", () => {
@@ -197,5 +302,115 @@ describe("RoutePluginsPublisher", () => {
 		const repositoryItem = current.closest(".RoutePluginsPublisherRepositoryItem");
 		expect(repositoryItem).not.toBeNull();
 		expect(gallery.closest(".RoutePluginsPublisherRepositoryItem")).toBe(repositoryItem);
+	});
+
+	test("holds the provider management lock until an in-flight claim finishes", async () => {
+		let finishClaim!: (result: { _yay: { repositoryUrl: string } }) => void;
+		mutationMock.mockReturnValueOnce(
+			new Promise<{ _yay: { repositoryUrl: string } }>((resolve) => {
+				finishClaim = resolve;
+			}),
+		);
+		render(<PageComponent />);
+		const repositoryInput = screen.getByPlaceholderText("https://github.com/owner/plugin-repo");
+		fireEvent.change(repositoryInput, { target: { value: "https://github.com/octo/third-plugin" } });
+		const claimButton = screen.getByRole("button", { name: "Claim" });
+		claimButton.focus();
+		fireEvent.click(claimButton);
+		expect((repositoryInput as HTMLInputElement).disabled).toBe(false);
+		expect((repositoryInput as HTMLInputElement).readOnly).toBe(true);
+		expect((claimButton as HTMLButtonElement).disabled).toBe(false);
+		expect(claimButton.getAttribute("aria-busy")).toBe("true");
+		fireEvent.click(claimButton);
+		expect(mutationMock).toHaveBeenCalledTimes(1);
+		expect(beginManagementActionMock).toHaveBeenCalledWith("claim_repository");
+
+		await act(async () => finishClaim({ _yay: { repositoryUrl: "https://github.com/octo/third-plugin" } }));
+
+		expect(finishManagementActionMock).toHaveBeenCalledWith(1);
+		expect(document.activeElement).toBe(repositoryInput);
+		expect((repositoryInput as HTMLInputElement).readOnly).toBe(false);
+		expect((repositoryInput as HTMLInputElement).value).toBe("");
+	});
+
+	test("keeps claim focus stable on failure and after an explicit focus move", async () => {
+		let finishClaim!: (result: { _nay?: { message: string }; _yay?: { repositoryUrl: string } }) => void;
+		mutationMock.mockReturnValueOnce(
+			new Promise((resolve) => {
+				finishClaim = resolve;
+			}),
+		);
+		const view = render(<PageComponent />);
+		const repositoryInput = screen.getByPlaceholderText("https://github.com/owner/plugin-repo");
+		fireEvent.change(repositoryInput, { target: { value: "https://github.com/octo/third-plugin" } });
+		const claimButton = screen.getByRole("button", { name: "Claim" });
+		claimButton.focus();
+		fireEvent.click(claimButton);
+
+		await act(async () => finishClaim({ _nay: { message: "Already claimed" } }));
+		expect(document.activeElement).toBe(claimButton);
+		expect((repositoryInput as HTMLInputElement).readOnly).toBe(false);
+
+		mutationMock.mockReturnValueOnce(
+			new Promise((resolve) => {
+				finishClaim = resolve;
+			}),
+		);
+		fireEvent.click(claimButton);
+		const explicitTarget = screen.getByRole("link", { name: "Open plugin page for Current Plugin" });
+		explicitTarget.focus();
+		await act(async () => finishClaim({ _yay: { repositoryUrl: "https://github.com/octo/third-plugin" } }));
+		view.rerender(<PageComponent />);
+		expect(document.activeElement).toBe(explicitTarget);
+	});
+
+	test("moves focus to the claim field after a repository claim is removed", async () => {
+		const repositories = makeRepositories();
+		setRepositories(repositories);
+		mutationMock.mockResolvedValueOnce({ _yay: {} });
+		const view = render(<PageComponent />);
+		const remove = screen.getByRole("button", { name: "Remove claim on octo/new-plugin" });
+		remove.focus();
+		fireEvent.click(remove);
+		expect(
+			(screen.getByRole("button", { name: "Removing claim on octo/new-plugin" }) as HTMLButtonElement).disabled,
+		).toBe(false);
+		fireEvent.click(screen.getByRole("button", { name: "Removing claim on octo/new-plugin" }));
+		expect(mutationMock).toHaveBeenCalledTimes(1);
+		await act(async () => {
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+		expect(beginManagementActionMock).toHaveBeenCalledWith("remove_repository");
+		expect(finishManagementActionMock).toHaveBeenCalledWith(1);
+
+		setRepositories([repositories[0]]);
+		view.rerender(<PageComponent />);
+
+		await waitFor(() =>
+			expect(document.activeElement).toBe(screen.getByPlaceholderText("https://github.com/owner/plugin-repo")),
+		);
+	});
+
+	test("does not steal focus when the person moves before a repository claim disappears", async () => {
+		const repositories = makeRepositories();
+		setRepositories(repositories);
+		mutationMock.mockResolvedValueOnce({ _yay: {} });
+		const view = render(<PageComponent />);
+		fireEvent.click(screen.getByRole("button", { name: "Remove claim on octo/new-plugin" }));
+		await act(async () => {
+			await Promise.resolve();
+			await Promise.resolve();
+		});
+		fireEvent.change(screen.getByPlaceholderText("https://github.com/owner/plugin-repo"), {
+			target: { value: "https://github.com/octo/another-plugin" },
+		});
+		const claim = screen.getByRole("button", { name: "Claim" });
+		claim.focus();
+
+		setRepositories([repositories[0]]);
+		view.rerender(<PageComponent />);
+
+		await waitFor(() => expect(document.activeElement).toBe(claim));
 	});
 });

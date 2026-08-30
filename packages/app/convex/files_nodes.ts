@@ -812,6 +812,22 @@ async function db_authorize_lock_management(
 }
 
 /**
+ * A projection stamp is internal authority. Public lock and sharing controls must not change the
+ * stamped node or anything whose effective lock comes from a stamped projection folder.
+ */
+export async function files_nodes_db_has_projection_authority(ctx: QueryCtx | MutationCtx, node: Doc<"files_nodes">) {
+	if (node.projectionPluginName !== undefined) {
+		return true;
+	}
+	if (node.readOnlyScopeNodeId === undefined) {
+		return false;
+	}
+
+	const lockSource = await ctx.db.get("files_nodes", node.readOnlyScopeNodeId);
+	return lockSource?.projectionPluginName !== undefined;
+}
+
+/**
  * Load active and archived descendants once. Reuse them for all checks and updates.
  */
 async function db_load_swept_descendants(
@@ -916,22 +932,28 @@ export const get_node_read_only_management_state = query({
 		}
 		const { fileNode: node, organization, defaultWorkspaceId } = authorized._yay;
 
-		const canManage = await access_control_db_has_permission(ctx, {
-			organizationId: organization._id,
-			workspaceId: membership.workspaceId,
-			defaultWorkspaceId,
-			organizationOwnerUserId: organization.ownerUserId,
-			resource: {
-				kind: "file",
-				id: String(node._id),
-				restrictedScopeNodeId: node.restrictedScopeNodeId ?? null,
-			},
-			permission: "content.permissions.manage",
-			userId: userAuth.id,
-		});
+		const canManage =
+			!(await files_nodes_db_has_projection_authority(ctx, node)) &&
+			(await access_control_db_has_permission(ctx, {
+				organizationId: organization._id,
+				workspaceId: membership.workspaceId,
+				defaultWorkspaceId,
+				organizationOwnerUserId: organization.ownerUserId,
+				resource: {
+					kind: "file",
+					id: String(node._id),
+					restrictedScopeNodeId: node.restrictedScopeNodeId ?? null,
+				},
+				permission: "content.permissions.manage",
+				userId: userAuth.id,
+			}));
 
 		const readOnlyState: "writable" | "self" | "inherited" =
-			node.readOnlyScopeNodeId === undefined ? "writable" : node.readOnlyScopeNodeId === node._id ? "self" : "inherited";
+			node.readOnlyScopeNodeId === undefined
+				? "writable"
+				: node.readOnlyScopeNodeId === node._id
+					? "self"
+					: "inherited";
 
 		const parentScopeNodeId = await files_nodes_db_resolve_parent_read_only_scope(ctx, {
 			parentId: node.parentId,
@@ -1000,6 +1022,9 @@ export const set_node_read_only = mutation({
 			return authorized;
 		}
 		const { membership, node } = authorized._yay;
+		if (await files_nodes_db_has_projection_authority(ctx, node)) {
+			return Result({ _nay: { message: "This item is managed by a plugin." } });
+		}
 
 		// The node is already directly locked. Return success for repeated calls.
 		if (node.readOnlyScopeNodeId === node._id) {
@@ -1056,6 +1081,9 @@ export const set_node_writable = mutation({
 			return authorized;
 		}
 		const { membership, node } = authorized._yay;
+		if (await files_nodes_db_has_projection_authority(ctx, node)) {
+			return Result({ _nay: { message: "This item is managed by a plugin." } });
+		}
 
 		// The node is already writable. Return success for repeated calls.
 		if (node.readOnlyScopeNodeId === undefined) {
@@ -1240,6 +1268,8 @@ async function db_insert_node(
 		 * The new node gets the parent lock and stays read-only.
 		 */
 		inheritParentReadOnlyScope?: true;
+		/** Projection doors only. Public create and copy flows must never forward this field. */
+		projectionPluginName?: Doc<"files_nodes">["projectionPluginName"];
 		now: number;
 	},
 ) {
@@ -1261,6 +1291,7 @@ async function db_insert_node(
 		path: args.path,
 		restrictedScopeNodeId,
 		readOnlyScopeNodeId,
+		projectionPluginName: args.projectionPluginName,
 		treePath: derive_tree_path_for_file_node(args.path, args.kind),
 		pathDepth: files_path_depth(args.path),
 		lowercaseExtension: files_lowercase_extension(args.path, args.kind),
@@ -1356,6 +1387,8 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		 * is locked so files created under it stay locked.
 		 */
 		inheritParentReadOnlyScope?: true;
+		/** Projection doors only. Stamp the requested leaf, never intermediate folders. */
+		projectionPluginName?: Doc<"files_nodes">["projectionPluginName"];
 	},
 ) {
 	let currentParent: Doc<"files_nodes">["parentId"] = args.parentId;
@@ -1492,6 +1525,7 @@ export async function files_nodes_db_create_node_recursively_at_path(
 			assetId: isLeaf ? args.assetId : undefined,
 			archiveOperationId: isLeaf ? args.archiveOperationId : undefined,
 			expectsTextContent: isLeaf ? args.expectsTextContent : undefined,
+			projectionPluginName: isLeaf ? args.projectionPluginName : undefined,
 			...(args.inheritParentReadOnlyScope ? { inheritParentReadOnlyScope: true } : {}),
 			now: args.now,
 		});
@@ -2508,7 +2542,8 @@ export const create_upload_node = mutation({
 		// ignore the client-declared one, which is unvalidated input. Unrecognized names (media,
 		// pdf, …) keep the client value: the classifier only knows text, and plugin routing and
 		// the details card need a type for media uploads too.
-		const storedContentType = files_get_editable_text_content_type(nameSegments.at(-1) ?? args.filename) ?? args.contentType;
+		const storedContentType =
+			files_get_editable_text_content_type(nameSegments.at(-1) ?? args.filename) ?? args.contentType;
 
 		const nodeIdResult = await files_nodes_db_create_node_recursively_at_path(ctx, {
 			organizationId: membership.organizationId,
@@ -3193,8 +3228,7 @@ export const discard_failed_upload_node = mutation({
 			workspaceId: membership.workspaceId,
 			r2Key: uploadStagingR2Key,
 			reason: "upload_staging",
-			putMayArriveUntil:
-				(asset.uploadUrlExpiresAt ?? asset.unfinalizedExpiresAt ?? now) + r2_PUT_MAY_ARRIVE_MARGIN_MS,
+			putMayArriveUntil: (asset.uploadUrlExpiresAt ?? asset.unfinalizedExpiresAt ?? now) + r2_PUT_MAY_ARRIVE_MARGIN_MS,
 		});
 		if (liveR2Key !== uploadStagingR2Key) {
 			// The copy may reach the final key before the event saves `r2Key`.
@@ -3207,9 +3241,7 @@ export const discard_failed_upload_node = mutation({
 				// A service event may already be copying staging bytes here. Keep the job until that
 				// accepted work has enough time to finish.
 				putMayArriveUntil:
-					serviceTarget?.state === "pending"
-						? now + files_UPLOAD_URL_TTL_MS + r2_PUT_MAY_ARRIVE_MARGIN_MS
-						: undefined,
+					serviceTarget?.state === "pending" ? now + files_UPLOAD_URL_TTL_MS + r2_PUT_MAY_ARRIVE_MARGIN_MS : undefined,
 			});
 		}
 
@@ -4166,8 +4198,8 @@ export const rename_node = mutation({
 						.eq("parentId", targetParentId)
 						.eq("name", leafName)
 						.eq("archiveOperationId", undefined),
-					)
-					.first();
+				)
+				.first();
 			if (activeSiblingConflict && activeSiblingConflict._id !== args.nodeId) {
 				// Check access before reporting the conflict. Keep a restricted sibling hidden.
 				const authorizedConflict = await access_control_db_authorize_membership(ctx, {
@@ -4404,8 +4436,8 @@ export const move_nodes = mutation({
 						.eq("workspaceId", membership.workspaceId)
 						.eq("path", fileNodeToMove.movedPath)
 						.eq("archiveOperationId", undefined),
-					)
-					.first();
+				)
+				.first();
 			if (activePathConflict && !movingNodeIds.has(activePathConflict._id)) {
 				// Check access before reporting the conflict. Keep a restricted child hidden.
 				const authorizedConflict = await access_control_db_authorize_membership(ctx, {
@@ -5158,14 +5190,15 @@ export const unarchive_nodes = mutation({
 
 /**
  * Fields for a node returned by public queries.
- * Do not return either raw read-only field. The scope may name a hidden folder, and the service
- * target is internal cleanup authority.
+ * Do not return raw lock or provenance fields. They are internal authority, and the scope may name
+ * a hidden folder.
  * Return `readOnlyState`, and return the lock source only when the caller can read it.
  */
 const files_node_public_doc_fields = ((/* iife */) => {
 	const {
 		readOnlyScopeNodeId: _readOnlyScopeNodeId,
 		readOnlyPluginServiceTargetId: _readOnlyPluginServiceTargetId,
+		projectionPluginName: _projectionPluginName,
 		...rest
 	} = doc(app_convex_schema, "files_nodes").fields;
 
@@ -5186,7 +5219,12 @@ function files_node_project_read_only(
 	fileNode: Doc<"files_nodes">,
 	readableSource: Pick<Doc<"files_nodes">, "_id" | "path"> | null,
 ) {
-	const { readOnlyScopeNodeId, readOnlyPluginServiceTargetId: _readOnlyPluginServiceTargetId, ...rest } = fileNode;
+	const {
+		readOnlyScopeNodeId,
+		readOnlyPluginServiceTargetId: _readOnlyPluginServiceTargetId,
+		projectionPluginName: _projectionPluginName,
+		...rest
+	} = fileNode;
 
 	// Keep these values as exact literals so they match the return validator.
 	const readOnlyState: "writable" | "self" | "inherited" =
@@ -6216,9 +6254,7 @@ async function db_resolve_committed_chunk_source(
 		// `db_get_file_content_materialization_header` explains.
 		const asset = await ctx.db.get("files_r2_assets", fileNode.assetId);
 		const byteSize =
-			asset && asset.organizationId === args.organizationId && asset.workspaceId === args.workspaceId
-				? asset.size
-				: 0;
+			asset && asset.organizationId === args.organizationId && asset.workspaceId === args.workspaceId ? asset.size : 0;
 		return { nodeId: fileNode._id, byteSize, counts: await resolve_counts() };
 	}
 
@@ -6563,9 +6599,7 @@ export const read_file_content_from_chunks = internalQuery({
 		// materialization branches below and reads its committed chunks directly.
 		const isNonCollaborativeTextFile = !isEditableTextFile && files_node_has_editable_text_content(fileNode);
 		const isReadOnlyPlainTextFile =
-			!isEditableTextFile &&
-			!isNonCollaborativeTextFile &&
-			(fileNode.contentType?.startsWith("text/plain") ?? false);
+			!isEditableTextFile && !isNonCollaborativeTextFile && (fileNode.contentType?.startsWith("text/plain") ?? false);
 		if (realTenantScope) {
 			if (!isEditableTextFile && !isNonCollaborativeTextFile && !isReadOnlyPlainTextFile) return null;
 
@@ -7489,16 +7523,14 @@ export const match_text_file_lines = internalQuery({
 
 		const chunks =
 			window?.kind === "lines"
-				? ctx.db
-						.query("files_text_chunks")
-						.withIndex("by_organization_workspace_source_fileNode_lineEnd_chunk", (q) =>
-							q
-								.eq("organizationId", args.organizationId)
-								.eq("workspaceId", args.workspaceId)
-								.eq("sourceKind", "committed")
-								.eq("fileNodeId", fileNode._id)
-								.gte("lineEnd", Math.max(1, Math.trunc(window.startLine))),
-						)
+				? ctx.db.query("files_text_chunks").withIndex("by_organization_workspace_source_fileNode_lineEnd_chunk", (q) =>
+						q
+							.eq("organizationId", args.organizationId)
+							.eq("workspaceId", args.workspaceId)
+							.eq("sourceKind", "committed")
+							.eq("fileNodeId", fileNode._id)
+							.gte("lineEnd", Math.max(1, Math.trunc(window.startLine))),
+					)
 				: window?.kind === "slice"
 					? ctx.db
 							.query("files_text_chunks")
@@ -8635,7 +8667,9 @@ export async function yjs_reserve_and_increment_last_sequence(
 	}
 	if (fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId) {
 		return Result({
-			_nay: { message: "This file changed while you were editing. Copy your local changes before reloading, then try again." },
+			_nay: {
+				message: "This file changed while you were editing. Copy your local changes before reloading, then try again.",
+			},
 		});
 	}
 	// A durable refusal marker means materialization already refused this file's state and an
@@ -8665,7 +8699,10 @@ export async function yjs_reserve_and_increment_last_sequence(
 	if (lastSequenceData) {
 		const nextCount = lastSequenceData.unmaterializedUpdateCount + 1;
 		const nextBytes = lastSequenceData.unmaterializedUpdateBytes + args.updateByteLength;
-		if (nextCount > files_MAX_UNMATERIALIZED_YJS_UPDATE_COUNT || nextBytes > files_MAX_UNMATERIALIZED_YJS_UPDATE_BYTES) {
+		if (
+			nextCount > files_MAX_UNMATERIALIZED_YJS_UPDATE_COUNT ||
+			nextBytes > files_MAX_UNMATERIALIZED_YJS_UPDATE_BYTES
+		) {
 			// A settle marker (too-large text or over-cap frontmatter) means materialization
 			// completes without advancing the committed content, so the counters can never
 			// shrink and "retry in a moment" would be permanently false. The repair path is the
@@ -9550,15 +9587,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("slice window scans inside an oversized line", async () => {
 			const prefix = "x".repeat(files_GREP_MAX_SCAN_BYTES + 10);
 			const content = `${prefix}needle-end\n`;
-			const result = await match_text_chunks_list(
-				grepTestChunkIterator(grepTestChunks(content, [prefix.length - 5])),
-				{
-					...matchMarkdownTestScannerOptions,
-					pattern: "needle",
-					match: { kind: "substring", needle: "needle", ignoreCase: false },
-					window: { kind: "slice", startIndex: prefix.length - 5, maxChars: 64 },
-				},
-			);
+			const result = await match_text_chunks_list(grepTestChunkIterator(grepTestChunks(content, [prefix.length - 5])), {
+				...matchMarkdownTestScannerOptions,
+				pattern: "needle",
+				match: { kind: "substring", needle: "needle", ignoreCase: false },
+				window: { kind: "slice", startIndex: prefix.length - 5, maxChars: 64 },
+			});
 
 			expect(result).not.toBeNull();
 			if (!result) throw new Error("expected grep scan result");

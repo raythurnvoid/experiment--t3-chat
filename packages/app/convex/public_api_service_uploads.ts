@@ -192,7 +192,12 @@ async function db_authorize_service_upload(ctx: MutationCtx, principal: ServiceU
 		ctx.db.get("organizations", grant.organizationId),
 		ctx.db.get("organizations_workspaces", grant.workspaceId),
 	]);
-	if (!organization?.defaultWorkspaceId || !workspace || workspace.organizationId !== organization._id) {
+	if (
+		!organization?.defaultWorkspaceId ||
+		!workspace ||
+		workspace.organizationId !== organization._id ||
+		workspace.pluginDataPurgeStartedAt !== undefined
+	) {
 		return Result({ _nay: { message: "Not found" } });
 	}
 	const allowed = await access_control_db_has_permission(ctx, {

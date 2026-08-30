@@ -6626,14 +6626,7 @@ describe("non-collaborative files", () => {
 	test("every committed read door serves a non-collaborative markdown file", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const lines = [
-			"# Handbook",
-			"",
-			"quietneedle one",
-			"a middle line",
-			"quietneedle two",
-			"the last line",
-		];
+		const lines = ["# Handbook", "", "quietneedle one", "a middle line", "quietneedle two", "the last line"];
 		const markdown = lines.join("\n");
 		const path = "/handbook.md";
 		const { nodeId } = await seed_non_collaborative_file(t, db, path, markdown);
@@ -6924,9 +6917,8 @@ describe("non-collaborative files", () => {
 		const afterRefusals = await t.run(async (ctx) => ({
 			assetId: (await ctx.db.get("files_nodes", nodeId))?.assetId,
 			assets: (await ctx.db.query("files_r2_assets").collect()).length,
-			versions: (await ctx.db.query("files_snapshots").collect()).filter(
-				(snapshot) => snapshot.fileNodeId === nodeId,
-			).length,
+			versions: (await ctx.db.query("files_snapshots").collect()).filter((snapshot) => snapshot.fileNodeId === nodeId)
+				.length,
 		}));
 		expect(afterRefusals).toEqual({ assetId, assets: 2, versions: 0 });
 	});
@@ -6941,12 +6933,7 @@ describe("non-collaborative files", () => {
 		});
 		const original = "# Final lock\n\noriginal body\n";
 		const nextText = "# Final lock\n\nreplacement body\n";
-		const { nodeId, assetId } = await seed_non_collaborative_file(
-			t,
-			db,
-			"/replacement-final-lock.md",
-			original,
-		);
+		const { nodeId, assetId } = await seed_non_collaborative_file(t, db, "/replacement-final-lock.md", original);
 
 		const preflight = await t.query(internal.files_nodes_content.get_replace_file_content_preflight, {
 			organizationId: db.organizationId,
@@ -6992,9 +6979,7 @@ describe("non-collaborative files", () => {
 		const after = await t.run(async (ctx) => ({
 			node: await ctx.db.get("files_nodes", nodeId),
 			newAsset: await ctx.db.get("files_r2_assets", versionSnapshotAssetId),
-			versions: (await ctx.db.query("files_snapshots").collect()).filter(
-				(snapshot) => snapshot.fileNodeId === nodeId,
-			),
+			versions: (await ctx.db.query("files_snapshots").collect()).filter((snapshot) => snapshot.fileNodeId === nodeId),
 		}));
 		expect(after.node?.assetId).toBe(assetId);
 		expect(after.newAsset?.r2Key).toBeUndefined();
@@ -7074,9 +7059,8 @@ describe("non-collaborative files", () => {
 
 		// The refusal left no orphan: no new version snapshot doc and no new content asset.
 		const leftovers = await t.run(async (ctx) => ({
-			snapshots: (await ctx.db.query("files_snapshots").collect()).filter(
-				(snapshot) => snapshot.fileNodeId === nodeId,
-			).length,
+			snapshots: (await ctx.db.query("files_snapshots").collect()).filter((snapshot) => snapshot.fileNodeId === nodeId)
+				.length,
 			assets: (await ctx.db.query("files_r2_assets").collect()).length,
 		}));
 		expect(leftovers.snapshots).toBe(0);
@@ -7331,19 +7315,13 @@ describe("non-collaborative files", () => {
 				snapshots: await ctx.db
 					.query("files_yjs_snapshots")
 					.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-						q
-							.eq("organizationId", db.organizationId)
-							.eq("workspaceId", db.workspaceId)
-							.eq("fileNodeId", nodeId),
+						q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", nodeId),
 					)
 					.collect(),
 				updates: await ctx.db
 					.query("files_yjs_updates")
 					.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-						q
-							.eq("organizationId", db.organizationId)
-							.eq("workspaceId", db.workspaceId)
-							.eq("fileNodeId", nodeId),
+						q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", nodeId),
 					)
 					.collect(),
 			};
@@ -7402,7 +7380,9 @@ describe("non-collaborative files", () => {
 			membershipId: db.membershipId,
 			nodeId,
 		});
-		expect(blockedOn._nay?.message).toBe("The old collaboration history is still being removed. Try again in a moment.");
+		expect(blockedOn._nay?.message).toBe(
+			"The old collaboration history is still being removed. Try again in a moment.",
+		);
 		expect(r2Writes.size).toBe(writesBeforeBlockedOn);
 
 		await t.mutation(internal.files_nodes_content.cleanup_file_yjs_covered_rows, {
@@ -7545,9 +7525,7 @@ describe("non-collaborative files", () => {
 
 		// The document is untouched, so unlocking and toggling off still works and the other
 		// direction can be checked on a locked non-collaborative file.
-		expect(
-			await t.run(async (ctx) => (await ctx.db.query("files_yjs_docs_last_sequences").collect()).length),
-		).toBe(1);
+		expect(await t.run(async (ctx) => (await ctx.db.query("files_yjs_docs_last_sequences").collect()).length)).toBe(1);
 
 		await asUser.mutation(api.files_nodes.set_node_writable, { membershipId: db.membershipId, nodeId });
 		const off = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
@@ -7574,9 +7552,8 @@ describe("non-collaborative files", () => {
 		const leftovers = await t.run(async (ctx) => ({
 			snapshots: (await ctx.db.query("files_yjs_snapshots").collect()).length,
 			lastSequences: (await ctx.db.query("files_yjs_docs_last_sequences").collect()).length,
-			unfinalizedAssets: (await ctx.db.query("files_r2_assets").collect()).filter(
-				(asset) => asset.r2Key === undefined,
-			).length,
+			unfinalizedAssets: (await ctx.db.query("files_r2_assets").collect()).filter((asset) => asset.r2Key === undefined)
+				.length,
 		}));
 		expect(leftovers.snapshots).toBe(0);
 		expect(leftovers.lastSequences).toBe(0);
@@ -7610,19 +7587,16 @@ describe("non-collaborative files", () => {
 			nodeId,
 		});
 		expect(locked._nay).toBeUndefined();
-		const refused = await asUser.mutation(
-			internal.files_nodes_content.finalize_file_collaboration_enable,
-			{
-				membershipId: db.membershipId,
-				nodeId,
-				text,
-				textSize: files_get_utf8_byte_size(text),
-				baseAssetId: assetId,
-				yjsSnapshotAssetId: assets.yjsSnapshotAssetId,
-				yjsSnapshotSize: 2,
-				contentSnapshotAssetId: assets.contentSnapshotAssetId,
-			},
-		);
+		const refused = await asUser.mutation(internal.files_nodes_content.finalize_file_collaboration_enable, {
+			membershipId: db.membershipId,
+			nodeId,
+			text,
+			textSize: files_get_utf8_byte_size(text),
+			baseAssetId: assetId,
+			yjsSnapshotAssetId: assets.yjsSnapshotAssetId,
+			yjsSnapshotSize: 2,
+			contentSnapshotAssetId: assets.contentSnapshotAssetId,
+		});
 		expect(refused._nay?.name).toBe("read_only");
 		expect(refused._nay?.message).toBe("This item is read-only.");
 
@@ -7656,12 +7630,7 @@ describe("non-collaborative files", () => {
 
 		const markdown = "# Toggle acl\n\nbody\n";
 		const collaborativeNodeId = await test_materialize_markdown_file(t, asOwner, db, "/toggle-acl-on.md", markdown);
-		const { nodeId: nonCollaborativeNodeId } = await seed_non_collaborative_file(
-			t,
-			db,
-			"/toggle-acl-off.md",
-			markdown,
-		);
+		const { nodeId: nonCollaborativeNodeId } = await seed_non_collaborative_file(t, db, "/toggle-acl-off.md", markdown);
 		// The seed helper writes the asset doc but never uploads its object, and the ON toggle reads
 		// the committed text back from the bucket. Put it there so the positive control below
 		// reaches the permission check instead of a 404.
@@ -7811,17 +7780,12 @@ describe("non-collaborative files", () => {
 				contentFrontmatterTooLargeIndexDocumentCount: 1,
 			});
 		});
-		const frontmatterCanRecover = await asUser.mutation(
-			api.files_nodes_content.set_file_non_collaborative,
-			{
-				membershipId: db.membershipId,
-				nodeId,
-				acknowledgeDropCollaborativeHistory: true,
-			},
-		);
-		expect(frontmatterCanRecover._nay?.message).toBe(
-			"This file is still saving. Try again in a moment.",
-		);
+		const frontmatterCanRecover = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+			membershipId: db.membershipId,
+			nodeId,
+			acknowledgeDropCollaborativeHistory: true,
+		});
+		expect(frontmatterCanRecover._nay?.message).toBe("This file is still saving. Try again in a moment.");
 		expect(await count_materialization_jobs()).toBe(1);
 
 		// A durable marker means materialization can never catch up on its own, so waiting would be
@@ -7906,9 +7870,9 @@ describe("non-collaborative files", () => {
 			targetSequence: sequence,
 			byteSize: files_MAX_TEXT_CONTENT_BYTES + 1,
 		});
-		expect(await t.run(async (ctx) => (await ctx.db.query("files_content_materialization_jobs").collect()).length)).toBe(
-			0,
-		);
+		expect(
+			await t.run(async (ctx) => (await ctx.db.query("files_content_materialization_jobs").collect()).length),
+		).toBe(0);
 
 		const marked = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
 			membershipId: db.membershipId,
@@ -8031,9 +7995,7 @@ describe("non-collaborative files", () => {
 				lastSequenceSaved: (await ctx.db.query("files_pending_updates_last_sequence_saved").collect()).length,
 			};
 		});
-		expect(pendingAfter.docs).toEqual([
-			{ fileNodeId: contentAndMoveNodeId, hasContent: false, destName: "moved.md" },
-		]);
+		expect(pendingAfter.docs).toEqual([{ fileNodeId: contentAndMoveNodeId, hasContent: false, destName: "moved.md" }]);
 		expect(pendingAfter.activeStates).toBe(0);
 		// A leftover marker would make the diff editor refetch forever after collaboration is
 		// turned back on, because the fresh document starts counting at 1 again.
@@ -9083,9 +9045,9 @@ test("file metadata stays visible while a pending content edit hides committed f
 		});
 
 	// The pending edit replaces what the file's own frontmatter says.
-	expect((await search({ op: "eq", qualifiedField: "frontmatter.from", value: "committed@example.com" })).items).toEqual(
-		[],
-	);
+	expect(
+		(await search({ op: "eq", qualifiedField: "frontmatter.from", value: "committed@example.com" })).items,
+	).toEqual([]);
 	// It says nothing about the metadata written next to the file, so that stays findable.
 	expect((await search({ op: "eq", qualifiedField: "metadata.source", value: "slack" })).items).toMatchObject([
 		{ path, nodeId },
@@ -9151,9 +9113,9 @@ test("set_entries refuses bad YAML, folders, and read-only files", async () => {
 	});
 	if (locked._nay) throw new Error(locked._nay.message);
 	expect(await setEntries(nodeId, "title: on a locked file\n")).toMatchObject({ _nay: { name: "read_only" } });
-	expect(await asUser.query(api.files_metadata.get_entries, { membershipId: db.membershipId, fileNodeId: nodeId })).toEqual(
-		[],
-	);
+	expect(
+		await asUser.query(api.files_metadata.get_entries, { membershipId: db.membershipId, fileNodeId: nodeId }),
+	).toEqual([]);
 });
 
 test("update_entries_by_path lets the agent set and remove keys on an uploaded file", async () => {
@@ -9226,9 +9188,9 @@ test("update_entries_by_path lets the agent set and remove keys on an uploaded f
 		{ key: "status", value: "signed" },
 		{ key: "signed-on", value: "2026-08-18" },
 	]);
-	expect(await asUser.query(api.files_metadata.get_entries, { membershipId: db.membershipId, fileNodeId: nodeId })).toEqual(
-		second._yay.entries,
-	);
+	expect(
+		await asUser.query(api.files_metadata.get_entries, { membershipId: db.membershipId, fileNodeId: nodeId }),
+	).toEqual(second._yay.entries);
 
 	expect(
 		(
@@ -12594,9 +12556,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 		const preRepairPointers = await test_get_file_yjs_pointers(t, nodeId);
 		const preRepairAssets = await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", nodeId);
-			const snapshot = node?.yjsSnapshotId
-				? await ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId)
-				: null;
+			const snapshot = node?.yjsSnapshotId ? await ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId) : null;
 			const snapshotAsset = snapshot ? await ctx.db.get("files_r2_assets", snapshot.assetId) : null;
 			if (!node?.assetId || !snapshotAsset?.r2Key) {
 				throw new Error("Expected committed content and Yjs assets before the repair");
@@ -12686,9 +12646,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 			await delay(0);
 			await t.finishInProgressScheduledFunctions();
 		}
-		const repairDeletionJob = (await read_deletion_jobs(t)).find(
-			(job) => job.r2Key === preRepairAssets.yjsR2Key,
-		);
+		const repairDeletionJob = (await read_deletion_jobs(t)).find((job) => job.r2Key === preRepairAssets.yjsR2Key);
 		expect(repairDeletionJob?.putMayArriveUntil).toBeGreaterThan(Date.now());
 	});
 
@@ -13234,8 +13192,7 @@ describe("files_nodes.set_node_read_only", () => {
 
 	test("locking a new active folder ignores a restricted archived tree with the same path", async () => {
 		const t = test_convex();
-		const { db, asUser, archivedChildId, activeRootId, activeChildId } =
-			await seed_reused_read_only_path_tree(t);
+		const { db, asUser, archivedChildId, activeRootId, activeChildId } = await seed_reused_read_only_path_tree(t);
 		const manager = await t.run(async (ctx) => {
 			const now = Date.now();
 			const userId = await ctx.db.insert("users", { clerkUserId: "clerk_read_only_path_reuse_manager" });
@@ -13845,8 +13802,7 @@ describe("files_nodes.rename_node read-only gates", () => {
 
 	test("a locked archived tree with the same path does not block renaming the new active tree", async () => {
 		const t = test_convex();
-		const { db, asUser, archivedChildId, activeRootId, activeChildId } =
-			await seed_reused_read_only_path_tree(t);
+		const { db, asUser, archivedChildId, activeRootId, activeChildId } = await seed_reused_read_only_path_tree(t);
 
 		const renamed = await asUser.mutation(api.files_nodes.rename_node, {
 			membershipId: db.membershipId,
@@ -14046,9 +14002,7 @@ describe("files_nodes.archive_nodes read-only gates", () => {
 		const activeChild = await read_lock_node(t, activeChildId);
 		expect(activeRoot?.archiveOperationId).toBeDefined();
 		expect(activeChild?.archiveOperationId).toBe(activeRoot?.archiveOperationId);
-		expect((await read_lock_node(t, archivedRootId))?.archiveOperationId).toBe(
-			archivedRootBefore?.archiveOperationId,
-		);
+		expect((await read_lock_node(t, archivedRootId))?.archiveOperationId).toBe(archivedRootBefore?.archiveOperationId);
 		expect((await read_lock_node(t, archivedChildId))?.archiveOperationId).toBe(
 			archivedChildBefore?.archiveOperationId,
 		);
@@ -14827,8 +14781,10 @@ describe("files_nodes.remove_eager_created_node_if_safe read-only gates", () => 
 	test("a lock after the eager create keeps the leaf and its created ancestors", async () => {
 		const t = test_convex();
 		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
-		const { db, asUser, nodeId, eagerCreatedCommittedSequence, createdAncestorIds } =
-			await seed_eager_branch(t, "/ro-eager/deep/x.md");
+		const { db, asUser, nodeId, eagerCreatedCommittedSequence, createdAncestorIds } = await seed_eager_branch(
+			t,
+			"/ro-eager/deep/x.md",
+		);
 		// Ancestors come deepest-first, so the last one is the shallow /ro-eager folder. Locking
 		// it cascades over the whole created branch.
 		const shallowAncestorId = createdAncestorIds[createdAncestorIds.length - 1];
@@ -14858,8 +14814,10 @@ describe("files_nodes.remove_eager_created_node_if_safe read-only gates", () => 
 	test("a lock then unlock lets cleanup remove the writable branch", async () => {
 		const t = test_convex();
 		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
-		const { db, asUser, nodeId, eagerCreatedCommittedSequence, createdAncestorIds } =
-			await seed_eager_branch(t, "/ro-eager-cycle/deep/x.md");
+		const { db, asUser, nodeId, eagerCreatedCommittedSequence, createdAncestorIds } = await seed_eager_branch(
+			t,
+			"/ro-eager-cycle/deep/x.md",
+		);
 		const shallowAncestorId = createdAncestorIds[createdAncestorIds.length - 1];
 		if (!shallowAncestorId) {
 			throw new Error("Expected created ancestor folder ids");
@@ -15073,8 +15031,14 @@ describe("files_nodes public read-only projection", () => {
 		// The nested folder becomes a restricted scope and the second member gets a direct grant
 		// on it. File sharing does not write these grants yet, so the test inserts the docs.
 		const member = await t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", inner._yay.nodeId, { restrictedScopeNodeId: inner._yay.nodeId });
-			await ctx.db.patch("files_nodes", file._yay.nodeId, { restrictedScopeNodeId: inner._yay.nodeId });
+			await ctx.db.patch("files_nodes", inner._yay.nodeId, {
+				restrictedScopeNodeId: inner._yay.nodeId,
+				projectionPluginName: "chitchat",
+			});
+			await ctx.db.patch("files_nodes", file._yay.nodeId, {
+				restrictedScopeNodeId: inner._yay.nodeId,
+				projectionPluginName: "chitchat",
+			});
 
 			const memberUserId = await ctx.db.insert("users", { clerkUserId: "clerk_projection_member" });
 			const now = Date.now();
@@ -15132,6 +15096,7 @@ describe("files_nodes public read-only projection", () => {
 			// The raw pointer must not leave the backend: it would name the hidden outer folder.
 			expect("readOnlyScopeNodeId" in node).toBe(false);
 			expect("readOnlyPluginServiceTargetId" in node).toBe(false);
+			expect("projectionPluginName" in node).toBe(false);
 		}
 
 		// The owner can read the lock root, so each returned node may name it.
@@ -15163,6 +15128,7 @@ describe("files_nodes public read-only projection", () => {
 		expect(memberView?.readOnlySourcePath).toBeUndefined();
 		expect(memberView !== null && "readOnlyScopeNodeId" in memberView).toBe(false);
 		expect(memberView !== null && "readOnlyPluginServiceTargetId" in memberView).toBe(false);
+		expect(memberView !== null && "projectionPluginName" in memberView).toBe(false);
 
 		const ownerView = await f.asOwner.query(api.files_nodes.get_file_node_for_membership, {
 			membershipId: f.db.membershipId,
@@ -15259,9 +15225,7 @@ function expected_ledger_keys(
 	assetIds: ReadonlyArray<Id<"files_r2_assets">>,
 ) {
 	return assetIds
-		.map((assetId) =>
-			r2_create_asset_key({ organizationId: db.organizationId, workspaceId: db.workspaceId, assetId }),
-		)
+		.map((assetId) => r2_create_asset_key({ organizationId: db.organizationId, workspaceId: db.workspaceId, assetId }))
 		.sort();
 }
 
@@ -15479,10 +15443,7 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 		expect(refused._nay?.message).toBe("Permission denied");
 		expect(refused._nay?.name).not.toBe("read_only");
 		expect(await read_active_child(t, db, hidden._yay.nodeId, "leaf.md")).toBeNull();
-		expect((await read_deletion_jobs(t)).map((job) => job.reason)).toEqual([
-			"read_only_create",
-			"read_only_create",
-		]);
+		expect((await read_deletion_jobs(t)).map((job) => job.reason)).toEqual(["read_only_create", "read_only_create"]);
 	});
 
 	test("a create publishes when a lock is removed before the final mutation", async () => {
@@ -15556,9 +15517,7 @@ describe("files_nodes_content.create_file_node read-only barrier", () => {
 		});
 		expect(actionRefused._nay?.name).toBe("read_only");
 		expect(actionRefused._nay?.message).toBe("This item is read-only.");
-		expect(await t.run(async (ctx) => (await ctx.db.query("files_r2_assets").collect()).length)).toBe(
-			assetCountBefore,
-		);
+		expect(await t.run(async (ctx) => (await ctx.db.query("files_r2_assets").collect()).length)).toBe(assetCountBefore);
 
 		// The prepared create (captured before the lock) refuses on the current lock in the final
 		// mutation and hands its uploads to the ledger.
@@ -16335,9 +16294,7 @@ describe("files_nodes_content.finalize_file_yjs_repair read-only gates", () => {
 		expect(refused._nay?.name).toBe("read_only");
 		expect(refused._nay?.message).toBe("This item is read-only.");
 
-		expect(await t.run(async (ctx) => (await ctx.db.query("files_r2_assets").collect()).length)).toBe(
-			assetCountBefore,
-		);
+		expect(await t.run(async (ctx) => (await ctx.db.query("files_r2_assets").collect()).length)).toBe(assetCountBefore);
 		expect(await read_deletion_jobs(t)).toEqual([]);
 	});
 

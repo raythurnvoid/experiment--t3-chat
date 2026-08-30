@@ -37,6 +37,11 @@ On `files_nodes`, beside `restrictedScopeNodeId`:
 - `readOnlyPluginServiceTargetId`: internal provenance for the exact service target that created a
   direct lock. Public node query answers always remove it. Every member lock/unlock transition and
   inherited-pointer cascade clears it. An idempotent call that changes no lock leaves it alone.
+- `projectionPluginName`: internal ownership for Chitchat or Council projected nodes. Public node
+  queries remove it, and public create, copy, collaboration, and lock doors cannot set it. A normal
+  copy gets no stamp; moving the original node keeps its stamp. Public lock, unlock, restrict,
+  unrestrict, and share-grant doors refuse a stamped node and any descendant whose effective lock
+  comes from a stamped projection folder. Only the projector may change those policy fields.
 
 There is no read-only generation or lock-history table. A past lock does not make later work stale.
 Every write checks the current pointer in its final transaction. If the pointer is clear at that time,
@@ -84,28 +89,28 @@ delete flow does not prove that the file was deleted.
 
 # Operation Matrix
 
-| Operation | Locked file | Locked folder | Unlocked ancestor with a locked descendant |
-| --- | --- | --- | --- |
-| Open, read, search, download | Allow (ACL applies) | Allow (ACL applies) | Allow |
-| Copy path, link, node id | Allow | Allow | Allow |
-| Copy content or subtree out | Allow when readable; copy is writable | Same | Same |
-| Edit or save content | Block | Not applicable | Allow on unlocked siblings |
-| Create child, upload, import, paste media | Not applicable | Block | Allow into unlocked branches |
-| Rename | Block | Block | Block for the ancestor |
-| Move | Block as source and replacement | Block as source and destination | Block for the ancestor |
-| Archive/delete | Block | Block | Block for the ancestor |
-| Restore/unarchive | Block until unlocked | Block until unlocked | Block when the restored subtree includes a lock |
-| Snapshot browse/download | Allow | Not applicable | Allow |
-| Snapshot restore/archive/unarchive | Block | Not applicable | Not applicable |
-| Share or change access | Allow with management permission | Same | Allow |
-| Reply to an existing comment | Allow with comment permission | Not applicable | Allow |
-| Create or resolve an anchored comment | Block (changes a Yjs mark) | Not applicable | Allow on unlocked documents |
-| Discard a whole pending proposal | Allow | Allow | Allow |
-| Accept/save pending work | Block | Block | Block when any affected subtree is locked |
-| Lock/unlock | Only through the dedicated management action | Same | Same |
-| Finish an upload accepted before the lock | Allow; the finished file stays locked | Same | Same |
-| Materialize an already committed Yjs update | Allow | Not applicable | Allow |
-| Tenant/account deletion | Allow through the explicit deletion workflow | Allow | Allow |
+| Operation                                   | Locked file                                  | Locked folder                   | Unlocked ancestor with a locked descendant      |
+| ------------------------------------------- | -------------------------------------------- | ------------------------------- | ----------------------------------------------- |
+| Open, read, search, download                | Allow (ACL applies)                          | Allow (ACL applies)             | Allow                                           |
+| Copy path, link, node id                    | Allow                                        | Allow                           | Allow                                           |
+| Copy content or subtree out                 | Allow when readable; copy is writable        | Same                            | Same                                            |
+| Edit or save content                        | Block                                        | Not applicable                  | Allow on unlocked siblings                      |
+| Create child, upload, import, paste media   | Not applicable                               | Block                           | Allow into unlocked branches                    |
+| Rename                                      | Block                                        | Block                           | Block for the ancestor                          |
+| Move                                        | Block as source and replacement              | Block as source and destination | Block for the ancestor                          |
+| Archive/delete                              | Block                                        | Block                           | Block for the ancestor                          |
+| Restore/unarchive                           | Block until unlocked                         | Block until unlocked            | Block when the restored subtree includes a lock |
+| Snapshot browse/download                    | Allow                                        | Not applicable                  | Allow                                           |
+| Snapshot restore/archive/unarchive          | Block                                        | Not applicable                  | Not applicable                                  |
+| Share or change access                      | Allow with management permission             | Same                            | Allow                                           |
+| Reply to an existing comment                | Allow with comment permission                | Not applicable                  | Allow                                           |
+| Create or resolve an anchored comment       | Block (changes a Yjs mark)                   | Not applicable                  | Allow on unlocked documents                     |
+| Discard a whole pending proposal            | Allow                                        | Allow                           | Allow                                           |
+| Accept/save pending work                    | Block                                        | Block                           | Block when any affected subtree is locked       |
+| Lock/unlock                                 | Only through the dedicated management action | Same                            | Same                                            |
+| Finish an upload accepted before the lock   | Allow; the finished file stays locked        | Same                            | Same                                            |
+| Materialize an already committed Yjs update | Allow                                        | Not applicable                  | Allow                                           |
+| Tenant/account deletion                     | Allow through the explicit deletion workflow | Allow                           | Allow                                           |
 
 Direct `chat_messages` sidecar mutations stay under their current comment ACL rules while a file is locked. The Files UI blocks anchored Create and Resolve when `canEditContent` is false because those actions also change a Yjs mark. The Yjs write gate remains authoritative if a live race reaches it.
 
@@ -170,8 +175,11 @@ Both mutations resolve auth and membership, apply the tree-write rate bucket, an
   (create folder, create non-collaborative markdown, replace, archive). They are not user or agent
   doors. `files_node_require_writable` stays strict and has no bypass flag. The recursive create
   helper may take `skipAccessControlAndLock` and `inheritParentReadOnlyScope` **only** from those
-  projection doors. Clients cannot send those flags. Replace and archive pass the lock only when
-  `readOnlyScopeNodeId` is the mapped projection folder. Bash `replace_file_content` and
+  projection doors. Clients cannot send those flags. Every projection-only lock bypass also requires
+  the matching `projectionPluginName`; a lock made through `set_node_read_only` cannot grant that
+  authority. The cutover never stamps from a legacy pointer alone: it resets an unproved root and
+  removes an unproved map so rebuild takes the collision path. Replace and archive still require the
+  expected root or direct lock. Bash `replace_file_content` and
   `create_file_by_path` under that folder still return `_nay.name === "read_only"`.
 - If discard or expiry finds a locked eager-created node or created ancestor, remove the pending docs
   but keep the empty committed branch. `eagerCreated` stores the creation-time committed sequence and
@@ -270,15 +278,15 @@ After acceptance, a lock only changes what may start next. The R2 event still pu
 
 Derive operation-specific capabilities instead of one broad `canWrite`:
 
-| Capability | Meaning |
-| --- | --- |
-| `canEditContent` | ACL write and no effective lock |
-| `canReceiveChildren` | Folder ACL write and the folder is not effectively locked |
-| `canRelocateOrRename` | Source ACL write, no effective lock, no VISIBLE locked descendant |
-| `canArchiveOrRestore` | Same subtree rule plus existing restore/restricted-scope rules |
+| Capability                                                                                            | Meaning                                                                                                                                                                                              |
+| ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `canEditContent`                                                                                      | ACL write and no effective lock                                                                                                                                                                      |
+| `canReceiveChildren`                                                                                  | Folder ACL write and the folder is not effectively locked                                                                                                                                            |
+| `canRelocateOrRename`                                                                                 | Source ACL write, no effective lock, no VISIBLE locked descendant                                                                                                                                    |
+| `canArchiveOrRestore`                                                                                 | Same subtree rule plus existing restore/restricted-scope rules                                                                                                                                       |
 | `canManage` (from `get_node_read_only_management_state`, not from `files_get_read_only_capabilities`) | `content.permissions.manage` on **this** node, not on the lock source. The Properties modal ANDs it with `readOnlyState !== "inherited"` to get its local `canToggle` — see the checkbox table below |
-| `readOnlyState` | `writable`, `self`, or `inherited` |
-| `hasVisibleReadOnlyDescendant` | One ancestor-id set derived from the authorized `list_tree` result; no per-row subtree scan |
+| `readOnlyState`                                                                                       | `writable`, `self`, or `inherited`                                                                                                                                                                   |
+| `hasVisibleReadOnlyDescendant`                                                                        | One ancestor-id set derived from the authorized `list_tree` result; no per-row subtree scan                                                                                                          |
 
 Locked rows stay selectable, openable, searchable, and expandable; the lock mark is separate from the restricted-access icon. Exact accessible row descriptions:
 
@@ -295,12 +303,12 @@ The lock lives in the `Protection` section of the Properties modal (`packages/ap
 
 A checkbox cannot say which of the four states the node is in, so the line under the label carries that, and it is the part a test must assert on:
 
-| `readOnlyState` | `hasInheritedParentLock` | Checkbox | Description under the label | What unticking does |
-| --- | --- | --- | --- | --- |
-| `writable` | — | off | `Anyone with permission to edit can change this <kind>.` | — |
-| `self` | false | on | `Locked here. Unchecking makes this <kind> writable again.` | `set_node_writable` → writable |
-| `self` | true | on | `Locked here and by <source>. Unchecking removes only the lock set here, so this <kind> stays read-only.` | `set_node_writable` → drops to the inherited lock |
-| `inherited` | true | on, **disabled** | `Read-only because <source> is locked. Unlock it there to make this <kind> writable.` | nothing; the box cannot be unticked here |
+| `readOnlyState` | `hasInheritedParentLock` | Checkbox         | Description under the label                                                                               | What unticking does                               |
+| --------------- | ------------------------ | ---------------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| `writable`      | —                        | off              | `Anyone with permission to edit can change this <kind>.`                                                  | —                                                 |
+| `self`          | false                    | on               | `Locked here. Unchecking makes this <kind> writable again.`                                               | `set_node_writable` → writable                    |
+| `self`          | true                     | on               | `Locked here and by <source>. Unchecking removes only the lock set here, so this <kind> stays read-only.` | `set_node_writable` → drops to the inherited lock |
+| `inherited`     | true                     | on, **disabled** | `Read-only because <source> is locked. Unlock it there to make this <kind> writable.`                     | nothing; the box cannot be unticked here          |
 
 Two extra rules the checkbox alone does not carry:
 
@@ -312,22 +320,22 @@ The checkbox writes as soon as it is clicked. There is no Save for the lock — 
 
 # Requirements
 
-| ID | Requirement |
-| --- | --- |
-| RO-01 | A direct or inherited lock blocks every user-originated committed content change |
-| RO-02 | Locked names, paths, parents, archive state, and child entries cannot change |
-| RO-03 | Owners and admins do not bypass an active lock |
-| RO-04 | `content.permissions.manage` is required to lock or unlock |
-| RO-05 | Folder locks apply to active and archived descendants and preserve nested explicit locks |
-| RO-06 | Reads, search, downloads, sharing, safe comment replies, and copy-out keep working |
-| RO-07 | Every final transaction checks current lock state before its first write |
+| ID    | Requirement                                                                                                                                   |
+| ----- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| RO-01 | A direct or inherited lock blocks every user-originated committed content change                                                              |
+| RO-02 | Locked names, paths, parents, archive state, and child entries cannot change                                                                  |
+| RO-03 | Owners and admins do not bypass an active lock                                                                                                |
+| RO-04 | `content.permissions.manage` is required to lock or unlock                                                                                    |
+| RO-05 | Folder locks apply to active and archived descendants and preserve nested explicit locks                                                      |
+| RO-06 | Reads, search, downloads, sharing, safe comment replies, and copy-out keep working                                                            |
+| RO-07 | Every final transaction checks current lock state before its first write                                                                      |
 | RO-08 | A past lock does not refuse a write that is writable in the final transaction; normal ACL, identity, and content-staleness checks still apply |
-| RO-09 | Existing pending proposals stay visible; accept/save fail while locked; discard remains available |
-| RO-10 | Read-only checks do not reveal hidden restricted descendants |
-| RO-11 | Committed-Yjs convergence and accepted uploads finish; node-deleting cleanup respects locks |
-| RO-12 | UI state changes reactively and stays usable by keyboard, at 200% zoom, and with assistive names |
-| RO-13 | API clients get one stable read-only conflict without new public error vocabulary |
-| RO-14 | A refused final transaction commits no partial state; every multi-step flow has explicit cleanup or a durable terminal outcome |
+| RO-09 | Existing pending proposals stay visible; accept/save fail while locked; discard remains available                                             |
+| RO-10 | Read-only checks do not reveal hidden restricted descendants                                                                                  |
+| RO-11 | Committed-Yjs convergence and accepted uploads finish; node-deleting cleanup respects locks                                                   |
+| RO-12 | UI state changes reactively and stays usable by keyboard, at 200% zoom, and with assistive names                                              |
+| RO-13 | API clients get one stable read-only conflict without new public error vocabulary                                                             |
+| RO-14 | A refused final transaction commits no partial state; every multi-step flow has explicit cleanup or a durable terminal outcome                |
 
 # Test Map
 
