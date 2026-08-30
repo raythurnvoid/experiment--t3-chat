@@ -6,6 +6,7 @@ Use this for the selected-file editor surface under `/files?nodeId=<file-id>`. K
 
 - Editor route shape: `/w/:organizationName/:workspaceName/files?nodeId=<id>`.
 - Editor mode query values: `view=rich_text_editor`, `view=plain_text_editor`, `view=diff_editor`.
+- A `nonCollaborative` file (service uploads like Council `/meetings/<id>/transcript.md` and `summary.md`) is ALWAYS clamped to the plain (Monaco) editor: `files_resolve_effective_editor_view` (`packages/app/src/lib/files.ts`) forces `plain_text_editor` because the file has no Yjs document, even when `yjsRootKind` is `rich_text` and even with an explicit `view=rich_text_editor` in the URL. The switcher still renders `Rich` and `Diff` for such a node, and clicking them silently does nothing — the radio never checks. That is the clamp, not a click that failed to land; do not re-click or file it as a hung page. Verified 2026-08-30.
 - Scroll owner: `.FileNodeView-editor-area`.
 - Content panel: `.FileNodeView-content-panel`.
 - Right sidebar panel: `.FileNodeView-editor-sidebar-panel`.
