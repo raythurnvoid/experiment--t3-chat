@@ -709,6 +709,25 @@ The string era: `ROOM_CSS` in the old `src/room/page.ts` was a JS template liter
 
 - The lasting lesson is the shared blast radius: one agent's syntax error can take the local Worker away from every other agent driving the room and abort unrelated test suites that import the broken module. If the Worker goes silent while you did not touch the room code, check whether someone else is mid-edit before restarting anything. The typecheck names a syntax error instantly: `vp env exec pnpm --dir packages/council run typecheck`.
 
+## No dev server at all is a user-only blocker — check it before you plan a browser pass
+
+Observed 2026-08-31: a long autonomous session reached its browser QA phase, loaded this skill, and
+only then found that nothing was listening on 5173. The QA Edge profile was connected and the
+Playwriter relay was up, so every harness check said "ready". Repo `CLAUDE.md` says "do not run
+`pnpm run dev`; let the user run it manually", so the session could not unblock itself.
+
+- Probe the app before you spend a call on Playwriter: `Invoke-WebRequest http://localhost:5173/
+  -TimeoutSec 5 -UseBasicParsing`, or list the listening ports
+  (`Get-NetTCPConnection -State Listen | Where-Object LocalPort -in 5173,4173,3000,8787`). A refused
+  connection means no server, which is a different problem from the wrong-checkout one below.
+- Do not start it, and do not start a `vite preview` or a second port as a workaround. Report the
+  blocker and say which steps it holds up.
+- The relay and the browser being healthy proves nothing about the app. `browser list` answers from
+  the Edge extension, not from the dev server.
+- Plan around it: work that needs no browser (tests, typecheck, builds, mirror pushes, commits) can
+  still finish. Say plainly in the report which checks were skipped for this reason, because a run
+  that quietly drops its browser evidence reads as a run that had none to give.
+
 ## A dev server on the usual port can serve a completely different checkout
 
 **Run this check before your first assertion, not after your first surprise.** Two reviewers on
