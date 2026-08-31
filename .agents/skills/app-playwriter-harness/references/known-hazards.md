@@ -387,6 +387,16 @@ schema.nodes.image?.isInline; // and per-node spec facts
 ## Monaco (plain text and diff editors)
 
 - **Synthetic input does not reach Monaco at all since `monaco-editor` 0.56.0** (verified 2026-08-03, in Edge extension mode AND headless direct CDP, on a writable editor). `locator.click()` on `.view-lines` does not focus the editor: no `.focused` class appears and `document.activeElement` stays on `<body>`. `keyboard.type`, `keyboard.insertText`, clipboard paste (`Control+v`), and shortcuts (`Control+a`, `Control+c`, `Control+End`) never reach the model, even when focus is confirmed. The focus target is now `div.native-edit-context` (tabindex 0, `role="textbox"`); `textarea.ime-text-area` still exists but has tabindex -1 and is not the input path. A programmatic `.focus()` on `.native-edit-context` does set `document.activeElement`, but typed input still does not land. Do not burn retries on alternate click or typing recipes, and do not read "typing does nothing" as a read-only editor — probe `aria-readonly` and the toolbar instead.
+- **Update 2026-08-31: focusing through the handle first DOES make `keyboard.type` land.** On the
+  non-collaborative diff editor, `await page.evaluate(() => window.__qa.monaco().diffModified.focus())`
+  followed by a plain `page.keyboard.type("...")` reached the model: the value gained the typed text
+  and 5 hunks rendered. So the bullet above is about clicking `.view-lines` to focus, not about
+  synthetic typing as such. Try the handle-focus route before concluding that input cannot reach Monaco.
+- **A Monaco pane's hidden `<textarea>` reports `readOnly: true` even when the editor is editable.**
+  Reading `.monaco-editor textarea` and finding `readOnly` set proves nothing, and it will send you
+  looking for a permissions bug that does not exist. Ask the editor instead:
+  `window.__qa.monaco().diffModified.getRawOptions().readOnly`. On a writable file that answers
+  `false` for the modified pane and `true` for the original one, which is the intended split.
 - **Working route to a live editor handle (verified 2026-08-10 in the joint 4/5 QA run):** two equivalent page-context forms. The dev-only keyed accessor `window.__qa.monaco()` returns `{ plainText?, diffOriginal?, diffModified? }`, so a runner can tell the diff panes apart. The namespace import `const m = await import("/@id/monaco-editor")` gives `m.editor.getEditors()` (mount order — ambiguous once the diff editor's two panes are up) plus the full API. A bare `import("monaco-editor")` throws in page context; `/@id/monaco-editor` is the Vite-transformed id.
 - To CHANGE local editor content through the app's own command pipeline, use the handle: `ed.trigger("keyboard", "type", { text })` runs the same command path as typing (change events, dirty check, undo stack), and `ed.executeEdits("qa", [{ range: ed.getModel().getFullModelRange(), text }])` replaces the document without auto-indent/auto-closing interference. Position the caret first with `ed.setSelection(...)` / `ed.setPosition(...)`; undo with `ed.trigger("keyboard", "undo", null)`. Honesty line for reports: `trigger` proves the editor→model pipeline, not the broken browser→Monaco input path (`native-edit-context`), so it cannot prove a real-user typing regression.
 - To READ the language, read `data-mode-id` from the editor root (`document.querySelector(".FileEditorPlainText .monaco-editor").getAttribute("data-mode-id")`) or `ed.getModel().getLanguageId()` — `json` for a `.json` node, and so on. Verified 2026-08-10; pair it with the distinct `mtk*` token classes under `.view-lines` to prove tokenization actually ran.
@@ -623,6 +633,29 @@ it, every time. That is the pattern working, not a finding — but only if the s
 then walk the real Tab order (focus the row's primary control, press Tab, read `document.activeElement`)
 before writing it off. In Chitchat the actions are `display: none` at rest and Tab reaches People, Rename
 and Archive in order once the row holds focus.
+
+## A plugin run can fail with "Plugin left API calls unfinished" while every request answered 200
+
+Authorizing a plugin request opens a call slot on the run, and the route has to close it again. If a
+route forgets, the request still answers 200 and the plugin still does its work, so the page looks
+fine — but the run is failed at the end, and every later run of that plugin fails the same way. The
+error names no route, so it reads like a runtime problem rather than one specific door.
+
+To find the door, read `plugins_event_run_calls --limit 20 --order desc`, group the rows by `runId`,
+and look for the one row whose `status` is still `"started"` while its `responseStatus` is 200. Its
+`route` column is the door that did not settle. Fixed for `/api/v1/files/read` on 2026-08-31; the
+`fail` helper plus a settle on the success path in `convex/public_api.ts` is the shape every route
+follows.
+
+## The wrong query param on `/files` opens the last file you had open, and looks like a content bug
+
+The route reads `nodeId`. Any other name — `fileId` is the easy slip — is ignored, and the route then
+restores whatever node the session had open before. The page loads fine and shows a real file, so the
+mistake does not look like a mistake: it looks like the file you asked for has the wrong content, and
+you go hunting for a backend bug that is not there. Read the breadcrumb and confirm it names the file
+you meant before drawing any conclusion from the content. Also check the URL after the navigation —
+the route rewrites it to the node it actually opened, so the rewritten `?nodeId=` is the honest answer
+about which file you are looking at.
 
 ## A relay restart kills every session, and takes your `page.route` bundle swap with it
 

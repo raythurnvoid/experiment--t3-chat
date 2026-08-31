@@ -30,7 +30,7 @@ Everything below lives inside the frame.
 | --- | --- |
 | Channel rail button | `locator("button.channel-link", { hasText: "#alpha" })` — do NOT use an end-anchored `getByRole` name regex, see the unread-suffix note below |
 | Create channel | `getByRole("button", { name: "Create channel" })`, then `getByLabel("Channel name")`, then `getByRole("button", { name: "Create", exact: true })`. Waiting on `[data-dialog-initial="true"]` can hang even when the dialog is already on screen (verified 2026-08-26). For a private channel, `getByLabel("Private channel").check()` before Create |
-| Composer | `textarea.composer-input` — with a thread open there are TWO of them, so scope: the channel one by its aria-label `Message #<channel>`, the thread one as `section.thread textarea.composer-input` (aria-label `Reply in thread`). Since 0.5.0 (Ariakit-combobox mention picker) the composer carries `role="combobox"` with `aria-expanded` — the quickest live proof of a 0.5.0 frame. Typing `@` in a single-member workspace opens NO menu (the picker excludes the sender), `aria-expanded` stays `"false"`, and no `[role=listbox]` enters the DOM — verified 2026-08-25 |
+| Composer | `textarea.composer-input` — with a thread open there are TWO of them, so scope: the channel one by its aria-label `Message #<channel>`, the thread one as `section.thread textarea.composer-input` (aria-label `Reply in thread`). Since 0.5.0 (Ariakit-combobox mention picker) the composer carries `role="combobox"` with `aria-expanded` — the quickest live proof of a 0.5.0 frame. That role replaces the textarea's default one, so `getByRole("textbox")` matches NOTHING on this page and a locator built from it just hangs until the call times out. Use the class selector above. Typing `@` in a single-member workspace opens NO menu (the picker excludes the sender), `aria-expanded` stays `"false"`, and no `[role=listbox]` enters the DOM — verified 2026-08-25 |
 | Message row | `li.message`, with `.is-leader` or `.is-continuation`, and `data-key` carrying the document key |
 | Day divider | `li.day-divider` |
 | Message body | `.message-text` |
@@ -61,8 +61,10 @@ start-anchored `/^#design-review/` is also wrong twice over: the name may start 
 initial, and it also matches the thread-summary button in the Threads view (its text starts with
 the channel name), and that ambiguous `frameLocator(...).getByRole(...).click()` crashed the CLI
 with the `UV_HANDLE_CLOSING` exit-9 assertion instead of a strict-mode error. Use the class
-locator with `hasText` from the table above; `Rename #x` / `Archive #x` are separate buttons
-without `.channel-link`, so `hasText` stays unambiguous.
+locator with `hasText` from the table above; `Rename #x` / `Archive #x` are separate elements
+without `.channel-link`, so `hasText` stays unambiguous. They are `role=menuitem`, NOT buttons, so
+reach them with `getByRole("menuitem", ...)` — a `getByRole("button", { name: "Rename #x" })` matches
+nothing and only hangs until the call times out.
 
 **`.channel-link` and `.channel-name` also match the three view rows.** Unreads, Threads and
 Activity carry the same classes, so "list the channels" over `.channel-link` answers six rows in a

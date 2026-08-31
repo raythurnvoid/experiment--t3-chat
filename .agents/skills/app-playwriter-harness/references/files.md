@@ -273,8 +273,8 @@ Use this when a check needs a file with collaboration turned off (a Council-note
 
 1. Create a `.md` file from the sidebar. A new file is collaborative.
 2. Open it, switch to the **Markdown** view, and give it a body that carries a real Markdown escape, for example a line holding `2026\-08\-30`. Save.
-3. Open the breadcrumb Properties dialog (see "File Properties Modal" below for its two click hazards) and uncheck `Collaboration`. Confirm the destructive dialog; it asks you to acknowledge that the edit history is dropped.
-4. For a read-only variant, tick `Protection` in the same dialog (click `.FilesPropertiesModalReadOnly-checkbox`, the label, or focus the 1px input and press Space).
+3. Open the breadcrumb Properties dialog (see "File Properties Modal" below for its two click hazards) and uncheck `Collaboration` by clicking its label, `.FilesPropertiesModalCollaboration-checkbox`. Focusing the 1px input and pressing Space does NOT toggle it (tried 2026-08-31: the input stayed `checked`), so use the label. The confirmation is not a separate dialog — it appears INSIDE the properties modal as a `Turn collaboration off` / `Cancel` pair, so do not wait for a new `[role=dialog]` to show up.
+4. For a read-only variant, tick `Protection` in the same dialog by clicking its label, `.FilesPropertiesModalReadOnly-checkbox`.
 5. Reopen the dialog and read both states back before you start the checks.
 
 The rich view must then render the content un-escaped (`2026-08-30`) while the Markdown view shows the raw bytes. Selectors and behaviors of the non-collaborative rich and diff editors are in `file-node-view.md` under "Non-Collaborative Editors (No Yjs)".
