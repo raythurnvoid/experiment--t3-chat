@@ -34,7 +34,8 @@ Load each companion skill that owns the affected boundary:
 
 # Primary Files
 
-- `packages/app/convex/data_deletion.ts`: queue helper, phase 1/2 user deletion, organization/workspace purge batches, admin data reset, Workpool actions.
+- `packages/app/convex/data_deletion.ts`: phase 1/2 user deletion, organization/workspace purge batches, admin data reset, Workpool actions.
+- `packages/app/convex/data_deletion_requests.ts`: `data_deletion_db_request`, the queue helper the modules above call to enqueue a request.
 - `packages/app/convex/users.ts`: `delete_current_user_account`, deleted-user recovery in `resolve_user`, `hard_delete_user_now`, `purge_deleted_user_tombstone`.
 - `packages/app/convex/organizations.ts`: `delete_workspace` and `delete_organization` phase-1 behavior.
 - `packages/app/convex/schema.ts`: `data_deletion_requests` and indexes.

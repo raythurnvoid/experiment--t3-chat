@@ -36,8 +36,11 @@ state.qa.overlay = {
 	 * ids of blocked controls, the ids of controls no sample could reach, and per control `sampled`,
 	 * `topAtCenter` and `blockedPoints`. Read `blockedPoints` to tell a fully covered control from a
 	 * partly covered one, and read `sampled` so a zero-blocked result can be trusted as evidence
-	 * rather than as a probe that silently measured nothing. The field names match
-	 * `auditAccessibility` in `install-harness.js`, so the two outputs can be compared directly.
+	 * rather than as a probe that silently measured nothing. This shares the five-point sampler and
+	 * the out-of-window skip with `auditAccessibility` in `install-harness.js`, but not the reported
+	 * field names: that helper has no `sampled` and no `outOfView`, and inside `blockedPoints` it
+	 * calls the covering element `top` where this one calls it `hit`. Only `topAtCenter` and the
+	 * `blockedPoints` array itself line up, so map the fields before comparing the two outputs.
 	 */
 	async blocked(overlaySelector, controlSelector) {
 		return await state.page.evaluate(

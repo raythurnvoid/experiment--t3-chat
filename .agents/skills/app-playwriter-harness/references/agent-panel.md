@@ -27,7 +27,7 @@ Recipes for driving the in-app AI agent (files-page sidebar and `/chat` page). T
 | Tool `Parameters` / `Result` / `Error` blocks | `[aria-label="Result"]` etc. inside the card (`role=textbox`) |
 | Generated picture | `.AiChatMessage img[alt="Generated image"]` (class `AiChatMessagePartToolImageGeneration-image`; while it is still drawing, the part is the disclosure titled `Generate image`) |
 | Chat mode picker | `getByRole("combobox", { name: /^Chat mode:/ })`, then `getByRole("option", { name: "Agent" \| "Ask" })` |
-| Failed send | `role=alert` containing `Message failed to send.` + `Show error details` and `Retry` buttons; the details dialog is named `Error details` and its raw message textbox is named `Raw error message` |
+| Failed send | `role=alert` holds only the text `Message failed to send.`; the `Show error details` and `Retry` buttons are its siblings inside `.AiChatMessageUserSendError`, so search at page scope, not inside `[role=alert]`. The details dialog is named `Error details` and its raw message textbox is named `Raw error message` |
 | Pending-changes strip (above composer, only when the OPEN CHAT touched pending files) | `.FileEditorSidebarPendingStrip` (whole row is a button; clicking switches to the Pending changes tab; counts only docs whose `threadIds` include the open chat, so a fresh chat shows no strip even when the workspace has pending changes) |
 | Pending-changes tab count badge | `.FileEditorSidebarPendingTabBadge` (inside `#app_file_editor_sidebar_tabs_pending`; absent at count 0; always the workspace-wide count) |
 | Composer image attachment badges | `[aria-label="Image attachments"] li` (each has an `<img>` data-URL preview, a name `<span>`, and a `Remove <filename>` button) |

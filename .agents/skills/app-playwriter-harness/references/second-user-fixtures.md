@@ -53,7 +53,7 @@ Load `http://localhost:5173/`, wait a few seconds, then read the identity:
 
 ## 2b. The anonymous user is also the Free-plan fixture
 
-A freshly minted anonymous user is a real non-paying payer, so it is the cheapest way to test any door that is closed to `Free`. Its auto-seeded snapshot has no `subscription.productId` at all, which is the "payer with no billing state" case, and `billing_db_check_paid_plan` refuses it exactly like `Free`. It acts in its OWN default `personal`/`home` workspace, so no invite step is needed.
+A freshly minted anonymous user is a real non-paying payer, so it is the cheapest way to test any door that is closed to `Free`. Its auto-seeded snapshot carries the real Free product id in `subscription.productId` (`billing_db_ensure_anonymous_user_usage_snapshot`), so `billing_db_check_paid_plan` refuses it through the same `product.name === "Free"` comparison a signed-in Free user hits. It is the Free case, not the "payer with no billing state" case — do not use it to test that branch. It acts in its OWN default `personal`/`home` workspace, so no invite step is needed.
 
 Do not try the other route — patching the signed-in account's `billing_usage_snapshots` row. It bricks the app; see the entry in `known-hazards.md`.
 

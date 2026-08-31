@@ -224,12 +224,12 @@ Important limitation:
 ### Workspace-gated plugin source mounts (`/.plugins`)
 
 - Read-only sources of plugins installed in the current workspace are exposed to Bash under `/.plugins/<pluginName>`. `bash_PLUGINS_MOUNT_ROOT` (`/.plugins`, in `server/bash-utils.ts`) is the prefix source of truth; per-family checks use `bash_is_path_under(bash_PLUGINS_MOUNT_ROOT, path)`, and `bash_is_path_under_read_only_mounts` covers `/.mounts` and `/.plugins` together for write/exec guards.
-- Storage is version-keyed and shared: `register_plugin_version` writes each version's source tree once to the reserved `GLOBAL`/`PLUGINS` scope under the opaque root `/<pluginVersionId>/...` (bookkeeping lives on `plugins_versions.source*`: `sourceStatus`, `sourceFileCount`, `sourceTotalBytes`, `sourceLastError`). There is no per-workspace copy and no `plugins_source_mounts` table anymore.
+- Storage is version-keyed and shared: `register_plugin_version` writes each version's source tree once to the reserved `GLOBAL`/`PLUGINS` scope under the opaque root `/<pluginVersionId>/...` (bookkeeping lives on `plugins_versions.source*`: `sourceStatus` and `sourceLastError`). There is no per-workspace copy and no `plugins_source_mounts` table anymore.
 - Visibility is gated per workspace by enabled `plugins_workspace_installations` rows: `bash_run_command` calls `internal.plugins.list_bash_source_mounts` (backed by the `by_organization_workspace_status_pluginName` index) and creates one `bash_DbFilesFs` per installed plugin with `dbFilesPathPrefix: "/<pluginVersionId>"`, mounted at `/.plugins/<pluginName>`. The installation row acts as the symlink: upgrades retarget the version root atomically, uninstall removes visibility, and workspaces share one tree with zero copies.
 - No installation → no existence: `/.plugins` itself does not exist when the workspace has zero enabled installations, and `/.plugins/<notInstalled>` resolves to plain ENOENT (no existence leak). Publishers get no special access; they must install the plugin to browse its source via the agent.
 - Bare `ls /.plugins` lists installed plugin names (synthesized from the mount table, no Convex call). Inside one plugin, read commands (`ls`, `cat`, `head`, `tail`, `wc`, `stat`, `sed`, `grep`, `textgrep`, `search`, `meta search`, `tree`, `find`) work exactly like `/.mounts` through the translated `dbFilesPath`. Root-scope `search`, `tree`, and `find` at `/.plugins` fan out across every installed plugin in plugin-name order via `bash_plugins_fan_out_paginate` (`bash-utils.ts`): each plugin's version-keyed tree is paged sequentially with the existing single-scope queries, results are rewritten to `/.plugins/<pluginName>/...` paths, and the continuation carries a composite cursor pinning the `[pluginName, pluginVersionId]` listing snapshot — if installations change between pages the continuation fails with "listing changed; rerun without --cursor". `find` depth predicates are translated by -1 per plugin (plugin folders sit at depth 1 under `/.plugins`); `find --prefix /.plugins` and root-scope `meta search` still print guidance to scope to one plugin.
 - Same read-only rules as `/.mounts`: all writes (shell redirects, `touch`, `rm`, `mv`, `tee`, `cp` destination, `edit_file`) are rejected, every supported direct or nested shell-code loader rejects plugin files, `cp /.plugins/<pluginName>/<file> /tmp/<name>` (copy OUT to scratch) is allowed, and `cd` into a plugin mount persists across turns. Plugin source is committed-only content with no pending-update overlay.
-- Registry hard deletes sweep each version's `GLOBAL`/`PLUGINS` tree (`db_delete_plugin_source_tree_batch`) before deleting the version doc; `plugins.delete_plugin_source_tree_batch` drains one version's tree standalone.
+- Registry hard deletes sweep each version's `GLOBAL`/`PLUGINS` tree (`files_nodes_db_delete_subtree_batch`, from `files_nodes.ts`) before deleting the version doc; `plugins.delete_plugin_source_tree_batch` drains one version's tree standalone.
 - `execute_code` and the public file API cannot reach `/.plugins`: grants are tenant-scoped and never authorize reserved-scope docs.
 
 ## Legacy `read_file`
@@ -336,7 +336,7 @@ These tools are **deleted**. The sections below stay only so an old assistant me
 
 - Credential management and public file reads live in `../../../packages/app/convex/public_api.ts`. Credentials are reveal-once, stored as `sha256(secret)` plus an obfuscated display value, and scoped to one organization/workspace/user membership.
 - The public file routes accept either a `Bearer pk_...` credential or a gateway-injected public API grant token. They check active membership through the shared verifier, enforce explicit file scopes, rate-limit both pre-auth and per principal, log route use, and update `api_credentials.lastUsedAt` for user API keys. Active signed-in members can create, list, rotate, and revoke only their own keys in the current workspace. Keys are limited to 20 active keys per user/workspace, names are required and limited to 80 characters, and member removal permanently revokes keys for the organization.
-- The file HTTP route family is `/api/v1/files/list`, `/api/v1/files/read`, `/api/v1/files/read-many`, `/api/v1/files/write`, `/api/v1/files/touch`, and `/api/v1/files/download-urls`. `write` and `touch` commit Markdown; they are not general binary upload. Do not add `/api/code-execution/*` compatibility aliases.
+- The file HTTP route family is `/api/v1/files/list`, `/api/v1/files/read`, `/api/v1/files/read-many`, `/api/v1/files/write`, `/api/v1/files/write-many`, `/api/v1/files/touch`, `/api/v1/files/download-urls`, and `/api/v1/files/upload-urls`. The plugin-only doors (`plugin-folders/ensure`, `plugin-archive`, `plugin-access/set`) and the sealed `service-uploads/*` pipeline are documented in `../public-api/SKILL.md`. `write` and `touch` commit Markdown; they are not general binary upload. Do not add `/api/code-execution/*` compatibility aliases.
 - Public file routes are scoped to real tenant organization/workspace ids. They do not authorize reserved `GLOBAL`/`GITHUB` or `GLOBAL`/`PLUGINS` docs, even when the requested path looks like `/.mounts/<name>`, `/.plugins/<pluginName>`, or a stored reserved-scope path.
 
 # Pending Update Integration
@@ -425,8 +425,9 @@ Writes:
 # TODO / Hardening Backlog
 
 Defensive limits against pathologically large / long-line content. These are NOT about the
-agent read path — that is already bounded (`bash` reads use a 64 KB scan window, a 30 KB
-stdout cap, and per-line display truncation at `files_READ_MAX_LINE_CHARS = 8000` in
+agent read path — that is already bounded (`bash` reads use a 256,000-character scan window
+(`files_READ_RANGE_MAX_SCAN_CHARS`), a 30,000-character stdout cap (`OUTPUT_LIMIT` in
+`server/bash.ts`), and per-line display truncation at `files_READ_MAX_LINE_CHARS = 8000` in
 `convex/files_nodes.ts`). The gap below is about **storage and materialization cost** of
 content written/typed into the workspace.
 

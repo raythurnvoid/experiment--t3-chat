@@ -15,14 +15,14 @@ Read required env vars once at module level, into a plain const, and throw at mo
 if (!process.env.PLUGIN_RUNNER_URL) {
 	throw new Error("PLUGIN_RUNNER_URL is not set in Convex env");
 }
-const PLUGIN_RUNNER_URL = normalize_external_base_url(process.env.PLUGIN_RUNNER_URL);
+const PLUGIN_RUNNER_URL = process.env.PLUGIN_RUNNER_URL;
 
 // Wrong — hides the missing var until some request calls it.
 function runner_url() {
 	if (!process.env.PLUGIN_RUNNER_URL) {
 		throw new Error("PLUGIN_RUNNER_URL is not set in Convex env");
 	}
-	return normalize_external_base_url(process.env.PLUGIN_RUNNER_URL);
+	return process.env.PLUGIN_RUNNER_URL;
 }
 ```
 
@@ -75,7 +75,7 @@ Why this is type-safe:
 ## Example (template)
 
 ```ts
-export function example_http_routes(router: RouterForConvexModules) {
+export function example_http_routes(router: { route: HttpRouter["route"] }) {
 	return {
 		...((/* iife */ path = "/api/example" as const satisfies api_schemas_Main_Path) => ({
 			[path]: {
@@ -300,7 +300,7 @@ Do not namespace module-private helpers, types, or constants with the module/fil
 - Use prefixes for exported symbols so import sites can see where a symbol comes from.
 - Keep non-exported functions like `authorize_file_download`, not `r2_authorize_file_download`.
 - Keep non-exported types and constants unprefixed too, unless a very local ambiguity makes the shorter name misleading.
-- Non-exported module-level constants are UPPER_SNAKE (`REVIEW_MODEL_ID`, `HOST_TOKEN_TTL_MS`, `UPLOAD_COMPLETED_EVENT_TYPE`) and live in the top-of-file constants block, not next to their first user.
+- Non-exported module-level constants are UPPER_SNAKE (`REVIEW_MODEL_ID`, `MAX_DOCUMENT_SLOTS`, `UPLOAD_COMPLETED_EVENT_TYPE`) and live in the top-of-file constants block, not next to their first user.
 - Guard model-id constants with the existing union type: `const REVIEW_MODEL_ID = "gpt-5.4-mini" as const satisfies ai_chat_ModelId;`. The constant's type becomes the literal, so a variable reassigned across different model ids needs a wider annotation (`let modelId: string = ...`).
 - Do not export a symbol that has no consumer outside its module. Documented exception: mutable spy-seam objects that tests must stub in place (for example `plugins_ai_review`) — module-internal calls dereference the same object, so the seam cannot work unexported.
 - This rule is about module/file prefixes, not meaningful boundary prefixes. If the surrounding file already uses a boundary prefix for a specific kind of helper, follow it. For example, in `files_nodes.ts`, private helpers that fetch or query Convex docs use `db_`, while pure helpers stay unprefixed.
