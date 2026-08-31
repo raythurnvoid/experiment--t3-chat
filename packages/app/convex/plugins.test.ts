@@ -11374,7 +11374,14 @@ describe("plugins backend invoke runs", () => {
 				internal.plugins_runtime.start_invoke_run,
 				start_invoke_args(fixture, { endpointId: "send", callerSerializationKey: "café" }),
 			),
-		).toEqual({ _nay: { message: "Serialization keys must be printable ASCII up to 128 characters" } });
+		).toEqual({ _nay: { message: "Serialization keys must be visible ASCII (no spaces) up to 128 characters" } });
+		// The space character is printable but not visible ASCII; the same refusal covers it.
+		expect(
+			await t.mutation(
+				internal.plugins_runtime.start_invoke_run,
+				start_invoke_args(fixture, { endpointId: "send", callerSerializationKey: "channel a" }),
+			),
+		).toEqual({ _nay: { message: "Serialization keys must be visible ASCII (no spaces) up to 128 characters" } });
 
 		const channelA = await t.mutation(
 			internal.plugins_runtime.start_invoke_run,
@@ -11642,6 +11649,64 @@ describe("plugins backend invoke runs", () => {
 		});
 	});
 
+	test("lets a wire body of exactly 64,000 bytes through and refuses the next byte", async () => {
+		const t = test_convex();
+		const fixture = await install_invoke_plugin(t);
+		const token = await seed_invoke_session(t, fixture);
+
+		// The wire body carries the configuration too, and JSON escaping doubles every backslash.
+		// Padding the configuration leaves the boundary itself to the input, which the 32 KiB
+		// request cap can still hold.
+		const configurationYaml = `padding: '${"\\".repeat(16_000)}'\n`;
+		expect(new TextEncoder().encode(configurationYaml).byteLength).toBeLessThanOrEqual(16 * 1024);
+		await t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", fixture.installationId, { configurationYaml }),
+		);
+
+		const runnerBodySizes: number[] = [];
+		vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+			if (String(input) === `${process.env.PLUGIN_RUNNER_URL}/internal/plugin-runner/run`) {
+				runnerBodySizes.push(new TextEncoder().encode(String(init?.body ?? "")).byteLength);
+				return new Response(
+					JSON.stringify({
+						_yay: { pluginStatus: 200, elapsedMs: 1, outputBytes: 4, output: "pong", outputTruncated: false },
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}
+			return new Response(null, { status: 404 });
+		});
+
+		// One probe measures everything the envelope adds around the input. Every character below
+		// is a plain "a", which JSON stores as one byte, so the input length moves the wire body
+		// one byte at a time from here.
+		const probeInputLength = 1_000;
+		const probe = await post_invoke(
+			t,
+			token,
+			invoke_request_body({ endpoint: "echo", input: "a".repeat(probeInputLength) }),
+		);
+		expect(probe.status).toBe(200);
+		const exactInputLength = 64_000 - runnerBodySizes[0]! + probeInputLength;
+
+		const exact = await post_invoke(
+			t,
+			token,
+			invoke_request_body({ endpoint: "echo", input: "a".repeat(exactInputLength) }),
+		);
+		expect(exact.status).toBe(200);
+		expect(runnerBodySizes[1]).toBe(64_000);
+
+		// One byte more is one byte too many, and the host says so without calling the runner.
+		const over = await post_invoke(
+			t,
+			token,
+			invoke_request_body({ endpoint: "echo", input: "a".repeat(exactInputLength + 1) }),
+		);
+		expect(over.status).toBe(413);
+		expect(runnerBodySizes).toHaveLength(2);
+	});
+
 	test("answers 502 with a curated message when the plugin backend fails", async () => {
 		const t = test_convex();
 		const fixture = await install_invoke_plugin(t);
@@ -11712,14 +11777,16 @@ describe("plugins owned-area file doors", () => {
 	async function start_owned_invoke_run(
 		t: ReturnType<typeof test_convex>,
 		fixture: Awaited<ReturnType<typeof install_owned_files_plugin>>,
+		/** The member who pressed the button. A run reads files with this person's eyes. */
+		args: { userId?: Id<"users">; tokenSeed?: string } = {},
 	) {
-		const apiToken = `plr_${"d".repeat(64)}`;
+		const apiToken = `plr_${(args.tokenSeed ?? "d").repeat(64)}`;
 		const started = await t.mutation(internal.plugins_runtime.start_invoke_run, {
 			organizationId: fixture.membership.organizationId,
 			workspaceId: fixture.membership.workspaceId,
 			installationId: fixture.installationId,
 			pluginVersionId: fixture.pluginVersionId,
-			userId: fixture.membership.userId,
+			userId: args.userId ?? fixture.membership.userId,
 			endpointId: "echo",
 			callerSerializationKey: null,
 			apiTokenHash: await crypto_sha256_hex(apiToken),
@@ -11849,6 +11916,116 @@ describe("plugins owned-area file doors", () => {
 		expect(listedBody.items.map((item) => item.path)).toContain("/probe/tail.md");
 	});
 
+	test("a run without workspace.files.read is refused the read doors it just wrote through", async () => {
+		const t = test_convex();
+		const fixture = await install_owned_files_plugin(t);
+		const run = await start_owned_invoke_run(t, fixture);
+		expect((await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/probe" })).status).toBe(
+			200,
+		);
+		expect(
+			(await door_call(t, "/api/v1/files/write", run.apiToken, { path: "/probe/tail.md", content: "# Tail\n" }))
+				.status,
+		).toBe(200);
+
+		// The workspace never accepted workspace.files.read, so the resolver granted no files:read
+		// and no files:list. Writing its own file is not the same consent as reading the workspace.
+		for (const [route, body] of [
+			["/api/v1/files/read", { path: "/probe/tail.md" }],
+			["/api/v1/files/list", { path: "/probe" }],
+		] as const) {
+			const refused = await door_call(t, route, run.apiToken, body);
+			expect([route, refused.status]).toEqual([route, 403]);
+			expect([route, await refused.json()]).toEqual([route, { message: "Permission denied" }]);
+		}
+	});
+
+	test("read-many refuses a run that reads single files fine", async () => {
+		const t = test_convex();
+		const fixture = await install_owned_files_plugin(t, [...OWNED_CAPABILITIES, "workspace.files.read"]);
+		const run = await start_owned_invoke_run(t, fixture);
+		expect((await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/probe" })).status).toBe(
+			200,
+		);
+		expect(
+			(await door_call(t, "/api/v1/files/write", run.apiToken, { path: "/probe/tail.md", content: "# Tail\n" }))
+				.status,
+		).toBe(200);
+		expect((await door_call(t, "/api/v1/files/read", run.apiToken, { path: "/probe/tail.md" })).status).toBe(200);
+
+		// The bulk read door stays with the key holders. A run reads one file at a time, so this
+		// refusal is the kind gate, not the consent: the same run reads that exact path above.
+		const refused = await door_call(t, "/api/v1/files/read-many", run.apiToken, { paths: ["/probe/tail.md"] });
+		expect(refused.status).toBe(403);
+		expect(await refused.json()).toEqual({ message: "Permission denied" });
+	});
+
+	test("a run reads with its actor's eyes, so a restricted folder stays invisible", async () => {
+		const t = test_convex();
+		const fixture = await install_owned_files_plugin(t, [...OWNED_CAPABILITIES, "workspace.files.read"]);
+
+		// The owner's run writes a real file first. Without this control the outsider's refusals
+		// below could just as well mean an empty workspace or a file with no content.
+		const ownerRun = await start_owned_invoke_run(t, fixture);
+		expect(
+			(await door_call(t, "/api/v1/files/plugin-folders/ensure", ownerRun.apiToken, { path: "/probe" })).status,
+		).toBe(200);
+		expect(
+			(await door_call(t, "/api/v1/files/write", ownerRun.apiToken, { path: "/probe/tail.md", content: "# Tail\n" }))
+				.status,
+		).toBe(200);
+		const ownerRead = await door_call(t, "/api/v1/files/read", ownerRun.apiToken, { path: "/probe/tail.md" });
+		expect(ownerRead.status).toBe(200);
+		const ownerListed = await door_call(t, "/api/v1/files/list", ownerRun.apiToken, { path: "/" });
+		expect(((await ownerListed.json()) as { items: { path: string }[] }).items.map((item) => item.path)).toContain(
+			"/probe",
+		);
+
+		// Restrict the subtree the way `restrict_node` stamps it, then settle the run so the
+		// installation lock frees for the second one.
+		const probeRoot = await find_active_node(t, fixture, "/probe");
+		const tailFile = await find_active_node(t, fixture, "/probe/tail.md");
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", probeRoot!._id, { restrictedScopeNodeId: probeRoot!._id });
+			await ctx.db.patch("files_nodes", tailFile!._id, { restrictedScopeNodeId: probeRoot!._id });
+			await ctx.db.patch("plugins_event_runs", ownerRun.runId, { status: "succeeded" });
+		});
+
+		// A second member who was never let into that folder presses the plugin's button.
+		const memberUserId = await t.run(async (ctx) => {
+			const now = Date.now();
+			const userId = await ctx.db.insert("users", { clerkUserId: "owned-doors-outsider" });
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				userId,
+				active: true,
+				updatedAt: now,
+			});
+			await ctx.db.insert("access_control_role_assignments", {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				userId,
+				role: "member",
+				createdAt: now,
+				updatedAt: now,
+			});
+			return userId;
+		});
+		const outsiderRun = await start_owned_invoke_run(t, fixture, { userId: memberUserId, tokenSeed: "e" });
+
+		// Installing a plugin must not become a way around a restriction: the run sees exactly what
+		// the member who invoked it sees, which is nothing of this folder.
+		const listed = await door_call(t, "/api/v1/files/list", outsiderRun.apiToken, { path: "/" });
+		expect(listed.status).toBe(200);
+		const listedBody = (await listed.json()) as { items: { path: string }[] };
+		expect(listedBody.items.map((item) => item.path)).not.toContain("/probe");
+
+		const read = await door_call(t, "/api/v1/files/read", outsiderRun.apiToken, { path: "/probe/tail.md" });
+		expect(read.status).toBe(404);
+		expect(await read.json()).toEqual({ message: "File not found or exceeds the read limit." });
+	});
+
 	test("owned-area writes stamp every created node and stay inside the stamped area", async () => {
 		const t = test_convex();
 		const fixture = await install_owned_files_plugin(t);
@@ -11961,6 +12138,22 @@ describe("plugins owned-area file doors", () => {
 		expect(await refused.json()).toEqual({ message: "This folder holds items this plugin does not own" });
 		expect(await find_active_node(t, fixture, "/probe")).not.toBeNull();
 		expect(await find_active_node(t, fixture, "/probe/keep.md")).not.toBeNull();
+
+		// Every door call above consumed and settled one plugin call, the refused archive included.
+		const calls = await t.run((ctx) =>
+			ctx.db
+				.query("plugins_event_run_calls")
+				.withIndex("by_run_sequence", (q) => q.eq("runId", run.runId))
+				.collect(),
+		);
+		expect(calls.map((call) => call.status)).toEqual([
+			"succeeded",
+			"succeeded",
+			"succeeded",
+			"succeeded",
+			"succeeded",
+			"failed",
+		]);
 	});
 
 	test("the access door flips its own locks while the member doors stay closed", async () => {
@@ -12032,6 +12225,24 @@ describe("plugins owned-area file doors", () => {
 		});
 		expect(absent.status).toBe(404);
 		expect(await absent.json()).toEqual({ message: "Not found" });
+
+		// Every door call above consumed and settled one plugin call, both refusals included.
+		const calls = await t.run((ctx) =>
+			ctx.db
+				.query("plugins_event_run_calls")
+				.withIndex("by_run_sequence", (q) => q.eq("runId", run.runId))
+				.collect(),
+		);
+		expect(calls.map((call) => call.status)).toEqual([
+			"succeeded",
+			"succeeded",
+			"succeeded",
+			"succeeded",
+			"succeeded",
+			"succeeded",
+			"failed",
+			"failed",
+		]);
 	});
 
 	test("the access door binds a private-space reader list through readScopeId", async () => {

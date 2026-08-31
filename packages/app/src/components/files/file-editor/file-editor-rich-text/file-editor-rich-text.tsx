@@ -1250,48 +1250,15 @@ FileEditorRichText.clearDecorationHighlightProperly = (editor: Editor, triggerEl
 };
 // #endregion root
 
-// #region non-collaborative root
-
-// The replace door names this exact message when `baseAssetId` no longer matches the stored
-// asset. The comment save dispatches its merge retry on it.
-const REPLACE_FILE_STALENESS_MESSAGE =
-	"This file changed while you were saving. Copy your local changes before reloading, then try again.";
-
-/**
- * Serialize the mounted editor the way `files_yjs_doc_get_text` writes a file: non-empty content
- * ends with exactly one `\n`. The stored bytes of a non-collaborative file come from THIS
- * serializer, so the dirty baseline, Save, and the comment save must all go through it.
- */
-function serialize_editor_markdown(editor: Editor) {
-	const markdown = editor.getMarkdown();
-	return markdown === "" || markdown.endsWith("\n") ? markdown : markdown + "\n";
-}
-
-/**
- * Replace the whole editor document from Markdown by swapping the editor state.
- * `commands.setContent` fits the new blocks into the old document with a ProseMirror replace
- * step, and that fitting appends an empty trailing paragraph when the content ends in an atom
- * block (a trailing video embed, for example). Same rule as `headless_editor_replace_doc` in
- * `shared/files-tiptap.ts`, which is module-private.
- */
-function replace_editor_document(mut_editor: Editor, markdown: string) {
-	const json = files_tiptap_markdown_to_json({ markdown, extensions: nonCollaborativeExtensions });
-	if (json._nay) {
-		return json;
-	}
-
-	mut_editor.view.updateState(
-		EditorState.create({ doc: mut_editor.schema.nodeFromJSON(json._yay), plugins: mut_editor.state.plugins }),
-	);
-	return json;
-}
-
 // #region non-collaborative toolbar
 type FileEditorRichTextNonCollabToolbarActions_ClassNames =
 	| "FileEditorRichTextNonCollabToolbarActions"
 	| "FileEditorRichTextNonCollabToolbarActions-button"
 	| "FileEditorRichTextNonCollabToolbarActions-icon"
-	| "FileEditorRichTextNonCollabToolbarActions-reformat-hint";
+	| "FileEditorRichTextNonCollabToolbarActions-reformat-hint"
+	| "FileEditorRichTextNonCollabToolbarActions-word-count-badge"
+	| "FileEditorRichTextNonCollabToolbarActions-word-count-badge-hidden"
+	| "FileEditorRichTextNonCollabToolbarActions-size-badge";
 
 type FileEditorRichTextNonCollabToolbarActions_Props = {
 	editor: Editor;
@@ -1380,10 +1347,17 @@ const FileEditorRichTextNonCollabToolbarActions = memo(function FileEditorRichTe
 			<MyBadge
 				variant="secondary"
 				className={cn(
-					// Intentional style reuse from the collaborative toolbar in this file.
+					// Intentional style reuse from the collaborative toolbar in this file, next to the
+					// local identity class.
 					wordsCount
-						? ("FileEditorRichTextToolbarActions-word-count-badge" satisfies FileEditorRichTextToolbarActions_ClassNames)
-						: ("FileEditorRichTextToolbarActions-word-count-badge-hidden" satisfies FileEditorRichTextToolbarActions_ClassNames),
+						? cn(
+								"FileEditorRichTextNonCollabToolbarActions-word-count-badge" satisfies FileEditorRichTextNonCollabToolbarActions_ClassNames,
+								"FileEditorRichTextToolbarActions-word-count-badge" satisfies FileEditorRichTextToolbarActions_ClassNames,
+							)
+						: cn(
+								"FileEditorRichTextNonCollabToolbarActions-word-count-badge-hidden" satisfies FileEditorRichTextNonCollabToolbarActions_ClassNames,
+								"FileEditorRichTextToolbarActions-word-count-badge-hidden" satisfies FileEditorRichTextToolbarActions_ClassNames,
+							),
 				)}
 			>
 				{wordsCount} Words
@@ -1392,7 +1366,9 @@ const FileEditorRichTextNonCollabToolbarActions = memo(function FileEditorRichTe
 				<MyBadge
 					variant={sizeBadge.isOverCap ? "destructive" : "secondary"}
 					className={cn(
-						// Intentional style reuse from the collaborative toolbar in this file.
+						// Intentional style reuse from the collaborative toolbar in this file, next to
+						// the local identity class.
+						"FileEditorRichTextNonCollabToolbarActions-size-badge" satisfies FileEditorRichTextNonCollabToolbarActions_ClassNames,
 						"FileEditorRichTextToolbarActions-size-badge" satisfies FileEditorRichTextToolbarActions_ClassNames,
 					)}
 				>
@@ -1421,6 +1397,41 @@ const FileEditorRichTextNonCollabToolbarActions = memo(function FileEditorRichTe
 // #endregion non-collaborative toolbar
 
 // #region non-collaborative inner
+
+// The replace door names this exact message when `baseAssetId` no longer matches the stored
+// asset. The comment save dispatches its merge retry on it.
+const REPLACE_FILE_STALENESS_MESSAGE =
+	"This file changed while you were saving. Copy your local changes before reloading, then try again.";
+
+/**
+ * Serialize the mounted editor the way `files_yjs_doc_get_text` writes a file: non-empty content
+ * ends with exactly one `\n`. The stored bytes of a non-collaborative file come from THIS
+ * serializer, so the dirty baseline, Save, and the comment save must all go through it.
+ */
+function serialize_editor_markdown(editor: Editor) {
+	const markdown = editor.getMarkdown();
+	return markdown === "" || markdown.endsWith("\n") ? markdown : markdown + "\n";
+}
+
+/**
+ * Replace the whole editor document from Markdown by swapping the editor state.
+ * `commands.setContent` fits the new blocks into the old document with a ProseMirror replace
+ * step, and that fitting appends an empty trailing paragraph when the content ends in an atom
+ * block (a trailing video embed, for example). Same rule as `headless_editor_replace_doc` in
+ * `shared/files-tiptap.ts`, which is module-private.
+ */
+function replace_editor_document(mut_editor: Editor, markdown: string) {
+	const json = files_tiptap_markdown_to_json({ markdown, extensions: nonCollaborativeExtensions });
+	if (json._nay) {
+		return json;
+	}
+
+	mut_editor.view.updateState(
+		EditorState.create({ doc: mut_editor.schema.nodeFromJSON(json._yay), plugins: mut_editor.state.plugins }),
+	);
+	return json;
+}
+
 type FileEditorRichTextNonCollabInner_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	editable: boolean;
@@ -1678,151 +1689,178 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 			return false;
 		}
 
-		const textWithComment = serialize_editor_markdown(editor);
+		// Block Save while the commit is in flight: both send `replace_file_content` with the same
+		// base asset id, so a mid-commit Save would race it into a duplicate version and a second
+		// billed save. Use an async IIFE because the React compiler has problems with try catch
+		// finally blocks.
+		setIsSaving(true);
+		const commit = async (/* iife */) => {
+			const textWithComment = serialize_editor_markdown(editor);
 
-		const commentByteSize = files_get_utf8_byte_size(textWithComment);
-		if (commentByteSize > files_MAX_TEXT_CONTENT_BYTES) {
-			toast.error(file_editor_get_size_error_message(commentByteSize));
-			return false;
-		}
+			const commentByteSize = files_get_utf8_byte_size(textWithComment);
+			if (commentByteSize > files_MAX_TEXT_CONTENT_BYTES) {
+				toast.error(file_editor_get_size_error_message(commentByteSize));
+				return false;
+			}
 
-		const replaced = await app_convex.action(app_convex_api.files_nodes_content.replace_file_content, {
-			membershipId,
-			nodeId,
-			text: textWithComment,
-			baseAssetId: nonCollaborativeBaseAssetId,
-		});
+			const replaced = await app_convex.action(app_convex_api.files_nodes_content.replace_file_content, {
+				membershipId,
+				nodeId,
+				text: textWithComment,
+				baseAssetId: nonCollaborativeBaseAssetId,
+			});
 
-		if (replaced._yay) {
-			setNonCollaborativeBaseAssetId(replaced._yay.assetId);
-			baselineMarkdownRef.current = textWithComment;
+			if (replaced._yay) {
+				setNonCollaborativeBaseAssetId(replaced._yay.assetId);
+				baselineMarkdownRef.current = textWithComment;
+				setShowReformatHint(false);
+				recomputeDirtyState(editor);
+				return true;
+			}
+
+			if (replaced._nay.message !== REPLACE_FILE_STALENESS_MESSAGE) {
+				console.error("[FileEditorRichTextNonCollab.handleCommitComment] Error while saving the comment", {
+					nay: replaced._nay,
+				});
+				toast.error(replaced._nay.message);
+				return false;
+			}
+
+			// Somebody else saved between our load and this comment. Yjs is used below only as a merge
+			// tool: nothing is synced and nothing is stored as Yjs. The comment mark is one small edit
+			// on top of the base text we loaded, somebody else saved a different edit on top of the
+			// same base, and Yjs can replay our edit onto their text.
+
+			// The member may have typed while the save above was waiting. Merging would publish that
+			// typing, so refuse; the caller takes the mark back out and the typing stays local.
+			if (serialize_editor_markdown(editor) !== textWithComment) {
+				toast.error("Save your changes before adding a comment.");
+				return false;
+			}
+
+			const savedBaseText = baselineMarkdownRef.current;
+
+			const fresh = await app_convex.query(app_convex_api.files_nodes_content.get_non_collaborative_file_content, {
+				membershipId,
+				nodeId,
+			});
+			if (fresh._nay) {
+				console.error("[FileEditorRichTextNonCollab.handleCommitComment] Error while re-reading the file content", {
+					nay: fresh._nay,
+				});
+				toast.error("This file changed while you were saving. Reload the page, then add your comment again.");
+				return false;
+			}
+
+			// The member may also have typed while the re-read above was waiting. Nothing is published
+			// yet, so refuse the same way: the caller takes the mark back out and the typing stays.
+			if (serialize_editor_markdown(editor) !== textWithComment) {
+				toast.error("Save your changes before adding a comment.");
+				return false;
+			}
+
+			// Both docs MUST come from the same base doc. Two docs built separately from text share no
+			// history, and `files_yjs_reconcile_branch_with_local_text` would then quietly keep our
+			// text and drop theirs.
+			const baseYjsDoc = new YDoc();
+			const baseFromText = files_yjs_doc_update_from_text({
+				mut_yjsDoc: baseYjsDoc,
+				text: savedBaseText,
+				rootKind: "rich_text",
+			});
+			if (baseFromText._nay) {
+				console.error("[FileEditorRichTextNonCollab.handleCommitComment] Error while building the base document", {
+					nay: baseFromText._nay,
+				});
+				toast.error("This file changed while you were saving. Reload the page, then add your comment again.");
+				return false;
+			}
+
+			// The merge runs on the shared extension list, which does not know every node the browser
+			// editor can write (youtube, twitter, math). If projecting the saved base through it does
+			// not give the saved base back, the merge would drop something. Refuse instead of quietly
+			// rewriting the file.
+			const baseRoundTrip = files_yjs_doc_get_text({ yjsDoc: baseYjsDoc, rootKind: "rich_text" });
+			if (baseRoundTrip._nay || baseRoundTrip._yay !== savedBaseText) {
+				toast.error("This file changed while you were saving. Reload the page, then add your comment again.");
+				return false;
+			}
+
+			const freshYjsDoc = files_yjs_doc_clone({ yjsDoc: baseYjsDoc });
+			const freshFromText = files_yjs_doc_update_from_text({
+				mut_yjsDoc: freshYjsDoc,
+				text: fresh._yay.text,
+				rootKind: "rich_text",
+			});
+			if (freshFromText._nay) {
+				console.error("[FileEditorRichTextNonCollab.handleCommitComment] Error while building the fresh document", {
+					nay: freshFromText._nay,
+				});
+				toast.error("This file changed while you were saving. Reload the page, then add your comment again.");
+				return false;
+			}
+
+			const merged = files_yjs_reconcile_branch_with_local_text({
+				previousRemoteYjsDoc: baseYjsDoc,
+				nextRemoteYjsDoc: freshYjsDoc,
+				localText: textWithComment,
+				rootKind: "rich_text",
+			});
+			if (merged._nay) {
+				console.error("[FileEditorRichTextNonCollab.handleCommitComment] Error while merging the comment", {
+					nay: merged._nay,
+				});
+				toast.error("This file changed while you were saving. Reload the page, then add your comment again.");
+				return false;
+			}
+
+			// Retry once against the fresh asset. A second staleness refusal gets the normal message.
+			const replacedMerged = await app_convex.action(app_convex_api.files_nodes_content.replace_file_content, {
+				membershipId,
+				nodeId,
+				text: merged._yay.mergedText,
+				baseAssetId: fresh._yay.assetId,
+			});
+			if (replacedMerged._nay) {
+				console.error("[FileEditorRichTextNonCollab.handleCommitComment] Error while saving the merged comment", {
+					nay: replacedMerged._nay,
+				});
+				toast.error(replacedMerged._nay.message);
+				return false;
+			}
+
+			// The member may have typed while the merged save was waiting. Replacing the document now
+			// would delete that typing, so keep the editor and the OLD base asset id as they are: the
+			// editor stays dirty, and the next Save gets the normal staleness refusal instead of
+			// silently overwriting the merged version.
+			if (serialize_editor_markdown(editor) !== textWithComment) {
+				toast.info("Someone else saved this file and your comment was merged into their version. Your typing since then is not saved yet.");
+				return true;
+			}
+
+			// The file now also holds the other person's text; the editor must show it.
+			setNonCollaborativeBaseAssetId(replacedMerged._yay.assetId);
+			baselineMarkdownRef.current = merged._yay.mergedText;
 			setShowReformatHint(false);
+
+			const replacedDoc = replace_editor_document(editor, merged._yay.mergedText);
+			if (replacedDoc._nay) {
+				// The save DID happen, so the commit reports success; only the local view is stale.
+				console.error("[FileEditorRichTextNonCollab.handleCommitComment] Error while showing the merged content", {
+					nay: replacedDoc._nay,
+				});
+				toast.error("The comment was saved, but the editor could not show the merged file. Reload the file.");
+				return true;
+			}
+
 			recomputeDirtyState(editor);
+			toast.info("Someone else saved this file. Your comment was merged into their version.");
 			return true;
-		}
+		};
 
-		if (replaced._nay.message !== REPLACE_FILE_STALENESS_MESSAGE) {
-			console.error("[FileEditorRichTextNonCollab.handleCommitComment] Error while saving the comment", {
-				nay: replaced._nay,
-			});
-			toast.error(replaced._nay.message);
-			return false;
-		}
-
-		// Somebody else saved between our load and this comment. Yjs is used below only as a merge
-		// tool: nothing is synced and nothing is stored as Yjs. The comment mark is one small edit
-		// on top of the base text we loaded, somebody else saved a different edit on top of the
-		// same base, and Yjs can replay our edit onto their text.
-
-		// The member may have typed while the save above was waiting. Merging would publish that
-		// typing, so refuse; the caller takes the mark back out and the typing stays local.
-		if (serialize_editor_markdown(editor) !== textWithComment) {
-			toast.error("Save your changes before adding a comment.");
-			return false;
-		}
-
-		const savedBaseText = baselineMarkdownRef.current;
-
-		const fresh = await app_convex.query(app_convex_api.files_nodes_content.get_non_collaborative_file_content, {
-			membershipId,
-			nodeId,
+		return await commit().finally(() => {
+			setIsSaving(false);
 		});
-		if (fresh._nay) {
-			console.error("[FileEditorRichTextNonCollab.handleCommitComment] Error while re-reading the file content", {
-				nay: fresh._nay,
-			});
-			toast.error("This file changed while you were saving. Reload the page, then add your comment again.");
-			return false;
-		}
-
-		// Both docs MUST come from the same base doc. Two docs built separately from text share no
-		// history, and `files_yjs_reconcile_branch_with_local_text` would then quietly keep our
-		// text and drop theirs.
-		const baseYjsDoc = new YDoc();
-		const baseFromText = files_yjs_doc_update_from_text({
-			mut_yjsDoc: baseYjsDoc,
-			text: savedBaseText,
-			rootKind: "rich_text",
-		});
-		if (baseFromText._nay) {
-			console.error("[FileEditorRichTextNonCollab.handleCommitComment] Error while building the base document", {
-				nay: baseFromText._nay,
-			});
-			toast.error("This file changed while you were saving. Reload the page, then add your comment again.");
-			return false;
-		}
-
-		// The merge runs on the shared extension list, which does not know every node the browser
-		// editor can write (youtube, twitter, math). If projecting the saved base through it does
-		// not give the saved base back, the merge would drop something. Refuse instead of quietly
-		// rewriting the file.
-		const baseRoundTrip = files_yjs_doc_get_text({ yjsDoc: baseYjsDoc, rootKind: "rich_text" });
-		if (baseRoundTrip._nay || baseRoundTrip._yay !== savedBaseText) {
-			toast.error("This file changed while you were saving. Reload the page, then add your comment again.");
-			return false;
-		}
-
-		const freshYjsDoc = files_yjs_doc_clone({ yjsDoc: baseYjsDoc });
-		const freshFromText = files_yjs_doc_update_from_text({
-			mut_yjsDoc: freshYjsDoc,
-			text: fresh._yay.text,
-			rootKind: "rich_text",
-		});
-		if (freshFromText._nay) {
-			console.error("[FileEditorRichTextNonCollab.handleCommitComment] Error while building the fresh document", {
-				nay: freshFromText._nay,
-			});
-			toast.error("This file changed while you were saving. Reload the page, then add your comment again.");
-			return false;
-		}
-
-		const merged = files_yjs_reconcile_branch_with_local_text({
-			previousRemoteYjsDoc: baseYjsDoc,
-			nextRemoteYjsDoc: freshYjsDoc,
-			localText: textWithComment,
-			rootKind: "rich_text",
-		});
-		if (merged._nay) {
-			console.error("[FileEditorRichTextNonCollab.handleCommitComment] Error while merging the comment", {
-				nay: merged._nay,
-			});
-			toast.error("This file changed while you were saving. Reload the page, then add your comment again.");
-			return false;
-		}
-
-		// Retry once against the fresh asset. A second staleness refusal gets the normal message.
-		const replacedMerged = await app_convex.action(app_convex_api.files_nodes_content.replace_file_content, {
-			membershipId,
-			nodeId,
-			text: merged._yay.mergedText,
-			baseAssetId: fresh._yay.assetId,
-		});
-		if (replacedMerged._nay) {
-			console.error("[FileEditorRichTextNonCollab.handleCommitComment] Error while saving the merged comment", {
-				nay: replacedMerged._nay,
-			});
-			toast.error(replacedMerged._nay.message);
-			return false;
-		}
-
-		// The file now also holds the other person's text; the editor must show it.
-		setNonCollaborativeBaseAssetId(replacedMerged._yay.assetId);
-		baselineMarkdownRef.current = merged._yay.mergedText;
-		setShowReformatHint(false);
-
-		const replacedDoc = replace_editor_document(editor, merged._yay.mergedText);
-		if (replacedDoc._nay) {
-			// The save DID happen, so the commit reports success; only the local view is stale.
-			console.error("[FileEditorRichTextNonCollab.handleCommitComment] Error while showing the merged content", {
-				nay: replacedDoc._nay,
-			});
-			toast.error("The comment was saved, but the editor could not show the merged file. Reload the file.");
-			return true;
-		}
-
-		recomputeDirtyState(editor);
-		toast.info("Someone else saved this file. Your comment was merged into their version.");
-		return true;
 	});
 
 	// Same pattern as the comments composer: the editor instance is created once, so a later answer
@@ -2023,6 +2061,7 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 });
 // #endregion non-collaborative inner
 
+// #region non-collaborative root
 export type FileEditorRichTextNonCollab_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	editable: boolean;
@@ -2038,7 +2077,7 @@ export type FileEditorRichTextNonCollab_Props = {
  * rules forbid skipping the call, so a merged component would open a Yjs provider against a file
  * that has no Yjs document.
  */
-const FileEditorRichTextNonCollab = memo(function FileEditorRichTextNonCollab(
+export const FileEditorRichTextNonCollab = memo(function FileEditorRichTextNonCollab(
 	props: FileEditorRichTextNonCollab_Props,
 ) {
 	const { nodeId, editable, presenceStore, commentsPortalHost, toolbarPortalHost, topStickyFloatingSlot } = props;
@@ -2098,6 +2137,4 @@ const FileEditorRichTextNonCollab = memo(function FileEditorRichTextNonCollab(
 		</EditorRoot>
 	);
 });
-
-export { FileEditorRichTextNonCollab };
 // #endregion non-collaborative root

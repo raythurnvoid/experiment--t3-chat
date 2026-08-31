@@ -552,12 +552,10 @@ function files_table_code_mark_to_html(node: TiptapJSONContent): TiptapJSONConte
 		BACKSLASH_BEFORE_PIPE_REGEX.test(node.text) &&
 		node.marks?.some((mark) => mark.type === "code")
 	) {
-		const escaped = node.text
-			.replaceAll("&", "&amp;")
-			.replaceAll("<", "&lt;")
-			.replaceAll(">", "&gt;")
-			.replaceAll("\\", "&#92;")
-			.replaceAll("|", "&#124;");
+		// Escape every character except letters, digits, and spaces. Between the written code tags
+		// the text is ordinary inline markdown to marked, so a bare backtick, `**`, `~~`, or a URL
+		// would be re-parsed on the next open and the member's code characters would change.
+		const escaped = node.text.replace(/[^A-Za-z0-9 ]/gu, (char) => `&#${char.codePointAt(0)};`);
 
 		return {
 			...node,
@@ -577,9 +575,13 @@ function files_render_table_cell_markdown(cell: TiptapJSONContent, helpers: Mark
 	// with `<br>`. A real newline would end the row and destroy the whole table.
 	const rendered = helpers.renderChildren((cell.content ?? []).map(files_table_code_mark_to_html), "<br>");
 
-	// A hard break serializes as spaces plus a newline. Turn every newline, with the spaces or
-	// backslash around it, into `<br>` for the same reason.
-	const singleLine = rendered.replace(/[ \t\\]*\n[ \t]*/g, "<br>").trim();
+	// A hard break serializes as spaces plus a newline, never as a backslash. Turn every newline,
+	// with the spaces around it, into `<br>` for the same reason.
+	const singleLine = rendered.replace(/[ \t]*\n[ \t]*/g, "<br>").trim();
+
+	// A backslash right before an inserted `<br>` would escape the `<` on the next parse and turn
+	// the break into literal text. Write those backslashes as numeric references instead.
+	const brSafe = singleLine.replace(/\\+(?=<br>)/g, (run) => "&#92;".repeat(run.length));
 
 	// GFM drops the spaces around cell text when it parses, so trim here too, or the next parse
 	// would not give the same text back.
@@ -588,7 +590,7 @@ function files_render_table_cell_markdown(cell: TiptapJSONContent, helpers: Mark
 	// Without that, cell text `a\|b` would be written as `a\\|b`, and marked would then read one
 	// real backslash plus one real pipe, give the row an extra cell, and drop the whole table
 	// back to a paragraph.
-	return singleLine.replace(/(\\*)\|/g, (_match, backslashes: string) => backslashes + backslashes + "\\|");
+	return brSafe.replace(/(\\*)\|/g, (_match, backslashes: string) => backslashes + backslashes + "\\|");
 }
 
 /**

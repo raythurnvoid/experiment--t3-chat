@@ -146,9 +146,9 @@ const MAX_SCOPES_PER_MEMBER = 50;
 /**
  * The longest a reservation may hold capacity.
  *
- * Council's meeting reservation runs to the meeting's eight-day recovery horizon: the provider
- * keeps a recording URL for seven days, plus one day. A shorter ceiling here would refuse the one
- * reservation this store was built for.
+ * The longest reservation this store was built for runs to a meeting's eight-day recovery
+ * horizon: the recording provider keeps a URL for seven days, plus one day. A shorter ceiling
+ * here would refuse that reservation.
  */
 const MAX_RESERVATION_TTL_MS = 8 * 24 * 60 * 60 * 1000;
 /**
@@ -422,8 +422,11 @@ async function db_authorize(
 
 	if (args.collections && args.collections.length > 0 && args.principal.kind === "user_api_key") {
 		const version = await ctx.db.get("plugins_versions", installation.pluginVersionId);
+		if (!version) {
+			return Result({ _nay: { message: "Not found" } });
+		}
 		// A null list means the manifest declared none, so every collection stays user-writable.
-		const userWritableCollections = version?.userWritableCollections ?? null;
+		const userWritableCollections = version.userWritableCollections ?? null;
 		if (userWritableCollections !== null) {
 			for (const collection of args.collections) {
 				if (!userWritableCollections.includes(collection)) {
@@ -3678,7 +3681,10 @@ export async function plugins_data_db_delete_scope(ctx: MutationCtx, scopes: Doc
 	await Promise.all(scopes.map((scope) => ctx.db.delete("plugins_data_scopes", scope._id)));
 }
 
-/** The mirrored `content.read` grants on one scope-bound file node, bounded at 256 (a scope names at most 50 people). */
+/**
+ * The mirrored `content.read` grants on one scope-bound file node, bounded at 256 (a scope names
+ * at most 50 people).
+ */
 function db_binding_file_grants(
 	ctx: QueryCtx | MutationCtx,
 	args: {
@@ -3708,11 +3714,11 @@ function db_binding_file_grants(
  * so there is no reason to let a new member show up late.
  *
  * `removeUserIds: "all"` is the teardown form, used when the scope itself was deleted. It also
- * deletes the binding rows, because a binding pointing at a dead scope is a dangling row. It
+ * deletes the binding docs, because a binding pointing at a dead scope is a dangling doc. It
  * does NOT un-restrict the bound nodes: the reader list is gone, so the nodes end with zero
  * readers and stay restricted — fail closed.
  */
-export async function plugins_data_db_sync_file_access_bindings(
+async function plugins_data_db_sync_file_access_bindings(
 	ctx: MutationCtx,
 	args: {
 		installation: Doc<"plugins_workspace_installations">;
@@ -3790,7 +3796,7 @@ export async function plugins_data_db_apply_file_access_binding(
 	const now = Date.now();
 	const existingBinding = await ctx.db
 		.query("plugins_file_access_bindings")
-		.withIndex("by_nodeId", (q) => q.eq("nodeId", args.node._id))
+		.withIndex("by_node", (q) => q.eq("nodeId", args.node._id))
 		.first();
 
 	if (args.readScopeId === null) {
@@ -5946,7 +5952,7 @@ export const delete_versioned_document = internalMutation({
 				usedBytes: usage.usedBytes - (existing?.byteSize ?? 0),
 				usedDocuments: usage.usedDocuments - (existing ? 1 : 0),
 				// A released never-stored retry already counted this slot. Adding another would
-				// double-count and refuse the last-slot Council delete after the reservation TTL.
+				// double-count and refuse a last-slot delete after the reservation TTL.
 				tombstoneDocuments: usage.tombstoneDocuments + (releasedSlotAlreadyHeld ? 0 : 1),
 			},
 			now,
@@ -6120,7 +6126,7 @@ export async function plugins_data_db_drain_batch(
 		return { done: false, deletedCount: grants.length };
 	}
 
-	// Binding rows drain with the plugin; the mirrored file grants stay. Frozen files outlive the
+	// Binding docs drain with the plugin; the mirrored file grants stay. Frozen files outlive the
 	// plugin.
 	const fileAccessBindings = await ctx.db
 		.query("plugins_file_access_bindings")

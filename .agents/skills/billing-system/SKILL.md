@@ -208,7 +208,7 @@ For signed-in users there is no local credit debit after save; Polar usage event
 
 R2 content materialization is storage bookkeeping for an already accepted save; it must not emit an additional billing event.
 
-Plugin file writes have no billing exception: a plugin writes its workspace files through the public API doors (`/api/v1/files/write` and the plugin file doors), and every public-API file write emits `file_save` like any other save. Do not add a `skipBilling` flag to `replace_file_content`.
+Plugin file writes have no billing exception: a plugin writes its file content through `/api/v1/files/write`, and every public-API file write emits `file_save` like any other save. The plugin file doors (`plugin-folders/ensure`, `plugin-archive`, `plugin-access/set`) write no file content, so they have no gate and no emit. Do not add a `skipBilling` flag to `replace_file_content`.
 
 ### Anonymous users
 

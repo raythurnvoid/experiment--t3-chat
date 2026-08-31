@@ -917,7 +917,8 @@ freshly created Council room page had **all-200 responses**, proved with a `page
 listener on that page, while the log buffer for the same call showed `401`, `502`, `503` and
 `ERR_FAILED` lines. They came from roughly 45 leftover sessions still holding room tabs against
 `127.0.0.1:8787`. Such a tab is not idle: one left inside a call polls meeting state every 10 s
-(`startPolling` in `room/client.ts`, stopped only by `teardownCall`), so it keeps generating traffic
+(`startPolling` in `packages/council/room-client/src/lifecycle.ts`, stopped only by `teardownCall`
+in the same file), so it keeps generating traffic
 and failures by itself long after the run that opened it ended.
 
 This reads exactly like a broken route mock, and it sent a reviewer hunting for a fixture bug that did
@@ -1373,8 +1374,9 @@ vp env exec pnpm --dir packages/council run test --reporter=json --outputFile="$
 
 Then sum `assertionResults.length` per entry in `testResults`. A ready script is
 `per-file.mjs` under `t3-chat-+personal/+ai/fixer-bk-2026-08-23/`. It printed 22 files / 537 tests for
-`packages/council`, matching the default reporter's own summary line — check that they agree,
-because a JSON report written by a crashed run still parses.
+`packages/council` when it was written; the same suite is 26 files / 648 tests as of 2026-08-31, so
+read the current summary line rather than these numbers, and check that the two agree — a JSON
+report written by a crashed run still parses.
 
 ## A script `focus()` never matches `:focus-visible`, so every ring probe reads `none`
 

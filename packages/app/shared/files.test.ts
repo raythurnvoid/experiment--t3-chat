@@ -63,6 +63,7 @@ import {
 	table_between_paragraphs,
 	table_last_block,
 	table_code_span_backslash,
+	table_code_span_markdown_active,
 	table_ragged,
 	table_no_outer_pipes,
 	table_padded_cells,
@@ -1656,8 +1657,20 @@ describe("GFM tables round-trip through Yjs", () => {
 		expect(round_trip_markdown(output)).toBe(output);
 	});
 
+	test("disarms markdown syntax inside the HTML code element form, stable", () => {
+		// Between the written code tags the text is ordinary inline markdown to marked, so an
+		// unescaped `**b**` would come back as bold and the asterisks would be deleted.
+		const expected = "| <code>a &#42;&#42;b&#42;&#42; &#92;&#92;&#124; c</code> | d |\n| --- | --- |\n| 1 | 2 |\n";
+		const output = round_trip_markdown(table_code_span_markdown_active);
+		expect(output).toBe(expected);
+		expect_still_a_table(output);
+		expect(round_trip_markdown(output)).toBe(output);
+	});
+
 	test("keeps the exact text and code mark of the HTML code element form", () => {
-		const json = files_tiptap_markdown_to_json({ markdown: "| <code>x &#92;&#92;&#124; y</code> | c |\n| --- | --- |\n| 1 | 2 |\n" });
+		const json = files_tiptap_markdown_to_json({
+			markdown: "| <code>x &#92;&#92;&#124; y</code> | c |\n| --- | --- |\n| 1 | 2 |\n",
+		});
 		if (json._nay) {
 			throw new Error("Expected the entity code form to parse", { cause: json._nay });
 		}
@@ -1769,6 +1782,78 @@ describe("GFM tables round-trip through Yjs", () => {
 		expect(round_trip_markdown(markdown)).toBe(markdown + "\n");
 	});
 
+	test("keeps a backslash that ends a non-final cell paragraph, stable", () => {
+		// An unescaped backslash right before the <br> join would escape the "<" on the next parse
+		// and turn the break into literal text.
+		const markdown = build_markdown_from_json({
+			type: "doc",
+			content: [
+				{
+					type: "table",
+					content: [
+						make_table_row("tableHeader", ["A", "B"]),
+						{
+							type: "tableRow",
+							content: [
+								{
+									type: "tableCell",
+									content: [
+										{ type: "paragraph", content: [{ type: "text", text: "one\\" }] },
+										{ type: "paragraph", content: [{ type: "text", text: "two" }] },
+									],
+								},
+								{
+									type: "tableCell",
+									content: [{ type: "paragraph", content: [{ type: "text", text: "2" }] }],
+								},
+							],
+						},
+					],
+				},
+			],
+		});
+		expect(markdown).toBe("| A | B |\n| --- | --- |\n| one&#92;<br>two | 2 |");
+		expect_still_a_table(markdown);
+		expect(round_trip_markdown(markdown)).toBe(markdown + "\n");
+	});
+
+	test("keeps a backslash right before a hard break in a cell, stable", () => {
+		// The newline join must not eat the member's own backslash: a hard break renders as spaces
+		// plus a newline, never as a backslash, so any backslash next to it belongs to the text.
+		const markdown = build_markdown_from_json({
+			type: "doc",
+			content: [
+				{
+					type: "table",
+					content: [
+						make_table_row("tableHeader", ["A", "B"]),
+						{
+							type: "tableRow",
+							content: [
+								{
+									type: "tableCell",
+									content: [
+										{
+											type: "paragraph",
+											content: [{ type: "text", text: "a\\" }, { type: "hardBreak" }, { type: "text", text: "b" }],
+										},
+									],
+								},
+								{
+									type: "tableCell",
+									content: [{ type: "paragraph", content: [{ type: "text", text: "c" }] }],
+								},
+							],
+						},
+					],
+				},
+			],
+		});
+		expect(markdown).toBe("| A | B |\n| --- | --- |\n| a&#92;<br>b | c |");
+		expect_still_a_table(markdown);
+		expect(round_trip_markdown(markdown)).toBe(markdown + "\n");
+	});
+
 	test("writes a colspan header once and pads the row", () => {
 		const markdown = build_markdown_from_json({
 			type: "doc",
@@ -1861,7 +1946,9 @@ describe("GFM tables round-trip through Yjs", () => {
 				},
 			],
 		});
-		expect(markdown).toBe("| <code>x ` &#92;&#124; y</code> | c |\n| --- | --- |\n| 1 | 2 |");
+		// The backtick is escaped too: a lone backtick is inert, but a pair would form a code span
+		// on the next parse, so every non-alphanumeric character takes the numeric-reference form.
+		expect(markdown).toBe("| <code>x &#96; &#92;&#124; y</code> | c |\n| --- | --- |\n| 1 | 2 |");
 		expect_still_a_table(markdown);
 		expect(round_trip_markdown(markdown)).toBe(markdown + "\n");
 	});
@@ -1879,10 +1966,11 @@ describe("GFM tables round-trip through Yjs", () => {
 });
 
 describe("non-collaborative markdown normalization is idempotent", () => {
-	// The rich editor for a file with collaboration turned off saves `normalize(document)` on
-	// every explicit Save. A normalize whose output keeps changing would rewrite the file on
-	// every save, so the property this feature stands on is: the first pass may reformat, and
-	// every pass after that changes nothing.
+	// The mounted non-collaborative editor serializes with `nonCollaborativeExtensions`; its own
+	// idempotence suite lives in the browser project next to that list. This suite is the shared
+	// mirror: the same fixtures through the shared Yjs pipeline, which the comment merge retry
+	// and the Yjs materialization path use. The property both suites stand on is the same: the
+	// first pass may reformat, and every pass after that changes nothing.
 	function normalize(markdown: string) {
 		const yjsDoc = new YDoc();
 		const updateResult = files_yjs_doc_update_from_text({
@@ -1924,7 +2012,7 @@ describe("non-collaborative markdown normalization is idempotent", () => {
 		expect(normalize(input)).toBe(input);
 	});
 
-	test("un-escapes a Council-style escaped date once, then holds still", () => {
+	test("un-escapes a backslash-escaped date once, then holds still", () => {
 		const once = normalize("Meeting on 2026\\-08\\-30\n");
 		expect(once).toContain("2026-08-30");
 		expect(normalize(once)).toBe(once);
@@ -1977,8 +2065,8 @@ describe("non-collaborative markdown normalization is idempotent", () => {
 	});
 
 	test("reformats the code-span backslash fixture once, then holds still", () => {
-		// User decision E chose option C: the serializer writes the span as an HTML code element
-		// with numeric character references, so the backslash run cannot grow.
+		// Product decision: the serializer writes the span as an HTML code element with numeric
+		// character references, so the backslash run cannot grow.
 		const expected = "| <code>x &#92;&#92;&#124; y</code> | c |\n| --- | --- |\n| 1 | 2 |\n";
 		const output = normalize(table_code_span_backslash);
 		expect(output).toBe(expected);

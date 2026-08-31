@@ -3660,7 +3660,9 @@ describe("files write billing", () => {
 		return { db, credential: created._yay!.credential };
 	}
 
-	/** Move the payer to Free and empty the meter, which is the only state the credit gate refuses. */
+	/**
+	 * Move the payer to Free and empty the meter, which is the only state the credit gate refuses.
+	 */
 	async function drain_credits(args: { t: ReturnType<typeof test_convex>; userId: Id<"users"> }) {
 		await args.t.run(async (ctx) => {
 			await test_mocks_fill_db_with.plan(ctx, { userId: args.userId, plan: "Free" });
@@ -5245,13 +5247,15 @@ describe("service file writes", () => {
 		destinationPathPrefix?: string;
 		phase?: "interactive" | "processing";
 		actorUserId?: Id<"users">;
+		/** A second plugin in the same workspace, for the tests about one plugin's lock. */
+		pluginName?: string;
 	}) {
 		const token = `psg_${crypto_random_hex(32)}`;
 		const tokenHash = await crypto_sha256_hex(token);
 		const seeded = await args.t.run(async (ctx) => {
 			const now = Date.now();
 			const capabilities = args.acceptedCapabilities ?? SERVICE_CAPABILITIES;
-			const pluginName = "council";
+			const pluginName = args.pluginName ?? "council";
 			const pluginVersionId = await ctx.db.insert("plugins_versions", {
 				name: pluginName,
 				displayName: "Council",
@@ -5953,5 +5957,111 @@ describe("service file writes", () => {
 		expect(restored).toEqual({ _yay: null });
 		const restoredFile = await find_active_node({ t, db, path: "/meetings/meeting-1/transcript.md" });
 		expect(restoredFile?.readOnlyScopeNodeId).toBeUndefined();
+	});
+
+	test("another plugin's grant cannot archive through the lock this plugin created", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-service-foreign-lock" });
+		const owner = await seed_sealed_service({ t, db });
+		const foreign = await seed_sealed_service({ t, db, pluginName: "minutes" });
+
+		expect(
+			(
+				await service_write({
+					t,
+					token: owner.token,
+					path: "/meetings/meeting-1/transcript.md",
+					content: "# T\n",
+					readOnly: true,
+				})
+			).status,
+		).toBe(200);
+
+		// The second plugin seals the same destination, so it needs its own upload target there
+		// before the destination is archivable for it at all.
+		const createdTarget = await t.fetch("/api/v1/files/service-uploads/create-target", {
+			method: "POST",
+			headers: auth_headers(foreign.token),
+			body: JSON.stringify({
+				idempotencyKey: "meeting-1-foreign",
+				targetKey: "recording",
+				path: "/meetings/meeting-1/foreign.mp4",
+				contentType: "video/mp4",
+				size: 1024,
+				readOnly: false,
+				nonCollaborative: false,
+			}),
+		});
+		expect(createdTarget.status).toBe(200);
+
+		// A named lock is passable only by the plugin that owns the name. To another plugin it is
+		// an ordinary member lock, and it stops the whole sweep.
+		const archived = await t.fetch("/api/v1/files/service-uploads/archive-destination", {
+			method: "POST",
+			headers: auth_headers(foreign.token),
+			body: JSON.stringify({}),
+		});
+		expect(archived.status).toBe(409);
+		expect(await archived.json()).toEqual({ message: "This item is read-only." });
+		expect(await find_active_node({ t, db, path: "/meetings/meeting-1/transcript.md" })).not.toBeNull();
+		expect(await find_active_node({ t, db, path: "/meetings" })).not.toBeNull();
+	});
+
+	test("a member lock on a folder above refuses the destination archive", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-service-member-lock-above" });
+		const service = await seed_sealed_service({ t, db });
+
+		expect(
+			(
+				await service_write({
+					t,
+					token: service.token,
+					path: "/meetings/meeting-1/transcript.md",
+					content: "# T\n",
+					readOnly: true,
+				})
+			).status,
+		).toBe(200);
+		const createdTarget = await t.fetch("/api/v1/files/service-uploads/create-target", {
+			method: "POST",
+			headers: auth_headers(service.token),
+			body: JSON.stringify({
+				idempotencyKey: "meeting-1",
+				targetKey: "recording",
+				path: "/meetings/meeting-1/recording.mp4",
+				contentType: "video/mp4",
+				size: 1024,
+				readOnly: false,
+				nonCollaborative: false,
+			}),
+		});
+		expect(createdTarget.status).toBe(200);
+
+		const meetingFolder = await find_active_node({ t, db, path: "/meetings/meeting-1" });
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "clerk-service-member-lock-above",
+			external_id: db.userId,
+		});
+		const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: db.membershipId,
+			nodeId: meetingFolder!._id,
+		});
+		expect(locked._nay).toBeUndefined();
+
+		// The plugin may pass its own named lock on the transcript, but a member's lock on the
+		// folder holding it carries no plugin name. "Leave this alone" wins over the sweep.
+		const archived = await t.fetch("/api/v1/files/service-uploads/archive-destination", {
+			method: "POST",
+			headers: auth_headers(service.token),
+			body: JSON.stringify({}),
+		});
+		expect(archived.status).toBe(409);
+		expect(await archived.json()).toEqual({ message: "This item is read-only." });
+		expect(await find_active_node({ t, db, path: "/meetings/meeting-1" })).not.toBeNull();
+		expect(await find_active_node({ t, db, path: "/meetings/meeting-1/transcript.md" })).not.toBeNull();
 	});
 });

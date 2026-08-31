@@ -411,6 +411,12 @@ const RUN_REQUEST_SCHEMA = z.strictObject({
 		.string({ error: "requestPath is invalid" })
 		.max(256, "requestPath is invalid")
 		.regex(/^\/[\x21-\x7E]*$/u, "requestPath is invalid")
+		// The URL built below collapses `.` and `..` segments, so a dotted path could reach the
+		// reserved prefix past the startsWith check. Refuse dot segments before it.
+		.refine(
+			(value) => value.split("/").every((segment) => segment !== "." && segment !== ".."),
+			"requestPath is invalid",
+		)
 		.refine((value) => !value.startsWith("/__bonobo_senate"), "requestPath must not use the reserved prefix")
 		.optional(),
 	input: z.unknown(),

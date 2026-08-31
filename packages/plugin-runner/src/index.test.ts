@@ -232,6 +232,10 @@ describe("validation", () => {
 			{ requestPath: `/${"a".repeat(256)}`, message: "requestPath is invalid" },
 			{ requestPath: "/__bonobo_senate/run", message: "requestPath must not use the reserved prefix" },
 			{ requestPath: "/__bonobo_senate-extra", message: "requestPath must not use the reserved prefix" },
+			// The URL built for the plugin fetch collapses dot segments, so this path would reach
+			// the reserved prefix past the startsWith check.
+			{ requestPath: "/x/../__bonobo_senate/run", message: "requestPath is invalid" },
+			{ requestPath: "/./run", message: "requestPath is invalid" },
 		];
 		for (const { requestPath, message } of cases) {
 			const res = await worker.fetch(run_request(await make_run_body({ body: { requestPath } })), make_env());

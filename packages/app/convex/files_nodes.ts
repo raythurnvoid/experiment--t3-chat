@@ -5205,7 +5205,9 @@ export const unarchive_nodes = mutation({
 const files_node_public_doc_fields = ((/* iife */) => {
 	const {
 		readOnlyScopeNodeId: _readOnlyScopeNodeId,
+		readOnlyPluginName: _readOnlyPluginName,
 		readOnlyPluginServiceTargetId: _readOnlyPluginServiceTargetId,
+		pluginServiceWritePluginName: _pluginServiceWritePluginName,
 		pluginOwnerName: _pluginOwnerName,
 		...rest
 	} = doc(app_convex_schema, "files_nodes").fields;
@@ -5229,7 +5231,9 @@ function files_node_project_read_only(
 ) {
 	const {
 		readOnlyScopeNodeId,
+		readOnlyPluginName: _readOnlyPluginName,
 		readOnlyPluginServiceTargetId: _readOnlyPluginServiceTargetId,
+		pluginServiceWritePluginName: _pluginServiceWritePluginName,
 		pluginOwnerName: _pluginOwnerName,
 		...rest
 	} = fileNode;

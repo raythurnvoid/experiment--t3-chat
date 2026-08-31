@@ -597,14 +597,15 @@ type start_event_run_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-// Caller serialization keys share the endpoint path character rule: printable ASCII, bounded.
+// Caller serialization keys share the endpoint path character rule: visible ASCII (no spaces),
+// bounded.
 const INVOKE_CALLER_KEY_REGEX = /^[\x21-\x7E]{1,128}$/u;
 
 /**
  * Claims the serialization lock and creates a running invoke run in one transaction. The run
- * record itself is the lock: a second invoke with the same live key finds this row and answers
- * busy, and two invokes racing on the same key conflict on Convex's transaction retry — the
- * loser re-runs and finds the winner's row. So no separate lock table is needed.
+ * record itself is the lock, so no separate lock table is needed. A second invoke with the same
+ * live key finds this doc and answers busy. Two invokes racing on the same key conflict on
+ * Convex's transaction retry. The loser re-runs and finds the winner's doc.
  *
  * Everything the plugin_ui token proved at mint time is revalidated here because consent,
  * enablement, or the installed version can change between mint and invoke.
@@ -684,7 +685,7 @@ export const start_invoke_run = internalMutation({
 				return Result({ _nay: { message: "This endpoint requires a serialization key" } });
 			}
 			if (!INVOKE_CALLER_KEY_REGEX.test(args.callerSerializationKey)) {
-				return Result({ _nay: { message: "Serialization keys must be printable ASCII up to 128 characters" } });
+				return Result({ _nay: { message: "Serialization keys must be visible ASCII (no spaces) up to 128 characters" } });
 			}
 			lockKey = `${endpoint.id}:${args.callerSerializationKey}`;
 		} else {

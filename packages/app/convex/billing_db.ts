@@ -125,8 +125,8 @@ export async function billing_db_emit_file_save(
 		version: string | number;
 	},
 ) {
-	// Declared against the type instead of `billing_event(...)` so this module never
-	// value-imports `server/billing.ts` (see the import note above).
+	// Declare the event against the type instead of calling `billing_event(...)`, so this module
+	// never value-imports `server/billing.ts` (see the import note above).
 	const event: billing_Event = {
 		name: "file_save",
 		externalCustomerId: args.billedUser._id,

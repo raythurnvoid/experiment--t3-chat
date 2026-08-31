@@ -1268,7 +1268,7 @@ const app_convex_schema = defineSchema({
 		.index("by_ownerUser", ["ownerUserId"]),
 
 	/**
-	 * One row per plugin name that registered an outside service for the service-grant exchange.
+	 * One doc per plugin name that registered an outside service for the service-grant exchange.
 	 * The host generates the `pse_` secret and stores only its hash; rotating writes a new hash and
 	 * the old secret stops working immediately. The registered scopes are the exchange authority —
 	 * the manifest's `service` block is only consent copy.
@@ -2134,7 +2134,7 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
 
 	/**
-	 * One row binds a plugin-owned file node's reader list to a plugin-data scope. The host keeps
+	 * One doc binds a plugin-owned file node's reader list to a plugin-data scope. The host keeps
 	 * exactly one `content.read` grant per active scope member on the node, updating them in the
 	 * same mutations that change the scope's membership. At most
 	 * `MAX_ACCESS_BINDINGS_PER_SCOPE` (4) nodes per scope keep that synchronous work bounded.
@@ -2148,7 +2148,7 @@ const app_convex_schema = defineSchema({
 		updatedAt: v.number(),
 	})
 		.index("by_installation_scopeId", ["installationId", "scopeId"])
-		.index("by_nodeId", ["nodeId"])
+		.index("by_node", ["nodeId"])
 		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
 
 	/**

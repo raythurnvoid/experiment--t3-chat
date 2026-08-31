@@ -32,6 +32,11 @@ export const table_last_block = "before\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n
 // character references instead, so the first pass reformats it and every pass after that is stable.
 export const table_code_span_backslash = "| `x \\\\\\| y` | c |\n| --- | --- |\n| 1 | 2 |\n";
 
+// The same entity rewrite must also disarm markdown syntax inside the code text. Between the
+// written code tags the text is ordinary inline markdown to marked, so an unescaped `**b**`
+// would come back as bold and the asterisks would be deleted from the member's code.
+export const table_code_span_markdown_active = "| `a **b** \\\\\\| c` | d |\n| --- | --- |\n| 1 | 2 |\n";
+
 // Foreign inputs. The first normalize reformats them; every normalize after that changes nothing.
 export const table_ragged = "|  A   |B|\n|---|:-:|\n| 1 |    2 |\n";
 export const table_no_outer_pipes = "A | B\n--- | ---\n1 | 2\n";

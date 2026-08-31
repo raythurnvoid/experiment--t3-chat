@@ -15152,6 +15152,43 @@ describe("files_nodes public read-only view", () => {
 		});
 	});
 
+	test("get_file_node_for_membership never returns the plugin provenance stamps", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Stamp Privacy User",
+		});
+		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "stamped-privacy",
+		});
+		if (folder._nay) {
+			throw new Error(folder._nay.message);
+		}
+
+		// Stamp the doc the way a plugin lock and a service write do. Both fields are declared
+		// "Never returned to clients" in the schema, so the projection must strip them.
+		const nodeId = folder._yay.nodeId;
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", nodeId, {
+				readOnlyScopeNodeId: nodeId,
+				readOnlyPluginName: "data-probe",
+				pluginServiceWritePluginName: "data-probe",
+			});
+		});
+
+		const view = await asUser.query(api.files_nodes.get_file_node_for_membership, {
+			membershipId: db.membershipId,
+			fileNodeId: nodeId,
+		});
+		expect(view).toMatchObject({ readOnlyState: "self" });
+		expect(view !== null && "readOnlyPluginName" in view).toBe(false);
+		expect(view !== null && "pluginServiceWritePluginName" in view).toBe(false);
+	});
+
 	test("a writable node projects writable state with no source", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -15182,7 +15219,7 @@ describe("files_nodes public read-only view", () => {
 describe("files_nodes_db_has_plugin_owner_authority", () => {
 	/**
 	 * One stamped folder with an unstamped file inside whose effective lock points at it, an
-	 * unstamped sibling folder, and a second member to use as a share-grant principal. This
+	 * unstamped sibling folder, and a second member to use as a share-grant principal.
 	 * The stamp is plugin authority, so the six public sharing and lock doors must refuse
 	 * stamped nodes.
 	 */

@@ -9,6 +9,7 @@ import {
 	table_backslash_before_pipe,
 	table_comment_span,
 	table_code_span_backslash,
+	table_code_span_markdown_active,
 } from "../../../../../shared/files-table-markdown-fixtures.ts";
 
 describe("browser extension list table schema", () => {
@@ -193,7 +194,7 @@ describe("non-collaborative markdown normalization is idempotent", () => {
 		expect(normalize(input)).toBe(input);
 	});
 
-	test("un-escapes a Council-style escaped date once, then holds still", () => {
+	test("un-escapes a backslash-escaped date once, then holds still", () => {
 		const once = normalize("Meeting on 2026\\-08\\-30\n");
 		expect(once).toContain("2026-08-30");
 		expect(normalize(once)).toBe(once);
@@ -246,10 +247,20 @@ describe("non-collaborative markdown normalization is idempotent", () => {
 	});
 
 	test("reformats the code-span backslash fixture once, then holds still", () => {
-		// User decision E chose option C: the serializer writes the span as an HTML code element
-		// with numeric character references, so the backslash run cannot grow.
+		// Product decision: the serializer writes the span as an HTML code element with numeric
+		// character references, so the backslash run cannot grow.
 		const expected = "| <code>x &#92;&#92;&#124; y</code> | c |\n| --- | --- |\n| 1 | 2 |\n";
 		const output = normalize(table_code_span_backslash);
+		expect(output).toBe(expected);
+		expect_still_a_table(output);
+		expect(normalize(output)).toBe(output);
+	});
+
+	test("disarms markdown syntax inside the HTML code element form, stable", () => {
+		// Between the written code tags the text is ordinary inline markdown to marked, so an
+		// unescaped `**b**` would come back as bold and the asterisks would be deleted.
+		const expected = "| <code>a &#42;&#42;b&#42;&#42; &#92;&#92;&#124; c</code> | d |\n| --- | --- |\n| 1 | 2 |\n";
+		const output = normalize(table_code_span_markdown_active);
 		expect(output).toBe(expected);
 		expect_still_a_table(output);
 		expect(normalize(output)).toBe(output);

@@ -213,7 +213,13 @@ const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextTool
 				// collaboration turned off must save it now, and the popover only closes once the
 				// save is known to have worked, so the member has something to retry in.
 				if (commitComment) {
-					const committed = await commitComment(threadId);
+					// A rejected commit (a network drop, not a refusal) must also take the mark
+					// back out, or it would ride along unsaved and publish with the next Save.
+					const committed = await commitComment(threadId).catch((error: unknown) => {
+						console.error(error);
+						toast.error("Failed to save the comment");
+						return false;
+					});
 					if (!committed) {
 						remove_comment_mark(editor, threadId);
 						return;

@@ -280,8 +280,8 @@ async function organizations_test_seed_live_plugin_authority(
 ) {
 	const now = Date.now();
 	const pluginVersionId = await ctx.db.insert("plugins_versions", {
-		name: "chitchat",
-		displayName: "Chitchat",
+		name: "deletion-authority",
+		displayName: "Deletion Authority",
 		version: "0.1.0",
 		description: "Deletion authority fixture",
 		reviewStatus: "passed",
@@ -311,7 +311,7 @@ async function organizations_test_seed_live_plugin_authority(
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		pluginVersionId,
-		pluginName: "chitchat",
+		pluginName: "deletion-authority",
 		status: "enabled",
 		configurationYaml: null,
 		acceptedCapabilities: [],

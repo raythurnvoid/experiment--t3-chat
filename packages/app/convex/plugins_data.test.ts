@@ -348,6 +348,76 @@ describe("resolve_principal", () => {
 		expect(resolved._yay).toMatchObject({ kind: "plugin_service", scopes: ["plugin_data:read"] });
 	});
 
+	test("gives an invoke run only what its capabilities earn, and never files:download", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const run = await start_plugin_run(t, fixture, {
+			acceptedCapabilities: ["plugin.data.read", "plugin.data.write"],
+			tokenSeed: "e",
+		});
+		// The seed starts an upload run. An invoke run has no source file at all, which is what
+		// takes the sibling-write baseline away from it.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_event_runs", run.runId, {
+				event: "ui.invoke.requested",
+				endpointId: "chat",
+				serializationKey: "installation",
+				assetId: undefined,
+				fileNodeId: undefined,
+			});
+		});
+
+		const baseline = await t.query(internal.public_api.resolve_principal, { presented: run.apiToken });
+		if (baseline._nay) {
+			throw new Error(baseline._nay.message);
+		}
+		expect(baseline._yay.scopes).toEqual(["activities:write", "plugin_data:read", "plugin_data:write"]);
+
+		// Own-write is an invoke run's one write consent, and workspace.files.read its one read
+		// consent. Neither earns `files:download`, which stays bound to a run's own source file.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_event_runs", run.runId, {
+				acceptedCapabilities: ["workspace.files.own-write", "workspace.files.read"],
+			});
+		});
+		const withConsent = await t.query(internal.public_api.resolve_principal, { presented: run.apiToken });
+		if (withConsent._nay) {
+			throw new Error(withConsent._nay.message);
+		}
+		expect(withConsent._yay.scopes).toEqual(["activities:write", "files:read", "files:list", "files:write"]);
+	});
+
+	test("an event run reads and lists only once the installation accepts workspace.files.read", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const run = await start_plugin_run(t, fixture, { acceptedCapabilities: [], tokenSeed: "f" });
+
+		// An upload run keeps the platform baseline: its own source file, Markdown siblings, and
+		// the activity feed.
+		const baseline = await t.query(internal.public_api.resolve_principal, { presented: run.apiToken });
+		if (baseline._nay) {
+			throw new Error(baseline._nay.message);
+		}
+		expect(baseline._yay.scopes).toEqual(["files:download", "files:write", "activities:write"]);
+
+		// Reading the rest of the workspace is a separate consent, and an event run earns it the
+		// same way an invoke run does.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_event_runs", run.runId, { acceptedCapabilities: ["workspace.files.read"] });
+		});
+		const withRead = await t.query(internal.public_api.resolve_principal, { presented: run.apiToken });
+		if (withRead._nay) {
+			throw new Error(withRead._nay.message);
+		}
+		expect(withRead._yay.scopes).toEqual([
+			"files:download",
+			"files:write",
+			"activities:write",
+			"files:read",
+			"files:list",
+		]);
+	});
+
 	test("refuses the whole grant once the installation stops accepting plugin.service.connect", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
@@ -1193,6 +1263,40 @@ describe("public API routes", () => {
 		});
 		expect(allowed.status).toBe(200);
 		expect(await read_documents(t, fixture)).toHaveLength(1);
+	});
+
+	test("stamps an invoke run's store writes with the invoking member", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const member = await join_member_with_role(t, fixture, { clerkUserId: "invoke-run-member", role: "member" });
+		const run = await start_plugin_run(t, fixture, {
+			acceptedCapabilities: ["plugin.data.read", "plugin.data.write"],
+			tokenSeed: "d",
+		});
+		// The fixture seeds an upload event run for the owner. Reshape it into the member's invoke
+		// run, because authorship is what this test must tell apart: the owner installed the
+		// plugin, but the member invoked this run.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_event_runs", run.runId, {
+				event: "ui.invoke.requested",
+				endpointId: "chat",
+				serializationKey: "installation",
+				actorUserId: member.userId,
+				assetId: undefined,
+				fileNodeId: undefined,
+			});
+		});
+
+		const written = await t.fetch("/api/v1/plugin-data/write", {
+			method: "POST",
+			headers: service_headers(run.apiToken),
+			body: JSON.stringify({ collection: "meetings", key: "meeting-1", value: { n: 1 } }),
+		});
+		expect(written.status).toBe(200);
+
+		const documents = await read_documents(t, fixture);
+		expect(documents).toHaveLength(1);
+		expect(documents[0]).toMatchObject({ createdBy: member.userId, updatedBy: member.userId });
 	});
 
 	test("lets a plugin page read and refuses it every write", async () => {
@@ -2958,9 +3062,8 @@ describe("reserve_document", () => {
 		const fixture = await seed_installation(t);
 		const principal = store_principal(fixture, { kind: "plugin_service" });
 
-		// Council holds a meeting reservation until eight days after the meeting closes: the seven
-		// days the provider keeps the recording URL, plus one. A shorter ceiling would refuse the one
-		// reservation this store was built for.
+		// The longest supported reservation runs until eight days after a meeting closes: the seven
+		// days the recording provider keeps the URL, plus one. A shorter ceiling would refuse it.
 		const reserved = await t.mutation(internal.plugins_data.reserve_document, {
 			principal,
 			collection: "meetings",
@@ -3900,6 +4003,80 @@ describe("db_authorize", () => {
 
 		// Read the table, not the refusals: the owner's one document must still be there, untouched.
 		expect(await read_documents(t, fixture)).toHaveLength(1);
+	});
+
+	test("the user-writable list gates an API key but no machine writer", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_versions", fixture.pluginVersionId, { userWritableCollections: ["channels"] });
+		});
+
+		// A `pk_` key writes as the member holding it, so the list gates it like the page door.
+		// Deletes are gated too, or a member could remove a backend-owned document with their key.
+		const keyWrite = await t.mutation(internal.plugins_data.write_document, {
+			principal: store_principal(fixture, { kind: "user_api_key" }),
+			collection: "meetings",
+			key: "a",
+			value: { n: 1 },
+		});
+		expect(keyWrite._nay?.message).toBe("This collection is not user-writable");
+		const keyDelete = await t.mutation(internal.plugins_data.delete_document, {
+			principal: store_principal(fixture, { kind: "user_api_key" }),
+			collection: "meetings",
+			key: "a",
+		});
+		expect(keyDelete._nay?.message).toBe("This collection is not user-writable");
+
+		// The list exists so the backend can own some collections alone: the plugin's own run and
+		// its service write the unlisted collection freely.
+		const runWrite = await t.mutation(internal.plugins_data.write_document, {
+			principal: store_principal(fixture),
+			collection: "meetings",
+			key: "a",
+			value: { n: 1 },
+		});
+		if (runWrite._nay) {
+			throw new Error(runWrite._nay.message);
+		}
+		const serviceWrite = await t.mutation(internal.plugins_data.write_document, {
+			principal: service_principal(fixture),
+			collection: "meetings",
+			key: "b",
+			value: { n: 2 },
+		});
+		if (serviceWrite._nay) {
+			throw new Error(serviceWrite._nay.message);
+		}
+
+		// The listed collection accepts the key.
+		const listed = await t.mutation(internal.plugins_data.write_document, {
+			principal: store_principal(fixture, { kind: "user_api_key" }),
+			collection: "channels",
+			key: "general",
+			value: { n: 1 },
+		});
+		if (listed._nay) {
+			throw new Error(listed._nay.message);
+		}
+	});
+
+	test("refuses an API key write when the installed version doc is missing", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		await t.run(async (ctx) => {
+			await ctx.db.delete("plugins_versions", fixture.pluginVersionId);
+		});
+
+		// The installation names its version doc, so a missing doc is a server-side break. The gate
+		// must refuse, not fall open into "no list declared, every collection writable".
+		const keyWrite = await t.mutation(internal.plugins_data.write_document, {
+			principal: store_principal(fixture, { kind: "user_api_key" }),
+			collection: "meetings",
+			key: "a",
+			value: { n: 1 },
+		});
+		expect(keyWrite._nay?.message).toBe("Not found");
 	});
 
 	test("refuses an installation id that is not an id at all", async () => {
@@ -5063,6 +5240,53 @@ describe("user_put_document", () => {
 			expectedRevision: 999,
 		});
 		expect(hijack._nay?.message).toBe("This document belongs to another writer");
+	});
+
+	test("the user-writable list gates puts and removes by collection", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+
+		// The seeded version declares no list, so every collection is user-writable.
+		const beforeList = await fixture.asPage.mutation(api.plugins_data.user_put_document, {
+			collection: "messages",
+			key: "open",
+			value: { n: 1 },
+		});
+		if (beforeList._nay) {
+			throw new Error(beforeList._nay.message);
+		}
+
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_versions", fixture.pluginVersionId, { userWritableCollections: ["channels"] });
+		});
+
+		// An unlisted collection now refuses the door, deletes included, so a member cannot remove
+		// a backend-owned document through a page write.
+		const put = await fixture.asPage.mutation(api.plugins_data.user_put_document, {
+			collection: "messages",
+			key: "open",
+			value: { n: 2 },
+		});
+		expect(put._nay?.message).toBe("This collection is not user-writable");
+		const removed = await fixture.asPage.mutation(api.plugins_data.user_remove_document, {
+			collection: "messages",
+			key: "open",
+		});
+		expect(removed._nay?.message).toBe("This collection is not user-writable");
+
+		// The listed collection stays open.
+		const listed = await fixture.asPage.mutation(api.plugins_data.user_put_document, {
+			collection: "channels",
+			key: "general",
+			value: { name: "general" },
+		});
+		if (listed._nay) {
+			throw new Error(listed._nay.message);
+		}
+
+		// The refusals wrote nothing: the gated doc still holds the pre-list value.
+		const documents = await read_documents(t, fixture);
+		expect(documents.find((doc) => doc.key === "open")).toMatchObject({ value: { n: 1 } });
 	});
 });
 

@@ -235,7 +235,9 @@ async function read_targets(t: ReturnType<typeof test_convex>) {
 	return await t.run(async (ctx) => await ctx.db.query("plugin_service_storage_targets").collect());
 }
 
-/** The fixture payer is anonymous, so every billing charge lands on this snapshot meter. */
+/**
+ * The fixture payer is anonymous, so every billing charge lands on this snapshot meter.
+ */
 async function read_meter(t: ReturnType<typeof test_convex>, fixture: Awaited<ReturnType<typeof seed_installation>>) {
 	return await t.run(async (ctx) => {
 		const snapshot = await ctx.db

@@ -1056,6 +1056,19 @@ describe("plugins_validate_manifest", () => {
 		}
 	});
 
+	test("refuses dot segments that would normalize into the reserved prefix", () => {
+		// The runner's URL constructor collapses `.` and `..` segments, so `/x/../__bonobo_senate/run`
+		// would pass the startsWith check and still reach the reserved prefix.
+		for (const path of ["/x/../__bonobo_senate/run", "/./run", "/a/../b", "/.."]) {
+			expect(
+				plugins_validate_manifest({
+					...manifest_json({ capabilities: ["plugin.backend.invoke"] }),
+					backend: { ...backend_json, endpoints: [{ id: "echo", path }] },
+				}),
+			).toEqual({ _nay: { message: "Backend endpoint paths must not contain . or .. segments" } });
+		}
+	});
+
 	test("rejects duplicate backend endpoint ids and paths", () => {
 		expect(
 			plugins_validate_manifest({

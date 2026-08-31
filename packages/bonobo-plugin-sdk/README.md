@@ -283,7 +283,7 @@ With the `plugin.backend.invoke` capability, a frame may run the plugin's backen
 Three rules for a plugin that uses it:
 
 - **Identity.** The backend must read who is acting from the envelope's `actorUserId` only — never from `input`, which any page code can fill with anything.
-- **Idempotency (the honest limit).** The host dedupes nothing: a retried call runs the backend again. Put a client request id inside `input` and dedupe in your own store writes, so a retry after an `unavailable` answer cannot apply the same work twice.
+- **Idempotency (the honest limit).** The host dedupes nothing: a retried call runs the backend again. The store and the file system are two systems with one transaction each, so a backend that writes both can crash in between and leave one of them written. Put a client request id inside `input` and dedupe in your own store writes, so a retry after an `unavailable` answer cannot apply the same work twice.
 - **Serialization.** An endpoint with `serialization: "installation"` runs one invoke at a time for the whole installation; `"caller-key"` serializes per `serializationKey` (required then, at most 128 characters). A call that finds one already running resolves `_nay` with `name: "busy"` and `retryAfterMs` — wait and retry.
 
 `_nay.name` vocabulary: `busy` (a serialization conflict or the rate limit, with `retryAfterMs`), `denied` (the capability is not accepted or the frame's access is gone), `session_expired` (reload the frame), `invalid` (the request was refused — malformed, or too large for this plugin's configuration), and `unavailable` (a transport failure or a failed backend run — the outcome is unknown, so only retry work that is safe to repeat).

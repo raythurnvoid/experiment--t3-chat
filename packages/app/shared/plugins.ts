@@ -814,6 +814,13 @@ const backend_endpoint_schema = z
 				`Backend endpoint paths must be at most ${MAX_BACKEND_ENDPOINT_PATH_LENGTH} characters`,
 			)
 			.regex(BACKEND_ENDPOINT_PATH_REGEX, "Backend endpoint paths must start with / and use printable ASCII")
+			// The runner builds a URL from this path, and the URL constructor collapses `.` and
+			// `..` segments. A path like `/x/../__bonobo_senate/run` would pass the prefix check
+			// below and still reach the reserved prefix, so refuse dot segments outright.
+			.refine(
+				(path) => path.split("/").every((segment) => segment !== "." && segment !== ".."),
+				"Backend endpoint paths must not contain . or .. segments",
+			)
 			.refine(
 				(path) => !path.startsWith(RESERVED_BACKEND_PATH_PREFIX),
 				`Backend endpoint paths must not start with ${RESERVED_BACKEND_PATH_PREFIX}`,

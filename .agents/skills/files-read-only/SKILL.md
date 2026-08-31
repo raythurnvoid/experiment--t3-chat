@@ -172,14 +172,20 @@ Both mutations resolve auth and membership, apply the tree-write rate bucket, an
   capability, provenance, and live manage ACL before any cleanup write. Inherited, member-created,
   member-recreated, moved, released, deleting, stale-epoch, or unrelated locks never pass. A member
   lock on any folder above the file does not pass either.
-- The plugin write engine passes a read-only lock ONLY when it is a direct lock whose
-  `readOnlyPluginName` equals the calling principal's plugin name, the gating capability
-  (`workspace.files.own-access`) is still accepted, and the node is inside the caller's authority
-  area — the stamped area for a `plugin_run`, the sealed destination for a `plugin_service`. The
-  service branch also passes a direct lock whose `readOnlyPluginServiceTargetId` points at its own
-  live target, through the same `db_can_clean_up_service_created_lock` helper the service cleanup
-  doors use — call that helper, never re-implement its checks. Every other lock keeps answering 409
-  `This item is read-only.` exactly as before.
+- The plugin write engine passes a read-only lock only for a lock its own plugin created, and the
+  two principal kinds are judged differently
+  (`public_api_db_can_pass_read_only_for_plugin`, `public_api.ts`).
+  - A `plugin_run` must be an invoke run. The engine resolves the lock's owning scope node and
+    passes when that node's `readOnlyPluginName` is the plugin's name, so a file inside a folder
+    the plugin locked stays writable to it. `own-access` is NOT checked here: `own-access` is the
+    capability to CREATE a lock, `own-write` the capability to write the file, and revalidation
+    already proved own-area and own-write. A plugin that later loses `own-access` can still
+    maintain the files it owns.
+  - A `plugin_service` passes only a lock on the file itself: the plugin-named lock its write door
+    created (`public_api_service_uploads_db_can_release_plugin_named_lock`, which requires
+    `workspace.files.create-read-only` and refuses when a member lock sits on a folder above), or
+    the lock of this installation's own live upload target.
+  Every other lock keeps answering 409 `This item is read-only.` exactly as before.
 - A door that passes that check must also release the lock before it archives the node. `unarchive_nodes`
   refuses the whole restore when any node in the restored subtree is read-only, so a file that kept the
   lock could never come back and the archived set would stop being restorable. A member can also hold a

@@ -1943,7 +1943,7 @@ export async function public_api_db_revalidate_file_write_principal(
  * The plugin facts `public_api_db_revalidate_file_write_principal` proved, handed to the checks below that
  * need the installation or the grant again.
  */
-export type public_api_FileWritePluginFacts = {
+type public_api_FileWritePluginFacts = {
 	pluginRun: Doc<"plugins_event_runs"> | null;
 	installation: Doc<"plugins_workspace_installations"> | null;
 	serviceGrant: Doc<"plugin_service_grants"> | null;

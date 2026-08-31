@@ -28,9 +28,7 @@ import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx"
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { cn } from "@/lib/utils.ts";
 
-export type FileEditorRichTextToolsTable_ClassNames =
-	| "FileEditorRichTextToolsTable"
-	| "FileEditorRichTextToolsTable-popover";
+export type FileEditorRichTextToolsTable_ClassNames = "FileEditorRichTextToolsTable";
 
 type TableCommandKey =
 	| "addRowBefore"
@@ -113,9 +111,7 @@ const FileEditorRichTextToolsTableInner = memo(function FileEditorRichTextToolsT
 						</MyIconButtonIcon>
 					</MyIconButton>
 				</MyMenuTrigger>
-				<MyMenuPopover
-					className={cn("FileEditorRichTextToolsTable-popover" satisfies FileEditorRichTextToolsTable_ClassNames)}
-				>
+				<MyMenuPopover>
 					<MyMenuPopoverScrollableArea>
 						<MyMenuPopoverContent>
 							<MyMenuItemsGroup>
