@@ -7853,10 +7853,10 @@ describe("plugins publish_version", () => {
 			requestedBy: membership.userId,
 			repositoryId,
 			hashChar: "b",
-			source: `// ${"x".repeat(900_000)}`,
+			source: `// ${"x".repeat(10_000_000)}`,
 		});
 
-		expect(overCap).toEqual({ _nay: { message: "Plugin review bundle exceeds the 900000-byte limit" } });
+		expect(overCap).toEqual({ _nay: { message: "Plugin review bundle exceeds the 10000000-byte limit" } });
 		expect(aiReview).not.toHaveBeenCalled();
 		const stored = await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect());
 		expect(stored).toEqual([]);
@@ -7932,12 +7932,13 @@ describe("plugins publish_version", () => {
 		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
 		mock_ai_review();
 		const steps = mock_review_steps([]);
-		// Four files just under the 900,000-byte bundle cap. The step budget is sized against exactly
-		// this shape, so proving it here is better than trusting the arithmetic behind the constant.
+		// Four files of about the size a real bundled plugin ships. The byte cap is far above this, so
+		// what bounds an artifact this size is the step budget, and proving it here is better than
+		// trusting the arithmetic behind the constants.
 		const reviewFiles = Array.from({ length: 4 }, (_unused, fileIndex) => ({
 			path: `dist/backend/part-${fileIndex}.js`,
 			contentType: "application/javascript",
-			// 215,000 ASCII bytes each. Four of them plus the record headers sit just under the cap.
+			// 215,000 ASCII bytes each, so the four together are a little over 860,000 bytes.
 			source: Array.from({ length: 8_000 }, (_ignored, line) => `export const value${line} = ${line};`)
 				.join("\n")
 				.slice(0, 215_000),
@@ -11914,6 +11915,39 @@ describe("plugins owned-area file doors", () => {
 		expect(listed.status).toBe(200);
 		const listedBody = (await listed.json()) as { items: { path: string }[] };
 		expect(listedBody.items.map((item) => item.path)).toContain("/probe/tail.md");
+	});
+
+	test("the read door settles the call slot it consumed, on both the found and the missing path", async () => {
+		const t = test_convex();
+		const fixture = await install_owned_files_plugin(t, [...OWNED_CAPABILITIES, "workspace.files.read"]);
+		const run = await start_owned_invoke_run(t, fixture);
+		expect((await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/probe" })).status).toBe(
+			200,
+		);
+		expect(
+			(await door_call(t, "/api/v1/files/write", run.apiToken, { path: "/probe/tail.md", content: "# Tail\n" }))
+				.status,
+		).toBe(200);
+
+		expect((await door_call(t, "/api/v1/files/read", run.apiToken, { path: "/probe/tail.md" })).status).toBe(200);
+		expect((await door_call(t, "/api/v1/files/read", run.apiToken, { path: "/probe/gone.md" })).status).toBe(404);
+
+		// Authorizing consumes one call slot per request. A run that ends with any call still
+		// "started" is failed as "Plugin left API calls unfinished", even though every request here
+		// answered, so the read door has to settle its own slot the way the write door does.
+		const calls = await t.run((ctx) =>
+			ctx.db
+				.query("plugins_event_run_calls")
+				.withIndex("by_run_sequence", (q) => q.eq("runId", run.runId))
+				.collect(),
+		);
+		expect(calls.map((call) => call.route)).toEqual([
+			"/api/v1/files/plugin-folders/ensure",
+			"/api/v1/files/write",
+			"/api/v1/files/read",
+			"/api/v1/files/read",
+		]);
+		expect(calls.map((call) => call.status)).toEqual(["succeeded", "succeeded", "succeeded", "failed"]);
 	});
 
 	test("a run without workspace.files.read is refused the read doors it just wrote through", async () => {

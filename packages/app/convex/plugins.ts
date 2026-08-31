@@ -84,11 +84,17 @@ const REVIEW_INPUT_MAX_TOKENS = 240_000;
  * file when it writes one file node each. A Convex function argument may be 16 MiB, so nothing in the
  * platform required the same number for the whole bundle.
  *
- * The real wall is the model's input window, which the token count below enforces exactly. This byte
- * cap sits under it as the cheap check that runs first, so an artifact that could never fit is refused
- * without paying for a token count.
+ * This is a generous outer bound, not the size a review can actually read. Most plugins should never
+ * reach it. The bundle never goes into one prompt: the reviewer reads the artifact through a tool,
+ * at most `REVIEW_READ_SOURCE_MAX_BYTES` per read, across at most `REVIEW_MAX_STEPS` steps. So the
+ * size a review can really cover is about 4 MB, and the coverage gate is what refuses a version
+ * whose bytes were never read.
+ *
+ * An artifact between that coverage ceiling and this cap is not refused here. It fails later, at the
+ * coverage gate or the wall clock, after the publish has already paid for model calls. Keep this
+ * number under the 16 MiB Convex argument limit.
  */
-const REVIEW_BUNDLE_MAX_BYTES = 900_000;
+const REVIEW_BUNDLE_MAX_BYTES = 10_000_000;
 /**
  * How many bytes one tool result may carry back to the model.
  *
@@ -3239,15 +3245,20 @@ async function publish_version_from_github(
 
 	// The manifest backend entry must resolve to one listed dist file.
 	const backendEntrypoint = manifest._yay.backend;
-	let backendEntrypointFile: (NonNullable<typeof manifest._yay.backend> & { r2Key: string; sha256: string }) | null =
-		null;
+	// Take the stored shape from the schema, not from the manifest. The manifest's backend block also
+	// carries `endpoints`, which is stored in its own top-level field below, and spreading the whole
+	// block in here would send a field this one does not declare.
+	let backendEntrypointFile: Doc<"plugins_versions">["backendEntrypointFile"] = null;
 	if (backendEntrypoint) {
 		const backendEntrypointListedFile = files.find((file) => file.path === backendEntrypoint.entry);
 		if (!backendEntrypointListedFile) {
 			return Result({ _nay: { message: "Plugin backend entrypoint file is missing from artifact files" } });
 		}
 		backendEntrypointFile = {
-			...backendEntrypoint,
+			compatibilityDate: backendEntrypoint.compatibilityDate,
+			compatibilityFlags: backendEntrypoint.compatibilityFlags,
+			entry: backendEntrypoint.entry,
+			moduleName: backendEntrypoint.moduleName,
 			r2Key: backendEntrypointListedFile.r2Key,
 			sha256: backendEntrypointListedFile.sha256,
 		};
