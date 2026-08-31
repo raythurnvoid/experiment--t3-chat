@@ -1242,6 +1242,48 @@ describe("plugins Phase 0", () => {
 		expect(run?.apiCallCount).toBe(0);
 	});
 
+	test("refuses an upload run archiving a member's file that merely sits beside its upload", async () => {
+		const t = test_convex();
+		const { membership, upload, apiToken } = await start_running_plugin_run(t, { tokenSeed: "6" });
+
+		// A member's own file in the same folder as the triggering upload. The run holds no file
+		// capability at all — the sibling-write baseline gives it `files:write` just because a
+		// source file exists, so the archive door is the only thing standing between the plugin
+		// and this file.
+		const memberFileId = await t.run(async (ctx) => {
+			const now = Date.now();
+			return await ctx.db.insert("files_nodes", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				parentId: "root",
+				name: "board-minutes.md",
+				path: "/board-minutes.md",
+				treePath: "/board-minutes.md",
+				pathDepth: 1,
+				kind: "file",
+				contentType: "text/markdown;charset=utf-8",
+				lowercaseExtension: "md",
+				createdBy: membership.userId,
+				updatedBy: membership.userId,
+				updatedAt: now,
+			});
+		});
+		expect(upload.nodeId).not.toBe(memberFileId);
+
+		const refused = await t.fetch("/api/v1/files/plugin-archive", {
+			method: "POST",
+			headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
+			body: JSON.stringify({ path: "/board-minutes.md" }),
+		});
+		expect(refused.status).toBe(403);
+		expect(await refused.json()).toEqual({ message: "Permission denied" });
+
+		// The file is still there. Archiving is how a delete looks in this product, so a passing
+		// status alone would not prove the member kept their work.
+		const stillActive = await t.run((ctx) => ctx.db.get("files_nodes", memberFileId));
+		expect(stillActive?.archiveOperationId).toBeUndefined();
+	});
+
 	test("stops authenticating a run token after the run reaches a terminal state", async () => {
 		const t = test_convex();
 		const { runId, apiToken } = await start_running_plugin_run(t, { tokenSeed: "2" });

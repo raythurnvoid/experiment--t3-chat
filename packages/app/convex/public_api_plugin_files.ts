@@ -410,8 +410,16 @@ export const archive_plugin_path = internalMutation({
 		}
 
 		if (args.principalRef.kind === "plugin_run") {
-			// Revalidation proved the target is stamped; the sweep below proves the same for the
-			// whole subtree, bounded like the service `archive-destination` door.
+			// The target itself must carry this plugin's stamp. Revalidation proves that for an invoke
+			// run, but an upload run is revalidated by the sibling rule instead, which only says the
+			// path sits beside the triggering upload. Without this check a run could archive a member's
+			// file that happens to sit in the same folder as the file it was started for.
+			if (node.pluginOwnerName !== installation.pluginName) {
+				return Result({ _nay: { message: "Permission denied" } });
+			}
+
+			// The sweep below proves the same for the whole subtree, bounded like the service
+			// `archive-destination` door.
 			const descendants = await public_api_service_uploads_db_collect_bounded_descendants(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
