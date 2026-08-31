@@ -1,5 +1,11 @@
 packages:
   - "packages/*"
+  # The council app is its own repository, mounted as a submodule. It carries its own lockfile and
+  # its own tool versions, so the root workspace must not adopt it. On this machine the submodule
+  # is cloned, so `packages/*` would otherwise find its package.json and demand a root lockfile
+  # entry for it. CI never clones it, so the same lockfile would then not match CI's disk and
+  # `pnpm install --frozen-lockfile` would fail there.
+  - "!packages/council"
   - "packages/app/vendor/novel/packages/*"
   - "packages/app/vendor/headless-tree/packages/*"
   - "packages/app/vendor/remix/packages/*"

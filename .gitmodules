@@ -181,3 +181,6 @@
 [submodule "plugins/bonobo-plugin-chitchat"]
 	path = plugins/bonobo-plugin-chitchat
 	url = https://github.com/raythurnvoid/bonobo-plugin-chitchat.git
+[submodule "packages/council"]
+	path = packages/council
+	url = https://github.com/raythurnvoid/bonobo-senate-council.git
