@@ -9,7 +9,7 @@ Use this skill only for the full reset that preserves every Clerk-backed account
 
 # Preserve Accounts And Shared Tenants
 
-Reset disposable dev data while preserving Clerk-backed accounts and any shared tenant that another active user still uses, then republish and reinstall the four first-party plugins. Load `convex-admin-ops` for CLI mechanics (Windows invocation, JSON args, readback interpretation), `plugin-system` for publish/release invariants, and `app-playwriter-harness` for the browser reseed phase.
+Reset disposable dev data while preserving Clerk-backed accounts and any shared tenant that another active user still uses, then republish and reinstall the five first-party plugins. Load `convex-admin-ops` for CLI mechanics (Windows invocation, JSON args, readback interpretation), `plugin-system` for publish/release invariants, and `app-playwriter-harness` for the browser reseed phase.
 
 # What Survives A Reset
 

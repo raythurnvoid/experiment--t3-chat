@@ -6,7 +6,7 @@ Local repository rules say not to install or run Python on this machine. Deploy 
 
 ## Runtime Contract
 
-Convex sends `POST /markitdown` with:
+The PDF plugin's backend worker (`plugins/bonobo-plugin-pdf`) sends `POST /markitdown` with:
 
 - `sourceUrl`: short-lived signed R2 download URL
 - `filename`: original filename
@@ -28,11 +28,11 @@ Conversion behavior:
 
 - Uses MarkItDown with plugins disabled.
 - Uses the sanitized filename, extension, and optional MIME type as conversion hints.
-- Convex may call this endpoint for uploaded source files without MIME allowlisting; deterministic non-success responses such as `413` or `422` mark the upload terminal and leave it as a stored file.
+- The plugin may call this endpoint for uploaded source files without MIME allowlisting; a deterministic non-success response such as `413` or `422` fails that plugin run and leaves the upload as a stored file.
 - Downloads from the signed R2 URL with a streamed request.
 - Spools the source stream with an 8 MiB in-memory threshold before spilling to a temporary file.
-- Enforces the source size through `maxBytes`; Convex currently passes 50 MiB.
-- Enforces the Markdown response size through `maxMarkdownBytes`; Convex currently passes 900,000 bytes.
+- Enforces the source size through `maxBytes`; the PDF plugin currently passes 200 MiB. 50 MiB is only this service's default when the field is omitted.
+- Enforces the Markdown response size through `maxMarkdownBytes`; the PDF plugin currently passes 900,000 bytes.
 
 Error statuses:
 
@@ -48,12 +48,12 @@ Create a Modal Secret named `BONOBO_SENATE_PRESS` with:
 
 - `BONOBO_SENATE_PRESS`
 
-Set matching Convex environment variables:
+Set matching plugin-runner secrets (see `packages/plugin-runner/wrangler.jsonc`), which reach the PDF plugin as publisher secrets:
 
 - `MODAL_FILE_CONVERTER_URL`: the deployed Modal `/markitdown` endpoint URL
 - `MODAL_TOKEN`: the same token value as `BONOBO_SENATE_PRESS`
 
-Convex calls Modal with `Authorization: Bearer <MODAL_TOKEN>`. Modal compares that value against the `BONOBO_SENATE_PRESS` secret.
+The plugin calls Modal with `Authorization: Bearer <MODAL_TOKEN>`. Modal compares that value against the `BONOBO_SENATE_PRESS` secret.
 
 ## Deploy
 

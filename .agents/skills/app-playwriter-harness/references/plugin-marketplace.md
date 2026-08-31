@@ -532,8 +532,8 @@ fake-audio scratch-Chrome loop above.
   no constant to read any more) before trusting the live Worker. Do not Join from the
   QA Edge profile (mic permission). Colleagues should open the guest link in their own browser.
 - **Start recording in the room.** Close without that click settles `ready` with no recording files.
-  The host still writes `/meetings/<meetingId>/meeting.md` from the plugin store (title, status,
-  times). After Close, the card moves `processing → ready` (often a few minutes). Recordings land
+  The Council Worker writes `/meetings/<meetingId>/meeting.md` through its sealed service grant; the
+  host copies nothing. After Close, the card moves `processing → ready` (often a few minutes). Recordings land
   under `/meetings/<meetingId>/`: `recording.mp4`, `recording-audio.m4a`, `transcript.md`,
   `summary.md`, and maybe `provider-transcript.json`. Composite transcript lines are labeled
   `Meeting`. Those blob uploads need a paid plan; the meeting note does not.

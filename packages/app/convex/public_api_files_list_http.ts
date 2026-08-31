@@ -8,6 +8,7 @@ import type { public_api_Scope } from "../shared/public-api.ts";
 import {
 	public_api_authorize_request,
 	public_api_is_path_inside_prefix,
+	public_api_settle_plugin_call_best_effort,
 	public_api_visibility_user_id,
 } from "./public_api_http_auth.ts";
 import { server_path_normalize, server_request_json_parse_and_validate } from "../server/server-utils.ts";
@@ -54,15 +55,36 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 								return auth._nay;
 							}
 							const principal = auth._yay.principal;
+							const pluginCallId = auth._yay.pluginCallId;
+
+							// Authorizing consumed a plugin run's call slot, and a run that ends with a call still
+							// open is failed as "Plugin left API calls unfinished". So every branch below settles
+							// it, including the successful one.
+							const fail = async (failArgs: { status: number; message: string; errorCode: string }) => {
+								await public_api_settle_plugin_call_best_effort(ctx, {
+									callId: pluginCallId,
+									status: "failed",
+									responseStatus: failArgs.status,
+									errorCode: failArgs.errorCode,
+									errorMessage: failArgs.message,
+								});
+								return { message: failArgs.message };
+							};
 
 							const body = await server_request_json_parse_and_validate(request, bodyValidator);
 							if (body._nay) {
-								return { status: 400, body: { message: body._nay.message } } as const;
+								return {
+									status: 400,
+									body: await fail({ status: 400, message: body._nay.message, errorCode: "invalid_input" }),
+								} as const;
 							}
 
 							const requestedPath = server_path_normalize(body._yay.path ?? "/");
 							if (!public_api_is_path_inside_prefix(requestedPath, principal.pathPrefix)) {
-								return { status: 403, body: { message: "Permission denied" } } as const;
+								return {
+									status: 403,
+									body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
+								} as const;
 							}
 
 							const lowercaseExtension = normalize_extension(body._yay.extension);
@@ -91,6 +113,11 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 									? await ctx.runQuery(internal.r2.get_assets_ready_states, { assetIds: pageAssetIds })
 									: {};
 
+							await public_api_settle_plugin_call_best_effort(ctx, {
+								callId: pluginCallId,
+								status: "succeeded",
+								responseStatus: 200,
+							});
 							console.info("Public API files listed", {
 								principalKind: principal.kind,
 								principalKey: principal.principalKey,

@@ -230,7 +230,7 @@ job through a fresh upload window in the same transaction that deletes the asset
 committed before deletion keeps its canonical size when later staging events arrive. Duplicate and
 smaller events do not charge twice. The target stays released, and the quota is never refunded.
 
-During the retention window, tombstoning an anonymous user also does not revoke every anonymous access path. See the current security gap in [auth-system](../auth-system/SKILL.md#known-anonymous-deletion-gap).
+During the retention window, tombstoning an anonymous user also does not revoke every anonymous access path. See the current security gap in [auth-system](../auth-system/SKILL.md#anonymous-deletion-closed-and-remaining-gaps).
 
 Uninstalling one plugin does not go through this purge. `plugins.uninstall_version` deletes the installation doc in its own transaction. That deletion is the immediate kill switch for every UI session and store door, so the mutation does not need to read an unbounded session list first. It schedules `plugins_data.drain_uninstalled_installation` with the tenant and installation id it already holds, and that mutation drains UI sessions and every store table in bounded batches until nothing is left. The registry hard delete first disables every matching installation in bounded passes, so ordinary producers stop before deletion can spend several calls draining growing tables. It then runs the same drain synchronously, per installation, before deleting the installation doc.
 

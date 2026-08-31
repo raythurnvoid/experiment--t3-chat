@@ -11950,6 +11950,33 @@ describe("plugins owned-area file doors", () => {
 		expect(calls.map((call) => call.status)).toEqual(["succeeded", "succeeded", "succeeded", "failed"]);
 	});
 
+	test("the list door settles the call slot it consumed, on both the listed and the rejected path", async () => {
+		const t = test_convex();
+		const fixture = await install_owned_files_plugin(t, [...OWNED_CAPABILITIES, "workspace.files.read"]);
+		const run = await start_owned_invoke_run(t, fixture);
+		expect((await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/probe" })).status).toBe(
+			200,
+		);
+
+		expect((await door_call(t, "/api/v1/files/list", run.apiToken, { path: "/probe" })).status).toBe(200);
+		expect((await door_call(t, "/api/v1/files/list", run.apiToken, { path: "/probe", limit: 0 })).status).toBe(400);
+
+		// Same slot accounting as the read door above. The list door admits plugin_run, so authorizing
+		// consumes a slot here too, and the door owns settling it on the success path as well.
+		const calls = await t.run((ctx) =>
+			ctx.db
+				.query("plugins_event_run_calls")
+				.withIndex("by_run_sequence", (q) => q.eq("runId", run.runId))
+				.collect(),
+		);
+		expect(calls.map((call) => call.route)).toEqual([
+			"/api/v1/files/plugin-folders/ensure",
+			"/api/v1/files/list",
+			"/api/v1/files/list",
+		]);
+		expect(calls.map((call) => call.status)).toEqual(["succeeded", "succeeded", "failed"]);
+	});
+
 	test("a run without workspace.files.read is refused the read doors it just wrote through", async () => {
 		const t = test_convex();
 		const fixture = await install_owned_files_plugin(t);

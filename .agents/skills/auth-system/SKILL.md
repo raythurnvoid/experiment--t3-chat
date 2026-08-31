@@ -264,7 +264,7 @@ Summary:
 - Organization ownership lives in `organizations.ownerUserId` for default and non-default organizations. Owners hold **no** role assignment; role display resolves ownership from `ownerUserId` before reading assignments. Only non-default ownership consumes the extra-organization quota and can be transferred.
 - **Implementation note:** Many app surfaces may still use older hardcoded organization/workspace ids outside this tenancy module—verify callsites.
 
-Authorization helpers in `organizations.ts` call the backend access-control permission checker. Frontend guards and full permission-management UI are intentionally incremental follow-up work.
+Authorization helpers in `organizations.ts` call the backend access-control permission checker. The permission-management UI shipped: the role editor at `src/routes/w/$organizationName/$workspaceName/roles/index.tsx` and the members page at `.../users/index.tsx`.
 
 # Planned Privacy And Permission Model
 
@@ -305,9 +305,10 @@ Canonical access-control details live in `../access-control/SKILL.md`.
 
 Role authority is **code**, not data: system roles live in `access_control_SYSTEM_ROLE_MATRIX`.
 `access_control_permission_grants` is allow-only and used for per-file sharing — the schema can target a
-role, a specific user, or public access for `organization`, `workspace`, `file` and `thread` resources,
-but today the only writer is `files_sharing.ts`, and it writes only user and role grants on `file`
-resources (the restricted scope node).
+role, a specific user, or public access for `organization`, `workspace`, `file`, `thread` and
+`plugin_scope` resources. Today there are two writers: `files_sharing.ts` writes user and role grants on `file`
+resources (the restricted scope node), and `plugins_data.ts` writes `plugin_scope` grants plus the per-file
+`content.read` grants that mirror a private scope to its readers.
 
 System roles are `admin`, `member`, `viewer`. Ownership is `organizations.ownerUserId` and carries no
 doc; there is no `owner` role. Direct user grants allow file-level access without changing anyone's

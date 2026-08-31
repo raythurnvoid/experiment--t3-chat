@@ -306,7 +306,7 @@ When a helper needs a Convex args object type, keep the type surface as small an
 - Prefer an inline object type when the helper only consumes a small body shape or a one-off subset.
 - If a helper intentionally mirrors a generated registered function's full args shape (`api.foo.bar` or `internal.foo.bar`), use `FunctionArgs<typeof internal.foo.bar>`.
 - If you need the result type from a same-file registered mutation, infer its awaited return type from `RegisteredMutation` instead of reaching into `_handler`.
-- For same-file Convex calls that would otherwise trigger generated API circularity, keep the generated reference direct and cast only the awaited result. Follow the current pattern in `packages/app/convex/files_nodes.ts`.
+- For same-file Convex calls that would otherwise trigger generated API circularity, keep the generated reference direct and cast only the awaited result. Follow the current pattern in `packages/app/convex/files_nodes_content.ts`.
 - Do not use implementation details such as `_handler`, do not extract a separate validator just to get a type, and do not create a named args type unless a production API genuinely needs it.
 
 Current same-file result pattern:
@@ -323,7 +323,7 @@ type finalize_file_content_materialization_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-const finalizationResult = (await ctx.runMutation(internal.files_nodes.finalize_file_content_materialization, {
+const finalizationResult = (await ctx.runMutation(internal.files_nodes_content.finalize_file_content_materialization, {
 	organizationId: args.organizationId,
 	workspaceId: args.workspaceId,
 	nodeId: args.nodeId,
