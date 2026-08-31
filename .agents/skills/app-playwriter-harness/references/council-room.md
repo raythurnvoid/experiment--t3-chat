@@ -6,7 +6,7 @@
 > than a read of the source, is what backs them. The room has moved again since both of those stamps.
 > This file does not record what `ROOM_REVISION` reads today, and that is on purpose — see "Prove the
 > Worker serves your tree" below for why a recorded value is the one way this proof can lie to you.
-> Read the constant out of `packages/council-service/src/room/page.ts` before you trust anything this
+> Read the constant out of `packages/council/src/room/page.ts` before you trust anything this
 > file says about the room, and compare it with the marker the Worker serves. Treat every
 > "measured on r18" note below as history, not as the current behaviour — re-run the one you are about
 > to rely on.
@@ -28,8 +28,8 @@
 Two Council surfaces run locally and are driven without any real provider or Convex host:
 
 - **The meeting room** — one static document the Council Worker serves at `GET /room`. Source:
-  `packages/council-service/src/room/page.ts` (document + CSS), `packages/council-service/src/room/client.ts`
-  (the two inline scripts, as plain strings), `packages/council-service/src/routes-room.ts` (`POST /room/api/*`).
+  `packages/council/src/room/page.ts` (document + CSS), `packages/council/src/room/client.ts`
+  (the two inline scripts, as plain strings), `packages/council/src/routes-room.ts` (`POST /room/api/*`).
 - **The plugin dashboard preview** — the Council plugin UI with a stubbed `window.fetch`. Source:
   `plugins/bonobo-plugin-council/src/preview.tsx` and `src/app.tsx`.
 
@@ -47,7 +47,7 @@ It was already running both times. One `curl` settles it, and remember the IPv6 
 
 | Surface | Command | URL |
 | --- | --- | --- |
-| Room | `vp env exec pnpx wrangler dev --local --config packages/council-service/wrangler.jsonc` | `http://127.0.0.1:8787/room?m=<meetingId>` |
+| Room | `vp env exec pnpx wrangler dev --local --config packages/council/wrangler.jsonc` | `http://127.0.0.1:8787/room?m=<meetingId>` |
 | Dashboard preview | `vite --port 5199 --strictPort` in `plugins/bonobo-plugin-council` | `http://localhost:5199/preview.html?state=<fixture>` |
 
 - The Worker answers on both `127.0.0.1:8787` and `localhost:8787`. The runners use `127.0.0.1`.
@@ -65,14 +65,14 @@ It was already running both times. One `curl` settles it, and remember the IPv6 
 
 ## Prove the Worker serves your tree
 
-A browser result about `packages/council-service/**` means nothing if the Worker is serving stale
+A browser result about `packages/council/**` means nothing if the Worker is serving stale
 code. The document carries a marker for exactly this:
 
 ```js
 await page.evaluate(() => document.querySelector('meta[name="council-room-revision"]').getAttribute("content"));
 ```
 
-It is `ROOM_REVISION` in `packages/council-service/src/room/page.ts`. This document deliberately does
+It is `ROOM_REVISION` in `packages/council/src/room/page.ts`. This document deliberately does
 not record its current value: the constant is bumped whenever the served bytes change, so any value
 written here is wrong within a round or two, and a reader who trusts it compares the Worker against a
 number that was never the answer. Read the constant out of the file and compare it with what the Worker
@@ -1173,17 +1173,17 @@ trap holds in that case, which is why this survives casual testing.
 
 ## Proving a room fix in this package's unit tests
 
-Browser QA on this page pairs with `packages/council-service/src/room/*.test.ts`, and a
-break-on-purpose proof has to run ONE named test. The package declares no dependencies of its own,
-so `pnpm --dir packages/council-service exec vitest` fails with `Command "vitest" not found`. Borrow
-the app's vitest and point it at this package's config. The test path is relative to
-`packages/council-service`, not to the repo root:
+Browser QA on this page pairs with the room test files in `packages/council`, and a
+break-on-purpose proof has to run ONE named test. The package is its own repository with its own
+vitest (installed by `vp env exec pnpm --dir packages/council --ignore-workspace install`; the
+root install does not cover it). The test path is relative to `packages/council`, not to the repo
+root:
 
 ```powershell
-vp env exec pnpm --dir packages/app exec vitest run --config ../council-service/vitest.config.mjs src/room/client.test.ts -t "<test name>"
+vp env exec pnpm --dir packages/council exec vitest run src/room/client.test.ts -t "<test name>"
 ```
 
-`vp env exec pnpm --dir packages/council-service run test` stays the gate for the whole suite.
+`vp env exec pnpm --dir packages/council run test` stays the gate for the whole suite.
 
 Two happy-dom facts decide whether a focus test proves anything here. happy-dom does **not** blur a
 focused control when it turns `disabled`, and `blur()` on an already-disabled control does nothing

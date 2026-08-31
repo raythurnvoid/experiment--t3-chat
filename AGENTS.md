@@ -168,6 +168,7 @@ Use [references-submodules/README.md](references-submodules/README.md) as the ma
 - Repositories under `references-submodules/` are read-only research sources. Do not import them into app runtime code or add them to the workspace.
 - `references-submodules/assistant-ui/` is research-only. The app does not use `@assistant-ui/*` packages at runtime.
 - The app uses the published `file-selector` and `@atlaskit/pragmatic-drag-and-drop` packages. Their repositories under `references-submodules/` are source references only.
+- `packages/council` is a first-party app submodule (the Council Worker, repo `raythurnvoid/bonobo-senate-council`) — neither a vendored dependency nor a research reference. It sits outside the pnpm workspace on purpose and carries its own lockfile and tools; run `vp env exec pnpm --dir packages/council --ignore-workspace install` after a submodule update before using its scripts.
 
 ## Third-party documentation research
 

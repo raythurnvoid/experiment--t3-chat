@@ -508,7 +508,7 @@ The 2026-08-10 plain-text QA runs extended the same baseline to the Monaco surfa
 
 `getComputedStyle` reports the declared colour, not the pixel that was painted, so it cannot score a `backdrop-filter`, an opacity-composited group, or an outline drawn over moving video. The only way to score those is to capture the composed frame with CDP `Page.captureScreenshot` and sample it. Two things bite while doing that:
 
-- **`fetch("data:image/png;base64,…")` is refused on a page with a strict `connect-src`.** The usual decode step — fetch the data URL, take the blob, draw it — dies with `TypeError: Failed to fetch`, which reads as a broken page rather than a policy refusal. `data:` is not covered by `'self'` and has to be listed on its own, and the Council room's policy (`packages/council-service/src/room-page.ts`) is `default-src 'none'` with `connect-src 'self' <provider origins>`. Decode without the network instead: `atob` -> `Uint8Array` -> `new Blob([bytes])` -> `createImageBitmap(blob)` -> draw to a canvas -> `getImageData`. That path asks no directive for permission. An `<img src="data:…">` also loads on the room, because its `img-src` does list `data:`, but the blob route works on any page and skips the image load wait.
+- **`fetch("data:image/png;base64,…")` is refused on a page with a strict `connect-src`.** The usual decode step — fetch the data URL, take the blob, draw it — dies with `TypeError: Failed to fetch`, which reads as a broken page rather than a policy refusal. `data:` is not covered by `'self'` and has to be listed on its own, and the Council room's policy (`packages/council/src/room-page.ts`) is `default-src 'none'` with `connect-src 'self' <provider origins>`. Decode without the network instead: `atob` -> `Uint8Array` -> `new Blob([bytes])` -> `createImageBitmap(blob)` -> draw to a canvas -> `getImageData`. That path asks no directive for permission. An `<img src="data:…">` also loads on the room, because its `img-src` does list `data:`, but the blob route works on any page and skips the image load wait.
 - **Sampling a rounded box by its bounding rect reads the backdrop through the corners.** The rect covers the corner squares that the border radius cut away, so those samples are whatever sits behind the element. In a pixel histogram they show up as false extremes — a near-black sample on a light chip — and they move the worst-case number the whole measurement is about. Inset every sample past the border radius before reading it.
 
 Measured 2026-08-22 on the Council room. Related: keep `scale: 1` on a clipped capture, see the `Page.captureScreenshot` clip entry above.
@@ -703,9 +703,9 @@ Observed 2026-07-26: every route rendered `Something went wrong`, with `Too many
 
 ## A backtick inside the room's CSS wedges the whole local Worker, for every agent using it
 
-`ROOM_CSS` in `packages/council-service/src/room/page.ts` is a JS template literal, so a backtick anywhere inside it — **including inside a CSS comment** — closes the string early and turns the rest of the stylesheet into JavaScript. Observed 2026-08-22: writing `` `aspect-ratio: 1` `` in a CSS comment stopped `127.0.0.1:8787` answering **any** request. The port stays `LISTENING` and connections sit in `CLOSE_WAIT`, so the symptom reads as a dead or hung Worker, not as a syntax error, and the instinct is to restart a server that is fine.
+`ROOM_CSS` in `packages/council/src/room/page.ts` is a JS template literal, so a backtick anywhere inside it — **including inside a CSS comment** — closes the string early and turns the rest of the stylesheet into JavaScript. Observed 2026-08-22: writing `` `aspect-ratio: 1` `` in a CSS comment stopped `127.0.0.1:8787` answering **any** request. The port stays `LISTENING` and connections sit in `CLOSE_WAIT`, so the symptom reads as a dead or hung Worker, not as a syntax error, and the instinct is to restart a server that is fine.
 
-- Name it instantly with the typecheck instead of guessing: `vp env exec pnpm --dir packages/council-service typecheck` prints `page.ts(979,6): error TS1005`.
+- Name it instantly with the typecheck instead of guessing: `vp env exec pnpm --dir packages/council typecheck` prints `page.ts(979,6): error TS1005`.
 - This is shared blast radius. One agent's unbalanced backtick takes the Worker away from every other agent driving the room, and it also aborts unrelated test suites that import the module — six at once in the observed case. If the Worker goes silent while you did not touch `page.ts`, check whether someone else is mid-edit before restarting anything.
 - Write CSS comments in that literal without backticks. Quote a property name as `aspect-ratio: 1` in plain words, not in code ticks.
 
@@ -761,7 +761,7 @@ A flag that comes after a subcommand (`vp env exec pnpx playwriter -s $session -
 
 ## The local Worker cannot answer the guest form until the request carries a client IP
 
-`handle_guest_session` (`packages/council-service/src/routes-room.ts`) reads `CF-Connecting-IP` **before** it reads the body, and answers `400 Missing client address` when the header is absent. Cloudflare's edge sets that header in production; `wrangler dev` does not. So on the local Worker the guest form looks broken — submit answers 400 with a message about an address the form never asked for.
+`handle_guest_session` (`packages/council/src/routes-room.ts`) reads `CF-Connecting-IP` **before** it reads the body, and answers `400 Missing client address` when the header is absent. Cloudflare's edge sets that header in production; `wrangler dev` does not. So on the local Worker the guest form looks broken — submit answers 400 with a message about an address the form never asked for.
 
 The workaround that keeps the production code path is a route handler that adds the header:
 
@@ -771,7 +771,7 @@ await page.route("**/room/api/**", (route) =>
 );
 ```
 
-Prefer this over the escape hatch, because it also lets you choose the rate-limit key. The guest bucket is **50 attempts per 10 minutes per IP** (`council_RATE_LIMITS.guest_join_ip` in `packages/council-service/src/db.ts:144`). That number has been raised before, so read the constant rather than trusting this line. A second run from the same address starts partly spent, so varying the last octet keeps runs apart. It does not buy a clean slate, though: `guest_join_code` (in `council_RATE_LIMITS`, also 50 per 10 minutes) is keyed on the hash of the code you present, so every run against the same meeting spends the same bucket whatever address it comes from. `COUNCIL_ALLOW_MISSING_CLIENT_IP=true` also exists and makes the Worker use the literal key `loopback`, but then every run shares one bucket and the header path is never exercised.
+Prefer this over the escape hatch, because it also lets you choose the rate-limit key. The guest bucket is **50 attempts per 10 minutes per IP** (`council_RATE_LIMITS.guest_join_ip` in `packages/council/src/db.ts:144`). That number has been raised before, so read the constant rather than trusting this line. A second run from the same address starts partly spent, so varying the last octet keeps runs apart. It does not buy a clean slate, though: `guest_join_code` (in `council_RATE_LIMITS`, also 50 per 10 minutes) is keyed on the hash of the code you present, so every run against the same meeting spends the same bucket whatever address it comes from. `COUNCIL_ALLOW_MISSING_CLIENT_IP=true` also exists and makes the Worker use the literal key `loopback`, but then every run shares one bucket and the header path is never exercised.
 
 ## A Vite preview can bind IPv6 only, so the `127.0.0.1` literal looks like a dead server
 
@@ -1318,7 +1318,7 @@ runner that spawns the wrong path gets `ENOENT`, `execFileSync` throws on every 
 harness scores each throw as "the suite failed, so the mutation was killed".
 
 Observed 2026-08-22: a reviewer's first campaign reported **116 killed, 0 survived** across
-`packages/council-service/src`. That is not a suspicious number — it reads as a very well-tested
+`packages/council/src`. That is not a suspicious number — it reads as a very well-tested
 package, which is exactly why nobody questions it. The corrected run gave 88 killed, **57 survived**.
 
 - Run two controls before believing any campaign result, and state both outcomes in the report:
@@ -1361,19 +1361,19 @@ Error: Failed to load custom Reporter from basic
 
 The stack is all `vite`/`vitest` internals, so it reads as a broken vitest config or a bad install, and
 you can lose a run chasing that instead of the flag. Reproduced 2026-08-23 on vitest 4.1.10 with
-`vp env exec pnpm --dir packages/council-service run test --reporter=basic` (exit 1, zero tests run).
+`vp env exec pnpm --dir packages/council run test --reporter=basic` (exit 1, zero tests run).
 
 The reason anyone reaches for it is per-file test counts, and **the default reporter does not print
 them** — it lists only the files that failed, then one summary line. To get counts per file, write a
 JSON report and read it:
 
 ```sh
-vp env exec pnpm --dir packages/council-service run test --reporter=json --outputFile="$SP/base.json"
+vp env exec pnpm --dir packages/council run test --reporter=json --outputFile="$SP/base.json"
 ```
 
 Then sum `assertionResults.length` per entry in `testResults`. A ready script is
 `per-file.mjs` under `t3-chat-+personal/+ai/fixer-bk-2026-08-23/`. It printed 22 files / 537 tests for
-`packages/council-service`, matching the default reporter's own summary line — check that they agree,
+`packages/council`, matching the default reporter's own summary line — check that they agree,
 because a JSON report written by a crashed run still parses.
 
 ## A script `focus()` never matches `:focus-visible`, so every ring probe reads `none`

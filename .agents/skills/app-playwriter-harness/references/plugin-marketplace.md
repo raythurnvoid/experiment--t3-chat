@@ -328,7 +328,7 @@ not chase a "data-probe page hangs" report without re-checking it live.
 
 The Council plugin page (`/w/<org>/<workspace>/plugins/council/pages/council`) proves the whole
 service-connect auth chain: on load it POSTs to the Council Worker
-(`https://bonobo-council-service.ray-thurne-void.workers.dev/api/meetings/list`), and the Worker trades
+(`https://council.bonobo-senate.com/api/meetings/list` since plugin 0.2.3), and the Worker trades
 the page token for a service grant at Convex `/api/internal/plugins/service-grants/exchange`
 (`plugins_service.ts`). An empty meetings list with no `role="alert"` is the pass signal.
 
@@ -489,7 +489,7 @@ click provably does nothing, not before.
   objects stay — that is the archive working, not failed QA cleanup.
 - A create failure renders only as a `role="alert"` inside the frame with the Worker's generic message.
   `Failed to reserve storage for the meeting` (HTTP 502) wraps ANY non-auth Convex `plugin-data/reserve`
-  refusal: `convex_post` in `packages/council-service/src/convex-api.ts` collapses every non-401/403/404/409/429
+  refusal: `convex_post` in `packages/council/src/convex-api.ts` collapses every non-401/403/404/409/429
   status to `refused`, the route maps that to 502, and neither side logs the underlying reason —
   `wrangler tail` shows `logs: []` and `convex logs` shows nothing. Diagnose by reading the reserve args in
   `routes-page.ts` against the caps in `packages/app/convex/plugins_data.ts` (`MAX_RESERVATION_TTL_MS`,
@@ -526,7 +526,7 @@ fake-audio scratch-Chrome loop above.
   the page posts `{}` and the leftover host lobby comes back (Host + old title; Join says the old
   meeting ended). Re-measured 2026-08-26 after deploying this package: leftover cookie + live guest
   URL → `{ meetingId }` → 401 → `#view-guest`. Compare the served marker with `ROOM_REVISION` in
-  `packages/council-service/src/room/page.ts` before trusting the live Worker. Do not Join from the
+  `packages/council/src/room/page.ts` before trusting the live Worker. Do not Join from the
   QA Edge profile (mic permission). Colleagues should open the guest link in their own browser.
 - **Start recording in the room.** Close without that click settles `ready` with no recording files.
   The host still writes `/meetings/<meetingId>/meeting.md` from the plugin store (title, status,
@@ -557,9 +557,9 @@ fake-audio scratch-Chrome loop above.
   `failure_reason` is the operator text, but a Durable Object reset mid-run can write that column
   first (`Durable Object reset because its code was updated.`) and then the catch cannot overwrite
   it because the row is already `failed`. The real step error lives on the Workflow instance:
-  `vp env exec -- pnpx wrangler workflows instances describe bonobo-council-workflow council-process_meeting-<meetingId>-g<generation> --config packages/council-service/wrangler.jsonc`.
+  `vp env exec -- pnpx wrangler workflows instances describe bonobo-senate-council-workflow council-process_meeting-<meetingId>-g<generation> --config packages/council/wrangler.jsonc`.
   Also read artifacts (`kind, file_name, status`, never `upload_body`) and the outbox generation.
-  Do not run `wrangler tail` on `bonobo-council-service` while a meeting is `processing`: enabling
+  Do not run `wrangler tail` on `bonobo-senate-council` while a meeting is `processing`: enabling
   tail or dashboard logs can reset the Workflow Durable Object. Hourly cron redrives after one
   hour if the sealed grant still lives. Convex will only show `plugins_projections_council:*`
   until create-target runs. Do not Join from QA Edge for this. QA Edge is not signed into the
@@ -619,7 +619,7 @@ fake-audio scratch-Chrome loop above.
   still polling. If that happens, set the row back to `processing` on the same generation so a
   later `UPLOADED` can still write `ready`. A Workflow that stays `Running` on one sleep step
   for far longer than 30 seconds may be paused: `wrangler workflows instances resume
-  bonobo-council-workflow <instanceId> --config packages/council-service/wrangler.jsonc`
+  bonobo-senate-council-workflow <instanceId> --config packages/council/wrangler.jsonc`
   unstuck generation 2 of the 2026-08-26 TEST meeting. Do not start `wrangler tail` to watch
   this. The hung-upload recovery is deployed. Generation 3 of that TEST meeting finished
   `ready` from the provider transcript after every poll stayed `UPLOADING` with
