@@ -55,6 +55,13 @@ Membership says where you are. Access control says what you may do there.
   cascade helper, `set_node_read_only`, and `set_node_writable` in
   `packages/app/convex/files_nodes.ts`. That is what makes a member's lock change take the bypass
   away. Once a member locks or unlocks the node, no service target owns that lock any more.
+- The plugin file doors add a second provenance-bound lock pointer, `readOnlyPluginName`, and the
+  same clearing rule applies to it. The split of who may release such a lock rides the ownership
+  stamp and is specified in `../files-read-only/SKILL.md`. The stamp itself
+  (`files_nodes.pluginOwnerName`, any plugin name) closes the member sharing doors: every
+  `files_sharing.ts` writer and both member lock doors refuse a stamped node and any node whose
+  effective lock comes from one — it covers every node a plugin creates through the owned-file
+  doors.
 
 ## Where a role binds
 
@@ -118,26 +125,25 @@ Fields: `organizationId`, `workspaceId`, `resourceKind` (`organization` | `works
 `thread` | `plugin_scope`), `resourceId` (stringified id), `principalKind` (`role` | `user` |
 `public`), optional `userId`, optional `role`, `permission`, `createdAt`, `updatedAt`.
 
-**Three writers: `files_sharing.ts`, `plugins_data.ts`, and `plugins_projections.ts`.** System role
+**Two writers: `files_sharing.ts` and `plugins_data.ts`.** System role
 permissions moved into code, so the old seeded organization and workspace grants are gone. Every
 other grant doc is a file share: one doc per permission per principal, with the **restricted scope
 node** as `resourceId`. Nothing writes a `public` grant, and the share validator has no `public` arm.
 
-`plugins_projections.reconcile_private_folder_grants` writes file grants too: one `content.read` per
-scope member on a private channel's projection folder, mirroring the `plugin_scope` grants. The sync
-owns that folder's grant list — it deletes anything else on the folder, including grants a person
-added by hand through the share dialog, and it never writes more than `content.read` (a file `manage`
-grant would let a channel manager unrestrict or re-share the folder). That clean-up runs when that
-channel next syncs, not on every sync, so a hand-added grant on a quiet channel's folder survives
-until the next message or membership change there. Only the owner can add one: `content.read` is all
-the mirror hands out, and every `files_sharing.ts` writer needs `content.permissions.manage` on the
-node. Removals are applied synchronously inside `user_manage_scope`
-(`plugins_data_db_sync_scope_projection_acl` in `plugins_data.ts`), so a removed member loses the folder in the
-same transaction; adds wait for the next sync. Archiving the channel deletes the mirrored grants
-outright (`archive_projection_channel`), because the folder map row it deletes is the only way back
-to them. Uninstall is the deliberate exception: it removes projection map rows but leaves the frozen
-workspace files and their `file` grants. Member removal and workspace purge can still find those grants
-without the projection map and remove them through their own tenant indexes.
+The declarative access bindings (`plugins_file_access_bindings` in `plugins_data.ts`) are the
+host-maintained file-grant mirror: a plugin binds one of its owned nodes to one of its private scopes
+(`access.readScopeId` on the plugin file doors), and the host restricts the node and keeps exactly one
+`content.read` grant per scope member on it — at most 4 bound nodes per scope, readers bounded by the
+50-person scope cap. BOTH directions are synchronous inside
+`user_manage_scope` (`plugins_data_db_sync_file_access_bindings`): no file write interleaves, so adds
+do not wait for a sync, and a removed member loses the bound files in the same transaction. The
+mirror hands out only `content.read` (a file `manage` grant would let a channel manager unrestrict or
+re-share the node). Scope deletion and stranded-scope cleanup (`cleanup_stranded_scopes`, after
+account or organization teardown empties a scope) delete the mirrored grants and the binding rows; the
+node stays restricted, so nothing widens when the readers go away. Uninstall drains only the binding
+rows and leaves the mirrored grants with their files — member removal and workspace purge find those
+grants through their own tenant indexes. The organization owner still reads
+everything. Plugins never name users — the only principal input is a scope id.
 
 `plugins_data.user_manage_scope` writes the `plugin_scope` grants. `resourceId` is
 `"<installationId>:<scopeId>"` — the installation is part of it because two installations may mint the
@@ -700,14 +706,16 @@ Be explicit about this when planning work; do not assume the subsystem is comple
   there. `files_nodes_db_create_node_recursively_at_path` answers `"This file already exists."`, and
   the public write route answers `"Permission denied"`. Neither hands over the name, the content or
   the author, and hiding it would need two nodes on one path. Accepted, not overlooked.
-- **`/chitchat/private` sharpens that oracle and is the current worst case.** Every private Chitchat
-  channel folder hangs off that one unrestricted, well-known parent, and each folder is named after
-  its channel, so guessing there is cheaper than guessing anywhere else — and the refusal strings
-  differ by case (`create_folder_node` on an existing unreadable child answers `"Permission denied"`,
-  a free name answers `"This item is read-only."` from the root lock). The names of the channels are
-  the secret the projection is protecting, so if this oracle is ever closed, close it by collapsing
-  those two answers the way `create_upload_nodes` collapses its skips into `"conflict"`. Known and
-  accepted for now; the tree itself lists no channel folder to a non-member.
+- **`/chitchat/private` used to be the worst case; the digest suffix blunted it.** Every private
+  Chitchat channel folder hangs off one well-known, plugin-locked parent (`<chitchat root>/private`),
+  and the refusal strings still differ by case (`create_folder_node` on an existing unreadable child
+  answers `"Permission denied"`, a free name answers `"This item is read-only."` from the plugin
+  folder lock). But since Chitchat 0.6.0 each channel folder is named
+  `<slug>-<digest8(channelKey)>`, and the channel key is an unguessable client UUID, so a probe
+  cannot confirm a guessed channel name — the guess would have to include the digest. The channel
+  names are the secret being protected; if the two-answer split ever matters, collapse those answers
+  the way `create_upload_nodes` collapses its skips into `"conflict"`. Known and accepted; the tree
+  itself lists no channel folder to a non-member.
 - **The folder import widens that oracle's budget, on purpose.** `files_nodes.create_upload_nodes`
   reports per-item skips, and a skip is the same class of probe. The payload never says why: a
   permission refusal and a user-chosen skip both answer the one literal `"conflict"`. Each item is

@@ -353,6 +353,9 @@ export const register_plugin_version = internalAction({
 		events: doc(app_convex_schema, "plugins_versions").fields.events,
 		pages: doc(app_convex_schema, "plugins_versions").fields.pages,
 		fileViews: doc(app_convex_schema, "plugins_versions").fields.fileViews,
+		endpoints: doc(app_convex_schema, "plugins_versions").fields.endpoints,
+		serviceScopes: doc(app_convex_schema, "plugins_versions").fields.serviceScopes,
+		userWritableCollections: doc(app_convex_schema, "plugins_versions").fields.userWritableCollections,
 		capabilities: doc(app_convex_schema, "plugins_versions").fields.capabilities,
 		outboundOrigins: doc(app_convex_schema, "plugins_versions").fields.outboundOrigins,
 		uiOutboundOrigins: doc(app_convex_schema, "plugins_versions").fields.uiOutboundOrigins,
@@ -434,6 +437,9 @@ export const upsert_plugin = internalMutation({
 		events: doc(app_convex_schema, "plugins_versions").fields.events,
 		pages: doc(app_convex_schema, "plugins_versions").fields.pages,
 		fileViews: doc(app_convex_schema, "plugins_versions").fields.fileViews,
+		endpoints: doc(app_convex_schema, "plugins_versions").fields.endpoints,
+		serviceScopes: doc(app_convex_schema, "plugins_versions").fields.serviceScopes,
+		userWritableCollections: doc(app_convex_schema, "plugins_versions").fields.userWritableCollections,
 		capabilities: doc(app_convex_schema, "plugins_versions").fields.capabilities,
 		outboundOrigins: doc(app_convex_schema, "plugins_versions").fields.outboundOrigins,
 		uiOutboundOrigins: doc(app_convex_schema, "plugins_versions").fields.uiOutboundOrigins,
@@ -3376,6 +3382,13 @@ async function publish_version_from_github(
 			entry: fileView.entry,
 			contentTypes: fileView.contentTypes,
 		})),
+		endpoints: (manifest._yay.backend?.endpoints ?? []).map((endpoint) => ({
+			id: endpoint.id,
+			path: endpoint.path,
+			serialization: endpoint.serialization ?? "installation",
+		})),
+		serviceScopes: manifest._yay.service?.scopes ?? null,
+		userWritableCollections: manifest._yay.userWritableCollections ?? null,
 		capabilities: manifest._yay.capabilities,
 		outboundOrigins: manifest._yay.outboundOrigins,
 		uiOutboundOrigins: manifest._yay.uiOutboundOrigins,
@@ -4086,6 +4099,171 @@ export const delete_publisher_repository_secret = mutation({
 			.first();
 		if (existing) {
 			await ctx.db.delete("plugins_publisher_repository_secrets", existing._id);
+		}
+		return Result({ _yay: null });
+	},
+});
+
+/**
+ * The registration state the Service section shows the publisher. Never the hash: the plaintext
+ * secret is shown once by the set mutation, and nothing can read it back afterwards.
+ */
+export const get_plugin_service_registration = query({
+	args: {
+		pluginName: v.string(),
+	},
+	returns: v.union(
+		v.object({
+			exists: v.boolean(),
+			scopes: doc(app_convex_schema, "plugins_service_registrations").fields.scopes,
+			updatedAt: v.union(v.number(), v.null()),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth || userAuth.kind !== "signed_in") {
+			return null;
+		}
+
+		// The same publisher gate as `get_publisher_plugin`: the claim behind the latest version,
+		// owned by the caller, who is also the version's publisher.
+		const latest = await ctx.db
+			.query("plugins_versions")
+			.withIndex("by_isLatest_name", (q) => q.eq("isLatest", true).eq("name", args.pluginName))
+			.first();
+		if (!latest) {
+			return null;
+		}
+		const repository = await ctx.db
+			.query("plugins_publisher_repositories")
+			.withIndex("by_repositoryUrl", (q) => q.eq("repositoryUrl", latest.sourceRepositoryUrl))
+			.first();
+		if (!repository || repository.ownerUserId !== userAuth.id || repository.ownerUserId !== latest.createdBy) {
+			return null;
+		}
+
+		const registration = await ctx.db
+			.query("plugins_service_registrations")
+			.withIndex("by_pluginName", (q) => q.eq("pluginName", args.pluginName))
+			.first();
+		if (!registration) {
+			return { exists: false, scopes: [], updatedAt: null };
+		}
+		return { exists: true, scopes: registration.scopes, updatedAt: registration.updatedAt };
+	},
+});
+
+/**
+ * Create or rotate the plugin's service registration. The host generates the secret — a
+ * publisher-supplied value would only mean weaker secrets — stores its hash, and returns the
+ * plaintext exactly once. A rotation stores a new hash, so the old secret stops working with
+ * this commit.
+ */
+export const set_plugin_service_registration = mutation({
+	args: {
+		pluginName: v.string(),
+		scopes: doc(app_convex_schema, "plugins_service_registrations").fields.scopes,
+	},
+	returns: v_result({ _yay: v.object({ exchangeSecret: v.string() }) }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth || userAuth.kind !== "signed_in") {
+			return Result({ _nay: { message: "Sign in to publish plugins" } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "plugins_manage", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		// A registration with no scopes could not exchange anything, so refuse it here instead of
+		// letting the service learn that at its first exchange.
+		const scopes = [...new Set(args.scopes)];
+		if (scopes.length === 0) {
+			return Result({ _nay: { message: "Choose at least one scope" } });
+		}
+
+		const latest = await ctx.db
+			.query("plugins_versions")
+			.withIndex("by_isLatest_name", (q) => q.eq("isLatest", true).eq("name", args.pluginName))
+			.first();
+		if (!latest) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		const repository = await ctx.db
+			.query("plugins_publisher_repositories")
+			.withIndex("by_repositoryUrl", (q) => q.eq("repositoryUrl", latest.sourceRepositoryUrl))
+			.first();
+		if (!repository || repository.ownerUserId !== userAuth.id || repository.ownerUserId !== latest.createdBy) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		// The `pse_` prefix makes a leaked value recognizable in scanners, like the token prefixes.
+		const exchangeSecret = `pse_${crypto_random_hex(32)}`;
+		const exchangeSecretHash = await crypto_sha256_hex(exchangeSecret);
+		const now = Date.now();
+		const existing = await ctx.db
+			.query("plugins_service_registrations")
+			.withIndex("by_pluginName", (q) => q.eq("pluginName", args.pluginName))
+			.first();
+		if (existing) {
+			await ctx.db.patch("plugins_service_registrations", existing._id, {
+				exchangeSecretHash,
+				scopes,
+				updatedAt: now,
+			});
+		} else {
+			await ctx.db.insert("plugins_service_registrations", {
+				pluginName: args.pluginName,
+				exchangeSecretHash,
+				scopes,
+				createdBy: userAuth.id,
+				updatedAt: now,
+			});
+		}
+
+		return Result({ _yay: { exchangeSecret } });
+	},
+});
+
+export const remove_plugin_service_registration = mutation({
+	args: {
+		pluginName: v.string(),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth || userAuth.kind !== "signed_in") {
+			return Result({ _nay: { message: "Sign in to publish plugins" } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "plugins_manage", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const latest = await ctx.db
+			.query("plugins_versions")
+			.withIndex("by_isLatest_name", (q) => q.eq("isLatest", true).eq("name", args.pluginName))
+			.first();
+		if (!latest) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		const repository = await ctx.db
+			.query("plugins_publisher_repositories")
+			.withIndex("by_repositoryUrl", (q) => q.eq("repositoryUrl", latest.sourceRepositoryUrl))
+			.first();
+		if (!repository || repository.ownerUserId !== userAuth.id || repository.ownerUserId !== latest.createdBy) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		const existing = await ctx.db
+			.query("plugins_service_registrations")
+			.withIndex("by_pluginName", (q) => q.eq("pluginName", args.pluginName))
+			.first();
+		if (existing) {
+			await ctx.db.delete("plugins_service_registrations", existing._id);
 		}
 		return Result({ _yay: null });
 	},
@@ -5629,8 +5807,6 @@ export const delete_plugin_source_tree_batch = internalMutation({
 const REGISTRY_PREVIEW_LARGE_DOC_LIMIT = 50;
 /** Child rows are smaller, but every nested query still shares one transaction-wide cap. */
 const REGISTRY_PREVIEW_CHILD_DOC_LIMIT = 320;
-/** One staged body plus one sentinel stays byte-safe even when the plugin has many installations. */
-const REGISTRY_PREVIEW_STAGED_FILE_READ_LIMIT = 2;
 
 async function plugins_db_take_registry_preview_docs<T>(
 	budget: plugins_data_PreviewReadBudget,
@@ -5669,22 +5845,6 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 		pluginDataDocuments: v.number(),
 		pluginDataLiveReservations: v.number(),
 		pluginDataTombstones: v.number(),
-		pluginDataProjectionDirtyChannels: v.number(),
-		pluginDataProjectionDirtyChannelsTruncated: v.boolean(),
-		pluginDataProjectionChitchatItems: v.number(),
-		pluginDataProjectionChitchatItemsTruncated: v.boolean(),
-		pluginDataProjectionChitchatReactions: v.number(),
-		pluginDataProjectionChitchatReactionsTruncated: v.boolean(),
-		pluginDataProjectionChitchatAuthors: v.number(),
-		pluginDataProjectionChitchatAuthorsTruncated: v.boolean(),
-		pluginDataProjectionChitchatFiles: v.number(),
-		pluginDataProjectionChitchatFilesTruncated: v.boolean(),
-		pluginDataProjectionChitchatBuilds: v.number(),
-		pluginDataProjectionChitchatBuildsTruncated: v.boolean(),
-		pluginDataProjectionFiles: v.number(),
-		pluginDataProjectionFilesTruncated: v.boolean(),
-		pluginDataProjectionStates: v.number(),
-		pluginDataProjectionStatesTruncated: v.boolean(),
 		// One row per member who holds something in an installation. It carries a user id, so an
 		// operator must see it in the readback before an irreversible delete.
 		pluginDataMemberUsage: v.number(),
@@ -5694,6 +5854,8 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 		// outside service decides how many grants it mints, so the count is bounded on purpose and
 		// the operator must see `100+` instead of a number that looks exact.
 		pluginServiceGrantsTruncated: v.boolean(),
+		fileAccessBindings: v.number(),
+		fileAccessBindingsTruncated: v.boolean(),
 		pluginScopeGrants: v.number(),
 		pluginScopeGrantsTruncated: v.boolean(),
 		pluginDataScopeRows: v.number(),
@@ -5720,10 +5882,6 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 		const childDocBudget: plugins_data_PreviewReadBudget = {
 			remaining: REGISTRY_PREVIEW_CHILD_DOC_LIMIT,
 			truncated: false,
-			stagedFiles: {
-				remainingCount: 1,
-				remainingReads: REGISTRY_PREVIEW_STAGED_FILE_READ_LIMIT,
-			},
 		};
 		const versions = (
 			await plugins_db_take_registry_preview_docs(largeDocBudget, (limit) =>
@@ -5764,26 +5922,12 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 		let pluginDataDocuments = 0;
 		let pluginDataLiveReservations = 0;
 		let pluginDataTombstones = 0;
-		let pluginDataProjectionDirtyChannels = 0;
-		let pluginDataProjectionDirtyChannelsTruncated = false;
-		let pluginDataProjectionChitchatItems = 0;
-		let pluginDataProjectionChitchatItemsTruncated = false;
-		let pluginDataProjectionChitchatReactions = 0;
-		let pluginDataProjectionChitchatReactionsTruncated = false;
-		let pluginDataProjectionChitchatAuthors = 0;
-		let pluginDataProjectionChitchatAuthorsTruncated = false;
-		let pluginDataProjectionChitchatFiles = 0;
-		let pluginDataProjectionChitchatFilesTruncated = false;
-		let pluginDataProjectionChitchatBuilds = 0;
-		let pluginDataProjectionChitchatBuildsTruncated = false;
-		let pluginDataProjectionFiles = 0;
-		let pluginDataProjectionFilesTruncated = false;
-		let pluginDataProjectionStates = 0;
-		let pluginDataProjectionStatesTruncated = false;
 		let pluginDataMemberUsage = 0;
 		let pluginDataMemberUsageTruncated = false;
 		let pluginServiceGrants = 0;
 		let pluginServiceGrantsTruncated = false;
+		let fileAccessBindings = 0;
+		let fileAccessBindingsTruncated = false;
 		let pluginScopeGrants = 0;
 		let pluginScopeGrantsTruncated = false;
 		let pluginDataScopeRows = 0;
@@ -5887,7 +6031,6 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 						organizationId: installation.organizationId,
 						workspaceId: installation.workspaceId,
 						installationId: installation._id,
-						includeProjectionRows: true,
 					},
 					childDocBudget,
 				);
@@ -5895,28 +6038,14 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 				pluginDataDocuments += pluginData.documents;
 				pluginDataLiveReservations += pluginData.liveReservations;
 				pluginDataTombstones += pluginData.tombstones;
-				pluginDataProjectionDirtyChannels += pluginData.projectionDirtyChannels;
-				pluginDataProjectionDirtyChannelsTruncated ||= pluginData.projectionDirtyChannelsTruncated;
-				pluginDataProjectionChitchatItems += pluginData.projectionChitchatItems;
-				pluginDataProjectionChitchatItemsTruncated ||= pluginData.projectionChitchatItemsTruncated;
-				pluginDataProjectionChitchatReactions += pluginData.projectionChitchatReactions;
-				pluginDataProjectionChitchatReactionsTruncated ||= pluginData.projectionChitchatReactionsTruncated;
-				pluginDataProjectionChitchatAuthors += pluginData.projectionChitchatAuthors;
-				pluginDataProjectionChitchatAuthorsTruncated ||= pluginData.projectionChitchatAuthorsTruncated;
-				pluginDataProjectionChitchatFiles += pluginData.projectionChitchatFiles;
-				pluginDataProjectionChitchatFilesTruncated ||= pluginData.projectionChitchatFilesTruncated;
-				pluginDataProjectionChitchatBuilds += pluginData.projectionChitchatBuilds;
-				pluginDataProjectionChitchatBuildsTruncated ||= pluginData.projectionChitchatBuildsTruncated;
-				pluginDataProjectionFiles += pluginData.projectionFiles;
-				pluginDataProjectionFilesTruncated ||= pluginData.projectionFilesTruncated;
-				pluginDataProjectionStates += pluginData.projectionStates;
-				pluginDataProjectionStatesTruncated ||= pluginData.projectionStatesTruncated;
 				pluginDataMemberUsage += pluginData.memberUsageDocs;
 				pluginDataMemberUsageTruncated ||= pluginData.memberUsageDocsTruncated;
 				pluginServiceGrants += pluginData.serviceGrants;
 				// One capped installation makes the whole sum a lower bound, and several installations
 				// hide that twice over. Carry the flag up so the sum is never read as exact.
 				pluginServiceGrantsTruncated ||= pluginData.serviceGrantsTruncated;
+				fileAccessBindings += pluginData.fileAccessBindings;
+				fileAccessBindingsTruncated ||= pluginData.fileAccessBindingsTruncated;
 				pluginScopeGrants += pluginData.pluginScopeGrants;
 				pluginScopeGrantsTruncated ||= pluginData.pluginScopeGrantsTruncated;
 				pluginDataScopeRows += pluginData.pluginDataScopeRows;
@@ -5983,26 +6112,12 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 			pluginDataDocuments,
 			pluginDataLiveReservations,
 			pluginDataTombstones,
-			pluginDataProjectionDirtyChannels,
-			pluginDataProjectionDirtyChannelsTruncated,
-			pluginDataProjectionChitchatItems,
-			pluginDataProjectionChitchatItemsTruncated,
-			pluginDataProjectionChitchatReactions,
-			pluginDataProjectionChitchatReactionsTruncated,
-			pluginDataProjectionChitchatAuthors,
-			pluginDataProjectionChitchatAuthorsTruncated,
-			pluginDataProjectionChitchatFiles,
-			pluginDataProjectionChitchatFilesTruncated,
-			pluginDataProjectionChitchatBuilds,
-			pluginDataProjectionChitchatBuildsTruncated,
-			pluginDataProjectionFiles,
-			pluginDataProjectionFilesTruncated,
-			pluginDataProjectionStates,
-			pluginDataProjectionStatesTruncated,
 			pluginDataMemberUsage,
 			pluginDataMemberUsageTruncated,
 			pluginServiceGrants,
 			pluginServiceGrantsTruncated,
+			fileAccessBindings,
+			fileAccessBindingsTruncated,
 			pluginScopeGrants,
 			pluginScopeGrantsTruncated,
 			pluginDataScopeRows,
@@ -6268,6 +6383,17 @@ export const hard_delete_plugin_from_registry = internalMutation({
 
 			await ctx.db.delete("plugins_publish_artifact_cleanup_attempts", cleanupAttempt._id);
 			return { done: false, deleted: Math.max(1, keys.length) };
+		}
+
+		// The service registration is name-scoped and dies with the name. Left behind, its old
+		// secret would exchange tokens for a future plugin that reuses this name.
+		const registration = await ctx.db
+			.query("plugins_service_registrations")
+			.withIndex("by_pluginName", (q) => q.eq("pluginName", args.pluginName))
+			.first();
+		if (registration) {
+			await ctx.db.delete("plugins_service_registrations", registration._id);
+			return { done: false, deleted: 1 };
 		}
 
 		// A shared repository claim can outlive this plugin name. Clear a pre-review failure too,

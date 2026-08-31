@@ -5524,66 +5524,6 @@ describe("delete_organization", () => {
 		expect(organizationAfter).not.toBeNull();
 	});
 
-	test("fences a scheduled plugin projection during organization retention", async () => {
-		const t = test_convex();
-		const ownerId = await t.run((ctx) =>
-			ctx.db.insert("users", { clerkUserId: "clerk-user-delete-scheduled-plugin-organization" }),
-		);
-		await organizations_test_bootstrap_user(t, { userId: ownerId });
-		const owner = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: ownerId,
-			name: "Owner",
-			email: "delete-scheduled-plugin-organization@test.local",
-		});
-		const organization = await owner.mutation(api.organizations.create_organization, {
-			name: "plugin-org-delete",
-			description: "",
-		});
-		expect(organization._yay).toBeTruthy();
-		const fixture = await t.run((ctx) =>
-			organizations_test_seed_live_plugin_authority(ctx, {
-				userId: ownerId,
-				organizationId: organization._yay!.organizationId,
-				workspaceId: organization._yay!.defaultWorkspaceId,
-				tag: "organization-delete",
-			}),
-		);
-		await t.mutation(internal.plugins_projections.schedule_sync, {
-			installationId: fixture.installationId,
-		});
-		const projectionState = await t.run((ctx) =>
-			ctx.db
-				.query("plugins_data_projection_states")
-				.withIndex("by_installation", (q) => q.eq("installationId", fixture.installationId))
-				.unique(),
-		);
-		expect(projectionState).not.toBeNull();
-
-		const deleted = await owner.mutation(api.organizations.delete_organization, {
-			organizationId: organization._yay!.organizationId,
-		});
-		expect(deleted._yay).toBeNull();
-		expect(
-			await t.run((ctx) => ctx.db.get("organizations_workspaces", organization._yay!.defaultWorkspaceId)),
-		).toMatchObject({ pluginDataPurgeStartedAt: expect.any(Number) });
-
-		const projected = await t.mutation(internal.plugins_projections.ensure_projection_root, {
-			installationId: fixture.installationId,
-			syncGeneration: projectionState!.syncGeneration,
-		});
-		expect(projected).toEqual({ _nay: { message: "Not found" } });
-		const projectedFiles = await t.run(async (ctx) =>
-			(await ctx.db.query("files_nodes").collect()).filter(
-				(node) =>
-					node.organizationId === organization._yay!.organizationId &&
-					node.workspaceId === organization._yay!.defaultWorkspaceId &&
-					node.projectionPluginName === "chitchat",
-			),
-		);
-		expect(projectedFiles).toHaveLength(0);
-	});
-
 	test("queues organization-scope purge, drops memberships immediately, keeps structure until cron, then purge removes content and structure", async () => {
 		const t = test_convex();
 		const [ownerId, memberId] = await t.run(async (ctx) =>

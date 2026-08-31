@@ -18,7 +18,7 @@ export const plugins_RUNTIME_VERSION = "1";
  * Keep one value through a multi-step rollout, or invalidate every verdict produced by the interim
  * steps before any of them can authorize a publish.
  */
-export const plugins_REVIEW_POLICY_VERSION = "7";
+export const plugins_REVIEW_POLICY_VERSION = "8";
 
 const MANIFEST_SCHEMA_VERSION = 1;
 const EVENT_TYPES = ["files.upload.completed", "users.account.deleted"] as const;
@@ -46,6 +46,15 @@ const CAPABILITIES = [
 	// It narrows `workspace.files.write` instead of replacing it, because a read-only file is still
 	// a file this installation writes.
 	"workspace.files.create-read-only",
+	// Consent line: the plugin's backend may create, update, and archive files inside the folders
+	// this plugin creates and owns. Every node it creates carries the plugin's ownership stamp, and
+	// the write doors refuse any path whose existing chain does not carry that stamp, so this opens
+	// no write over a member's own files.
+	"workspace.files.own-write",
+	// Consent line: the plugin may lock its own folders and files read-only and restrict them to its
+	// own private scopes; the host keeps the reader lists equal to the scope members. It only ever
+	// applies to nodes carrying this plugin's ownership stamp, so a member's files are out of reach.
+	"workspace.files.own-access",
 	"plugin.data.read",
 	"plugin.data.write",
 	// Consent line: the plugin's UI pages and file views may store and change this plugin's data as
@@ -53,6 +62,11 @@ const CAPABILITIES = [
 	// own backend or service writing as the installation: the two are different consents, and a
 	// user-write door under the backend capability would widen consent nobody gave.
 	"plugin.data.user-write",
+	// Consent line: the plugin's pages and file views may run the plugin's backend on demand; the
+	// backend then acts with the plugin's own API access. Kept apart from the event-driven runs the
+	// backend already gets, because "a member's click runs publisher code that can write" is a
+	// different consent from "an upload runs it".
+	"plugin.backend.invoke",
 	"plugin.service.connect",
 	// The plugin's UI pages and file views, running in the browser, may call the origins in
 	// `uiOutboundOrigins`. Kept apart from `outbound.fetch`, which is the plugin's backend calling out
@@ -329,6 +343,19 @@ export const plugins_data_MAX_NAME_LENGTH = 128;
 export const plugins_data_MAX_KEY_PREFIX_LENGTH = plugins_data_MAX_NAME_LENGTH - (13 + 1 + 4 + 1);
 /** The largest page or window one plugin-data read may return. */
 export const plugins_data_MAX_LIST_PAGE_SIZE = 100;
+
+/**
+ * The one rule for a plugin-data collection, key, scope id, or idempotency key.
+ * The manifest and the write doors must agree, so both call this.
+ */
+export function plugins_data_is_valid_name(raw: string) {
+	return (
+		raw.length > 0 &&
+		raw.length <= plugins_data_MAX_NAME_LENGTH &&
+		raw === raw.trim() &&
+		!/[\p{Cc}\p{Cf}]/u.test(raw)
+	);
+}
 
 // #endregion plugin data store
 
@@ -652,6 +679,9 @@ const MAX_DESCRIPTION_LENGTH = 2_000;
 const MAX_VERSION_LENGTH = 100;
 const MAX_COMPATIBILITY_FLAGS = 32;
 const MAX_COMPATIBILITY_FLAG_LENGTH = 64;
+const MAX_BACKEND_ENDPOINTS = 8;
+const MAX_BACKEND_ENDPOINT_PATH_LENGTH = 256;
+const MAX_USER_WRITABLE_COLLECTIONS = 16;
 const MAX_STORED_MANIFEST_BYTES = 64 * 1024;
 const MAX_CONFIGURATION_PATH_SEGMENTS = 16;
 const MAX_CONFIGURATION_PATH_SEGMENT_LENGTH = 128;
@@ -762,6 +792,38 @@ const manifest_file_schema = z
 	})
 	.strict();
 
+// Same shape as PAGE_ID_REGEX, kept separate because endpoint ids are their own namespace.
+const BACKEND_ENDPOINT_ID_REGEX = /^[a-z0-9][a-z0-9-]{0,63}$/u;
+// Printable ASCII only, starting with `/`. The path becomes the synthetic request URL the runner
+// builds, so anything outside this range would have to be escaped somewhere and compared somewhere
+// else — refuse it at publish instead.
+const BACKEND_ENDPOINT_PATH_REGEX = /^\/[\x21-\x7E]*$/u;
+// The runner delivers host events on paths under this prefix. A manifest endpoint on it could make
+// a member's page invoke look like a host event delivery to the plugin's own code.
+const RESERVED_BACKEND_PATH_PREFIX = "/__bonobo_senate";
+
+const backend_endpoint_schema = z
+	.object({
+		id: z
+			.string()
+			.regex(BACKEND_ENDPOINT_ID_REGEX, "Backend endpoint ids must be lowercase letters, digits, and dashes"),
+		path: z
+			.string()
+			.max(
+				MAX_BACKEND_ENDPOINT_PATH_LENGTH,
+				`Backend endpoint paths must be at most ${MAX_BACKEND_ENDPOINT_PATH_LENGTH} characters`,
+			)
+			.regex(BACKEND_ENDPOINT_PATH_REGEX, "Backend endpoint paths must start with / and use printable ASCII")
+			.refine(
+				(path) => !path.startsWith(RESERVED_BACKEND_PATH_PREFIX),
+				`Backend endpoint paths must not start with ${RESERVED_BACKEND_PATH_PREFIX}`,
+			),
+		serialization: z.enum(["installation", "caller-key"]).optional(),
+	})
+	.strict();
+
+const service_scope_schema = z.enum(["plugin_data:read", "plugin_data:write", "files:write"]);
+
 const PAGE_ID_REGEX = /^[a-z0-9][a-z0-9-]{0,63}$/u;
 // Lucide icon names are kebab-case; the app maps them through an allowlist with a fallback.
 const PAGE_NAV_ICON_REGEX = /^[a-z0-9-]{1,64}$/u;
@@ -870,6 +932,24 @@ const manifest_schema = z
 						MAX_COMPATIBILITY_FLAGS,
 						`Plugin backends can declare at most ${MAX_COMPATIBILITY_FLAGS} compatibility flags`,
 					),
+				/** HTTP-invokable entrypoints for the invoke door; requires `plugin.backend.invoke`. */
+				endpoints: z
+					.array(backend_endpoint_schema)
+					.max(MAX_BACKEND_ENDPOINTS, `Plugin backends can declare at most ${MAX_BACKEND_ENDPOINTS} endpoints`)
+					.optional(),
+			})
+			.strict()
+			.optional(),
+		/**
+		 * Consent copy for the plugin's outside service. The service-registration row in the host is
+		 * the exchange authority; this block only tells the consent screens what the service will ask
+		 * for, so the two are deliberately not cross-checked at publish.
+		 */
+		service: z
+			.object({
+				scopes: z
+					.array(service_scope_schema)
+					.min(1, "Plugin service declarations must name at least one scope"),
 			})
 			.strict()
 			.optional(),
@@ -881,6 +961,18 @@ const manifest_schema = z
 			.max(MAX_FILE_VIEWS, `Plugin manifests can declare at most ${MAX_FILE_VIEWS} file views`)
 			.optional(),
 		capabilities: z.array(z.enum(CAPABILITIES)),
+		/**
+		 * The collections a member-identity writer may write. Absent means every collection stays
+		 * user-writable; an empty array means none is. Machine writers are never restricted by this
+		 * list — it exists so the backend can own some collections alone.
+		 */
+		userWritableCollections: z
+			.array(z.string())
+			.max(
+				MAX_USER_WRITABLE_COLLECTIONS,
+				`Plugin manifests can declare at most ${MAX_USER_WRITABLE_COLLECTIONS} user-writable collections`,
+			)
+			.optional(),
 		secrets: z
 			.array(secret_declaration_schema)
 			.max(MAX_SECRETS, `Plugin manifests can declare at most ${MAX_SECRETS} secrets`)
@@ -1057,6 +1149,41 @@ export function plugins_validate_manifest(input: unknown) {
 			return Result({ _nay: { message: `Plugin file view "${fileView.id}" entry must be a text/html file` } });
 		}
 	}
+	const endpointIds = new Set<string>();
+	const endpointPaths = new Set<string>();
+	for (const endpoint of parsed.data.backend?.endpoints ?? []) {
+		if (endpointIds.has(endpoint.id)) {
+			return Result({ _nay: { message: `Plugin manifest has duplicate backend endpoint id "${endpoint.id}"` } });
+		}
+		endpointIds.add(endpoint.id);
+		if (endpointPaths.has(endpoint.path)) {
+			return Result({ _nay: { message: `Plugin manifest has duplicate backend endpoint path "${endpoint.path}"` } });
+		}
+		endpointPaths.add(endpoint.path);
+	}
+	const serviceScopes = new Set<string>();
+	for (const scope of parsed.data.service?.scopes ?? []) {
+		if (serviceScopes.has(scope)) {
+			return Result({ _nay: { message: `Plugin manifest has duplicate service scope "${scope}"` } });
+		}
+		serviceScopes.add(scope);
+	}
+	const userWritableCollections = new Set<string>();
+	for (const collection of parsed.data.userWritableCollections ?? []) {
+		// The write doors judge membership in this list with the same rule they judge collection
+		// names, so a name the doors would refuse can never be declared here.
+		if (!plugins_data_is_valid_name(collection)) {
+			return Result({
+				_nay: { message: "User-writable collection names must be valid plugin-data collection names" },
+			});
+		}
+		if (userWritableCollections.has(collection)) {
+			return Result({
+				_nay: { message: `Plugin manifest has duplicate user-writable collection "${collection}"` },
+			});
+		}
+		userWritableCollections.add(collection);
+	}
 	const capabilities = new Set<string>();
 	for (const capability of parsed.data.capabilities) {
 		if (capabilities.has(capability)) {
@@ -1154,6 +1281,67 @@ export function plugins_validate_manifest(input: unknown) {
 	}
 	if (parsed.data.uiOutboundOrigins.length > 0 && !capabilities.has("ui.outbound.fetch" satisfies plugins_Capability)) {
 		return Result({ _nay: { message: "UI outbound origins require the ui.outbound.fetch capability" } });
+	}
+	// Endpoints live inside the backend block, so this first rule catches the capability declared
+	// with no backend at all; the pair below then agrees in both directions like ui.outbound.fetch.
+	if (capabilities.has("plugin.backend.invoke" satisfies plugins_Capability) && !parsed.data.backend) {
+		return Result({ _nay: { message: "The plugin.backend.invoke capability requires a plugin backend" } });
+	}
+	if (capabilities.has("plugin.backend.invoke" satisfies plugins_Capability) && endpointIds.size === 0) {
+		return Result({
+			_nay: { message: "The plugin.backend.invoke capability requires at least one backend endpoint" },
+		});
+	}
+	if (endpointIds.size > 0 && !capabilities.has("plugin.backend.invoke" satisfies plugins_Capability)) {
+		return Result({ _nay: { message: "Backend endpoints require the plugin.backend.invoke capability" } });
+	}
+	// Own-access only creates and releases locks on files own-write maintains, so on its own it
+	// would consent to authority over files this plugin can never produce.
+	if (
+		capabilities.has("workspace.files.own-access" satisfies plugins_Capability) &&
+		!capabilities.has("workspace.files.own-write" satisfies plugins_Capability)
+	) {
+		return Result({
+			_nay: {
+				message: "The workspace.files.own-access capability requires the workspace.files.own-write capability",
+			},
+		});
+	}
+	// Own-write is a narrower door on the same file surface, and keeping the base capability
+	// visible keeps the consent honest.
+	if (
+		capabilities.has("workspace.files.own-write" satisfies plugins_Capability) &&
+		!capabilities.has("workspace.files.write" satisfies plugins_Capability)
+	) {
+		return Result({
+			_nay: { message: "The workspace.files.own-write capability requires the workspace.files.write capability" },
+		});
+	}
+	if (parsed.data.service && !capabilities.has("plugin.service.connect" satisfies plugins_Capability)) {
+		return Result({ _nay: { message: "Plugin service declarations require the plugin.service.connect capability" } });
+	}
+	// Each declared service scope needs the capability that gates it at exchange time, so the
+	// consent screens never promise a scope the exchange would refuse.
+	for (const scope of parsed.data.service?.scopes ?? []) {
+		const requiredCapability: plugins_Capability =
+			scope === "plugin_data:read"
+				? "plugin.data.read"
+				: scope === "plugin_data:write"
+					? "plugin.data.write"
+					: "workspace.files.write";
+		if (!capabilities.has(requiredCapability)) {
+			return Result({
+				_nay: { message: `The ${scope} service scope requires the ${requiredCapability} capability` },
+			});
+		}
+	}
+	if (
+		parsed.data.userWritableCollections !== undefined &&
+		!capabilities.has("plugin.data.user-write" satisfies plugins_Capability)
+	) {
+		return Result({
+			_nay: { message: "User-writable collections require the plugin.data.user-write capability" },
+		});
 	}
 	return Result({ _yay: parsed.data });
 }

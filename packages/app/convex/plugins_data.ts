@@ -16,6 +16,10 @@ import {
 import { components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import { access_control_db_has_permission } from "./access_control.ts";
+import {
+	files_nodes_db_cascade_restricted_scope,
+	files_nodes_db_resolve_parent_restricted_scope,
+} from "./files_nodes.ts";
 import type { access_control_Permission } from "../shared/access-control.ts";
 import type { billing_PRODUCTS } from "../shared/billing.ts";
 import { public_api_service_uploads_db_drain_batch } from "./public_api_service_uploads.ts";
@@ -26,16 +30,13 @@ import { server_convex_get_plugin_session } from "../server/server-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { files_get_utf8_byte_size } from "../shared/files.ts";
 import {
+	plugins_data_is_valid_name,
 	plugins_data_MAX_KEY_PREFIX_LENGTH,
 	plugins_data_MAX_LIST_PAGE_SIZE,
 	plugins_data_MAX_NAME_LENGTH,
 	type plugins_Capability,
 } from "../shared/plugins.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
-import {
-	plugins_projections_channel_key_for_store_document,
-	plugins_projections_is_registered,
-} from "./plugins_projections_registry.ts";
 
 // #region limits
 
@@ -113,6 +114,13 @@ const MAX_MEMBER_LIST_PAGE_SIZE = 100;
 /** How many people one private scope may name. Same size as a file share list. */
 const MAX_SCOPE_PRINCIPALS = 50;
 /**
+ * How many file nodes one private scope may be bound to through the plugin access door. A scope
+ * change rewrites one `content.read` grant per member per bound node in the same mutation, so
+ * this cap is what keeps that synchronous work small: 50 members x 4 nodes stays under the
+ * 256-grant read bound the binding sync uses.
+ */
+const MAX_ACCESS_BINDINGS_PER_SCOPE = 4;
+/**
  * How many scope ids one installation may mint before reinstalling.
  *
  * A scope id can never be reused, even after its live rows are deleted. Keep one small identity
@@ -138,7 +146,7 @@ const MAX_SCOPES_PER_MEMBER = 50;
 /**
  * The longest a reservation may hold capacity.
  *
- * Council's projection reservation runs to the meeting's eight-day recovery horizon: the provider
+ * Council's meeting reservation runs to the meeting's eight-day recovery horizon: the provider
  * keeps a recording URL for seven days, plus one day. A shorter ceiling here would refuse the one
  * reservation this store was built for.
  */
@@ -227,16 +235,18 @@ function canonical_json(value: unknown): string {
  * not be two different docs.
  */
 function validate_name(raw: string, label: "Collection names" | "Keys" | "Idempotency keys" | "Scope ids") {
-	if (raw.length === 0) {
-		return Result({ _nay: { message: `${label} must not be empty` } });
-	}
-	if (raw.length > plugins_data_MAX_NAME_LENGTH) {
-		return Result({ _nay: { message: `${label} must be at most ${plugins_data_MAX_NAME_LENGTH} characters` } });
-	}
-	if (raw !== raw.trim()) {
-		return Result({ _nay: { message: `${label} must not start or end with whitespace` } });
-	}
-	if (/[\p{Cc}\p{Cf}]/u.test(raw)) {
+	// The shared predicate is the one rule, so the manifest's user-writable list and these doors
+	// can never disagree about what a valid name is. The branches below only pick the message.
+	if (!plugins_data_is_valid_name(raw)) {
+		if (raw.length === 0) {
+			return Result({ _nay: { message: `${label} must not be empty` } });
+		}
+		if (raw.length > plugins_data_MAX_NAME_LENGTH) {
+			return Result({ _nay: { message: `${label} must be at most ${plugins_data_MAX_NAME_LENGTH} characters` } });
+		}
+		if (raw !== raw.trim()) {
+			return Result({ _nay: { message: `${label} must not start or end with whitespace` } });
+		}
 		return Result({ _nay: { message: `${label} must not contain control characters` } });
 	}
 
@@ -383,6 +393,14 @@ async function db_authorize(
 	args: {
 		principal: StorePrincipal;
 		permission: "content.read" | "content.write";
+		/**
+		 * Collections a write is about to touch, checked against the installed version's
+		 * user-writable list for `user_api_key` only. A `pk_` key is a member-identity writer like
+		 * the frame door, and without this gate a member bypasses the collection list with their
+		 * own key. Machine principals (`plugin_run`, `plugin_service`) stay ungated — the list
+		 * exists so the backend can own some collections alone.
+		 */
+		collections?: string[];
 	},
 ) {
 	const installationId = ctx.db.normalizeId("plugins_workspace_installations", args.principal.installationId);
@@ -400,6 +418,19 @@ async function db_authorize(
 	// read, and a write would store documents the plugin itself may never read back.
 	if (!installation.acceptedCapabilities.includes(CAPABILITY_BY_PERMISSION[args.permission])) {
 		return Result({ _nay: { message: "Permission denied" } });
+	}
+
+	if (args.collections && args.collections.length > 0 && args.principal.kind === "user_api_key") {
+		const version = await ctx.db.get("plugins_versions", installation.pluginVersionId);
+		// A null list means the manifest declared none, so every collection stays user-writable.
+		const userWritableCollections = version?.userWritableCollections ?? null;
+		if (userWritableCollections !== null) {
+			for (const collection of args.collections) {
+				if (!userWritableCollections.includes(collection)) {
+					return Result({ _nay: { message: "This collection is not user-writable" } });
+				}
+			}
+		}
 	}
 
 	const membership = await ctx.db
@@ -1803,90 +1834,6 @@ export type plugins_data_write_documents_batch_Result =
  * returned `_nay` for the fourth would keep those three while telling the caller nothing was written.
  * Every refusal below therefore happens before `db_write_document` is called even once.
  */
-/**
- * Schedule a file-projection sync after a successful store write.
- *
- * Unregistered plugins return here. They must not read projection tables or create a scheduled
- * function. The 2s debounce lives in `schedule_sync`, so this write transaction only enqueues a
- * follow-up mutation.
- */
-async function db_schedule_projection_sync_if_registered(
-	ctx: MutationCtx,
-	installation: Pick<Doc<"plugins_workspace_installations">, "_id" | "pluginName">,
-) {
-	if (!plugins_projections_is_registered(installation.pluginName)) {
-		return;
-	}
-
-	await ctx.scheduler.runAfter(0, internal.plugins_projections.schedule_sync, {
-		installationId: installation._id,
-	});
-}
-
-/** Mark exact projection channels without moving an existing channel to the back of the queue. */
-async function db_upsert_projection_dirty_channels(
-	ctx: MutationCtx,
-	installation: Pick<Doc<"plugins_workspace_installations">, "_id" | "pluginName" | "organizationId" | "workspaceId">,
-	channelKeys: Iterable<string>,
-) {
-	if (!plugins_projections_is_registered(installation.pluginName)) {
-		return false;
-	}
-
-	const uniqueChannelKeys = new Set(channelKeys);
-	if (uniqueChannelKeys.size === 0) {
-		return false;
-	}
-
-	const now = Date.now();
-	for (const channelKey of uniqueChannelKeys) {
-		const existing = await ctx.db
-			.query("plugins_data_projection_dirty_channels")
-			.withIndex("by_installation_channelKey", (q) =>
-				q.eq("installationId", installation._id).eq("channelKey", channelKey),
-			)
-			.first();
-		if (existing) {
-			// Keep FIFO order while making every same-millisecond change visible to completion.
-			await ctx.db.patch("plugins_data_projection_dirty_channels", existing._id, {
-				updatedAt: Math.max(now, existing.updatedAt + 1),
-			});
-			continue;
-		}
-
-		await ctx.db.insert("plugins_data_projection_dirty_channels", {
-			organizationId: installation.organizationId,
-			workspaceId: installation.workspaceId,
-			installationId: installation._id,
-			channelKey,
-			queuedAt: now,
-			updatedAt: now,
-		});
-	}
-
-	return true;
-}
-
-/** Derive, dedupe, and mark the projected channels changed by accepted store writes. */
-async function db_mark_projection_store_documents_dirty_and_schedule(
-	ctx: MutationCtx,
-	installation: Doc<"plugins_workspace_installations">,
-	documents: { collection: string; key: string; scopeId: string | undefined }[],
-) {
-	const channelKeys = documents.flatMap((document) => {
-		const channelKey = plugins_projections_channel_key_for_store_document({
-			pluginName: installation.pluginName,
-			...document,
-		});
-		return channelKey === null ? [] : [channelKey];
-	});
-	if (!(await db_upsert_projection_dirty_channels(ctx, installation, channelKeys))) {
-		return;
-	}
-
-	await db_schedule_projection_sync_if_registered(ctx, installation);
-}
-
 async function db_write_documents(
 	ctx: MutationCtx,
 	args: {
@@ -1902,7 +1849,11 @@ async function db_write_documents(
 	if (pagePrincipal._nay) {
 		return pagePrincipal;
 	}
-	const authorized = await db_authorize(ctx, { principal: args.principal, permission: "content.write" });
+	const authorized = await db_authorize(ctx, {
+		principal: args.principal,
+		permission: "content.write",
+		collections: args.documents.map((document) => document.collection),
+	});
 	if (authorized._nay) {
 		return authorized;
 	}
@@ -2069,7 +2020,6 @@ async function db_write_documents(
 
 	// Past this line the batch is accepted, so the writes below run together and the accounting doc
 	// is created if this is the installation's first document.
-	const projectedDocuments: { collection: string; key: string; scopeId: string | undefined }[] = [];
 	for (const document of prepared) {
 		const stored = await db_write_document(ctx, {
 			actorUserId: args.principal.actorUserId,
@@ -2082,7 +2032,6 @@ async function db_write_documents(
 			chargedTo: writer,
 			now,
 		});
-		projectedDocuments.push({ collection: document.collection, key: document.key, scopeId: stored.scopeId });
 		let chargedToMemberUsageId: Id<"plugins_data_member_usage"> | null = null;
 		for (const delta of member_usage_deltas({
 			writer,
@@ -2113,8 +2062,6 @@ async function db_write_documents(
 		maxDocumentSlots,
 	});
 
-	await db_mark_projection_store_documents_dirty_and_schedule(ctx, installation, projectedDocuments);
-
 	return Result({
 		_yay: {
 			documents: prepared.map((document) => ({
@@ -2139,7 +2086,13 @@ export const delete_document = internalMutation({
 		if (pagePrincipal._nay) {
 			return pagePrincipal;
 		}
-		const authorized = await db_authorize(ctx, { principal: args.principal, permission: "content.write" });
+		// Deletes count as writes here: without the list check a member could remove a
+		// backend-owned document with their own key.
+		const authorized = await db_authorize(ctx, {
+			principal: args.principal,
+			permission: "content.write",
+			collections: [args.collection],
+		});
 		if (authorized._nay) {
 			return authorized;
 		}
@@ -2225,10 +2178,6 @@ export const delete_document = internalMutation({
 			maxDocumentSlots,
 		});
 
-		await db_mark_projection_store_documents_dirty_and_schedule(ctx, installation, [
-			{ collection: existing.collection, key: existing.key, scopeId: existing.scopeId },
-		]);
-
 		return Result({ _yay: { deleted: true } });
 	},
 });
@@ -2275,6 +2224,12 @@ async function db_authorize_page_write(
 		 * a delivered write as failed.
 		 */
 		skipRateLimit?: true;
+		/**
+		 * The collection this member write is about to touch, checked against the installed
+		 * version's user-writable list. Scope management passes nothing — scopes are not
+		 * collections.
+		 */
+		collection?: string;
 	} = {},
 ) {
 	const pluginSession = await server_convex_get_plugin_session(ctx);
@@ -2373,6 +2328,14 @@ async function db_authorize_page_write(
 		!installation.acceptedCapabilities.includes("plugin.data.user-write" satisfies plugins_Capability)
 	) {
 		return Result({ _nay: { message: "Permission denied" } });
+	}
+	// Deletes pass their collection too, so a member cannot remove a backend-owned document.
+	// A null list means the installed version declared none, so every collection stays
+	// user-writable.
+	if (args.collection !== undefined && version.userWritableCollections != null) {
+		if (!version.userWritableCollections.includes(args.collection)) {
+			return Result({ _nay: { message: "This collection is not user-writable" } });
+		}
 	}
 
 	// The organization and the workspace come back because a scope check needs them: a
@@ -2553,10 +2516,6 @@ async function db_commit_user_write_document(
 		maxDocumentSlots,
 	});
 
-	await db_mark_projection_store_documents_dirty_and_schedule(ctx, args.installation, [
-		{ collection: args.collection, key: args.key, scopeId: stored.scopeId },
-	]);
-
 	return { revision: stored.revision, byteSize: args.byteSize };
 }
 
@@ -2698,10 +2657,6 @@ async function db_user_delete_document(
 		now,
 		maxDocumentSlots: await db_resolve_document_slot_cap(ctx, { organization: args.organization }),
 	});
-
-	await db_mark_projection_store_documents_dirty_and_schedule(ctx, args.installation, [
-		{ collection: args.existing.collection, key: args.existing.key, scopeId: args.existing.scopeId },
-	]);
 }
 
 export const user_append_document = mutation({
@@ -2713,7 +2668,7 @@ export const user_append_document = mutation({
 	},
 	returns: v_result({ _yay: v.object({ key: v.string(), revision: v.number(), byteSize: v.number() }) }),
 	handler: async (ctx, args) => {
-		const authorized = await db_authorize_page_write(ctx, { skipRateLimit: true });
+		const authorized = await db_authorize_page_write(ctx, { skipRateLimit: true, collection: args.collection });
 		if (authorized._nay) {
 			return authorized;
 		}
@@ -2879,7 +2834,7 @@ export const user_put_document = mutation({
 	},
 	returns: v_result({ _yay: v.object({ revision: v.number(), byteSize: v.number() }) }),
 	handler: async (ctx, args) => {
-		const authorized = await db_authorize_page_write(ctx);
+		const authorized = await db_authorize_page_write(ctx, { collection: args.collection });
 		if (authorized._nay) {
 			return authorized;
 		}
@@ -2964,7 +2919,7 @@ export const user_remove_document = mutation({
 	},
 	returns: v_result({ _yay: v.object({ deleted: v.boolean() }) }),
 	handler: async (ctx, args) => {
-		const authorized = await db_authorize_page_write(ctx);
+		const authorized = await db_authorize_page_write(ctx, { collection: args.collection });
 		if (authorized._nay) {
 			return authorized;
 		}
@@ -3032,7 +2987,7 @@ export const user_put_owned_document = mutation({
 	},
 	returns: v_result({ _yay: v.object({ key: v.string(), revision: v.number(), byteSize: v.number() }) }),
 	handler: async (ctx, args) => {
-		const authorized = await db_authorize_page_write(ctx);
+		const authorized = await db_authorize_page_write(ctx, { collection: args.collection });
 		if (authorized._nay) {
 			return authorized;
 		}
@@ -3128,7 +3083,7 @@ export const user_remove_owned_document = mutation({
 	},
 	returns: v_result({ _yay: v.object({ deleted: v.boolean() }) }),
 	handler: async (ctx, args) => {
-		const authorized = await db_authorize_page_write(ctx);
+		const authorized = await db_authorize_page_write(ctx, { collection: args.collection });
 		if (authorized._nay) {
 			return authorized;
 		}
@@ -3260,7 +3215,7 @@ async function db_get_scope_identity(
 }
 
 /** Add the durable identity marker when a live or released scope predates marker writes. */
-export async function plugins_data_db_ensure_scope_identity(
+async function plugins_data_db_ensure_scope_identity(
 	ctx: MutationCtx,
 	args: {
 		organizationId: Id<"organizations">;
@@ -3723,71 +3678,257 @@ export async function plugins_data_db_delete_scope(ctx: MutationCtx, scopes: Doc
 	await Promise.all(scopes.map((scope) => ctx.db.delete("plugins_data_scopes", scope._id)));
 }
 
-/**
- * Keep the file projection in step with a scope membership change.
- *
- * A scope change writes no store document, so the projection's change cursors never see it.
- * By projection convention a private channel's file channel key is its scope id, so this marks
- * that channel dirty and schedules a sync.
- *
- * Removing a person (or deleting the scope) also deletes their mirrored `content.read` grants
- * on the mapped channel folder in this same transaction. Being removed from a private channel
- * must close the projected file at once, not after the sync debounce. Additions ride the
- * debounced sync instead — showing up late is safe, staying readable late is not.
- */
-export async function plugins_data_db_sync_scope_projection_acl(
-	ctx: MutationCtx,
+/** The mirrored `content.read` grants on one scope-bound file node, bounded at 256 (a scope names at most 50 people). */
+function db_binding_file_grants(
+	ctx: QueryCtx | MutationCtx,
 	args: {
-		installation: Doc<"plugins_workspace_installations">;
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
-		scopeId: string;
-		removeGrantsFor: Id<"users">[] | "all" | null;
+		nodeId: Id<"files_nodes">;
 	},
 ) {
-	if (!plugins_projections_is_registered(args.installation.pluginName)) {
-		return;
-	}
-
-	await db_upsert_projection_dirty_channels(ctx, args.installation, [args.scopeId]);
-	await db_schedule_projection_sync_if_registered(ctx, args.installation);
-
-	if (args.removeGrantsFor === null) {
-		return;
-	}
-
-	// -1 is the channel folder's map row (`plugins_PRIVATE_FOLDER_ROLLOVER_INDEX` in
-	// plugins_projections.ts). No row means the channel was never projected.
-	const folderRow = await ctx.db
-		.query("plugins_data_projection_files")
-		.withIndex("by_installation_channelKey_rolloverIndex", (q) =>
-			q.eq("installationId", args.installation._id).eq("channelKey", args.scopeId).eq("rolloverIndex", -1),
-		)
-		.first();
-	if (!folderRow) {
-		return;
-	}
-
-	// Same bound as `MIRROR_GRANT_TAKE` in plugins_projections.ts: the mirror writes one grant
-	// per scope member and a scope names at most 50 people.
-	const folderGrants = await ctx.db
+	return ctx.db
 		.query("access_control_permission_grants")
 		.withIndex("by_organization_workspace_resource_user_permission", (q) =>
 			q
 				.eq("organizationId", args.organizationId)
 				.eq("workspaceId", args.workspaceId)
 				.eq("resourceKind", "file")
-				.eq("resourceId", String(folderRow.fileNodeId)),
+				.eq("resourceId", String(args.nodeId)),
 		)
 		.take(256);
-	for (const grant of folderGrants) {
-		const remove =
-			args.removeGrantsFor === "all" ||
-			(grant.principalKind === "user" && grant.userId !== undefined && args.removeGrantsFor.includes(grant.userId));
-		if (remove) {
-			await ctx.db.delete("access_control_permission_grants", grant._id);
+}
+
+/**
+ * Keep the mirrored `content.read` grants on scope-bound file nodes in step with a scope
+ * membership change. Called at every place a scope's member list changes.
+ *
+ * There is no plugin allowlist guard here: any plugin may bind its owned files to a scope.
+ * Additions apply synchronously too — a binding has no interleaved file write to wait for,
+ * so there is no reason to let a new member show up late.
+ *
+ * `removeUserIds: "all"` is the teardown form, used when the scope itself was deleted. It also
+ * deletes the binding rows, because a binding pointing at a dead scope is a dangling row. It
+ * does NOT un-restrict the bound nodes: the reader list is gone, so the nodes end with zero
+ * readers and stay restricted — fail closed.
+ */
+export async function plugins_data_db_sync_file_access_bindings(
+	ctx: MutationCtx,
+	args: {
+		installation: Doc<"plugins_workspace_installations">;
+		scopeId: string;
+		addUserIds: Id<"users">[];
+		removeUserIds: Id<"users">[] | "all";
+	},
+) {
+	const bindings = await ctx.db
+		.query("plugins_file_access_bindings")
+		.withIndex("by_installation_scopeId", (q) =>
+			q.eq("installationId", args.installation._id).eq("scopeId", args.scopeId),
+		)
+		.collect();
+
+	const now = Date.now();
+	for (const binding of bindings) {
+		const grants = await db_binding_file_grants(ctx, {
+			organizationId: binding.organizationId,
+			workspaceId: binding.workspaceId,
+			nodeId: binding.nodeId,
+		});
+
+		const holders = new Set<Id<"users">>();
+		for (const grant of grants) {
+			const remove =
+				args.removeUserIds === "all" ||
+				(grant.principalKind === "user" && grant.userId !== undefined && args.removeUserIds.includes(grant.userId));
+			if (remove) {
+				await ctx.db.delete("access_control_permission_grants", grant._id);
+				continue;
+			}
+			if (grant.principalKind === "user" && grant.userId && grant.permission === "content.read") {
+				holders.add(grant.userId);
+			}
+		}
+
+		if (args.removeUserIds === "all") {
+			await ctx.db.delete("plugins_file_access_bindings", binding._id);
+			continue;
+		}
+		for (const userId of args.addUserIds) {
+			if (holders.has(userId)) {
+				continue;
+			}
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: binding.organizationId,
+				workspaceId: binding.workspaceId,
+				resourceKind: "file",
+				resourceId: String(binding.nodeId),
+				principalKind: "user",
+				userId,
+				permission: "content.read",
+				createdAt: now,
+				updatedAt: now,
+			});
+			holders.add(userId);
 		}
 	}
+}
+
+/**
+ * Bind one plugin-owned node's reader list to a live private scope, or release that binding.
+ * The plugin access door (`plugin-folders/ensure` and `plugin-access/set`) is the only caller;
+ * it already proved the node carries the calling plugin's stamp and the own-access consent.
+ */
+export async function plugins_data_db_apply_file_access_binding(
+	ctx: MutationCtx,
+	args: {
+		installation: Doc<"plugins_workspace_installations">;
+		node: Doc<"files_nodes">;
+		readScopeId: string | null;
+	},
+) {
+	const now = Date.now();
+	const existingBinding = await ctx.db
+		.query("plugins_file_access_bindings")
+		.withIndex("by_nodeId", (q) => q.eq("nodeId", args.node._id))
+		.first();
+
+	if (args.readScopeId === null) {
+		// Release. Only a binding this installation made is this door's to undo; any other
+		// restriction on the node is a member's and stays.
+		if (!existingBinding || existingBinding.installationId !== args.installation._id) {
+			return Result({ _yay: null });
+		}
+		const grants = await db_binding_file_grants(ctx, {
+			organizationId: existingBinding.organizationId,
+			workspaceId: existingBinding.workspaceId,
+			nodeId: existingBinding.nodeId,
+		});
+		for (const grant of grants) {
+			await ctx.db.delete("access_control_permission_grants", grant._id);
+		}
+		await ctx.db.delete("plugins_file_access_bindings", existingBinding._id);
+
+		// The binding was the reason for the restriction. Give the node back its parent's scope,
+		// exactly like the member unshare door, so a binding nested under another restricted
+		// folder stays inside that folder's list.
+		const parentScope = await files_nodes_db_resolve_parent_restricted_scope(ctx, { parentId: args.node.parentId });
+		await ctx.db.patch("files_nodes", args.node._id, { restrictedScopeNodeId: parentScope });
+		await files_nodes_db_cascade_restricted_scope(ctx, {
+			organizationId: args.node.organizationId,
+			workspaceId: args.node.workspaceId,
+			parentId: args.node._id,
+			scopeNodeId: parentScope,
+		});
+		return Result({ _yay: null });
+	}
+
+	// The scope must be live in this installation. A released or foreign scope id answers the
+	// same way as a missing one.
+	const readScopeId = args.readScopeId;
+	const scopeRow = await ctx.db
+		.query("plugins_data_scopes")
+		.withIndex("by_installation_scope", (q) => q.eq("installationId", args.installation._id).eq("scopeId", readScopeId))
+		.first();
+	if (!scopeRow) {
+		return Result({ _nay: { message: "Not found" } });
+	}
+
+	// The cap keeps the synchronous grant work of every later membership change small.
+	const boundRows = await ctx.db
+		.query("plugins_file_access_bindings")
+		.withIndex("by_installation_scopeId", (q) =>
+			q.eq("installationId", args.installation._id).eq("scopeId", readScopeId),
+		)
+		.take(MAX_ACCESS_BINDINGS_PER_SCOPE + 1);
+	const alreadyBoundHere = boundRows.some((row) => row.nodeId === args.node._id);
+	if (!alreadyBoundHere && boundRows.length >= MAX_ACCESS_BINDINGS_PER_SCOPE) {
+		return Result({
+			_nay: { message: `One private space can be bound to at most ${MAX_ACCESS_BINDINGS_PER_SCOPE} files or folders.` },
+		});
+	}
+
+	// Restrict the node on itself and cascade, like the member share door does.
+	if (args.node.restrictedScopeNodeId !== args.node._id) {
+		await ctx.db.patch("files_nodes", args.node._id, { restrictedScopeNodeId: args.node._id });
+		await files_nodes_db_cascade_restricted_scope(ctx, {
+			organizationId: args.node.organizationId,
+			workspaceId: args.node.workspaceId,
+			parentId: args.node._id,
+			scopeNodeId: args.node._id,
+		});
+	}
+
+	// Exactly one `content.read` grant per active scope member. The kept set makes a duplicate
+	// grant for the same user get deleted. Deleting every other grant is safe because the member
+	// share door refuses stamped nodes, so nothing else writes grants here.
+	// The node's own tenant fields are typed with the special workspace literals, so use the
+	// installation's ids — the door already proved the node lives in this workspace.
+	const resourceId = scope_resource_id(args.installation._id, args.readScopeId);
+	const scopeGrants = await db_scope_grants(ctx, {
+		organizationId: args.installation.organizationId,
+		workspaceId: args.installation.workspaceId,
+		resourceId,
+	});
+	const memberUserIds = new Set(
+		await db_active_scope_user_ids(ctx, {
+			organizationId: args.installation.organizationId,
+			workspaceId: args.installation.workspaceId,
+			grants: scopeGrants,
+		}),
+	);
+	const nodeGrants = await db_binding_file_grants(ctx, {
+		organizationId: args.installation.organizationId,
+		workspaceId: args.installation.workspaceId,
+		nodeId: args.node._id,
+	});
+	const kept = new Set<Id<"users">>();
+	for (const grant of nodeGrants) {
+		const mirrored =
+			grant.principalKind === "user" &&
+			grant.userId !== undefined &&
+			memberUserIds.has(grant.userId) &&
+			grant.permission === "content.read" &&
+			!kept.has(grant.userId);
+		if (mirrored && grant.userId) {
+			kept.add(grant.userId);
+			continue;
+		}
+		await ctx.db.delete("access_control_permission_grants", grant._id);
+	}
+	for (const userId of memberUserIds) {
+		if (kept.has(userId)) {
+			continue;
+		}
+		await ctx.db.insert("access_control_permission_grants", {
+			organizationId: args.installation.organizationId,
+			workspaceId: args.installation.workspaceId,
+			resourceKind: "file",
+			resourceId: String(args.node._id),
+			principalKind: "user",
+			userId,
+			permission: "content.read",
+			createdAt: now,
+			updatedAt: now,
+		});
+	}
+
+	if (existingBinding) {
+		await ctx.db.patch("plugins_file_access_bindings", existingBinding._id, {
+			scopeId: args.readScopeId,
+			updatedAt: now,
+		});
+	} else {
+		await ctx.db.insert("plugins_file_access_bindings", {
+			organizationId: args.installation.organizationId,
+			workspaceId: args.installation.workspaceId,
+			installationId: args.installation._id,
+			scopeId: args.readScopeId,
+			nodeId: args.node._id,
+			updatedAt: now,
+		});
+	}
+	return Result({ _yay: null });
 }
 
 /** Delete an empty live scope, or make its lowest active member the manager. */
@@ -3819,12 +3960,14 @@ export async function plugins_data_db_keep_scope_managed(
 			return { deleted: false, hasActivePrincipal: false, promoted: false };
 		}
 		await plugins_data_db_delete_scope(ctx, args.scopes);
-		await plugins_data_db_sync_scope_projection_acl(ctx, {
+		// Account deletion and organization member drain reach scope teardown only through this
+		// branch (via cleanup_stranded_scopes), so a binding not synced here would keep mirrored
+		// `content.read` grants alive on a file whose scope no longer exists.
+		await plugins_data_db_sync_file_access_bindings(ctx, {
 			installation: args.installation,
-			organizationId: first.organizationId,
-			workspaceId: first.workspaceId,
 			scopeId: first.scopeId,
-			removeGrantsFor: "all",
+			addUserIds: [],
+			removeUserIds: "all",
 		});
 		return { deleted: true, hasActivePrincipal: false, promoted: false };
 	}
@@ -3902,7 +4045,7 @@ export const cleanup_stranded_scopes = internalMutation({
 			}
 
 			const installation = await ctx.db.get("plugins_workspace_installations", pair.installationId);
-			// The uninstall drain owns both fences and projections after the installation is gone. Only
+			// The uninstall drain owns the fences after the installation is gone. Only
 			// remove the leaked live scope docs in that case; the installation-scoped drain does the rest.
 			if (!installation) {
 				await Promise.all(scopes.map((scope) => ctx.db.delete("plugins_data_scopes", scope._id)));
@@ -4514,12 +4657,11 @@ export const user_manage_scope = mutation({
 				level: null,
 				now,
 			});
-			await plugins_data_db_sync_scope_projection_acl(ctx, {
+			await plugins_data_db_sync_file_access_bindings(ctx, {
 				installation,
-				organizationId: organization._id,
-				workspaceId: workspace._id,
 				scopeId: scopeId._yay,
-				removeGrantsFor: [userId],
+				addUserIds: [],
+				removeUserIds: [userId],
 			});
 			await Promise.all(
 				existing.map((scope) => ctx.db.patch("plugins_data_scopes", scope._id, { updatedAt: membershipRevision })),
@@ -4554,12 +4696,11 @@ export const user_manage_scope = mutation({
 
 		if (args.action.kind === "delete") {
 			await plugins_data_db_delete_scope(ctx, existing);
-			await plugins_data_db_sync_scope_projection_acl(ctx, {
+			await plugins_data_db_sync_file_access_bindings(ctx, {
 				installation,
-				organizationId: organization._id,
-				workspaceId: workspace._id,
 				scopeId: scopeId._yay,
-				removeGrantsFor: "all",
+				addUserIds: [],
+				removeUserIds: "all",
 			});
 			return Result({ _yay: { scopeId: scopeId._yay, deleted: true, membershipRevision } });
 		}
@@ -4589,12 +4730,11 @@ export const user_manage_scope = mutation({
 				level: null,
 				now,
 			});
-			await plugins_data_db_sync_scope_projection_acl(ctx, {
+			await plugins_data_db_sync_file_access_bindings(ctx, {
 				installation,
-				organizationId: organization._id,
-				workspaceId: workspace._id,
 				scopeId: scopeId._yay,
-				removeGrantsFor: [target],
+				addUserIds: [],
+				removeUserIds: [target],
 			});
 			await Promise.all(
 				existing.map((scope) => ctx.db.patch("plugins_data_scopes", scope._id, { updatedAt: membershipRevision })),
@@ -4659,12 +4799,12 @@ export const user_manage_scope = mutation({
 			level: args.action.level,
 			now,
 		});
-		await plugins_data_db_sync_scope_projection_acl(ctx, {
+		// A level change for an existing member makes this an idempotent no-op.
+		await plugins_data_db_sync_file_access_bindings(ctx, {
 			installation,
-			organizationId: organization._id,
-			workspaceId: workspace._id,
 			scopeId: scopeId._yay,
-			removeGrantsFor: null,
+			addUserIds: [target],
+			removeUserIds: [],
 		});
 		await Promise.all(
 			existing.map((scope) => ctx.db.patch("plugins_data_scopes", scope._id, { updatedAt: membershipRevision })),
@@ -5628,7 +5768,7 @@ export const write_versioned_document = internalMutation({
 				byteSize: byteSize._yay,
 				revision: args.revision,
 				writeMode: "versioned",
-				// The versioned service projection is workspace-visible data, not member-owned.
+				// Versioned service documents are workspace-visible data, not member-owned.
 				ownership: "shared",
 				producerPrincipalKey: args.principal.principalKey,
 				createdBy: args.principal.actorUserId,
@@ -5659,12 +5799,6 @@ export const write_versioned_document = internalMutation({
 			now,
 			maxDocumentSlots,
 		});
-
-		// Council meetings arrive on this door, not through iframe appends. Record the exact meeting
-		// before the merged cursor feed runs, so a same-millisecond patch cannot fall behind its fence.
-		await db_mark_projection_store_documents_dirty_and_schedule(ctx, installation, [
-			{ collection: collection._yay, key: key._yay, scopeId: scope?.scopeId ?? existing?.scopeId },
-		]);
 
 		return Result({ _yay: { revision: args.revision, byteSize: byteSize._yay } });
 	},
@@ -5874,12 +6008,6 @@ export const delete_versioned_document = internalMutation({
 		});
 		await db_patch_usage(ctx, { usage: afterWrites, next: { collectionNames }, now, maxDocumentSlots });
 
-		if (existing) {
-			await db_mark_projection_store_documents_dirty_and_schedule(ctx, installation, [
-				{ collection: existing.collection, key: existing.key, scopeId: existing.scopeId },
-			]);
-		}
-
 		return Result({ _yay: { deleted: existing != null, revision: args.revision } });
 	},
 });
@@ -5926,106 +6054,6 @@ export async function plugins_data_db_drain_batch(
 			await Promise.all(uiSessions.map((doc) => ctx.db.delete("plugins_ui_sessions", doc._id)));
 			return { done: false, deletedCount: uiSessions.length };
 		}
-	}
-
-	// Projection tables first (children, then state). Uninstall must not write files_nodes.
-	const dirtyChannels = await ctx.db
-		.query("plugins_data_projection_dirty_channels")
-		.withIndex("by_organization_workspace_installation", (q) => {
-			const tenant = q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId);
-			return args.installationId ? tenant.eq("installationId", args.installationId) : tenant;
-		})
-		.take(args.batchSize);
-	if (dirtyChannels.length > 0) {
-		await Promise.all(dirtyChannels.map((doc) => ctx.db.delete("plugins_data_projection_dirty_channels", doc._id)));
-		return { done: false, deletedCount: dirtyChannels.length };
-	}
-
-	const chitchatItems = await ctx.db
-		.query("plugins_data_projection_chitchat_items")
-		.withIndex("by_organization_workspace_installation", (q) => {
-			const tenant = q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId);
-			return args.installationId ? tenant.eq("installationId", args.installationId) : tenant;
-		})
-		.take(args.batchSize);
-	if (chitchatItems.length > 0) {
-		await Promise.all(chitchatItems.map((doc) => ctx.db.delete("plugins_data_projection_chitchat_items", doc._id)));
-		return { done: false, deletedCount: chitchatItems.length };
-	}
-
-	const chitchatReactions = await ctx.db
-		.query("plugins_data_projection_chitchat_reactions")
-		.withIndex("by_organization_workspace_installation", (q) => {
-			const tenant = q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId);
-			return args.installationId ? tenant.eq("installationId", args.installationId) : tenant;
-		})
-		.take(args.batchSize);
-	if (chitchatReactions.length > 0) {
-		await Promise.all(
-			chitchatReactions.map((doc) => ctx.db.delete("plugins_data_projection_chitchat_reactions", doc._id)),
-		);
-		return { done: false, deletedCount: chitchatReactions.length };
-	}
-
-	const chitchatAuthors = await ctx.db
-		.query("plugins_data_projection_chitchat_authors")
-		.withIndex("by_organization_workspace_installation", (q) => {
-			const tenant = q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId);
-			return args.installationId ? tenant.eq("installationId", args.installationId) : tenant;
-		})
-		.take(args.batchSize);
-	if (chitchatAuthors.length > 0) {
-		await Promise.all(chitchatAuthors.map((doc) => ctx.db.delete("plugins_data_projection_chitchat_authors", doc._id)));
-		return { done: false, deletedCount: chitchatAuthors.length };
-	}
-
-	// A staged body can approach the file byte cap. Read and delete only one body per transaction.
-	const chitchatFiles = await ctx.db
-		.query("plugins_data_projection_chitchat_files")
-		.withIndex("by_organization_workspace_installation", (q) => {
-			const tenant = q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId);
-			return args.installationId ? tenant.eq("installationId", args.installationId) : tenant;
-		})
-		.take(1);
-	if (chitchatFiles.length > 0) {
-		await Promise.all(chitchatFiles.map((doc) => ctx.db.delete("plugins_data_projection_chitchat_files", doc._id)));
-		return { done: false, deletedCount: chitchatFiles.length };
-	}
-
-	const chitchatBuilds = await ctx.db
-		.query("plugins_data_projection_chitchat_builds")
-		.withIndex("by_organization_workspace_installation", (q) => {
-			const tenant = q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId);
-			return args.installationId ? tenant.eq("installationId", args.installationId) : tenant;
-		})
-		.take(args.batchSize);
-	if (chitchatBuilds.length > 0) {
-		await Promise.all(chitchatBuilds.map((doc) => ctx.db.delete("plugins_data_projection_chitchat_builds", doc._id)));
-		return { done: false, deletedCount: chitchatBuilds.length };
-	}
-
-	const projectionFiles = await ctx.db
-		.query("plugins_data_projection_files")
-		.withIndex("by_organization_workspace_installation", (q) => {
-			const tenant = q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId);
-			return args.installationId ? tenant.eq("installationId", args.installationId) : tenant;
-		})
-		.take(args.batchSize);
-	if (projectionFiles.length > 0) {
-		await Promise.all(projectionFiles.map((doc) => ctx.db.delete("plugins_data_projection_files", doc._id)));
-		return { done: false, deletedCount: projectionFiles.length };
-	}
-
-	const projectionStates = await ctx.db
-		.query("plugins_data_projection_states")
-		.withIndex("by_organization_workspace_installation", (q) => {
-			const tenant = q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId);
-			return args.installationId ? tenant.eq("installationId", args.installationId) : tenant;
-		})
-		.take(args.batchSize);
-	if (projectionStates.length > 0) {
-		await Promise.all(projectionStates.map((doc) => ctx.db.delete("plugins_data_projection_states", doc._id)));
-		return { done: false, deletedCount: projectionStates.length };
 	}
 
 	// Every store table below carries the same three tenant fields in the same index, so each pass
@@ -6092,7 +6120,21 @@ export async function plugins_data_db_drain_batch(
 		return { done: false, deletedCount: grants.length };
 	}
 
-	// Keep this slot after the document and projection passes. Grants go before scope docs so a
+	// Binding rows drain with the plugin; the mirrored file grants stay. Frozen files outlive the
+	// plugin.
+	const fileAccessBindings = await ctx.db
+		.query("plugins_file_access_bindings")
+		.withIndex("by_organization_workspace_installation", (q) => {
+			const tenant = q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId);
+			return args.installationId ? tenant.eq("installationId", args.installationId) : tenant;
+		})
+		.take(args.batchSize);
+	if (fileAccessBindings.length > 0) {
+		await Promise.all(fileAccessBindings.map((doc) => ctx.db.delete("plugins_file_access_bindings", doc._id)));
+		return { done: false, deletedCount: fileAccessBindings.length };
+	}
+
+	// Keep this slot after the document passes. Grants go before scope docs so a
 	// partial drain fails closed. Released fences go last so stale writers stay refused until both the
 	// documents and their live scope docs are gone.
 	const scopeResourcePrefix = args.installationId ? `${args.installationId}:` : null;
@@ -6210,18 +6252,11 @@ export const drain_uninstalled_installation = internalMutation({
 
 /** How many docs without counters one installation preview reads before it answers "this many or more". */
 const PREVIEW_DOC_COUNT_LIMIT = 100;
-/** A staged body can be close to the file limit, so the preview reads at most two to prove `1+`. */
-const PREVIEW_STAGED_FILE_COUNT_LIMIT = 1;
 
 /** Shared read budget used by a larger preview that walks several installations. */
 export type plugins_data_PreviewReadBudget = {
 	remaining: number;
 	truncated: boolean;
-	/** Count at most one large staged body, with one extra read to prove the `1+` lower bound. */
-	stagedFiles?: {
-		remainingCount: number;
-		remainingReads: number;
-	};
 };
 
 async function db_take_preview_docs<T>(
@@ -6246,33 +6281,6 @@ async function db_take_preview_docs<T>(
 	return { docs: docs.slice(0, limit), truncated };
 }
 
-async function db_take_staged_file_preview_docs<T>(
-	read: (limit: number) => Promise<T[]>,
-	budget?: plugins_data_PreviewReadBudget,
-) {
-	const stagedFiles = budget?.stagedFiles;
-	if (!budget || !stagedFiles) {
-		return await db_take_preview_docs(read, budget, PREVIEW_STAGED_FILE_COUNT_LIMIT);
-	}
-	if (budget.remaining === 0 || stagedFiles.remainingReads === 0) {
-		budget.truncated = true;
-		return { docs: [], truncated: true };
-	}
-
-	// Share both the one counted body and its truncation sentinel across every installation. Without
-	// this separate byte budget, many `limit + 1` reads can exceed the transaction read limit.
-	const wantedReads = stagedFiles.remainingCount + 1;
-	const readLimit = Math.min(wantedReads, budget.remaining, stagedFiles.remainingReads);
-	const docs = await read(readLimit);
-	budget.remaining -= docs.length;
-	stagedFiles.remainingReads -= docs.length;
-	const counted = docs.slice(0, stagedFiles.remainingCount);
-	stagedFiles.remainingCount -= counted.length;
-	const truncated = docs.length > counted.length || (docs.length === readLimit && readLimit < wantedReads);
-	budget.truncated ||= truncated;
-	return { docs: counted, truncated };
-}
-
 /**
  * How much stored data one installation still holds. The admin deletion preview reports it.
  *
@@ -6284,13 +6292,11 @@ async function db_take_staged_file_preview_docs<T>(
 	 * `tombstones` therefore covers released reservation records, revision tombstones, and deleted-append
 	 * receipts together, because one counter pays for all of their slots.
  *
- * Projection rows, per-member share rows, service grants, private-scope grants, live scope docs,
- * and released-range fences have no counters. Each registry-preview read is bounded. Past
+ * Per-member share rows, service grants, private-scope grants, live scope docs, and
+ * released-range fences have no counters. Each registry-preview read is bounded. Past
  * `PREVIEW_DOC_COUNT_LIMIT`, its flag tells the reader to show `100+` instead of an exact number.
- * Staged file bodies use a smaller `1+` limit because one body can approach the file byte cap. A
- * registry-wide caller also passes one shared budget so many small installation reads cannot add
- * up to one unbounded query. Keep projection reads opt-in because the normal usage query does not
- * need them.
+ * A registry-wide caller also passes one shared budget so many small installation reads cannot
+ * add up to one unbounded query.
  */
 export async function plugins_data_db_count_installation_docs(
 	ctx: QueryCtx,
@@ -6298,7 +6304,6 @@ export async function plugins_data_db_count_installation_docs(
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		installationId: Id<"plugins_workspace_installations">;
-		includeProjectionRows?: boolean;
 	},
 	previewBudget?: plugins_data_PreviewReadBudget,
 ) {
@@ -6314,127 +6319,6 @@ export async function plugins_data_db_count_installation_docs(
 		}
 	}
 
-	const projectionDirtyChannels = args.includeProjectionRows
-		? await db_take_preview_docs(
-				(limit) =>
-					ctx.db
-						.query("plugins_data_projection_dirty_channels")
-						.withIndex("by_organization_workspace_installation", (q) =>
-							q
-								.eq("organizationId", args.organizationId)
-								.eq("workspaceId", args.workspaceId)
-								.eq("installationId", args.installationId),
-						)
-						.take(limit),
-				previewBudget,
-			)
-		: null;
-	const projectionChitchatItems = args.includeProjectionRows
-		? await db_take_preview_docs(
-				(limit) =>
-					ctx.db
-						.query("plugins_data_projection_chitchat_items")
-						.withIndex("by_organization_workspace_installation", (q) =>
-							q
-								.eq("organizationId", args.organizationId)
-								.eq("workspaceId", args.workspaceId)
-								.eq("installationId", args.installationId),
-						)
-						.take(limit),
-				previewBudget,
-			)
-		: null;
-	const projectionChitchatReactions = args.includeProjectionRows
-		? await db_take_preview_docs(
-				(limit) =>
-					ctx.db
-						.query("plugins_data_projection_chitchat_reactions")
-						.withIndex("by_organization_workspace_installation", (q) =>
-							q
-								.eq("organizationId", args.organizationId)
-								.eq("workspaceId", args.workspaceId)
-								.eq("installationId", args.installationId),
-						)
-						.take(limit),
-				previewBudget,
-			)
-		: null;
-	const projectionChitchatAuthors = args.includeProjectionRows
-		? await db_take_preview_docs(
-				(limit) =>
-					ctx.db
-						.query("plugins_data_projection_chitchat_authors")
-						.withIndex("by_organization_workspace_installation", (q) =>
-							q
-								.eq("organizationId", args.organizationId)
-								.eq("workspaceId", args.workspaceId)
-								.eq("installationId", args.installationId),
-						)
-						.take(limit),
-				previewBudget,
-			)
-		: null;
-	const projectionChitchatFiles = args.includeProjectionRows
-		? await db_take_staged_file_preview_docs(
-				(limit) =>
-					ctx.db
-						.query("plugins_data_projection_chitchat_files")
-						.withIndex("by_organization_workspace_installation", (q) =>
-							q
-								.eq("organizationId", args.organizationId)
-								.eq("workspaceId", args.workspaceId)
-								.eq("installationId", args.installationId),
-						)
-						.take(limit),
-				previewBudget,
-			)
-		: null;
-	const projectionChitchatBuilds = args.includeProjectionRows
-		? await db_take_preview_docs(
-				(limit) =>
-					ctx.db
-						.query("plugins_data_projection_chitchat_builds")
-						.withIndex("by_organization_workspace_installation", (q) =>
-							q
-								.eq("organizationId", args.organizationId)
-								.eq("workspaceId", args.workspaceId)
-								.eq("installationId", args.installationId),
-						)
-						.take(limit),
-				previewBudget,
-			)
-		: null;
-	const projectionFiles = args.includeProjectionRows
-		? await db_take_preview_docs(
-				(limit) =>
-					ctx.db
-						.query("plugins_data_projection_files")
-						.withIndex("by_organization_workspace_installation", (q) =>
-							q
-								.eq("organizationId", args.organizationId)
-								.eq("workspaceId", args.workspaceId)
-								.eq("installationId", args.installationId),
-						)
-						.take(limit),
-				previewBudget,
-			)
-		: null;
-	const projectionStates = args.includeProjectionRows
-		? await db_take_preview_docs(
-				(limit) =>
-					ctx.db
-						.query("plugins_data_projection_states")
-						.withIndex("by_organization_workspace_installation", (q) =>
-							q
-								.eq("organizationId", args.organizationId)
-								.eq("workspaceId", args.workspaceId)
-								.eq("installationId", args.installationId),
-						)
-						.take(limit),
-				previewBudget,
-			)
-		: null;
-
 	const memberUsage = await db_take_preview_docs(
 		(limit) =>
 			ctx.db
@@ -6447,6 +6331,19 @@ export async function plugins_data_db_count_installation_docs(
 		(limit) =>
 			ctx.db
 				.query("plugin_service_grants")
+				.withIndex("by_organization_workspace_installation", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("installationId", args.installationId),
+				)
+				.take(limit),
+		previewBudget,
+	);
+	const fileAccessBindings = await db_take_preview_docs(
+		(limit) =>
+			ctx.db
+				.query("plugins_file_access_bindings")
 				.withIndex("by_organization_workspace_installation", (q) =>
 					q
 						.eq("organizationId", args.organizationId)
@@ -6505,26 +6402,12 @@ export async function plugins_data_db_count_installation_docs(
 		liveReservations: usage?.reservedDocuments ?? 0,
 		tombstones: usage?.tombstoneDocuments ?? 0,
 		collectionNames: usage?.collectionNames ?? [],
-		projectionDirtyChannels: projectionDirtyChannels?.docs.length ?? 0,
-		projectionDirtyChannelsTruncated: projectionDirtyChannels?.truncated ?? false,
-		projectionChitchatItems: projectionChitchatItems?.docs.length ?? 0,
-		projectionChitchatItemsTruncated: projectionChitchatItems?.truncated ?? false,
-		projectionChitchatReactions: projectionChitchatReactions?.docs.length ?? 0,
-		projectionChitchatReactionsTruncated: projectionChitchatReactions?.truncated ?? false,
-		projectionChitchatAuthors: projectionChitchatAuthors?.docs.length ?? 0,
-		projectionChitchatAuthorsTruncated: projectionChitchatAuthors?.truncated ?? false,
-		projectionChitchatFiles: projectionChitchatFiles?.docs.length ?? 0,
-		projectionChitchatFilesTruncated: projectionChitchatFiles?.truncated ?? false,
-		projectionChitchatBuilds: projectionChitchatBuilds?.docs.length ?? 0,
-		projectionChitchatBuildsTruncated: projectionChitchatBuilds?.truncated ?? false,
-		projectionFiles: projectionFiles?.docs.length ?? 0,
-		projectionFilesTruncated: projectionFiles?.truncated ?? false,
-		projectionStates: projectionStates?.docs.length ?? 0,
-		projectionStatesTruncated: projectionStates?.truncated ?? false,
 		memberUsageDocs: memberUsage.docs.length,
 		memberUsageDocsTruncated: memberUsage.truncated,
 		serviceGrants: serviceGrants.docs.length,
 		serviceGrantsTruncated: serviceGrants.truncated,
+		fileAccessBindings: fileAccessBindings.docs.length,
+		fileAccessBindingsTruncated: fileAccessBindings.truncated,
 		pluginScopeGrants: pluginScopeGrants.docs.length,
 		pluginScopeGrantsTruncated: pluginScopeGrants.truncated,
 		pluginDataScopeRows: pluginDataScopeRows.docs.length,

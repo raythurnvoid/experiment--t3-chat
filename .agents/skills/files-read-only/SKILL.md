@@ -11,8 +11,9 @@ act. Read-only answers whether the node may change.
 No normal write bypasses a lock. This includes writes from owners, admins, members, API keys, plugin
 runs, and agents. `content.permissions.manage` lets a caller lock or unlock a node. It does not let
 other writes bypass the lock. Named tenant, workspace, and account deletion flows are lifecycle
-bypasses because they remove the whole scope. The one narrow product exception is cleanup of a
-service-created direct lock, described below; it is provenance-bound and is not general write access.
+bypasses because they remove the whole scope. Two narrow product exceptions exist, both
+provenance-bound and neither general write access: cleanup of a service-created direct lock, and a
+plugin door passing its own plugin-created direct lock (`readOnlyPluginName`), both described below.
 
 The closest OS comparison is the Linux immutable flag (`chattr +i`). It blocks content changes,
 rename, and delete. POSIX mode bits and the Windows read-only attribute are different because the
@@ -37,11 +38,21 @@ On `files_nodes`, beside `restrictedScopeNodeId`:
 - `readOnlyPluginServiceTargetId`: internal provenance for the exact service target that created a
   direct lock. Public node query answers always remove it. Every member lock/unlock transition and
   inherited-pointer cascade clears it. An idempotent call that changes no lock leaves it alone.
-- `projectionPluginName`: internal ownership for Chitchat or Council projected nodes. Public node
-  queries remove it, and public create, copy, collaboration, and lock doors cannot set it. A normal
-  copy gets no stamp; moving the original node keeps its stamp. Public lock, unlock, restrict,
-  unrestrict, and share-grant doors refuse a stamped node and any descendant whose effective lock
-  comes from a stamped projection folder. Only the projector may change those policy fields.
+- `readOnlyPluginName`: internal provenance for a direct lock a plugin door created (`access.readOnly`
+  on `/api/v1/files/write`, `plugin-folders/ensure`, or `plugin-access/set` — see
+  `../public-api/SKILL.md#plugin-file-doors`). Public node query answers remove it, and member
+  lock/unlock transitions clear it the same way as the service target pointer. Who can release such a
+  lock splits on the ownership stamp: a member CAN unlock a service-written file (no stamp — the
+  unlock clears the pointer, same rule as `readOnlyPluginServiceTargetId`), but a member CANNOT
+  unlock a stamped run-owned node (`This item is managed by a plugin.`) — only `plugin-access/set`
+  with `readOnly: false` and `plugin-archive` release it.
+- `pluginOwnerName`: internal ownership stamp, the plugin NAME that owns the node — every node a
+  plugin backend creates through the owned-file doors (`plugin-folders/ensure`, and a `plugin_run`
+  write through `/api/v1/files/write` inside its owned area) carries it. Public node queries remove
+  it, and public create, copy, collaboration, and lock doors cannot set it. A normal copy gets no stamp; moving the original node
+  keeps its stamp. Public lock, unlock, restrict, unrestrict, and share-grant doors refuse a stamped
+  node and any descendant whose effective lock comes from a stamped folder. Only the owning plugin's
+  doors may change those policy fields.
 
 There is no read-only generation or lock-history table. A past lock does not make later work stale.
 Every write checks the current pointer in its final transaction. If the pointer is clear at that time,
@@ -161,6 +172,14 @@ Both mutations resolve auth and membership, apply the tree-write rate bucket, an
   capability, provenance, and live manage ACL before any cleanup write. Inherited, member-created,
   member-recreated, moved, released, deleting, stale-epoch, or unrelated locks never pass. A member
   lock on any folder above the file does not pass either.
+- The plugin write engine passes a read-only lock ONLY when it is a direct lock whose
+  `readOnlyPluginName` equals the calling principal's plugin name, the gating capability
+  (`workspace.files.own-access`) is still accepted, and the node is inside the caller's authority
+  area — the stamped area for a `plugin_run`, the sealed destination for a `plugin_service`. The
+  service branch also passes a direct lock whose `readOnlyPluginServiceTargetId` points at its own
+  live target, through the same `db_can_clean_up_service_created_lock` helper the service cleanup
+  doors use — call that helper, never re-implement its checks. Every other lock keeps answering 409
+  `This item is read-only.` exactly as before.
 - A door that passes that check must also release the lock before it archives the node. `unarchive_nodes`
   refuses the whole restore when any node in the restored subtree is read-only, so a file that kept the
   lock could never come back and the archived set would stop being restorable. A member can also hold a
@@ -171,16 +190,15 @@ Both mutations resolve auth and membership, apply the tree-write rate bucket, an
   destination subtree. The released pointer still falls back to the parent's current scope, the same way
   `set_node_writable` does, and after those refusals that scope is always writable. Only a file ever
   carries this provenance, so a lock above is always a member lock and there is no subtree to cascade to.
-- Plugin **file projection** uses named internal doors in `packages/app/convex/plugins_projections.ts`
-  (create folder, create non-collaborative markdown, replace, archive). They are not user or agent
-  doors. `files_node_require_writable` stays strict and has no bypass flag. The recursive create
-  helper may take `skipAccessControlAndLock` and `inheritParentReadOnlyScope` **only** from those
-  projection doors. Clients cannot send those flags. Every projection-only lock bypass also requires
-  the matching `projectionPluginName`; a lock made through `set_node_read_only` cannot grant that
-  authority. The cutover never stamps from a legacy pointer alone: it resets an unproved root and
-  removes an unproved map so rebuild takes the collision path. Replace and archive still require the
-  expected root or direct lock. Bash `replace_file_content` and
-  `create_file_by_path` under that folder still return `_nay.name === "read_only"`.
+- Plugin-owned files go through the plugin file doors (`plugin-folders/ensure`, `/api/v1/files/write`
+  for a plugin run, `plugin-archive`, `plugin-access/set` — `../public-api/SKILL.md#plugin-file-doors`).
+  They are not user or agent doors. `files_node_require_writable` stays strict and has no bypass
+  flag. The recursive create helper may take `skipAccessControlAndLock` and
+  `inheritParentReadOnlyScope` **only** from those doors. Clients cannot send those flags. The write
+  engine passes a plugin lock only when it is a direct lock whose `readOnlyPluginName` equals the
+  calling plugin's name, the capability is still accepted, and the node is inside the caller's
+  stamped authority area; a lock made through `set_node_read_only` cannot grant that authority. Bash `replace_file_content` and `create_file_by_path` under a plugin-locked
+  folder still return `_nay.name === "read_only"`.
 - If discard or expiry finds a locked eager-created node or created ancestor, remove the pending docs
   but keep the empty committed branch. `eagerCreated` stores the creation-time committed sequence and
   optional `createdAncestorIds`. Cleanup checks every existing node's current lock before its first
@@ -342,11 +360,10 @@ The checkbox writes as soon as it is clicked. There is no Save for the lock — 
 - `convex/files_nodes.test.ts` — pointer/cascade states, tree operations, current-lock Yjs/snapshot/repair checks, action-backed replacement/toggle final checks, lock → unlock success, upload-node and failed-upload-discard refusals, copy-out controls.
 - `convex/files_pending_updates.test.ts` — proposal/accept/discard behavior, current-lock final checks, lock → unlock completion, and eager-created cleanup.
 - `convex/public_api.test.ts` — 409 `conflict` contract, batch semantics, current-lock final checks, target identity conflicts, lock → unlock success, and zero partial output. `convex/public_api_service_uploads.test.ts` also proves that the service delete checks every live node's current path, restricted ACL, and lock before its first write, refuses the whole call when a member locked a folder above the file, archives committed files, and hard-deletes only pending placeholders.
-- `convex/plugins_projections_chitchat.test.ts` — projection folder lock; bash replace and create under the folder are `read_only`; named projection replace still updates the locked file.
 - `convex/r2.test.ts` — post-lock accepted upload publication, lock → unlock completion, immutable staging/live behavior, conversion completion, deletion-job generations/tombstones/durability, and crash-orphan recovery.
 - `convex/data_deletion.test.ts` — lifecycle bypass and deletion-job ownership across purge.
 - `convex/data_import.test.ts` — normal import respects locks; bypasses are named and internal.
-- `convex/access_control.test.ts` — management authority, owner non-bypass, public-query projection privacy, hidden-outer-lock management state.
+- `convex/access_control.test.ts` — management authority, owner non-bypass, public-query lock-source privacy, hidden-outer-lock management state.
 - `src/lib/files-yjs-provider.test.ts` — current-lock terminal drop, access-change resync, and unchanged transient retries.
 - `server/bash.ts` in-source `action_run` — command matrix and eager-create compensation.
 - `server/server-ai-tools.test.ts` — tool description says locked paths are read-only and copy-out is allowed.

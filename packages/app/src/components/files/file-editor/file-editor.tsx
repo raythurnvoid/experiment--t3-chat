@@ -1,5 +1,5 @@
 import "./file-editor.css";
-import { FileEditorRichText } from "./file-editor-rich-text/file-editor-rich-text.tsx";
+import { FileEditorRichText, FileEditorRichTextNonCollab } from "./file-editor-rich-text/file-editor-rich-text.tsx";
 import { FileEditorDiffSkeleton } from "./file-editor-diff/file-editor-diff-skeleton.tsx";
 import React, { useState, useImperativeHandle, type Ref, useEffect, useRef } from "react";
 import { FileEditorPlainText } from "./file-editor-plain-text/file-editor-plain-text.tsx";
@@ -7,6 +7,7 @@ import { FileEditorPlainTextSkeleton } from "./file-editor-plain-text/file-edito
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { cn, sx } from "@/lib/utils.ts";
 import { FileEditorDiff } from "./file-editor-diff/file-editor-diff.tsx";
+import { FileEditorDiffNonCollab } from "./file-editor-diff/file-editor-diff-non-collab.tsx";
 import { useMutation, useQuery } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
@@ -365,7 +366,7 @@ type FileEditorRender_Props = {
 	rootKind: files_YjsRootKind;
 	/** Monaco language for the node, derived from its name via `files_get_monaco_language_id`. */
 	monacoLanguageId: string;
-	/** Collaboration is off for this node: no Yjs document, so only the plain text editor runs. */
+	/** Collaboration is off for this node: no Yjs document; the editors edit the stored string. */
 	nonCollaborative: boolean;
 	yjsLastSequenceId?: app_convex_Id<"files_yjs_docs_last_sequences">;
 	editorMode: FileEditor_Mode;
@@ -415,6 +416,20 @@ function FileEditorRender(props: FileEditorRender_Props) {
 	}
 
 	if (editorMode === "rich_text_editor") {
+		// A file with collaboration turned off never has a Yjs sequence id, so this branch must
+		// come before the skeleton check below or that skeleton would show forever.
+		if (nonCollaborative) {
+			return (
+				<FileEditorRichTextNonCollab
+					nodeId={nodeId}
+					editable={editable}
+					presenceStore={presenceStore}
+					commentsPortalHost={commentsPortalHost}
+					toolbarPortalHost={toolbarPortalHost}
+					topStickyFloatingSlot={topStickyFloatingSlot}
+				/>
+			);
+		}
 		if (!yjsLastSequenceId) {
 			return <FileEditorRichTextSkeleton />;
 		}
@@ -433,6 +448,24 @@ function FileEditorRender(props: FileEditorRender_Props) {
 	}
 
 	if (editorMode === "diff_editor") {
+		// A file with collaboration turned off has no pending updates and no shared document, so
+		// its diff view compares the committed text with the member's local edits instead.
+		if (nonCollaborative) {
+			return (
+				<FileEditorDiffNonCollab
+					key={nodeId}
+					nodeId={nodeId}
+					editable={editable}
+					monacoLanguageId={monacoLanguageId}
+					presenceStore={presenceStore}
+					commentsPortalHost={commentsPortalHost}
+					toolbarPortalHost={toolbarPortalHost}
+					topSafeArea={topSafeArea}
+					topStickyFloatingSlot={topStickyFloatingSlot}
+					topViewZoneSlot={topViewZoneSlot}
+				/>
+			);
+		}
 		return (
 			<FileEditorDiff
 				key={nodeId}
@@ -494,7 +527,7 @@ type FileEditorInner_Props = {
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	rootKind: files_YjsRootKind;
 	monacoLanguageId: string;
-	/** Collaboration is off for this node: no Yjs document, so only the plain text editor runs. */
+	/** Collaboration is off for this node: no Yjs document; the editors edit the stored string. */
 	nonCollaborative: boolean;
 	yjsLastSequenceId?: app_convex_Id<"files_yjs_docs_last_sequences">;
 	serverSequence?: number;
@@ -531,12 +564,11 @@ function FileEditorInner(props: FileEditorInner_Props) {
 	} = props;
 
 	// The route already clamps the view it puts in the URL, but a folder's README is opened by the
-	// folder view with the folder's own mode. Clamp here too so no caller can mount a Yjs view on a
-	// document that does not exist.
+	// folder view with the folder's own mode. Clamp here too so no caller can mount the rich editor
+	// on a document shape that has no rich text.
 	const effectiveEditorMode = files_resolve_effective_editor_view({
 		requestedView: editorMode,
 		rootKind,
-		nonCollaborative,
 	});
 
 	// Editing needs write permission and a writable node. Keep editing off while permission loads.
@@ -659,7 +691,7 @@ export type FileEditor_Props = {
 	rootKind: files_YjsRootKind;
 	/** Monaco language for the node, derived from its name via `files_get_monaco_language_id`. */
 	monacoLanguageId: string;
-	/** Collaboration is off for this node: no Yjs document, so only the plain text editor runs. */
+	/** Collaboration is off for this node: no Yjs document; the editors edit the stored string. */
 	nonCollaborative: boolean;
 	yjsLastSequenceId?: app_convex_Id<"files_yjs_docs_last_sequences">;
 	serverSequence?: number;

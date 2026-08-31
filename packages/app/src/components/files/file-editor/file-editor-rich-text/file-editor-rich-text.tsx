@@ -1,5 +1,5 @@
 import "./file-editor-rich-text.css";
-import { memo, useState, useEffect, useRef } from "react";
+import { memo, useState, useEffect, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 import {
 	EditorContent,
@@ -13,14 +13,15 @@ import { Editor, useEditorState } from "@tiptap/react";
 import { toast } from "sonner";
 import { useFileEditorRichTextExtension } from "@/lib/file-editor-rich-text-extension.ts";
 import type { YjsSyncStatus } from "@liveblocks/core";
-import { Plugin, PluginKey } from "@tiptap/pm/state";
-import { defaultExtensions } from "./extensions.ts";
+import { EditorState, Plugin, PluginKey } from "@tiptap/pm/state";
+import { defaultExtensions, nonCollaborativeExtensions } from "./extensions.ts";
 import { FileEditorRichTextToolsColorSelector } from "./file-editor-rich-text-tools-color-selector.tsx";
 import { FileEditorRichTextToolsLinkSetter } from "./file-editor-rich-text-tools-link-setter.tsx";
 import { FileEditorRichTextToolsNodeSelector } from "./file-editor-rich-text-tools-node-selector.tsx";
 import { FileEditorRichTextToolsMathToggle } from "./file-editor-rich-text-tools-math-toggle.tsx";
 import { FileEditorRichTextToolsTextStyles } from "./file-editor-rich-text-tools-text-styles.tsx";
 import { FileEditorRichTextToolsSlashCommand } from "./file-editor-rich-text-tools-slash-command.tsx";
+import { FileEditorRichTextToolsTable } from "./file-editor-rich-text-tools-table.tsx";
 import { FileEditorRichTextToolsHistoryButtons } from "./file-editor-rich-text-tools-history-buttons.tsx";
 import { MySeparator } from "@/components/my-separator.tsx";
 import {
@@ -40,14 +41,24 @@ import { check_element_is_in_allowed_areas, cn } from "@/lib/utils.ts";
 import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
 import { app_fetch_ai_docs_contextual_prompt } from "@/lib/fetch.ts";
 import { MyBadge } from "@/components/my-badge.tsx";
-import { app_convex_api } from "@/lib/app-convex-client.ts";
+import { app_convex, app_convex_api } from "@/lib/app-convex-client.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import {
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_PresenceStore,
 	files_YJS_DOC_KEYS,
 	files_get_utf8_byte_size,
+	files_yjs_reconcile_branch_with_local_text,
 } from "@/lib/files.ts";
+import {
+	files_tiptap_markdown_to_json,
+	files_yjs_doc_get_text,
+	files_yjs_doc_update_from_text,
+} from "../../../../../shared/files-tiptap.ts";
+import { files_yjs_doc_clone } from "../../../../../shared/files-yjs.ts";
+import { Doc as YDoc } from "yjs";
+import { usePromiseValue } from "@/lib/async.ts";
+import { MySpinner } from "@/components/my-spinner.tsx";
 import {
 	file_editor_SIZE_MEASURE_CHARS,
 	file_editor_get_size_badge_text,
@@ -60,7 +71,7 @@ import { MyButton, MyButtonIcon, type MyButton_Props } from "@/components/my-but
 import { MyFloatingSurface } from "@/components/my-floating-surface.tsx";
 import { FileEditorRichTextToolsInlineAi } from "./file-editor-rich-text-tools-inline-ai.tsx";
 import { FileEditorRichTextToolsComment } from "./file-editor-rich-text-tools-comment.tsx";
-import { Sparkles } from "lucide-react";
+import { Save, Sparkles } from "lucide-react";
 import { FileEditorRichTextDragHandle } from "./file-editor-rich-text-drag-handle.tsx";
 import type { EditorBubbleProps } from "../../../../../vendor/novel/packages/headless/src/components/editor-bubble.tsx";
 import { bubbleMenuReevaluateVisibility } from "../../../../../vendor/tiptap/packages/extension-bubble-menu/src/index.ts";
@@ -127,6 +138,8 @@ const FileEditorRichTextToolbarTools = memo(function FileEditorRichTextToolbarTo
 			<FileEditorRichTextToolsTextStyles editor={editor} />
 			<MySeparator orientation="vertical" />
 			<FileEditorRichTextToolsColorSelector editor={editor} setDecorationHighlightOnOpen={true} />
+			<MySeparator orientation="vertical" />
+			<FileEditorRichTextToolsTable editor={editor} />
 			<MySeparator orientation="vertical" />
 		</>
 	);
@@ -301,13 +314,17 @@ export type FileEditorRichTextBubbleContentActions_ClassNames =
 type FileEditorRichTextBubbleContentActions_Props = {
 	editor: Editor;
 	nodeId: app_convex_Id<"files_nodes">;
-	onClickAi: MyButton_Props["onClick"];
+	/** See `FileEditorRichTextToolsComment_Props`; the bubble threads both comment props through. */
+	disabledReason: string | null;
+	commitComment?: (threadId: string) => Promise<boolean>;
+	/** `null` hides the Ask AI action: the inline AI extension runs on Yjs. */
+	onClickAi: MyButton_Props["onClick"] | null;
 };
 
 const FileEditorRichTextBubbleContentActions = memo(function FileEditorRichTextBubbleContentActions(
 	props: FileEditorRichTextBubbleContentActions_Props,
 ) {
-	const { editor, nodeId, onClickAi } = props;
+	const { editor, nodeId, disabledReason, commitComment, onClickAi } = props;
 
 	const handleActionMouseDown = useFn<MyButton_Props["onMouseDown"]>((event) => {
 		// Keep the editor selection alive while the bubble action handles the click.
@@ -325,30 +342,38 @@ const FileEditorRichTextBubbleContentActions = memo(function FileEditorRichTextB
 				"FileEditorRichTextBubbleContentActions" satisfies FileEditorRichTextBubbleContentActions_ClassNames,
 			)}
 		>
-			<MyButton
-				variant="floating"
-				className={cn(
-					"FileEditorRichTextBubbleContentActions-button" satisfies FileEditorRichTextBubbleContentActions_ClassNames,
-				)}
-				onPointerDown={handleActionPointerDown}
-				onMouseDown={handleActionMouseDown}
-				onClick={onClickAi}
-			>
-				<MyButtonIcon
+			{onClickAi != null && (
+				<MyButton
+					variant="floating"
 					className={cn(
-						"FileEditorRichTextBubbleContentActions-icon" satisfies FileEditorRichTextBubbleContentActions_ClassNames,
+						"FileEditorRichTextBubbleContentActions-button" satisfies FileEditorRichTextBubbleContentActions_ClassNames,
 					)}
+					onPointerDown={handleActionPointerDown}
+					onMouseDown={handleActionMouseDown}
+					onClick={onClickAi}
 				>
-					<Sparkles />
-				</MyButtonIcon>
-				Ask AI
-			</MyButton>
+					<MyButtonIcon
+						className={cn(
+							"FileEditorRichTextBubbleContentActions-icon" satisfies FileEditorRichTextBubbleContentActions_ClassNames,
+						)}
+					>
+						<Sparkles />
+					</MyButtonIcon>
+					Ask AI
+				</MyButton>
+			)}
 			<FileEditorRichTextToolsNodeSelector editor={editor} buttonVariant="floating" />
 			<FileEditorRichTextToolsLinkSetter editor={editor} buttonVariant="floating" />
 			<FileEditorRichTextToolsMathToggle editor={editor} buttonVariant="floating" />
 			<FileEditorRichTextToolsTextStyles editor={editor} buttonVariant="floating" />
 			<FileEditorRichTextToolsColorSelector editor={editor} buttonVariant="floating" />
-			<FileEditorRichTextToolsComment editor={editor} fileNodeId={nodeId} buttonVariant="floating" />
+			<FileEditorRichTextToolsComment
+				editor={editor}
+				fileNodeId={nodeId}
+				disabledReason={disabledReason}
+				commitComment={commitComment}
+				buttonVariant="floating"
+			/>
 		</div>
 	);
 });
@@ -360,17 +385,21 @@ export type FileEditorRichTextBubbleContent_ClassNames = "FileEditorRichTextBubb
 type FileEditorRichTextBubbleContent_Props = {
 	editor: Editor;
 	nodeId: app_convex_Id<"files_nodes">;
+	/** See `FileEditorRichTextToolsComment_Props`; the bubble threads both comment props through. */
+	disabledReason: string | null;
+	commitComment?: (threadId: string) => Promise<boolean>;
 	openAi: boolean;
 	portalElement: HTMLElement | null;
 	onPortalRef: (inst: HTMLDivElement | null) => void;
-	onClickAi: MyButton_Props["onClick"];
+	onClickAi: MyButton_Props["onClick"] | null;
 	onDiscardAi: () => void;
 };
 
 const FileEditorRichTextBubbleContent = memo(function FileEditorRichTextBubbleContent(
 	props: FileEditorRichTextBubbleContent_Props,
 ) {
-	const { editor, nodeId, openAi, portalElement, onPortalRef, onClickAi, onDiscardAi } = props;
+	const { editor, nodeId, disabledReason, commitComment, openAi, portalElement, onPortalRef, onClickAi, onDiscardAi } =
+		props;
 
 	return (
 		<MyFloatingSurface
@@ -379,7 +408,13 @@ const FileEditorRichTextBubbleContent = memo(function FileEditorRichTextBubbleCo
 		>
 			{openAi && <FileEditorRichTextToolsInlineAi editor={editor} onDiscard={onDiscardAi} />}
 			{!openAi && portalElement ? (
-				<FileEditorRichTextBubbleContentActions editor={editor} nodeId={nodeId} onClickAi={onClickAi} />
+				<FileEditorRichTextBubbleContentActions
+					editor={editor}
+					nodeId={nodeId}
+					disabledReason={disabledReason}
+					commitComment={commitComment}
+					onClickAi={onClickAi}
+				/>
 			) : null}
 		</MyFloatingSurface>
 	);
@@ -396,6 +431,11 @@ export type FileEditorRichTextBubble_ClassNames = "FileEditorRichTextBubble" | "
 export type FileEditorRichTextBubble_Props = {
 	editor: Editor;
 	nodeId: app_convex_Id<"files_nodes">;
+	/** See `FileEditorRichTextToolsComment_Props`; the bubble threads both comment props through. */
+	disabledReason: string | null;
+	commitComment?: (threadId: string) => Promise<boolean>;
+	/** Ask AI runs on the Yjs-backed inline AI extension, so the non-collaborative editor hides it. */
+	showAiAction: boolean;
 };
 
 /**
@@ -414,7 +454,7 @@ export type FileEditorRichTextBubble_Props = {
  * - The user presses Escape to close a popover in the bubble (popover closes, bubble stays visible)
  */
 export const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(props: FileEditorRichTextBubble_Props) {
-	const { editor, nodeId } = props;
+	const { editor, nodeId, disabledReason, commitComment, showAiAction } = props;
 
 	const bubbleSurfaceRef = useRef<HTMLDivElement>(null);
 	const isShownRef = useRef(false);
@@ -688,10 +728,12 @@ export const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(p
 			<FileEditorRichTextBubbleContent
 				editor={editor}
 				nodeId={nodeId}
+				disabledReason={disabledReason}
+				commitComment={commitComment}
 				openAi={openAi}
 				portalElement={portalElement}
 				onPortalRef={handlePortalElementRef}
-				onClickAi={handleClickAi}
+				onClickAi={showAiAction ? handleClickAi : null}
 				onDiscardAi={handleDiscardAi}
 			/>
 		</EditorBubble>
@@ -771,6 +813,7 @@ export type FileEditorRichText_ClassNames =
 	| "FileEditorRichText-visible"
 	| "FileEditorRichText-load-error"
 	| "FileEditorRichText-push-refused"
+	| "FileEditorRichText-refusal"
 	| "FileEditorRichText-editor-content-root"
 	| "FileEditorRichText-editor-content-container"
 	| "FileEditorRichText-editor-content"
@@ -1061,7 +1104,7 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 								<ImageResizer />
 								<FileEditorRichTextToolsSlashCommand />
 								<FileEditorRichTextDragHandle editor={editor} />
-								<FileEditorRichTextBubble editor={editor} nodeId={nodeId} />
+								<FileEditorRichTextBubble editor={editor} nodeId={nodeId} disabledReason={null} showAiAction={true} />
 							</>
 						) : null
 					}
@@ -1206,3 +1249,855 @@ FileEditorRichText.clearDecorationHighlightProperly = (editor: Editor, triggerEl
 	});
 };
 // #endregion root
+
+// #region non-collaborative root
+
+// The replace door names this exact message when `baseAssetId` no longer matches the stored
+// asset. The comment save dispatches its merge retry on it.
+const REPLACE_FILE_STALENESS_MESSAGE =
+	"This file changed while you were saving. Copy your local changes before reloading, then try again.";
+
+/**
+ * Serialize the mounted editor the way `files_yjs_doc_get_text` writes a file: non-empty content
+ * ends with exactly one `\n`. The stored bytes of a non-collaborative file come from THIS
+ * serializer, so the dirty baseline, Save, and the comment save must all go through it.
+ */
+function serialize_editor_markdown(editor: Editor) {
+	const markdown = editor.getMarkdown();
+	return markdown === "" || markdown.endsWith("\n") ? markdown : markdown + "\n";
+}
+
+/**
+ * Replace the whole editor document from Markdown by swapping the editor state.
+ * `commands.setContent` fits the new blocks into the old document with a ProseMirror replace
+ * step, and that fitting appends an empty trailing paragraph when the content ends in an atom
+ * block (a trailing video embed, for example). Same rule as `headless_editor_replace_doc` in
+ * `shared/files-tiptap.ts`, which is module-private.
+ */
+function replace_editor_document(mut_editor: Editor, markdown: string) {
+	const json = files_tiptap_markdown_to_json({ markdown, extensions: nonCollaborativeExtensions });
+	if (json._nay) {
+		return json;
+	}
+
+	mut_editor.view.updateState(
+		EditorState.create({ doc: mut_editor.schema.nodeFromJSON(json._yay), plugins: mut_editor.state.plugins }),
+	);
+	return json;
+}
+
+// #region non-collaborative toolbar
+type FileEditorRichTextNonCollabToolbarActions_ClassNames =
+	| "FileEditorRichTextNonCollabToolbarActions"
+	| "FileEditorRichTextNonCollabToolbarActions-button"
+	| "FileEditorRichTextNonCollabToolbarActions-icon"
+	| "FileEditorRichTextNonCollabToolbarActions-reformat-hint";
+
+type FileEditorRichTextNonCollabToolbarActions_Props = {
+	editor: Editor;
+	nodeId: app_convex_Id<"files_nodes">;
+	editable: boolean;
+	sessionId: string;
+	byteSize: number;
+	isSaveDisabled: boolean;
+	isSaveDebouncing: boolean;
+	/** The serializer's output differs from the stored bytes, so the first save reformats the file. */
+	showReformatHint: boolean;
+	nonCollaborativeBaseAssetId: app_convex_Id<"files_r2_assets">;
+	toolbarPortalHost: HTMLElement;
+	getCurrentText: () => string;
+	onApplySnapshotText: (text: string) => void;
+	onClickSave: () => void;
+};
+
+const FileEditorRichTextNonCollabToolbarActions = memo(function FileEditorRichTextNonCollabToolbarActions(
+	props: FileEditorRichTextNonCollabToolbarActions_Props,
+) {
+	const {
+		editor,
+		nodeId,
+		editable,
+		sessionId,
+		byteSize,
+		isSaveDisabled,
+		isSaveDebouncing,
+		showReformatHint,
+		nonCollaborativeBaseAssetId,
+		toolbarPortalHost,
+		getCurrentText,
+		onApplySnapshotText,
+		onClickSave,
+	} = props;
+
+	const wordsCount = useEditorState({
+		editor,
+		selector: ({ editor: currentEditor }) => currentEditor.storage.characterCount.words(),
+	});
+
+	const sizeBadge = file_editor_get_size_badge_text(byteSize);
+
+	return createPortal(
+		<div
+			role="group"
+			aria-label="Rich text editor actions"
+			className={cn(
+				"FileEditorRichTextNonCollabToolbarActions" satisfies FileEditorRichTextNonCollabToolbarActions_ClassNames,
+				// Intentional style reuse: same row layout as the collaborative toolbar in this file.
+				"FileEditorRichTextToolbarActions" satisfies FileEditorRichTextToolbarActions_ClassNames,
+			)}
+		>
+			<FileEditorRichTextToolbarTools editor={editor} editable={editable} />
+			{/* No sync status here: the file has no live sync, so Save is the only way out. */}
+			<MyButton
+				variant="ghost-highlightable"
+				className={cn(
+					"FileEditorRichTextNonCollabToolbarActions-button" satisfies FileEditorRichTextNonCollabToolbarActions_ClassNames,
+				)}
+				disabled={isSaveDisabled}
+				aria-busy={isSaveDebouncing}
+				onClick={onClickSave}
+			>
+				<MyButtonIcon
+					className={cn(
+						"FileEditorRichTextNonCollabToolbarActions-icon" satisfies FileEditorRichTextNonCollabToolbarActions_ClassNames,
+					)}
+				>
+					{isSaveDebouncing ? <MySpinner aria-label="Checking" /> : <Save />}
+				</MyButtonIcon>
+				Save
+			</MyButton>
+			{/* Required warning: the first save may rewrite lines the member never touched, and
+			    this is the only notice they get before it. */}
+			{showReformatHint && (
+				<span
+					className={cn(
+						"FileEditorRichTextNonCollabToolbarActions-reformat-hint" satisfies FileEditorRichTextNonCollabToolbarActions_ClassNames,
+					)}
+				>
+					Saving from the rich editor will reformat this file's Markdown.
+				</span>
+			)}
+			<MyBadge
+				variant="secondary"
+				className={cn(
+					// Intentional style reuse from the collaborative toolbar in this file.
+					wordsCount
+						? ("FileEditorRichTextToolbarActions-word-count-badge" satisfies FileEditorRichTextToolbarActions_ClassNames)
+						: ("FileEditorRichTextToolbarActions-word-count-badge-hidden" satisfies FileEditorRichTextToolbarActions_ClassNames),
+				)}
+			>
+				{wordsCount} Words
+			</MyBadge>
+			{sizeBadge && (
+				<MyBadge
+					variant={sizeBadge.isOverCap ? "destructive" : "secondary"}
+					className={cn(
+						// Intentional style reuse from the collaborative toolbar in this file.
+						"FileEditorRichTextToolbarActions-size-badge" satisfies FileEditorRichTextToolbarActions_ClassNames,
+					)}
+				>
+					{sizeBadge.label}
+				</MyBadge>
+			)}
+			{/*
+				The badge is silent, so without this a screen reader user only finds out the file
+				is too big when Save is rejected.
+				*/}
+			<span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+				{file_editor_get_size_status_message({ byteSize, blocks: "saving" })}
+			</span>
+			<FileEditorSnapshotsModal
+				nodeId={nodeId}
+				sessionId={sessionId}
+				editable={editable}
+				nonCollaborativeBaseAssetId={nonCollaborativeBaseAssetId}
+				getCurrentText={getCurrentText}
+				onApplySnapshotText={onApplySnapshotText}
+			/>
+		</div>,
+		toolbarPortalHost,
+	);
+});
+// #endregion non-collaborative toolbar
+
+// #region non-collaborative inner
+type FileEditorRichTextNonCollabInner_Props = {
+	nodeId: app_convex_Id<"files_nodes">;
+	editable: boolean;
+	/** The stored bytes the loader read; the mount-time baseline is re-serialized from them. */
+	initialText: string;
+	/** Parsed from `initialText` against the mounted extension list, so the two cannot drift. */
+	initialJson: NonNullable<ReturnType<typeof files_tiptap_markdown_to_json>["_yay"]>;
+	initialBaseAssetId: app_convex_Id<"files_r2_assets">;
+	presenceStore: files_PresenceStore;
+	commentsPortalHost: HTMLElement | null;
+	toolbarPortalHost: HTMLElement;
+	topStickyFloatingSlot?: React.ReactNode;
+};
+
+const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonCollabInner(
+	props: FileEditorRichTextNonCollabInner_Props,
+) {
+	const {
+		nodeId,
+		editable,
+		initialText,
+		initialJson,
+		initialBaseAssetId,
+		presenceStore,
+		commentsPortalHost,
+		toolbarPortalHost,
+		topStickyFloatingSlot,
+	} = props;
+
+	const { membershipId } = AppTenantProvider.useContext();
+
+	const [editor, setEditor] = useState<Editor | null>(null);
+
+	const sizeRef = useRef({ isOverCap: false });
+
+	const getIsOverCap = useFn(() => sizeRef.current.isOverCap);
+
+	const sizeLimit = file_editor_rich_text_SizeLimitExtension.configure({ getIsOverCap });
+
+	const media = file_editor_rich_text_MediaExtension.configure({ membershipId });
+
+	// Save state. The baseline is the mounted serializer's output, not the stored bytes: opening
+	// and closing a file then never marks it dirty, and only the first save may reformat once
+	// (`showReformatHint` warns about that).
+	const baselineMarkdownRef = useRef<string>(initialText);
+	const [nonCollaborativeBaseAssetId, setNonCollaborativeBaseAssetId] = useState(initialBaseAssetId);
+	const [dirtyCheckState, setDirtyCheckState] = useState<"clean" | "checking" | "dirty">("clean");
+	const dirtyCheckTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+	const [isSaving, setIsSaving] = useState(false);
+	const [byteSize, setByteSize] = useState(() => files_get_utf8_byte_size(initialText));
+	const [showReformatHint, setShowReformatHint] = useState(false);
+
+	const isSaveDebouncing = dirtyCheckState === "checking";
+	const isSaveDisabled = !editable || isSaving || dirtyCheckState !== "dirty";
+	// "checking" blocks too: typing happened moments ago, so unsaved edits may exist.
+	const commentDisabledReason = dirtyCheckState === "clean" ? null : "Save your changes before adding a comment.";
+
+	const imageUploadInputRef = useRef<HTMLInputElement>(null);
+	const videoUploadInputRef = useRef<HTMLInputElement>(null);
+	const [embedPickerAnchorRect, setEmbedPickerAnchorRect] = useState<{
+		x: number;
+		y: number;
+		width: number;
+		height: number;
+	} | null>(null);
+
+	// Click the input synchronously: the browser only opens a file dialog while the user
+	// gesture that ran the slash command is still active.
+	const pickMediaUploadFile = useFn((kind: "image" | "video") => {
+		(kind === "image" ? imageUploadInputRef : videoUploadInputRef).current?.click();
+	});
+
+	const openEmbedExistingPicker = useFn(() => {
+		if (!editor) {
+			return;
+		}
+
+		// Anchor the picker to the caret; the slash item already deleted the "/..." text.
+		const caretRect = editor.view.coordsAtPos(editor.state.selection.from);
+		setEmbedPickerAnchorRect({
+			x: caretRect.left,
+			y: caretRect.top,
+			width: 1,
+			height: caretRect.bottom - caretRect.top,
+		});
+	});
+
+	const handleEmbedPickerClose = useFn(() => {
+		setEmbedPickerAnchorRect(null);
+	});
+
+	const handleMediaUploadInputChange = useFn((event: React.ChangeEvent<HTMLInputElement>) => {
+		const files = Array.from(event.currentTarget.files ?? []);
+		// Reset so picking the same file twice in a row still fires a change event.
+		event.currentTarget.value = "";
+		if (files.length === 0 || !editor || !editable) {
+			return;
+		}
+
+		file_editor_rich_text_upload_media_files({
+			view: editor.view,
+			files,
+			source: "file",
+			membershipId,
+			documentNodeId: nodeId,
+		});
+	});
+
+	const mediaInsert = file_editor_rich_text_MediaInsertExtension.configure({
+		pickUploadFile: pickMediaUploadFile,
+		openEmbedExistingPicker,
+	});
+
+	const extensions = [
+		...nonCollaborativeExtensions,
+		FileEditorRichTextToolsSlashCommand.slashCommand,
+		sizeLimit,
+		media,
+		mediaInsert,
+	];
+
+	// Serialize once, refresh the size states, and compare against the baseline. Used by the
+	// typing debounce and after every save-shaped operation, so there is exactly one dirty
+	// computation (the comment gate reads the same state).
+	const recomputeDirtyState = (currentEditor: Editor) => {
+		const currentText = serialize_editor_markdown(currentEditor);
+		const nextByteSize = files_get_utf8_byte_size(currentText);
+		setByteSize(nextByteSize);
+		sizeRef.current.isOverCap = nextByteSize > files_MAX_TEXT_CONTENT_BYTES;
+
+		if (dirtyCheckTimeoutRef.current) {
+			clearTimeout(dirtyCheckTimeoutRef.current);
+			dirtyCheckTimeoutRef.current = undefined;
+		}
+		setDirtyCheckState(currentText !== baselineMarkdownRef.current ? "dirty" : "clean");
+	};
+
+	const handleCreate: EditorContentProps["onCreate"] = ({ editor: createdEditor }) => {
+		// Serialize the freshly mounted document through the argument: the React `editor` state is
+		// still null here because `setEditor` has not finished.
+		const baseline = serialize_editor_markdown(createdEditor);
+		baselineMarkdownRef.current = baseline;
+		setByteSize(files_get_utf8_byte_size(baseline));
+		sizeRef.current.isOverCap = files_get_utf8_byte_size(baseline) > files_MAX_TEXT_CONTENT_BYTES;
+		setShowReformatHint(baseline !== initialText);
+		setEditor(createdEditor);
+	};
+
+	const getCurrentText = useFn(() => (editor ? serialize_editor_markdown(editor) : initialText));
+
+	const handleClickSave = useFn(() => {
+		if (!editable || !editor || isSaving || dirtyCheckState !== "dirty") return;
+
+		setIsSaving(true);
+
+		// Use an async IIFE because the React compiler has problems with try catch finally blocks
+		(async (/* iife */) => {
+			const textToSave = serialize_editor_markdown(editor);
+
+			// Nothing is persisted until this point, so the cap is enforced here. The content
+			// stays in the editor, so the member can trim it and save again.
+			const savedByteSize = files_get_utf8_byte_size(textToSave);
+			if (savedByteSize > files_MAX_TEXT_CONTENT_BYTES) {
+				toast.error(file_editor_get_size_error_message(savedByteSize));
+				return;
+			}
+
+			// Send the whole text and name the asset it was built on, so a save that landed
+			// meanwhile is refused instead of silently overwritten.
+			const replaced = await app_convex.action(app_convex_api.files_nodes_content.replace_file_content, {
+				membershipId,
+				nodeId,
+				text: textToSave,
+				baseAssetId: nonCollaborativeBaseAssetId,
+			});
+			if (replaced._nay) {
+				console.error("[FileEditorRichTextNonCollab.handleClickSave] Error while replacing the file content", {
+					nay: replaced._nay,
+				});
+				toast.error(replaced._nay.message);
+				return;
+			}
+
+			// The save wrote a new version, and the next save has to be based on it.
+			setNonCollaborativeBaseAssetId(replaced._yay.assetId);
+			baselineMarkdownRef.current = textToSave;
+			setShowReformatHint(false);
+			// The member may have typed while the call was waiting. Recompute dirty against the
+			// captured saved text instead of resetting to clean, so later typing never reads as saved.
+			recomputeDirtyState(editor);
+		})()
+			.catch((err) => {
+				console.error("[FileEditorRichTextNonCollab.handleClickSave] Save failed", err);
+				toast.error(err instanceof Error ? err.message : "Failed to save");
+			})
+			.finally(() => {
+				setIsSaving(false);
+			});
+	});
+
+	// No `editable` guard here on purpose: this runs only after the backend already committed the
+	// restore, so skipping the refresh when permission was removed mid-restore would leave the
+	// editor showing stale content. The pre-action gate lives in the snapshots modal.
+	const handleApplySnapshotText = useFn(() => {
+		// Use an async IIFE because the React compiler has problems with try catch finally blocks
+		(async (/* iife */) => {
+			if (!editor) {
+				return;
+			}
+
+			// The restore replaced the whole text, so re-read it together with the asset it now
+			// lives in. That asset is the base of the next save.
+			const restored = await app_convex.query(app_convex_api.files_nodes_content.get_non_collaborative_file_content, {
+				membershipId,
+				nodeId,
+			});
+			if (restored._nay) {
+				console.error("[FileEditorRichTextNonCollab.handleApplySnapshotText] Error while reading the restored content", {
+					nay: restored._nay,
+				});
+				toast.error("Failed to refresh the editor after the restore. Reload the file.");
+				return;
+			}
+
+			const replacedDoc = replace_editor_document(editor, restored._yay.text);
+			if (replacedDoc._nay) {
+				console.error("[FileEditorRichTextNonCollab.handleApplySnapshotText] Error while parsing the restored content", {
+					nay: replacedDoc._nay,
+				});
+				toast.error("Failed to refresh the editor after the restore. Reload the file.");
+				return;
+			}
+
+			// Same rules as mount: the baseline is the serializer's output for the restored
+			// document, and the hint returns when that output differs from the stored bytes.
+			const baseline = serialize_editor_markdown(editor);
+			baselineMarkdownRef.current = baseline;
+			setShowReformatHint(baseline !== restored._yay.text);
+			setNonCollaborativeBaseAssetId(restored._yay.assetId);
+			recomputeDirtyState(editor);
+		})()
+			.catch((err) => {
+				console.error("[FileEditorRichTextNonCollab.handleApplySnapshotText] Failed to apply snapshot restore", err);
+				toast.error(err instanceof Error ? err.message : "Failed to restore snapshot");
+			})
+			.finally(() => {});
+	});
+
+	/**
+	 * The targeted comment save. The gate guarantees the editor was clean when the composer
+	 * submitted, so the current document is the saved base plus only the new mark.
+	 */
+	const handleCommitComment = useFn(async (threadId: string): Promise<boolean> => {
+		if (!editor) {
+			return false;
+		}
+
+		const textWithComment = serialize_editor_markdown(editor);
+
+		const commentByteSize = files_get_utf8_byte_size(textWithComment);
+		if (commentByteSize > files_MAX_TEXT_CONTENT_BYTES) {
+			toast.error(file_editor_get_size_error_message(commentByteSize));
+			return false;
+		}
+
+		const replaced = await app_convex.action(app_convex_api.files_nodes_content.replace_file_content, {
+			membershipId,
+			nodeId,
+			text: textWithComment,
+			baseAssetId: nonCollaborativeBaseAssetId,
+		});
+
+		if (replaced._yay) {
+			setNonCollaborativeBaseAssetId(replaced._yay.assetId);
+			baselineMarkdownRef.current = textWithComment;
+			setShowReformatHint(false);
+			recomputeDirtyState(editor);
+			return true;
+		}
+
+		if (replaced._nay.message !== REPLACE_FILE_STALENESS_MESSAGE) {
+			console.error("[FileEditorRichTextNonCollab.handleCommitComment] Error while saving the comment", {
+				nay: replaced._nay,
+			});
+			toast.error(replaced._nay.message);
+			return false;
+		}
+
+		// Somebody else saved between our load and this comment. Yjs is used below only as a merge
+		// tool: nothing is synced and nothing is stored as Yjs. The comment mark is one small edit
+		// on top of the base text we loaded, somebody else saved a different edit on top of the
+		// same base, and Yjs can replay our edit onto their text.
+
+		// The member may have typed while the save above was waiting. Merging would publish that
+		// typing, so refuse; the caller takes the mark back out and the typing stays local.
+		if (serialize_editor_markdown(editor) !== textWithComment) {
+			toast.error("Save your changes before adding a comment.");
+			return false;
+		}
+
+		const savedBaseText = baselineMarkdownRef.current;
+
+		const fresh = await app_convex.query(app_convex_api.files_nodes_content.get_non_collaborative_file_content, {
+			membershipId,
+			nodeId,
+		});
+		if (fresh._nay) {
+			console.error("[FileEditorRichTextNonCollab.handleCommitComment] Error while re-reading the file content", {
+				nay: fresh._nay,
+			});
+			toast.error("This file changed while you were saving. Reload the page, then add your comment again.");
+			return false;
+		}
+
+		// Both docs MUST come from the same base doc. Two docs built separately from text share no
+		// history, and `files_yjs_reconcile_branch_with_local_text` would then quietly keep our
+		// text and drop theirs.
+		const baseYjsDoc = new YDoc();
+		const baseFromText = files_yjs_doc_update_from_text({
+			mut_yjsDoc: baseYjsDoc,
+			text: savedBaseText,
+			rootKind: "rich_text",
+		});
+		if (baseFromText._nay) {
+			console.error("[FileEditorRichTextNonCollab.handleCommitComment] Error while building the base document", {
+				nay: baseFromText._nay,
+			});
+			toast.error("This file changed while you were saving. Reload the page, then add your comment again.");
+			return false;
+		}
+
+		// The merge runs on the shared extension list, which does not know every node the browser
+		// editor can write (youtube, twitter, math). If projecting the saved base through it does
+		// not give the saved base back, the merge would drop something. Refuse instead of quietly
+		// rewriting the file.
+		const baseRoundTrip = files_yjs_doc_get_text({ yjsDoc: baseYjsDoc, rootKind: "rich_text" });
+		if (baseRoundTrip._nay || baseRoundTrip._yay !== savedBaseText) {
+			toast.error("This file changed while you were saving. Reload the page, then add your comment again.");
+			return false;
+		}
+
+		const freshYjsDoc = files_yjs_doc_clone({ yjsDoc: baseYjsDoc });
+		const freshFromText = files_yjs_doc_update_from_text({
+			mut_yjsDoc: freshYjsDoc,
+			text: fresh._yay.text,
+			rootKind: "rich_text",
+		});
+		if (freshFromText._nay) {
+			console.error("[FileEditorRichTextNonCollab.handleCommitComment] Error while building the fresh document", {
+				nay: freshFromText._nay,
+			});
+			toast.error("This file changed while you were saving. Reload the page, then add your comment again.");
+			return false;
+		}
+
+		const merged = files_yjs_reconcile_branch_with_local_text({
+			previousRemoteYjsDoc: baseYjsDoc,
+			nextRemoteYjsDoc: freshYjsDoc,
+			localText: textWithComment,
+			rootKind: "rich_text",
+		});
+		if (merged._nay) {
+			console.error("[FileEditorRichTextNonCollab.handleCommitComment] Error while merging the comment", {
+				nay: merged._nay,
+			});
+			toast.error("This file changed while you were saving. Reload the page, then add your comment again.");
+			return false;
+		}
+
+		// Retry once against the fresh asset. A second staleness refusal gets the normal message.
+		const replacedMerged = await app_convex.action(app_convex_api.files_nodes_content.replace_file_content, {
+			membershipId,
+			nodeId,
+			text: merged._yay.mergedText,
+			baseAssetId: fresh._yay.assetId,
+		});
+		if (replacedMerged._nay) {
+			console.error("[FileEditorRichTextNonCollab.handleCommitComment] Error while saving the merged comment", {
+				nay: replacedMerged._nay,
+			});
+			toast.error(replacedMerged._nay.message);
+			return false;
+		}
+
+		// The file now also holds the other person's text; the editor must show it.
+		setNonCollaborativeBaseAssetId(replacedMerged._yay.assetId);
+		baselineMarkdownRef.current = merged._yay.mergedText;
+		setShowReformatHint(false);
+
+		const replacedDoc = replace_editor_document(editor, merged._yay.mergedText);
+		if (replacedDoc._nay) {
+			// The save DID happen, so the commit reports success; only the local view is stale.
+			console.error("[FileEditorRichTextNonCollab.handleCommitComment] Error while showing the merged content", {
+				nay: replacedDoc._nay,
+			});
+			toast.error("The comment was saved, but the editor could not show the merged file. Reload the file.");
+			return true;
+		}
+
+		recomputeDirtyState(editor);
+		toast.info("Someone else saved this file. Your comment was merged into their version.");
+		return true;
+	});
+
+	// Same pattern as the comments composer: the editor instance is created once, so a later answer
+	// to "may this user write here" has to go through `setEditable`.
+	useEffect(() => {
+		if (editor) {
+			editor.setEditable(editable, false);
+		}
+	}, [editor, editable]);
+
+	// The dirty check serializes the whole document, so it runs on a typing pause, not on every
+	// keystroke. Same cost profile the collaborative toolbar accepts for its size badge.
+	useEffect(() => {
+		if (!editor) {
+			return;
+		}
+
+		const handleUpdate = () => {
+			setDirtyCheckState("checking");
+			if (dirtyCheckTimeoutRef.current) {
+				clearTimeout(dirtyCheckTimeoutRef.current);
+			}
+			dirtyCheckTimeoutRef.current = setTimeout(() => {
+				dirtyCheckTimeoutRef.current = undefined;
+				recomputeDirtyState(editor);
+			}, 400);
+		};
+
+		editor.on("update", handleUpdate);
+		return () => {
+			editor.off("update", handleUpdate);
+			clearTimeout(dirtyCheckTimeoutRef.current);
+			dirtyCheckTimeoutRef.current = undefined;
+		};
+	}, [editor]);
+
+	/**
+	 * Reject content that would push the document over the size cap. Every save persists the whole
+	 * document, so pasted and dropped content has to be checked before it lands. The size is
+	 * measured exactly here rather than read from the debounced state: a paste is a one-off user
+	 * action, so one serialization is affordable and never stale.
+	 */
+	const checkIncomingContentFitsSizeCap = useFn((incomingText: string) => {
+		if (!editor || !incomingText) {
+			return true;
+		}
+
+		const nextByteSize = files_get_utf8_byte_size(editor.getMarkdown()) + files_get_utf8_byte_size(incomingText);
+		if (nextByteSize <= files_MAX_TEXT_CONTENT_BYTES) {
+			return true;
+		}
+
+		toast.error(file_editor_get_size_error_message(nextByteSize));
+		return false;
+	});
+
+	// The non-collaborative editor has no sync status; "the Tiptap instance exists" is its
+	// readiness, and the same visible-class mechanism keeps the layout identical.
+	const isEditorReady = editor !== null;
+
+	return (
+		<>
+			<div
+				className={cn(
+					"FileEditorRichText" satisfies FileEditorRichText_ClassNames,
+					isEditorReady && ("FileEditorRichText-visible" satisfies FileEditorRichText_ClassNames),
+				)}
+			>
+				<input
+					ref={imageUploadInputRef}
+					type="file"
+					accept="image/*"
+					multiple
+					aria-hidden="true"
+					tabIndex={-1}
+					style={{ display: "none" }}
+					onChange={handleMediaUploadInputChange}
+				/>
+				<input
+					ref={videoUploadInputRef}
+					type="file"
+					accept="video/*"
+					multiple
+					aria-hidden="true"
+					tabIndex={-1}
+					style={{ display: "none" }}
+					onChange={handleMediaUploadInputChange}
+				/>
+				{editor && embedPickerAnchorRect && (
+					<FileEditorRichTextMediaEmbedPicker
+						editor={editor}
+						membershipId={membershipId}
+						anchorRect={embedPickerAnchorRect}
+						onClose={handleEmbedPickerClose}
+					/>
+				)}
+				{editor && (
+					<FileEditorRichTextNonCollabToolbarActions
+						editor={editor}
+						nodeId={nodeId}
+						editable={editable}
+						sessionId={presenceStore.localSessionId}
+						byteSize={byteSize}
+						isSaveDisabled={isSaveDisabled}
+						isSaveDebouncing={isSaveDebouncing}
+						showReformatHint={showReformatHint}
+						nonCollaborativeBaseAssetId={nonCollaborativeBaseAssetId}
+						toolbarPortalHost={toolbarPortalHost}
+						getCurrentText={getCurrentText}
+						onApplySnapshotText={handleApplySnapshotText}
+						onClickSave={handleClickSave}
+					/>
+				)}
+				<FileEditorRichTextTopStickyFloatingContainer topStickyFloatingSlot={topStickyFloatingSlot} />
+				<EditorContent
+					className={cn("FileEditorRichText-editor-content-root" satisfies FileEditorRichText_ClassNames)}
+					injectCSS={false}
+					initialContent={initialJson}
+					editorContainerProps={{
+						className: cn("FileEditorRichText-editor-content-container" satisfies FileEditorRichText_ClassNames),
+					}}
+					editorProps={{
+						attributes: {
+							class: cn(
+								"app-doc" satisfies AppClassName,
+								"FileEditorRichText-editor-content" satisfies FileEditorRichText_ClassNames,
+							),
+						},
+						handleDOMEvents: {
+							keydown: (_view, event) => handleCommandNavigation(event),
+						},
+						// ProseMirror treats true as handled. A settled read-only view skips these handlers on
+						// its own, but the view's read-only gate lands one `setEditable` effect later than the
+						// React render, so block a paste or drop that arrives in that window here and in
+						// `handleDrop` below.
+						handlePaste: (view, event) => {
+							if (!editable) {
+								return true;
+							}
+							if (checkIncomingContentFitsSizeCap(event.clipboardData?.getData("text/plain") ?? "") === false) {
+								return true;
+							}
+							return file_editor_rich_text_handle_media_paste({ view, event, membershipId, documentNodeId: nodeId });
+						},
+						handleDrop: (view, event, _slice, moved) => {
+							if (!editable) {
+								return true;
+							}
+							// `moved` is an internal drag, so the content is only relocated, not added.
+							if (
+								!moved &&
+								checkIncomingContentFitsSizeCap(event.dataTransfer?.getData("text/plain") ?? "") === false
+							) {
+								return true;
+							}
+							return file_editor_rich_text_handle_media_drop({
+								view,
+								event,
+								moved,
+								membershipId,
+								documentNodeId: nodeId,
+							});
+						},
+					}}
+					extensions={extensions}
+					editable={editable}
+					immediatelyRender={false}
+					onCreate={handleCreate}
+					slotAfter={
+						editor && editable ? (
+							<>
+								<ImageResizer />
+								<FileEditorRichTextToolsSlashCommand />
+								<FileEditorRichTextDragHandle editor={editor} />
+								<FileEditorRichTextBubble
+									editor={editor}
+									nodeId={nodeId}
+									disabledReason={commentDisabledReason}
+									commitComment={handleCommitComment}
+									showAiAction={false}
+								/>
+							</>
+						) : null
+					}
+				></EditorContent>
+			</div>
+			{editor && (
+				<FileEditorRichTextAnchoredCommentsLayer
+					commentsPortalHost={commentsPortalHost}
+					editor={editor}
+					editable={editable}
+					isEditorReady={isEditorReady}
+				/>
+			)}
+			{!isEditorReady && <FileEditorRichTextSkeleton />}
+		</>
+	);
+});
+// #endregion non-collaborative inner
+
+export type FileEditorRichTextNonCollab_Props = {
+	nodeId: app_convex_Id<"files_nodes">;
+	editable: boolean;
+	presenceStore: files_PresenceStore;
+	commentsPortalHost: HTMLElement | null;
+	toolbarPortalHost: HTMLElement;
+	topStickyFloatingSlot?: React.ReactNode;
+};
+
+/**
+ * The rich editor for a file with collaboration turned off. A separate top-level component, not
+ * a flag on `FileEditorRichText`: that component calls `useFilesYjs` unconditionally, and hook
+ * rules forbid skipping the call, so a merged component would open a Yjs provider against a file
+ * that has no Yjs document.
+ */
+const FileEditorRichTextNonCollab = memo(function FileEditorRichTextNonCollab(
+	props: FileEditorRichTextNonCollab_Props,
+) {
+	const { nodeId, editable, presenceStore, commentsPortalHost, toolbarPortalHost, topStickyFloatingSlot } = props;
+
+	const { membershipId } = AppTenantProvider.useContext();
+
+	const fileContentDataPromise = useMemo(() => {
+		// Collaboration off: the server sends the committed text and the asset the next save has
+		// to name.
+		return app_convex
+			.query(app_convex_api.files_nodes_content.get_non_collaborative_file_content, { membershipId, nodeId })
+			.then((result) => {
+				if (result._nay) {
+					console.error("[FileEditorRichTextNonCollab] Error while reading the file content", result._nay);
+					return null;
+				}
+
+				// Parse against the list the editor mounts, so a document this editor cannot
+				// represent is refused below before any editor exists.
+				const json = files_tiptap_markdown_to_json({
+					markdown: result._yay.text,
+					extensions: nonCollaborativeExtensions,
+				});
+				if (json._nay) {
+					console.error("[FileEditorRichTextNonCollab] Error while parsing the file content", json._nay);
+					return null;
+				}
+
+				return { text: result._yay.text, baseAssetId: result._yay.assetId, initialJson: json._yay };
+			});
+	}, [membershipId, nodeId]);
+	const fileContentData = usePromiseValue(fileContentDataPromise);
+
+	// On a refused or missing read, never mount the editor over a stand-in document: a save from
+	// it would overwrite the real content.
+	return fileContentData === undefined ? (
+		<FileEditorRichTextSkeleton />
+	) : fileContentData === null ? (
+		<div role="alert" className={"FileEditorRichText-refusal" satisfies FileEditorRichText_ClassNames}>
+			This file's content could not be read safely, so the editor stays closed to protect it. Reload the file or
+			contact support if this keeps happening.
+		</div>
+	) : (
+		// Remount on the loaded lineage so a different stored version never reuses editor state.
+		<EditorRoot key={`non_collaborative:${fileContentData.baseAssetId}`}>
+			<FileEditorRichTextNonCollabInner
+				nodeId={nodeId}
+				editable={editable}
+				initialText={fileContentData.text}
+				initialJson={fileContentData.initialJson}
+				initialBaseAssetId={fileContentData.baseAssetId}
+				presenceStore={presenceStore}
+				commentsPortalHost={commentsPortalHost}
+				toolbarPortalHost={toolbarPortalHost}
+				topStickyFloatingSlot={topStickyFloatingSlot}
+			/>
+		</EditorRoot>
+	);
+});
+
+export { FileEditorRichTextNonCollab };
+// #endregion non-collaborative root

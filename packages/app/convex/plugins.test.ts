@@ -122,6 +122,7 @@ async function register_media_plugin(
 		uiOutboundOrigins?: string[];
 		capabilities?: plugins_Capability[];
 		pages?: Doc<"plugins_versions">["pages"];
+		endpoints?: Doc<"plugins_versions">["endpoints"];
 		secrets?: Array<{ name: string; description: string; optional: boolean }>;
 		sourceFiles?: Array<{ path: string; rawText: string }>;
 	} = {},
@@ -188,6 +189,7 @@ async function register_media_plugin(
 		],
 		pages: args.pages ?? [],
 		fileViews: [],
+		endpoints: args.endpoints,
 		capabilities: args.capabilities ?? ["plugin.secrets.read", "outbound.fetch"],
 		outboundOrigins: args.outboundOrigins ?? [],
 		uiOutboundOrigins: args.uiOutboundOrigins ?? [],
@@ -2341,6 +2343,198 @@ describe("plugins Phase 0", () => {
 		expect(await t.run((ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
 	});
 
+	test("charges the anonymous workspace payer one cent for each plugin output write", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const registered = await register_media_plugin(t, membership.userId);
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const installed = await asOwner.mutation(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: registered.pluginVersionId,
+			...media_plugin_consent,
+		});
+		if (installed._nay) {
+			throw new Error(installed._nay.message);
+		}
+		const upload = await asOwner.mutation(api.files_nodes.create_upload_node, {
+			membershipId: membership.membershipId,
+			parentId: "root",
+			filename: "billed.mp4",
+			contentType: "video/mp4",
+			size: 1024,
+		});
+		if (upload._nay) {
+			throw new Error(upload._nay.message);
+		}
+		const runId = await t.run(async (ctx) => {
+			const installation = await ctx.db.get("plugins_workspace_installations", installed._yay.installationId);
+			if (!installation) {
+				throw new Error("Expected installation");
+			}
+			return await ctx.db.insert("plugins_event_runs", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				assetId: upload._yay.assetId,
+				fileNodeId: upload._yay.nodeId,
+				actorUserId: membership.userId,
+				installationId: installed._yay.installationId,
+				pluginVersionId: installation.pluginVersionId,
+				event: "files.upload.completed",
+				eventId: "plugin:billing-charge-test",
+				status: "queued",
+				acceptedCapabilities: installation.acceptedCapabilities,
+				expiresAt: Date.now() + 30 * 60 * 1000,
+				apiCallCount: 0,
+				outputWriteCount: 0,
+				errorMessage: null,
+				updatedAt: Date.now(),
+			});
+		});
+		const apiToken = `plr_${"b".repeat(64)}`;
+		await t.mutation(internal.plugins_runtime.start_event_run, {
+			runId,
+			apiTokenHash: await crypto_sha256_hex(apiToken),
+		});
+
+		const read_meter = async () =>
+			await t.run(async (ctx) => {
+				const snapshot = await ctx.db
+					.query("billing_usage_snapshots")
+					.withIndex("by_user", (q) => q.eq("userId", membership.userId))
+					.first();
+				if (!snapshot?.meter) {
+					throw new Error("Expected a seeded usage snapshot");
+				}
+				return snapshot.meter;
+			});
+		const before = await read_meter();
+
+		const response = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${apiToken}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				path: "/billed.transcript.md",
+				content: "# Transcript\n",
+				overwrite: "replace",
+			}),
+		});
+		expect(response.status).toBe(200);
+
+		// The payer is anonymous, so the charge lands on the snapshot meter in the same commit.
+		const after = await read_meter();
+		expect(after.balance).toBe(before.balance - 1);
+		expect(after.consumedUnits).toBe(before.consumedUnits + 1);
+	});
+
+	test("refuses a plugin output write with 402 and settles the call as insufficient_funds", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const registered = await register_media_plugin(t, membership.userId);
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const installed = await asOwner.mutation(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: registered.pluginVersionId,
+			...media_plugin_consent,
+		});
+		if (installed._nay) {
+			throw new Error(installed._nay.message);
+		}
+		const upload = await asOwner.mutation(api.files_nodes.create_upload_node, {
+			membershipId: membership.membershipId,
+			parentId: "root",
+			filename: "broke.mp4",
+			contentType: "video/mp4",
+			size: 1024,
+		});
+		if (upload._nay) {
+			throw new Error(upload._nay.message);
+		}
+		const runId = await t.run(async (ctx) => {
+			const installation = await ctx.db.get("plugins_workspace_installations", installed._yay.installationId);
+			if (!installation) {
+				throw new Error("Expected installation");
+			}
+			return await ctx.db.insert("plugins_event_runs", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				assetId: upload._yay.assetId,
+				fileNodeId: upload._yay.nodeId,
+				actorUserId: membership.userId,
+				installationId: installed._yay.installationId,
+				pluginVersionId: installation.pluginVersionId,
+				event: "files.upload.completed",
+				eventId: "plugin:billing-refusal-test",
+				status: "queued",
+				acceptedCapabilities: installation.acceptedCapabilities,
+				expiresAt: Date.now() + 30 * 60 * 1000,
+				apiCallCount: 0,
+				outputWriteCount: 0,
+				errorMessage: null,
+				updatedAt: Date.now(),
+			});
+		});
+		const apiToken = `plr_${"e".repeat(64)}`;
+		await t.mutation(internal.plugins_runtime.start_event_run, {
+			runId,
+			apiTokenHash: await crypto_sha256_hex(apiToken),
+		});
+
+		// Move the payer to Free and empty the meter, which is the only state the credit gate refuses.
+		await t.run(async (ctx) => {
+			await test_mocks_fill_db_with.plan(ctx, { userId: membership.userId, plan: "Free" });
+			const snapshot = await ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_user", (q) => q.eq("userId", membership.userId))
+				.first();
+			if (!snapshot?.meter) {
+				throw new Error("Expected a seeded usage snapshot");
+			}
+			await ctx.db.patch("billing_usage_snapshots", snapshot._id, {
+				meter: { ...snapshot.meter, balance: 0 },
+			});
+		});
+
+		const response = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${apiToken}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify({
+				path: "/broke.transcript.md",
+				content: "# Transcript\n",
+				overwrite: "replace",
+			}),
+		});
+		expect(response.status).toBe(402);
+		expect(await response.json()).toEqual({ message: "Insufficient funds" });
+
+		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
+		// The refused call still burned a quota slot but wrote nothing.
+		expect(run?.apiCallCount).toBe(1);
+		expect(run?.outputWriteCount).toBe(0);
+		const calls = await t.run((ctx) =>
+			ctx.db
+				.query("plugins_event_run_calls")
+				.withIndex("by_run_sequence", (q) => q.eq("runId", runId))
+				.collect(),
+		);
+		expect(calls).toHaveLength(1);
+		expect(calls[0]).toMatchObject({
+			sequence: 1,
+			kind: "api_request",
+			route: "/api/v1/files/write",
+			status: "failed",
+			responseStatus: 402,
+			errorCode: "insufficient_funds",
+			errorMessage: "Insufficient funds",
+		});
+		expect(await t.run((ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
+	});
+
 	test("marks a run failed when the runner reports a non-2xx plugin status", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -2397,6 +2591,7 @@ describe("plugins Phase 0", () => {
 							pluginStatus: 500,
 							elapsedMs: 12,
 							outputBytes: 13,
+							output: "",
 							outputTruncated: false,
 						},
 					}),
@@ -2924,6 +3119,7 @@ describe("plugins Phase 0", () => {
 							pluginStatus: 200,
 							elapsedMs: 12,
 							outputBytes: 2,
+							output: "ok",
 							outputTruncated: false,
 						},
 					}),
@@ -2970,7 +3166,7 @@ describe("plugins Phase 0", () => {
 		vi.mocked(fetch).mockImplementation(
 			async () =>
 				new Response(
-					JSON.stringify({ _yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, outputTruncated: false } }),
+					JSON.stringify({ _yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, output: "", outputTruncated: false } }),
 					{
 						status: 200,
 						headers: { "Content-Type": "application/json" },
@@ -5647,6 +5843,7 @@ describe("plugins outbound origins consent", () => {
 							pluginStatus: 500,
 							elapsedMs: 12,
 							outputBytes: 0,
+							output: "",
 							outputTruncated: false,
 						},
 					}),
@@ -6360,6 +6557,13 @@ describe("plugins publish_version", () => {
 		expect(plugins_REVIEW_POLICY_VERSION).not.toBe("6");
 	});
 
+	test("left policy 7 behind when backend endpoints and invoke became reviewable surface", () => {
+		// Policy 7 verdicts never saw backend endpoint declarations, the invoke capability, or the
+		// owned-files and service-scope rules, so a cached policy-7 verdict must not authorize a
+		// publish that declares them.
+		expect(plugins_REVIEW_POLICY_VERSION).not.toBe("7");
+	});
+
 	test("does not stamp an old in-flight verdict with the current review policy", async () => {
 		const t = test_convex();
 		const publisher = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -6620,6 +6824,11 @@ describe("plugins publish_version", () => {
 			reviewStatus: "passed",
 			artifactHash: await sha256_text(github.manifestText),
 		});
+		// A manifest that declares no backend endpoints, no service block, and no user-writable
+		// collections is stored in normalized form, not as missing fields.
+		expect(version.endpoints).toEqual([]);
+		expect(version.serviceScopes).toBeNull();
+		expect(version.userWritableCollections).toBeNull();
 		expect(aiReview).toHaveBeenCalledTimes(1);
 		const reviews = await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect());
 		expect(reviews).toMatchObject([
@@ -10992,6 +11201,1020 @@ describe("plugins run_installation_on_files", () => {
 	});
 });
 
+describe("plugins backend invoke runs", () => {
+	const invoke_consent: {
+		acceptedCapabilities: plugins_Capability[];
+		acceptedOutboundOrigins: string[];
+		acceptedUiOutboundOrigins: string[];
+	} = {
+		acceptedCapabilities: ["plugin.backend.invoke"],
+		acceptedOutboundOrigins: [],
+		acceptedUiOutboundOrigins: [],
+	};
+
+	async function install_invoke_plugin(
+		t: ReturnType<typeof test_convex>,
+		args?: {
+			endpoints?: Doc<"plugins_versions">["endpoints"];
+		},
+	) {
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const registered = await register_media_plugin(t, membership.userId, {
+			name: "probe",
+			displayName: "Probe",
+			capabilities: ["plugin.backend.invoke"],
+			// No configurable filters: invoke tests that need a configuration patch it on the
+			// installation directly.
+			configurable: false,
+			endpoints: args?.endpoints ?? [
+				{ id: "echo", path: "/echo", serialization: "installation" },
+				{ id: "send", path: "/send", serialization: "caller-key" },
+			],
+		});
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const installed = await asOwner.mutation(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: registered.pluginVersionId,
+			...invoke_consent,
+		});
+		if (installed._nay) {
+			throw new Error(installed._nay.message);
+		}
+		return {
+			membership,
+			asOwner,
+			installationId: installed._yay.installationId,
+			pluginVersionId: registered.pluginVersionId,
+		};
+	}
+
+	function start_invoke_args(
+		fixture: Awaited<ReturnType<typeof install_invoke_plugin>>,
+		args?: { endpointId?: string; callerSerializationKey?: string | null; apiTokenHash?: string },
+	) {
+		return {
+			organizationId: fixture.membership.organizationId,
+			workspaceId: fixture.membership.workspaceId,
+			installationId: fixture.installationId,
+			pluginVersionId: fixture.pluginVersionId,
+			userId: fixture.membership.userId,
+			endpointId: args?.endpointId ?? "echo",
+			callerSerializationKey: args?.callerSerializationKey ?? null,
+			apiTokenHash: args?.apiTokenHash ?? "invoke-token-hash",
+		};
+	}
+
+	test("claims the lock and creates a running invoke run in one transaction", async () => {
+		const t = test_convex();
+		const fixture = await install_invoke_plugin(t);
+
+		const before = Date.now();
+		const started = await t.mutation(internal.plugins_runtime.start_invoke_run, start_invoke_args(fixture));
+		if (started._nay) {
+			throw new Error(started._nay.message);
+		}
+
+		expect(started._yay.endpointPath).toBe("/echo");
+		expect(started._yay.pluginRun).toMatchObject({
+			event: "ui.invoke.requested",
+			endpointId: "echo",
+			serializationKey: "installation",
+			status: "running",
+			actorUserId: fixture.membership.userId,
+			apiTokenHash: "invoke-token-hash",
+			acceptedCapabilities: ["plugin.backend.invoke"],
+			apiCallCount: 0,
+			outputWriteCount: 0,
+			errorMessage: null,
+		});
+		expect(started._yay.pluginRun.eventId).toMatch(
+			new RegExp(`^ui_invoke::[0-9a-f-]{36}::${fixture.installationId}$`, "u"),
+		);
+		// The 60-second TTL is both the token life and how long a crashed invoke can hold the lock.
+		expect(started._yay.pluginRun.expiresAt).toBeGreaterThanOrEqual(before + 60_000);
+		expect(started._yay.pluginRun.apiTokenExpiresAt).toBe(started._yay.pluginRun.expiresAt);
+		expect(started._yay.pluginRun.assetId).toBeUndefined();
+		expect(started._yay.pluginRun.fileNodeId).toBeUndefined();
+	});
+
+	test("refuses an undeclared endpoint, missing consent, a disabled installation, and a purge fence", async () => {
+		const t = test_convex();
+		const fixture = await install_invoke_plugin(t);
+
+		expect(
+			await t.mutation(internal.plugins_runtime.start_invoke_run, start_invoke_args(fixture, { endpointId: "nope" })),
+		).toEqual({ _nay: { message: "Endpoint not found" } });
+
+		// Consent can be withdrawn between the session mint and the invoke.
+		await t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", fixture.installationId, { acceptedCapabilities: [] }),
+		);
+		expect(await t.mutation(internal.plugins_runtime.start_invoke_run, start_invoke_args(fixture))).toEqual({
+			_nay: { message: "Permission denied" },
+		});
+		await t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
+				acceptedCapabilities: ["plugin.backend.invoke"],
+			}),
+		);
+
+		await t.run((ctx) => ctx.db.patch("plugins_workspace_installations", fixture.installationId, { status: "disabled" }));
+		expect(await t.mutation(internal.plugins_runtime.start_invoke_run, start_invoke_args(fixture))).toEqual({
+			_nay: { message: "Not found" },
+		});
+		await t.run((ctx) => ctx.db.patch("plugins_workspace_installations", fixture.installationId, { status: "enabled" }));
+
+		await t.run((ctx) =>
+			ctx.db.patch("organizations_workspaces", fixture.membership.workspaceId, {
+				pluginDataPurgeStartedAt: Date.now(),
+			}),
+		);
+		expect(await t.mutation(internal.plugins_runtime.start_invoke_run, start_invoke_args(fixture))).toEqual({
+			_nay: { message: "Not found" },
+		});
+	});
+
+	test("a live run holds the lock, an expired one does not", async () => {
+		const t = test_convex();
+		const fixture = await install_invoke_plugin(t);
+
+		const first = await t.mutation(internal.plugins_runtime.start_invoke_run, start_invoke_args(fixture));
+		if (first._nay) {
+			throw new Error(first._nay.message);
+		}
+
+		const second = await t.mutation(internal.plugins_runtime.start_invoke_run, start_invoke_args(fixture));
+		expect(second._nay).toMatchObject({
+			name: "busy",
+			message: "Another invoke is already running for this endpoint",
+		});
+		expect(second._nay?.data?.retryAfterMs).toBeGreaterThan(0);
+
+		// A crashed invoke leaves a running row until the expiry cron settles it; liveness is
+		// judged by expiresAt so that row cannot hold the lock past its TTL.
+		await t.run((ctx) =>
+			ctx.db.patch("plugins_event_runs", first._yay.pluginRun._id, { expiresAt: Date.now() - 1 }),
+		);
+		const third = await t.mutation(internal.plugins_runtime.start_invoke_run, start_invoke_args(fixture));
+		expect(third._nay).toBeUndefined();
+	});
+
+	test("caller-key endpoints lock per key and require a valid key", async () => {
+		const t = test_convex();
+		const fixture = await install_invoke_plugin(t);
+
+		expect(
+			await t.mutation(
+				internal.plugins_runtime.start_invoke_run,
+				start_invoke_args(fixture, { endpointId: "send" }),
+			),
+		).toEqual({ _nay: { message: "This endpoint requires a serialization key" } });
+		expect(
+			await t.mutation(
+				internal.plugins_runtime.start_invoke_run,
+				start_invoke_args(fixture, { endpointId: "send", callerSerializationKey: "café" }),
+			),
+		).toEqual({ _nay: { message: "Serialization keys must be printable ASCII up to 128 characters" } });
+
+		const channelA = await t.mutation(
+			internal.plugins_runtime.start_invoke_run,
+			start_invoke_args(fixture, { endpointId: "send", callerSerializationKey: "channel-a" }),
+		);
+		if (channelA._nay) {
+			throw new Error(channelA._nay.message);
+		}
+		expect(channelA._yay.pluginRun.serializationKey).toBe("send:channel-a");
+
+		// The same key is busy; a different key is a different lock.
+		expect(
+			(
+				await t.mutation(
+					internal.plugins_runtime.start_invoke_run,
+					start_invoke_args(fixture, { endpointId: "send", callerSerializationKey: "channel-a" }),
+				)
+			)._nay,
+		).toMatchObject({ name: "busy" });
+		const channelB = await t.mutation(
+			internal.plugins_runtime.start_invoke_run,
+			start_invoke_args(fixture, { endpointId: "send", callerSerializationKey: "channel-b" }),
+		);
+		expect(channelB._nay).toBeUndefined();
+	});
+
+	test("finishes an invoke run as succeeded with no output writes, but not with an unfinished call", async () => {
+		const t = test_convex();
+		const fixture = await install_invoke_plugin(t);
+
+		const started = await t.mutation(internal.plugins_runtime.start_invoke_run, start_invoke_args(fixture));
+		if (started._nay) {
+			throw new Error(started._nay.message);
+		}
+		const runId = started._yay.pluginRun._id;
+
+		// An invoke that only answers (or only writes store documents) is a success; the
+		// Markdown-output requirement is an upload-run rule.
+		await t.mutation(internal.plugins_runtime.finish_event_run, {
+			runId,
+			outcome: {
+				kind: "runner_response",
+				runnerOk: true,
+				runnerHttpStatus: 200,
+				bodyStatus: "succeeded",
+				runnerErrorMessage: null,
+				pluginStatus: 200,
+			},
+		});
+		const finished = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
+		expect(finished).toMatchObject({
+			status: "succeeded",
+			errorMessage: null,
+			outputWriteCount: 0,
+		});
+		// Terminal runs must not authenticate.
+		expect(finished?.apiTokenHash).toBeUndefined();
+
+		const second = await t.mutation(internal.plugins_runtime.start_invoke_run, start_invoke_args(fixture));
+		if (second._nay) {
+			throw new Error(second._nay.message);
+		}
+		await t.run((ctx) =>
+			ctx.db.insert("plugins_event_run_calls", {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				runId: second._yay.pluginRun._id,
+				installationId: fixture.installationId,
+				pluginVersionId: fixture.pluginVersionId,
+				sequence: 1,
+				kind: "api_request",
+				route: "/api/v1/plugin-data/write",
+				status: "started",
+				errorMessage: null,
+				startedAt: Date.now(),
+				updatedAt: Date.now(),
+			}),
+		);
+		await t.mutation(internal.plugins_runtime.finish_event_run, {
+			runId: second._yay.pluginRun._id,
+			outcome: {
+				kind: "runner_response",
+				runnerOk: true,
+				runnerHttpStatus: 200,
+				bodyStatus: "succeeded",
+				runnerErrorMessage: null,
+				pluginStatus: 200,
+			},
+		});
+		expect(await t.run((ctx) => ctx.db.get("plugins_event_runs", second._yay.pluginRun._id))).toMatchObject({
+			status: "failed",
+			errorMessage: "Plugin left API calls unfinished",
+		});
+	});
+
+	test("the expiry cron settles a crashed invoke run and frees the lock", async () => {
+		const t = test_convex();
+		const fixture = await install_invoke_plugin(t);
+
+		const started = await t.mutation(internal.plugins_runtime.start_invoke_run, start_invoke_args(fixture));
+		if (started._nay) {
+			throw new Error(started._nay.message);
+		}
+
+		const afterTtl = started._yay.pluginRun.expiresAt + 1;
+		const swept = await t.mutation(internal.plugins_runtime.fail_expired_event_runs, {
+			_test_now: afterTtl,
+			_test_disableReschedule: true,
+		});
+		expect(swept.failedCount).toBe(1);
+		const settled = await t.run((ctx) => ctx.db.get("plugins_event_runs", started._yay.pluginRun._id));
+		expect(settled).toMatchObject({
+			status: "failed",
+			errorMessage: "Run expired",
+		});
+		// Terminal runs must not authenticate.
+		expect(settled?.apiTokenHash).toBeUndefined();
+
+		const second = await t.mutation(internal.plugins_runtime.start_invoke_run, start_invoke_args(fixture));
+		expect(second._nay).toBeUndefined();
+	});
+
+	// #region invoke route transport
+	let invoke_session_seed_counter = 0;
+
+	/**
+	 * Seed a `plu_` session the invoke route resolves through the public API door. The mint flow
+	 * itself is covered by plugins_ui.test.ts; seeding the doc keeps these tests on the transport.
+	 */
+	async function seed_invoke_session(
+		t: ReturnType<typeof test_convex>,
+		fixture: Awaited<ReturnType<typeof install_invoke_plugin>>,
+	) {
+		invoke_session_seed_counter += 1;
+		const token = `plu_${String(invoke_session_seed_counter % 10).repeat(64)}`;
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			await ctx.db.insert("plugins_ui_sessions", {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				installationId: fixture.installationId,
+				pluginVersionId: fixture.pluginVersionId,
+				userId: fixture.membership.userId,
+				tokenHash: await crypto_sha256_hex(token),
+				createdAt: now,
+				expiresAt: now + 30 * 60 * 1000,
+			});
+		});
+		return token;
+	}
+
+	function invoke_request_body(body: Record<string, unknown>) {
+		return JSON.stringify(body);
+	}
+
+	async function post_invoke(t: ReturnType<typeof test_convex>, token: string, rawBody: string) {
+		return await t.fetch("/api/v1/plugin-backend/invoke", {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+			body: rawBody,
+		});
+	}
+
+	test("relays an invoke round trip: endpoint path, host-verified identity, untouched input, freed lock", async () => {
+		const t = test_convex();
+		const fixture = await install_invoke_plugin(t);
+		const token = await seed_invoke_session(t, fixture);
+
+		const runnerBodies: Array<Record<string, unknown>> = [];
+		vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+			if (String(input) === `${process.env.PLUGIN_RUNNER_URL}/internal/plugin-runner/run`) {
+				runnerBodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
+				return new Response(
+					JSON.stringify({
+						_yay: { pluginStatus: 200, elapsedMs: 7, outputBytes: 4, output: "pong", outputTruncated: false },
+					}),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}
+			return new Response(null, { status: 404 });
+		});
+
+		const response = await post_invoke(
+			t,
+			token,
+			invoke_request_body({ endpoint: "echo", input: { hello: "world", actorUserId: "attacker" } }),
+		);
+		expect(response.status).toBe(200);
+		const responseBody = (await response.json()) as Record<string, unknown>;
+		expect(responseBody).toMatchObject({ pluginStatus: 200, output: "pong", outputTruncated: false });
+
+		expect(runnerBodies).toHaveLength(1);
+		const wire = runnerBodies[0]! as {
+			requestPath?: string;
+			input: {
+				event: string;
+				actorUserId: string;
+				source: null;
+				invoke: { endpointId: string; serializationKey: string | null; input: unknown };
+			};
+		};
+		expect(wire.requestPath).toBe("/echo");
+		expect(wire.input.event).toBe("ui.invoke.requested");
+		// Identity is host-verified: the envelope names the session member even though the page
+		// body claimed someone else, and the page's input goes through untouched.
+		expect(wire.input.actorUserId).toBe(String(fixture.membership.userId));
+		expect(wire.input.source).toBeNull();
+		expect(wire.input.invoke).toEqual({
+			endpointId: "echo",
+			serializationKey: null,
+			input: { hello: "world", actorUserId: "attacker" },
+		});
+
+		const run = await t.run(async (ctx) => await ctx.db.query("plugins_event_runs").first());
+		expect(run).toMatchObject({
+			event: "ui.invoke.requested",
+			status: "succeeded",
+			outputWriteCount: 0,
+			runnerHttpStatus: 200,
+		});
+		expect(String(responseBody.runId)).toBe(String(run?._id));
+
+		// The settle freed the serialization lock, so a second invoke goes through.
+		const again = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+		expect(again.status).toBe(200);
+	});
+
+	test("refuses an invoke wire body the runner would reject, without calling the runner", async () => {
+		const t = test_convex();
+		const fixture = await install_invoke_plugin(t);
+		const token = await seed_invoke_session(t, fixture);
+
+		// A valid 16 KiB backslash-heavy configuration plus a valid invoke request: both pass
+		// their own caps, but JSON escaping doubles every backslash in the wire body, so the
+		// runner JSON crosses its 64,000-byte limit. The route cap alone cannot prove the
+		// wrapper fits.
+		const configurationYaml = `padding: '${"\\".repeat(16_200)}'\n`;
+		expect(new TextEncoder().encode(configurationYaml).byteLength).toBeLessThanOrEqual(16 * 1024);
+		await t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", fixture.installationId, { configurationYaml }),
+		);
+
+		const rawBody = invoke_request_body({ endpoint: "echo", input: "\\".repeat(15_800) });
+		expect(new TextEncoder().encode(rawBody).byteLength).toBeLessThanOrEqual(32 * 1024);
+
+		let runnerCalls = 0;
+		vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+			if (String(input) === `${process.env.PLUGIN_RUNNER_URL}/internal/plugin-runner/run`) {
+				runnerCalls += 1;
+			}
+			return new Response(null, { status: 404 });
+		});
+
+		const response = await post_invoke(t, token, rawBody);
+		expect(response.status).toBe(413);
+		expect(await response.json()).toEqual({
+			message: "Invoke request is too large for this plugin configuration",
+		});
+		expect(runnerCalls).toBe(0);
+
+		const run = await t.run(async (ctx) => await ctx.db.query("plugins_event_runs").first());
+		expect(run).toMatchObject({
+			status: "failed",
+			errorMessage: "Invoke request is too large for this plugin configuration",
+		});
+	});
+
+	test("answers 502 with a curated message when the plugin backend fails", async () => {
+		const t = test_convex();
+		const fixture = await install_invoke_plugin(t);
+		const token = await seed_invoke_session(t, fixture);
+
+		vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
+			if (String(input) === `${process.env.PLUGIN_RUNNER_URL}/internal/plugin-runner/run`) {
+				return new Response(
+					JSON.stringify({ _nay: { name: "PluginResponseError", message: "Plugin returned status 500" } }),
+					{ status: 200, headers: { "Content-Type": "application/json" } },
+				);
+			}
+			return new Response(null, { status: 404 });
+		});
+
+		const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+		expect(response.status).toBe(502);
+		const responseBody = (await response.json()) as Record<string, unknown>;
+		expect(responseBody.message).toBe("Plugin backend failed");
+
+		// The run record keeps the detail the response left out.
+		const run = await t.run(async (ctx) => await ctx.db.query("plugins_event_runs").first());
+		expect(run).toMatchObject({ status: "failed", errorMessage: "Plugin returned status 500" });
+	});
+	// #endregion invoke route transport
+});
+
+describe("plugins owned-area file doors", () => {
+	const OWNED_CAPABILITIES: plugins_Capability[] = [
+		"plugin.backend.invoke",
+		"workspace.files.write",
+		"workspace.files.own-write",
+		"workspace.files.own-access",
+	];
+
+	async function install_owned_files_plugin(
+		t: ReturnType<typeof test_convex>,
+		capabilities: plugins_Capability[] = OWNED_CAPABILITIES,
+	) {
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const registered = await register_media_plugin(t, membership.userId, {
+			name: "probe",
+			displayName: "Probe",
+			capabilities,
+			configurable: false,
+			endpoints: [{ id: "echo", path: "/echo", serialization: "installation" }],
+		});
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const installed = await asOwner.mutation(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: registered.pluginVersionId,
+			acceptedCapabilities: capabilities,
+			acceptedOutboundOrigins: [],
+			acceptedUiOutboundOrigins: [],
+		});
+		if (installed._nay) {
+			throw new Error(installed._nay.message);
+		}
+		return {
+			membership,
+			asOwner,
+			installationId: installed._yay.installationId,
+			pluginVersionId: registered.pluginVersionId,
+		};
+	}
+
+	/** Start a live invoke run and mint the API token its file-door calls present. */
+	async function start_owned_invoke_run(
+		t: ReturnType<typeof test_convex>,
+		fixture: Awaited<ReturnType<typeof install_owned_files_plugin>>,
+	) {
+		const apiToken = `plr_${"d".repeat(64)}`;
+		const started = await t.mutation(internal.plugins_runtime.start_invoke_run, {
+			organizationId: fixture.membership.organizationId,
+			workspaceId: fixture.membership.workspaceId,
+			installationId: fixture.installationId,
+			pluginVersionId: fixture.pluginVersionId,
+			userId: fixture.membership.userId,
+			endpointId: "echo",
+			callerSerializationKey: null,
+			apiTokenHash: await crypto_sha256_hex(apiToken),
+		});
+		if (started._nay) {
+			throw new Error(started._nay.message);
+		}
+		return { apiToken, runId: started._yay.pluginRun._id };
+	}
+
+	async function door_call(t: ReturnType<typeof test_convex>, path: string, apiToken: string, body: unknown) {
+		return await t.fetch(path, {
+			method: "POST",
+			headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
+			body: JSON.stringify(body),
+		});
+	}
+
+	async function find_active_node(
+		t: ReturnType<typeof test_convex>,
+		fixture: Awaited<ReturnType<typeof install_owned_files_plugin>>,
+		path: string,
+	) {
+		return await t.run(async (ctx) =>
+			ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", fixture.membership.organizationId)
+						.eq("workspaceId", fixture.membership.workspaceId)
+						.eq("path", path)
+						.eq("archiveOperationId", undefined),
+				)
+				.first(),
+		);
+	}
+
+	async function seed_member_folder(
+		t: ReturnType<typeof test_convex>,
+		fixture: Awaited<ReturnType<typeof install_owned_files_plugin>>,
+		name: string,
+	) {
+		return await t.run(async (ctx) => {
+			const now = Date.now();
+			return await ctx.db.insert("files_nodes", {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				parentId: files_ROOT_ID,
+				name,
+				path: `/${name}`,
+				treePath: `/${name}/`,
+				pathDepth: 1,
+				kind: "folder",
+				lowercaseExtension: null,
+				createdBy: fixture.membership.userId,
+				updatedBy: fixture.membership.userId,
+				updatedAt: now,
+			});
+		});
+	}
+
+	test("the folder ensure creates the stamped chain once and refuses an occupied path", async () => {
+		const t = test_convex();
+		const fixture = await install_owned_files_plugin(t);
+		const run = await start_owned_invoke_run(t, fixture);
+
+		const ensured = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+			path: "/probe/output",
+		});
+		expect(ensured.status).toBe(200);
+		const ensuredBody = (await ensured.json()) as { nodeId: string; path: string; created: boolean };
+		expect(ensuredBody).toEqual({ nodeId: expect.any(String), path: "/probe/output", created: true });
+
+		// Every node the ensure created carries the plugin's ownership stamp, root included.
+		const root = await find_active_node(t, fixture, "/probe");
+		const output = await find_active_node(t, fixture, "/probe/output");
+		expect(root).toMatchObject({ kind: "folder", pluginOwnerName: "probe" });
+		expect(output).toMatchObject({ kind: "folder", pluginOwnerName: "probe" });
+		expect(String(output!._id)).toBe(ensuredBody.nodeId);
+
+		const replay = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+			path: "/probe/output",
+		});
+		expect(replay.status).toBe(200);
+		expect(await replay.json()).toEqual({ nodeId: ensuredBody.nodeId, path: "/probe/output", created: false });
+
+		// A member's folder on the path is a conflict the plugin resolves by picking another name.
+		await seed_member_folder(t, fixture, "member-zone");
+		const occupied = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+			path: "/member-zone/sub",
+		});
+		expect(occupied.status).toBe(409);
+		expect(await occupied.json()).toEqual({ message: "This path is used by an item this plugin does not own" });
+
+		// Every door call consumed and settled one plugin call.
+		const calls = await t.run((ctx) =>
+			ctx.db
+				.query("plugins_event_run_calls")
+				.withIndex("by_run_sequence", (q) => q.eq("runId", run.runId))
+				.collect(),
+		);
+		expect(calls.map((call) => call.status)).toEqual(["succeeded", "succeeded", "failed"]);
+	});
+
+	test("an invoke run reads and lists workspace files through the public doors", async () => {
+		const t = test_convex();
+		const fixture = await install_owned_files_plugin(t, [...OWNED_CAPABILITIES, "workspace.files.read"]);
+		const run = await start_owned_invoke_run(t, fixture);
+
+		expect((await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/probe" })).status).toBe(
+			200,
+		);
+		expect(
+			(await door_call(t, "/api/v1/files/write", run.apiToken, { path: "/probe/tail.md", content: "# Tail\n" }))
+				.status,
+		).toBe(200);
+
+		// An invoke run has no source file, so these reads prove the workspace.files.read consent
+		// path: the run principal holds files:read and files:list, and both routes accept plugin_run.
+		const read = await door_call(t, "/api/v1/files/read", run.apiToken, { path: "/probe/tail.md" });
+		expect(read.status).toBe(200);
+		expect(await read.json()).toMatchObject({ path: "/probe/tail.md", content: "# Tail\n" });
+
+		const listed = await door_call(t, "/api/v1/files/list", run.apiToken, { path: "/probe" });
+		expect(listed.status).toBe(200);
+		const listedBody = (await listed.json()) as { items: { path: string }[] };
+		expect(listedBody.items.map((item) => item.path)).toContain("/probe/tail.md");
+	});
+
+	test("owned-area writes stamp every created node and stay inside the stamped area", async () => {
+		const t = test_convex();
+		const fixture = await install_owned_files_plugin(t);
+		const run = await start_owned_invoke_run(t, fixture);
+		expect((await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/probe" })).status).toBe(
+			200,
+		);
+
+		const written = await door_call(t, "/api/v1/files/write", run.apiToken, {
+			path: "/probe/notes/data.md",
+			content: "# Data\n",
+		});
+		expect(written.status).toBe(200);
+
+		// The write stamped the file and the intermediate folder it created. Without the folder
+		// stamp the next write below it would be refused as outside the plugin's area.
+		const notes = await find_active_node(t, fixture, "/probe/notes");
+		const data = await find_active_node(t, fixture, "/probe/notes/data.md");
+		expect(notes).toMatchObject({ kind: "folder", pluginOwnerName: "probe" });
+		expect(data).toMatchObject({ kind: "file", pluginOwnerName: "probe" });
+		expect(data?.pluginServiceWritePluginName).toBeUndefined();
+
+		const sibling = await door_call(t, "/api/v1/files/write", run.apiToken, {
+			path: "/probe/notes/second.md",
+			content: "# Second\n",
+		});
+		expect(sibling.status).toBe(200);
+
+		// Outside the stamped area nothing is writable: not a fresh path, not a member's folder.
+		await seed_member_folder(t, fixture, "member-zone");
+		for (const path of ["/elsewhere/loose.md", "/member-zone/steal.md"]) {
+			const refused = await door_call(t, "/api/v1/files/write", run.apiToken, { path, content: "# No\n" });
+			expect(refused.status).toBe(403);
+			expect(await refused.json()).toEqual({ message: "Permission denied" });
+			expect(await find_active_node(t, fixture, path)).toBeNull();
+		}
+
+		// The access option creates the file already locked under the plugin's own name.
+		const locked = await door_call(t, "/api/v1/files/write", run.apiToken, {
+			path: "/probe/locked.md",
+			content: "# Locked\n",
+			access: { readOnly: true },
+		});
+		expect(locked.status).toBe(200);
+		const lockedNode = await find_active_node(t, fixture, "/probe/locked.md");
+		expect(lockedNode).toMatchObject({
+			readOnlyScopeNodeId: lockedNode!._id,
+			readOnlyPluginName: "probe",
+		});
+	});
+
+	test("the archive door takes only the plugin's own subtree and releases its own locks", async () => {
+		const t = test_convex();
+		const fixture = await install_owned_files_plugin(t);
+		const run = await start_owned_invoke_run(t, fixture);
+		expect((await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/probe" })).status).toBe(
+			200,
+		);
+		for (const [path, readOnly] of [
+			["/probe/a/one.md", true],
+			["/probe/a/two.md", false],
+		] as const) {
+			const written = await door_call(t, "/api/v1/files/write", run.apiToken, {
+				path,
+				content: "# A\n",
+				...(readOnly ? { access: { readOnly: true } } : {}),
+			});
+			expect(written.status).toBe(200);
+		}
+		const lockedNode = await find_active_node(t, fixture, "/probe/a/one.md");
+		expect(lockedNode?.readOnlyScopeNodeId).toBe(lockedNode?._id);
+
+		const archived = await door_call(t, "/api/v1/files/plugin-archive", run.apiToken, { path: "/probe/a" });
+		expect(archived.status).toBe(200);
+		expect(await archived.json()).toEqual({ archivedNodes: 3 });
+		expect(await find_active_node(t, fixture, "/probe/a")).toBeNull();
+		expect(await find_active_node(t, fixture, "/probe/a/one.md")).toBeNull();
+
+		// The plugin's own lock was released before the archive, so a member restore gets a
+		// writable file back.
+		const afterArchive = await t.run(async (ctx) => ctx.db.get("files_nodes", lockedNode!._id));
+		expect(afterArchive?.readOnlyScopeNodeId).toBeUndefined();
+		expect(afterArchive?.readOnlyPluginName).toBeUndefined();
+
+		// A member's file inside an open plugin folder refuses the whole subtree archive.
+		expect(
+			(await door_call(t, "/api/v1/files/write", run.apiToken, { path: "/probe/keep.md", content: "# K\n" })).status,
+		).toBe(200);
+		const probeRoot = await find_active_node(t, fixture, "/probe");
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			await ctx.db.insert("files_nodes", {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				parentId: probeRoot!._id,
+				name: "mine.md",
+				path: "/probe/mine.md",
+				treePath: "/probe/mine.md",
+				pathDepth: 2,
+				kind: "file",
+				contentType: "text/markdown;charset=utf-8",
+				lowercaseExtension: "md",
+				createdBy: fixture.membership.userId,
+				updatedBy: fixture.membership.userId,
+				updatedAt: now,
+			});
+		});
+		const refused = await door_call(t, "/api/v1/files/plugin-archive", run.apiToken, { path: "/probe" });
+		expect(refused.status).toBe(409);
+		expect(await refused.json()).toEqual({ message: "This folder holds items this plugin does not own" });
+		expect(await find_active_node(t, fixture, "/probe")).not.toBeNull();
+		expect(await find_active_node(t, fixture, "/probe/keep.md")).not.toBeNull();
+	});
+
+	test("the access door flips its own locks while the member doors stay closed", async () => {
+		const t = test_convex();
+		const fixture = await install_owned_files_plugin(t);
+		const run = await start_owned_invoke_run(t, fixture);
+		expect((await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/probe" })).status).toBe(
+			200,
+		);
+		expect(
+			(await door_call(t, "/api/v1/files/write", run.apiToken, { path: "/probe/report.md", content: "# R\n" }))
+				.status,
+		).toBe(200);
+		const reportNode = await find_active_node(t, fixture, "/probe/report.md");
+
+		const lock = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+			path: "/probe/report.md",
+			access: { readOnly: true },
+		});
+		expect(lock.status).toBe(200);
+		expect(await lock.json()).toEqual({ nodeId: String(reportNode!._id) });
+		expect(await find_active_node(t, fixture, "/probe/report.md")).toMatchObject({
+			readOnlyScopeNodeId: reportNode!._id,
+			readOnlyPluginName: "probe",
+		});
+
+		// The member lock doors refuse plugin-managed nodes in both directions, so the plugin's
+		// access door is the only unlock for its stamped files.
+		expect(
+			await fixture.asOwner.mutation(api.files_nodes.set_node_writable, {
+				membershipId: fixture.membership.membershipId,
+				nodeId: reportNode!._id,
+			}),
+		).toEqual({ _nay: { message: "This item is managed by a plugin." } });
+
+		const unlock = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+			path: "/probe/report.md",
+			access: { readOnly: false },
+		});
+		expect(unlock.status).toBe(200);
+		expect((await find_active_node(t, fixture, "/probe/report.md"))?.readOnlyScopeNodeId).toBeUndefined();
+
+		// Locking the plugin's own folder cascades over the subtree, and the plugin still writes
+		// through its own folder lock — the pattern a plugin uses for machine-managed areas.
+		const folderLock = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+			path: "/probe",
+			access: { readOnly: true },
+		});
+		expect(folderLock.status).toBe(200);
+		const probeRoot = await find_active_node(t, fixture, "/probe");
+		expect((await find_active_node(t, fixture, "/probe/report.md"))?.readOnlyScopeNodeId).toBe(probeRoot!._id);
+		const throughLock = await door_call(t, "/api/v1/files/write", run.apiToken, {
+			path: "/probe/still-mine.md",
+			content: "# Mine\n",
+		});
+		expect(throughLock.status).toBe(200);
+
+		// Not the plugin's node: refused without revealing more; an absent path answers not found.
+		await seed_member_folder(t, fixture, "member-zone");
+		const foreign = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+			path: "/member-zone",
+			access: { readOnly: true },
+		});
+		expect(foreign.status).toBe(403);
+		expect(await foreign.json()).toEqual({ message: "Permission denied" });
+		const absent = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+			path: "/probe/ghost.md",
+			access: { readOnly: true },
+		});
+		expect(absent.status).toBe(404);
+		expect(await absent.json()).toEqual({ message: "Not found" });
+	});
+
+	test("the access door binds a private-space reader list through readScopeId", async () => {
+		const t = test_convex();
+		const fixture = await install_owned_files_plugin(t);
+		const run = await start_owned_invoke_run(t, fixture);
+		expect((await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/probe" })).status).toBe(
+			200,
+		);
+		expect(
+			(await door_call(t, "/api/v1/files/write", run.apiToken, { path: "/probe/secret.md", content: "# S\n" }))
+				.status,
+		).toBe(200);
+		const secretNode = await find_active_node(t, fixture, "/probe/secret.md");
+		// The binding needs a live private scope of this installation; the door checks the scope
+		// row, not the page flow that normally creates it.
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			await ctx.db.insert("plugins_data_scopes", {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				installationId: fixture.installationId,
+				scopeId: "p/door",
+				collection: "messages",
+				keyPrefix: "p/door",
+				createdByUserId: fixture.membership.userId,
+				createdAt: now,
+				updatedAt: now,
+			});
+		});
+		const read_binding_rows = async () =>
+			await t.run(async (ctx) =>
+				ctx.db
+					.query("plugins_file_access_bindings")
+					.withIndex("by_installation_scopeId", (q) =>
+						q.eq("installationId", fixture.installationId).eq("scopeId", "p/door"),
+					)
+					.collect(),
+			);
+
+		// An access object with nothing to change is refused before the mutation runs.
+		const empty = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+			path: "/probe/secret.md",
+			access: {},
+		});
+		expect(empty.status).toBe(400);
+		expect(await empty.json()).toEqual({ message: "access must set readOnly or readScopeId." });
+
+		const bound = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+			path: "/probe/secret.md",
+			access: { readScopeId: "p/door" },
+		});
+		expect(bound.status).toBe(200);
+		expect(await bound.json()).toEqual({ nodeId: String(secretNode!._id) });
+		expect((await find_active_node(t, fixture, "/probe/secret.md"))?.restrictedScopeNodeId).toBe(secretNode!._id);
+		expect(await read_binding_rows()).toMatchObject([{ nodeId: secretNode!._id }]);
+
+		const deadScope = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+			path: "/probe/secret.md",
+			access: { readScopeId: "p/ghost" },
+		});
+		expect(deadScope.status).toBe(404);
+		expect(await deadScope.json()).toEqual({ message: "Not found" });
+
+		const released = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+			path: "/probe/secret.md",
+			access: { readScopeId: null },
+		});
+		expect(released.status).toBe(200);
+		expect((await find_active_node(t, fixture, "/probe/secret.md"))?.restrictedScopeNodeId).toBeUndefined();
+		expect(await read_binding_rows()).toEqual([]);
+
+		// Ensure applies both access fields on the folder it creates, in the same call.
+		const vault = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+			path: "/probe/vault",
+			access: { readOnly: true, readScopeId: "p/door" },
+		});
+		expect(vault.status).toBe(200);
+		const vaultNode = await find_active_node(t, fixture, "/probe/vault");
+		expect(vaultNode).toMatchObject({
+			readOnlyScopeNodeId: vaultNode!._id,
+			readOnlyPluginName: "probe",
+			restrictedScopeNodeId: vaultNode!._id,
+		});
+		expect(await read_binding_rows()).toMatchObject([{ nodeId: vaultNode!._id }]);
+
+		// A dead scope on ensure answers 404 through the same arm as the access door.
+		const vaultDead = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+			path: "/probe/vault-two",
+			access: { readScopeId: "p/ghost" },
+		});
+		expect(vaultDead.status).toBe(404);
+		expect(await vaultDead.json()).toEqual({ message: "Not found" });
+	});
+
+	test("the doors refuse a non-invoke run, a finished run, and withdrawn consent", async () => {
+		const t = test_convex();
+		const fixture = await install_owned_files_plugin(t);
+		const run = await start_owned_invoke_run(t, fixture);
+		expect((await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/probe" })).status).toBe(
+			200,
+		);
+
+		// The owned-area doors belong to invoke runs. A sourceless non-invoke run already loses the
+		// write scope at resolve time.
+		await t.run((ctx) => ctx.db.patch("plugins_event_runs", run.runId, { event: "files.upload.completed" }));
+		const sourcelessRun = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+			path: "/probe/more",
+		});
+		expect(sourcelessRun.status).toBe(403);
+		expect(await sourcelessRun.json()).toEqual({ message: "Permission denied" });
+
+		// An upload run with a source holds files:write for its sibling rule, so it reaches the
+		// door itself — and the door's own event gate refuses it.
+		const sourceNodeId = await t.run(async (ctx) => {
+			const now = Date.now();
+			return await ctx.db.insert("files_nodes", {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				parentId: files_ROOT_ID,
+				name: "source.png",
+				path: "/source.png",
+				treePath: "/source.png",
+				pathDepth: 1,
+				kind: "file",
+				contentType: "image/png",
+				lowercaseExtension: "png",
+				createdBy: fixture.membership.userId,
+				updatedBy: fixture.membership.userId,
+				updatedAt: now,
+			});
+		});
+		await t.run((ctx) => ctx.db.patch("plugins_event_runs", run.runId, { fileNodeId: sourceNodeId }));
+		const uploadRun = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+			path: "/probe/more",
+		});
+		expect(uploadRun.status).toBe(401);
+		expect(await uploadRun.json()).toEqual({ message: "Unauthenticated" });
+		await t.run((ctx) =>
+			ctx.db.patch("plugins_event_runs", run.runId, { event: "ui.invoke.requested", fileNodeId: undefined }),
+		);
+
+		// Consent can be taken back while a run is live: own-access closes the lock doors, then
+		// own-write closes the rest.
+		await t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
+				acceptedCapabilities: ["plugin.backend.invoke", "workspace.files.write", "workspace.files.own-write"],
+			}),
+		);
+		const noAccessConsent = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+			path: "/probe",
+			access: { readOnly: true },
+		});
+		expect(noAccessConsent.status).toBe(403);
+		await t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
+				acceptedCapabilities: ["plugin.backend.invoke", "workspace.files.write"],
+			}),
+		);
+		const noWriteConsent = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+			path: "/probe/more",
+		});
+		expect(noWriteConsent.status).toBe(403);
+		const noWriteWrite = await door_call(t, "/api/v1/files/write", run.apiToken, {
+			path: "/probe/late.md",
+			content: "# Late\n",
+		});
+		expect(noWriteWrite.status).toBe(403);
+		await t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
+				acceptedCapabilities: OWNED_CAPABILITIES,
+			}),
+		);
+
+		// A settled run is dead for every door.
+		await t.run((ctx) => ctx.db.patch("plugins_event_runs", run.runId, { status: "succeeded" }));
+		const finishedRun = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+			path: "/probe/more",
+		});
+		expect(finishedRun.status).toBe(401);
+	});
+});
+
 describe("plugins users.account.deleted dispatch", () => {
 	test("fans out one run per workspace the deleted member belonged to, and nowhere else", async () => {
 		const t = test_convex();
@@ -12430,97 +13653,6 @@ describe("plugins admin hard delete", () => {
 				createdAt: now,
 				expiresAt: now + 30 * 60 * 1000,
 			});
-			const projectionStateId = await ctx.db.insert("plugins_data_projection_states", {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				installationId: installedMedia._yay.installationId,
-				pluginName: "media",
-				writerUserId: membership.userId,
-				cursors: {},
-				scanCursors: {},
-				syncGeneration: 1,
-				dirty: true,
-				updatedAt: now,
-			});
-			const projectionBuildId = await ctx.db.insert("plugins_data_projection_chitchat_builds", {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				installationId: installedMedia._yay.installationId,
-				lifecycleStateId: projectionStateId,
-				channelKey: "hard-delete-channel",
-				dirtyUpdatedAt: now,
-				channelName: "Hard delete",
-				topic: null,
-				isPrivate: false,
-				slug: "hard-delete",
-				header: "# Hard delete",
-				phase: "cleanup",
-				outputFileIndex: 0,
-				publishedFiles: [],
-				createdAt: now,
-				updatedAt: now,
-			});
-			await Promise.all([
-				ctx.db.insert("plugins_data_projection_dirty_channels", {
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					installationId: installedMedia._yay.installationId,
-					channelKey: "hard-delete-channel",
-					queuedAt: now,
-					updatedAt: now,
-				}),
-				ctx.db.insert("plugins_data_projection_chitchat_items", {
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					installationId: installedMedia._yay.installationId,
-					buildId: projectionBuildId,
-					collection: "messages",
-					key: "hard-delete-message",
-					createdAt: now,
-					createdBy: String(membership.userId),
-					text: "Staged message",
-					attachments: [],
-					editedAt: null,
-					deletedAt: null,
-				}),
-				ctx.db.insert("plugins_data_projection_chitchat_reactions", {
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					installationId: installedMedia._yay.installationId,
-					buildId: projectionBuildId,
-					key: "hard-delete-reaction",
-					targetKey: "hard-delete-message",
-					token: "thumbs-up",
-					removed: false,
-				}),
-				ctx.db.insert("plugins_data_projection_chitchat_authors", {
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					installationId: installedMedia._yay.installationId,
-					buildId: projectionBuildId,
-					userId: String(membership.userId),
-					label: "Owner",
-				}),
-				ctx.db.insert("plugins_data_projection_chitchat_files", {
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					installationId: installedMedia._yay.installationId,
-					buildId: projectionBuildId,
-					fileIndex: 0,
-					body: "Staged body",
-					updatedAt: now,
-				}),
-				ctx.db.insert("plugins_data_projection_files", {
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					installationId: installedMedia._yay.installationId,
-					channelKey: "hard-delete-channel",
-					fileNodeId: upload._yay.nodeId,
-					rolloverIndex: 0,
-					path: "/hard-delete.png",
-					updatedAt: now,
-				}),
-			]);
 			// The plugin's document store. The counters live in the accounting doc, and the preview
 			// reports them from there, so seed both together the way a real write would leave them.
 			await ctx.db.insert("plugins_data", {
@@ -12748,26 +13880,12 @@ describe("plugins admin hard delete", () => {
 			pluginDataDocuments: 1,
 			pluginDataLiveReservations: 1,
 			pluginDataTombstones: 1,
-			pluginDataProjectionDirtyChannels: 1,
-			pluginDataProjectionDirtyChannelsTruncated: false,
-			pluginDataProjectionChitchatItems: 1,
-			pluginDataProjectionChitchatItemsTruncated: false,
-			pluginDataProjectionChitchatReactions: 1,
-			pluginDataProjectionChitchatReactionsTruncated: false,
-			pluginDataProjectionChitchatAuthors: 1,
-			pluginDataProjectionChitchatAuthorsTruncated: false,
-			pluginDataProjectionChitchatFiles: 1,
-			pluginDataProjectionChitchatFilesTruncated: false,
-			pluginDataProjectionChitchatBuilds: 1,
-			pluginDataProjectionChitchatBuildsTruncated: false,
-			pluginDataProjectionFiles: 1,
-			pluginDataProjectionFilesTruncated: false,
-			pluginDataProjectionStates: 1,
-			pluginDataProjectionStatesTruncated: false,
 			pluginDataMemberUsage: 2,
 			pluginDataMemberUsageTruncated: false,
 			pluginServiceGrants: 1,
 			pluginServiceGrantsTruncated: false,
+			fileAccessBindings: 0,
+			fileAccessBindingsTruncated: false,
 			pluginScopeGrants: 1,
 			pluginScopeGrantsTruncated: false,
 			pluginDataScopeRows: 1,
@@ -12815,26 +13933,12 @@ describe("plugins admin hard delete", () => {
 			pluginDataDocuments: 0,
 			pluginDataLiveReservations: 0,
 			pluginDataTombstones: 0,
-			pluginDataProjectionDirtyChannels: 0,
-			pluginDataProjectionDirtyChannelsTruncated: false,
-			pluginDataProjectionChitchatItems: 0,
-			pluginDataProjectionChitchatItemsTruncated: false,
-			pluginDataProjectionChitchatReactions: 0,
-			pluginDataProjectionChitchatReactionsTruncated: false,
-			pluginDataProjectionChitchatAuthors: 0,
-			pluginDataProjectionChitchatAuthorsTruncated: false,
-			pluginDataProjectionChitchatFiles: 0,
-			pluginDataProjectionChitchatFilesTruncated: false,
-			pluginDataProjectionChitchatBuilds: 0,
-			pluginDataProjectionChitchatBuildsTruncated: false,
-			pluginDataProjectionFiles: 0,
-			pluginDataProjectionFilesTruncated: false,
-			pluginDataProjectionStates: 0,
-			pluginDataProjectionStatesTruncated: false,
 			pluginDataMemberUsage: 0,
 			pluginDataMemberUsageTruncated: false,
 			pluginServiceGrants: 0,
 			pluginServiceGrantsTruncated: false,
+			fileAccessBindings: 0,
+			fileAccessBindingsTruncated: false,
 			pluginScopeGrants: 0,
 			pluginScopeGrantsTruncated: false,
 			pluginDataScopeRows: 0,
@@ -12894,14 +13998,6 @@ describe("plugins admin hard delete", () => {
 		expect(await t.run((ctx) => ctx.db.query("plugins_data_reservations").collect())).toEqual([]);
 		expect(await t.run((ctx) => ctx.db.query("plugins_data_revision_tombstones").collect())).toEqual([]);
 		expect(await t.run((ctx) => ctx.db.query("plugin_service_grants").collect())).toEqual([]);
-		expect(await t.run((ctx) => ctx.db.query("plugins_data_projection_dirty_channels").collect())).toEqual([]);
-		expect(await t.run((ctx) => ctx.db.query("plugins_data_projection_chitchat_items").collect())).toEqual([]);
-		expect(await t.run((ctx) => ctx.db.query("plugins_data_projection_chitchat_reactions").collect())).toEqual([]);
-		expect(await t.run((ctx) => ctx.db.query("plugins_data_projection_chitchat_authors").collect())).toEqual([]);
-		expect(await t.run((ctx) => ctx.db.query("plugins_data_projection_chitchat_files").collect())).toEqual([]);
-		expect(await t.run((ctx) => ctx.db.query("plugins_data_projection_chitchat_builds").collect())).toEqual([]);
-		expect(await t.run((ctx) => ctx.db.query("plugins_data_projection_files").collect())).toEqual([]);
-		expect(await t.run((ctx) => ctx.db.query("plugins_data_projection_states").collect())).toEqual([]);
 		expect(
 			(await t.run((ctx) => ctx.db.query("access_control_permission_grants").collect()))
 				.filter((grant) => grant.resourceKind === "plugin_scope")
@@ -13043,288 +14139,6 @@ describe("plugins admin hard delete", () => {
 			pluginDataScopeRowsTruncated: false,
 			releasedScopeRangeRows: 1,
 			releasedScopeRangeRowsTruncated: false,
-		});
-	});
-
-	test.each([
-		{
-			kind: "dirty" as const,
-			countField: "pluginDataProjectionDirtyChannels" as const,
-			truncatedField: "pluginDataProjectionDirtyChannelsTruncated" as const,
-			rowCount: 101,
-			expectedCount: 100,
-		},
-		{
-			kind: "items" as const,
-			countField: "pluginDataProjectionChitchatItems" as const,
-			truncatedField: "pluginDataProjectionChitchatItemsTruncated" as const,
-			rowCount: 101,
-			expectedCount: 100,
-		},
-		{
-			kind: "reactions" as const,
-			countField: "pluginDataProjectionChitchatReactions" as const,
-			truncatedField: "pluginDataProjectionChitchatReactionsTruncated" as const,
-			rowCount: 101,
-			expectedCount: 100,
-		},
-		{
-			kind: "authors" as const,
-			countField: "pluginDataProjectionChitchatAuthors" as const,
-			truncatedField: "pluginDataProjectionChitchatAuthorsTruncated" as const,
-			rowCount: 101,
-			expectedCount: 100,
-		},
-		{
-			kind: "staged files" as const,
-			countField: "pluginDataProjectionChitchatFiles" as const,
-			truncatedField: "pluginDataProjectionChitchatFilesTruncated" as const,
-			rowCount: 2,
-			expectedCount: 1,
-		},
-		{
-			kind: "builds" as const,
-			countField: "pluginDataProjectionChitchatBuilds" as const,
-			truncatedField: "pluginDataProjectionChitchatBuildsTruncated" as const,
-			rowCount: 101,
-			expectedCount: 100,
-		},
-		{
-			kind: "file maps" as const,
-			countField: "pluginDataProjectionFiles" as const,
-			truncatedField: "pluginDataProjectionFilesTruncated" as const,
-			rowCount: 101,
-			expectedCount: 100,
-		},
-		{
-			kind: "states" as const,
-			countField: "pluginDataProjectionStates" as const,
-			truncatedField: "pluginDataProjectionStatesTruncated" as const,
-			rowCount: 101,
-			expectedCount: 100,
-		},
-	])("bounds projection $kind in the registry preview", async (testCase) => {
-		const t = test_convex();
-		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const media = await register_media_plugin(t, membership.userId, { name: "media" });
-		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const installed = await asOwner.mutation(api.plugins.install_version, {
-			membershipId: membership.membershipId,
-			pluginVersionId: media.pluginVersionId,
-			...media_plugin_consent,
-		});
-		if (installed._nay) {
-			throw new Error(installed._nay.message);
-		}
-
-		await t.run(async (ctx) => {
-			const now = Date.now();
-			const tenant = {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				installationId: installed._yay.installationId,
-			};
-			const insertState = async (index: number) =>
-				await ctx.db.insert("plugins_data_projection_states", {
-					...tenant,
-					pluginName: "media",
-					writerUserId: membership.userId,
-					cursors: {},
-					scanCursors: {},
-					syncGeneration: index,
-					dirty: true,
-					updatedAt: now,
-				});
-			const insertBuild = async (stateId: Awaited<ReturnType<typeof insertState>>, index: number) =>
-				await ctx.db.insert("plugins_data_projection_chitchat_builds", {
-					...tenant,
-					lifecycleStateId: stateId,
-					channelKey: `channel-${index}`,
-					dirtyUpdatedAt: now,
-					channelName: `Channel ${index}`,
-					topic: null,
-					isPrivate: false,
-					slug: `channel-${index}`,
-					header: `# Channel ${index}`,
-					phase: "cleanup",
-					outputFileIndex: 0,
-					publishedFiles: [],
-					createdAt: now,
-					updatedAt: now,
-				});
-
-			if (testCase.kind === "dirty") {
-				for (let index = 0; index < testCase.rowCount; index += 1) {
-					await ctx.db.insert("plugins_data_projection_dirty_channels", {
-						...tenant,
-						channelKey: `channel-${index}`,
-						queuedAt: now + index,
-						updatedAt: now,
-					});
-				}
-				return;
-			}
-			if (testCase.kind === "states") {
-				for (let index = 0; index < testCase.rowCount; index += 1) {
-					await insertState(index);
-				}
-				return;
-			}
-			if (testCase.kind === "file maps") {
-				const fileNode = await ctx.db.query("files_nodes").first();
-				if (!fileNode) {
-					throw new Error("Expected a registered plugin source node");
-				}
-				for (let index = 0; index < testCase.rowCount; index += 1) {
-					await ctx.db.insert("plugins_data_projection_files", {
-						...tenant,
-						channelKey: `channel-${index}`,
-						fileNodeId: fileNode._id,
-						rolloverIndex: 0,
-						path: `/projection-${index}.md`,
-						updatedAt: now,
-					});
-				}
-				return;
-			}
-
-			const stateId = await insertState(0);
-			if (testCase.kind === "builds") {
-				for (let index = 0; index < testCase.rowCount; index += 1) {
-					await insertBuild(stateId, index);
-				}
-				return;
-			}
-			const buildId = await insertBuild(stateId, 0);
-			for (let index = 0; index < testCase.rowCount; index += 1) {
-				if (testCase.kind === "items") {
-					await ctx.db.insert("plugins_data_projection_chitchat_items", {
-						...tenant,
-						buildId,
-						collection: "messages",
-						key: `message-${index}`,
-						createdAt: now + index,
-						createdBy: String(membership.userId),
-						text: `Message ${index}`,
-						attachments: [],
-						editedAt: null,
-						deletedAt: null,
-					});
-				} else if (testCase.kind === "reactions") {
-					await ctx.db.insert("plugins_data_projection_chitchat_reactions", {
-						...tenant,
-						buildId,
-						key: `reaction-${index}`,
-						targetKey: "message-0",
-						token: "thumbs-up",
-						removed: false,
-					});
-				} else if (testCase.kind === "authors") {
-					await ctx.db.insert("plugins_data_projection_chitchat_authors", {
-						...tenant,
-						buildId,
-						userId: `user-${index}`,
-						label: `User ${index}`,
-					});
-				} else {
-					await ctx.db.insert("plugins_data_projection_chitchat_files", {
-						...tenant,
-						buildId,
-						fileIndex: index,
-						body: `Staged body ${index}`,
-						updatedAt: now,
-					});
-				}
-			}
-		});
-
-		const preview = await t.query(internal.plugins.preview_hard_delete_registered_plugin, {
-			pluginName: "media",
-		});
-		expect(preview[testCase.countField]).toBe(testCase.expectedCount);
-		expect(preview[testCase.truncatedField]).toBe(true);
-		expect(preview.previewTruncated).toBe(true);
-	});
-
-	test("shares the staged-file byte budget across installations", async () => {
-		const t = test_convex();
-		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const media = await register_media_plugin(t, membership.userId, { name: "media" });
-		const asOwner = t.withIdentity(user_identity(membership.userId));
-		const installed = await asOwner.mutation(api.plugins.install_version, {
-			membershipId: membership.membershipId,
-			pluginVersionId: media.pluginVersionId,
-			...media_plugin_consent,
-		});
-		if (installed._nay) {
-			throw new Error(installed._nay.message);
-		}
-
-		const stagedBody = "x".repeat(590_000);
-		for (let index = 0; index < 16; index += 1) {
-			await t.run(async (ctx) => {
-				let installationId = installed._yay.installationId;
-				if (index > 0) {
-					const source = await ctx.db.get("plugins_workspace_installations", installed._yay.installationId);
-					if (!source) {
-						throw new Error("Installed plugin missing");
-					}
-					const { _id: _sourceId, _creationTime: _sourceCreationTime, ...fields } = source;
-					installationId = await ctx.db.insert("plugins_workspace_installations", fields);
-				}
-
-				const now = Date.now();
-				const tenant = {
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					installationId,
-				};
-				const stateId = await ctx.db.insert("plugins_data_projection_states", {
-					...tenant,
-					pluginName: "media",
-					writerUserId: membership.userId,
-					cursors: {},
-					scanCursors: {},
-					syncGeneration: 1,
-					dirty: true,
-					updatedAt: now,
-				});
-				const buildId = await ctx.db.insert("plugins_data_projection_chitchat_builds", {
-					...tenant,
-					lifecycleStateId: stateId,
-					channelKey: `channel-${index}`,
-					dirtyUpdatedAt: now,
-					channelName: `Channel ${index}`,
-					topic: null,
-					isPrivate: false,
-					slug: `channel-${index}`,
-					header: `# Channel ${index}`,
-					phase: "cleanup",
-					outputFileIndex: 1,
-					publishedFiles: [],
-					createdAt: now,
-					updatedAt: now,
-				});
-				for (let fileIndex = 0; fileIndex < 2; fileIndex += 1) {
-					await ctx.db.insert("plugins_data_projection_chitchat_files", {
-						...tenant,
-						buildId,
-						fileIndex,
-						body: stagedBody,
-						updatedAt: now,
-					});
-				}
-			});
-		}
-
-		const preview = await t.query(internal.plugins.preview_hard_delete_registered_plugin, {
-			pluginName: "media",
-		});
-		expect(preview).toMatchObject({
-			installations: 16,
-			pluginDataProjectionChitchatFiles: 1,
-			pluginDataProjectionChitchatFilesTruncated: true,
-			previewTruncated: true,
 		});
 	});
 

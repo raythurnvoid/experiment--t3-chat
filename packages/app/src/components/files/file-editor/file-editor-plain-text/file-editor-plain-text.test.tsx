@@ -232,7 +232,6 @@ describe("view gating", () => {
 		const effectiveView = files_resolve_effective_editor_view({
 			requestedView: "rich_text_editor",
 			rootKind: rootKind ?? "rich_text",
-			nonCollaborative: false,
 		});
 		expect(effectiveView).toBe("plain_text_editor");
 

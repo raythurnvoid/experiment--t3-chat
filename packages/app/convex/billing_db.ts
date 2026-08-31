@@ -10,7 +10,11 @@ import { components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server.js";
 import { billing_PRODUCTS } from "../shared/billing.ts";
+// Keep this a type-only import. `server/billing.ts` loads the Polar SDK at module top level,
+// and a value import here would put that ~100ms cold-start cost on every module that imports
+// these lean helpers.
 import type { billing_Event } from "../server/billing.ts";
+import { composite_id } from "../shared/shared-utils.ts";
 
 const billing_workpool_usage_event = new Workpool(components.billing_workpool_usage_event, {
 	maxParallelism: 1,
@@ -99,6 +103,58 @@ export async function billing_db_check_paid_plan(
 	}
 
 	return { hasPaidPlan: product.name !== ("Free" satisfies keyof typeof billing_PRODUCTS) };
+}
+
+/**
+ * Send the one-cent `file_save` usage event for a file write that just committed.
+ * Call it inside the same mutation as the write, after the write succeeded, so a rolled-back
+ * write emits nothing and a committed write emits exactly once.
+ * The one-cent amount lives here on purpose: this helper is the call site for every public-API
+ * write door, including the doors Plan 4 adds. The four app save doors keep their own inline
+ * literal (see the billing-system skill).
+ */
+export async function billing_db_emit_file_save(
+	ctx: MutationCtx,
+	args: {
+		billedUser: Doc<"users">;
+		actorUserId: Id<"users">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		nodeId: Id<"files_nodes">;
+		/** Unique per save: a Yjs sequence, a version snapshot asset id, or a target id. */
+		version: string | number;
+	},
+) {
+	// Declared against the type instead of `billing_event(...)` so this module never
+	// value-imports `server/billing.ts` (see the import note above).
+	const event: billing_Event = {
+		name: "file_save",
+		externalCustomerId: args.billedUser._id,
+		externalMemberId: args.actorUserId,
+		externalId: composite_id(
+			"billing",
+			"file_save",
+			args.billedUser._id,
+			args.actorUserId,
+			args.organizationId,
+			args.workspaceId,
+			args.nodeId,
+			args.version,
+		),
+		metadata: {
+			amount: 1,
+			actorUserId: args.actorUserId,
+			billedUserId: args.billedUser._id,
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: args.nodeId,
+			version: String(args.version),
+		},
+	};
+
+	await billing_ingest_events(ctx, {
+		billedUserEvents: [{ billedUser: args.billedUser, event }],
+	});
 }
 
 /** Route app-owned billing events by billed user row: Polar for signed-in payers, local snapshot updates for anonymous payers. */

@@ -2,6 +2,7 @@ import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
 import { afterEach, describe, expect, expectTypeOf, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
+import { getFunctionName } from "convex/server";
 import type { Id } from "./_generated/dataModel";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_ROOT_ID, files_u8_to_array_buffer } from "../server/files.ts";
@@ -15,13 +16,14 @@ import {
 	r2_server_side_copy,
 } from "./r2_client.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
-import { crypto_sha256_hex } from "../server/crypto-utils.ts";
+import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { files_get_utf8_byte_size } from "../shared/files.ts";
 import {
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 	organizations_GLOBAL_ORGANIZATION_ID,
 } from "../shared/organizations.ts";
 import type { api_schemas_Main } from "../shared/api-schemas.ts";
+import type { plugins_Capability } from "../shared/plugins.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import { rate_limiter_check_by_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
@@ -1408,6 +1410,8 @@ describe("public files API", () => {
 			const member = await t.run(async (ctx) => {
 				const now = Date.now();
 				const userId = await ctx.db.insert("users", { clerkUserId: args.clerkUserId });
+				// The write route's credit gate bills the acting member, so the fixture pays.
+				await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Pay As You Go" });
 				const organization = await ctx.db.get("organizations", owner.organizationId);
 				const defaultWorkspaceId = organization!.defaultWorkspaceId!;
 
@@ -3639,6 +3643,324 @@ describe("files write-many", () => {
 	});
 });
 
+describe("files write billing", () => {
+	async function seed_billing_writer(args: { t: ReturnType<typeof test_convex>; clerkSubject: string }) {
+		const db = await seed_signed_in_membership({ t: args.t, clerkUserId: `clerk-${args.clerkSubject}` });
+		const asUser = args.t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: args.clerkSubject,
+			external_id: db.userId,
+		});
+		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			name: "Billing writer",
+			scopes: ["files:list", "files:read", "files:write"],
+		});
+		expect(created._nay).toBeUndefined();
+		return { db, credential: created._yay!.credential };
+	}
+
+	/** Move the payer to Free and empty the meter, which is the only state the credit gate refuses. */
+	async function drain_credits(args: { t: ReturnType<typeof test_convex>; userId: Id<"users"> }) {
+		await args.t.run(async (ctx) => {
+			await test_mocks_fill_db_with.plan(ctx, { userId: args.userId, plan: "Free" });
+			const snapshot = await ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_user", (q) => q.eq("userId", args.userId))
+				.first();
+			if (!snapshot?.meter) {
+				throw new Error("Expected a seeded usage snapshot");
+			}
+			await ctx.db.patch("billing_usage_snapshots", snapshot._id, {
+				meter: { ...snapshot.meter, balance: 0 },
+			});
+		});
+	}
+
+	function spy_billing_enqueue() {
+		const spy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_public_api_billing_test" as never);
+		// Generated-API references are proxies without stable identity, so compare function names.
+		const ingestName = getFunctionName(internal.billing.ingest_events);
+		const file_save_events = () =>
+			spy.mock.calls
+				.filter((call) => getFunctionName(call[1] as never) === ingestName)
+				.flatMap((call) => (call[2] as { events: Array<Record<string, unknown>> }).events);
+		return { spy, file_save_events };
+	}
+
+	async function read_version_snapshot_asset_ids(args: {
+		t: ReturnType<typeof test_convex>;
+		db: Awaited<ReturnType<typeof seed_signed_in_membership>>;
+		nodeId: string;
+	}) {
+		return await args.t.run(async (ctx) => {
+			const snapshots = await ctx.db
+				.query("files_snapshots")
+				.withIndex("by_organization_workspace_fileNode_archivedAt", (q) =>
+					q
+						.eq("organizationId", args.db.organizationId)
+						.eq("workspaceId", args.db.workspaceId)
+						.eq("fileNodeId", args.nodeId as Id<"files_nodes">),
+				)
+				.order("asc")
+				.collect();
+			return snapshots.map((snapshot) => snapshot.assetId);
+		});
+	}
+
+	test("the write route refuses with 402 when the payer has no credits and writes nothing", async () => {
+		const t = test_convex();
+		const { db, credential } = await seed_billing_writer({ t, clerkSubject: "write-billing-402" });
+		await drain_credits({ t, userId: db.userId });
+
+		const refused = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/billing/refused.md", content: "# Refused\n" }),
+		});
+		expect(refused.status).toBe(402);
+		expect(await refused.json()).toEqual({ message: "Insufficient funds" });
+
+		const node = await t.run(async (ctx) =>
+			ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("path", "/billing/refused.md")
+						.eq("archiveOperationId", undefined),
+				)
+				.first(),
+		);
+		expect(node).toBeNull();
+	});
+
+	test("a create and a fill each emit one file_save with their content snapshot asset id", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const { db, credential } = await seed_billing_writer({ t, clerkSubject: "write-billing-emit" });
+		const { file_save_events } = spy_billing_enqueue();
+
+		const written = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/billing/report.md", content: "# Report\n" }),
+		});
+		expect(written.status).toBe(200);
+		const writtenBody = (await written.json()) as { nodeId: string };
+
+		const filled = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/billing/report.md", content: "# Report\n\nFilled\n" }),
+		});
+		expect(filled.status).toBe(200);
+		expect(((await filled.json()) as { nodeId: string }).nodeId).toBe(writtenBody.nodeId);
+
+		// The create's version part is the staged content snapshot that became the first version
+		// snapshot; the fill's is the snapshot its own publish stored. One version-snapshot row per
+		// committed write, in order.
+		const snapshotAssetIds = await read_version_snapshot_asset_ids({ t, db, nodeId: writtenBody.nodeId });
+		expect(snapshotAssetIds).toHaveLength(2);
+		const events = file_save_events();
+		expect(events).toHaveLength(2);
+		for (const [index, event] of events.entries()) {
+			expect(event).toEqual(
+				expect.objectContaining({
+					name: "file_save",
+					externalCustomerId: db.userId,
+					externalMemberId: db.userId,
+					externalId: `file_save::${db.userId}::${db.userId}::${db.organizationId}::${db.workspaceId}::${writtenBody.nodeId}::${snapshotAssetIds[index]}`,
+					metadata: expect.objectContaining({
+						amount: 1,
+						actorUserId: db.userId,
+						billedUserId: db.userId,
+						version: String(snapshotAssetIds[index]),
+					}),
+				}),
+			);
+		}
+	});
+
+	test("a skipIfUnchanged no-op emits nothing but is still gated", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const { db, credential } = await seed_billing_writer({ t, clerkSubject: "write-billing-skip" });
+		const { file_save_events } = spy_billing_enqueue();
+
+		const written = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/billing/skip.md", content: "# Same\n" }),
+		});
+		expect(written.status).toBe(200);
+		expect(file_save_events()).toHaveLength(1);
+
+		const unchanged = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/billing/skip.md", content: "# Same\n", skipIfUnchanged: true }),
+		});
+		expect(unchanged.status).toBe(200);
+		expect(((await unchanged.json()) as { unchanged?: boolean }).unchanged).toBe(true);
+		// No publish happened, so no second event.
+		expect(file_save_events()).toHaveLength(1);
+
+		// The gate runs before the unchanged comparison: a broke Free payer is refused even for a
+		// write that would have changed nothing.
+		await drain_credits({ t, userId: db.userId });
+		const refused = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/billing/skip.md", content: "# Same\n", skipIfUnchanged: true }),
+		});
+		expect(refused.status).toBe(402);
+		expect(await refused.json()).toEqual({ message: "Insufficient funds" });
+	});
+
+	test("touch stays free: a broke payer still creates empty placeholders and no event is sent", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const { db, credential } = await seed_billing_writer({ t, clerkSubject: "write-billing-touch" });
+		const { file_save_events } = spy_billing_enqueue();
+		await drain_credits({ t, userId: db.userId });
+
+		const touched = await t.fetch("/api/v1/files/touch", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ paths: ["/billing/placeholder.md"] }),
+		});
+		expect(touched.status).toBe(200);
+		const touchedBody = (await touched.json()) as { files: Array<{ path: string; created: boolean }> };
+		expect(touchedBody.files).toEqual([expect.objectContaining({ path: "/billing/placeholder.md", created: true })]);
+		expect(file_save_events()).toHaveLength(0);
+	});
+
+	test("write-many refuses the whole batch with 402 and stages nothing", async () => {
+		const t = test_convex();
+		const { db, credential } = await seed_billing_writer({ t, clerkSubject: "write-many-billing-402" });
+		await drain_credits({ t, userId: db.userId });
+
+		const refused = await t.fetch("/api/v1/files/write-many", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: [
+					{ path: "/billing/batch-1.md", content: "# One\n" },
+					{ path: "/billing/batch-2.md", content: "# Two\n" },
+				],
+			}),
+		});
+		expect(refused.status).toBe(402);
+		expect(await refused.json()).toEqual({ message: "Insufficient funds" });
+
+		const after = await t.run(async (ctx) => {
+			const nodes = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("path", "/billing/batch-1.md")
+						.eq("archiveOperationId", undefined),
+				)
+				.collect();
+			const stages = await ctx.db.query("public_api_file_write_stages").collect();
+			return { nodes, stages };
+		});
+		expect(after.nodes).toEqual([]);
+		expect(after.stages).toEqual([]);
+	});
+
+	test("write-many emits one event per written item and none for a per-item conflict", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const { credential } = await seed_billing_writer({ t, clerkSubject: "write-many-billing-emit" });
+		const { file_save_events } = spy_billing_enqueue();
+
+		const first = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/billing/existing.md", content: "# Existing\n" }),
+		});
+		expect(first.status).toBe(200);
+		expect(file_save_events()).toHaveLength(1);
+
+		const response = await t.fetch("/api/v1/files/write-many", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({
+				files: [
+					{ path: "/billing/new-1.md", content: "# New one\n" },
+					{ path: "/billing/new-2.md", content: "# New two\n" },
+					{ path: "/billing/existing.md", content: "# Conflict\n", overwrite: "fail" },
+				],
+			}),
+		});
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as {
+			written: Array<{ path: string }>;
+			errors: Array<{ path: string; errorCode: string }>;
+		};
+		expect(body.written).toHaveLength(2);
+		expect(body.errors).toEqual([expect.objectContaining({ path: "/billing/existing.md", errorCode: "conflict" })]);
+
+		// One event per committed item; the refused item emits nothing.
+		expect(file_save_events()).toHaveLength(3);
+	});
+
+	test("an owner-billed organization charges the owner while the actor stays attributed", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const { db, credential } = await seed_billing_writer({ t, clerkSubject: "write-billing-owner" });
+		const { file_save_events } = spy_billing_enqueue();
+
+		// Rewire the seeded organization to owner billing with a different paying owner.
+		const ownerId = await t.run(async (ctx) => {
+			const owner = await ctx.db.insert("users", { clerkUserId: "clerk-write-billing-org-owner" });
+			await test_mocks_fill_db_with.plan(ctx, { userId: owner, plan: "Pay As You Go" });
+			await ctx.db.patch("organizations", db.organizationId, {
+				default: false,
+				billingMode: "organization_owner",
+				ownerUserId: owner,
+			});
+			// The actor wrote through the organization-owner shortcut before the rewire, so give
+			// the actor an explicit member role to keep write authority.
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				role: "member",
+				now: Date.now(),
+			});
+			return owner;
+		});
+
+		const written = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/billing/owner.md", content: "# Owner billed\n" }),
+		});
+		expect(written.status).toBe(200);
+
+		const events = file_save_events();
+		expect(events).toHaveLength(1);
+		expect(events[0]).toEqual(
+			expect.objectContaining({
+				externalCustomerId: ownerId,
+				externalMemberId: db.userId,
+				metadata: expect.objectContaining({
+					billedUserId: ownerId,
+					actorUserId: db.userId,
+				}),
+			}),
+		);
+	});
+});
+
 describe("files read-only locks", () => {
 	async function seed_locks_writer(args: { t: ReturnType<typeof test_convex>; clerkUserId: string }) {
 		const db = await seed_signed_in_membership({ t: args.t, clerkUserId: args.clerkUserId });
@@ -3661,6 +3983,8 @@ describe("files read-only locks", () => {
 		const member = await args.t.run(async (ctx) => {
 			const now = Date.now();
 			const userId = await ctx.db.insert("users", { clerkUserId: args.clerkUserId });
+			// The write route's credit gate bills the acting member, so the fixture pays.
+			await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Pay As You Go" });
 			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
@@ -4898,5 +5222,736 @@ describe("files read-only locks", () => {
 		const replaced = await find_active_node({ t, db: writer.db, path: "/stored.md" });
 		expect(replaced).not.toBeNull();
 		expect(replaced!._id).not.toBe(occupantNodeId);
+	});
+});
+
+describe("service file writes", () => {
+	const SERVICE_CAPABILITIES: plugins_Capability[] = [
+		"plugin.service.connect",
+		"workspace.files.write",
+		"workspace.files.create-read-only",
+	];
+
+	/**
+	 * Seed the docs a sealed service holds after the real exchange-and-seal flow: a ready plugin
+	 * version, an enabled installation, and a grant sealed to a destination. The exchange and seal
+	 * routes themselves are covered by `public_api_service_uploads.test.ts`; these tests exercise
+	 * the write door behind them.
+	 */
+	async function seed_sealed_service(args: {
+		t: ReturnType<typeof test_convex>;
+		db: Awaited<ReturnType<typeof seed_signed_in_membership>>;
+		acceptedCapabilities?: plugins_Capability[];
+		destinationPathPrefix?: string;
+		phase?: "interactive" | "processing";
+		actorUserId?: Id<"users">;
+	}) {
+		const token = `psg_${crypto_random_hex(32)}`;
+		const tokenHash = await crypto_sha256_hex(token);
+		const seeded = await args.t.run(async (ctx) => {
+			const now = Date.now();
+			const capabilities = args.acceptedCapabilities ?? SERVICE_CAPABILITIES;
+			const pluginName = "council";
+			const pluginVersionId = await ctx.db.insert("plugins_versions", {
+				name: pluginName,
+				displayName: "Council",
+				version: "0.1.0",
+				description: "Meetings with named transcripts",
+				reviewStatus: "passed",
+				reviewId: null,
+				isLatest: true,
+				artifactHash: `sha256:${"a".repeat(64)}`,
+				sourceRepositoryUrl: "https://github.com/bonobo/council-plugin",
+				sourceOwner: "bonobo",
+				sourceRepo: "council-plugin",
+				sourceCommitSha: "1234567890abcdef1234567890abcdef12345678",
+				manifestR2Key: "plugins/council/manifest.json",
+				backendEntrypointFile: null,
+				configuration: null,
+				events: [],
+				capabilities,
+				pages: [],
+				fileViews: [],
+				outboundOrigins: [],
+				uiOutboundOrigins: [],
+				files: [],
+				sourceStatus: "ready",
+				sourceLastError: null,
+				createdBy: args.db.userId,
+				updatedAt: now,
+			});
+			const installationId = await ctx.db.insert("plugins_workspace_installations", {
+				organizationId: args.db.organizationId,
+				workspaceId: args.db.workspaceId,
+				pluginVersionId,
+				pluginName,
+				status: "enabled",
+				configurationYaml: null,
+				acceptedCapabilities: capabilities,
+				capabilitiesAcceptedAt: now,
+				acceptedOutboundOrigins: [],
+				acceptedUiOutboundOrigins: [],
+				outboundOriginsAcceptedAt: now,
+				installedBy: args.db.userId,
+				updatedBy: args.db.userId,
+				updatedAt: now,
+			});
+			const grantId = await ctx.db.insert("plugin_service_grants", {
+				organizationId: args.db.organizationId,
+				workspaceId: args.db.workspaceId,
+				installationId,
+				pluginVersionId,
+				pluginName,
+				actorUserId: args.actorUserId ?? args.db.userId,
+				tokenHash,
+				scopes: ["plugin_data:read", "plugin_data:write", "files:write"],
+				principalKey: `plugin_service:${args.db.organizationId}:${args.db.workspaceId}:${installationId}`,
+				phase: args.phase ?? "processing",
+				destinationPathPrefix: args.destinationPathPrefix ?? "/meetings",
+				expiresAt: now + 60 * 60 * 1000,
+				updatedAt: now,
+			});
+			return { pluginVersionId, installationId, grantId };
+		});
+		return { token, ...seeded };
+	}
+
+	async function service_write(args: {
+		t: ReturnType<typeof test_convex>;
+		token: string;
+		path: string;
+		content: string;
+		overwrite?: "replace" | "fail";
+		skipIfUnchanged?: boolean;
+		readOnly?: boolean;
+	}) {
+		return await args.t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(args.token),
+			body: JSON.stringify({
+				path: args.path,
+				content: args.content,
+				...(args.overwrite ? { overwrite: args.overwrite } : {}),
+				...(args.skipIfUnchanged === undefined ? {} : { skipIfUnchanged: args.skipIfUnchanged }),
+				...(args.readOnly === undefined ? {} : { access: { readOnly: args.readOnly } }),
+			}),
+		});
+	}
+
+	async function find_active_node(args: {
+		t: ReturnType<typeof test_convex>;
+		db: Awaited<ReturnType<typeof seed_signed_in_membership>>;
+		path: string;
+	}) {
+		return await args.t.run(async (ctx) =>
+			ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q
+						.eq("organizationId", args.db.organizationId)
+						.eq("workspaceId", args.db.workspaceId)
+						.eq("path", args.path)
+						.eq("archiveOperationId", undefined),
+				)
+				.first(),
+		);
+	}
+
+	test("a sealed service write by a payer with no credits refuses with 402", async () => {
+		const t = test_convex();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-service-write-broke" });
+		const service = await seed_sealed_service({ t, db });
+		// The grant's actor is the payer here (default-billed organization). Move them to Free with
+		// an empty meter, the one state the credit gate refuses.
+		await t.run(async (ctx) => {
+			await test_mocks_fill_db_with.plan(ctx, { userId: db.userId, plan: "Free" });
+			const snapshot = await ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_user", (q) => q.eq("userId", db.userId))
+				.first();
+			if (!snapshot?.meter) {
+				throw new Error("Expected a seeded usage snapshot");
+			}
+			await ctx.db.patch("billing_usage_snapshots", snapshot._id, { meter: { ...snapshot.meter, balance: 0 } });
+		});
+
+		const refused = await service_write({
+			t,
+			token: service.token,
+			path: "/meetings/meeting-broke/meeting.md",
+			content: "# Meeting\n",
+		});
+		expect(refused.status).toBe(402);
+		expect(await refused.json()).toEqual({ message: "Insufficient funds" });
+		expect(await find_active_node({ t, db, path: "/meetings/meeting-broke/meeting.md" })).toBeNull();
+	});
+
+	test("creates its own stamped file and updates it in place", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-service-write-create" });
+		const service = await seed_sealed_service({ t, db });
+
+		const written = await service_write({ t, token: service.token, path: "/meetings/meeting-1/meeting.md", content: "# Meeting\n" });
+		expect(written.status).toBe(200);
+		const writtenBody = (await written.json()) as { path: string; nodeId: string; contentType: string };
+		expect(writtenBody).toEqual({
+			path: "/meetings/meeting-1/meeting.md",
+			nodeId: expect.any(String),
+			contentType: "text/markdown;charset=utf-8",
+		});
+
+		// The write stamps service provenance on the file, and only on the file: member sharing and
+		// the member lock door keep working because the plugin-owner stamp stays unset.
+		const node = await find_active_node({ t, db, path: "/meetings/meeting-1/meeting.md" });
+		expect(node?.pluginServiceWritePluginName).toBe("council");
+		expect(node?.pluginOwnerName).toBeUndefined();
+		const folder = await find_active_node({ t, db, path: "/meetings/meeting-1" });
+		expect(folder?.pluginServiceWritePluginName).toBeUndefined();
+		expect(folder?.pluginOwnerName).toBeUndefined();
+
+		const updated = await service_write({
+			t,
+			token: service.token,
+			path: "/meetings/meeting-1/meeting.md",
+			content: "# Meeting\n\nUpdated by the service\n",
+		});
+		expect(updated.status).toBe(200);
+		expect(((await updated.json()) as { nodeId: string }).nodeId).toBe(writtenBody.nodeId);
+
+		// Every published write consumed its stage; nothing is left for the cleanup cron.
+		const stages = await t.run(async (ctx) => await ctx.db.query("public_api_file_write_stages").collect());
+		expect(stages).toEqual([]);
+	});
+
+	test("refuses a path outside the seal and a grant that was never sealed", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-service-write-fence" });
+		const service = await seed_sealed_service({ t, db });
+
+		const outside = await service_write({ t, token: service.token, path: "/elsewhere/note.md", content: "# Out\n" });
+		expect(outside.status).toBe(403);
+		expect(await outside.json()).toEqual({ message: "Path is outside this grant's destination" });
+
+		// Forge the doc the exchange refuses to mint: an interactive grant that somehow carries the
+		// write scope and a destination. Only the phase is wrong, so this pins the phase fence.
+		const interactive = await seed_sealed_service({ t, db, phase: "interactive" });
+		const unsealed = await service_write({
+			t,
+			token: interactive.token,
+			path: "/meetings/note.md",
+			content: "# Early\n",
+		});
+		expect(unsealed.status).toBe(403);
+		expect(await unsealed.json()).toEqual({ message: "Path is outside this grant's destination" });
+
+		expect(await find_active_node({ t, db, path: "/elsewhere/note.md" })).toBeNull();
+		expect(await find_active_node({ t, db, path: "/meetings/note.md" })).toBeNull();
+	});
+
+	test("cannot update a file it did not create, and never confirms unchanged member content", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-service-write-ownership" });
+		const service = await seed_sealed_service({ t, db });
+		const memberContent = "# Member notes\n";
+		const nodeId = await seed_markdown_file({
+			t,
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/meetings/notes.md",
+			committedMarkdown: memberContent,
+		});
+
+		// Sending the member file's exact bytes with skipIfUnchanged must not answer "unchanged":
+		// that answer would confirm to the service what a file it does not own contains.
+		const probe = await service_write({
+			t,
+			token: service.token,
+			path: "/meetings/notes.md",
+			content: memberContent,
+			skipIfUnchanged: true,
+		});
+		expect(probe.status).toBe(403);
+		expect(await probe.json()).toEqual({ message: "Permission denied" });
+
+		const overwrite = await service_write({
+			t,
+			token: service.token,
+			path: "/meetings/notes.md",
+			content: "# Taken over\n",
+		});
+		expect(overwrite.status).toBe(403);
+
+		// A file stamped by another plugin's service refuses the same way.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", nodeId, { pluginServiceWritePluginName: "other-plugin" });
+		});
+		const foreign = await service_write({
+			t,
+			token: service.token,
+			path: "/meetings/notes.md",
+			content: "# Taken over\n",
+		});
+		expect(foreign.status).toBe(403);
+
+		// The stamp is the whole gate: with its own name on the file the same update is allowed.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", nodeId, { pluginServiceWritePluginName: "council" });
+		});
+		const owned = await service_write({
+			t,
+			token: service.token,
+			path: "/meetings/notes.md",
+			content: "# Updated by council\n",
+		});
+		expect(owned.status).toBe(200);
+		expect(((await owned.json()) as { nodeId: string }).nodeId).toBe(nodeId);
+	});
+
+	test("a grant revoked between prepare and publish refuses the publish and the stage can still be cleaned", async () => {
+		const t = test_convex();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-service-write-revoked" });
+		const service = await seed_sealed_service({ t, db });
+
+		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			principalRef: { kind: "plugin_service", grantId: service.grantId },
+			path: "/meetings/report.md",
+			overwrite: "replace",
+			contentSize: 16,
+			yjsSnapshotSize: 16,
+		});
+		expect(prepared._nay).toBeUndefined();
+		const stage = prepared._yay!;
+
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugin_service_grants", service.grantId, { revokedAt: Date.now() });
+		});
+
+		const published = await t.mutation(internal.public_api.publish_file_write, {
+			stageId: stage.stageId,
+			content: "# Report\n",
+			targetAnchor: stage.targetAnchor,
+		});
+		expect(published._nay?.message).toBe("Unauthenticated");
+		expect(await find_active_node({ t, db, path: "/meetings/report.md" })).toBeNull();
+
+		// The route's failure path runs this cleanup; after it nothing is left of the write.
+		await t.mutation(internal.public_api.cleanup_file_write_stage, { stageId: stage.stageId });
+		const stages = await t.run(async (ctx) => await ctx.db.query("public_api_file_write_stages").collect());
+		expect(stages).toEqual([]);
+		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", stage.yjsSnapshotAssetId))).toBeNull();
+		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", stage.contentSnapshotAssetId))).toBeNull();
+	});
+
+	test("creates a read-only file, updates through its own lock, and a member unlock ends the plugin claim", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-service-write-lock" });
+		const service = await seed_sealed_service({ t, db });
+
+		const written = await service_write({
+			t,
+			token: service.token,
+			path: "/meetings/meeting-1/transcript.md",
+			content: "# Transcript\n",
+			readOnly: true,
+		});
+		expect(written.status).toBe(200);
+		const node = await find_active_node({ t, db, path: "/meetings/meeting-1/transcript.md" });
+		expect(node).toMatchObject({
+			readOnlyScopeNodeId: node!._id,
+			readOnlyPluginName: "council",
+			pluginServiceWritePluginName: "council",
+		});
+
+		// The plugin's own named lock does not lock the plugin out.
+		const updated = await service_write({
+			t,
+			token: service.token,
+			path: "/meetings/meeting-1/transcript.md",
+			content: "# Transcript\n\nRevised\n",
+		});
+		expect(updated.status).toBe(200);
+
+		// The file carries no plugin-owner stamp, so the member lock door still owns it: an unlock
+		// works and ends the plugin's claim with it.
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "clerk-service-write-lock",
+			external_id: db.userId,
+		});
+		const unlocked = await asUser.mutation(api.files_nodes.set_node_writable, {
+			membershipId: db.membershipId,
+			nodeId: node!._id,
+		});
+		expect(unlocked._nay).toBeUndefined();
+		const afterUnlock = await find_active_node({ t, db, path: "/meetings/meeting-1/transcript.md" });
+		expect(afterUnlock?.readOnlyScopeNodeId).toBeUndefined();
+		expect(afterUnlock?.readOnlyPluginName).toBeUndefined();
+
+		// A member re-lock carries no plugin name, so the service cannot pass it.
+		const relocked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: db.membershipId,
+			nodeId: node!._id,
+		});
+		expect(relocked._nay).toBeUndefined();
+		const refused = await service_write({
+			t,
+			token: service.token,
+			path: "/meetings/meeting-1/transcript.md",
+			content: "# Transcript\n\nAgain\n",
+		});
+		expect(refused.status).toBe(409);
+		expect(await refused.json()).toEqual({ message: "This item is read-only." });
+	});
+
+	test("refuses the read-only option without consent or a managing actor", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-service-write-consent" });
+
+		// Without the create-read-only consent the locked create refuses before writing anything.
+		const unconsented = await seed_sealed_service({
+			t,
+			db,
+			acceptedCapabilities: ["plugin.service.connect", "workspace.files.write"],
+		});
+		const refused = await service_write({
+			t,
+			token: unconsented.token,
+			path: "/meetings/locked.md",
+			content: "# Locked\n",
+			readOnly: true,
+		});
+		expect(refused.status).toBe(403);
+		expect(await refused.json()).toEqual({ message: "Permission denied" });
+		expect(await find_active_node({ t, db, path: "/meetings/locked.md" })).toBeNull();
+
+		// A plain member holds content.write but not content.permissions.manage: they may author
+		// service files, but a lock is an ACL decision their grant cannot make.
+		const member = await t.run(async (ctx) => {
+			const now = Date.now();
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-service-write-consent-member" });
+			// The write route's credit gate bills the acting member, so the fixture pays.
+			await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Pay As You Go" });
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				active: true,
+				updatedAt: now,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				role: "member",
+				now,
+			});
+			return { userId };
+		});
+		const memberService = await seed_sealed_service({ t, db, actorUserId: member.userId });
+		const memberPlain = await service_write({
+			t,
+			token: memberService.token,
+			path: "/meetings/member-plain.md",
+			content: "# Plain\n",
+		});
+		expect(memberPlain.status).toBe(200);
+		const memberLocked = await service_write({
+			t,
+			token: memberService.token,
+			path: "/meetings/member-locked.md",
+			content: "# Locked\n",
+			readOnly: true,
+		});
+		expect(memberLocked.status).toBe(403);
+		expect(await find_active_node({ t, db, path: "/meetings/member-locked.md" })).toBeNull();
+
+		// The access option is a plugin feature: a user key holder locks files through the app.
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "clerk-service-write-consent",
+			external_id: db.userId,
+		});
+		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			name: "Files writer",
+			scopes: ["files:write"],
+		});
+		expect(created._nay).toBeUndefined();
+		const userKeyLocked = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(created._yay!.credential),
+			body: JSON.stringify({ path: "/user-locked.md", content: "# Locked\n", access: { readOnly: true } }),
+		});
+		expect(userKeyLocked.status).toBe(403);
+		expect(await userKeyLocked.json()).toEqual({ message: "Permission denied" });
+	});
+
+	test("replaces the file its own read-only upload target created and respects another plugin's lock", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-service-write-target" });
+		const service = await seed_sealed_service({ t, db });
+
+		// A committed read-only upload target: the flow a transcript upload uses before the
+		// service rewrites the file through the write door.
+		const enqueueActionSpy = vi
+			.spyOn(Workpool.prototype, "enqueueAction")
+			.mockResolvedValue("work_service_write_target" as never);
+		const createdTarget = await t.fetch("/api/v1/files/service-uploads/create-target", {
+			method: "POST",
+			headers: auth_headers(service.token),
+			body: JSON.stringify({
+				idempotencyKey: "meeting-1",
+				targetKey: "notes",
+				path: "/meetings/meeting-1/notes.md",
+				contentType: "text/markdown",
+				size: 16,
+				readOnly: true,
+				nonCollaborative: false,
+			}),
+		});
+		expect(createdTarget.status).toBe(200);
+		const target = await t.run(async (ctx) => (await ctx.db.query("plugin_service_storage_targets").collect())[0]!);
+		const asset = await t.run(async (ctx) => await ctx.db.get("files_r2_assets", target.assetId));
+		await t.mutation(internal.r2.process_uploaded_asset_event, {
+			assetId: target.assetId,
+			r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${target.assetId}`,
+			uploadStagingR2Key: asset!.uploadStagingR2Key!,
+			size: 16,
+			etag: "etag-service-write-target",
+			eventId: "service-write-target-event",
+		});
+		enqueueActionSpy.mockRestore();
+		const storedNode = await find_active_node({ t, db, path: "/meetings/meeting-1/notes.md" });
+		expect(storedNode).toMatchObject({
+			readOnlyScopeNodeId: storedNode!._id,
+			readOnlyPluginServiceTargetId: target._id,
+		});
+
+		// The target lock is the service's own, so the write may pass it, and the same target
+		// proof answers the ownership question the stored file cannot answer with a stamp.
+		const replaced = await service_write({
+			t,
+			token: service.token,
+			path: "/meetings/meeting-1/notes.md",
+			content: "# Notes\n\nRewritten as text\n",
+		});
+		expect(replaced.status).toBe(200);
+		const replacedBody = (await replaced.json()) as { nodeId: string };
+		expect(replacedBody.nodeId).not.toBe(String(storedNode!._id));
+		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", storedNode!._id))).toMatchObject({
+			archiveOperationId: expect.any(String),
+		});
+		const replacedNode = await find_active_node({ t, db, path: "/meetings/meeting-1/notes.md" });
+		expect(replacedNode?.pluginServiceWritePluginName).toBe("council");
+
+		// A lock naming another plugin is not this service's to pass.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", replacedNode!._id, {
+				readOnlyScopeNodeId: replacedNode!._id,
+				readOnlyPluginName: "other-plugin",
+			});
+		});
+		const refused = await service_write({
+			t,
+			token: service.token,
+			path: "/meetings/meeting-1/notes.md",
+			content: "# Notes\n\nTaken\n",
+		});
+		expect(refused.status).toBe(409);
+		expect(await refused.json()).toEqual({ message: "This item is read-only." });
+	});
+
+	test("archives its own files through the plugin archive door and releases the lock it passes", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-service-archive" });
+		const service = await seed_sealed_service({ t, db });
+		const archive = async (path: string) =>
+			await t.fetch("/api/v1/files/plugin-archive", {
+				method: "POST",
+				headers: auth_headers(service.token),
+				body: JSON.stringify({ path }),
+			});
+
+		expect(
+			(await service_write({ t, token: service.token, path: "/meetings/meeting-1/summary.md", content: "# S\n" }))
+				.status,
+		).toBe(200);
+		const archived = await archive("/meetings/meeting-1/summary.md");
+		expect(archived.status).toBe(200);
+		expect(await archived.json()).toEqual({ archivedNodes: 1 });
+		expect(await find_active_node({ t, db, path: "/meetings/meeting-1/summary.md" })).toBeNull();
+
+		// Archiving through its own named lock releases the lock first, so a member restore gets a
+		// writable file back.
+		expect(
+			(
+				await service_write({
+					t,
+					token: service.token,
+					path: "/meetings/meeting-1/locked.md",
+					content: "# L\n",
+					readOnly: true,
+				})
+			).status,
+		).toBe(200);
+		const lockedNode = await find_active_node({ t, db, path: "/meetings/meeting-1/locked.md" });
+		const lockedArchive = await archive("/meetings/meeting-1/locked.md");
+		expect(lockedArchive.status).toBe(200);
+		expect(await lockedArchive.json()).toEqual({ archivedNodes: 1 });
+		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", lockedNode!._id))).toMatchObject({
+			archiveOperationId: expect.any(String),
+		});
+		expect(
+			(await t.run(async (ctx) => ctx.db.get("files_nodes", lockedNode!._id)))?.readOnlyScopeNodeId,
+		).toBeUndefined();
+		expect(
+			(await t.run(async (ctx) => ctx.db.get("files_nodes", lockedNode!._id)))?.readOnlyPluginName,
+		).toBeUndefined();
+
+		// Archiving an absent path is satisfied by doing nothing.
+		const absent = await archive("/meetings/meeting-1/never-existed.md");
+		expect(absent.status).toBe(200);
+		expect(await absent.json()).toEqual({ archivedNodes: 0 });
+	});
+
+	test("the plugin archive door refuses everything that is not its own live file", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-service-archive-refusals" });
+		const service = await seed_sealed_service({ t, db });
+		const archive = async (path: string) =>
+			await t.fetch("/api/v1/files/plugin-archive", {
+				method: "POST",
+				headers: auth_headers(service.token),
+				body: JSON.stringify({ path }),
+			});
+
+		// A member's file inside the destination carries no service provenance.
+		await seed_markdown_file({
+			t,
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/meetings/member.md",
+			committedMarkdown: "# Member\n",
+		});
+		const memberFile = await archive("/meetings/member.md");
+		expect(memberFile.status).toBe(403);
+		expect(await memberFile.json()).toEqual({ message: "Permission denied" });
+
+		// A folder can never carry service write provenance, so the service branch refuses it.
+		expect(
+			(await service_write({ t, token: service.token, path: "/meetings/meeting-1/summary.md", content: "# S\n" }))
+				.status,
+		).toBe(200);
+		const folder = await archive("/meetings/meeting-1");
+		expect(folder.status).toBe(403);
+
+		// A member lock on the service's own file wins: the archive refuses instead of releasing it.
+		const node = await find_active_node({ t, db, path: "/meetings/meeting-1/summary.md" });
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "clerk-service-archive-refusals",
+			external_id: db.userId,
+		});
+		const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: db.membershipId,
+			nodeId: node!._id,
+		});
+		expect(locked._nay).toBeUndefined();
+		const memberLocked = await archive("/meetings/meeting-1/summary.md");
+		expect(memberLocked.status).toBe(409);
+		expect(await memberLocked.json()).toEqual({ message: "This item is read-only." });
+
+		// The seal bounds this door the same way it bounds the write.
+		const outside = await archive("/elsewhere/file.md");
+		expect(outside.status).toBe(403);
+		expect(await outside.json()).toEqual({ message: "Permission denied" });
+	});
+
+	test("the destination archive releases the write-created named lock", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-service-archive-destination" });
+		const service = await seed_sealed_service({ t, db });
+
+		expect(
+			(
+				await service_write({
+					t,
+					token: service.token,
+					path: "/meetings/meeting-1/transcript.md",
+					content: "# T\n",
+					readOnly: true,
+				})
+			).status,
+		).toBe(200);
+		const node = await find_active_node({ t, db, path: "/meetings/meeting-1/transcript.md" });
+
+		// The destination archive is anchored to upload targets: one upload in the destination makes
+		// the sealed folder archivable, and the sweep then has to get past the write-created lock too.
+		const createdTarget = await t.fetch("/api/v1/files/service-uploads/create-target", {
+			method: "POST",
+			headers: auth_headers(service.token),
+			body: JSON.stringify({
+				idempotencyKey: "meeting-1",
+				targetKey: "recording",
+				path: "/meetings/meeting-1/recording.mp4",
+				contentType: "video/mp4",
+				size: 1024,
+				readOnly: false,
+				nonCollaborative: false,
+			}),
+		});
+		expect(createdTarget.status).toBe(200);
+
+		const archived = await t.fetch("/api/v1/files/service-uploads/archive-destination", {
+			method: "POST",
+			headers: auth_headers(service.token),
+			body: JSON.stringify({}),
+		});
+		expect(archived.status).toBe(200);
+
+		// The whole destination is archived, and the named lock was released through the same
+		// exception that lets the service pass it, so a member restore gets writable files back.
+		const after = await t.run(async (ctx) => ctx.db.get("files_nodes", node!._id));
+		expect(after?.archiveOperationId).toEqual(expect.any(String));
+		expect(after?.readOnlyScopeNodeId).toBeUndefined();
+		expect(after?.readOnlyPluginName).toBeUndefined();
+		expect(await find_active_node({ t, db, path: "/meetings" })).toBeNull();
+
+		// A file that kept its lock would make this whole restore refuse, so the restore is the
+		// proof the release really happened.
+		const archivedRoot = await t.run(async (ctx) =>
+			ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("path", "/meetings"),
+				)
+				.first(),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "clerk-service-archive-destination",
+			external_id: db.userId,
+		});
+		const restored = await asUser.mutation(api.files_nodes.unarchive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [archivedRoot!._id],
+		});
+		expect(restored).toEqual({ _yay: null });
+		const restoredFile = await find_active_node({ t, db, path: "/meetings/meeting-1/transcript.md" });
+		expect(restoredFile?.readOnlyScopeNodeId).toBeUndefined();
 	});
 });

@@ -36,6 +36,10 @@ const REQUIRED_APP_PERMISSION_BY_SCOPE = {
 	// every installation's stored data.
 	"plugin_data:read": CONTENT_READ_PERMISSION,
 	"plugin_data:write": CONTENT_WRITE_PERMISSION,
+	// An invoke can drive writes as the member, so a workspace viewer cannot invoke at all, even a
+	// read-only endpoint. Note that `plugin_run` skips this map entirely (the exemption below), so
+	// the mapping only binds the `plugin_ui` caller — the only allowed kind for the invoke route.
+	"backend:invoke": CONTENT_WRITE_PERMISSION,
 } as const satisfies Record<public_api_Scope, RequiredAppPermission | null>;
 
 type Principal = NonNullable<public_api_resolve_principal_Result["_yay"]>;
@@ -99,10 +103,12 @@ export function public_api_is_path_inside_prefix(filePath: string, pathPrefix: s
 }
 
 /**
- * Whose eyes a public API call reads files with.
+ * Whose eyes a public API call reads files with, and the human a billed call is charged as.
  *
  * A plugin run has no user of its own, so it reads as the person whose upload started it. Without
- * that rule, installing a plugin would be a way around a restricted folder.
+ * that rule, installing a plugin would be a way around a restricted folder. The billing gates and
+ * emits use the same identity: the actor's organization then decides the payer through
+ * `billing_pick_billed_user_id`, exactly like an app save.
  */
 export function public_api_visibility_user_id(principal: { actorUserId: Id<"users"> } | { userId: Id<"users"> }) {
 	return "actorUserId" in principal ? principal.actorUserId : principal.userId;

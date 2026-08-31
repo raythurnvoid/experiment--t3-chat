@@ -812,11 +812,11 @@ async function db_authorize_lock_management(
 }
 
 /**
- * A projection stamp is internal authority. Public lock and sharing controls must not change the
- * stamped node or anything whose effective lock comes from a stamped projection folder.
+ * A plugin-owner stamp is internal authority. Public lock and sharing controls must not change the
+ * stamped node or anything whose effective lock comes from a stamped plugin-owned folder.
  */
-export async function files_nodes_db_has_projection_authority(ctx: QueryCtx | MutationCtx, node: Doc<"files_nodes">) {
-	if (node.projectionPluginName !== undefined) {
+export async function files_nodes_db_has_plugin_owner_authority(ctx: QueryCtx | MutationCtx, node: Doc<"files_nodes">) {
+	if (node.pluginOwnerName !== undefined) {
 		return true;
 	}
 	if (node.readOnlyScopeNodeId === undefined) {
@@ -824,7 +824,7 @@ export async function files_nodes_db_has_projection_authority(ctx: QueryCtx | Mu
 	}
 
 	const lockSource = await ctx.db.get("files_nodes", node.readOnlyScopeNodeId);
-	return lockSource?.projectionPluginName !== undefined;
+	return lockSource?.pluginOwnerName !== undefined;
 }
 
 /**
@@ -933,7 +933,7 @@ export const get_node_read_only_management_state = query({
 		const { fileNode: node, organization, defaultWorkspaceId } = authorized._yay;
 
 		const canManage =
-			!(await files_nodes_db_has_projection_authority(ctx, node)) &&
+			!(await files_nodes_db_has_plugin_owner_authority(ctx, node)) &&
 			(await access_control_db_has_permission(ctx, {
 				organizationId: organization._id,
 				workspaceId: membership.workspaceId,
@@ -1022,7 +1022,7 @@ export const set_node_read_only = mutation({
 			return authorized;
 		}
 		const { membership, node } = authorized._yay;
-		if (await files_nodes_db_has_projection_authority(ctx, node)) {
+		if (await files_nodes_db_has_plugin_owner_authority(ctx, node)) {
 			return Result({ _nay: { message: "This item is managed by a plugin." } });
 		}
 
@@ -1081,7 +1081,7 @@ export const set_node_writable = mutation({
 			return authorized;
 		}
 		const { membership, node } = authorized._yay;
-		if (await files_nodes_db_has_projection_authority(ctx, node)) {
+		if (await files_nodes_db_has_plugin_owner_authority(ctx, node)) {
 			return Result({ _nay: { message: "This item is managed by a plugin." } });
 		}
 
@@ -1107,9 +1107,12 @@ export const set_node_writable = mutation({
 			parentId: node.parentId,
 		});
 
+		// A service-written file can carry a plugin-named lock without being plugin-managed.
+		// A member unlock ends that provenance too, the same rule as the service target pointer.
 		await ctx.db.patch("files_nodes", node._id, {
 			readOnlyScopeNodeId: parentScopeNodeId,
 			readOnlyPluginServiceTargetId: undefined,
+			readOnlyPluginName: undefined,
 		});
 		await files_nodes_db_cascade_read_only_scope(ctx, {
 			organizationId: membership.organizationId,
@@ -1268,8 +1271,8 @@ async function db_insert_node(
 		 * The new node gets the parent lock and stays read-only.
 		 */
 		inheritParentReadOnlyScope?: true;
-		/** Projection doors only. Public create and copy flows must never forward this field. */
-		projectionPluginName?: Doc<"files_nodes">["projectionPluginName"];
+		/** Plugin doors only. Public create and copy flows must never forward this field. */
+		pluginOwnerName?: Doc<"files_nodes">["pluginOwnerName"];
 		now: number;
 	},
 ) {
@@ -1291,7 +1294,7 @@ async function db_insert_node(
 		path: args.path,
 		restrictedScopeNodeId,
 		readOnlyScopeNodeId,
-		projectionPluginName: args.projectionPluginName,
+		pluginOwnerName: args.pluginOwnerName,
 		treePath: derive_tree_path_for_file_node(args.path, args.kind),
 		pathDepth: files_path_depth(args.path),
 		lowercaseExtension: files_lowercase_extension(args.path, args.kind),
@@ -1377,18 +1380,23 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		 */
 		mut_createdAncestorIds?: Array<Id<"files_nodes">>;
 		/**
-		 * Projection doors only. Skip membership ACL and the parent lock check. The caller must
-		 * already have proved this path is the projection folder or a child of it. Do not pass
+		 * Plugin owned-area doors only. Skip membership ACL and the parent lock check. The caller
+		 * must already have proved this path is inside the plugin's own folder area. Do not pass
 		 * this from user or agent doors.
 		 */
 		skipAccessControlAndLock?: true;
 		/**
-		 * New nodes copy the parent's lock pointer. Use this after the projection folder itself
+		 * New nodes copy the parent's lock pointer. Use this after the plugin's folder itself
 		 * is locked so files created under it stay locked.
 		 */
 		inheritParentReadOnlyScope?: true;
-		/** Projection doors only. Stamp the requested leaf, never intermediate folders. */
-		projectionPluginName?: Doc<"files_nodes">["projectionPluginName"];
+		/**
+		 * Plugin owned-area doors only. Stamp EVERY node this call creates — the leaf and each
+		 * intermediate folder — with the plugin name. Without this, an owned-area write creating
+		 * `/owned/a/b/note.md` would leave `a` and `b` unstamped, and the next write under them
+		 * would find an unstamped deepest ancestor and be refused by the stamp rule.
+		 */
+		stampCreatedNodesPluginName?: Doc<"files_nodes">["pluginOwnerName"];
 	},
 ) {
 	let currentParent: Doc<"files_nodes">["parentId"] = args.parentId;
@@ -1454,7 +1462,7 @@ export async function files_nodes_db_create_node_recursively_at_path(
 				// Reuse active intermediate folders, but reject files that already own the path.
 				if (existing.kind === "folder") {
 					// Do not create below a read-only folder. Trusted SYSTEM writes skip this check.
-					// Projection doors skip it too after proving the lock source is their folder.
+					// Plugin doors skip it too after proving the lock source is their folder.
 					if (!args.skipAccessControlAndLock && args.userId !== users_SYSTEM_AUTHOR) {
 						const segmentWritable = files_node_require_writable(existing);
 						if (segmentWritable._nay) {
@@ -1525,7 +1533,7 @@ export async function files_nodes_db_create_node_recursively_at_path(
 			assetId: isLeaf ? args.assetId : undefined,
 			archiveOperationId: isLeaf ? args.archiveOperationId : undefined,
 			expectsTextContent: isLeaf ? args.expectsTextContent : undefined,
-			projectionPluginName: isLeaf ? args.projectionPluginName : undefined,
+			pluginOwnerName: args.stampCreatedNodesPluginName,
 			...(args.inheritParentReadOnlyScope ? { inheritParentReadOnlyScope: true } : {}),
 			now: args.now,
 		});
@@ -5198,7 +5206,7 @@ const files_node_public_doc_fields = ((/* iife */) => {
 	const {
 		readOnlyScopeNodeId: _readOnlyScopeNodeId,
 		readOnlyPluginServiceTargetId: _readOnlyPluginServiceTargetId,
-		projectionPluginName: _projectionPluginName,
+		pluginOwnerName: _pluginOwnerName,
 		...rest
 	} = doc(app_convex_schema, "files_nodes").fields;
 
@@ -5222,7 +5230,7 @@ function files_node_project_read_only(
 	const {
 		readOnlyScopeNodeId,
 		readOnlyPluginServiceTargetId: _readOnlyPluginServiceTargetId,
-		projectionPluginName: _projectionPluginName,
+		pluginOwnerName: _pluginOwnerName,
 		...rest
 	} = fileNode;
 

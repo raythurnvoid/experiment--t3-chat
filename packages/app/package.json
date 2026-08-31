@@ -87,6 +87,7 @@
 		"@tiptap/extension-mention": "workspace:*",
 		"@tiptap/extension-paragraph": "workspace:*",
 		"@tiptap/extension-placeholder": "workspace:*",
+		"@tiptap/extension-table": "workspace:*",
 		"@tiptap/extension-task-item": "workspace:*",
 		"@tiptap/extension-task-list": "workspace:*",
 		"@tiptap/extension-text": "workspace:*",

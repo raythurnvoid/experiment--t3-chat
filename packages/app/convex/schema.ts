@@ -15,9 +15,12 @@ const plugins_capability_validator = v.union(
 	v.literal("workspace.files.read"),
 	v.literal("workspace.files.write"),
 	v.literal("workspace.files.create-read-only"),
+	v.literal("workspace.files.own-write"),
+	v.literal("workspace.files.own-access"),
 	v.literal("plugin.data.read"),
 	v.literal("plugin.data.write"),
 	v.literal("plugin.data.user-write"),
+	v.literal("plugin.backend.invoke"),
 	v.literal("plugin.service.connect"),
 	v.literal("ui.outbound.fetch"),
 	v.literal("workspace.members.read"),
@@ -248,6 +251,8 @@ const app_convex_schema = defineSchema({
 		callId: v.optional(v.id("plugins_event_run_calls")),
 		/** Present only for user_api_key writes; publication revalidates the credential. */
 		credentialId: v.optional(v.id("api_credentials")),
+		/** Present only for plugin_service writes; publication revalidates the sealed grant. */
+		grantId: v.optional(v.id("plugin_service_grants")),
 		/** Normalized absolute target path; parents are resolved again at publication. */
 		path: v.string(),
 		overwrite: v.union(v.literal("replace"), v.literal("fail")),
@@ -744,10 +749,25 @@ const app_convex_schema = defineSchema({
 		 */
 		readOnlyPluginServiceTargetId: v.optional(v.id("plugin_service_storage_targets")),
 		/**
-		 * Internal ownership stamp for a file projection. Public file doors cannot set this field.
-		 * Keep the plugin name, not an installation id, so frozen output can be adopted on reinstall.
+		 * The plugin whose own door created this node's direct lock. Only `plugin-access/set`,
+		 * `plugin-archive`, and the same plugin's `archive-destination` can release it.
+		 * Never returned to clients.
 		 */
-		projectionPluginName: v.optional(v.union(v.literal("chitchat"), v.literal("council"))),
+		readOnlyPluginName: v.optional(v.string()),
+		/**
+		 * Internal plugin-ownership stamp. Public file doors cannot set this field. Keep the plugin
+		 * name, not an installation id, so frozen output can be adopted on reinstall. Any stamped
+		 * node refuses the member sharing and lock doors: the host owns its reader list and locks,
+		 * so members must not edit those grants by hand.
+		 */
+		pluginOwnerName: v.optional(v.string()),
+		/**
+		 * The plugin whose sealed service grant created this file through `/api/v1/files/write`.
+		 * Only later service updates and the per-file archive read it as ownership proof; member
+		 * sharing and lock code must ignore it, so the file stays a normal member-manageable file.
+		 * Never returned to clients.
+		 */
+		pluginServiceWritePluginName: v.optional(v.string()),
 		/** Created by user ID. SYSTEM is the pseudo user ID for reserved global-organization content. */
 		createdBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
 		/** Updated by user ID. SYSTEM is the pseudo user ID for reserved global-organization content. */
@@ -1247,6 +1267,22 @@ const app_convex_schema = defineSchema({
 		.index("by_repository_name", ["repositoryId", "name"])
 		.index("by_ownerUser", ["ownerUserId"]),
 
+	/**
+	 * One row per plugin name that registered an outside service for the service-grant exchange.
+	 * The host generates the `pse_` secret and stores only its hash; rotating writes a new hash and
+	 * the old secret stops working immediately. The registered scopes are the exchange authority —
+	 * the manifest's `service` block is only consent copy.
+	 */
+	plugins_service_registrations: defineTable({
+		pluginName: v.string(),
+		exchangeSecretHash: v.string(),
+		scopes: v.array(
+			v.union(v.literal("plugin_data:read"), v.literal("plugin_data:write"), v.literal("files:write")),
+		),
+		createdBy: v.id("users"),
+		updatedAt: v.number(),
+	}).index("by_pluginName", ["pluginName"]),
+
 	plugins_versions: defineTable({
 		name: v.string(),
 		displayName: v.string(),
@@ -1339,6 +1375,37 @@ const app_convex_schema = defineSchema({
 				contentTypes: v.array(v.string()),
 			}),
 		),
+		/**
+		 * Backend endpoints the invoke door may run, normalized to `[]` when the manifest declares
+		 * none. `serialization` is normalized to `"installation"` when the manifest omits it.
+		 * Optional only until the backfill in migrations.ts patches every stored version.
+		 */
+		endpoints: v.optional(
+			v.array(
+				v.object({
+					id: v.string(),
+					path: v.string(),
+					serialization: v.union(v.literal("installation"), v.literal("caller-key")),
+				}),
+			),
+		),
+		/**
+		 * The manifest's service consent copy, or null when the manifest declares no service block.
+		 * The service-registration row is the exchange authority; this list is display-only.
+		 * Optional only until the backfill in migrations.ts patches every stored version.
+		 */
+		serviceScopes: v.optional(
+			v.union(
+				v.array(v.union(v.literal("plugin_data:read"), v.literal("plugin_data:write"), v.literal("files:write"))),
+				v.null(),
+			),
+		),
+		/**
+		 * The collections a member-identity writer may write. Null means the manifest declared no
+		 * list, so every collection stays user-writable; `[]` means nothing is.
+		 * Optional only until the backfill in migrations.ts patches every stored version.
+		 */
+		userWritableCollections: v.optional(v.union(v.array(v.string()), v.null())),
 		capabilities: v.array(plugins_capability_validator),
 		/**
 		 * Exact https origins the plugin's code declares it calls; consented at install.
@@ -1550,8 +1617,17 @@ const app_convex_schema = defineSchema({
 			v.literal("files.upload.completed"),
 			v.literal("files.run.requested"),
 			v.literal("users.account.deleted"),
+			v.literal("ui.invoke.requested"),
 		),
 		eventId: v.string(),
+		/** The manifest backend endpoint an invoke run targets. Only invoke runs set it. */
+		endpointId: v.optional(v.string()),
+		/**
+		 * The serialization lock this run holds while queued or running: the literal
+		 * "installation", or `<endpointId>:<callerKey>` for a caller-key endpoint. The run record
+		 * itself is the lock — a second run with the same live key answers busy.
+		 */
+		serializationKey: v.optional(v.string()),
 		status: v.union(v.literal("queued"), v.literal("running"), v.literal("succeeded"), v.literal("failed")),
 		workId: v.optional(vWorkId),
 		apiTokenHash: v.optional(v.string()),
@@ -1582,6 +1658,7 @@ const app_convex_schema = defineSchema({
 		.index("by_work", ["workId"])
 		.index("by_apiTokenHash", ["apiTokenHash"])
 		.index("by_installation_updatedAt", ["installationId", "updatedAt"])
+		.index("by_installation_serializationKey_status", ["installationId", "serializationKey", "status"])
 		.index("by_pluginVersion", ["pluginVersionId"])
 		.index("by_status_expiresAt", ["status", "expiresAt"]),
 
@@ -1785,11 +1862,6 @@ const app_convex_schema = defineSchema({
 		 * question. Soft-delete `put`s stay in the table and move here; a physical delete does not.
 		 */
 		.index("by_installation_collection_scope_updatedAt", ["installationId", "collection", "scopeId", "updatedAt"])
-		/**
-		 * Projection jobs scan every scope together in update order. No member-facing read door may use
-		 * this index because it has no `scopeId` equality and therefore crosses private scope boundaries.
-		 */
-		.index("by_installation_collection_updatedAt", ["installationId", "collection", "updatedAt"])
 		.index("by_installation_collection_createdBy_requestId", [
 			"installationId",
 			"collection",
@@ -2062,207 +2134,21 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
 
 	/**
-	 * One doc per plugin installation that projects store documents into workspace files.
-	 * The store stays the source of truth. This doc holds the change-feed cursor and the
-	 * debounce job so a write can schedule work without knowing which plugin it is.
+	 * One row binds a plugin-owned file node's reader list to a plugin-data scope. The host keeps
+	 * exactly one `content.read` grant per active scope member on the node, updating them in the
+	 * same mutations that change the scope's membership. At most
+	 * `MAX_ACCESS_BINDINGS_PER_SCOPE` (4) nodes per scope keep that synchronous work bounded.
 	 */
-	plugins_data_projection_states: defineTable({
+	plugins_file_access_bindings: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		installationId: v.id("plugins_workspace_installations"),
-		pluginName: v.string(),
-		/** Organization owner at ensure-time. File `createdBy` / `updatedBy` use this stamp. */
-		writerUserId: v.id("users"),
-		rootFolderNodeId: v.optional(v.id("files_nodes")),
-		/** Exclusive channel-key cursor for the bounded projection-file reconcile pass. */
-		reconcileAfterChannelKey: v.optional(v.string()),
-		/**
-		 * Per-collection inclusive fence. A missing key means "never scanned". Convex cannot pass
-		 * a scheduled-function id into that job's args, so `syncGeneration` is the CAS token:
-		 * a newer debounce bumps it and an older run must not clear `scheduledJobId`.
-		 */
-		cursors: v.record(
-			v.string(),
-			v.object({
-				updatedAt: v.number(),
-				// Index ties on `updatedAt` order by `_creationTime` then random `_id`, so the fence
-				// needs the pair. Optional because the field arrived on populated cursor records; a
-				// cursor without it re-applies its tied page once, which is idempotent.
-				lastCreationTime: v.optional(v.number()),
-				lastId: v.id("plugins_data"),
-			}),
-		),
-		/**
-		 * Opaque Convex page cursors for a bounded change-feed scan that has not finished yet.
-		 * Keep this optional until the projection cursor reset migration has been audited in every
-		 * deployment. Then tighten it to a required record.
-		 */
-		scanCursors: v.optional(
-			v.record(
-				v.string(),
-				v.object({
-					cursor: v.string(),
-					fromUpdatedAt: v.optional(v.number()),
-					throughUpdatedAt: v.number(),
-				}),
-			),
-		),
-		syncGeneration: v.number(),
-		scheduledJobId: v.optional(v.id("_scheduled_functions")),
-		dirty: v.boolean(),
+		scopeId: v.string(),
+		nodeId: v.id("files_nodes"),
 		updatedAt: v.number(),
 	})
-		.index("by_installation", ["installationId"])
-		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"])
-		.index("by_pluginName", ["pluginName"]),
-
-	/**
-	 * One doc per projected file (the live channel file and each rollover file).
-	 * Uninstall drains this table and leaves the files in place.
-	 */
-	plugins_data_projection_files: defineTable({
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		installationId: v.id("plugins_workspace_installations"),
-		channelKey: v.string(),
-		fileNodeId: v.id("files_nodes"),
-		/** 0 is the newest main file. 1 is `slug.001.md` (oldest), then 2, 3, … */
-		rolloverIndex: v.number(),
-		path: v.string(),
-		/** Hash of the normalized text stored in the mapped file. */
-		contentHash: v.optional(v.string()),
-		/** Asset that the hash describes. A matching hash alone is not a safe no-write signal. */
-		contentAssetId: v.optional(v.id("files_r2_assets")),
-		updatedAt: v.number(),
-	})
-		.index("by_installation_channelKey_rolloverIndex", ["installationId", "channelKey", "rolloverIndex"])
-		.index("by_installation_fileNodeId", ["installationId", "fileNodeId"])
-		.index("by_fileNodeId", ["fileNodeId"])
-		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
-
-	/**
-	 * Channel keys that still need a file rebuild. Durable so a crash after the cursor
-	 * advances still rebuilds those channels. Not an array on the state doc.
-	 */
-	plugins_data_projection_dirty_channels: defineTable({
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		installationId: v.id("plugins_workspace_installations"),
-		channelKey: v.string(),
-		/** Claim time used for fair oldest-first retry order. Optional for existing queued docs. */
-		queuedAt: v.optional(v.number()),
-		updatedAt: v.number(),
-	})
-		.index("by_installation_channelKey", ["installationId", "channelKey"])
-		.index("by_installation_queuedAt", ["installationId", "queuedAt"])
-		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
-
-	/** One resumable Chitchat channel build. The projection-state id is its install lifecycle token. */
-	plugins_data_projection_chitchat_builds: defineTable({
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		installationId: v.id("plugins_workspace_installations"),
-		lifecycleStateId: v.id("plugins_data_projection_states"),
-		channelKey: v.string(),
-		dirtyUpdatedAt: v.number(),
-		channelName: v.string(),
-		topic: v.union(v.string(), v.null()),
-		isPrivate: v.boolean(),
-		slug: v.string(),
-		header: v.string(),
-		phase: v.union(
-			v.literal("scan_messages"),
-			v.literal("scan_replies"),
-			v.literal("scan_reactions"),
-			v.literal("render_select_message"),
-			v.literal("render_select_reply"),
-			v.literal("render_scan_reactions"),
-			v.literal("render_emit"),
-			v.literal("publish"),
-			v.literal("finalize"),
-			v.literal("archive"),
-			v.literal("cleanup"),
-		),
-		scanAfterKey: v.optional(v.string()),
-		messageCursor: v.optional(v.string()),
-		currentRootKey: v.optional(v.string()),
-		replyCursor: v.optional(v.string()),
-		currentItemKey: v.optional(v.string()),
-		currentItemKind: v.optional(v.union(v.literal("message"), v.literal("reply"))),
-		reactionCursor: v.optional(v.string()),
-		reactionCounts: v.optional(v.record(v.string(), v.number())),
-		outputFileIndex: v.number(),
-		publishFileIndex: v.optional(v.number()),
-		/** Small publish receipt list. Keep staged file bodies out of finalization reads. */
-		publishedFiles: v.array(v.object({ rolloverIndex: v.number(), path: v.string() })),
-		channelFolderPath: v.optional(v.string()),
-		createdAt: v.number(),
-		updatedAt: v.number(),
-	})
-		.index("by_installation_channelKey", ["installationId", "channelKey"])
-		.index("by_installation", ["installationId"])
-		.index("by_installation_phase", ["installationId", "phase"])
-		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
-
-	/** Bounded message/reply staging for a resumable Chitchat build. */
-	plugins_data_projection_chitchat_items: defineTable({
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		installationId: v.id("plugins_workspace_installations"),
-		buildId: v.id("plugins_data_projection_chitchat_builds"),
-		collection: v.union(v.literal("messages"), v.literal("replies")),
-		key: v.string(),
-		rootKey: v.optional(v.string()),
-		createdAt: v.number(),
-		createdBy: v.string(),
-		text: v.string(),
-		attachments: v.array(v.object({ name: v.string() })),
-		editedAt: v.union(v.number(), v.null()),
-		deletedAt: v.union(v.number(), v.null()),
-	})
-		.index("by_build_collection_key", ["buildId", "collection", "key"])
-		.index("by_build_collection_createdAt_key", ["buildId", "collection", "createdAt", "key"])
-		.index("by_build_root_createdAt_key", ["buildId", "rootKey", "createdAt", "key"])
-		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
-
-	/** Bounded reaction staging keyed by the exact message or reply it decorates. */
-	plugins_data_projection_chitchat_reactions: defineTable({
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		installationId: v.id("plugins_workspace_installations"),
-		buildId: v.id("plugins_data_projection_chitchat_builds"),
-		key: v.string(),
-		targetKey: v.string(),
-		token: v.string(),
-		removed: v.boolean(),
-	})
-		.index("by_build_key", ["buildId", "key"])
-		.index("by_build_target_key", ["buildId", "targetKey", "key"])
-		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
-
-	/** One stable, sanitized author label per user and build. */
-	plugins_data_projection_chitchat_authors: defineTable({
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		installationId: v.id("plugins_workspace_installations"),
-		buildId: v.id("plugins_data_projection_chitchat_builds"),
-		userId: v.string(),
-		label: v.union(v.string(), v.null()),
-	})
-		.index("by_build_userId", ["buildId", "userId"])
-		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
-
-	/** One staged rollover file. Index zero is the newest main file. */
-	plugins_data_projection_chitchat_files: defineTable({
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		installationId: v.id("plugins_workspace_installations"),
-		buildId: v.id("plugins_data_projection_chitchat_builds"),
-		fileIndex: v.number(),
-		body: v.string(),
-		updatedAt: v.number(),
-	})
-		.index("by_build_fileIndex", ["buildId", "fileIndex"])
+		.index("by_installation_scopeId", ["installationId", "scopeId"])
+		.index("by_nodeId", ["nodeId"])
 		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
 
 	/**

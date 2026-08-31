@@ -84,7 +84,9 @@ type api_schemas_<GroupNameInPascalCase>_<api_path_in_snake_case>_body_schema =
 import type { ai_chat_http_routes } from "../convex/ai_chat_http_routes.ts";
 import type { files_nodes_ai_http_routes } from "../convex/files_nodes_ai_http_routes.ts";
 import type { plugins_data_http_routes } from "../convex/plugins_data_http_routes.ts";
+import type { plugins_invoke_http_routes } from "../convex/plugins_invoke_http_routes.ts";
 import type { public_api_files_list_http_routes } from "../convex/public_api_files_list_http.ts";
+import type { public_api_plugin_files_http_routes } from "../convex/public_api_plugin_files_http_routes.ts";
 import type { public_api_http_routes } from "../convex/public_api_http_routes.ts";
 import type { public_api_service_uploads_http_routes } from "../convex/public_api_service_uploads_http_routes.ts";
 import type { r2_http_routes } from "../convex/r2_http_routes.ts";
@@ -150,6 +152,16 @@ export interface api_schemas_Main {
 
 	"/api/v1/files/upload-urls": ReturnType<typeof public_api_http_routes>["/api/v1/files/upload-urls"];
 
+	"/api/v1/files/plugin-folders/ensure": ReturnType<
+		typeof public_api_plugin_files_http_routes
+	>["/api/v1/files/plugin-folders/ensure"];
+
+	"/api/v1/files/plugin-archive": ReturnType<typeof public_api_plugin_files_http_routes>["/api/v1/files/plugin-archive"];
+
+	"/api/v1/files/plugin-access/set": ReturnType<
+		typeof public_api_plugin_files_http_routes
+	>["/api/v1/files/plugin-access/set"];
+
 	"/api/v1/files/service-uploads/create-target": ReturnType<
 		typeof public_api_service_uploads_http_routes
 	>["/api/v1/files/service-uploads/create-target"];
@@ -195,6 +207,8 @@ export interface api_schemas_Main {
 	"/api/v1/plugin-data/release-reservation": ReturnType<
 		typeof plugins_data_http_routes
 	>["/api/v1/plugin-data/release-reservation"];
+
+	"/api/v1/plugin-backend/invoke": ReturnType<typeof plugins_invoke_http_routes>["/api/v1/plugin-backend/invoke"];
 
 	"/api/v1/activities/start": ReturnType<typeof public_api_http_routes>["/api/v1/activities/start"];
 

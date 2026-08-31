@@ -36,6 +36,8 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Comments region: `getByRole("complementary", { name: "Document comments" })`.
 - Diff editor root: `[aria-label="File diff editor"]`.
 - Review changes button: `[data-testid="review-changes-button"]`.
+- Tables in the rich editor: plain `table`, `th`, `td` selectors inside `.FileEditorRichText-editor-content`.
+- Table commands menu: toolbar `getByRole("button", { name: "Table commands" })`; items are `Add row above`, `Add row below`, `Add column left`, `Add column right`, `Delete row`, `Delete column`, `Toggle header row`, `Delete table` (disabled while the caret is outside a table).
 - Properties button in the breadcrumb: `getByRole("button", { name: /^Properties of / })`. It still carries `data-file-read-only` with the node's lock state. Its `.click()` can hang on "visible, enabled and stable" while `hitTest` shows the button itself on top and nothing covers it (hit 2026-08-21). Read its box in page context and click the middle with `page.mouse.click(x, y)`.
 
 ### Sidebar And Folder Browser
@@ -44,7 +46,7 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Sidebar selected rows: `.FilesSidebarTreeItem[data-file-id]:has(.FilesSidebarTreeItemPrimaryAction[aria-selected="true"])`.
 - Sidebar row primary action: `.FilesSidebarTreeItemPrimaryAction`.
 - Sidebar row more action: `.FilesSidebarTreeItemMoreAction`.
-- Locked row accessible name: `getByRole("treeitem", { name: "<name>, read-only" })` when the lock is on that node, `"<name>, read-only from /path"` when it is inherited, or `"<name>, contains read-only items"` when the folder itself is writable but a child is locked. `/meetings` after Council host projection is that last shape. Expand it with `getByRole("button", { name: "Expand folder <name>, contains read-only items" })`. The visible title is an input, so `.FilesSidebarTreeItemTitle` with `hasText: /^name$/` does not match (verified 2026-08-26).
+- Locked row accessible name: `getByRole("treeitem", { name: "<name>, read-only" })` when the lock is on that node, `"<name>, read-only from /path"` when it is inherited, or `"<name>, contains read-only items"` when the folder itself is writable but a child is locked. `/meetings` after a Council meeting upload is that last shape. Expand it with `getByRole("button", { name: "Expand folder <name>, contains read-only items" })`. The visible title is an input, so `.FilesSidebarTreeItemTitle` with `hasText: /^name$/` does not match (verified 2026-08-26).
 - Sidebar context menu: `[data-files-sidebar-tree-context][role="menu"]`.
 - Folder explorer root: `.FileNodeViewFolderExplorer`.
 - Folder explorer rows: `.FileNodeViewFolderExplorer-row`.
@@ -132,6 +134,14 @@ Compare against the table's pinned SHA-256. Two caveats: the comparison holds on
 - Use real drag gestures for drag/drop checks. Do not use `dispatchEvent`, DOM `element.click()`, or forced clicks.
 
 ## High-Value Recipes
+
+### Insert A Table
+
+In an editable collaborative `.md` file, type `/table` in an empty paragraph and pick the
+`Table` item in the slash popover (`.FileEditorRichTextToolsSlashCommand-item`). A 3x3 table
+with a header row appears and the caret lands in the first cell. Tab moves to the next cell;
+Tab in the last cell adds a row. Switching the same file to the Markdown (Code) view must show
+a GFM pipe table (`| ... |` rows with a `| --- |` delimiter row).
 
 ### Sticky Comments Filter
 
@@ -256,6 +266,18 @@ do not depend on signing in or out.
 - Run `auditAccessibility({ selector: "body", minTargetSize: 24 })`, then separately audit the lock
   modal and Pending panel. Also check keyboard focus, Escape/focus return, 200% zoom, 360 px width,
   contrast, target sizes, and reduced motion.
+
+### Non-Collaborative File Fixture
+
+Use this when a check needs a file with collaboration turned off (a Council-note-shaped file). Build your own; never edit or delete the read-only Council meeting notes under `/meetings/`, they are shared QA fixtures.
+
+1. Create a `.md` file from the sidebar. A new file is collaborative.
+2. Open it, switch to the **Markdown** view, and give it a body that carries a real Markdown escape, for example a line holding `2026\-08\-30`. Save.
+3. Open the breadcrumb Properties dialog (see "File Properties Modal" below for its two click hazards) and uncheck `Collaboration`. Confirm the destructive dialog; it asks you to acknowledge that the edit history is dropped.
+4. For a read-only variant, tick `Protection` in the same dialog (click `.FilesPropertiesModalReadOnly-checkbox`, the label, or focus the 1px input and press Space).
+5. Reopen the dialog and read both states back before you start the checks.
+
+The rich view must then render the content un-escaped (`2026-08-30`) while the Markdown view shows the raw bytes. Selectors and behaviors of the non-collaborative rich and diff editors are in `file-node-view.md` under "Non-Collaborative Editors (No Yjs)".
 
 ### Folder Import
 

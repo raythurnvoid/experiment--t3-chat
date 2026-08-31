@@ -16,6 +16,7 @@ import {
 	KeyRound,
 	Puzzle,
 	Save,
+	ServerCog,
 	Settings2,
 	ShieldCheck,
 	Trash2,
@@ -27,6 +28,7 @@ import { toast } from "sonner";
 
 import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton } from "@/components/my-button.tsx";
+import { MyCheckboxButton } from "@/components/my-checkbox-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import {
 	MyInput,
@@ -802,6 +804,225 @@ const RoutePluginsPluginSecrets = memo(function RoutePluginsPluginSecrets(props:
 });
 // #endregion secrets
 
+// #region service
+type RoutePluginsPluginService_Registration = NonNullable<
+	app_convex_FunctionReturnType<typeof app_convex_api.plugins.get_plugin_service_registration>
+>;
+
+type RoutePluginsPluginService_Scope = RoutePluginsPluginService_Registration["scopes"][number];
+
+const ROUTE_PLUGINS_SERVICE_SCOPES: RoutePluginsPluginService_Scope[] = [
+	"plugin_data:read",
+	"plugin_data:write",
+	"files:write",
+];
+
+type RoutePluginsPluginServiceControls_ClassNames =
+	| "RoutePluginsPluginServiceControls"
+	| "RoutePluginsPluginServiceControls-status"
+	| "RoutePluginsPluginServiceControls-scopes"
+	| "RoutePluginsPluginServiceControls-actions"
+	| "RoutePluginsPluginServiceControls-secret"
+	| "RoutePluginsPluginServiceControls-secret-value"
+	| "RoutePluginsPluginServiceControls-secret-note";
+
+type RoutePluginsPluginServiceControls_Props = {
+	pluginName: string;
+	registration: RoutePluginsPluginService_Registration;
+};
+
+const RoutePluginsPluginServiceControls = memo(function RoutePluginsPluginServiceControls(
+	props: RoutePluginsPluginServiceControls_Props,
+) {
+	const { pluginName, registration } = props;
+	const [selectedScopes, setSelectedScopes] = useState<RoutePluginsPluginService_Scope[]>(() =>
+		registration.exists ? registration.scopes : [...ROUTE_PLUGINS_SERVICE_SCOPES],
+	);
+	// The plaintext exists only in this state, right after a generate. A remount (the parent keys
+	// this component on the registration row) or a refresh loses it for good, on purpose.
+	const [issuedSecret, setIssuedSecret] = useState<string | null>(null);
+	const [busy, setBusy] = useState(false);
+
+	const handleScopeChange = (scope: RoutePluginsPluginService_Scope, checked: boolean) => {
+		setSelectedScopes((current) => {
+			const next = current.filter((existing) => existing !== scope);
+			if (checked) {
+				next.push(scope);
+			}
+			return ROUTE_PLUGINS_SERVICE_SCOPES.filter((known) => next.includes(known));
+		});
+	};
+
+	const handleGenerate = useFn(() => {
+		if (busy) {
+			return;
+		}
+		if (selectedScopes.length === 0) {
+			toast.error("Choose at least one scope");
+			return;
+		}
+
+		setBusy(true);
+		app_convex
+			.mutation(app_convex_api.plugins.set_plugin_service_registration, { pluginName, scopes: selectedScopes })
+			.then((result) => {
+				if (result._nay) {
+					toast.error(result._nay.message);
+					return;
+				}
+
+				setIssuedSecret(result._yay.exchangeSecret);
+				toast.success(registration.exists ? "Service secret rotated" : "Service secret generated");
+			})
+			.catch((error) => {
+				console.error("[RoutePluginsPlugin.handleGenerate] Failed to set service registration:", { error });
+				toast.error("Failed to update the service registration");
+			})
+			.finally(() => {
+				setBusy(false);
+			});
+	});
+
+	const handleRemove = useFn(() => {
+		if (busy) {
+			return;
+		}
+
+		setBusy(true);
+		app_convex
+			.mutation(app_convex_api.plugins.remove_plugin_service_registration, { pluginName })
+			.then((result) => {
+				if (result._nay) {
+					toast.error(result._nay.message);
+					return;
+				}
+
+				setIssuedSecret(null);
+				toast.success("Service registration removed");
+			})
+			.catch((error) => {
+				console.error("[RoutePluginsPlugin.handleRemove] Failed to remove service registration:", { error });
+				toast.error("Failed to remove the service registration");
+			})
+			.finally(() => {
+				setBusy(false);
+			});
+	});
+
+	const handleCopySecret = useFn(() => {
+		if (!issuedSecret) {
+			return;
+		}
+		navigator.clipboard
+			.writeText(issuedSecret)
+			.then(() => {
+				toast.success("Secret copied");
+			})
+			.catch((error: unknown) => {
+				console.error("[RoutePluginsPlugin.handleCopySecret] Failed to copy secret:", { error });
+				toast.error("Failed to copy the secret");
+			});
+	});
+
+	return (
+		<div className={"RoutePluginsPluginServiceControls" satisfies RoutePluginsPluginServiceControls_ClassNames}>
+			<p className={"RoutePluginsPluginServiceControls-status" satisfies RoutePluginsPluginServiceControls_ClassNames}>
+				{registration.exists && registration.updatedAt !== null
+					? `Registered · updated ${format_datetime(registration.updatedAt)}`
+					: "No service registered. Generate a secret to let a server exchange this plugin's page tokens for service grants."}
+			</p>
+			<div className={"RoutePluginsPluginServiceControls-scopes" satisfies RoutePluginsPluginServiceControls_ClassNames}>
+				{ROUTE_PLUGINS_SERVICE_SCOPES.map((scope) => (
+					<MyCheckboxButton
+						key={scope}
+						variant="outline"
+						checked={selectedScopes.includes(scope)}
+						disabled={busy}
+						onCheckedChange={(checked) => handleScopeChange(scope, checked)}
+					>
+						{scope}
+					</MyCheckboxButton>
+				))}
+			</div>
+			<div className={"RoutePluginsPluginServiceControls-actions" satisfies RoutePluginsPluginServiceControls_ClassNames}>
+				<MyButton variant="outline" aria-busy={busy || undefined} onClick={handleGenerate}>
+					{registration.exists ? "Rotate secret" : "Generate secret"}
+				</MyButton>
+				{registration.exists ? (
+					<MyButton variant="outline_destructive" aria-busy={busy || undefined} onClick={handleRemove}>
+						Remove
+					</MyButton>
+				) : null}
+			</div>
+			{issuedSecret ? (
+				<div className={"RoutePluginsPluginServiceControls-secret" satisfies RoutePluginsPluginServiceControls_ClassNames}>
+					<div>
+						<code
+							className={
+								"RoutePluginsPluginServiceControls-secret-value" satisfies RoutePluginsPluginServiceControls_ClassNames
+							}
+						>
+							{issuedSecret}
+						</code>
+						<p
+							className={
+								"RoutePluginsPluginServiceControls-secret-note" satisfies RoutePluginsPluginServiceControls_ClassNames
+							}
+						>
+							Shown once. Store it in the service's secret store; only its hash is kept here.
+						</p>
+					</div>
+					<MyButton variant="outline" onClick={handleCopySecret}>
+						Copy
+					</MyButton>
+				</div>
+			) : null}
+		</div>
+	);
+});
+
+type RoutePluginsPluginService_ClassNames =
+	| "RoutePluginsPluginService"
+	| "RoutePluginsPluginService-header"
+	| "RoutePluginsPluginService-title"
+	| "RoutePluginsPluginService-description";
+
+type RoutePluginsPluginService_Props = {
+	pluginName: string;
+};
+
+const RoutePluginsPluginService = memo(function RoutePluginsPluginService(props: RoutePluginsPluginService_Props) {
+	const { pluginName } = props;
+	// Publisher-only: the query answers null for everyone else, and the section stays away.
+	const registration = useQuery(app_convex_api.plugins.get_plugin_service_registration, { pluginName });
+	if (!registration) {
+		return null;
+	}
+
+	return (
+		<section className={"RoutePluginsPluginService" satisfies RoutePluginsPluginService_ClassNames}>
+			<header className={"RoutePluginsPluginService-header" satisfies RoutePluginsPluginService_ClassNames}>
+				<h2 className={"RoutePluginsPluginService-title" satisfies RoutePluginsPluginService_ClassNames}>
+					<ServerCog aria-hidden />
+					Service
+				</h2>
+				<p className={"RoutePluginsPluginService-description" satisfies RoutePluginsPluginService_ClassNames}>
+					The exchange secret a server of this plugin proves itself with.
+				</p>
+			</header>
+			{/* Keyed on existence only: a Remove resets the checklist and drops a shown-once secret,
+			    while a rotate keeps the component mounted so the new secret stays on screen until the
+			    publisher leaves. */}
+			<RoutePluginsPluginServiceControls
+				key={String(registration.exists)}
+				pluginName={pluginName}
+				registration={registration}
+			/>
+		</section>
+	);
+});
+// #endregion service
+
 // #region configuration
 type RoutePluginsPluginConfiguration_ClassNames =
 	| "RoutePluginsPluginConfiguration"
@@ -1254,6 +1475,27 @@ function format_capability_label(value: string) {
 	// because "members" alone leaves an admin wondering whether email comes with it.
 	if (value === "workspace.members.read") {
 		return "List every member of this workspace, with their display names but not their emails";
+	}
+
+	// The plain rule writes "Plugin Backend Invoke", three nouns that say nothing about who starts
+	// what. Name the trigger and the actor: a member's click in the plugin's frames runs the
+	// publisher's backend code, which then acts with the plugin's own API access.
+	if (value === "plugin.backend.invoke") {
+		return "Run its backend when a member uses its pages and file views";
+	}
+
+	// The plain rule writes "Workspace Files Own Write", which reads as writing the member's own
+	// files. Say the boundary instead: the write surface is only the folders the plugin creates and
+	// owns, never a member's files.
+	if (value === "workspace.files.own-write") {
+		return "Create, update, and archive files in the folders it creates and owns";
+	}
+
+	// The plain rule writes "Workspace Files Own Access", which says nothing about locks or
+	// readers. Say both halves: the plugin can lock its own files read-only, and it decides which
+	// members can read them — and while it does, members cannot change those grants by hand.
+	if (value === "workspace.files.own-access") {
+		return "Lock its own files read-only and choose which members can read them";
 	}
 
 	return format_access_label(value);
@@ -2259,6 +2501,7 @@ function RoutePluginsPlugin() {
 						onManagingChange={setManagingSecrets}
 					/>
 				) : null}
+				{publisherPlugin ? <RoutePluginsPluginService pluginName={plugin.name} /> : null}
 				{installedItem && pluginConfiguration && installedItem.installation.configurationYaml !== null ? (
 					<RoutePluginsPluginConfiguration
 						key={installedItem.installation._id}
@@ -2513,6 +2756,25 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const rosterLabel = format_capability_label("workspace.members.read");
 			expect(rosterLabel).toBe("List every member of this workspace, with their display names but not their emails");
 			expect(rosterLabel).not.toBe(format_access_label("workspace.members.read"));
+		});
+
+		test("names the invoke capability instead of spelling out its id", () => {
+			// The plain rule writes "Plugin Backend Invoke", three nouns with no actor. The label
+			// must say a member's use of the plugin's frames is what runs the publisher's code.
+			const invokeLabel = format_capability_label("plugin.backend.invoke");
+			expect(invokeLabel).toBe("Run its backend when a member uses its pages and file views");
+			expect(invokeLabel).not.toBe(format_access_label("plugin.backend.invoke"));
+		});
+
+		test("names the two own-file capabilities apart from the base write", () => {
+			// The plain rule writes "Workspace Files Own Write" / "Own Access", which read as writing
+			// the member's own files. The labels must carry the boundary: the plugin's own folders.
+			const ownWriteLabel = format_capability_label("workspace.files.own-write");
+			expect(ownWriteLabel).toBe("Create, update, and archive files in the folders it creates and owns");
+			const ownAccessLabel = format_capability_label("workspace.files.own-access");
+			expect(ownAccessLabel).toBe("Lock its own files read-only and choose which members can read them");
+			expect(ownWriteLabel).not.toBe(format_capability_label("workspace.files.write"));
+			expect(ownAccessLabel).not.toBe(ownWriteLabel);
 		});
 
 		test("spells out every other capability with the shared rule", () => {

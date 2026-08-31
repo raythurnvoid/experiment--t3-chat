@@ -21,7 +21,6 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 
 import {
 	files_clear_node_path_cached_validation_messages,
-	files_editor_view_values,
 	files_fetch_file_yjs_state_and_text,
 	files_get_node_path_cached_validation_message,
 	files_get_node_path_validation,
@@ -91,39 +90,26 @@ describe("files_resolve_effective_editor_view", () => {
 			files_resolve_effective_editor_view({
 				requestedView: "diff_editor",
 				rootKind: "plain_text",
-				nonCollaborative: false,
 			}),
 		).toBe("diff_editor");
 		expect(
 			files_resolve_effective_editor_view({
 				requestedView: "plain_text_editor",
 				rootKind: "plain_text",
-				nonCollaborative: false,
 			}),
 		).toBe("plain_text_editor");
 		expect(
 			files_resolve_effective_editor_view({
 				requestedView: "rich_text_editor",
 				rootKind: "plain_text",
-				nonCollaborative: false,
 			}),
 		).toBe("plain_text_editor");
 		expect(
 			files_resolve_effective_editor_view({
 				requestedView: "rich_text_editor",
 				rootKind: "rich_text",
-				nonCollaborative: false,
 			}),
 		).toBe("rich_text_editor");
-	});
-
-	test("sends every view to the plain text editor when collaboration is off", () => {
-		// Both the rich view and the diff view need a Yjs document, and this file has none.
-		for (const requestedView of files_editor_view_values) {
-			expect(
-				files_resolve_effective_editor_view({ requestedView, rootKind: "rich_text", nonCollaborative: true }),
-			).toBe("plain_text_editor");
-		}
 	});
 });
 
@@ -619,6 +605,43 @@ describe("files_yjs_reconcile_branch_with_local_text", () => {
 
 		expect(reconcileResult._yay.mergedText).toContain("LOCAL-TYPED: unsaved edit.");
 		expect(readMarkdown(reconcileResult._yay.mergedYjsDoc)).toBe(reconcileResult._yay.mergedText);
+	});
+
+	test("merges a new comment mark onto a newer saved version", () => {
+		// The non-collaborative comment save uses this helper when somebody else saved between the
+		// member's load and their comment: the comment mark is the only local edit, and it must
+		// land on the other person's version without losing their sentence.
+		const baseMarkdown = "# Notes\n\nThe launch date is final.\n";
+		const previousRemoteYjsDoc = createYjsDocFromMarkdown(baseMarkdown);
+		const nextRemoteYjsDoc = files_yjs_doc_clone({ yjsDoc: previousRemoteYjsDoc });
+
+		const nextRemoteProjectionResult = files_yjs_doc_update_from_text({
+			rootKind: "rich_text",
+			mut_yjsDoc: nextRemoteYjsDoc,
+			text: "# Notes\n\nThe launch date is final.\n\nSomeone else added this sentence.\n",
+		});
+		if (nextRemoteProjectionResult._nay) {
+			throw new Error("Expected next remote Yjs doc projection to succeed", {
+				cause: nextRemoteProjectionResult._nay,
+			});
+		}
+
+		const reconcileResult = files_yjs_reconcile_branch_with_local_text({
+			previousRemoteYjsDoc,
+			nextRemoteYjsDoc,
+			localText:
+				'# Notes\n\nThe <span data-type="comment" data-lb-thread-id="t1">launch</span> date is final.\n',
+			rootKind: "rich_text",
+		});
+		if (reconcileResult._nay) {
+			throw new Error("Expected Yjs branch reconcile to succeed", {
+				cause: reconcileResult._nay,
+			});
+		}
+
+		const mergedMarkdown = reconcileResult._yay.mergedText;
+		expect(mergedMarkdown).toContain("Someone else added this sentence.");
+		expect(mergedMarkdown).toContain('<span data-type="comment" data-lb-thread-id="t1">launch</span>');
 	});
 });
 

@@ -703,11 +703,11 @@ Observed 2026-07-26: every route rendered `Something went wrong`, with `Too many
 
 ## A backtick inside the room's CSS wedges the whole local Worker, for every agent using it
 
-`ROOM_CSS` in `packages/council/src/room/page.ts` is a JS template literal, so a backtick anywhere inside it — **including inside a CSS comment** — closes the string early and turns the rest of the stylesheet into JavaScript. Observed 2026-08-22: writing `` `aspect-ratio: 1` `` in a CSS comment stopped `127.0.0.1:8787` answering **any** request. The port stays `LISTENING` and connections sit in `CLOSE_WAIT`, so the symptom reads as a dead or hung Worker, not as a syntax error, and the instinct is to restart a server that is fine.
+**FIXED by the 2026-08-31 room refactor**: the CSS is a real file now (`packages/council/room-client/room.css`), not a JS template literal, so a backtick in a CSS comment is just a character. The entry stays as history and for the shared-blast-radius lesson.
 
-- Name it instantly with the typecheck instead of guessing: `vp env exec pnpm --dir packages/council typecheck` prints `page.ts(979,6): error TS1005`.
-- This is shared blast radius. One agent's unbalanced backtick takes the Worker away from every other agent driving the room, and it also aborts unrelated test suites that import the module — six at once in the observed case. If the Worker goes silent while you did not touch `page.ts`, check whether someone else is mid-edit before restarting anything.
-- Write CSS comments in that literal without backticks. Quote a property name as `aspect-ratio: 1` in plain words, not in code ticks.
+The string era: `ROOM_CSS` in the old `src/room/page.ts` was a JS template literal, so a backtick anywhere inside it — **including inside a CSS comment** — closed the string early and turned the rest of the stylesheet into JavaScript. Observed 2026-08-22: writing `` `aspect-ratio: 1` `` in a CSS comment stopped `127.0.0.1:8787` answering **any** request. The port stayed `LISTENING` and connections sat in `CLOSE_WAIT`, so the symptom read as a dead or hung Worker, not as a syntax error, and the instinct was to restart a server that was fine.
+
+- The lasting lesson is the shared blast radius: one agent's syntax error can take the local Worker away from every other agent driving the room and abort unrelated test suites that import the broken module. If the Worker goes silent while you did not touch the room code, check whether someone else is mid-edit before restarting anything. The typecheck names a syntax error instantly: `vp env exec pnpm --dir packages/council run typecheck`.
 
 ## A dev server on the usual port can serve a completely different checkout
 

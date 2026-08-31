@@ -7,10 +7,12 @@ import type { Id } from "./_generated/dataModel";
 import type { billing_PRODUCTS } from "../shared/billing.ts";
 import { organizations_db_create_workspace } from "./organizations.ts";
 import {
+	plugins_data_db_apply_file_access_binding,
 	plugins_data_db_count_installation_docs,
 	plugins_data_max_last_append,
 	plugins_data_parse_append_key_at,
 } from "./plugins_data.ts";
+import { files_ROOT_ID } from "../server/files.ts";
 import { quotas_db_ensure } from "./quotas.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.ts";
@@ -1778,18 +1780,6 @@ async function read_documents(
 	);
 }
 
-async function read_dirty_channels(
-	t: ReturnType<typeof test_convex>,
-	fixture: Awaited<ReturnType<typeof seed_installation>>,
-) {
-	return await t.run(async (ctx) =>
-		ctx.db
-			.query("plugins_data_projection_dirty_channels")
-			.withIndex("by_installation_channelKey", (q) => q.eq("installationId", fixture.installationId))
-			.collect(),
-	);
-}
-
 /** The canonical JSON is `{"a":"..."}`, so a value of exactly N bytes needs N - 8 characters. */
 function value_of_bytes(byteSize: number) {
 	return { a: "x".repeat(byteSize - 8) };
@@ -2268,61 +2258,6 @@ describe("write_document", () => {
 });
 
 describe("write_documents_batch", () => {
-	test("dedupes Chitchat channels, schedules once, and keeps same-millisecond patches and deletes dirty", async () => {
-		const t = test_convex();
-		const fixture = await seed_installation(t);
-		await t.run((ctx) =>
-			ctx.db.patch("plugins_workspace_installations", fixture.installationId, { pluginName: "chitchat" }),
-		);
-		const principal = store_principal(fixture);
-		const now = Date.now();
-		const dateNow = vi.spyOn(Date, "now").mockReturnValue(now);
-		try {
-			const jobsBefore = await t.run(
-				async (ctx) => (await ctx.db.system.query("_scheduled_functions").collect()).length,
-			);
-			const written = await t.mutation(internal.plugins_data.write_documents_batch, {
-				principal,
-				documents: [
-					{ collection: "messages", key: "general:1:message", value: { text: "one" } },
-					{ collection: "replies", key: "general:1:message:reply", value: { text: "two" } },
-					{ collection: "cursors", key: "general:user", value: { seenAt: now } },
-				],
-			});
-			expect(written._nay).toBeUndefined();
-
-			const jobsAfter = await t.run(
-				async (ctx) => (await ctx.db.system.query("_scheduled_functions").collect()).length,
-			);
-			expect(jobsAfter - jobsBefore).toBe(1);
-			const [firstDirty] = await read_dirty_channels(t, fixture);
-			expect(firstDirty).toMatchObject({ channelKey: "general", queuedAt: now, updatedAt: now });
-
-			const patched = await t.mutation(internal.plugins_data.write_document, {
-				principal,
-				collection: "messages",
-				key: "general:1:message",
-				value: { text: "patched" },
-			});
-			expect(patched._nay).toBeUndefined();
-			const [afterPatch] = await read_dirty_channels(t, fixture);
-			expect(afterPatch?.queuedAt).toBe(firstDirty?.queuedAt);
-			expect(afterPatch?.updatedAt).toBeGreaterThan(firstDirty?.updatedAt ?? now);
-
-			const deleted = await t.mutation(internal.plugins_data.delete_document, {
-				principal,
-				collection: "replies",
-				key: "general:1:message:reply",
-			});
-			expect(deleted._yay?.deleted).toBe(true);
-			const [afterDelete] = await read_dirty_channels(t, fixture);
-			expect(afterDelete?.queuedAt).toBe(firstDirty?.queuedAt);
-			expect(afterDelete?.updatedAt).toBeGreaterThan(afterPatch?.updatedAt ?? now);
-		} finally {
-			dateNow.mockRestore();
-		}
-	});
-
 	test("writes nothing when one item is oversized", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
@@ -3023,7 +2958,7 @@ describe("reserve_document", () => {
 		const fixture = await seed_installation(t);
 		const principal = store_principal(fixture, { kind: "plugin_service" });
 
-		// Council holds a projection reservation until eight days after the meeting closes: the seven
+		// Council holds a meeting reservation until eight days after the meeting closes: the seven
 		// days the provider keeps the recording URL, plus one. A shorter ceiling would refuse the one
 		// reservation this store was built for.
 		const reserved = await t.mutation(internal.plugins_data.reserve_document, {
@@ -3135,78 +3070,50 @@ describe("release_reservation", () => {
 });
 
 describe("write_versioned_document", () => {
-	test("keeps same-millisecond Council patches and deletes on the exact dirty queue", async () => {
+	test("a resent versioned delete replays its answer instead of deleting twice", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const principal = service_principal(fixture);
-		const now = Date.now();
-		const dateNow = vi.spyOn(Date, "now").mockReturnValue(now);
-		try {
-			const written = await t.mutation(internal.plugins_data.write_versioned_document, {
-				principal,
-				collection: "meetings",
-				key: "same-ms-meeting",
-				revision: 1,
-				value: { title: "First" },
-			});
-			expect(written._nay).toBeUndefined();
-			const [insertDirty] = await read_dirty_channels(t, fixture);
-			expect(insertDirty).toMatchObject({ channelKey: "same-ms-meeting", queuedAt: now, updatedAt: now });
-			if (!insertDirty) {
-				throw new Error("Expected the inserted meeting to be dirty");
-			}
 
-			// Simulate a feed pass that advanced over the insert. The patch below keeps the document's
-			// older creation time and the same updatedAt, so only the exact dirty write can preserve it.
-			await t.run((ctx) => ctx.db.delete("plugins_data_projection_dirty_channels", insertDirty._id));
-			const patched = await t.mutation(internal.plugins_data.write_versioned_document, {
-				principal,
-				collection: "meetings",
-				key: "same-ms-meeting",
-				revision: 2,
-				value: { title: "Second" },
-			});
-			expect(patched._nay).toBeUndefined();
-			const [patchDirty] = await read_dirty_channels(t, fixture);
-			expect(patchDirty).toMatchObject({ channelKey: "same-ms-meeting", queuedAt: now, updatedAt: now });
+		const written = await t.mutation(internal.plugins_data.write_versioned_document, {
+			principal,
+			collection: "meetings",
+			key: "same-ms-meeting",
+			revision: 1,
+			value: { title: "First" },
+		});
+		expect(written._nay).toBeUndefined();
+		const patched = await t.mutation(internal.plugins_data.write_versioned_document, {
+			principal,
+			collection: "meetings",
+			key: "same-ms-meeting",
+			revision: 2,
+			value: { title: "Second" },
+		});
+		expect(patched._nay).toBeUndefined();
+		const deleted = await t.mutation(internal.plugins_data.delete_versioned_document, {
+			principal,
+			collection: "meetings",
+			key: "same-ms-meeting",
+			revision: 3,
+		});
+		expect(deleted._yay?.deleted).toBe(true);
 
-			const deleted = await t.mutation(internal.plugins_data.delete_versioned_document, {
-				principal,
-				collection: "meetings",
-				key: "same-ms-meeting",
-				revision: 3,
-			});
-			expect(deleted._yay?.deleted).toBe(true);
-			const [deleteDirty] = await read_dirty_channels(t, fixture);
-			expect(deleteDirty?.queuedAt).toBe(patchDirty?.queuedAt);
-			expect(deleteDirty?.updatedAt).toBeGreaterThan(patchDirty?.updatedAt ?? now);
-			const jobsAfterDelete = await t.run(
-				async (ctx) => (await ctx.db.system.query("_scheduled_functions").collect()).length,
-			);
-
-			const replayed = await t.mutation(internal.plugins_data.delete_versioned_document, {
-				principal,
-				collection: "meetings",
-				key: "same-ms-meeting",
-				revision: 3,
-			});
-			expect(replayed._yay).toEqual({ deleted: false, revision: 3 });
-			const absent = await t.mutation(internal.plugins_data.delete_versioned_document, {
-				principal,
-				collection: "meetings",
-				key: "never-stored",
-				revision: 1,
-			});
-			expect(absent._yay).toEqual({ deleted: false, revision: 1 });
-
-			// A replay or a tombstone-only delete did not change a stored value, so neither may add work.
-			expect(await read_dirty_channels(t, fixture)).toEqual([deleteDirty]);
-			expect(await t.run(async (ctx) => (await ctx.db.system.query("_scheduled_functions").collect()).length)).toBe(
-				jobsAfterDelete,
-			);
-		} finally {
-			dateNow.mockRestore();
-		}
+		// The producer resent the delete because it never saw the answer. Same answer, no second delete.
+		const replayed = await t.mutation(internal.plugins_data.delete_versioned_document, {
+			principal,
+			collection: "meetings",
+			key: "same-ms-meeting",
+			revision: 3,
+		});
+		expect(replayed._yay).toEqual({ deleted: false, revision: 3 });
+		const absent = await t.mutation(internal.plugins_data.delete_versioned_document, {
+			principal,
+			collection: "meetings",
+			key: "never-stored",
+			revision: 1,
+		});
+		expect(absent._yay).toEqual({ deleted: false, revision: 1 });
 	});
 
 	test("binds the key to its producer and keeps every other writer out", async () => {
@@ -4998,102 +4905,6 @@ describe("user_append_document", () => {
 });
 
 describe("user_put_document", () => {
-	test("marks exact Chitchat channels but ignores private read cursors", async () => {
-		const t = test_convex();
-		const fixture = await seed_user_write_door(t, { clerkUserId: "door-chitchat-projection" });
-		await t.run((ctx) =>
-			ctx.db.patch("plugins_workspace_installations", fixture.installationId, { pluginName: "chitchat" }),
-		);
-		const now = Date.now();
-		const dateNow = vi.spyOn(Date, "now").mockReturnValue(now);
-		try {
-			const publicPut = await fixture.asPage.mutation(api.plugins_data.user_put_document, {
-				collection: "messages",
-				key: "general:message-1",
-				value: { text: "public" },
-			});
-			expect(publicPut._nay).toBeUndefined();
-			const publicDirty = (await read_dirty_channels(t, fixture)).find((row) => row.channelKey === "general");
-			expect(publicDirty).toMatchObject({ queuedAt: now, updatedAt: now });
-
-			const publicDelete = await fixture.asPage.mutation(api.plugins_data.user_remove_document, {
-				collection: "messages",
-				key: "general:message-1",
-			});
-			expect(publicDelete._yay?.deleted).toBe(true);
-			const publicAfterDelete = (await read_dirty_channels(t, fixture)).find((row) => row.channelKey === "general");
-			expect(publicAfterDelete?.updatedAt).toBeGreaterThan(publicDirty?.updatedAt ?? now);
-
-			const scopeId = "p/direct-dirty-private";
-			const created = await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
-				action: {
-					kind: "create_with_document",
-					scopeId,
-					collections: ["channels", "messages", "replies", "reactions"],
-					keyPrefix: scopeId,
-					principals: [],
-					document: {
-						collection: "channels",
-						key: scopeId,
-						value: { name: "private", topic: null, archivedAt: null },
-					},
-				},
-			});
-			expect(created._nay).toBeUndefined();
-
-			const privatePut = await fixture.asPage.mutation(api.plugins_data.user_put_document, {
-				collection: "messages",
-				key: `${scopeId}:message-1`,
-				value: { text: "private" },
-			});
-			expect(privatePut._nay).toBeUndefined();
-			const privateDirty = (await read_dirty_channels(t, fixture)).find((row) => row.channelKey === scopeId);
-			expect(privateDirty?.updatedAt).toBeGreaterThanOrEqual(now);
-
-			const jobsBeforeCursor = await t.run(
-				async (ctx) => (await ctx.db.system.query("_scheduled_functions").collect()).length,
-			);
-			const readKey = `${scopeId}:read:${fixture.userId}`;
-			const cursorPut = await fixture.asPage.mutation(api.plugins_data.user_put_document, {
-				collection: "channels",
-				key: readKey,
-				value: { readAt: now },
-			});
-			expect(cursorPut._nay).toBeUndefined();
-			const privateAfterCursorPut = (await read_dirty_channels(t, fixture)).find((row) => row.channelKey === scopeId);
-			expect(privateAfterCursorPut?.updatedAt).toBe(privateDirty?.updatedAt);
-
-			const cursorDelete = await fixture.asPage.mutation(api.plugins_data.user_remove_document, {
-				collection: "channels",
-				key: readKey,
-			});
-			expect(cursorDelete._yay?.deleted).toBe(true);
-			const afterCursorDelete = await t.run(async (ctx) => ({
-				dirty: await ctx.db
-					.query("plugins_data_projection_dirty_channels")
-					.withIndex("by_installation_channelKey", (q) =>
-						q.eq("installationId", fixture.installationId).eq("channelKey", scopeId),
-					)
-					.unique(),
-				jobCount: (await ctx.db.system.query("_scheduled_functions").collect()).length,
-			}));
-			expect(afterCursorDelete.dirty?.updatedAt).toBe(privateDirty?.updatedAt);
-			expect(afterCursorDelete.jobCount).toBe(jobsBeforeCursor);
-
-			const privateDelete = await fixture.asPage.mutation(api.plugins_data.user_remove_document, {
-				collection: "messages",
-				key: `${scopeId}:message-1`,
-			});
-			expect(privateDelete._yay?.deleted).toBe(true);
-			const privateAfterContentDelete = (await read_dirty_channels(t, fixture)).find(
-				(row) => row.channelKey === scopeId,
-			);
-			expect(privateAfterContentDelete?.updatedAt).toBeGreaterThan(privateDirty?.updatedAt ?? now);
-		} finally {
-			dateNow.mockRestore();
-		}
-	});
-
 	test("creates shared docs any member can change, and guards owned docs by creator", async () => {
 		const t = test_convex();
 		const fixture = await seed_user_write_door(t);
@@ -7637,17 +7448,17 @@ describe("per-member capacity", () => {
 		}
 
 		// The grant carries the member whose page token was exchanged for it, and that field is kept
-		// for audit only. Charging by it would bill a whole backend projection to one member and lock
-		// them out of a plugin every other member keeps writing to.
+		// for audit only. Charging by it would bill a backend's whole write stream to one member and
+		// lock them out of a plugin every other member keeps writing to.
 		const written = await t.fetch("/api/v1/plugin-data/write", {
 			method: "POST",
 			headers: service_headers(granted._yay.token),
-			body: JSON.stringify({ collection: "meetings", key: "projection", value: { n: 1 } }),
+			body: JSON.stringify({ collection: "meetings", key: "machine-note", value: { n: 1 } }),
 		});
 		expect(written.status).toBe(200);
 
 		const stored = await read_documents(t, fixture);
-		expect(stored[0]).toMatchObject({ key: "projection", machineBytes: 7 });
+		expect(stored[0]).toMatchObject({ key: "machine-note", machineBytes: 7 });
 		expect(stored[0]?.chargedTo).toBeUndefined();
 		expect(await read_member_usage(t, fixture, fixture.userId)).toBeNull();
 	});
@@ -7868,10 +7679,9 @@ describe("plugins_data_db_drain_batch", () => {
 			});
 		}
 
-		// Five projected documents leave one deduped dirty channel and one usage doc: one pass for
-		// each table, then one that finds nothing left.
+		// Five documents and one usage doc: one pass for each table, then one that finds nothing left.
 		const passes = await drain_until_done(t, fixture);
-		expect(passes).toBe(4);
+		expect(passes).toBe(3);
 		expect(await read_all_store_tables(t, fixture)).toEqual({
 			documents: 0,
 			reservations: 0,
@@ -7934,122 +7744,77 @@ describe("plugins_data_db_drain_batch", () => {
 		});
 	});
 
-	test("drains resumable Chitchat build children before their build and projection state", async () => {
-		const t = test_convex({ transactionLimits: { bytesRead: 1_000_000 } });
+	test("deletes file access binding rows but keeps the mirrored file grants", async () => {
+		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const seeded = await t.run(async (ctx) => {
+		const nodeId = await t.run(async (ctx) => {
 			const now = Date.now();
-			const stateId = await ctx.db.insert("plugins_data_projection_states", {
+			const insertedNodeId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.workspaceId,
-				installationId: fixture.installationId,
-				pluginName: "chitchat",
-				writerUserId: fixture.userId,
-				cursors: {},
-				syncGeneration: 1,
-				dirty: false,
-				updatedAt: now,
-			});
-			const buildId = await ctx.db.insert("plugins_data_projection_chitchat_builds", {
-				organizationId: fixture.organizationId,
-				workspaceId: fixture.workspaceId,
-				installationId: fixture.installationId,
-				lifecycleStateId: stateId,
-				channelKey: "general",
-				dirtyUpdatedAt: now,
-				channelName: "general",
-				topic: null,
-				isPrivate: false,
-				slug: "general",
-				header: "# general\n",
-				phase: "scan_messages",
-				outputFileIndex: 0,
-				publishedFiles: [],
-				createdAt: now,
-				updatedAt: now,
-			});
-			const itemId = await ctx.db.insert("plugins_data_projection_chitchat_items", {
-				organizationId: fixture.organizationId,
-				workspaceId: fixture.workspaceId,
-				installationId: fixture.installationId,
-				buildId,
-				collection: "messages",
-				key: "general:message-1",
-				createdAt: now,
 				createdBy: fixture.userId,
-				text: "hello",
-				attachments: [],
-				editedAt: null,
-				deletedAt: null,
+				updatedBy: fixture.userId,
+				kind: "file",
+				name: "frozen.md",
+				path: "/frozen.md",
+				treePath: "/frozen.md",
+				pathDepth: 1,
+				lowercaseExtension: "md",
+				pluginOwnerName: "council",
+				restrictedScopeNodeId: undefined,
+				updatedAt: now,
 			});
-			const reactionId = await ctx.db.insert("plugins_data_projection_chitchat_reactions", {
+			await ctx.db.insert("plugins_file_access_bindings", {
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.workspaceId,
 				installationId: fixture.installationId,
-				buildId,
-				key: "general:reaction-1",
-				targetKey: "general:message-1",
-				token: "thumbsup",
-				removed: false,
+				scopeId: "p/frozen",
+				nodeId: insertedNodeId,
+				updatedAt: now,
 			});
-			const authorId = await ctx.db.insert("plugins_data_projection_chitchat_authors", {
+			await ctx.db.insert("access_control_permission_grants", {
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.workspaceId,
-				installationId: fixture.installationId,
-				buildId,
+				resourceKind: "file",
+				resourceId: String(insertedNodeId),
+				principalKind: "user",
 				userId: fixture.userId,
-				label: "Alice",
-			});
-			const firstFileId = await ctx.db.insert("plugins_data_projection_chitchat_files", {
-				organizationId: fixture.organizationId,
-				workspaceId: fixture.workspaceId,
-				installationId: fixture.installationId,
-				buildId,
-				fileIndex: 0,
-				body: "a".repeat(400_000),
+				permission: "content.read",
+				createdAt: now,
 				updatedAt: now,
 			});
-			const secondFileId = await ctx.db.insert("plugins_data_projection_chitchat_files", {
-				organizationId: fixture.organizationId,
-				workspaceId: fixture.workspaceId,
-				installationId: fixture.installationId,
-				buildId,
-				fileIndex: 1,
-				body: "b".repeat(400_000),
-				updatedAt: now,
-			});
-			return { authorId, buildId, fileIds: [firstFileId, secondFileId], itemId, reactionId, stateId };
+			return insertedNodeId;
 		});
-		const pass = async () =>
-			await t.mutation(internal.plugins_data.drain_uninstalled_installation, {
-				organizationId: fixture.organizationId,
-				workspaceId: fixture.workspaceId,
-				installationId: fixture.installationId,
-				_test_disableReschedule: true,
-			});
 
-		expect(await pass()).toEqual({ done: false, deletedCount: 1 });
-		expect(await t.run((ctx) => ctx.db.get("plugins_data_projection_chitchat_items", seeded.itemId))).toBeNull();
-		expect(await pass()).toEqual({ done: false, deletedCount: 1 });
-		expect(
-			await t.run((ctx) => ctx.db.get("plugins_data_projection_chitchat_reactions", seeded.reactionId)),
-		).toBeNull();
-		expect(await pass()).toEqual({ done: false, deletedCount: 1 });
-		expect(await t.run((ctx) => ctx.db.get("plugins_data_projection_chitchat_authors", seeded.authorId))).toBeNull();
-		expect(await pass()).toEqual({ done: false, deletedCount: 1 });
-		expect(
-			await t.run(async (ctx) =>
-				Promise.all(seeded.fileIds.map((fileId) => ctx.db.get("plugins_data_projection_chitchat_files", fileId))),
-			),
-		).toEqual([null, expect.objectContaining({ fileIndex: 1 })]);
-		expect(await pass()).toEqual({ done: false, deletedCount: 1 });
-		expect(await t.run((ctx) => ctx.db.get("plugins_data_projection_chitchat_files", seeded.fileIds[1]!))).toBeNull();
-		expect(await pass()).toEqual({ done: false, deletedCount: 1 });
-		expect(await t.run((ctx) => ctx.db.get("plugins_data_projection_chitchat_builds", seeded.buildId))).toBeNull();
-		expect(await t.run((ctx) => ctx.db.get("plugins_data_projection_states", seeded.stateId))).not.toBeNull();
-		expect(await pass()).toEqual({ done: false, deletedCount: 1 });
-		expect(await t.run((ctx) => ctx.db.get("plugins_data_projection_states", seeded.stateId))).toBeNull();
-		expect(await pass()).toEqual({ done: true, deletedCount: 0 });
+		await drain_until_done(t, fixture);
+
+		// The binding row belongs to the plugin and goes with it. The mirrored grant stays: the
+		// frozen file outlives the plugin.
+		const after = await t.run(async (ctx) => ({
+			bindings: await ctx.db
+				.query("plugins_file_access_bindings")
+				.withIndex("by_organization_workspace_installation", (q) =>
+					q
+						.eq("organizationId", fixture.organizationId)
+						.eq("workspaceId", fixture.workspaceId)
+						.eq("installationId", fixture.installationId),
+				)
+				.collect(),
+			grants: await ctx.db
+				.query("access_control_permission_grants")
+				.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+					q
+						.eq("organizationId", fixture.organizationId)
+						.eq("workspaceId", fixture.workspaceId)
+						.eq("resourceKind", "file")
+						.eq("resourceId", String(nodeId))
+						.eq("principalKind", "user"),
+				)
+				.collect(),
+		}));
+		expect(after.bindings).toEqual([]);
+		expect(after.grants).toHaveLength(1);
 	});
 
 	test("drains scope grants, live scope docs, and released fences in bounded fail-closed passes", async () => {
@@ -8579,6 +8344,40 @@ describe("plugins_data_db_count_installation_docs", () => {
 		await mint_service_grant(t, fixture);
 
 		expect(await count(t, fixture)).toMatchObject({ serviceGrants: 2, serviceGrantsTruncated: false });
+	});
+
+	test("counts file access binding rows for the deletion preview", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			for (let index = 0; index < 2; index += 1) {
+				const nodeId = await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					createdBy: fixture.userId,
+					updatedBy: fixture.userId,
+					kind: "file",
+					name: `bound-${index}.md`,
+					path: `/bound-${index}.md`,
+					treePath: `/bound-${index}.md`,
+					pathDepth: 1,
+					lowercaseExtension: "md",
+					updatedAt: now,
+				});
+				await ctx.db.insert("plugins_file_access_bindings", {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					installationId: fixture.installationId,
+					scopeId: `p/bound-${index}`,
+					nodeId,
+					updatedAt: now,
+				});
+			}
+		});
+
+		expect(await count(t, fixture)).toMatchObject({ fileAccessBindings: 2, fileAccessBindingsTruncated: false });
 	});
 
 	test("bounds member usage rows instead of collecting the whole workspace", async () => {
@@ -11162,10 +10961,9 @@ describe("user_manage_scope", () => {
 		).toEqual([]);
 	});
 
-	test("zero-grant cleanup writes the release fence and marks the live projection dirty", async () => {
+	test("zero-grant cleanup writes the release fence", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const beforeUpdatedAt = 10;
 		await t.run(async (ctx) => {
 			const now = Date.now();
 			await ctx.db.insert("plugins_data_scopes", {
@@ -11179,14 +10977,6 @@ describe("user_manage_scope", () => {
 				createdAt: now,
 				updatedAt: now,
 			});
-			await ctx.db.insert("plugins_data_projection_dirty_channels", {
-				organizationId: fixture.organizationId,
-				workspaceId: fixture.workspaceId,
-				installationId: fixture.installationId,
-				channelKey: "stranded",
-				updatedAt: beforeUpdatedAt,
-				queuedAt: beforeUpdatedAt,
-			});
 		});
 
 		await t.mutation(internal.plugins_data.cleanup_stranded_scopes, {
@@ -11196,19 +10986,12 @@ describe("user_manage_scope", () => {
 		const state = await t.run(async (ctx) => ({
 			scopes: await ctx.db.query("plugins_data_scopes").collect(),
 			fences: await ctx.db.query("plugins_data_released_scope_ranges").collect(),
-			dirty: await ctx.db
-				.query("plugins_data_projection_dirty_channels")
-				.withIndex("by_installation_channelKey", (q) =>
-					q.eq("installationId", fixture.installationId).eq("channelKey", "stranded"),
-				)
-				.first(),
 		}));
 		expect(state.scopes).toEqual([]);
 		expect(state.fences).toHaveLength(2);
-		expect(state.dirty?.updatedAt).toBeGreaterThan(beforeUpdatedAt);
 	});
 
-	test("zero-grant cleanup skips fences and projection work after the installation is gone", async () => {
+	test("zero-grant cleanup skips fences after the installation is gone", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		await t.run(async (ctx) => {
@@ -11234,9 +11017,341 @@ describe("user_manage_scope", () => {
 			await t.run(async (ctx) => ({
 				scopes: await ctx.db.query("plugins_data_scopes").collect(),
 				fences: await ctx.db.query("plugins_data_released_scope_ranges").collect(),
-				dirty: await ctx.db.query("plugins_data_projection_dirty_channels").collect(),
 			})),
-		).toEqual({ scopes: [], fences: [], dirty: [] });
+		).toEqual({ scopes: [], fences: [] });
+	});
+});
+
+/**
+ * Rename the seeded plugin to a name no shipped plugin uses, so a binding sync that silently
+ * special-cased a known plugin name would pass a `council` fixture and fail every real caller.
+ */
+async function seed_binding_fixture(t: ReturnType<typeof test_convex>, args: { clerkUserId: string }) {
+	const fixture = await seed_user_write_door(t, { clerkUserId: args.clerkUserId });
+	await t.run(async (ctx) => {
+		await ctx.db.patch("plugins_workspace_installations", fixture.installationId, { pluginName: "data-probe" });
+	});
+	return fixture;
+}
+
+async function insert_stamped_node(
+	t: ReturnType<typeof test_convex>,
+	fixture: Awaited<ReturnType<typeof seed_binding_fixture>>,
+	args: { name: string; kind: "file" | "folder"; parentId?: Id<"files_nodes">; parentPath?: string },
+) {
+	return await t.run(async (ctx) => {
+		const path = `${args.parentPath ?? ""}/${args.name}`;
+		return await ctx.db.insert("files_nodes", {
+			...test_mocks.files.base(),
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.workspaceId,
+			parentId: args.parentId ?? files_ROOT_ID,
+			createdBy: fixture.userId,
+			updatedBy: fixture.userId,
+			kind: args.kind,
+			name: args.name,
+			path,
+			treePath: args.kind === "folder" ? `${path}/` : path,
+			pathDepth: path.split("/").length - 1,
+			lowercaseExtension: args.kind === "file" ? "md" : null,
+			pluginOwnerName: "data-probe",
+			updatedAt: Date.now(),
+		});
+	});
+}
+
+async function apply_binding(
+	t: ReturnType<typeof test_convex>,
+	fixture: Awaited<ReturnType<typeof seed_binding_fixture>>,
+	args: { nodeId: Id<"files_nodes">; readScopeId: string | null },
+) {
+	return await t.run(async (ctx) => {
+		const installation = await ctx.db.get("plugins_workspace_installations", fixture.installationId);
+		const node = await ctx.db.get("files_nodes", args.nodeId);
+		if (!installation || !node) {
+			throw new Error("Binding fixture rows are missing");
+		}
+		return await plugins_data_db_apply_file_access_binding(ctx, {
+			installation,
+			node,
+			readScopeId: args.readScopeId,
+		});
+	});
+}
+
+async function read_node_read_grants(
+	t: ReturnType<typeof test_convex>,
+	fixture: Awaited<ReturnType<typeof seed_binding_fixture>>,
+	nodeId: Id<"files_nodes">,
+) {
+	return await t.run(async (ctx) =>
+		(
+			await ctx.db
+				.query("access_control_permission_grants")
+				.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+					q
+						.eq("organizationId", fixture.organizationId)
+						.eq("workspaceId", fixture.workspaceId)
+						.eq("resourceKind", "file")
+						.eq("resourceId", String(nodeId))
+						.eq("principalKind", "user"),
+				)
+				.collect()
+		)
+			.map((grant) => `${grant.userId}:${grant.permission}`)
+			.sort(),
+	);
+}
+
+async function read_binding_rows(
+	t: ReturnType<typeof test_convex>,
+	fixture: Awaited<ReturnType<typeof seed_binding_fixture>>,
+) {
+	return await t.run(async (ctx) =>
+		ctx.db
+			.query("plugins_file_access_bindings")
+			.withIndex("by_organization_workspace_installation", (q) =>
+				q
+					.eq("organizationId", fixture.organizationId)
+					.eq("workspaceId", fixture.workspaceId)
+					.eq("installationId", fixture.installationId),
+			)
+			.collect(),
+	);
+}
+
+describe("plugins_data_db_apply_file_access_binding", () => {
+	test("binds a stamped folder to a live scope, mirrors member grants, and releases on null", async () => {
+		const t = test_convex();
+		const fixture = await seed_binding_fixture(t, { clerkUserId: "binding-owner" });
+		const bob = await join_member_with_role(t, fixture, { clerkUserId: "binding-bob", role: "member" });
+		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "create", scopeId: "p/room", collections: ["messages"], keyPrefix: "p/room" },
+		});
+		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "set_principal", scopeId: "p/room", userId: bob.userId, level: "member" },
+		});
+		const folderId = await insert_stamped_node(t, fixture, { name: "reports", kind: "folder" });
+		const childId = await insert_stamped_node(t, fixture, {
+			name: "notes.md",
+			kind: "file",
+			parentId: folderId,
+			parentPath: "/reports",
+		});
+
+		const bound = await apply_binding(t, fixture, { nodeId: folderId, readScopeId: "p/room" });
+		expect(bound._nay).toBeUndefined();
+		const afterBind = await t.run(async (ctx) => ({
+			folder: await ctx.db.get("files_nodes", folderId),
+			child: await ctx.db.get("files_nodes", childId),
+		}));
+		expect(afterBind.folder?.restrictedScopeNodeId).toBe(folderId);
+		// The restriction cascades, so the child answers reads through the folder's scope.
+		expect(afterBind.child?.restrictedScopeNodeId).toBe(folderId);
+		expect(await read_node_read_grants(t, fixture, folderId)).toEqual(
+			[`${fixture.userId}:content.read`, `${bob.userId}:content.read`].sort(),
+		);
+		expect(await read_binding_rows(t, fixture)).toMatchObject([{ scopeId: "p/room", nodeId: folderId }]);
+
+		// Re-applying the same binding is a no-op: the kept set leaves one grant per member.
+		const rebound = await apply_binding(t, fixture, { nodeId: folderId, readScopeId: "p/room" });
+		expect(rebound._nay).toBeUndefined();
+		expect(await read_node_read_grants(t, fixture, folderId)).toHaveLength(2);
+
+		const released = await apply_binding(t, fixture, { nodeId: folderId, readScopeId: null });
+		expect(released._nay).toBeUndefined();
+		expect(await read_binding_rows(t, fixture)).toEqual([]);
+		expect(await read_node_read_grants(t, fixture, folderId)).toEqual([]);
+		const afterRelease = await t.run(async (ctx) => ({
+			folder: await ctx.db.get("files_nodes", folderId),
+			child: await ctx.db.get("files_nodes", childId),
+		}));
+		expect(afterRelease.folder?.restrictedScopeNodeId).toBeUndefined();
+		expect(afterRelease.child?.restrictedScopeNodeId).toBeUndefined();
+	});
+
+	test("refuses a dead scope and caps bound nodes per scope at four", async () => {
+		const t = test_convex();
+		const fixture = await seed_binding_fixture(t, { clerkUserId: "binding-cap-owner" });
+		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "create", scopeId: "p/cap", collections: ["messages"], keyPrefix: "p/cap" },
+		});
+		const nodeIds: Id<"files_nodes">[] = [];
+		for (let index = 0; index < 5; index += 1) {
+			nodeIds.push(await insert_stamped_node(t, fixture, { name: `bound-${index}.md`, kind: "file" }));
+		}
+
+		const dead = await apply_binding(t, fixture, { nodeId: nodeIds[0]!, readScopeId: "p/ghost" });
+		expect(dead._nay?.message).toBe("Not found");
+
+		for (const nodeId of nodeIds.slice(0, 4)) {
+			expect((await apply_binding(t, fixture, { nodeId, readScopeId: "p/cap" }))._nay).toBeUndefined();
+		}
+		const fifth = await apply_binding(t, fixture, { nodeId: nodeIds[4]!, readScopeId: "p/cap" });
+		expect(fifth._nay?.message).toBe("One private space can be bound to at most 4 files or folders.");
+		// A node already bound to the scope is not a fifth binding, so re-applying it still works.
+		expect((await apply_binding(t, fixture, { nodeId: nodeIds[3]!, readScopeId: "p/cap" }))._nay).toBeUndefined();
+		expect(await read_binding_rows(t, fixture)).toHaveLength(4);
+	});
+});
+
+describe("plugins_data_db_sync_file_access_bindings", () => {
+	test("membership changes sync mirrored grants for any plugin with bindings", async () => {
+		const t = test_convex();
+		const fixture = await seed_binding_fixture(t, { clerkUserId: "binding-sync-owner" });
+		const bob = await join_member_with_role(t, fixture, { clerkUserId: "binding-sync-bob", role: "member" });
+		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "create", scopeId: "p/sync", collections: ["messages"], keyPrefix: "p/sync" },
+		});
+		const nodeId = await insert_stamped_node(t, fixture, { name: "synced.md", kind: "file" });
+		expect((await apply_binding(t, fixture, { nodeId, readScopeId: "p/sync" }))._nay).toBeUndefined();
+		expect(await read_node_read_grants(t, fixture, nodeId)).toEqual([`${fixture.userId}:content.read`]);
+
+		// Adding a principal mirrors a grant onto the bound file in the same mutation.
+		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "set_principal", scopeId: "p/sync", userId: bob.userId, level: "member" },
+		});
+		expect(await read_node_read_grants(t, fixture, nodeId)).toEqual(
+			[`${fixture.userId}:content.read`, `${bob.userId}:content.read`].sort(),
+		);
+
+		// Removing the principal takes the mirrored grant back.
+		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "remove_principal", scopeId: "p/sync", userId: bob.userId },
+		});
+		expect(await read_node_read_grants(t, fixture, nodeId)).toEqual([`${fixture.userId}:content.read`]);
+
+		// Self-leave walks a different branch of the same mutation and must sync too.
+		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "set_principal", scopeId: "p/sync", userId: bob.userId, level: "member" },
+		});
+		await bob.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "remove_principal", scopeId: "p/sync", userId: bob.userId },
+		});
+		expect(await read_node_read_grants(t, fixture, nodeId)).toEqual([`${fixture.userId}:content.read`]);
+
+		// A scope with no binding changes no file grants.
+		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "create", scopeId: "p/unbound", collections: ["messages"], keyPrefix: "p/unbound" },
+		});
+		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "set_principal", scopeId: "p/unbound", userId: bob.userId, level: "member" },
+		});
+		expect(await read_node_read_grants(t, fixture, nodeId)).toEqual([`${fixture.userId}:content.read`]);
+	});
+
+	test("scope delete removes the binding and every mirrored grant but keeps the node restricted", async () => {
+		const t = test_convex();
+		const fixture = await seed_binding_fixture(t, { clerkUserId: "binding-delete-owner" });
+		const bob = await join_member_with_role(t, fixture, { clerkUserId: "binding-delete-bob", role: "member" });
+		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "create", scopeId: "p/gone", collections: ["messages"], keyPrefix: "p/gone" },
+		});
+		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "set_principal", scopeId: "p/gone", userId: bob.userId, level: "member" },
+		});
+		const nodeId = await insert_stamped_node(t, fixture, { name: "frozen.md", kind: "file" });
+		expect((await apply_binding(t, fixture, { nodeId, readScopeId: "p/gone" }))._nay).toBeUndefined();
+		expect(await read_node_read_grants(t, fixture, nodeId)).toHaveLength(2);
+
+		const deleted = await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "delete", scopeId: "p/gone" },
+		});
+		expect(deleted._nay).toBeUndefined();
+
+		expect(await read_node_read_grants(t, fixture, nodeId)).toEqual([]);
+		expect(await read_binding_rows(t, fixture)).toEqual([]);
+		// The reader list is gone, so the node fails closed: restricted with zero readers.
+		expect(await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))?.restrictedScopeNodeId)).toBe(nodeId);
+	});
+
+	test("account deletion teardown clears bound-file grants through cleanup_stranded_scopes", async () => {
+		const t = test_convex();
+		const fixture = await seed_binding_fixture(t, { clerkUserId: "binding-stranded-owner" });
+		const bob = await join_member_with_role(t, fixture, { clerkUserId: "binding-stranded-bob", role: "member" });
+		await bob.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "create", scopeId: "p/stranded", collections: ["messages"], keyPrefix: "p/stranded" },
+		});
+		const nodeId = await insert_stamped_node(t, fixture, { name: "stranded.md", kind: "file" });
+		expect((await apply_binding(t, fixture, { nodeId, readScopeId: "p/stranded" }))._nay).toBeUndefined();
+		expect(await read_node_read_grants(t, fixture, nodeId)).toEqual([`${bob.userId}:content.read`]);
+
+		// Account deletion deactivates the membership, deletes the member's scope grants, and then
+		// schedules this cleanup. The cleanup is the only code left that can drop the mirrored
+		// file grant, so this test hands it the same starting state.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("organizations_workspaces_users", bob.membershipId, {
+				active: false,
+				pendingOrganizationRemoval: true,
+				updatedAt: Date.now(),
+			});
+			const grants = await ctx.db
+				.query("access_control_permission_grants")
+				.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+					q
+						.eq("organizationId", fixture.organizationId)
+						.eq("workspaceId", fixture.workspaceId)
+						.eq("resourceKind", "plugin_scope")
+						.eq("resourceId", `${fixture.installationId}:p/stranded`)
+						.eq("principalKind", "user")
+						.eq("userId", bob.userId),
+				)
+				.collect();
+			await Promise.all(grants.map((grant) => ctx.db.delete("access_control_permission_grants", grant._id)));
+		});
+		await t.mutation(internal.plugins_data.cleanup_stranded_scopes, {
+			scopes: [{ installationId: fixture.installationId, scopeId: "p/stranded" }],
+		});
+
+		expect(await read_node_read_grants(t, fixture, nodeId)).toEqual([]);
+		expect(await read_binding_rows(t, fixture)).toEqual([]);
+		expect(await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))?.restrictedScopeNodeId)).toBe(nodeId);
+	});
+
+	test("organization member drain teardown removes grants for every bound member", async () => {
+		const t = test_convex();
+		const fixture = await seed_binding_fixture(t, { clerkUserId: "binding-org-owner" });
+		const bob = await join_member_with_role(t, fixture, { clerkUserId: "binding-org-bob", role: "member" });
+		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "create", scopeId: "p/org-gone", collections: ["messages"], keyPrefix: "p/org-gone" },
+		});
+		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "set_principal", scopeId: "p/org-gone", userId: bob.userId, level: "member" },
+		});
+		const nodeId = await insert_stamped_node(t, fixture, { name: "org-gone.md", kind: "file" });
+		expect((await apply_binding(t, fixture, { nodeId, readScopeId: "p/org-gone" }))._nay).toBeUndefined();
+		expect(await read_node_read_grants(t, fixture, nodeId)).toHaveLength(2);
+
+		// Organization deletion drains every membership and every grant, then schedules the same
+		// cleanup. With no member left the teardown must remove ALL mirrored grants, not just one
+		// departing user's.
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			for (const membershipId of [fixture.membershipId, bob.membershipId]) {
+				await ctx.db.patch("organizations_workspaces_users", membershipId, {
+					active: false,
+					pendingOrganizationRemoval: true,
+					updatedAt: now,
+				});
+			}
+			const grants = await ctx.db
+				.query("access_control_permission_grants")
+				.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+					q
+						.eq("organizationId", fixture.organizationId)
+						.eq("workspaceId", fixture.workspaceId)
+						.eq("resourceKind", "plugin_scope")
+						.eq("resourceId", `${fixture.installationId}:p/org-gone`),
+				)
+				.collect();
+			await Promise.all(grants.map((grant) => ctx.db.delete("access_control_permission_grants", grant._id)));
+		});
+		await t.mutation(internal.plugins_data.cleanup_stranded_scopes, {
+			scopes: [{ installationId: fixture.installationId, scopeId: "p/org-gone" }],
+		});
+
+		expect(await read_node_read_grants(t, fixture, nodeId)).toEqual([]);
+		expect(await read_binding_rows(t, fixture)).toEqual([]);
 	});
 });
 

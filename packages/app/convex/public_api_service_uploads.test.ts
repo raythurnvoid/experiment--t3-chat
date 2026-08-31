@@ -20,11 +20,11 @@ const DELETE_PATH = "/api/v1/files/service-uploads/delete";
 const ARCHIVE_PATH = "/api/v1/files/service-uploads/archive-destination";
 
 /** The value `setup-env.test.ts` puts in the environment for the whole convex project. */
-const EXCHANGE_SECRET = "COUNCIL_SERVICE_EXCHANGE_SECRET_TEST";
+const EXCHANGE_SECRET = "SERVICE_EXCHANGE_SECRET_TEST";
 
 const MIB = 1024 * 1024;
 
-const COUNCIL_CAPABILITIES: plugins_Capability[] = [
+const SERVICE_CAPABILITIES: plugins_Capability[] = [
 	"plugin.service.connect",
 	"plugin.data.read",
 	"plugin.data.write",
@@ -53,7 +53,7 @@ async function seed_installation(
 			...(args.workspaceName === undefined ? {} : { workspaceName: args.workspaceName }),
 			plan: args.plan,
 		});
-		const capabilities = args.acceptedCapabilities ?? COUNCIL_CAPABILITIES;
+		const capabilities = args.acceptedCapabilities ?? SERVICE_CAPABILITIES;
 		const pluginName = "council";
 		const pluginVersionId = await ctx.db.insert("plugins_versions", {
 			name: pluginName,
@@ -97,6 +97,14 @@ async function seed_installation(
 			outboundOriginsAcceptedAt: now,
 			installedBy: membership.userId,
 			updatedBy: membership.userId,
+			updatedAt: now,
+		});
+		// The exchange proves the presented service secret against the plugin's registration row.
+		await ctx.db.insert("plugins_service_registrations", {
+			pluginName,
+			exchangeSecretHash: await crypto_sha256_hex(EXCHANGE_SECRET),
+			scopes: ["plugin_data:read", "plugin_data:write", "files:write"],
+			createdBy: membership.userId,
 			updatedAt: now,
 		});
 		return { ...membership, pluginVersionId, installationId } as const;
@@ -225,6 +233,20 @@ async function set_quota_used(
 
 async function read_targets(t: ReturnType<typeof test_convex>) {
 	return await t.run(async (ctx) => await ctx.db.query("plugin_service_storage_targets").collect());
+}
+
+/** The fixture payer is anonymous, so every billing charge lands on this snapshot meter. */
+async function read_meter(t: ReturnType<typeof test_convex>, fixture: Awaited<ReturnType<typeof seed_installation>>) {
+	return await t.run(async (ctx) => {
+		const snapshot = await ctx.db
+			.query("billing_usage_snapshots")
+			.withIndex("by_user", (q) => q.eq("userId", fixture.userId))
+			.first();
+		if (!snapshot?.meter) {
+			throw new Error("Expected a seeded usage snapshot");
+		}
+		return snapshot.meter;
+	});
 }
 
 /**
@@ -734,6 +756,7 @@ describe("service upload quota", () => {
 		// instead of refusing them: the quota is a budget, not a guard.
 		const ceiling = (await read_quota(t, fixture))!.maxCount;
 		await set_quota_used(t, fixture, ceiling - 1);
+		const meterBefore = await read_meter(t, fixture);
 		const canonicalKey = await simulate_finalizer(t, fixture, target, { size: 6 * MIB });
 
 		// The R2 event owns settlement. The service does not need to make another API call for the
@@ -744,9 +767,11 @@ describe("service upload quota", () => {
 			size: 6 * MIB,
 		});
 		expect((await read_quota(t, fixture))?.usedCount).toBe(ceiling - 1 + 6 * MIB);
+		const meterSettled = await read_meter(t, fixture);
+		expect(meterSettled.balance).toBe(meterBefore.balance - 1);
 
 		// A later event can only describe the mutable staging object. It must not change the immutable
-		// canonical size or charge the target again.
+		// canonical size or charge the target again, in bytes or in money.
 		await simulate_finalizer(t, fixture, target, { size: 9 * MIB });
 		expect((await read_targets(t))[0]).toMatchObject({ state: "committed", actualBytes: 6 * MIB });
 		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId))).toMatchObject({
@@ -754,6 +779,7 @@ describe("service upload quota", () => {
 			size: 6 * MIB,
 		});
 		expect((await read_quota(t, fixture))?.usedCount).toBe(ceiling - 1 + 6 * MIB);
+		expect(await read_meter(t, fixture)).toEqual(meterSettled);
 
 		const settled = await call(t, FINALIZE_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" });
 		expect(settled.status).toBe(200);
@@ -908,7 +934,7 @@ describe("service upload targets", () => {
 		const sealed = await seal_token(t, fixture);
 		await t.run(async (ctx) => {
 			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
-				acceptedCapabilities: COUNCIL_CAPABILITIES.filter(
+				acceptedCapabilities: SERVICE_CAPABILITIES.filter(
 					(capability) => capability !== "workspace.files.create-read-only",
 				),
 			});
@@ -919,7 +945,7 @@ describe("service upload targets", () => {
 
 		await t.run(async (ctx) => {
 			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
-				acceptedCapabilities: COUNCIL_CAPABILITIES,
+				acceptedCapabilities: SERVICE_CAPABILITIES,
 			});
 		});
 		const memberUserId = await t.run(async (ctx) => {
@@ -1168,6 +1194,7 @@ describe("service upload targets", () => {
 
 		// The finalizer confirms a 3 MiB object against a 4 MiB declaration.
 		const target = (await read_targets(t))[0]!;
+		const meterBefore = await read_meter(t, fixture);
 		await simulate_finalizer(t, fixture, target, { size: 3 * MIB });
 
 		const settled = await call(t, FINALIZE_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" });
@@ -1178,16 +1205,45 @@ describe("service upload targets", () => {
 		// books; only what R2 confirmed does.
 		expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
 
-		// A finalize replay answers the same and moves no bytes.
+		// The commit also billed one file save. The anonymous meter stores no externalId, so the
+		// event's externalId grammar is pinned in billing.test.ts instead.
+		const meterSettled = await read_meter(t, fixture);
+		expect(meterSettled.balance).toBe(meterBefore.balance - 1);
+		expect(meterSettled.consumedUnits).toBe(meterBefore.consumedUnits + 1);
+
+		// A finalize replay answers the same, moves no bytes, and charges nothing again.
 		const replay = await call(t, FINALIZE_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" });
 		expect(replay.status).toBe(200);
 		expect(await replay.json()).toMatchObject({ state: "committed", actualBytes: 3 * MIB });
 		expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
+		expect(await read_meter(t, fixture)).toEqual(meterSettled);
 
 		// Remint after canonicalization also answers committed instead of minting a useless URL.
 		const remint = await call(t, REMINT_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" });
 		expect(remint.status).toBe(200);
 		expect(await remint.json()).toMatchObject({ state: "committed", actualBytes: 3 * MIB });
+	});
+
+	test("a purged payer makes the R2 settlement reject instead of committing for free", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture);
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
+		const target = (await read_targets(t))[0]!;
+
+		// Deleting the payer between create-target and the R2 event models a purge race. The billing
+		// emit throws, which rolls back the whole settlement so the R2 event retries instead of
+		// committing a save nobody paid for.
+		await t.run(async (ctx) => {
+			await ctx.db.delete("users", fixture.userId);
+		});
+
+		await expect(simulate_finalizer(t, fixture, target, { size: 3 * MIB })).rejects.toThrow(
+			"billedUserId points to a missing users doc",
+		);
+
+		expect((await read_targets(t))[0]).toMatchObject({ state: "pending", actualBytes: null });
+		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
 	});
 
 	test("deleting the stored object retires the target and keeps its bytes charged", async () => {
@@ -1428,7 +1484,7 @@ describe("service upload delete", () => {
 				pluginName: "council-other-installation",
 				status: "enabled",
 				configurationYaml: null,
-				acceptedCapabilities: COUNCIL_CAPABILITIES,
+				acceptedCapabilities: SERVICE_CAPABILITIES,
 				capabilitiesAcceptedAt: now,
 				acceptedOutboundOrigins: [],
 				acceptedUiOutboundOrigins: [],
@@ -1510,7 +1566,7 @@ describe("service upload delete", () => {
 		const target = (await read_targets(t))[0]!;
 		await t.run(async (ctx) => {
 			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
-				acceptedCapabilities: COUNCIL_CAPABILITIES.filter(
+				acceptedCapabilities: SERVICE_CAPABILITIES.filter(
 					(capability) => capability !== "workspace.files.create-read-only",
 				),
 			});
@@ -1882,6 +1938,7 @@ describe("service upload delete", () => {
 			nextAttemptAt: firstCanonicalJob.putMayArriveUntil,
 		});
 
+		const meterBefore = await read_meter(t, fixture);
 		await t.mutation(internal.r2.record_untracked_asset_event, {
 			bucket: asset.r2Bucket,
 			key: asset.uploadStagingR2Key,
@@ -1918,6 +1975,9 @@ describe("service upload delete", () => {
 		});
 		expect((await read_targets(t))[0]).toMatchObject({ state: "released", actualBytes: 8 * MIB });
 		expect((await read_quota(t, fixture))?.usedCount).toBe(8 * MIB);
+
+		// Late bytes on a released target never became a saved file, so no charge lands on the meter.
+		expect(await read_meter(t, fixture)).toEqual(meterBefore);
 	});
 
 	test("charges a late R2 object after the member discarded the pending placeholder", async () => {
@@ -1952,6 +2012,7 @@ describe("service upload delete", () => {
 		);
 		expect(canonicalJob?.putMayArriveUntil).toBeGreaterThan(Date.now());
 
+		const meterBefore = await read_meter(t, fixture);
 		await t.mutation(internal.r2.record_untracked_asset_event, {
 			bucket: asset.r2Bucket,
 			key: asset.uploadStagingR2Key,
@@ -1960,6 +2021,9 @@ describe("service upload delete", () => {
 		});
 		expect((await read_targets(t))[0]).toMatchObject({ state: "released", actualBytes: 6 * MIB });
 		expect((await read_quota(t, fixture))?.usedCount).toBe(6 * MIB);
+
+		// Late bytes on a released target never became a saved file, so no charge lands on the meter.
+		expect(await read_meter(t, fixture)).toEqual(meterBefore);
 	});
 
 	test("a read-only placeholder refuses the cancel and keeps the pending target", async () => {

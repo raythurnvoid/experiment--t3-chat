@@ -33,7 +33,9 @@ export default defineConfig({
 							// Vendored workspace packages must be inlined for tests,
 							// otherwise the runtime tries to execute raw `.ts` sources and fails with unknown extension errors.
 							// Keep this list as small as possible and scoped to the src test dependency graph.
-							inline: ["@tiptap/extension-collaboration"],
+							// `react-tweet` ships CSS imports the runtime cannot execute, and the browser
+							// extension-list test imports it through `novel`.
+							inline: ["@tiptap/extension-collaboration", "react-tweet"],
 						},
 					},
 				},

@@ -1,0 +1,10 @@
+@layer components {
+	.FileEditorRichTextToolsTable {
+		display: contents;
+	}
+
+	.FileEditorRichTextToolsTable .MyIconButtonIcon {
+		width: 20px;
+		height: 20px;
+	}
+}

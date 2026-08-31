@@ -38,18 +38,14 @@ export type files_EditorView = (typeof files_editor_view_values)[number];
  * and write keystrokes into a second root nobody reads. The plain (Monaco) and diff views are
  * valid for both shapes, so only the rich view is redirected.
  *
- * A file with collaboration turned off has no Yjs document at all. The rich text editor is built
- * on one, and the diff view compares a proposal against one, so both fall back to the plain text
- * editor, which edits an ordinary string.
+ * The document shape is the only clamp. A file with collaboration turned off supports every
+ * view its shape supports: the rich and diff editors for such a file are backed by the stored
+ * string instead of a Yjs document.
  */
 export function files_resolve_effective_editor_view(args: {
 	requestedView: files_EditorView;
 	rootKind: files_YjsRootKind;
-	nonCollaborative: boolean;
 }): files_EditorView {
-	if (args.nonCollaborative) {
-		return "plain_text_editor";
-	}
 	if (args.rootKind === "plain_text" && args.requestedView === "rich_text_editor") {
 		return "plain_text_editor";
 	}

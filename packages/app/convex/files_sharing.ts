@@ -26,7 +26,7 @@ import {
 } from "./access_control.ts";
 import {
 	files_nodes_db_cascade_restricted_scope,
-	files_nodes_db_has_projection_authority,
+	files_nodes_db_has_plugin_owner_authority,
 	files_nodes_db_resolve_parent_restricted_scope,
 } from "./files_nodes.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
@@ -519,10 +519,10 @@ export const get_node_share_state = query({
 			return null;
 		}
 		const { membership, node, organization, defaultWorkspaceId } = authorized._yay;
-		const projectionManaged = await files_nodes_db_has_projection_authority(ctx, node);
+		const pluginOwned = await files_nodes_db_has_plugin_owner_authority(ctx, node);
 
 		const canManage =
-			!projectionManaged &&
+			!pluginOwned &&
 			(await access_control_db_has_permission(ctx, {
 				organizationId: organization._id,
 				workspaceId: membership.workspaceId,
@@ -541,7 +541,7 @@ export const get_node_share_state = query({
 		// `restrict_node` applies. Asked here so the dialog does not offer a button that always fails.
 		// The owner holds no grants and passes every check earlier than this one.
 		const canRestrict =
-			!projectionManaged &&
+			!pluginOwned &&
 			(userAuth.id === organization.ownerUserId ||
 				(await caller_can_hand_out_level(ctx, {
 					organization,
@@ -563,7 +563,7 @@ export const get_node_share_state = query({
 			userId: userAuth.id,
 		});
 		const canShareWithRoles =
-			!projectionManaged &&
+			!pluginOwned &&
 			(organizationPermissions === "all" || organizationPermissions.has("organization.roles.manage"));
 
 		// A pointer at a node that was deleted, or that is no longer restricted, means this node uses
@@ -646,7 +646,7 @@ export const restrict_node = mutation({
 			return authorized;
 		}
 		const { membership, node, organization, defaultWorkspaceId } = authorized._yay;
-		if (await files_nodes_db_has_projection_authority(ctx, node)) {
+		if (await files_nodes_db_has_plugin_owner_authority(ctx, node)) {
 			return Result({ _nay: { message: "Plugin-managed files cannot be shared." } });
 		}
 
@@ -739,7 +739,7 @@ export const unrestrict_node = mutation({
 			return authorized;
 		}
 		const { membership, node } = authorized._yay;
-		if (await files_nodes_db_has_projection_authority(ctx, node)) {
+		if (await files_nodes_db_has_plugin_owner_authority(ctx, node)) {
 			return Result({ _nay: { message: "Plugin-managed files cannot be shared." } });
 		}
 
@@ -810,7 +810,7 @@ export const set_node_share_grant = mutation({
 			return authorized;
 		}
 		const { membership, node, organization, defaultWorkspaceId } = authorized._yay;
-		if (await files_nodes_db_has_projection_authority(ctx, node)) {
+		if (await files_nodes_db_has_plugin_owner_authority(ctx, node)) {
 			return Result({ _nay: { message: "Plugin-managed files cannot be shared." } });
 		}
 
@@ -971,7 +971,7 @@ export const remove_node_share_grant = mutation({
 			return authorized;
 		}
 		const { membership, node, organization } = authorized._yay;
-		if (await files_nodes_db_has_projection_authority(ctx, node)) {
+		if (await files_nodes_db_has_plugin_owner_authority(ctx, node)) {
 			return Result({ _nay: { message: "Plugin-managed files cannot be shared." } });
 		}
 

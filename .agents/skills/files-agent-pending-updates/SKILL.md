@@ -150,7 +150,7 @@ Pending updates attach to editable text `files_nodes` docs — nodes with Yjs st
 - Editable Markdown files (`rich_text`) and plain-text files such as `.json` or `.yaml` (`plain_text`) participate directly in pending review/edit flows.
 - Plugin-generated Markdown outputs are ordinary files, so they can participate in pending review/edit flows after the plugin creates them.
 - Raw uploaded source file nodes without Yjs ids (stored blobs) do not directly participate in pending content edits today.
-- A text file with collaboration turned off has no Yjs document either, so it has no content branch and never shows a diff row. The agent still edits it: the write is saved right away instead (see step 3 below). A move or delete proposal on such a file works normally, because those docs carry no branches.
+- A text file with collaboration turned off has no Yjs document either, so it has no content branch and never shows a diff row. The agent still edits it: the write is saved right away instead (see step 3 below). A move or delete proposal on such a file works normally, because those docs carry no branches. The diff VIEW still opens for such a file, but it shows the member's own unsaved edits against the committed text, never a proposal (`FileEditorDiffNonCollab`; see the `files-editable-text` skill).
 - Uploaded source paths do not alias to generated outputs; pending edits attach to the exact file node being edited.
 - Move-only and delete-only docs can represent folders and non-content file nodes. Those docs do not carry Yjs branches.
 

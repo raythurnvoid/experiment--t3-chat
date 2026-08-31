@@ -404,6 +404,15 @@ const RUN_REQUEST_SCHEMA = z.strictObject({
 		.string({ error: "pluginRunId is required" })
 		.min(1, "pluginRunId is required")
 		.max(128, "pluginRunId is required"),
+	// The path the plugin's fetch handler sees. Absent for host event runs, which keep the
+	// reserved default below. The reserved prefix is refused so a page invoke can never look
+	// like a host event delivery to the plugin's own routing.
+	requestPath: z
+		.string({ error: "requestPath is invalid" })
+		.max(256, "requestPath is invalid")
+		.regex(/^\/[\x21-\x7E]*$/u, "requestPath is invalid")
+		.refine((value) => !value.startsWith("/__bonobo_senate"), "requestPath must not use the reserved prefix")
+		.optional(),
 	input: z.unknown(),
 	host: HOST_RUNTIME_SCHEMA,
 	acceptedCapabilities: z
@@ -832,7 +841,7 @@ const routes = {
 							limits: DYNAMIC_WORKER_LIMITS,
 						})
 						.fetch(
-							new Request("https://plugin.local/__bonobo/run", {
+							new Request(`https://plugin.local${validated.data.requestPath ?? "/__bonobo_senate/run"}`, {
 								method: "POST",
 								headers: { "Content-Type": "application/json" },
 								body: JSON.stringify(build_plugin_event(validated.data.input, validated.data.pluginRunId)),

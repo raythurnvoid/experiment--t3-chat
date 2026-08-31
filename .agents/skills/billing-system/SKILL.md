@@ -194,7 +194,7 @@ Missing snapshots or subscriptions are treated as `hasCredits: false` in gate he
 
 ### File-save check and usage event
 
-File saves ([yjs_push_update](../../../packages/app/convex/files_nodes.ts), [save_file_pending_update](../../../packages/app/convex/files_pending_updates.ts), the non-collaborative save door [replace_file_content](../../../packages/app/convex/files_nodes_content.ts), and snapshot restore through [restore_snapshot_r2](../../../packages/app/convex/files_nodes.ts) / [restore_snapshot](../../../packages/app/convex/files_nodes.ts)) fail fast before the yjs push, the content replacement, or the restore write:
+File saves ([yjs_push_update](../../../packages/app/convex/files_nodes.ts), [save_file_pending_update_in_db](../../../packages/app/convex/files_pending_updates.ts), the non-collaborative save door [replace_file_content](../../../packages/app/convex/files_nodes_content.ts), and snapshot restore through [restore_snapshot_r2](../../../packages/app/convex/files_nodes_content.ts) / [restore_snapshot](../../../packages/app/convex/files_nodes_content.ts)) fail fast before the yjs push, the content replacement, or the restore write:
 
 1. Resolve `organization` and `billedUser` inline (`billing_pick_billed_user_id` reads only `default`, `billingMode`, `ownerUserId`; no assignment is read), then call `billing_db_check_credits(ctx, { userId: billedUser._id, minimumRequiredCents: 1 })`. When it returns `hasCredits: false`, the caller returns `_nay` with the literal `"Insufficient funds"` message to the frontend.
 2. Run the yjs push or the content replacement; obtain the version this save produced.
@@ -202,11 +202,13 @@ File saves ([yjs_push_update](../../../packages/app/convex/files_nodes.ts), [sav
 
 The last id part is called `version` because the two save paths name a version differently. A collaborative save uses the new Yjs sequence. A non-collaborative save has no sequence, so it uses the id of the version snapshot asset it just wrote. The part only has to be unique per save, so both work.
 
-For signed-in users there is no local credit debit after save; Polar usage events and subsequent customer-state refreshes are the only path that changes the synced meter. For anonymous users the shared ingest helper applies the same one-cent event locally after a successful save. Snapshot restore bills only when `write_markdown_to_yjs_sync` produced a new Yjs sequence. Do not reintroduce a shared `credits_FILE_SAVE_COST_CENTS` constant for the current one-cent file-save rule; keep the literal at the call sites unless the product rule changes.
+The public API bills `file_save` the same way ("nothing is free"): `/api/v1/files/write` and `/api/v1/files/write-many` run one `internal.billing.check_credits` gate at route entry (a refusal is HTTP 402 `Insufficient funds`; the `write` route also settles its plugin call with `errorCode: "insufficient_funds"`), and the commit mutations `publish_file_write` and `publish_file_fill` emit one `file_save` event each through `billing_db_emit_file_save`, with the staged content snapshot asset id as the version part. A sealed service upload emits the same event once per target when `db_settle_canonicalized_target` commits it (the target id is the version part; there is no gate at settlement — the bytes are already stored, and `create-target` already refused Free plans). `/api/v1/files/touch` stays free because the app's sidebar create of an empty file is free too.
+
+For signed-in users there is no local credit debit after save; Polar usage events and subsequent customer-state refreshes are the only path that changes the synced meter. For anonymous users the shared ingest helper applies the same one-cent event locally after a successful save. Snapshot restore bills only when `write_markdown_to_yjs_sync` produced a new Yjs sequence. Do not reintroduce a shared `credits_FILE_SAVE_COST_CENTS` constant for the current one-cent file-save rule; keep the literal at the call sites unless the product rule changes. One exception: the public-API doors send their event through `billing_db_emit_file_save`, which holds the `amount: 1` literal for those sites. The four app save doors keep their own inline literal.
 
 R2 content materialization is storage bookkeeping for an already accepted save; it must not emit an additional billing event.
 
-Named plugin file-projection replace (`packages/app/convex/plugins_projections.ts`) is the same kind of bookkeeping: it copies store documents into already-locked derived files. It must not emit `file_save`. Do not add a `skipBilling` flag to `replace_file_content`. That public door still bills.
+Plugin file writes have no billing exception: a plugin writes its workspace files through the public API doors (`/api/v1/files/write` and the plugin file doors), and every public-API file write emits `file_save` like any other save. Do not add a `skipBilling` flag to `replace_file_content`.
 
 ### Anonymous users
 
@@ -407,6 +409,12 @@ The indicator displays the current user's balance for personal organizations, `"
 
 ### Glossary — event ingestion
 
+#### `billing_db_emit_file_save`
+
+- **Kind:** exported async helper in [packages/app/convex/billing_db.ts](../../../packages/app/convex/billing_db.ts)
+- **Signature:** `(ctx: MutationCtx, { billedUser, actorUserId, organizationId, workspaceId, nodeId, version }) => Promise<void>`
+- **Role:** Builds the one-cent `file_save` event (name, `externalCustomerId`, `externalMemberId`, the deterministic `file_save::…` `externalId`, and the audit metadata) and sends it through `billing_ingest_events`. Call it inside the same mutation as the write it bills, after the write succeeded. It is the call site for every public-API write door; the four app save doors keep their inline event literal. It declares the event against the `billing_Event` type instead of calling `billing_event(...)`, so `billing_db.ts` never value-imports `server/billing.ts` (that would load the Polar SDK on every cold call).
+
 #### `billing_ingest_events`
 
 - **Kind:** exported async helper in [packages/app/convex/billing_db.ts](../../../packages/app/convex/billing_db.ts) — split out of `billing.ts` so emitting call sites skip the Polar SDK module-load cost.
@@ -495,7 +503,7 @@ The main billing UI lives in [billing-account-management-panel.tsx](../../../pac
 - Treat the Polar usage event name `press_usage_event` as the canonical event name for usage ingestion.
 - Treat `manual_credit`, `file_save`, `monthly_credit`, and `ai_usage` as the canonical usage event names. When listing billing event names in validators, tuple unions, tests, docs, or specs, put `manual_credit` first because it is the manual/admin variant, then list `file_save`, `monthly_credit`, and `ai_usage`. Usage-event `externalId` values use `::` as the only separator and start with the event name — `composite_id`'s `"billing"` context argument is type-only and never appears in the id. Organization usage ids include billed user, actor, organization, and workspace (`file_save::...`, `ai_usage::...`); manual and monthly credit ids remain customer-targeted. Inline `/files` AI generates a fresh server-owned UUID for the final `ai_usage` id segment before each model execution. Keep the caller `requestId` only as `metadata.messageId`; never use it as the Polar dedupe key.
 - Treat Polar meter amounts as a signed sum ledger: positive `metadata.amount` values are usage that consumes/decreases balance, while negative values are credits or payments that increase balance. `grant_credit` normalizes dashboard input to a negative `manual_credit` event by default. QA/admin drain flows may pass `allowNegative: true` with a negative `amount`, which records a positive manual usage event and reduces the balance.
-- Keep the current file-save usage amount as a literal `1` at each call site, and keep the current chat token-pricing switch local to `packages/app/convex/ai_chat.ts`.
+- Keep the current file-save usage amount as a literal `1` at each call site, and keep the current chat token-pricing switch local to `packages/app/convex/ai_chat.ts`. One exception: the public-API write doors emit through `billing_db_emit_file_save`, which holds the `amount: 1` literal for those sites; the four app save doors keep their own inline literal.
 - Keep `meter_credit` benefits detached from every Polar product. The Convex monthly credits engine is the only code path that grants recurring credits; running both would double-grant.
 - Prefer Polar-configured prices over hardcoded monetary logic in the repo. The code usually reads plan names and prices from synced Polar products. Per-plan recurring credit amounts are the exception: they live in `billing_PRODUCTS.<plan>.recurringCreditsCents` and are applied by the monthly credits engine.
 

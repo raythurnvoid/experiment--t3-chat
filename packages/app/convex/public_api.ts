@@ -19,7 +19,7 @@ import {
 	activities_db_get_by_source_id,
 	activities_db_start,
 } from "./activities.ts";
-import { billing_db_check_paid_plan, billing_pick_billed_user_id } from "./billing_db.ts";
+import { billing_db_check_paid_plan, billing_db_emit_file_save, billing_pick_billed_user_id } from "./billing_db.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
@@ -91,6 +91,10 @@ import {
 	public_api_settle_plugin_call_best_effort,
 	public_api_visibility_user_id,
 } from "./public_api_http_auth.ts";
+import {
+	public_api_service_uploads_db_can_clean_up_service_created_lock,
+	public_api_service_uploads_db_can_release_plugin_named_lock,
+} from "./public_api_service_uploads.ts";
 
 /**
  * Local structural mirror of `stage_trusted_yjs_update`'s Result. Keep it local instead of
@@ -195,6 +199,8 @@ const user_credential_scopes_validator = v.array(
 );
 const plugin_run_scopes_validator = v.array(
 	v.union(
+		v.literal("files:list" satisfies public_api_Scope),
+		v.literal("files:read" satisfies public_api_Scope),
 		v.literal("files:write" satisfies public_api_Scope),
 		v.literal("files:download" satisfies public_api_Scope),
 		v.literal("secrets:read" satisfies public_api_Scope),
@@ -207,13 +213,16 @@ const plugin_run_scopes_validator = v.array(
 // Read-only by design: UI sessions never get write, secrets, or outbound scopes. Plugin data
 // writes never use this token: a frame calls the `user_*` mutations in plugins_data.ts, which
 // write as the acting member and check both the `plugin.data.user-write` capability and the
-// member's own workspace content.write permission.
+// member's own workspace content.write permission. `backend:invoke` is not a write scope on the
+// frame itself: it only lets the frame start a plugin run, and that run's own token is what the
+// backend writes with.
 const plugin_ui_scopes_validator = v.array(
 	v.union(
 		v.literal("files:list" satisfies public_api_Scope),
 		v.literal("files:read" satisfies public_api_Scope),
 		v.literal("files:download" satisfies public_api_Scope),
 		v.literal("plugin_data:read" satisfies public_api_Scope),
+		v.literal("backend:invoke" satisfies public_api_Scope),
 	),
 );
 const plugin_service_scopes_validator = v.array(
@@ -1034,12 +1043,14 @@ export const resolve_principal = internalQuery({
 				installationId: v.id("plugins_workspace_installations"),
 				pluginVersionId: v.id("plugins_versions"),
 				/**
-				 * The person whose upload started this run. Used for file authorship, and as the eyes the
-				 * run reads and writes files with: a run has no user of its own, so without that it would
-				 * be a way around a restricted folder. See `public_api_visibility_user_id`.
+				 * The person whose upload started this run, or, on an invoke run, the invoking member,
+				 * host-verified from the `plu_` session that called the invoke route. Used for file
+				 * authorship, and as the eyes the run reads and writes files with: a run has no user of
+				 * its own, so without that it would be a way around a restricted folder. See
+				 * `public_api_visibility_user_id`.
 				 */
 				actorUserId: v.id("users"),
-				/** The file the event fired for. All three are null for an event that fires on no file. */
+				/** The file the event fired for. All three are null for an event that fires on no file, including every invoke run. */
 				sourceFileNodeId: v.union(v.id("files_nodes"), v.null()),
 				sourceAssetId: v.union(v.id("files_r2_assets"), v.null()),
 				/** Current path of the source node's parent; plugin writes must land exactly here. */
@@ -1047,6 +1058,12 @@ export const resolve_principal = internalQuery({
 				apiTokenExpiresAt: v.number(),
 				scopes: plugin_run_scopes_validator,
 				principalKey: v.string(),
+				/**
+				 * Always null: a plugin run has no destination seal. The read routes call
+				 * `public_api_is_path_inside_prefix(path, principal.pathPrefix)`, which treats null as
+				 * "anywhere" — right here, because the run's real boundary is its actor's eyes.
+				 */
+				pathPrefix: v.null(),
 			}),
 			v.object({
 				kind: v.literal("plugin_ui"),
@@ -1166,6 +1183,22 @@ export const resolve_principal = internalQuery({
 			if (pluginRun.acceptedCapabilities.includes("plugin.data.write")) {
 				scopes.push("plugin_data:write");
 			}
+			// Any run may read files under the same consent a frame reads with. The backend runs the
+			// same publisher code either way, the run reads with its actor's eyes, and without this an
+			// invoke endpoint could not read the files it maintains. `files:download` stays source-only.
+			if (pluginRun.acceptedCapabilities.includes("workspace.files.read")) {
+				scopes.push("files:read", "files:list");
+			}
+			// An invoke run has no source, so the sibling-write baseline above gave it no `files:write`.
+			// Own-write is its one write consent, bounded to the plugin's stamped folders by the write
+			// doors.
+			if (
+				pluginRun.event === "ui.invoke.requested" &&
+				pluginRun.acceptedCapabilities.includes("workspace.files.own-write") &&
+				!scopes.includes("files:write")
+			) {
+				scopes.push("files:write");
+			}
 
 			return Result({
 				_yay: {
@@ -1176,12 +1209,14 @@ export const resolve_principal = internalQuery({
 					installationId: pluginRun.installationId,
 					pluginVersionId: pluginRun.pluginVersionId,
 					actorUserId: pluginRun.actorUserId,
-					sourceFileNodeId: pluginRun.fileNodeId,
-					sourceAssetId: pluginRun.assetId,
+					// An invoke run stores no source fields at all, and the validator wants explicit null.
+					sourceFileNodeId: pluginRun.fileNodeId ?? null,
+					sourceAssetId: pluginRun.assetId ?? null,
 					outputParentPath,
 					apiTokenExpiresAt: pluginRun.apiTokenExpiresAt,
 					scopes,
 					principalKey: `plugin_run:${pluginRun._id}`,
+					pathPrefix: null,
 				},
 			});
 		}
@@ -1256,6 +1291,11 @@ export const resolve_principal = internalQuery({
 			// here would become injected input that the plugin's backend later acts on with its secrets.
 			if (installation.acceptedCapabilities.includes("plugin.data.read")) {
 				scopes.push("plugin_data:read");
+			}
+			// The invoke route also maps this scope to content.write, so a workspace viewer's frame
+			// carries the scope and is still refused there.
+			if (installation.acceptedCapabilities.includes("plugin.backend.invoke")) {
+				scopes.push("backend:invoke");
 			}
 
 			return Result({
@@ -1505,7 +1545,7 @@ export type public_api_resolve_principal_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-// The Council exchange routes in `plugins_service.ts` call these two through the generated `internal`
+// The service exchange routes in `plugins_service.ts` call these two through the generated `internal`
 // object, which erases the return type. Each alias gives that call its type back.
 
 export type public_api_create_plugin_service_grant_Result =
@@ -1588,14 +1628,64 @@ const file_write_principal_ref_validator = v.union(
 		runId: v.id("plugins_event_runs"),
 		callId: v.id("plugins_event_run_calls"),
 	}),
+	v.object({
+		kind: v.literal("plugin_service"),
+		grantId: v.id("plugin_service_grants"),
+	}),
 );
+
+/**
+ * The live-run checks every plugin-run write door repeats inside its own transaction: the run is
+ * still running with a live token in this tenant, and its installation is still enabled on the
+ * same version in an unfenced workspace. `plugin-folders/ensure` calls this directly, because it
+ * is the one run door whose target may not exist yet.
+ */
+export async function public_api_db_revalidate_live_plugin_run(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		runId: Id<"plugins_event_runs">;
+		now: number;
+	},
+) {
+	const pluginRun = await ctx.db.get("plugins_event_runs", args.runId);
+	if (
+		!pluginRun ||
+		pluginRun.status !== "running" ||
+		!pluginRun.apiTokenExpiresAt ||
+		pluginRun.apiTokenExpiresAt <= args.now ||
+		pluginRun.organizationId !== args.organizationId ||
+		pluginRun.workspaceId !== args.workspaceId
+	) {
+		return Result({ _nay: { message: "Unauthenticated" } });
+	}
+	const [installation, workspace] = await Promise.all([
+		ctx.db.get("plugins_workspace_installations", pluginRun.installationId),
+		ctx.db.get("organizations_workspaces", pluginRun.workspaceId),
+	]);
+	if (
+		!installation ||
+		!workspace ||
+		workspace.organizationId !== pluginRun.organizationId ||
+		workspace.pluginDataPurgeStartedAt !== undefined ||
+		installation.status !== "enabled" ||
+		installation.pluginVersionId !== pluginRun.pluginVersionId
+	) {
+		return Result({ _nay: { message: "Unauthenticated" } });
+	}
+
+	return Result({ _yay: { pluginRun, installation } });
+}
 
 /**
  * Shared revalidation for the prepare and publish mutations: the same live-principal and
  * plugin-constraint checks must hold in the transaction that creates the stage AND in the
  * transaction that publishes it, because the credential or run can die between the two.
+ * Exported for the plugin file doors (`public_api_plugin_files.ts`), which need the same
+ * transactional authority answer for their target paths.
  */
-async function db_revalidate_file_write_principal(
+export async function public_api_db_revalidate_file_write_principal(
 	ctx: MutationCtx,
 	args: {
 		organizationId: Id<"organizations">;
@@ -1607,31 +1697,76 @@ async function db_revalidate_file_write_principal(
 	},
 ) {
 	if (args.principalRef.kind === "plugin_run") {
-		const pluginRun = await ctx.db.get("plugins_event_runs", args.principalRef.runId);
-		if (
-			!pluginRun ||
-			pluginRun.status !== "running" ||
-			!pluginRun.apiTokenExpiresAt ||
-			pluginRun.apiTokenExpiresAt <= args.now ||
-			pluginRun.organizationId !== args.organizationId ||
-			pluginRun.workspaceId !== args.workspaceId
-		) {
-			return Result({ _nay: { message: "Unauthenticated" } });
+		const liveRun = await public_api_db_revalidate_live_plugin_run(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			runId: args.principalRef.runId,
+			now: args.now,
+		});
+		if (liveRun._nay) {
+			return liveRun;
 		}
-		const [installation, workspace] = await Promise.all([
-			ctx.db.get("plugins_workspace_installations", pluginRun.installationId),
-			ctx.db.get("organizations_workspaces", pluginRun.workspaceId),
-		]);
-		if (
-			!installation ||
-			!workspace ||
-			workspace.organizationId !== pluginRun.organizationId ||
-			workspace.pluginDataPurgeStartedAt !== undefined ||
-			installation.status !== "enabled" ||
-			installation.pluginVersionId !== pluginRun.pluginVersionId
-		) {
-			return Result({ _nay: { message: "Unauthenticated" } });
+		const { pluginRun, installation } = liveRun._yay;
+
+		// An invoke run has no source upload, so its write authority is the plugin's own stamped
+		// area instead of the sibling rule. Branch on the event: upload runs keep the sibling rule
+		// below exactly as it is.
+		if (pluginRun.event === "ui.invoke.requested") {
+			// Own-write is the consent for writing inside the plugin's stamped folders. The
+			// resolver already gated the `files:write` scope on it; ask again here because the
+			// consent can be taken back while a write is staged.
+			if (!installation.acceptedCapabilities.includes("workspace.files.own-write")) {
+				return Result({ _nay: { message: "Permission denied" } });
+			}
+
+			// The stamp rule: the active node at the target path, or the deepest existing
+			// ancestor, must carry this plugin's stamp. Nothing existing at all means the plugin
+			// never created its root through `plugin-folders/ensure`, so the write is refused.
+			const ownedNode =
+				(await db_get_active_node_at_path(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					path: args.path,
+				})) ??
+				(await db_get_deepest_existing_ancestor(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					path: args.path,
+				}));
+			if (!ownedNode || ownedNode.pluginOwnerName !== installation.pluginName) {
+				return Result({ _nay: { message: "Permission denied" } });
+			}
+
+			// The run writes as the member who invoked it, so that member must still be one, and
+			// must still be allowed to write where the output lands.
+			const invokeActorMembership = await ctx.db
+				.query("organizations_workspaces_users")
+				.withIndex("by_active_user_organization_workspace", (q) =>
+					q
+						.eq("active", true)
+						.eq("userId", args.userId)
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId),
+				)
+				.first();
+			if (!invokeActorMembership) {
+				return Result({ _nay: { message: "Permission denied" } });
+			}
+			if (
+				!(await has_workspace_content_permission(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					userId: args.userId,
+					permission: "content.write",
+					fileNode: ownedNode,
+				}))
+			) {
+				return Result({ _nay: { message: "Permission denied" } });
+			}
+
+			return Result({ _yay: { pluginRun, installation, serviceGrant: null } });
 		}
+
 		// The sibling-write constraint is checked against the source node's CURRENT parent in this
 		// transaction, so a concurrent source move cannot smuggle plugin output somewhere else.
 		// Archived counts as missing: publishing beside an archived source would recreate the
@@ -1682,7 +1817,90 @@ async function db_revalidate_file_write_principal(
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
-		return Result({ _yay: { pluginRun } });
+		return Result({ _yay: { pluginRun, installation, serviceGrant: null } });
+	}
+
+	if (args.principalRef.kind === "plugin_service") {
+		// The grant facts first: the same live checks the resolver ran, because a revocation, a
+		// phase change, or an expiry can land between the route's token check and this transaction.
+		const grant = await ctx.db.get("plugin_service_grants", args.principalRef.grantId);
+		if (
+			!grant ||
+			grant.revokedAt != null ||
+			grant.expiresAt <= args.now ||
+			grant.organizationId !== args.organizationId ||
+			grant.workspaceId !== args.workspaceId ||
+			grant.actorUserId !== args.userId ||
+			grant.phase !== "processing" ||
+			grant.destinationPathPrefix == null ||
+			!grant.scopes.includes("files:write")
+		) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		const [installation, workspace] = await Promise.all([
+			ctx.db.get("plugins_workspace_installations", grant.installationId),
+			ctx.db.get("organizations_workspaces", grant.workspaceId),
+		]);
+		if (
+			!installation ||
+			!workspace ||
+			workspace.organizationId !== grant.organizationId ||
+			workspace.pluginDataPurgeStartedAt !== undefined ||
+			installation.status !== "enabled" ||
+			installation.pluginVersionId !== grant.pluginVersionId ||
+			!installation.acceptedCapabilities.includes("plugin.service.connect") ||
+			!installation.acceptedCapabilities.includes("workspace.files.write")
+		) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		// The seal is a location bound, checked again here so a stage prepared for one path can
+		// never publish outside the destination the grant was sealed to.
+		if (!public_api_is_path_inside_prefix(args.path, grant.destinationPathPrefix)) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		// The grant acts for its member, so that member must still be one, and must still be
+		// allowed to write where the file lands. Asked against the target or the deepest existing
+		// ancestor, so a grant inside a restricted folder is judged by the grant that let the
+		// actor in — both fill and create under a restricted folder are covered.
+		const actorMembership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_active_user_organization_workspace", (q) =>
+				q
+					.eq("active", true)
+					.eq("userId", args.userId)
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId),
+			)
+			.first();
+		if (!actorMembership) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+		const aclNode =
+			(await db_get_active_node_at_path(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				path: args.path,
+			})) ??
+			(await db_get_deepest_existing_ancestor(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				path: args.path,
+			}));
+		if (
+			!(await has_workspace_content_permission(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				permission: "content.write",
+				...(aclNode ? { fileNode: aclNode } : {}),
+			}))
+		) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		return Result({ _yay: { pluginRun: null, installation, serviceGrant: grant } });
 	}
 
 	const credential = await ctx.db.get("api_credentials", args.principalRef.credentialId);
@@ -1718,7 +1936,127 @@ async function db_revalidate_file_write_principal(
 	) {
 		return Result({ _nay: { message: "Permission denied" } });
 	}
-	return Result({ _yay: { pluginRun: null } });
+	return Result({ _yay: { pluginRun: null, installation: null, serviceGrant: null } });
+}
+
+/**
+ * The plugin facts `public_api_db_revalidate_file_write_principal` proved, handed to the checks below that
+ * need the installation or the grant again.
+ */
+export type public_api_FileWritePluginFacts = {
+	pluginRun: Doc<"plugins_event_runs"> | null;
+	installation: Doc<"plugins_workspace_installations"> | null;
+	serviceGrant: Doc<"plugin_service_grants"> | null;
+};
+
+/**
+ * Whether this node's direct lock is the lock of this installation's own live upload target,
+ * judged by the same rule the service delete and archive doors use.
+ */
+async function db_service_lock_is_own_live_target(
+	ctx: MutationCtx,
+	args: { facts: public_api_FileWritePluginFacts; node: Doc<"files_nodes"> },
+) {
+	const installation = args.facts.installation;
+	const serviceGrant = args.facts.serviceGrant;
+	if (!installation || !serviceGrant || serviceGrant.destinationPathPrefix == null) {
+		return false;
+	}
+
+	const destinationNode = await db_get_active_node_at_path(ctx, {
+		organizationId: serviceGrant.organizationId,
+		workspaceId: serviceGrant.workspaceId,
+		path: serviceGrant.destinationPathPrefix,
+	});
+	if (!destinationNode) {
+		return false;
+	}
+	return await public_api_service_uploads_db_can_clean_up_service_created_lock(ctx, {
+		principal: {
+			organizationId: serviceGrant.organizationId,
+			workspaceId: serviceGrant.workspaceId,
+			actorUserId: serviceGrant.actorUserId,
+			pathPrefix: serviceGrant.destinationPathPrefix,
+		},
+		installation,
+		destinationNodeId: destinationNode._id,
+		node: args.node,
+	});
+}
+
+/**
+ * Whether a service principal may replace or fill this exact existing file. A path inside the
+ * seal is only a location bound, not proof the service created the file — without this gate a
+ * service could overwrite a member-created Markdown file inside its destination. Proof is the
+ * write-door provenance stamp, or the installation's own live read-only upload target on the
+ * node (a file created read-only through `create-target` carries no stamp but must stay
+ * updatable by the service that created it).
+ */
+async function db_service_owns_existing_file(
+	ctx: MutationCtx,
+	args: { facts: public_api_FileWritePluginFacts; node: Doc<"files_nodes"> },
+) {
+	const installation = args.facts.installation;
+	if (!installation || !args.facts.serviceGrant) {
+		return false;
+	}
+	if (args.node.pluginServiceWritePluginName === installation.pluginName) {
+		return true;
+	}
+	return await db_service_lock_is_own_live_target(ctx, args);
+}
+
+/**
+ * Whether a plugin principal may write through a `files_node_require_writable` refusal. Every
+ * other caller keeps today's 409.
+ *
+ * Run-owned area: pass when the lock's OWNING node is a direct lock this plugin's own doors
+ * created. Resolve the scope node instead of requiring the lock to sit on this node, so files
+ * inside a folder the plugin locked stay writable to the plugin's backend. Own-area and
+ * own-write were already proved by revalidation for invoke runs; own-access is not asked here,
+ * because own-access is the capability to CREATE a lock and own-write the capability to write
+ * the file — a plugin that later loses own-access can still maintain the files it owns.
+ *
+ * Service seal: only the file's own direct locks can pass — the plugin-named lock the write door
+ * created, or the lock of this installation's own live upload target.
+ *
+ * Exported for the plugin file doors, which judge archive and access locks with the same rule.
+ */
+export async function public_api_db_can_pass_read_only_for_plugin(
+	ctx: MutationCtx,
+	args: {
+		facts: public_api_FileWritePluginFacts;
+		/** The node whose lock refused the write: the target itself, or the ancestor a create sits under. */
+		node: Doc<"files_nodes">;
+	},
+) {
+	const installation = args.facts.installation;
+	if (!installation || args.node.readOnlyScopeNodeId === undefined) {
+		return false;
+	}
+
+	if (args.facts.pluginRun) {
+		if (args.facts.pluginRun.event !== "ui.invoke.requested") {
+			return false;
+		}
+		const scopeNode = await ctx.db.get("files_nodes", args.node.readOnlyScopeNodeId);
+		return scopeNode?.readOnlyPluginName === installation.pluginName;
+	}
+
+	const serviceGrant = args.facts.serviceGrant;
+	if (!serviceGrant || serviceGrant.destinationPathPrefix == null) {
+		return false;
+	}
+	if (
+		await public_api_service_uploads_db_can_release_plugin_named_lock(ctx, {
+			installation,
+			pathPrefix: serviceGrant.destinationPathPrefix,
+			node: args.node,
+		})
+	) {
+		return true;
+	}
+	return await db_service_lock_is_own_live_target(ctx, { facts: args.facts, node: args.node });
 }
 
 /**
@@ -1794,6 +2132,7 @@ async function db_preflight_file_write_target(
 		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
 		path: string;
+		pluginFacts: public_api_FileWritePluginFacts;
 	},
 ) {
 	const activeNode = await db_get_active_node_at_path(ctx, args);
@@ -1812,7 +2151,7 @@ async function db_preflight_file_write_target(
 
 		// Check the lock again at publish time. If the target is writable then, the write can finish.
 		const writable = files_node_require_writable(activeNode);
-		if (writable._nay) {
+		if (writable._nay && !(await public_api_db_can_pass_read_only_for_plugin(ctx, { facts: args.pluginFacts, node: activeNode }))) {
 			return writable;
 		}
 
@@ -1839,7 +2178,7 @@ async function db_preflight_file_write_target(
 
 		// Do not create temporary docs below a read-only node.
 		const writable = files_node_require_writable(ancestor);
-		if (writable._nay) {
+		if (writable._nay && !(await public_api_db_can_pass_read_only_for_plugin(ctx, { facts: args.pluginFacts, node: ancestor }))) {
 			return writable;
 		}
 	}
@@ -1930,7 +2269,7 @@ export const prepare_file_write = internalMutation({
 	}),
 	handler: async (ctx, args) => {
 		const now = Date.now();
-		const revalidated = await db_revalidate_file_write_principal(ctx, {
+		const revalidated = await public_api_db_revalidate_file_write_principal(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
@@ -1949,6 +2288,7 @@ export const prepare_file_write = internalMutation({
 			workspaceId: args.workspaceId,
 			userId: args.userId,
 			path: args.path,
+			pluginFacts: revalidated._yay,
 		});
 		if (preflight._nay) {
 			return preflight;
@@ -1978,7 +2318,9 @@ export const prepare_file_write = internalMutation({
 			userId: args.userId,
 			...(args.principalRef.kind === "plugin_run"
 				? { runId: args.principalRef.runId, callId: args.principalRef.callId }
-				: { credentialId: args.principalRef.credentialId }),
+				: args.principalRef.kind === "plugin_service"
+					? { grantId: args.principalRef.grantId }
+					: { credentialId: args.principalRef.credentialId }),
 			path: args.path,
 			overwrite: args.overwrite,
 			yjsSnapshotAssetId,
@@ -2010,6 +2352,11 @@ export const publish_file_write = internalMutation({
 		 * fill path drops the one it does not use.
 		 */
 		nonCollaborative: v.optional(v.boolean()),
+		/**
+		 * Plugin principals only: create the file with a direct plugin-named lock. The needed
+		 * consent is checked below before anything is written.
+		 */
+		requestReadOnly: v.optional(v.boolean()),
 	},
 	returns: v_result({
 		_yay: v.object({ nodeId: v.id("files_nodes") }),
@@ -2027,7 +2374,9 @@ export const publish_file_write = internalMutation({
 				? { kind: "plugin_run", runId: stage.runId, callId: stage.callId }
 				: stage.credentialId
 					? { kind: "user_api_key", credentialId: stage.credentialId }
-					: null;
+					: stage.grantId
+						? { kind: "plugin_service", grantId: stage.grantId }
+						: null;
 		if (!principalRef) {
 			// Unreachable: prepare_file_write always stores exactly one principal reference.
 			throw should_never_happen("public_api_file_write_stages doc without a principal reference", {
@@ -2035,7 +2384,7 @@ export const publish_file_write = internalMutation({
 			});
 		}
 
-		const revalidated = await db_revalidate_file_write_principal(ctx, {
+		const revalidated = await public_api_db_revalidate_file_write_principal(ctx, {
 			organizationId: stage.organizationId,
 			workspaceId: stage.workspaceId,
 			userId: stage.userId,
@@ -2057,6 +2406,11 @@ export const publish_file_write = internalMutation({
 				stageId: stage._id,
 			});
 		}
+
+		// Set when a lock refused this write and the plugin's own-lock exception passed it. The
+		// create below must then skip the recursive helper's own lock check, which would refuse
+		// that same lock again.
+		let createThroughOwnLock = false;
 
 		const activeNode = await ctx.db
 			.query("files_nodes")
@@ -2100,13 +2454,16 @@ export const publish_file_write = internalMutation({
 
 			const writable = files_node_require_writable(activeNode);
 			if (writable._nay) {
-				await db_abandon_file_write_stage_conflict(ctx, {
-					stage,
-					putAssetIds: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
-					refusalMessage: writable._nay.message,
-					deletionReason: "read_only_stage",
-				});
-				return writable;
+				if (!(await public_api_db_can_pass_read_only_for_plugin(ctx, { facts: revalidated._yay, node: activeNode }))) {
+					await db_abandon_file_write_stage_conflict(ctx, {
+						stage,
+						putAssetIds: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
+						refusalMessage: writable._nay.message,
+						deletionReason: "read_only_stage",
+					});
+					return writable;
+				}
+				createThroughOwnLock = true;
 			}
 
 			if (activeNode.kind !== "file") {
@@ -2114,6 +2471,15 @@ export const publish_file_write = internalMutation({
 			}
 			if (stage.overwrite === "fail") {
 				return Result({ _nay: { message: "A file already exists at this path" } });
+			}
+
+			// Replacing an existing file is an update, so a service needs proof it created this
+			// exact file, not only a path inside its seal.
+			if (
+				principalRef.kind === "plugin_service" &&
+				!(await db_service_owns_existing_file(ctx, { facts: revalidated._yay, node: activeNode }))
+			) {
+				return Result({ _nay: { message: "Permission denied" } });
 			}
 
 			// Recreation below walks this file's folders and asks `content.write` on each one, and a
@@ -2179,16 +2545,91 @@ export const publish_file_write = internalMutation({
 			if (ancestor) {
 				const writable = files_node_require_writable(ancestor);
 				if (writable._nay) {
-					await db_abandon_file_write_stage_conflict(ctx, {
-						stage,
-						putAssetIds: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
-						refusalMessage: writable._nay.message,
-						deletionReason: "read_only_stage",
-					});
-					return writable;
+					if (
+						!(await public_api_db_can_pass_read_only_for_plugin(ctx, { facts: revalidated._yay, node: ancestor }))
+					) {
+						await db_abandon_file_write_stage_conflict(ctx, {
+							stage,
+							putAssetIds: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
+							refusalMessage: writable._nay.message,
+							deletionReason: "read_only_stage",
+						});
+						return writable;
+					}
+					createThroughOwnLock = true;
 				}
 			}
 		}
+
+		// `access.readOnly` creates the file already locked. Decide the consent before anything is
+		// written, so a refusal leaves no half-created state.
+		if (args.requestReadOnly === true) {
+			const installation = revalidated._yay.installation;
+			// The route already refuses `access` for non-plugin callers; this is the transactional check.
+			if (!installation) {
+				return Result({ _nay: { message: "Permission denied" } });
+			}
+			if (principalRef.kind === "plugin_run") {
+				// Own-access is the consent that creates a lock. Own-write alone lets a plugin write
+				// its files, not lock them.
+				if (
+					revalidated._yay.pluginRun?.event !== "ui.invoke.requested" ||
+					!installation.acceptedCapabilities.includes("workspace.files.own-access")
+				) {
+					return Result({ _nay: { message: "Permission denied" } });
+				}
+			} else {
+				// Mirror the `create-target` read-only rule: the create-read-only consent, plus the
+				// actor still holding `content.permissions.manage` at the destination, because a lock
+				// is an ACL decision the actor must be allowed to make.
+				if (!installation.acceptedCapabilities.includes("workspace.files.create-read-only")) {
+					return Result({ _nay: { message: "Permission denied" } });
+				}
+				const destinationAclNode = await db_get_deepest_existing_ancestor(ctx, {
+					organizationId: stage.organizationId,
+					workspaceId: stage.workspaceId,
+					path: stage.path,
+				});
+				const [organization, workspace] = await Promise.all([
+					ctx.db.get("organizations", stage.organizationId),
+					ctx.db.get("organizations_workspaces", stage.workspaceId),
+				]);
+				let canManageDestination = false;
+				if (organization && organization.defaultWorkspaceId && workspace) {
+					// The full permission question, like the `create-target` door asks it: the actor's
+					// workspace-wide manage permission, refined by the destination's restricted scope.
+					canManageDestination = await access_control_db_has_permission(ctx, {
+						organizationId: organization._id,
+						workspaceId: workspace._id,
+						defaultWorkspaceId: organization.defaultWorkspaceId,
+						organizationOwnerUserId: organization.ownerUserId,
+						resource: destinationAclNode
+							? {
+									kind: "file",
+									id: String(destinationAclNode._id),
+									restrictedScopeNodeId: destinationAclNode.restrictedScopeNodeId ?? null,
+								}
+							: { kind: "workspace", id: String(workspace._id) },
+						permission: "content.permissions.manage",
+						userId: stage.userId,
+					});
+				}
+				if (!canManageDestination) {
+					return Result({ _nay: { message: "Permission denied" } });
+				}
+			}
+		}
+
+		// Owned-area runs stamp every node this write creates — the file and each new intermediate
+		// folder — so the stamp rule keeps answering for later writes below them. Driven by the
+		// principal reference, never by a request field: public doors must stay unable to set the
+		// stamp.
+		const stampPluginName =
+			principalRef.kind === "plugin_run" &&
+			revalidated._yay.pluginRun?.event === "ui.invoke.requested" &&
+			revalidated._yay.installation
+				? revalidated._yay.installation.pluginName
+				: undefined;
 
 		const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
 			userId: stage.userId,
@@ -2203,11 +2644,32 @@ export const publish_file_write = internalMutation({
 			assetId: stage.contentSnapshotAssetId,
 			expectsTextContent: true,
 			metadata: [{ key: "source", value: "api" }],
+			...(stampPluginName ? { stampCreatedNodesPluginName: stampPluginName } : {}),
+			// The refusing lock is the plugin's own, and the ACL questions were asked above. Skip
+			// the helper's re-check of that same lock, and keep the new nodes under the locked
+			// folder's pointer so they stay read-only for members.
+			...(createThroughOwnLock ? { skipAccessControlAndLock: true, inheritParentReadOnlyScope: true } : {}),
 			now,
 		});
 		if (created._nay) {
 			// An intermediate segment is owned by a file, or an equivalent structural conflict.
 			return Result({ _nay: { message: created._nay.message } });
+		}
+
+		// A service-created file records which plugin wrote it. Later service updates and the
+		// per-file archive read this as ownership proof; member sharing and lock code ignore it.
+		if (principalRef.kind === "plugin_service" && revalidated._yay.installation) {
+			await ctx.db.patch("files_nodes", created._yay, {
+				pluginServiceWritePluginName: revalidated._yay.installation.pluginName,
+			});
+		}
+		// The requested lock was authorized above, before anything was written. The node is brand
+		// new and has no descendants, so no cascade is needed.
+		if (args.requestReadOnly === true && revalidated._yay.installation) {
+			await ctx.db.patch("files_nodes", created._yay, {
+				readOnlyScopeNodeId: created._yay,
+				readOnlyPluginName: revalidated._yay.installation.pluginName,
+			});
 		}
 
 		// Same mutation as the node insert, so a content failure still rolls back the whole create.
@@ -2274,6 +2736,35 @@ export const publish_file_write = internalMutation({
 				});
 			}
 		}
+
+		// Nothing is free: the committed write bills the workspace payer one cent, in the same
+		// transaction, so a rolled-back publish emits nothing. The staged content snapshot becomes
+		// the file's first version snapshot, so it is the unique-per-save version part.
+		const organization = await ctx.db.get("organizations", stage.organizationId);
+		if (!organization) {
+			throw should_never_happen("stage.organizationId points to a missing organizations doc", {
+				stageId: stage._id,
+				organizationId: stage.organizationId,
+			});
+		}
+		const billedUserId = billing_pick_billed_user_id({ userId: stage.userId, organization });
+		const billedUser = await ctx.db.get("users", billedUserId);
+		if (!billedUser) {
+			throw should_never_happen("billedUserId points to a missing users doc", {
+				stageId: stage._id,
+				userId: stage.userId,
+				billedUserId,
+			});
+		}
+		await billing_db_emit_file_save(ctx, {
+			billedUser,
+			actorUserId: stage.userId,
+			organizationId: stage.organizationId,
+			workspaceId: stage.workspaceId,
+			nodeId: created._yay,
+			version: stage.contentSnapshotAssetId,
+		});
+
 		await ctx.db.delete("public_api_file_write_stages", stage._id);
 
 		return Result({ _yay: { nodeId: created._yay } });
@@ -2321,7 +2812,9 @@ export const publish_file_fill = internalMutation({
 				? { kind: "plugin_run", runId: stage.runId, callId: stage.callId }
 				: stage.credentialId
 					? { kind: "user_api_key", credentialId: stage.credentialId }
-					: null;
+					: stage.grantId
+						? { kind: "plugin_service", grantId: stage.grantId }
+						: null;
 		if (!principalRef) {
 			// Unreachable: prepare_file_write always stores exactly one principal reference.
 			throw should_never_happen("public_api_file_write_stages doc without a principal reference", {
@@ -2329,7 +2822,7 @@ export const publish_file_fill = internalMutation({
 			});
 		}
 
-		const revalidated = await db_revalidate_file_write_principal(ctx, {
+		const revalidated = await public_api_db_revalidate_file_write_principal(ctx, {
 			organizationId: stage.organizationId,
 			workspaceId: stage.workspaceId,
 			userId: stage.userId,
@@ -2352,7 +2845,7 @@ export const publish_file_fill = internalMutation({
 			return Result({ _nay: { message: "The file changed during the write" } });
 		}
 
-		// `db_revalidate_file_write_principal` above asks about the workspace, and a write can be staged
+		// `public_api_db_revalidate_file_write_principal` above asks about the workspace, and a write can be staged
 		// for a while. This is the commit, so the node itself is asked again here: a grant taken away
 		// during staging has to stop the write, not arrive too late.
 		if (
@@ -2367,10 +2860,19 @@ export const publish_file_fill = internalMutation({
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
+		// Filling is an update, so a service needs proof it created this exact file, not only a
+		// path inside its seal.
+		if (
+			principalRef.kind === "plugin_service" &&
+			!(await db_service_owns_existing_file(ctx, { facts: revalidated._yay, node: fileNode }))
+		) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
 		// Check ACL, then check the current lock before the first write. A refusal also cleans up the
 		// stage in this transaction. The fill path uploaded only the content snapshot.
 		const writable = files_node_require_writable(fileNode);
-		if (writable._nay) {
+		if (writable._nay && !(await public_api_db_can_pass_read_only_for_plugin(ctx, { facts: revalidated._yay, node: fileNode }))) {
 			await db_abandon_file_write_stage_conflict(ctx, {
 				stage,
 				putAssetIds: [stage.contentSnapshotAssetId],
@@ -2452,6 +2954,35 @@ export const publish_file_fill = internalMutation({
 				});
 			}
 		}
+
+		// Nothing is free: the committed fill bills the workspace payer one cent, in the same
+		// transaction, so a rolled-back publish emits nothing. The staged content snapshot becomes
+		// the file's new version snapshot, so it is the unique-per-save version part.
+		const organization = await ctx.db.get("organizations", stage.organizationId);
+		if (!organization) {
+			throw should_never_happen("stage.organizationId points to a missing organizations doc", {
+				stageId: stage._id,
+				organizationId: stage.organizationId,
+			});
+		}
+		const billedUserId = billing_pick_billed_user_id({ userId: stage.userId, organization });
+		const billedUser = await ctx.db.get("users", billedUserId);
+		if (!billedUser) {
+			throw should_never_happen("billedUserId points to a missing users doc", {
+				stageId: stage._id,
+				userId: stage.userId,
+				billedUserId,
+			});
+		}
+		await billing_db_emit_file_save(ctx, {
+			billedUser,
+			actorUserId: stage.userId,
+			organizationId: stage.organizationId,
+			workspaceId: stage.workspaceId,
+			nodeId: fileNode._id,
+			version: stage.contentSnapshotAssetId,
+		});
+
 		await ctx.db.delete("public_api_file_write_stages", stage._id);
 
 		return Result({ _yay: { nodeId: fileNode._id } });
@@ -2491,7 +3022,9 @@ export const publish_file_touch = internalMutation({
 				? { kind: "plugin_run", runId: stage.runId, callId: stage.callId }
 				: stage.credentialId
 					? { kind: "user_api_key", credentialId: stage.credentialId }
-					: null;
+					: stage.grantId
+						? { kind: "plugin_service", grantId: stage.grantId }
+						: null;
 		if (!principalRef) {
 			// Unreachable: prepare_file_write always stores exactly one principal reference.
 			throw should_never_happen("public_api_file_write_stages doc without a principal reference", {
@@ -2499,7 +3032,7 @@ export const publish_file_touch = internalMutation({
 			});
 		}
 
-		const revalidated = await db_revalidate_file_write_principal(ctx, {
+		const revalidated = await public_api_db_revalidate_file_write_principal(ctx, {
 			organizationId: stage.organizationId,
 			workspaceId: stage.workspaceId,
 			userId: stage.userId,
@@ -2822,7 +3355,7 @@ export const start_run_activity = internalMutation({
 		) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
-		// Match the write sink's vocabulary (`db_revalidate_file_write_principal`): a dead plugin-run
+		// Match the write sink's vocabulary (`public_api_db_revalidate_file_write_principal`): a dead plugin-run
 		// bearer is "Unauthenticated", while a live run whose actor lost membership is "Permission
 		// denied" and settles as 403 at the route.
 		if (!actorMembership) {
@@ -2909,7 +3442,7 @@ export const create_file_upload_targets = internalMutation({
 		// One transactional re-check covers the whole batch. The user_api_key branch never reads
 		// the path (path only matters for the plugin-run sibling constraint, and the route only
 		// admits user keys), so any placeholder path works.
-		const revalidated = await db_revalidate_file_write_principal(ctx, {
+		const revalidated = await public_api_db_revalidate_file_write_principal(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
@@ -3382,7 +3915,7 @@ async function write_one_markdown_file(
 	args: {
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
-		/** Authoring user: the credential owner, or the plugin run's actorUserId. */
+		/** Authoring user: the credential owner, or the plugin run's or service grant's actorUserId. */
 		userId: Id<"users">;
 		visibilityUserId: Id<"users">;
 		principalRef: Infer<typeof file_write_principal_ref_validator>;
@@ -3396,6 +3929,11 @@ async function write_one_markdown_file(
 		 * file: writing over a file that already exists keeps whatever mode that file has.
 		 */
 		nonCollaborative: boolean;
+		/**
+		 * Plugin principals only: create the file with a direct plugin-named lock. Only used when
+		 * this write creates the file; filling an existing file keeps its lock state.
+		 */
+		requestReadOnly: boolean;
 	},
 ) {
 	// Decide create-vs-fill before staging. Writing over an existing editable Markdown
@@ -3432,7 +3970,10 @@ async function write_one_markdown_file(
 	// re-import.
 	if (activeNode?.nonCollaborative === true && files_node_has_editable_text_content(activeNode)) {
 		// Re-running an import must not mint a new version for a file whose text did not change.
-		if (args.skipIfUnchanged) {
+		// A service never takes this shortcut: its proof that it created the file lives in the
+		// publish mutation, and a 200 here would let a service confirm the exact content of a
+		// member file inside its destination.
+		if (args.skipIfUnchanged && args.principalRef.kind !== "plugin_service") {
 			const current = (await ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
@@ -3613,7 +4154,10 @@ async function write_one_markdown_file(
 			// Re-running an import must not mint new versions for files whose content did not
 			// change. A null diff means projecting the incoming Markdown was a semantic no-op,
 			// so return before staging: no stage, no asset docs, no uploads, no version snapshot.
-			if (args.skipIfUnchanged && fillUpdate === null) {
+			// A service never takes this shortcut: its proof that it created the file lives in
+			// the publish mutation, and a 200 here would let a service confirm the exact content
+			// of a member file inside its destination.
+			if (args.skipIfUnchanged && fillUpdate === null && args.principalRef.kind !== "plugin_service") {
 				// Skip only when the commit-time write check would also say yes. When it says no,
 				// fall through to the normal write path so the caller gets the same refusal a plain
 				// write gets — a 200 here would let a caller who cannot write the node confirm its
@@ -3869,6 +4413,7 @@ async function write_one_markdown_file(
 		content: args.content,
 		targetAnchor: prepared._yay.targetAnchor,
 		nonCollaborative: args.nonCollaborative,
+		...(args.requestReadOnly ? { requestReadOnly: true } : {}),
 	});
 	if (published._nay) {
 		// Conflict is the fallback: structural 409s pass their specific message through,
@@ -3910,7 +4455,7 @@ export type public_api_http_read_file_Body = z.infer<typeof read_file_body_valid
 export async function public_api_http_read_file(ctx: ActionCtx, request: Request, path: "/api/v1/files/read") {
 	const auth = await public_api_authorize_request(ctx, request, {
 		requiredScope: "files:read" satisfies public_api_Scope,
-		allowedKinds: ["user_api_key", "public_api_grant", "plugin_ui"],
+		allowedKinds: ["user_api_key", "public_api_grant", "plugin_ui", "plugin_run"],
 		route: path,
 	});
 	if (auth._nay) {
@@ -3934,7 +4479,8 @@ export async function public_api_http_read_file(ctx: ActionCtx, request: Request
 	const content = await ctx.runAction(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
 		organizationId: principal.organizationId,
 		workspaceId: principal.workspaceId,
-		userId: principal.userId,
+		// A plugin run has no user of its own, so it reads with its actor's eyes.
+		userId: public_api_visibility_user_id(principal),
 		path: requestedPath,
 		includePending: principal.kind === "public_api_grant",
 		maxBytes: Math.min(body._yay.maxBytes ?? FILES_READ_MAX_BYTES, FILES_READ_MAX_BYTES),
@@ -4078,6 +4624,12 @@ const write_file_body_validator = z.object({
 	 * already exists keeps whatever mode that file has.
 	 */
 	nonCollaborative: z.boolean().optional(),
+	/**
+	 * Plugin principals only. `readOnly: true` creates the file with a direct plugin-named lock;
+	 * it does nothing when the write fills an existing file. The consent behind it is checked
+	 * transactionally at publish time.
+	 */
+	access: z.object({ readOnly: z.boolean().optional() }).optional(),
 });
 
 export type public_api_http_write_file_Body = z.infer<typeof write_file_body_validator>;
@@ -4085,7 +4637,7 @@ export type public_api_http_write_file_Body = z.infer<typeof write_file_body_val
 export async function public_api_http_write_file(ctx: ActionCtx, request: Request, path: "/api/v1/files/write") {
 	const auth = await public_api_authorize_request(ctx, request, {
 		requiredScope: "files:write" satisfies public_api_Scope,
-		allowedKinds: ["user_api_key", "plugin_run"],
+		allowedKinds: ["user_api_key", "plugin_run", "plugin_service"],
 		route: path,
 	});
 	if (auth._nay) {
@@ -4179,19 +4731,60 @@ export async function public_api_http_write_file(ctx: ActionCtx, request: Reques
 			}),
 		} as const;
 	}
-	// Plugins may only create Markdown siblings of their triggering file; the same
-	// constraint is revalidated transactionally at prepare and publish time. A run with no triggering
-	// file has no such place, so every path is refused.
+	// Upload-triggered plugins may only create Markdown siblings of their triggering file; the
+	// same constraint is revalidated transactionally at prepare and publish time. An invoke run
+	// has no source file (`outputParentPath` is null); its authority is the plugin's stamped area,
+	// which only the transactional checks can prove, so it passes here. A non-invoke run with no
+	// source never carries the `files:write` scope, so it never reaches this line.
 	if (
 		principal.kind === "plugin_run" &&
-		(principal.outputParentPath === null || server_path_parent_of(requestedPath) !== principal.outputParentPath)
+		principal.outputParentPath !== null &&
+		server_path_parent_of(requestedPath) !== principal.outputParentPath
 	) {
 		return {
 			status: 403,
 			body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
 		} as const;
 	}
+	// A service writes only inside the destination its grant was sealed to, and only in the
+	// processing phase — the same fence as the service upload routes. Revalidated transactionally
+	// at prepare and publish time.
+	if (
+		principal.kind === "plugin_service" &&
+		(principal.phase !== "processing" || !public_api_is_path_inside_prefix(requestedPath, principal.pathPrefix))
+	) {
+		return {
+			status: 403,
+			body: await fail({
+				status: 403,
+				message: "Path is outside this grant's destination",
+				errorCode: "permission_denied",
+			}),
+		} as const;
+	}
+	// The `access` option is a plugin feature: a user key holder locks files through the app.
+	if (body._yay.access?.readOnly === true && principal.kind === "user_api_key") {
+		return {
+			status: 403,
+			body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
+		} as const;
+	}
 	const overwrite = body._yay.overwrite ?? "replace";
+
+	// Nothing is free: a public-API write costs the same one cent a member's save costs.
+	// The gate sits at the route, not inside `prepare_file_write`, because `touch` shares that
+	// mutation and touch stays free (the app's sidebar create of an empty file is free too).
+	const credits = await ctx.runQuery(internal.billing.check_credits, {
+		userId: public_api_visibility_user_id(principal),
+		organizationId: principal.organizationId,
+		minimumRequiredCents: 1,
+	});
+	if (!credits.hasCredits) {
+		return {
+			status: 402,
+			body: await fail({ status: 402, message: "Insufficient funds", errorCode: "insufficient_funds" }),
+		} as const;
+	}
 
 	let principalRef: Infer<typeof file_write_principal_ref_validator>;
 	if (principal.kind === "plugin_run") {
@@ -4202,6 +4795,8 @@ export async function public_api_http_write_file(ctx: ActionCtx, request: Reques
 			});
 		}
 		principalRef = { kind: "plugin_run", runId: principal.runId, callId: pluginCallId };
+	} else if (principal.kind === "plugin_service") {
+		principalRef = { kind: "plugin_service", grantId: principal.grantId };
 	} else {
 		principalRef = { kind: "user_api_key", credentialId: principal.credentialId };
 	}
@@ -4209,7 +4804,7 @@ export async function public_api_http_write_file(ctx: ActionCtx, request: Reques
 	const written = await write_one_markdown_file(ctx, {
 		organizationId: principal.organizationId,
 		workspaceId: principal.workspaceId,
-		userId: principal.kind === "plugin_run" ? principal.actorUserId : principal.userId,
+		userId: public_api_visibility_user_id(principal),
 		visibilityUserId: public_api_visibility_user_id(principal),
 		principalRef,
 		path: requestedPath,
@@ -4218,6 +4813,7 @@ export async function public_api_http_write_file(ctx: ActionCtx, request: Reques
 		overwrite,
 		skipIfUnchanged: body._yay.skipIfUnchanged ?? false,
 		nonCollaborative: body._yay.nonCollaborative ?? false,
+		requestReadOnly: body._yay.access?.readOnly === true,
 	});
 	if (written._nay) {
 		const failBody = await fail({
@@ -4422,6 +5018,18 @@ export async function public_api_http_write_many(ctx: ActionCtx, request: Reques
 		} as const;
 	}
 
+	// Nothing is free: one credit gate for the whole batch, before any file is staged. There is
+	// no per-item re-check — the payer is signed in (user-key route), and the synced balance
+	// cannot move during the batch from the batch's own events.
+	const credits = await ctx.runQuery(internal.billing.check_credits, {
+		userId: public_api_visibility_user_id(principal),
+		organizationId: principal.organizationId,
+		minimumRequiredCents: 1,
+	});
+	if (!credits.hasCredits) {
+		return { status: 402, body: { message: "Insufficient funds" } } as const;
+	}
+
 	const principalRef: Infer<typeof file_write_principal_ref_validator> = {
 		kind: "user_api_key",
 		credentialId: principal.credentialId,
@@ -4453,6 +5061,8 @@ export async function public_api_http_write_many(ctx: ActionCtx, request: Reques
 			overwrite: file.overwrite,
 			skipIfUnchanged: body.data.skipIfUnchanged ?? false,
 			nonCollaborative: file.nonCollaborative ?? false,
+			// Write-many stays a user-key route, and the lock option is a plugin feature.
+			requestReadOnly: false,
 		});
 		if (result._nay) {
 			// The credential died mid-batch (expired or revoked); every remaining item

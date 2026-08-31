@@ -54,6 +54,13 @@ export const experimental_reuseContext = true;
 const RUN_TTL_MS = 10 * 60 * 1000;
 // 3 minutes.
 const RUNNER_REQUEST_TIMEOUT_MS = 3 * 60 * 1000;
+// 60 seconds: an invoke run is a synchronous request/response held open by a page, not queued
+// work. The run record doubles as the serialization lock, so a short TTL also bounds how long a
+// crashed invoke can keep an endpoint busy before the expiry cron frees it.
+const INVOKE_RUN_TTL_MS = 60 * 1000;
+// Mirror of the runner's LIMITS.bodyBytes. The exact wire body is measured before the fetch so
+// an oversized invoke fails with a labeled error instead of a generic runner 413.
+const RUNNER_BODY_MAX_BYTES = 64_000;
 // One shared transactional quota across every plugin-consuming call, whatever the route.
 const MAX_API_CALLS = 20;
 const RUNNER_ERROR_MESSAGE_MAX_CHARS = 500;
@@ -65,6 +72,7 @@ const RUN_CLEANUP_BATCH_SIZE = 50;
 const UPLOAD_COMPLETED_EVENT_TYPE = "files.upload.completed" as const;
 const RUN_REQUESTED_EVENT_TYPE = "files.run.requested" as const;
 const ACCOUNT_DELETED_EVENT_TYPE = "users.account.deleted" as const;
+const UI_INVOKE_EVENT_TYPE = "ui.invoke.requested" as const;
 
 async function db_plugin_workspace_is_live(
 	ctx: MutationCtx,
@@ -589,6 +597,171 @@ type start_event_run_Result =
 		? Awaited<ReturnValue>
 		: never;
 
+// Caller serialization keys share the endpoint path character rule: printable ASCII, bounded.
+const INVOKE_CALLER_KEY_REGEX = /^[\x21-\x7E]{1,128}$/u;
+
+/**
+ * Claims the serialization lock and creates a running invoke run in one transaction. The run
+ * record itself is the lock: a second invoke with the same live key finds this row and answers
+ * busy, and two invokes racing on the same key conflict on Convex's transaction retry — the
+ * loser re-runs and finds the winner's row. So no separate lock table is needed.
+ *
+ * Everything the plugin_ui token proved at mint time is revalidated here because consent,
+ * enablement, or the installed version can change between mint and invoke.
+ */
+export const start_invoke_run = internalMutation({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		pluginVersionId: v.id("plugins_versions"),
+		userId: v.id("users"),
+		endpointId: v.string(),
+		callerSerializationKey: v.union(v.string(), v.null()),
+		apiTokenHash: v.string(),
+	},
+	returns: v_result({
+		_yay: v.object({
+			pluginRun: doc(app_convex_schema, "plugins_event_runs"),
+			installation: doc(app_convex_schema, "plugins_workspace_installations"),
+			version: doc(app_convex_schema, "plugins_versions"),
+			outboundOrigins: v.array(v.string()),
+			endpointPath: v.string(),
+		}),
+		_nay: {
+			data: v.object({ retryAfterMs: v.number() }),
+		},
+	}),
+	handler: async (ctx, args) => {
+		if (!(await db_plugin_workspace_is_live(ctx, args))) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
+		const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
+		if (
+			!installation ||
+			installation.organizationId !== args.organizationId ||
+			installation.workspaceId !== args.workspaceId ||
+			installation.status !== "enabled" ||
+			// The session was minted against one version; an upgrade in between must not let the
+			// old page invoke the new version's endpoints.
+			installation.pluginVersionId !== args.pluginVersionId
+		) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		if (!installation.acceptedCapabilities.includes("plugin.backend.invoke")) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		const version = await ctx.db.get("plugins_versions", installation.pluginVersionId);
+		if (!version || !version.backendEntrypointFile) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		const endpoint = version.endpoints?.find((entry) => entry.id === args.endpointId);
+		if (!endpoint) {
+			return Result({ _nay: { message: "Endpoint not found" } });
+		}
+
+		// The run reads and writes with the invoking member's eyes, so that member must still be
+		// a live member of the workspace.
+		const membership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_user_organization_workspace_active", (q) =>
+				q
+					.eq("userId", args.userId)
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("active", true),
+			)
+			.first();
+		if (!membership) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
+		let lockKey: string;
+		if (endpoint.serialization === "caller-key") {
+			if (args.callerSerializationKey === null) {
+				return Result({ _nay: { message: "This endpoint requires a serialization key" } });
+			}
+			if (!INVOKE_CALLER_KEY_REGEX.test(args.callerSerializationKey)) {
+				return Result({ _nay: { message: "Serialization keys must be printable ASCII up to 128 characters" } });
+			}
+			lockKey = `${endpoint.id}:${args.callerSerializationKey}`;
+		} else {
+			lockKey = "installation";
+		}
+
+		// Expired queued/running rows must not hold the lock forever: the expiry cron settles
+		// them, but a crash can leave one live until it fires, so judge liveness by expiresAt.
+		const now = Date.now();
+		for (const status of ["queued", "running"] as const) {
+			const recentRuns = await ctx.db
+				.query("plugins_event_runs")
+				.withIndex("by_installation_serializationKey_status", (q) =>
+					q.eq("installationId", installation._id).eq("serializationKey", lockKey).eq("status", status),
+				)
+				.order("desc")
+				.take(5);
+			const liveRun = recentRuns.find((run) => run.expiresAt > now);
+			if (liveRun) {
+				return Result({
+					_nay: {
+						name: "busy",
+						message: "Another invoke is already running for this endpoint",
+						data: { retryAfterMs: Math.max(0, liveRun.expiresAt - now) },
+					},
+				});
+			}
+		}
+
+		// Invoke runs skip the queue: the caller is holding an open HTTP request, so the run
+		// starts running in the same transaction that claims the lock.
+		const runId = await ctx.db.insert("plugins_event_runs", {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			actorUserId: args.userId,
+			installationId: installation._id,
+			pluginVersionId: version._id,
+			event: UI_INVOKE_EVENT_TYPE,
+			eventId: composite_id("plugin", "ui_invoke", crypto.randomUUID(), String(installation._id)),
+			endpointId: endpoint.id,
+			serializationKey: lockKey,
+			status: "running",
+			apiTokenHash: args.apiTokenHash,
+			apiTokenExpiresAt: now + INVOKE_RUN_TTL_MS,
+			acceptedCapabilities: installation.acceptedCapabilities,
+			expiresAt: now + INVOKE_RUN_TTL_MS,
+			apiCallCount: 0,
+			outputWriteCount: 0,
+			errorMessage: null,
+			startedAt: now,
+			updatedAt: now,
+		});
+
+		const pluginRun = await ctx.db.get("plugins_event_runs", runId);
+		if (!pluginRun) {
+			// Unreachable: the run was inserted in this same transaction.
+			throw should_never_happen("plugins_event_runs doc missing right after insert", { runId });
+		}
+
+		return Result({
+			_yay: {
+				pluginRun,
+				installation,
+				version,
+				// The origins the installer consented to are the only ones the plugin may fetch from.
+				outboundOrigins: installation.acceptedOutboundOrigins,
+				endpointPath: endpoint.path,
+			},
+		});
+	},
+});
+
+export type start_invoke_run_Result =
+	typeof start_invoke_run extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
 /**
  * Terminalization side effects shared by finish_event_run and the expiry cron: any call the
  * plugin left started is settled failed, and any write stage it left unpublished is scheduled for
@@ -682,15 +855,22 @@ export const finish_event_run = internalMutation({
 			const pluginStatusIsOk =
 				outcome.pluginStatus === undefined || (outcome.pluginStatus >= 200 && outcome.pluginStatus < 300);
 
-			// A clean runner exit is not enough: the plugin must also have published at least one
-			// output, left no API call unfinished, and left no staged write unpublished.
-			succeeded =
+			// A clean runner exit is not enough: the plugin must also have left no API call
+			// unfinished and no staged write unpublished.
+			const cleanExit =
 				outcome.runnerOk &&
 				outcome.bodyStatus === "succeeded" &&
-				pluginRun.outputWriteCount > 0 &&
 				startedCallCount === 0 &&
 				stages.length === 0 &&
 				pluginStatusIsOk;
+			// An invoke run is a request/response exchange whose result is the plugin's own output
+			// body, so a clean exit alone succeeds. A file event run must also have published at
+			// least one Markdown output.
+			if (pluginRun.event === UI_INVOKE_EVENT_TYPE) {
+				succeeded = cleanExit;
+			} else {
+				succeeded = cleanExit && pluginRun.outputWriteCount > 0;
+			}
 
 			errorMessage = succeeded
 				? null
@@ -880,6 +1060,123 @@ export const cleanup_old_event_runs = internalMutation({
 	},
 });
 
+// A plugin failure still arrives as HTTP 200 + _nay (run metrics under data); a non-200
+// status means the runner itself failed. The _yay metrics and output are validated because
+// finish_event_run and the invoke route consume them; the _nay arm is trusted beyond name
+// and message.
+const runner_response_body_validator = z.union([
+	z.object({
+		_yay: z.looseObject({
+			pluginStatus: z.number(),
+			elapsedMs: z.number(),
+			outputBytes: z.number(),
+			output: z.string(),
+			outputTruncated: z.boolean(),
+		}),
+		_nay: z.undefined().optional(),
+	}),
+	z.object({
+		_yay: z.undefined().optional(),
+		_nay: z.looseObject({
+			name: z.string(),
+			message: z.string(),
+			data: z
+				.looseObject({
+					pluginStatus: z.number().optional(),
+					elapsedMs: z.number().optional(),
+					outputBytes: z.number().optional(),
+					outputTruncated: z.boolean().optional(),
+				})
+				.optional(),
+		}),
+	}),
+]);
+
+/**
+ * One runner round trip shared by event runs and invoke runs. Builds the exact wire body,
+ * refuses one the runner would reject as too large, sends it, and validates the response
+ * shape. Network errors and timeouts propagate as exceptions to the caller's catch.
+ */
+export async function plugins_runtime_execute_runner_request(args: {
+	timeoutMs: number;
+	requestPath?: string;
+	version: Doc<"plugins_versions">;
+	backendEntrypointFile: NonNullable<Doc<"plugins_versions">["backendEntrypointFile"]>;
+	pluginRunId: Id<"plugins_event_runs">;
+	apiToken: string;
+	acceptedCapabilities: Doc<"plugins_event_runs">["acceptedCapabilities"];
+	outboundOrigins: string[];
+	input: unknown;
+}) {
+	// One exact body string: the size refusal below must judge the same bytes the runner would.
+	const body = JSON.stringify({
+		// Runner wire fields; the plugin's name doubles as its id.
+		pluginId: args.version.name,
+		pluginName: args.version.name,
+		pluginVersion: args.version.version,
+		pluginRunId: String(args.pluginRunId),
+		artifactKey: args.backendEntrypointFile.r2Key,
+		// Runner wire field; must be the backend entrypoint file's pinned sha256 (runner
+		// re-hashes the downloaded dist and refuses on mismatch), never version.artifactHash.
+		artifactHash: args.backendEntrypointFile.sha256,
+		// Where the plugin calls back into this host's public API, and the plaintext token it
+		// must present there. This is the token's only copy outside the runner; Convex keeps
+		// just its hash.
+		host: {
+			origin: HOST_ORIGIN,
+			token: args.apiToken,
+		},
+		// The rules the runner enforces while the plugin executes: what it may do, and the
+		// only origins it may fetch from.
+		acceptedCapabilities: args.acceptedCapabilities,
+		outboundOrigins: args.outboundOrigins,
+		// Absent for host event runs; JSON.stringify drops the undefined key, so the runner
+		// keeps its reserved default path.
+		requestPath: args.requestPath,
+		input: args.input,
+	} satisfies pluginRunnerApiSchema["/internal/plugin-runner/run"]["POST"]["body"]);
+
+	const bodyBytes = new TextEncoder().encode(body).byteLength;
+	if (bodyBytes > RUNNER_BODY_MAX_BYTES) {
+		return Result({
+			_nay: {
+				name: "body_too_large" as const,
+				message: "Plugin request is too large",
+			},
+		});
+	}
+
+	// The runner downloads the plugin bundle, executes it, and only then responds: this one
+	// request spans the whole plugin execution, and its response body is the run's result.
+	const runnerResponse = await fetch(`${PLUGIN_RUNNER_URL}/internal/plugin-runner/run`, {
+		method: "POST",
+		// A hung runner request would otherwise hold the action until the Convex action timeout
+		// kills it, which reads as a crash (workpool retry + expiry cron) instead of a labeled failure.
+		signal: AbortSignal.timeout(args.timeoutMs),
+		headers: {
+			Authorization: `Bearer ${PLUGIN_RUNNER_SECRET}`,
+			"Content-Type": "application/json",
+		},
+		body,
+	});
+
+	const runnerJson = await Result_try_promise<unknown>(runnerResponse.json());
+	const runnerParsed = runner_response_body_validator.safeParse(runnerJson._yay);
+	const runnerResult = runnerJson._nay
+		? Result({ _nay: { name: "invalid_response", message: "Plugin runner returned invalid JSON" } })
+		: runnerParsed.success
+			? runnerParsed.data
+			: Result({ _nay: { name: "invalid_response", message: "Plugin runner returned an invalid response" } });
+
+	return Result({
+		_yay: {
+			runnerOk: runnerResponse.ok,
+			runnerHttpStatus: runnerResponse.status,
+			runnerResult,
+		},
+	});
+}
+
 /**
  * Executes both upload-triggered and manually requested runs.
  */
@@ -929,101 +1226,50 @@ export const execute_upload_completed_event_run = internalAction({
 		}
 
 		try {
-			// The runner downloads the plugin bundle, executes it, and only then responds: this one
-			// request spans the whole plugin execution, and its response body is the run's result.
-			const runnerResponse = await fetch(`${PLUGIN_RUNNER_URL}/internal/plugin-runner/run`, {
-				method: "POST",
-				// A hung runner request would otherwise hold the action until the Convex action timeout
-				// kills it, which reads as a crash (workpool retry + expiry cron) instead of a labeled failure.
-				signal: AbortSignal.timeout(RUNNER_REQUEST_TIMEOUT_MS),
-				headers: {
-					Authorization: `Bearer ${PLUGIN_RUNNER_SECRET}`,
-					"Content-Type": "application/json",
+			const runner = await plugins_runtime_execute_runner_request({
+				timeoutMs: RUNNER_REQUEST_TIMEOUT_MS,
+				version: startResult._yay.version,
+				backendEntrypointFile,
+				pluginRunId: startResult._yay.pluginRun._id,
+				apiToken,
+				acceptedCapabilities: startResult._yay.pluginRun.acceptedCapabilities,
+				outboundOrigins: startResult._yay.outboundOrigins,
+				// The event as the plugin sees it. Source carries metadata only: the plugin downloads
+				// the file content itself through a host call.
+				input: {
+					event: startResult._yay.pluginRun.event,
+					eventId: startResult._yay.pluginRun.eventId,
+					organizationId: String(startResult._yay.pluginRun.organizationId),
+					workspaceId: String(startResult._yay.pluginRun.workspaceId),
+					actorUserId: String(startResult._yay.pluginRun.actorUserId),
+					configuration,
+					source:
+						startResult._yay.fileNode && startResult._yay.asset
+							? {
+									fileNodeId: String(startResult._yay.fileNode._id),
+									assetId: String(startResult._yay.asset._id),
+									name: startResult._yay.fileNode.name,
+									// Absolute path so plugins can construct exact sibling output paths for
+									// /api/v1/files/write.
+									path: startResult._yay.fileNode.path,
+									contentType: startResult._yay.fileNode.contentType ?? null,
+									size: startResult._yay.asset.size,
+								}
+							: null,
 				},
-				body: JSON.stringify({
-					// Runner wire fields; the plugin's name doubles as its id.
-					pluginId: startResult._yay.version.name,
-					pluginName: startResult._yay.version.name,
-					pluginVersion: startResult._yay.version.version,
-					pluginRunId: String(startResult._yay.pluginRun._id),
-					artifactKey: backendEntrypointFile.r2Key,
-					// Runner wire field; must be the backend entrypoint file's pinned sha256 (runner
-					// re-hashes the downloaded dist and refuses on mismatch), never version.artifactHash.
-					artifactHash: backendEntrypointFile.sha256,
-					// Where the plugin calls back into this host's public API, and the plaintext token it
-					// must present there. This is the token's only copy outside the runner; Convex keeps
-					// just its hash.
-					host: {
-						origin: HOST_ORIGIN,
-						token: apiToken,
-					},
-					// The rules the runner enforces while the plugin executes: what it may do, and the
-					// only origins it may fetch from.
-					acceptedCapabilities: startResult._yay.pluginRun.acceptedCapabilities,
-					outboundOrigins: startResult._yay.outboundOrigins,
-					// The event as the plugin sees it. Source carries metadata only: the plugin downloads
-					// the file content itself through a host call.
-					input: {
-						event: startResult._yay.pluginRun.event,
-						eventId: startResult._yay.pluginRun.eventId,
-						organizationId: String(startResult._yay.pluginRun.organizationId),
-						workspaceId: String(startResult._yay.pluginRun.workspaceId),
-						actorUserId: String(startResult._yay.pluginRun.actorUserId),
-						configuration,
-						source:
-							startResult._yay.fileNode && startResult._yay.asset
-								? {
-										fileNodeId: String(startResult._yay.fileNode._id),
-										assetId: String(startResult._yay.asset._id),
-										name: startResult._yay.fileNode.name,
-										// Absolute path so plugins can construct exact sibling output paths for
-										// /api/v1/files/write.
-										path: startResult._yay.fileNode.path,
-										contentType: startResult._yay.fileNode.contentType ?? null,
-										size: startResult._yay.asset.size,
-									}
-								: null,
-					},
-				} satisfies pluginRunnerApiSchema["/internal/plugin-runner/run"]["POST"]["body"]),
 			});
+			// Only body_too_large: the request never reached the runner. Host-built event bodies
+			// are small, so this branch is effectively unreachable here; it exists for the shared
+			// helper's contract.
+			if (runner._nay) {
+				await ctx.runMutation(internal.plugins_runtime.finish_event_run, {
+					runId: args.runId,
+					outcome: { kind: "failed", errorMessage: runner._nay.message },
+				});
+				return null;
+			}
 
-			// A plugin failure still arrives as HTTP 200 + _nay (run metrics under data); a non-200
-			// status means the runner itself failed. The _yay metrics are validated because
-			// finish_event_run consumes them; the _nay arm is trusted beyond name and message.
-			const bodyValidator = z.union([
-				z.object({
-					_yay: z.looseObject({
-						pluginStatus: z.number(),
-						elapsedMs: z.number(),
-						outputBytes: z.number(),
-						outputTruncated: z.boolean(),
-					}),
-					_nay: z.undefined().optional(),
-				}),
-				z.object({
-					_yay: z.undefined().optional(),
-					_nay: z.looseObject({
-						name: z.string(),
-						message: z.string(),
-						data: z
-							.looseObject({
-								pluginStatus: z.number().optional(),
-								elapsedMs: z.number().optional(),
-								outputBytes: z.number().optional(),
-								outputTruncated: z.boolean().optional(),
-							})
-							.optional(),
-					}),
-				}),
-			]);
-			const runnerJson = await Result_try_promise<unknown>(runnerResponse.json());
-			const runnerParsed = bodyValidator.safeParse(runnerJson._yay);
-			const runnerResult = runnerJson._nay
-				? Result({ _nay: { name: "invalid_response", message: "Plugin runner returned invalid JSON" } })
-				: runnerParsed.success
-					? runnerParsed.data
-					: Result({ _nay: { name: "invalid_response", message: "Plugin runner returned an invalid response" } });
-
+			const runnerResult = runner._yay.runnerResult;
 			const runMetrics = runnerResult._nay ? runnerResult._nay.data : runnerResult._yay;
 
 			// Hand over the raw facts; finish_event_run classifies success or failure.
@@ -1031,8 +1277,8 @@ export const execute_upload_completed_event_run = internalAction({
 				runId: args.runId,
 				outcome: {
 					kind: "runner_response",
-					runnerOk: runnerResponse.ok,
-					runnerHttpStatus: runnerResponse.status,
+					runnerOk: runner._yay.runnerOk,
+					runnerHttpStatus: runner._yay.runnerHttpStatus,
 					bodyStatus: runnerResult._nay ? "errored" : "succeeded",
 					// The plugin's own truncated error message is persisted for workspace admins; plugin
 					// authors own the risk of secrets embedded in their exception messages.

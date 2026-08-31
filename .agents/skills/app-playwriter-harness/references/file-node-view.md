@@ -75,6 +75,8 @@ await replyForm.locator('[contenteditable="true"][aria-label="Reply to comment"]
 await replyForm.getByRole("button", { name: "Reply to comment" }).click();
 ```
 
+- Commented text in the document is wrapped in `span.lb-tiptap-thread-mark` (class from `packages/app/shared/files-tiptap-comments.ts`); its `data-lb-thread-id` attribute carries the thread id. Use it to assert a comment mark survived a save or a reload.
+
 ## Comments Sidebar
 
 - Comments region: `getByRole("complementary", { name: "Document comments" })`.
@@ -181,6 +183,28 @@ The wait runner reads the message before and after `waitForSelector`, and logs `
 ### Frontmatter Indexing Warning QA
 
 Upload `assets/files/qa-frontmatter-overcap.md` through the sidebar. After conversion, the rich editor stays editable and `.FileNodeViewTopFloating-frontmatter-too-large` appears in the shared top status. Its full message is in the nested span's `title`; assert it reports 129 fields and 258 index entries, with limits of 128 and 512. The node must not show the stored-file card or enter a conversion retry loop. Archive the fixture after the check.
+
+## Non-Collaborative Editors (No Yjs)
+
+Since 2026-08-31 a file with collaboration turned off supports every view its document shape supports: the rich and diff views are backed by the stored string instead of a Yjs document. The view-switcher buttons are functional; asserting the mounted editor changed is the real check.
+
+Rich view (`FileEditorRichTextNonCollab`, only for `rich_text` shape):
+
+- Same content selectors as the collaborative rich editor: `.FileEditorRichText-editor-content` and `.FileEditorRichText-editor-content-root`, so the existing typing recipes work unchanged.
+- Toolbar: `[role="group"][aria-label="Rich text editor actions"]` with class `.FileEditorRichTextNonCollabToolbarActions`, holding `Save` (with the `Checking` spinner while the dirty check debounces), the word/size badges, and `Open file snapshots`. No Sync.
+- Reformat hint: `.FileEditorRichTextNonCollabToolbarActions-reformat-hint` reads "Saving from the rich editor will reformat this file's Markdown." It shows only while the loaded Markdown differs from what the editor would serialize, and it goes away after the first save.
+- The bubble **Comment** button is disabled while unsaved edits exist. The disabled button carries `title` and `aria-label` `Add comment — save your changes first`. After a save it enables, and submitting a comment saves the file again at once (the mark must live in a committed version).
+- A refused content read renders `.FileEditorRichText-refusal` (`role="alert"`) instead of the editor.
+- A save that lost the race toasts "This file changed while you were saving. Copy your local changes before reloading, then try again."
+
+Diff view (`FileEditorDiffNonCollab`, both shapes):
+
+- Same root and toolbar labels as the collaborative diff editor: `[aria-label="File diff editor"]`, `[aria-label="Diff editor actions"]`. Tell them apart by class: the non-collaborative root is `.FileEditorDiffNonCollab` and its toolbar holds only `Save`, `Discard all` (`aria-label="Discard all changes in this file"`), the size badge, and the snapshots button — no Sync, no Accept all.
+- The original pane is the committed text, the modified pane is the member's local edits. Monaco's per-hunk revert arrow in the margin restores the committed text for one hunk; there are no accept/discard widgets.
+- Both panes register the usual keyed handles: `window.__qa.monaco().diffOriginal` / `.diffModified`.
+- A refused content read renders `.FileEditorDiffNonCollab-refusal` (`role="alert"`).
+
+Fixture recipe: see "Non-Collaborative File Fixture" in `files.md`.
 
 ## Agent Sidebar
 

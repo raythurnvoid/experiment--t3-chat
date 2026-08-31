@@ -175,6 +175,7 @@ export default defineConfig({
 			"@tiptap/extension-mention",
 			"@tiptap/extension-paragraph",
 			"@tiptap/extension-placeholder",
+			"@tiptap/extension-table",
 			"@tiptap/extension-task-item",
 			"@tiptap/extension-task-list",
 			"@tiptap/extension-text",

@@ -4,32 +4,32 @@
 > 2026-08-23, and have not been re-measured since.** The recording-stage claims are the exception:
 > they were re-measured on **`council-room-r22`** and carry that stamp wherever a measurement, rather
 > than a read of the source, is what backs them. The room has moved again since both of those stamps.
-> This file does not record what `ROOM_REVISION` reads today, and that is on purpose — see "Prove the
+> This file does not record what the marker reads today, and that is on purpose — see "Prove the
 > Worker serves your tree" below for why a recorded value is the one way this proof can lie to you.
-> Read the constant out of `packages/council/src/room/page.ts` before you trust anything this
-> file says about the room, and compare it with the marker the Worker serves. Treat every
-> "measured on r18" note below as history, not as the current behaviour — re-run the one you are about
-> to rely on.
+> The marker is **build-derived** since the 2026-08-31 room refactor: the build hashes the built JS
+> and CSS filenames into `council-room-<8 hex>` and prints the value. Read it, do not bump it —
+> there is no constant to bump any more. Compare the served marker with the value your last
+> `run build` printed. Treat every "measured on r18" note below as history, not as the current
+> behaviour — re-run the one you are about to rely on.
 >
-> Nothing catches this drift for you. `page.test.ts` asserts only that the marker is present and
-> non-empty (`content="[^"]+"`), so the constant and this file can disagree with every gate green.
+> **A matching revision proves this file is not stale. It does not prove it is complete.** In the
+> string era the constant only moved when somebody bumped it by hand, and that got forgotten —
+> once inside the very session a stamp was written, so two measurements read the same marker and
+> disagreed about the layout. The build hash closed that hole for code and CSS, but a match still
+> only says "the served build is the one I built", never "this document is current". Prove the
+> served bytes separately — see "Prove the Worker serves your tree".
 >
-> **A matching revision proves this file is not stale. It does not prove it is complete.** The constant
-> only moves when somebody bumps it by hand, and that gets forgotten. It was forgotten during the very
-> session this stamp was written: another fixer moved the landscape breakpoint from 599px to 659px and
-> left the revision on `r18`, so a measurement taken before that edit and one taken after it read the
-> same marker and disagreed about the layout. Treat a match as "nobody bumped it since", never as "this
-> document is current", and prove the served bytes separately — see "Prove the Worker serves your tree".
->
-> **Pointers into `client.ts`, `page.ts` and `routes-room.ts` are given by symbol name, not line
-> number, and yours should be too.** Those three files move by tens of lines a session. Every line
+> **Pointers into the room-client modules and `routes-room.ts` are given by symbol name, not line
+> number, and yours should be too.** Those files move by tens of lines a session. Every line
 > number written into this file during round 10 was already wrong by the end of that same round.
 
 Two Council surfaces run locally and are driven without any real provider or Convex host:
 
-- **The meeting room** — one static document the Council Worker serves at `GET /room`. Source:
-  `packages/council/src/room/page.ts` (document + CSS), `packages/council/src/room/client.ts`
-  (the two inline scripts, as plain strings), `packages/council/src/routes-room.ts` (`POST /room/api/*`).
+- **The meeting room** — a Vite-built document the Council Worker serves at `GET /room` from its
+  assets store. Source: `packages/council/room-client/room.html` and `room.css` (the document),
+  `packages/council/room-client/src/` (the typed client modules; start function in `client.ts`,
+  one module per feature region), `packages/council/src/room-page.ts` (CSP + serving),
+  `packages/council/src/routes-room.ts` (`POST /room/api/*`).
 - **The plugin dashboard preview** — the Council plugin UI with a stubbed `window.fetch`. Source:
   `plugins/bonobo-plugin-council/src/preview.tsx` and `src/app.tsx`.
 
@@ -47,7 +47,7 @@ It was already running both times. One `curl` settles it, and remember the IPv6 
 
 | Surface | Command | URL |
 | --- | --- | --- |
-| Room | `vp env exec pnpx wrangler dev --local --config packages/council/wrangler.jsonc` | `http://127.0.0.1:8787/room?m=<meetingId>` |
+| Room | terminal 1: `vp env exec pnpm --dir packages/council run build -- --watch`; terminal 2: `vp env exec pnpm --dir packages/council exec wrangler dev --local` (the pinned wrangler, not `pnpx`) | `http://127.0.0.1:8787/room?m=<meetingId>` |
 | Dashboard preview | `vite --port 5199 --strictPort` in `plugins/bonobo-plugin-council` | `http://localhost:5199/preview.html?state=<fixture>` |
 
 - The Worker answers on both `127.0.0.1:8787` and `localhost:8787`. The runners use `127.0.0.1`.
@@ -72,21 +72,22 @@ code. The document carries a marker for exactly this:
 await page.evaluate(() => document.querySelector('meta[name="council-room-revision"]').getAttribute("content"));
 ```
 
-It is `ROOM_REVISION` in `packages/council/src/room/page.ts`. This document deliberately does
-not record its current value: the constant is bumped whenever the served bytes change, so any value
-written here is wrong within a round or two, and a reader who trusts it compares the Worker against a
-number that was never the answer. Read the constant out of the file and compare it with what the Worker
-serves. A recorded value that happens to match a stale marker is the
-one way this proof can lie to you. From the shell:
+The marker is build-derived: `run build` hashes the built JS and CSS filenames into
+`council-room-<8 hex>` and prints the value. This document deliberately does not record a current
+value — any value written here is wrong within a round or two, and a reader who trusts it compares
+the Worker against a number that was never the answer. Compare the served marker with the value
+your own build printed. From the shell:
 
 ```sh
 curl -s "http://127.0.0.1:8787/room?m=qa" | grep -o 'council-room-revision" content="[^"]*"'
 ```
 
-`wrangler dev` rebuilds on save, so your edit should already be in the served document. The marker
-only moves when someone bumps the constant, so bump it in the same change whenever you touch
-`room/page.ts` or `room/client.ts`. When it was not bumped, fall back to the break-on-purpose rule:
-change one visible string, reload, watch it change, put it back.
+`wrangler dev` serves whatever is in `room-client/dist/` and picks up a rebuilt assets directory
+without a restart (verified 2026-08-31) — but nothing rebuilds for you. A source edit reaches the
+served document only after `run build` runs again, so keep `run build -- --watch` running, and
+mind that a comment-only edit changes no built bytes and so no marker. When in doubt, fall back to
+the break-on-purpose rule: change one visible string, rebuild, reload, watch it change, put it
+back.
 
 ## Room entry points and views
 
@@ -176,7 +177,7 @@ inserts the host's participant row with an empty `display_name`: the insert is t
 name stays empty until they type it in the lobby, because `Host` is a role and not a name. So the
 empty string is the state every real first-time host reaches. The client gates the entire lobby naming
 step on it — `hostNeedsName` is `participant.role === "host" && displayName === ""`
-(`renderLobby` in `room/client.ts`) — and the Join handler only reads the field while `#host-name-field` is not
+(`renderLobby` in `room-client/src/session.ts`) — and the Join handler only reads the field while `#host-name-field` is not
 hidden. So a fixture that hands the host a ready-made name is the *returning* host, and it cannot reach
 `#host-name`, its two refusals (`Enter the name to show to other participants.` and `That display name
 is too long. Try a shorter one.`, each setting `aria-invalid` and pulling focus back to the input), or
@@ -202,11 +203,11 @@ when there is none. Some answers have their own branch:
   sent — so a runner can tell a 500 from a 503 by whether the banner repeats its own text. Two more
   cases in the same `catch` replace the message with fixed text and would break that rule of thumb:
   a request that aborted on the 30 s deadline, and an answer that lands after the provider has
-  already started recording. Read all of them off `startRecording` in `room/client.ts`.
+  already started recording. Read all of them off `startRecording` in `room-client/src/host-controls.ts`.
   **`idle` and `unsaved` wear the same label, `Start recording`, so the control cannot tell you which
   one you are in.** The end dialog can: open `#host-confirm` and read `#host-confirm-text`, which
   says no recording was started on `idle` and that the recording could not be saved on `unsaved`.
-  Those two sentences are written by `openEndConfirm` in `room/client.ts`, one `if` branch each —
+  Those two sentences are written by `openEndConfirm` in `room-client/src/host-controls.ts`, one `if` branch each —
   read them out of that function rather than out of a copy here, because a product sentence pasted
   into this file goes stale the moment somebody rewords it and no gate would notice. Nothing cheaper
   separates the two stages, because `state` lives inside the client's IIFE and no page global exposes
@@ -330,8 +331,8 @@ function emitter(fields) {
 
 ### Events the room subscribes to
 
-Checked against `wireCallEvents`, `createRoomJoinedWaiter`, `createTile`, and `updateParticipantTile`
-in `room/client.ts`.
+Checked against `wireCallEvents` in `room-client/src/call-state.ts`, `createRoomJoinedWaiter` in
+`room-client/src/join.ts`, and `createTile` and `updateParticipantTile` in `room-client/src/media.ts`.
 
 | Emitter | Event | Payload the room reads |
 | --- | --- | --- |
@@ -459,7 +460,7 @@ pinned it before `goto` with `await page.clock.setFixedTime(new Date("2026-08-22
 ## Element ids
 
 Every id below was read out of the document the local Worker served, and matched against
-`room/page.ts`. Ids are stable — this document is hand-written HTML, not a component tree.
+`room-client/room.html`. Ids are stable — this document is hand-written HTML, not a component tree.
 
 **Guest form** — `#guest-form`, `#guest-code`, `#guest-name`, `#guest-email` (optional), `#guest-submit`,
 `#guest-error`. A refused field also gets `aria-invalid="true"` and keyboard focus.
@@ -840,7 +841,7 @@ should. It is `snapshot()` that reads the wrong surface. Use `getCleanHTML` for 
   `[role="alert"],[role="status"],[aria-live]` across the whole refusal so you also catch a live
   region that announces late or never. What the user hears is what existed when focus landed, not
   what the DOM settled on afterwards. The room's own lobby name refusals do write the message before
-  they call `focus()` (`room/client.ts`, the empty and 128-byte checks) — but that ordering is the
+  they call `focus()` (`joinMeeting` in `room-client/src/join.ts`, the empty and 128-byte checks) — but that ordering is the
   thing to prove, not the thing to assume.
 - **The client's own deadlines are 30 s each** — join, start recording, close, and the guest session
   (which also covers the ticket exchange and the cookie resume) — and the meeting-state poll is 10 s. A wedge check has to sit through a real 30 s, so give `waitForFunction`
@@ -895,9 +896,9 @@ should. It is `snapshot()` that reads the wrong surface. Use `getCleanHTML` for 
   is lobby title ≠ URL id.
   After deploying this package (Worker version `2df566c7-a207-47db-b965-4deea1c2ff95`, same day),
   the same leftover cookie plus the same guest URL posted `{ meetingId }`, the resume answered 401,
-  and `#view-guest` appeared. That is the current served behaviour only while the marker still
-  matches `ROOM_REVISION` in `page.ts`. Compare the served `council-room-revision` before blaming
-  the tree. Do not Join from the QA Edge profile.
+  and `#view-guest` appeared. That is the current served behaviour only while the served marker
+  still matches the one your build printed. Compare the served `council-room-revision` before
+  blaming the tree. Do not Join from the QA Edge profile.
 - **A browser cannot reach the guest join without `CF-Connecting-IP`.** `COUNCIL_ALLOW_MISSING_CLIENT_IP`
   is `"false"` in `wrangler.jsonc`, and only Cloudflare's edge sets that header, so
   `POST /room/api/guest-session` from a local browser answers `400 Missing client address` before it
@@ -1180,8 +1181,12 @@ root install does not cover it). The test path is relative to `packages/council`
 root:
 
 ```powershell
-vp env exec pnpm --dir packages/council exec vitest run src/room/client.test.ts -t "<test name>"
+vp env exec pnpm --dir packages/council exec vitest run room-client/src/client.test.ts -t "<test name>"
 ```
+
+The client behavior tests live in `room-client/src/client.test.ts`; the markup and CSS claims in
+`room-client/src/room-document.test.ts`; the source-text claims in
+`room-client/src/client-source.test.ts`.
 
 `vp env exec pnpm --dir packages/council run test` stays the gate for the whole suite.
 
@@ -1225,7 +1230,7 @@ check while a state a real user reaches does not.
 The technique here is still the point. `RECORDING_LABELS` (`client.ts`) has six stages and five
 strings, and the short one, `"Start recording"`, covers two of the six stages: `idle` and `unsaved`.
 It fits everywhere. The longest, `"Recording unavailable"`,
-measures 125px at the shipped 12px label size, and it is the string every width in `room/page.ts` is
+measures 125px at the shipped 12px label size, and it is the string every width in `room-client/room.css` is
 derived against. A sweep that measures the **idle** control measures the one value that cannot fail —
 and so does a sweep that measures `unsaved`, which looks like a driven state and is not a wider one.
 Nine rounds of reflow sweeps in this loop reported the room clean for exactly that reason.
@@ -1364,7 +1369,7 @@ and find.
 
 ## Scoring a busy control, and why the obvious probe passes it
 
-Both the room (`page.ts`, inline `ROOM_CSS`) and the dashboard (`council.css`) mark work in flight with
+Both the room (`room-client/room.css`) and the dashboard (`council.css`) mark work in flight with
 `aria-busy="true"` on a `.button`, and the label is the only progress feedback a user gets. So the
 label's contrast in that state is a real WCAG 1.4.3 question, and it is one a look at the page cannot
 answer — a faded button looks fine next to a bright one.

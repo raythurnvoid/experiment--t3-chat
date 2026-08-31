@@ -341,13 +341,15 @@ the page token for a service grant at Convex `/api/internal/plugins/service-gran
   bucket (STRICT_WRITE: capacity 2, 12/min, keyed per user — the user's own open plugin tabs share it).
   Retry recovers in seconds; it is not a Worker or exchange fault.
 - An alert naming the exchange (`Convex /api/internal/plugins/service-grants/exchange returned HTTP
-  401`) means the Worker reached Convex and Convex refused. The exchange 401s for: wrong/unset
-  `COUNCIL_SERVICE_EXCHANGE_SECRET`, bad bearer, dead page token. To check the deployment secret
-  without ever printing it, probe its SHAPE: pipe `convex env get COUNCIL_SERVICE_EXCHANGE_SECRET`
-  into a Node one-liner that prints only length, line count, and char classes. A value with an embedded
-  newline can never match — HTTP headers cannot carry raw newlines and the stored value is compared
-  untrimmed — so a 2-line value is proof of a mis-set env var (found 2026-08-15: 43 chars + trailing
-  `\n`; `convex env list` shows such a value as a stray `'` continuation line).
+  401`) means the Worker reached Convex and Convex refused. The exchange 401s for: a Worker-side
+  `COUNCIL_SERVICE_EXCHANGE_SECRET` that does not hash-match the publisher's service registration, a
+  bad bearer, or a dead page token. Since the registration migration there is NO Convex env var to
+  check: `plugins_service_registrations` stores only the SHA-256 hash of the registered secret, and
+  the old `convex env get COUNCIL_SERVICE_EXCHANGE_SECRET` shape probe is gone with the env var. A
+  value with an embedded or trailing newline can never match — HTTP headers cannot carry raw
+  newlines and the presented value is hashed untrimmed — so on a stubborn 401, re-run
+  `wrangler secret put` for the Worker secret rather than probing Convex (the 2026-08-15 incident
+  was exactly a 2-line value: 43 chars + trailing `\n`).
 
 ## Council page: driving meeting creation
 
@@ -525,8 +527,9 @@ fake-audio scratch-Chrome loop above.
   meeting is refused and the guest form appears. If the served `council-room-revision` lags the tree,
   the page posts `{}` and the leftover host lobby comes back (Host + old title; Join says the old
   meeting ended). Re-measured 2026-08-26 after deploying this package: leftover cookie + live guest
-  URL → `{ meetingId }` → 401 → `#view-guest`. Compare the served marker with `ROOM_REVISION` in
-  `packages/council/src/room/page.ts` before trusting the live Worker. Do not Join from the
+  URL → `{ meetingId }` → 401 → `#view-guest`. The marker is build-derived since the 2026-08-31
+  room refactor — compare the served marker with the value the deploying build printed (there is
+  no constant to read any more) before trusting the live Worker. Do not Join from the
   QA Edge profile (mic permission). Colleagues should open the guest link in their own browser.
 - **Start recording in the room.** Close without that click settles `ready` with no recording files.
   The host still writes `/meetings/<meetingId>/meeting.md` from the plugin store (title, status,
@@ -538,31 +541,33 @@ fake-audio scratch-Chrome loop above.
   `destinationPath` at create time. Recordings appear in Files only on the first successful upload.
   Installed Council 0.2.0 still prints `Saved to` on every card even when `artifactCount` is 0.
   Current plugin source hides the path unless `artifacts.length > 0` and says `Council saved no
-  files for this meeting.` instead. The Files tree can still show `meeting.md` from host projection
-  for that same meeting. The card label next to it is `Ended` (close time), not a Files destination.
-- **Host projection Files tree (no Join).** Convex copies each public `meetings` store doc into
-  `/meetings/<meetingId>/meeting.md`. After a Convex push that includes
-  `plugins_projections_council`, trigger `internal.plugins_projections.schedule_sync` for the
-  install, then open `/w/personal/home/files?nodeId=root` in an owned tab. Root shows
+  files for this meeting.` instead. The Files tree can still show `meeting.md`, written by the
+  Council Worker itself, for that same meeting. The card label next to it is `Ended` (close time),
+  not a Files destination.
+- **Meeting note Files tree (no Join).** The Council Worker writes each meeting's note to
+  `/meetings/<meetingId>/meeting.md` through its sealed service grant on `/api/v1/files/write` —
+  the host copies nothing any more. The 2026-08 data erase removed every old note, and the Worker
+  rebuilds them only after its pending redeploy (D1 `0010` resets `file_projection_revision` to 0
+  so every meeting rebuilds); until then absent notes are expected. To check: open
+  `/w/personal/home/files?nodeId=root` in an owned tab. Root shows
   `meetings, contains read-only items` (not `meetings, read-only`). `Add file` / `Add folder` on
   that row stay enabled; the same actions on `chitchat, read-only` stay disabled. Expand
   `meetings` → the uuid folders → `meeting.md, read-only`. Open it and read
   `.FileNodeView-content-panel`: title, `Status:`, `Meeting id:`, and either artifact file names
-  or `Council stored no recording files for this meeting.` Only public store `meetings` docs get
-  a note. A leftover uuid folder with no store doc stays without `meeting.md` (delete archives
-  the note and leaves the folder). Do not Join from QA Edge for this check. Existing store docs
-  do not appear until that first scheduled sync (or the hourly `ensure_hourly` job with
-  `pluginName: "council"`).
+  or `Council stored no recording files for this meeting.` A leftover uuid folder with no D1 row
+  stays without `meeting.md` (delete archives the note and leaves the folder). Do not Join from QA
+  Edge for this check.
 - **A Failed card is not enough.** The page always shows the same save-failed sentence. D1
   `failure_reason` is the operator text, but a Durable Object reset mid-run can write that column
   first (`Durable Object reset because its code was updated.`) and then the catch cannot overwrite
   it because the row is already `failed`. The real step error lives on the Workflow instance:
-  `vp env exec -- pnpx wrangler workflows instances describe bonobo-senate-council-workflow council-process_meeting-<meetingId>-g<generation> --config packages/council/wrangler.jsonc`.
+  `vp env exec -- pnpx wrangler workflows instances describe bonobo-council-workflow council-process_meeting-<meetingId>-g<generation> --config packages/council/wrangler.jsonc`
+  (the workflow becomes `bonobo-senate-council-workflow` at the pending Worker cutover).
   Also read artifacts (`kind, file_name, status`, never `upload_body`) and the outbox generation.
-  Do not run `wrangler tail` on `bonobo-senate-council` while a meeting is `processing`: enabling
+  Do not run `wrangler tail` on `bonobo-council-service` while a meeting is `processing`: enabling
   tail or dashboard logs can reset the Workflow Durable Object. Hourly cron redrives after one
-  hour if the sealed grant still lives. Convex will only show `plugins_projections_council:*`
-  until create-target runs. Do not Join from QA Edge for this. QA Edge is not signed into the
+  hour if the sealed grant still lives. Convex will only show the service-grant exchange and
+  `meeting.md` writes until create-target runs. Do not Join from QA Edge for this. QA Edge is not signed into the
   Cloudflare or Convex dashboards — use Wrangler and `convex logs`, and do not sign in.
   If the Workflow error is `The provider never published the recording's track files`, ask
   RealtimeKit live (Cloudflare API MCP `GET .../recordings/{id}`, or list today's recordings).
@@ -619,7 +624,7 @@ fake-audio scratch-Chrome loop above.
   still polling. If that happens, set the row back to `processing` on the same generation so a
   later `UPLOADED` can still write `ready`. A Workflow that stays `Running` on one sleep step
   for far longer than 30 seconds may be paused: `wrangler workflows instances resume
-  bonobo-senate-council-workflow <instanceId> --config packages/council/wrangler.jsonc`
+  bonobo-council-workflow <instanceId> --config packages/council/wrangler.jsonc`
   unstuck generation 2 of the 2026-08-26 TEST meeting. Do not start `wrangler tail` to watch
   this. The hung-upload recovery is deployed. Generation 3 of that TEST meeting finished
   `ready` from the provider transcript after every poll stayed `UPLOADING` with

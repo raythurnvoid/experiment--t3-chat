@@ -41,6 +41,17 @@
 		text-align: center;
 	}
 
+	/* Shown instead of the editor when the content read was refused: mounting an empty stand-in
+	   document would let Save overwrite the real content. */
+	.FileEditorRichText-refusal {
+		margin: 32px auto;
+		max-width: 480px;
+		padding: 16px;
+
+		font-size: 0.95rem;
+		color: var(--color-fg-08);
+	}
+
 	.FileEditorRichText-editor-content-root {
 		width: 100%;
 	}
@@ -506,6 +517,27 @@
 		white-space: nowrap;
 	}
 	/* #endregion toolbar */
+
+	/* #region non-collaborative toolbar */
+	.FileEditorRichTextNonCollabToolbarActions-button {
+		gap: 4px;
+	}
+
+	.FileEditorRichTextNonCollabToolbarActions-icon {
+		width: 20px;
+		height: 20px;
+	}
+
+	.FileEditorRichTextNonCollabToolbarActions-reformat-hint {
+		min-width: 0;
+
+		font-size: 12px;
+		color: var(--color-fg-07);
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+	}
+	/* #endregion non-collaborative toolbar */
 
 	/* #region top sticky floating container */
 	.FileEditorRichTextTopStickyFloatingContainer {

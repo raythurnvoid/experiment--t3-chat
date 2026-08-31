@@ -2042,7 +2042,7 @@ export const delete_organization = mutation({
 					Promise.all(
 						organizationWorkspaces.map(async (workspace) => {
 							// Organization structure stays through retention. Fence each workspace now so its
-							// plugin sessions, runs, services, store, and scheduled projections stop immediately.
+							// plugin sessions, runs, services, and store stop immediately.
 							if (workspace.pluginDataPurgeStartedAt === undefined) {
 								await ctx.db.patch("organizations_workspaces", workspace._id, {
 									pluginDataPurgeStartedAt: now,

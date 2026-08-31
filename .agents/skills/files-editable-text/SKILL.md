@@ -12,6 +12,8 @@ Every editable text file has a Yjs document in one of two shapes (`files_YjsRoot
 
 The root names live in `files_YJS_DOC_KEYS` (`packages/app/shared/files.ts`). Markdown keeps the rich text editor. The other 19 extensions open in the Monaco "Code" editor.
 
+Rich text documents support GFM tables. The shared extension set in `packages/app/shared/files-tiptap.ts` (`#region tables`) registers the four table nodes for both the browser and the server, so the two schemas stay identical. The serializer writes GFM pipe tables: no column padding, alignment colons read from the first row, `\|` escaping with the backslash run in front of a pipe doubled, `<br>` for newlines inside a cell, and an empty header row when the document's first row holds body cells. Merged cells, column widths, and multiple blocks inside a cell are not representable in GFM: they are flattened once on the first save and are stable afterwards. One special spelling: a code span in a cell that holds a backslash right before a pipe is written as an HTML `<code>` element with numeric character references (`&#92;`, `&#124;`), because the backtick form would grow its backslash run on every save. Cells accept `paragraph+` only, so members cannot create lists, headings, or code blocks inside a cell.
+
 # The Extension Classifier
 
 Everything derives from the file NAME's extension and only the extension. The client-declared media type is unvalidated input and must never pick a shape or a served type. All in `packages/app/shared/files.ts`:
@@ -64,7 +66,7 @@ Two predicates in `packages/app/shared/files.ts` ask the two different questions
 
 ## The third write door
 
-`replace_file_content` (`packages/app/convex/files_nodes_content.ts`) is the only **user and agent** content-write door for a non-collaborative file. It is an action plus a final mutation, because a Convex mutation cannot reach R2 and this door writes a new version snapshot object. Named plugin file-projection replace is a separate internal door. It copies store text into a locked derived file and does not go through this helper.
+`replace_file_content` (`packages/app/convex/files_nodes_content.ts`) is the only **user and agent** content-write door for a non-collaborative file. It is an action plus a final mutation, because a Convex mutation cannot reach R2 and this door writes a new version snapshot object. A plugin updating its own non-collaborative file goes through the public `/api/v1/files/write` door instead, which has its own write pipeline and does not go through this helper.
 
 - The action checks auth and credits, runs the text cap and the frontmatter preflight, and PUTs the new content object. Over-cap frontmatter is refused with `Too many frontmatter fields`, the same words as the pending-update preflight: both are doors where a person hands over a whole text and can shorten it after reading the message. Materialization cannot refuse anybody, so it settles with the marker pair instead — see the `file-metadata` skill.
 - `finalize_file_content_replacement` re-runs auth → membership → ACL `content.write` → read-only lock → staleness, then replaces the chunks, points the node at the new asset, stores the version snapshot, and emits the `file_save` billing event.
@@ -99,12 +101,12 @@ There are exactly four sources. Nothing else sets the flag.
 - A sealed service `create-target` request with required `nonCollaborative: true`. The filename must
   pass the normal editable-text classifier. The choice stays on the service target while the empty
   placeholder is a blob, then successful conversion publishes the flag.
-- Named plugin file-projection create in `packages/app/convex/plugins_projections.ts`. It inserts a
+- A `nonCollaborative: true` create on the public `/api/v1/files/write` door. It inserts a
   non-collaborative Markdown file with a content/version R2 object (same as other non-collab creates).
-  Only the projection doors call it. `create_file_by_path` is unchanged and still creates a collaborative file.
+  This is how a plugin backend creates its owned files. `create_file_by_path` is unchanged and still creates a collaborative file.
 
-Member uploads never create a non-collaborative file. A service upload and file projection are the
-narrow exceptions. After
+Member uploads never create a non-collaborative file. A service upload and the public write door's
+`nonCollaborative` flag are the narrow exceptions. After
 classifier, UTF-8, NUL, size, document-build, and frontmatter handling succeeds, a service upload publishes chunks,
 one content/version snapshot and one file snapshot, with no Yjs asset, snapshot, sequence, or update
 docs. A deterministic fallback stays a blob, preserves any service lock provenance, and leaves the
@@ -112,9 +114,13 @@ node flag unset. There is still no lazy Yjs creation: a collaborative file gets 
 
 ## What the editors do
 
-`files_resolve_effective_editor_view` (`packages/app/src/lib/files.ts`) sends every view of a non-collaborative file to the plain text editor, whatever its `yjsRootKind`. The rich text editor is built on a Yjs document and the diff view compares a proposal against one, so neither can open a file that has none. Monaco edits an ordinary string instead: the toolbar shows Save, and Save calls `replace_file_content`. There is no Sync button, because there is nothing to sync. Restoring an old version from the snapshots dialog also goes through the replace door.
+`files_resolve_effective_editor_view` (`packages/app/src/lib/files.ts`) clamps on the document shape only: a `plain_text` document has no rich view, and that is the whole rule. A non-collaborative file supports every view its shape supports. A non-collaborative `rich_text` file opens in the rich editor by default (`FileEditorRichTextNonCollab` in `file-editor-rich-text.tsx`), and its diff view (`FileEditorDiffNonCollab` in `file-editor-diff/file-editor-diff-non-collab.tsx`) compares the committed text against the member's local edits — never a proposal, because these files have no pending updates.
 
-The editor loads its text with `get_non_collaborative_file_content`, which returns the committed text and the asset that text came from in one query, so the two cannot straddle somebody else's save.
+Every one of these editors loads its text with `get_non_collaborative_file_content`, which returns the committed text and the asset that text came from in one query, so the two cannot straddle somebody else's save. Save is explicit and calls `replace_file_content`, naming that asset; a save that lands on a stale asset is refused with a stable staleness message instead of overwriting someone else's version. There is no Sync button, because there is no shared document to merge. Restoring an old version from the snapshots dialog also goes through the replace door. Switching views loses unsaved edits on purpose: each view edits its own copy of the stored string.
+
+The rich editor serializes the whole document back to Markdown on save, so the first save may reformat the file (the toolbar shows a hint while that is true). Every later save of the same content is byte-identical: an idempotence test suite over `nonCollaborativeExtensions` (`extensions.test.ts`, mirrored in `shared/files.test.ts`) protects that. One special case: a table cell holding a code span with a backslash serializes through an HTML `<code>` tag with HTML number codes for the pipe and backslash, because plain Markdown cannot spell that content inside a table row.
+
+Adding a comment in the rich editor saves the file at once — the thread anchor must live in a committed version, or resolving from the sidebar would target text nobody saved. The Comment button is disabled while unsaved edits exist; the member saves first, then comments.
 
 # Read-Only Check
 

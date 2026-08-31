@@ -8,10 +8,11 @@
  * that grant alive, and asks whether it is still allowed to act before it does something the user
  * will see.
  *
- * Two credentials are needed, the same way the runner host routes work. The shared secret proves the
- * call comes from the service the operator deployed, and it is checked first so a frame holding only
- * its own token cannot reach or probe these routes. The bearer then says which installation and which
- * member the call is for.
+ * Two credentials are needed, the same way the runner host routes work. The bearer says which
+ * installation and which member the call is for, and the shared secret proves the call comes from
+ * the service the plugin's publisher registered — its hash lives in `plugins_service_registrations`,
+ * keyed by the plugin name the bearer's installation resolves to. A frame holding only its own
+ * token still gets nothing here: without the registered secret every call answers `Unauthorized`.
  *
  * `public_api.ts` owns the grant table, the token format, and the resolver. This module owns only the
  * lifecycle: who may trade a UI token for a grant, when a grant may be renewed, and what a service
@@ -24,6 +25,7 @@ import { z } from "zod";
 
 import { internal } from "./_generated/api.js";
 import { internalQuery, type ActionCtx } from "./_generated/server.js";
+import type { Doc } from "./_generated/dataModel";
 import type {
 	public_api_create_plugin_service_grant_Result,
 	public_api_resolve_principal_Result,
@@ -42,47 +44,22 @@ import { public_api_PLUGIN_SERVICE_TOKEN_REGEX, public_api_PLUGIN_UI_TOKEN_REGEX
 // #region shared
 
 /**
- * The shared secret the Council service proves itself with.
+ * The workspace capability that gates each registered scope at the exchange and the seal.
  *
- * This is read without throwing when it is unset, unlike `PLUGIN_RUNNER_HOST_SECRET` in
- * `plugins_runtime.ts`. That secret is set on every deployment already, so a missing value there
- * means the deployment is broken and stopping is right. This one is set when the Council service is
- * first deployed. Until then a throw would fail the whole Convex push and take the rest of the app
- * down with it. So an unset secret refuses every call here instead, and nothing else changes.
+ * `plugin.service.connect` is always required on top of these: it is the one the install dialog
+ * warns about. Asking for every gating capability up front means a half-consented install fails
+ * at the exchange instead of halfway through the service's work.
+ *
+ * `workspace.files.create-read-only` is deliberately NOT required here. `create-target` still
+ * checks it on every call, and nothing real is lost: a workspace accepts a version's whole
+ * capability list or none of it, so a service that got a grant already accepted that capability
+ * too when its plugin declares it.
  */
-const COUNCIL_SERVICE_EXCHANGE_SECRET = process.env.COUNCIL_SERVICE_EXCHANGE_SECRET;
-
-/**
- * The one plugin this secret may exchange UI tokens for.
- *
- * Without it the secret would work for any installation whose plugin declares the five capabilities,
- * and that is a way for one plugin to act as another. Every plugin frame is served from the same
- * asset origin, pages and file views alike, so one frame can read another frame's `plu_` token — the
- * plugin-system skill says plainly that the shared origin is not a plugin-to-plugin boundary. A
- * service holding this secret could present that stolen token and get a grant carrying the other
- * plugin's producer identity. A UI token is read-only for plugin data on purpose, while a service
- * grant is the only principal allowed to write versioned documents at all, so the exchange would turn
- * a read-only token into the other plugin's writer.
- *
- * Read without throwing for the same reason as the secret above. Unset refuses every exchange.
- */
-const COUNCIL_PLUGIN_NAME = process.env.COUNCIL_PLUGIN_NAME;
-
-/**
- * The capabilities a workspace must have accepted before its Council installation may hand access to
- * a server outside the app.
- *
- * `plugin.service.connect` is the one the install dialog warns about, and the mint checks it again.
- * The other four are what the finished Council needs to do its job, so asking for all of them up
- * front means a half-consented install fails at the exchange instead of halfway through a meeting.
- */
-const REQUIRED_CAPABILITIES = [
-	"plugin.service.connect",
-	"plugin.data.read",
-	"plugin.data.write",
-	"workspace.files.write",
-	"workspace.files.create-read-only",
-] as const satisfies readonly plugins_Capability[];
+const SCOPE_GATING_CAPABILITY = {
+	"plugin_data:read": "plugin.data.read",
+	"plugin_data:write": "plugin.data.write",
+	"files:write": "workspace.files.write",
+} as const satisfies Record<Doc<"plugins_service_registrations">["scopes"][number], plugins_Capability>;
 
 function get_service_secret(request: Request) {
 	const header = request.headers.get("X-Bonobo-Service-Authorization");
@@ -105,33 +82,25 @@ function get_bearer_token(request: Request) {
 }
 
 /**
- * Prove the call came from the deployed Council service.
- *
- * The digests are compared instead of the secrets themselves so the constant-time compare cannot leak
- * the secret's length. There is no cached digest here on purpose: these routes run a few times per
- * meeting, not on every plugin API call the way the runner host routes do, so the hash is not worth
- * a cache that would have to explain itself.
- */
-async function is_council_service(request: Request) {
-	const presented = get_service_secret(request);
-	if (!presented || !COUNCIL_SERVICE_EXCHANGE_SECRET) {
-		return false;
-	}
-
-	return crypto_timing_safe_equal(
-		await crypto_sha256_hex(presented),
-		await crypto_sha256_hex(COUNCIL_SERVICE_EXCHANGE_SECRET),
-	);
-}
-
-/**
- * The shared shape of all four routes: service secret first, then the bearer, then the body.
+ * The shared shape of all four routes: both credentials are parsed, the bearer is resolved, and
+ * then the presented secret is proven against the plugin's registration.
  *
  * Every authentication failure answers with the same `Unauthorized` literal, so a caller cannot tell
  * a wrong secret from a wrong token from a token that expired a minute ago. Any other `_nay` is a
  * body problem. Callers own the status mapping.
+ *
+ * The bearer token is looked up BEFORE the secret is proven, because the registration that holds
+ * the secret's hash belongs to the installation the token points at. That lookup is the same work
+ * `/api/v1/*` already does for any caller, so it adds no new cost. And an attacker still learns
+ * nothing from it: every failure answers the same word, and the `public_api_auth` rate bucket
+ * limits how fast they can try.
+ *
+ * The registration lookup is also what binds the secret to ONE plugin. Every plugin frame is
+ * served from the same asset origin, so one frame can read another frame's `plu_` token; a service
+ * that presented a stolen token from another plugin finds that plugin's registration — a hash its
+ * own secret does not match.
  */
-async function authorize_council_service_request<Body>(
+async function authorize_service_request<Body>(
 	ctx: ActionCtx,
 	request: Request,
 	args: {
@@ -139,7 +108,8 @@ async function authorize_council_service_request<Body>(
 		bodyValidator: z.ZodSchema<Body>;
 	},
 ) {
-	if (!(await is_council_service(request))) {
+	const presentedSecret = get_service_secret(request);
+	if (!presentedSecret) {
 		return Result({ _nay: { message: "Unauthorized" } });
 	}
 
@@ -153,21 +123,74 @@ async function authorize_council_service_request<Body>(
 	if (resolved._nay) {
 		return Result({ _nay: { message: "Unauthorized" } });
 	}
+	// The token regexes only match UI tokens and service grants, so any other principal kind is a
+	// resolver surprise. Refuse it the flat way; the routes still narrow to the one kind they take.
+	const principal = resolved._yay;
+	if (principal.kind !== "plugin_ui" && principal.kind !== "plugin_service") {
+		return Result({ _nay: { message: "Unauthorized" } });
+	}
+
+	const installation: get_installation_capabilities_Result = await ctx.runQuery(
+		internal.plugins_service.get_installation_capabilities,
+		{
+			organizationId: principal.organizationId,
+			workspaceId: principal.workspaceId,
+			installationId: principal.installationId,
+		},
+	);
+	// A dead installation and a missing registration answer like a wrong secret. Nothing before
+	// this line has proven the caller is anyone, so a distinct status would hand out state.
+	if (installation._nay || !installation._yay.registration) {
+		return Result({ _nay: { message: "Unauthorized" } });
+	}
+	// The digests are compared instead of the secrets themselves so the constant-time compare
+	// cannot leak the secret's length.
+	if (!crypto_timing_safe_equal(await crypto_sha256_hex(presentedSecret), installation._yay.registration.hash)) {
+		return Result({ _nay: { message: "Unauthorized" } });
+	}
 
 	const body = await server_request_json_parse_and_validate(request, args.bodyValidator);
 	if (body._nay) {
 		return Result({ _nay: { message: body._nay.message } });
 	}
 
-	return Result({ _yay: { principal: resolved._yay, presentedToken: token, body: body._yay } });
+	return Result({
+		_yay: {
+			principal,
+			presentedToken: token,
+			body: body._yay,
+			pluginName: installation._yay.pluginName,
+			acceptedCapabilities: installation._yay.acceptedCapabilities,
+			registeredScopes: installation._yay.registration.scopes,
+		},
+	});
 }
 
 /**
- * The capabilities the workspace accepted for one installation.
+ * The capabilities the exchange and the seal require: the connect consent plus the gate for each
+ * registered scope. Returns the missing ones, so the caller can log them before refusing.
+ */
+function missing_service_capabilities(args: {
+	acceptedCapabilities: readonly plugins_Capability[];
+	registeredScopes: Doc<"plugins_service_registrations">["scopes"];
+}) {
+	const required: plugins_Capability[] = [
+		"plugin.service.connect",
+		...args.registeredScopes.map((scope) => SCOPE_GATING_CAPABILITY[scope]),
+	];
+	return required.filter((capability) => !args.acceptedCapabilities.includes(capability));
+}
+
+/**
+ * The capabilities the workspace accepted for one installation, plus the plugin's service
+ * registration when one exists.
  *
  * The mint refuses a disabled or foreign installation itself, but it narrows a missing scope
  * capability away instead of refusing, and it would have already written the grant doc by the time
  * the caller saw the narrowed list. So the exchange asks first and refuses without writing anything.
+ *
+ * The registration rides along so proving the secret costs no extra round trip. The hash stays
+ * inside this internal boundary; the publisher-facing query never returns it.
  */
 export const get_installation_capabilities = internalQuery({
 	args: {
@@ -179,6 +202,13 @@ export const get_installation_capabilities = internalQuery({
 		_yay: v.object({
 			pluginName: v.string(),
 			acceptedCapabilities: doc(app_convex_schema, "plugins_workspace_installations").fields.acceptedCapabilities,
+			registration: v.union(
+				v.object({
+					hash: v.string(),
+					scopes: doc(app_convex_schema, "plugins_service_registrations").fields.scopes,
+				}),
+				v.null(),
+			),
 		}),
 	}),
 	handler: async (ctx, args) => {
@@ -198,8 +228,19 @@ export const get_installation_capabilities = internalQuery({
 			return Result({ _nay: { message: "Not found" } });
 		}
 
+		const registration = await ctx.db
+			.query("plugins_service_registrations")
+			.withIndex("by_pluginName", (q) => q.eq("pluginName", installation.pluginName))
+			.first();
+
 		return Result({
-			_yay: { pluginName: installation.pluginName, acceptedCapabilities: installation.acceptedCapabilities },
+			_yay: {
+				pluginName: installation.pluginName,
+				acceptedCapabilities: installation.acceptedCapabilities,
+				registration: registration
+					? { hash: registration.exchangeSecretHash, scopes: registration.scopes }
+					: null,
+			},
 		});
 	},
 });
@@ -248,7 +289,7 @@ const exchange_body_validator = z.object({}).strict();
 export type plugins_service_http_exchange_Body = z.infer<typeof exchange_body_validator>;
 
 export async function plugins_service_http_exchange(ctx: ActionCtx, request: Request) {
-	const auth = await authorize_council_service_request(ctx, request, {
+	const auth = await authorize_service_request(ctx, request, {
 		tokenRegex: public_api_PLUGIN_UI_TOKEN_REGEX,
 		bodyValidator: exchange_body_validator,
 	});
@@ -275,37 +316,19 @@ export async function plugins_service_http_exchange(ctx: ActionCtx, request: Req
 		return { status: 401, body: { message: "Unauthorized" } } as const;
 	}
 
-	const installation: get_installation_capabilities_Result = await ctx.runQuery(
-		internal.plugins_service.get_installation_capabilities,
-		{
-			organizationId: principal.organizationId,
-			workspaceId: principal.workspaceId,
-			installationId: principal.installationId,
-		},
-	);
-	if (installation._nay) {
-		return grant_failure(installation._nay.message);
-	}
-	// The secret says which plugin it may act for. Checked before the capabilities so a UI token from
-	// another plugin is refused whatever that plugin declares.
-	if (!COUNCIL_PLUGIN_NAME || installation._yay.pluginName !== COUNCIL_PLUGIN_NAME) {
-		return { status: 403, body: { message: "Permission denied" } } as const;
-	}
-	const missing = REQUIRED_CAPABILITIES.filter(
-		(capability) => !installation._yay.acceptedCapabilities.includes(capability),
-	);
+	const missing = missing_service_capabilities(auth._yay);
 	if (missing.length > 0) {
-		console.warn("Council service grant exchange refused for missing capabilities", {
+		console.warn("Plugin service grant exchange refused for missing capabilities", {
 			installationId: principal.installationId,
 			missing,
 		});
 		return { status: 403, body: { message: "Permission denied" } } as const;
 	}
 
-	// No file-write scope is asked for here. It only exists together with a destination prefix, and
-	// the destination is chosen when a meeting opens, not when the service connects. The seal route
-	// below is what trades this grant for a processing one that carries `files:write` and the exact
-	// prefix, and the `/api/v1/files/service-uploads/*` routes only accept that sealed grant.
+	// No file-write scope is asked for here even when the registration holds one. It only exists
+	// together with a destination prefix, and the destination is chosen when the work starts, not
+	// when the service connects. The seal route below is what trades this grant for a processing
+	// one that carries `files:write` and the exact prefix.
 	const minted: public_api_create_plugin_service_grant_Result = await ctx.runMutation(
 		internal.public_api.create_plugin_service_grant,
 		{
@@ -313,10 +336,10 @@ export async function plugins_service_http_exchange(ctx: ActionCtx, request: Req
 			workspaceId: principal.workspaceId,
 			installationId: principal.installationId,
 			actorUserId: principal.userId,
-			requestedScopes: ["plugin_data:read", "plugin_data:write"],
+			requestedScopes: auth._yay.registeredScopes.filter((scope) => scope !== "files:write"),
 			destinationPathPrefix: null,
 			// The service holds this one while a member is watching the frame. A `processing` grant is
-			// what outlives them, and it is minted by the sealed Council flow, not by an exchange.
+			// what outlives them, and it is minted by the seal flow, not by an exchange.
 			phase: "interactive",
 			now,
 		},
@@ -357,7 +380,7 @@ export type plugins_service_http_renew_Body = z.infer<typeof renew_body_validato
  * what stops a leaked exchange secret from being enough to reach a workspace's data on its own.
  */
 export async function plugins_service_http_renew(ctx: ActionCtx, request: Request) {
-	const auth = await authorize_council_service_request(ctx, request, {
+	const auth = await authorize_service_request(ctx, request, {
 		tokenRegex: public_api_PLUGIN_SERVICE_TOKEN_REGEX,
 		bodyValidator: renew_body_validator,
 	});
@@ -429,7 +452,7 @@ export type plugins_service_http_seal_processing_Body = z.infer<typeof seal_proc
  * the next one and the six-day deadline would mean nothing.
  */
 export async function plugins_service_http_seal_processing(ctx: ActionCtx, request: Request) {
-	const auth = await authorize_council_service_request(ctx, request, {
+	const auth = await authorize_service_request(ctx, request, {
 		tokenRegex: public_api_PLUGIN_SERVICE_TOKEN_REGEX,
 		bodyValidator: seal_processing_body_validator,
 	});
@@ -485,25 +508,9 @@ export async function plugins_service_http_seal_processing(ctx: ActionCtx, reque
 	// The same pre-check the exchange does, for the same reason: the mint narrows a missing scope
 	// capability away instead of refusing, so ask first. The mint also refuses on its own through
 	// `requireAllRequestedScopes` in case a capability disappears between this query and the mutation.
-	const installation: get_installation_capabilities_Result = await ctx.runQuery(
-		internal.plugins_service.get_installation_capabilities,
-		{
-			organizationId: principal.organizationId,
-			workspaceId: principal.workspaceId,
-			installationId: principal.installationId,
-		},
-	);
-	if (installation._nay) {
-		return grant_failure(installation._nay.message);
-	}
-	if (!COUNCIL_PLUGIN_NAME || installation._yay.pluginName !== COUNCIL_PLUGIN_NAME) {
-		return { status: 403, body: { message: "Permission denied" } } as const;
-	}
-	const missing = REQUIRED_CAPABILITIES.filter(
-		(capability) => !installation._yay.acceptedCapabilities.includes(capability),
-	);
+	const missing = missing_service_capabilities(auth._yay);
 	if (missing.length > 0) {
-		console.warn("Council service grant seal refused for missing capabilities", {
+		console.warn("Plugin service grant seal refused for missing capabilities", {
 			installationId: principal.installationId,
 			missing,
 		});
@@ -517,9 +524,9 @@ export async function plugins_service_http_seal_processing(ctx: ActionCtx, reque
 			workspaceId: principal.workspaceId,
 			installationId: principal.installationId,
 			actorUserId: principal.actorUserId,
-			requestedScopes: ["plugin_data:read", "plugin_data:write", "files:write"],
-			// A processing grant with fewer scopes than promised would fail at the end of the meeting,
-			// after the member left. Refuse the seal now instead.
+			// Exactly the registered scopes. A processing grant with fewer scopes than promised
+			// would fail after the member left, so the mint refuses instead of narrowing.
+			requestedScopes: auth._yay.registeredScopes,
 			requireAllRequestedScopes: true,
 			destinationPathPrefix,
 			phase: "processing",
@@ -603,7 +610,7 @@ const REQUIRED_CONTENT_PERMISSION_BY_SCOPE = {
 } as const satisfies Record<plugins_service_http_verify_live_Body["scopes"][number], "read" | "write">;
 
 export async function plugins_service_http_verify_live(ctx: ActionCtx, request: Request) {
-	const auth = await authorize_council_service_request(ctx, request, {
+	const auth = await authorize_service_request(ctx, request, {
 		tokenRegex: public_api_PLUGIN_SERVICE_TOKEN_REGEX,
 		bodyValidator: verify_live_body_validator,
 	});

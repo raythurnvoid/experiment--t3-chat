@@ -224,6 +224,39 @@ describe("validation", () => {
 		}
 	});
 
+	it("rejects a malformed or reserved requestPath with curated messages", async () => {
+		// Messages are curated: they must never echo the submitted value back.
+		const cases = [
+			{ requestPath: "echo", message: "requestPath is invalid" },
+			{ requestPath: "/caffè", message: "requestPath is invalid" },
+			{ requestPath: `/${"a".repeat(256)}`, message: "requestPath is invalid" },
+			{ requestPath: "/__bonobo_senate/run", message: "requestPath must not use the reserved prefix" },
+			{ requestPath: "/__bonobo_senate-extra", message: "requestPath must not use the reserved prefix" },
+		];
+		for (const { requestPath, message } of cases) {
+			const res = await worker.fetch(run_request(await make_run_body({ body: { requestPath } })), make_env());
+			expect(res.status).toBe(400);
+			expect((await res.json())._nay.message).toBe(message);
+		}
+	});
+
+	it("accepts a body of exactly the byte limit and refuses one byte more", async () => {
+		// The body is pure ASCII, so byte length equals string length.
+		const base = await make_run_body({ body: { input: "" } });
+		const padding = "a".repeat(LIMITS.bodyBytes - base.length);
+
+		const exact = await worker.fetch(run_request(await make_run_body({ body: { input: padding } })), make_env(), make_ctx());
+		expect(exact.status).toBe(200);
+
+		const oneOver = await worker.fetch(
+			run_request(await make_run_body({ body: { input: `${padding}a` } })),
+			make_env(),
+			make_ctx(),
+		);
+		expect(oneOver.status).toBe(413);
+		expect((await oneOver.json())._nay.name).toBe("body_too_large");
+	});
+
 	it("rejects an artifact key outside the configured prefix", async () => {
 		const res = await worker.fetch(
 			run_request(await make_run_body({ body: { artifactKey: "other/media.js" } })),
@@ -365,6 +398,28 @@ describe("dynamic worker loading", () => {
 		expect(body._yay.pluginStatus).toBe(202);
 		expect(body._yay.elapsedMs).toEqual(expect.any(Number));
 		expect(body._yay.outputBytes).toBe("plugin-ok".length);
+	});
+
+	it("delivers requestPath to the plugin fetch handler and keeps the reserved default without one", async () => {
+		const seenUrls: string[] = [];
+		const env = make_env({
+			onPluginRequest: (request) => {
+				seenUrls.push(request.url);
+				return new Response("plugin-ok", { status: 200 });
+			},
+		});
+
+		const withPath = await worker.fetch(
+			run_request(await make_run_body({ body: { requestPath: "/echo" } })),
+			env,
+			make_ctx(),
+		);
+		expect(withPath.status).toBe(200);
+
+		const withoutPath = await worker.fetch(run_request(await make_run_body()), env, make_ctx());
+		expect(withoutPath.status).toBe(200);
+
+		expect(seenUrls).toEqual(["https://plugin.local/echo", "https://plugin.local/__bonobo_senate/run"]);
 	});
 
 	it("keys the dynamic worker per run so a cached isolate never carries another run's bindings", async () => {

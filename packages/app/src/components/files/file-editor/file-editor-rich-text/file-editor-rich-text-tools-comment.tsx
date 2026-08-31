@@ -18,6 +18,7 @@ import {
 	type FileEditorCommentsComposerControl_Ref,
 	type FileEditorCommentsComposer_Props,
 } from "../file-editor-comments-composer.tsx";
+import { files_COMMENT_MARK_TYPE } from "../../../../../shared/files-tiptap-comments.ts";
 
 // #region form
 type FileEditorRichTextToolsCommentForm_ClassNames = "FileEditorRichTextToolsCommentForm";
@@ -69,6 +70,21 @@ export type FileEditorRichTextToolsComment_ClassNames =
 export type FileEditorRichTextToolsComment_Props = {
 	editor: Editor;
 	fileNodeId: app_convex_Id<"files_nodes">;
+	/**
+	 * Why the member cannot comment right now, or `null` when they can.
+	 * A file with collaboration turned off has no live sync, so a comment has to be saved
+	 * into the file. Saving unsaved text edits at the same time would publish work the member
+	 * did not ask to publish, so the button waits until the editor is clean.
+	 */
+	disabledReason: string | null;
+	/**
+	 * How the new comment mark reaches the stored file.
+	 * A collaborative file leaves this undefined: the Yjs provider syncs the mark on its own.
+	 * A file with collaboration turned off passes a handler that saves the file right away,
+	 * because a mark that only lives in the open editor would be gone after a reload.
+	 * Return `false` when the save failed, so the caller can take the mark back out.
+	 */
+	commitComment?: (threadId: string) => Promise<boolean>;
 	buttonVariant?: MyButton_Props["variant"];
 };
 
@@ -76,10 +92,28 @@ type FileEditorRichTextToolsCommentInner_Props = FileEditorRichTextToolsComment_
 	isSelectionEmpty: boolean;
 };
 
+/**
+ * Remove only the mark of one thread. `unsetMark` would also drop an older thread's mark
+ * wherever the selection overlaps it, and `files_CommentsExtension` has no
+ * "remove one comment" command, so walk the document the way `markCommentAsOrphan` does.
+ */
+function remove_comment_mark(editor: Editor, threadId: string) {
+	const markType = editor.schema.marks[files_COMMENT_MARK_TYPE];
+	const tr = editor.state.tr;
+	editor.state.doc.descendants((node, pos) => {
+		for (const mark of node.marks) {
+			if (mark.type === markType && mark.attrs.threadId === threadId) {
+				tr.removeMark(pos, pos + node.nodeSize, mark);
+			}
+		}
+	});
+	editor.view.dispatch(tr);
+}
+
 const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextToolsCommentInner(
 	props: FileEditorRichTextToolsCommentInner_Props,
 ) {
-	const { editor, fileNodeId, buttonVariant = "ghost-highlightable", isSelectionEmpty } = props;
+	const { editor, fileNodeId, disabledReason, commitComment, buttonVariant = "ghost-highlightable", isSelectionEmpty } = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
 
@@ -136,6 +170,17 @@ const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextTool
 			return;
 		}
 
+		// The button is disabled, but the member can type in the document while the popover is open.
+		if (disabledReason) {
+			toast.error(disabledReason);
+			return;
+		}
+
+		// The mutation waits for the server, and the member can keep typing meanwhile. Capture the
+		// document and selection now so the mark is only added when both are still the same.
+		const capturedDoc = editor.state.doc;
+		const capturedSelection = editor.state.selection;
+
 		const markdownContent = composerControlRef.current.getMarkdownContent();
 
 		setIsSubmitting(true);
@@ -145,13 +190,35 @@ const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextTool
 			fileNodeId,
 			content: markdownContent.trim(),
 		})
-			.then((result) => {
+			.then(async (result) => {
 				if (result._nay) {
 					toast.error(result._nay.message ?? "Failed to create comment");
 					return;
 				}
 
-				editor.chain().focus().addComment(result._yay.threadId).run();
+				// The save-first gate cannot see typing that happened while the mutation was waiting.
+				// On a file that saves the mark right away, a changed document or selection would
+				// anchor the mark to text the member never chose, so refuse and leave the composer
+				// open. The thread row stays unreferenced, which is invisible and accepted.
+				if (commitComment && (!editor.state.doc.eq(capturedDoc) || !editor.state.selection.eq(capturedSelection))) {
+					toast.error("Save your changes before adding a comment.");
+					return;
+				}
+
+				const threadId = result._yay.threadId;
+
+				editor.chain().focus().addComment(threadId).run();
+
+				// A collaborative file syncs the mark through Yjs on its own. A file with
+				// collaboration turned off must save it now, and the popover only closes once the
+				// save is known to have worked, so the member has something to retry in.
+				if (commitComment) {
+					const committed = await commitComment(threadId);
+					if (!committed) {
+						remove_comment_mark(editor, threadId);
+						return;
+					}
+				}
 
 				composerControlRef.current?.clear();
 				setIsEmpty(true);
@@ -186,12 +253,18 @@ const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextTool
 		<div className={cn("FileEditorRichTextToolsComment" satisfies FileEditorRichTextToolsComment_ClassNames)}>
 			<MyPopover open={open} setOpen={doSetOpen} placement="bottom-end">
 				<MyPopoverTrigger>
+					{/* A disabled trigger cannot open the popover at all, which is the strongest block.
+					    The reason cannot use the `tooltip` prop: a disabled button fires no pointer
+					    events, so an Ariakit hover tooltip would never show. The native `title` and the
+					    dynamic accessible name both work on a disabled button. */}
 					<MyButton
 						className={cn(
 							"FileEditorRichTextToolsComment-trigger-button" satisfies FileEditorRichTextToolsComment_ClassNames,
 						)}
 						variant={buttonVariant}
-						aria-label="Add comment"
+						disabled={disabledReason != null}
+						title={disabledReason ?? undefined}
+						aria-label={disabledReason ? "Add comment — save your changes first" : "Add comment"}
 					>
 						<MyButtonIcon>
 							<MessageSquarePlus />
@@ -227,7 +300,7 @@ export const FileEditorRichTextToolsComment = memo(function FileEditorRichTextTo
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
-	const { editor, fileNodeId, buttonVariant = "ghost-highlightable" } = props;
+	const { editor, fileNodeId, disabledReason, commitComment, buttonVariant = "ghost-highlightable" } = props;
 
 	const editorState = useEditorState({
 		editor,
@@ -242,6 +315,8 @@ export const FileEditorRichTextToolsComment = memo(function FileEditorRichTextTo
 		<FileEditorRichTextToolsCommentInner
 			editor={editor}
 			fileNodeId={fileNodeId}
+			disabledReason={disabledReason}
+			commitComment={commitComment}
 			buttonVariant={buttonVariant}
 			isSelectionEmpty={editorState.isSelectionEmpty}
 		/>

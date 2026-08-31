@@ -720,6 +720,63 @@
 		color: var(--color-fg-11);
 	}
 
+	/*
+	Tables are scoped to .ProseMirror only, NOT .app-doc: the AI chat renders its own tables
+	with its own CSS in ai-chat-markdown.css, and its root carries `app-doc`, so bare table
+	rules under .app-doc would leak into every chat table.
+	*/
+	.ProseMirror {
+		table {
+			width: 100%;
+			table-layout: fixed;
+			border-collapse: collapse;
+
+			margin: 0.5em 0;
+		}
+
+		th,
+		td {
+			position: relative;
+
+			border: 1px solid var(--color-base-1-06);
+			padding: 4px 8px;
+
+			vertical-align: top;
+		}
+
+		th {
+			background: var(--color-base-1-04);
+
+			font-weight: 600;
+			text-align: start;
+		}
+
+		/* The `align` attribute is how GFM alignment reaches the DOM. Map it explicitly instead of
+		   trusting the browser's legacy presentational mapping. */
+		th[align="center"],
+		td[align="center"] {
+			text-align: center;
+		}
+
+		th[align="right"],
+		td[align="right"] {
+			text-align: right;
+		}
+
+		/* prosemirror-tables marks a selected cell with this class. */
+		.selectedCell::after {
+			content: "";
+
+			position: absolute;
+			inset: 0;
+
+			background: var(--color-accent-04);
+			opacity: 0.3;
+
+			pointer-events: none;
+		}
+	}
+
 	/* #endregion rich text styles */
 
 	/* #region monaco */

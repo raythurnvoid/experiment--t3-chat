@@ -4,7 +4,7 @@ import { Workpool, type WorkId } from "@convex-dev/workpool";
 import { api, components, internal } from "./_generated/api.js";
 import { billing_db_ensure_anonymous_user_usage_snapshot } from "./billing.ts";
 import { billing_polar } from "./billing_polar.ts";
-import { billing_db_check_credits, billing_ingest_events } from "./billing_db.ts";
+import { billing_db_check_credits, billing_db_emit_file_save, billing_ingest_events } from "./billing_db.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { customersCreate } from "@polar-sh/sdk/funcs/customersCreate.js";
@@ -4781,6 +4781,51 @@ describe("ingest_events", () => {
 		);
 		expect(usageSnapshot?.meter?.consumedUnits).toBe(1);
 		expect(usageSnapshot?.meter?.balance).toBe(recurringCredits - 1);
+	});
+
+	test("billing_db_emit_file_save builds the one-cent file_save event with the composite externalId", async () => {
+		const t = test_convex();
+		const billedUserId = await seed_signed_in_user_id(t);
+		const actorUserId = await seed_signed_in_user_id(t);
+		const { captured, enqueueActionSpy } = mock_billing_ingest_enqueue("work_emit_file_save");
+
+		await t.run(async (ctx) => {
+			const billedUser = await ctx.db.get("users", billedUserId);
+			if (!billedUser) {
+				throw new Error("Expected the seeded billed user");
+			}
+
+			await billing_db_emit_file_save(ctx, {
+				billedUser,
+				actorUserId,
+				organizationId: "organization_1" as Id<"organizations">,
+				workspaceId: "workspace_1" as Id<"organizations_workspaces">,
+				nodeId: "file_1" as Id<"files_nodes">,
+				// A number version (a Yjs sequence) must land in metadata as a string.
+				version: 42,
+			});
+		});
+
+		expect(enqueueActionSpy).toHaveBeenCalledTimes(1);
+		expect(captured.ingestPayload).toEqual({
+			events: [
+				{
+					name: "file_save",
+					externalCustomerId: billedUserId,
+					externalMemberId: actorUserId,
+					externalId: `file_save::${billedUserId}::${actorUserId}::organization_1::workspace_1::file_1::42`,
+					metadata: {
+						amount: 1,
+						actorUserId,
+						billedUserId,
+						organizationId: "organization_1",
+						workspaceId: "workspace_1",
+						nodeId: "file_1",
+						version: "42",
+					},
+				},
+			],
+		});
 	});
 });
 

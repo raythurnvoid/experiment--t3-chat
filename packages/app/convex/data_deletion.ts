@@ -1308,7 +1308,7 @@ async function db_drain_user_notifications_batch(ctx: MutationCtx, args: { userI
 
 /**
  * Deletes one indexed batch of direct grants before finalization. A plugin-scope grant also queues
- * the existing scope cleanup so its private projection ACL follows the surviving principals.
+ * the existing scope cleanup so the scope's file access bindings follow the surviving principals.
  */
 async function db_drain_user_direct_permission_grants_batch(
 	ctx: MutationCtx,

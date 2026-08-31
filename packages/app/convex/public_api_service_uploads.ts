@@ -25,11 +25,12 @@ import type { RegisteredMutation } from "convex/server";
 import { internalMutation, type MutationCtx } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import { access_control_db_can_act_on_file_node, access_control_db_has_permission } from "./access_control.ts";
-import { billing_db_check_paid_plan, billing_pick_billed_user_id } from "./billing_db.ts";
+import { billing_db_check_paid_plan, billing_db_emit_file_save, billing_pick_billed_user_id } from "./billing_db.ts";
 import {
 	files_node_require_writable,
 	files_nodes_db_archive_nodes,
 	files_nodes_db_can_act_on_swept_nodes,
+	files_nodes_db_cascade_read_only_scope,
 	files_nodes_db_create_node_recursively_at_path,
 	files_nodes_db_hard_delete_node,
 	files_nodes_db_resolve_parent_read_only_scope,
@@ -348,11 +349,15 @@ async function db_target_destination_is_closed(ctx: MutationCtx, target: Doc<"pl
  *
  * The target, current lock pointer, destination generation, accepted capability, and live actor ACL
  * are all part of this authority. A member unlock and relock clears the pointer in files_nodes.ts.
+ *
+ * Exported for the `/api/v1/files/write` engine: a file created read-only through `create-target`
+ * must be updatable by the service that created it, and both doors must judge that lock with this
+ * one rule.
  */
-async function db_can_clean_up_service_created_lock(
+export async function public_api_service_uploads_db_can_clean_up_service_created_lock(
 	ctx: MutationCtx,
 	args: {
-		principal: ServiceUploadPrincipal;
+		principal: Pick<ServiceUploadPrincipal, "organizationId" | "workspaceId" | "actorUserId" | "pathPrefix">;
 		installation: Doc<"plugins_workspace_installations">;
 		destinationNodeId: Id<"files_nodes">;
 		node: Doc<"files_nodes">;
@@ -426,6 +431,39 @@ async function db_can_clean_up_service_created_lock(
 }
 
 /**
+ * The other plugin-passable lock: a direct lock the plugin's own write doors created and named
+ * with `readOnlyPluginName`. Kept next to
+ * `public_api_service_uploads_db_can_clean_up_service_created_lock` so both lock kinds are judged
+ * in one place. A file created read-only through `/api/v1/files/write` has no
+ * `plugin_service_storage_targets` row, so the target-based rule above can never say yes for it.
+ */
+export async function public_api_service_uploads_db_can_release_plugin_named_lock(
+	ctx: MutationCtx,
+	args: {
+		installation: Doc<"plugins_workspace_installations">;
+		/** The caller's authority area: the grant's sealed destination, or a run's stamped root path. */
+		pathPrefix: string;
+		node: Doc<"files_nodes">;
+	},
+) {
+	// The lock must be the node's own, name the calling plugin, sit inside the caller's authority
+	// area, and the consent that created it must still be accepted.
+	if (
+		args.node.readOnlyScopeNodeId !== args.node._id ||
+		args.node.readOnlyPluginName !== args.installation.pluginName ||
+		!public_api_is_path_inside_prefix(args.node.path, args.pathPrefix) ||
+		!args.installation.acceptedCapabilities.includes("workspace.files.create-read-only")
+	) {
+		return false;
+	}
+
+	// A member can also lock a folder above this node. The read-only cascade stops at the node's
+	// own lock, so that folder lock is invisible here and must still win — the same rule the
+	// service delete door applies.
+	return (await files_nodes_db_resolve_parent_read_only_scope(ctx, { parentId: args.node.parentId })) === undefined;
+}
+
+/**
  * Release the direct locks a service door was allowed to archive through.
  *
  * Archiving a file the service locked is only half the job. `unarchive_nodes` refuses the whole
@@ -433,10 +471,15 @@ async function db_can_clean_up_service_created_lock(
  * never come back, so the archived set would stop being restorable.
  *
  * Fall back to the parent's pointer the same way `set_node_writable` does. Both doors already
- * refused when a folder above the file still holds a lock, so that pointer is writable here. Only a
- * file ever carries this provenance, so there is no subtree to cascade to.
+ * refused when a folder above the file still holds a lock, so that pointer is writable here.
+ * A folder can carry a plugin-named lock (the owned-area doors lock folders), so a released
+ * folder also cascades the parent pointer down its subtree, or its descendants would keep
+ * pointing at a lock that no longer exists.
  */
-async function db_release_service_created_locks(ctx: MutationCtx, args: { nodes: Array<Doc<"files_nodes">> }) {
+export async function public_api_service_uploads_db_release_service_created_locks(
+	ctx: MutationCtx,
+	args: { nodes: Array<Doc<"files_nodes">> },
+) {
 	await Promise.all(
 		args.nodes.map(async (node) => {
 			const parentScopeNodeId = await files_nodes_db_resolve_parent_read_only_scope(ctx, {
@@ -445,7 +488,16 @@ async function db_release_service_created_locks(ctx: MutationCtx, args: { nodes:
 			await ctx.db.patch("files_nodes", node._id, {
 				readOnlyScopeNodeId: parentScopeNodeId,
 				readOnlyPluginServiceTargetId: undefined,
+				readOnlyPluginName: undefined,
 			});
+			if (node.kind === "folder") {
+				await files_nodes_db_cascade_read_only_scope(ctx, {
+					organizationId: node.organizationId,
+					workspaceId: node.workspaceId,
+					parentId: node._id,
+					scopeNodeId: parentScopeNodeId,
+				});
+			}
 		}),
 	);
 }
@@ -618,6 +670,41 @@ async function db_settle_canonicalized_target(
 	await ctx.db.patch("plugin_service_storage_targets", args.target._id, {
 		state: "committed",
 		updatedAt: args.now,
+	});
+
+	// Nothing is free: the stored file bills the workspace payer one cent, once per target.
+	// Every caller refuses a non-pending target before reaching this settle, so the emit runs at
+	// most once; the target id keeps the event's externalId deterministic on top of that.
+	// A missing organization or payer doc throws, which rolls back the `committed` patch above,
+	// so a service write can never commit without its one billing event; the R2 event retries.
+	const organization = await ctx.db.get("organizations", args.target.organizationId);
+	if (!organization) {
+		throw should_never_happen("target.organizationId points to a missing organizations doc", {
+			targetId: args.target._id,
+			organizationId: args.target.organizationId,
+		});
+	}
+	const billedUserId = billing_pick_billed_user_id({ userId: args.target.createdBy, organization });
+	const billedUser = await ctx.db.get("users", billedUserId);
+	if (!billedUser) {
+		throw should_never_happen("billedUserId points to a missing users doc", {
+			targetId: args.target._id,
+			userId: args.target.createdBy,
+			billedUserId,
+		});
+	}
+	// An anonymous payer with no usage snapshot would also make this emit throw, and that stays
+	// unguarded on purpose: `create-target` already refused anyone without a paid plan, a paid
+	// plan means a synced snapshot with a meter, and an anonymous user gets a synthetic snapshot
+	// the moment the user doc is created. Whoever weakens the create-target plan gate later must
+	// know it was also holding this up.
+	await billing_db_emit_file_save(ctx, {
+		billedUser,
+		actorUserId: args.target.createdBy,
+		organizationId: args.target.organizationId,
+		workspaceId: args.target.workspaceId,
+		nodeId: args.target.nodeId,
+		version: args.target._id,
 	});
 
 	return args.actualBytes;
@@ -1505,7 +1592,7 @@ export const delete_upload_target = internalMutation({
 				continue;
 			}
 			if (
-				!(await db_can_clean_up_service_created_lock(ctx, {
+				!(await public_api_service_uploads_db_can_clean_up_service_created_lock(ctx, {
 					principal: args.principal,
 					installation,
 					destinationNodeId: match.target.destinationNodeId,
@@ -1534,7 +1621,7 @@ export const delete_upload_target = internalMutation({
 				: [],
 		);
 		if (committedNodes.length > 0) {
-			await db_release_service_created_locks(ctx, {
+			await public_api_service_uploads_db_release_service_created_locks(ctx, {
 				nodes: committedNodes.filter((node) => serviceLockedNodeIds.has(node._id)),
 			});
 			// Archive every committed match together, like one member delete action.
@@ -1628,12 +1715,14 @@ export type public_api_service_uploads_delete_upload_target_Result =
 
 /**
  * A meeting folder holds a handful of files. This bounds what one archive call patches, whatever a
- * grant was sealed to.
+ * grant was sealed to. Shared with the `/api/v1/files/plugin-archive` door so both archives keep
+ * the same ceiling.
  */
-const MAX_ARCHIVE_NODES = 256;
+export const public_api_service_uploads_MAX_ARCHIVE_NODES = 256;
+const MAX_ARCHIVE_NODES = public_api_service_uploads_MAX_ARCHIVE_NODES;
 
 /** Load at most `maxNodes` descendants. One extra read proves that the subtree is too large. */
-async function db_collect_bounded_descendants(
+export async function public_api_service_uploads_db_collect_bounded_descendants(
 	ctx: MutationCtx,
 	args: {
 		organizationId: Id<"organizations">;
@@ -1789,7 +1878,7 @@ export const archive_destination = internalMutation({
 		}
 
 		// Follow parent ids, not paths. Active and archived trees can hold the same path.
-		const descendants = await db_collect_bounded_descendants(ctx, {
+		const descendants = await public_api_service_uploads_db_collect_bounded_descendants(ctx, {
 			organizationId: args.principal.organizationId,
 			workspaceId: args.principal.workspaceId,
 			parentId: destination._id,
@@ -1827,8 +1916,10 @@ export const archive_destination = internalMutation({
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
-		// A lock is a member saying "leave this alone". The only exception is the direct lock created
-		// by this exact live service target, while the actor still manages its ACL.
+		// A lock is a member saying "leave this alone". The only exceptions are the two locks the
+		// plugin's own doors created: the direct lock of this exact live service target, and a
+		// direct `readOnlyPluginName` lock from the plugin's write door, both judged while the
+		// actor still holds the needed permission.
 		const serviceLockedNodes: Array<Doc<"files_nodes">> = [];
 		for (const node of [destination, ...descendants]) {
 			const writable = files_node_require_writable(node);
@@ -1836,10 +1927,15 @@ export const archive_destination = internalMutation({
 				continue;
 			}
 			if (
-				!(await db_can_clean_up_service_created_lock(ctx, {
+				!(await public_api_service_uploads_db_can_clean_up_service_created_lock(ctx, {
 					principal: args.principal,
 					installation: authorized._yay.installation,
 					destinationNodeId: destination._id,
+					node,
+				})) &&
+				!(await public_api_service_uploads_db_can_release_plugin_named_lock(ctx, {
+					installation: authorized._yay.installation,
+					pathPrefix: args.principal.pathPrefix,
 					node,
 				}))
 			) {
@@ -1881,7 +1977,7 @@ export const archive_destination = internalMutation({
 			}
 		}
 
-		await db_release_service_created_locks(ctx, { nodes: serviceLockedNodes });
+		await public_api_service_uploads_db_release_service_created_locks(ctx, { nodes: serviceLockedNodes });
 
 		await files_nodes_db_archive_nodes(ctx, {
 			nodeIds: [destination._id, ...activeDescendants.map((descendant) => descendant._id)],

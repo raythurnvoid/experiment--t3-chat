@@ -52,6 +52,23 @@ import {
 } from "./files-yjs.ts";
 import { files_text_diff_TOO_LARGE_MESSAGE } from "./files-text-diff.ts";
 import {
+	table_canonical_2x2,
+	table_alignments,
+	table_pipe_in_cell,
+	table_backslash_before_pipe,
+	table_empty_cell,
+	table_inline_marks,
+	table_comment_span,
+	table_hard_break,
+	table_between_paragraphs,
+	table_last_block,
+	table_code_span_backslash,
+	table_ragged,
+	table_no_outer_pipes,
+	table_padded_cells,
+	table_in_list_item,
+} from "./files-table-markdown-fixtures.ts";
+import {
 	Doc as YDoc,
 	XmlElement as YXmlElement,
 	applyUpdate,
@@ -1527,6 +1544,446 @@ describe("media embeds round-trip through Yjs", () => {
 		editor._yay.destroy();
 
 		expect(markdown).toBe('<video src="bonobo-file://k17abcdef" title="A red circle" width="480" align="center"></video>');
+	});
+});
+
+describe("GFM tables round-trip through Yjs", () => {
+	function round_trip_markdown(markdown: string) {
+		const yjsDoc = new YDoc();
+		const updateResult = files_yjs_doc_update_from_text({
+			text: markdown,
+			mut_yjsDoc: yjsDoc,
+			rootKind: "rich_text",
+		});
+		if (updateResult._nay) {
+			throw new Error("Expected table markdown to Yjs conversion to succeed", {
+				cause: updateResult._nay,
+			});
+		}
+
+		const markdownResult = files_yjs_doc_get_text({ yjsDoc, rootKind: "rich_text" });
+		if (markdownResult._nay) {
+			throw new Error("Expected Yjs to markdown conversion to succeed", {
+				cause: markdownResult._nay,
+			});
+		}
+
+		return markdownResult._yay;
+	}
+
+	// A table that loses its column count comes back from marked as a plain paragraph, and the parse
+	// keeps the paragraph's newlines, so the pipe lines survive in the text. Looking for a delimiter
+	// row in the output would therefore pass on a document with no table in it. Parse the output back
+	// and look for the node instead.
+	function expect_still_a_table(markdown: string) {
+		const json = files_tiptap_markdown_to_json({ markdown });
+		if (json._nay) {
+			throw new Error("Expected table markdown to parse", { cause: json._nay });
+		}
+
+		expect(JSON.stringify(json._yay)).toContain('"type":"table"');
+	}
+
+	test("round-trips a canonical table byte for byte", () => {
+		const output = round_trip_markdown(table_canonical_2x2);
+		expect(output).toBe(table_canonical_2x2);
+		expect_still_a_table(output);
+	});
+
+	test("keeps the alignment colons of every column", () => {
+		const output = round_trip_markdown(table_alignments);
+		expect(output).toBe(table_alignments);
+		expect_still_a_table(output);
+	});
+
+	test("keeps an escaped pipe inside a cell", () => {
+		const output = round_trip_markdown(table_pipe_in_cell);
+		expect(output).toBe(table_pipe_in_cell);
+		expect_still_a_table(output);
+	});
+
+	test("keeps a backslash before a pipe without destroying the table", () => {
+		// Without `expect_still_a_table` this test would pass while the table was gone: a degraded
+		// paragraph keeps its pipe lines verbatim, so a text match alone proves nothing.
+		const output = round_trip_markdown(table_backslash_before_pipe);
+		expect(output).toBe(table_backslash_before_pipe);
+		expect_still_a_table(output);
+	});
+
+	test("keeps an empty cell and its column", () => {
+		const output = round_trip_markdown(table_empty_cell);
+		expect(output).toBe(table_empty_cell);
+		expect_still_a_table(output);
+	});
+
+	test("keeps bold, code with an escaped pipe, and a link inside cells", () => {
+		const output = round_trip_markdown(table_inline_marks);
+		expect(output).toBe(table_inline_marks);
+		expect_still_a_table(output);
+	});
+
+	test("keeps a comment span inside a cell", () => {
+		const output = round_trip_markdown(table_comment_span);
+		expect(output).toBe(table_comment_span);
+		expect_still_a_table(output);
+	});
+
+	test("keeps a hard break inside a cell as <br>", () => {
+		const output = round_trip_markdown(table_hard_break);
+		expect(output).toBe(table_hard_break);
+		expect_still_a_table(output);
+	});
+
+	test("keeps a table between two paragraphs", () => {
+		const output = round_trip_markdown(table_between_paragraphs);
+		expect(output).toBe(table_between_paragraphs);
+		expect_still_a_table(output);
+	});
+
+	test("keeps a table that is the last block", () => {
+		const output = round_trip_markdown(table_last_block);
+		expect(output).toBe(table_last_block);
+		expect_still_a_table(output);
+	});
+
+	test("writes a code span holding a backslash before a pipe as an HTML code element, stable", () => {
+		// The backtick form cannot store this content: the backslash run would grow on every save.
+		// The serializer writes the span as `<code>` with numeric character references instead.
+		const expected = "| <code>x &#92;&#92;&#124; y</code> | c |\n| --- | --- |\n| 1 | 2 |\n";
+		const output = round_trip_markdown(table_code_span_backslash);
+		expect(output).toBe(expected);
+		expect_still_a_table(output);
+		expect(round_trip_markdown(output)).toBe(output);
+	});
+
+	test("keeps the exact text and code mark of the HTML code element form", () => {
+		const json = files_tiptap_markdown_to_json({ markdown: "| <code>x &#92;&#92;&#124; y</code> | c |\n| --- | --- |\n| 1 | 2 |\n" });
+		if (json._nay) {
+			throw new Error("Expected the entity code form to parse", { cause: json._nay });
+		}
+
+		const flat = JSON.stringify(json._yay);
+		expect(flat).toContain('"type":"table"');
+		expect(flat).toContain(JSON.stringify("x \\\\| y"));
+		expect(flat).toContain('"type":"code"');
+	});
+
+	test("normalizes a ragged table once, then holds still", () => {
+		const expected = "| A | B |\n| --- | :---: |\n| 1 | 2 |\n";
+		const output = round_trip_markdown(table_ragged);
+		expect(output).toBe(expected);
+		expect_still_a_table(output);
+		expect(round_trip_markdown(output)).toBe(output);
+	});
+
+	test("adds outer pipes once, then holds still", () => {
+		const expected = "| A | B |\n| --- | --- |\n| 1 | 2 |\n";
+		const output = round_trip_markdown(table_no_outer_pipes);
+		expect(output).toBe(expected);
+		expect_still_a_table(output);
+		expect(round_trip_markdown(output)).toBe(output);
+	});
+
+	test("drops column padding once, then holds still", () => {
+		const expected = "| a | b |\n| --- | --- |\n| 1 | 2 |\n";
+		const output = round_trip_markdown(table_padded_cells);
+		expect(output).toBe(expected);
+		expect_still_a_table(output);
+		expect(round_trip_markdown(output)).toBe(output);
+	});
+
+	test("keeps a table inside a list item", () => {
+		const expected = "- item\n  | A | B |\n  | --- | --- |\n  | 1 | 2 |\n";
+		const output = round_trip_markdown(table_in_list_item);
+		expect(output).toBe(expected);
+		expect_still_a_table(output);
+		expect(round_trip_markdown(output)).toBe(output);
+	});
+
+	function build_markdown_from_json(json: Record<string, unknown>) {
+		const editor = files_headless_tiptap_editor_create({ initialContent: { json } });
+		if (editor._nay) {
+			throw new Error("Expected headless editor creation to succeed", { cause: editor._nay });
+		}
+
+		const markdown = files_headless_tiptap_editor_get_markdown({ mut_editor: editor._yay });
+		editor._yay.destroy();
+		return markdown;
+	}
+
+	function make_table_row(cellType: "tableCell" | "tableHeader", texts: string[]) {
+		return {
+			type: "tableRow",
+			content: texts.map((text) => ({
+				type: cellType,
+				content: [{ type: "paragraph", content: [{ type: "text", text }] }],
+			})),
+		};
+	}
+
+	test("writes an empty header row for a table with no header row", () => {
+		const markdown = build_markdown_from_json({
+			type: "doc",
+			content: [
+				{
+					type: "table",
+					content: [make_table_row("tableCell", ["a", "b"]), make_table_row("tableCell", ["1", "2"])],
+				},
+			],
+		});
+		expect(markdown).toBe("|  |  |\n| --- | --- |\n| a | b |\n| 1 | 2 |");
+		expect_still_a_table(markdown);
+		expect(round_trip_markdown(markdown)).toBe(markdown + "\n");
+	});
+
+	test("joins a multi-paragraph cell with <br>", () => {
+		const markdown = build_markdown_from_json({
+			type: "doc",
+			content: [
+				{
+					type: "table",
+					content: [
+						make_table_row("tableHeader", ["A", "B"]),
+						{
+							type: "tableRow",
+							content: [
+								{
+									type: "tableCell",
+									content: [
+										{ type: "paragraph", content: [{ type: "text", text: "one" }] },
+										{ type: "paragraph", content: [{ type: "text", text: "two" }] },
+									],
+								},
+								{
+									type: "tableCell",
+									content: [{ type: "paragraph", content: [{ type: "text", text: "2" }] }],
+								},
+							],
+						},
+					],
+				},
+			],
+		});
+		expect(markdown).toBe("| A | B |\n| --- | --- |\n| one<br>two | 2 |");
+		expect_still_a_table(markdown);
+		expect(round_trip_markdown(markdown)).toBe(markdown + "\n");
+	});
+
+	test("writes a colspan header once and pads the row", () => {
+		const markdown = build_markdown_from_json({
+			type: "doc",
+			content: [
+				{
+					type: "table",
+					content: [
+						{
+							type: "tableRow",
+							content: [
+								{
+									type: "tableHeader",
+									attrs: { colspan: 2 },
+									content: [{ type: "paragraph", content: [{ type: "text", text: "X" }] }],
+								},
+							],
+						},
+						make_table_row("tableCell", ["1", "2"]),
+					],
+				},
+			],
+		});
+		expect(markdown).toBe("| X |  |\n| --- | --- |\n| 1 | 2 |");
+		expect_still_a_table(markdown);
+		expect(round_trip_markdown(markdown)).toBe(markdown + "\n");
+	});
+
+	test("serializes direct code-marked JSON with a backslash before a pipe, stable", () => {
+		const markdown = build_markdown_from_json({
+			type: "doc",
+			content: [
+				{
+					type: "table",
+					content: [
+						{
+							type: "tableRow",
+							content: [
+								{
+									type: "tableHeader",
+									content: [
+										{
+											type: "paragraph",
+											content: [{ type: "text", text: "x \\| y", marks: [{ type: "code" }] }],
+										},
+									],
+								},
+								{
+									type: "tableHeader",
+									content: [{ type: "paragraph", content: [{ type: "text", text: "c" }] }],
+								},
+							],
+						},
+						make_table_row("tableCell", ["1", "2"]),
+					],
+				},
+			],
+		});
+		expect(markdown).toBe("| <code>x &#92;&#124; y</code> | c |\n| --- | --- |\n| 1 | 2 |");
+		expect_still_a_table(markdown);
+		expect(round_trip_markdown(markdown)).toBe(markdown + "\n");
+	});
+
+	test("serializes code-marked text holding a backtick and a backslash-pipe, stable", () => {
+		const markdown = build_markdown_from_json({
+			type: "doc",
+			content: [
+				{
+					type: "table",
+					content: [
+						{
+							type: "tableRow",
+							content: [
+								{
+									type: "tableHeader",
+									content: [
+										{
+											type: "paragraph",
+											content: [{ type: "text", text: "x ` \\| y", marks: [{ type: "code" }] }],
+										},
+									],
+								},
+								{
+									type: "tableHeader",
+									content: [{ type: "paragraph", content: [{ type: "text", text: "c" }] }],
+								},
+							],
+						},
+						make_table_row("tableCell", ["1", "2"]),
+					],
+				},
+			],
+		});
+		expect(markdown).toBe("| <code>x ` &#92;&#124; y</code> | c |\n| --- | --- |\n| 1 | 2 |");
+		expect_still_a_table(markdown);
+		expect(round_trip_markdown(markdown)).toBe(markdown + "\n");
+	});
+
+	test("cell schema stays paragraph-only so one save settles the content", () => {
+		const editor = files_headless_tiptap_editor_create({ initialContent: { markdown: table_canonical_2x2 } });
+		if (editor._nay) {
+			throw new Error("Expected headless editor creation to succeed", { cause: editor._nay });
+		}
+
+		expect(editor._yay.schema.nodes.tableCell.spec.content).toBe("paragraph+");
+		expect(editor._yay.schema.nodes.tableHeader.spec.content).toBe("paragraph+");
+		editor._yay.destroy();
+	});
+});
+
+describe("non-collaborative markdown normalization is idempotent", () => {
+	// The rich editor for a file with collaboration turned off saves `normalize(document)` on
+	// every explicit Save. A normalize whose output keeps changing would rewrite the file on
+	// every save, so the property this feature stands on is: the first pass may reformat, and
+	// every pass after that changes nothing.
+	function normalize(markdown: string) {
+		const yjsDoc = new YDoc();
+		const updateResult = files_yjs_doc_update_from_text({
+			text: markdown,
+			mut_yjsDoc: yjsDoc,
+			rootKind: "rich_text",
+		});
+		if (updateResult._nay) {
+			throw new Error("Expected markdown to Yjs conversion to succeed", {
+				cause: updateResult._nay,
+			});
+		}
+
+		const markdownResult = files_yjs_doc_get_text({ yjsDoc, rootKind: "rich_text" });
+		if (markdownResult._nay) {
+			throw new Error("Expected Yjs to markdown conversion to succeed", {
+				cause: markdownResult._nay,
+			});
+		}
+
+		return markdownResult._yay;
+	}
+
+	// A table that loses its column count comes back from marked as a plain paragraph, and the parse
+	// keeps the paragraph's newlines, so the pipe lines survive in the text. Looking for a delimiter
+	// row in the output would therefore pass on a document with no table in it. Parse the output back
+	// and look for the node instead.
+	function expect_still_a_table(markdown: string) {
+		const json = files_tiptap_markdown_to_json({ markdown });
+		if (json._nay) {
+			throw new Error("Expected table markdown to parse", { cause: json._nay });
+		}
+
+		expect(JSON.stringify(json._yay)).toContain('"type":"table"');
+	}
+
+	test("keeps a canonical document byte for byte, so the second save is a no-op", () => {
+		const input = "# Heading\n\nBody text\n";
+		expect(normalize(input)).toBe(input);
+	});
+
+	test("un-escapes a Council-style escaped date once, then holds still", () => {
+		const once = normalize("Meeting on 2026\\-08\\-30\n");
+		expect(once).toContain("2026-08-30");
+		expect(normalize(once)).toBe(once);
+	});
+
+	test("settles headings, lists, code fences, task lists and frontmatter after one pass", () => {
+		const fixtures = [
+			"# Title\n\nDated 2026-08-30\n",
+			"* one\n* two\n",
+			"1. one\n2. two\n",
+			"```ts\nconst a = 1;\n```\n",
+			"- [ ] todo\n- [x] done\n",
+			'---\nfoo: bar\nbaz: "qux"\n---\n\nBody\n',
+		];
+		for (const fixture of fixtures) {
+			const once = normalize(fixture);
+			expect(normalize(once)).toBe(once);
+		}
+	});
+
+	test("settles trailing-newline variants", () => {
+		for (const fixture of ["text", "text\n", "text\n\n\n"]) {
+			const once = normalize(fixture);
+			expect(normalize(once)).toBe(once);
+		}
+	});
+
+	test("keeps a paragraph comment mark span stable", () => {
+		// Section 7's targeted comment save writes exactly this span through this path.
+		const once = normalize('Hello <span data-type="comment" data-lb-thread-id="t1">world</span> again.\n');
+		expect(once).toContain('data-lb-thread-id="t1"');
+		expect(normalize(once)).toBe(once);
+	});
+
+	// Table fixtures never assert idempotence alone: a table degraded to a paragraph is
+	// idempotent too. Assert the exact expected bytes and parse the output back for the node.
+	test("keeps the imported canonical table fixtures byte for byte", () => {
+		const fixtures = [
+			table_canonical_2x2,
+			table_alignments,
+			table_pipe_in_cell,
+			table_backslash_before_pipe,
+			table_comment_span,
+		];
+		for (const fixture of fixtures) {
+			const output = normalize(fixture);
+			expect(output).toBe(fixture);
+			expect_still_a_table(output);
+		}
+	});
+
+	test("reformats the code-span backslash fixture once, then holds still", () => {
+		// User decision E chose option C: the serializer writes the span as an HTML code element
+		// with numeric character references, so the backslash run cannot grow.
+		const expected = "| <code>x &#92;&#92;&#124; y</code> | c |\n| --- | --- |\n| 1 | 2 |\n";
+		const output = normalize(table_code_span_backslash);
+		expect(output).toBe(expected);
+		expect_still_a_table(output);
+		expect(normalize(output)).toBe(output);
 	});
 });
 

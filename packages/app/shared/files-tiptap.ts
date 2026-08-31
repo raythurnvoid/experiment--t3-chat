@@ -14,6 +14,7 @@ import { TextStyle, Color } from "@tiptap/extension-text-style";
 import { Underline } from "@tiptap/extension-underline";
 import { Highlight } from "@tiptap/extension-highlight";
 import { HorizontalRule } from "@tiptap/extension-horizontal-rule";
+import { Table, TableRow, TableHeader, TableCell } from "@tiptap/extension-table";
 import { marked } from "marked";
 import type { Doc as YDoc } from "yjs";
 import { Editor, Extension, Node, type Extensions } from "@tiptap/core";
@@ -495,6 +496,181 @@ const files_video_node = Node.create({
 });
 // #endregion media embeds
 
+// #region tables
+// marked writes the column alignment onto every cell of the column, header and body alike, so
+// the alignment lives on cells here too. GFM only knows these three values.
+const files_table_cell_align_attribute = {
+	align: {
+		default: null as "left" | "center" | "right" | null,
+		parseHTML: (element: HTMLElement) => {
+			const align = element.getAttribute("align");
+			return align === "left" || align === "center" || align === "right" ? align : null;
+		},
+		renderHTML: (attributes: Record<string, unknown>) => {
+			const align = attributes.align;
+			return align ? { align } : {};
+		},
+	},
+};
+
+const files_table_cell_node = TableCell.extend({
+	// GFM cells hold inline content. Keep multiple paragraphs for pasted HTML, but do not let
+	// members create lists, headings, or code blocks that need another save to become stable.
+	content: "paragraph+",
+
+	// The explicit `this` annotation is needed because `extend` types its config against a
+	// union, which loses the `parent` member from the inferred context.
+	addAttributes(this: { parent?: () => Record<string, unknown> }) {
+		return { ...this.parent?.(), ...files_table_cell_align_attribute };
+	},
+});
+
+const files_table_header_node = TableHeader.extend({
+	content: "paragraph+",
+
+	addAttributes(this: { parent?: () => Record<string, unknown> }) {
+		return { ...this.parent?.(), ...files_table_cell_align_attribute };
+	},
+});
+
+const BACKSLASH_BEFORE_PIPE_REGEX = /\\\|/;
+
+/**
+ * Rewrite a code-marked text node that holds a backslash right before a pipe into an HTML
+ * `<code>` element with numeric character references.
+ *
+ * The backtick spelling cannot store that content in a table cell: marked's row splitter removes
+ * one backslash of the escaped pipe while the code span keeps the rest literally, so the escape
+ * run would grow on every save. The entity form never shows the row splitter a pipe, so nothing
+ * is escaped and nothing grows. Only the copy handed to the serializer changes; the editor
+ * document keeps the member's exact text.
+ */
+function files_table_code_mark_to_html(node: TiptapJSONContent): TiptapJSONContent {
+	if (
+		node.type === "text" &&
+		typeof node.text === "string" &&
+		BACKSLASH_BEFORE_PIPE_REGEX.test(node.text) &&
+		node.marks?.some((mark) => mark.type === "code")
+	) {
+		const escaped = node.text
+			.replaceAll("&", "&amp;")
+			.replaceAll("<", "&lt;")
+			.replaceAll(">", "&gt;")
+			.replaceAll("\\", "&#92;")
+			.replaceAll("|", "&#124;");
+
+		return {
+			...node,
+			text: `<code>${escaped}</code>`,
+			marks: node.marks.filter((mark) => mark.type !== "code"),
+		};
+	}
+
+	return node.content ? { ...node, content: node.content.map(files_table_code_mark_to_html) } : node;
+}
+
+/**
+ * Turn one table cell into the text between two pipes.
+ */
+function files_render_table_cell_markdown(cell: TiptapJSONContent, helpers: MarkdownRendererHelpers) {
+	// Markdown has no way to put a second block inside a table cell, so the blocks are joined
+	// with `<br>`. A real newline would end the row and destroy the whole table.
+	const rendered = helpers.renderChildren((cell.content ?? []).map(files_table_code_mark_to_html), "<br>");
+
+	// A hard break serializes as spaces plus a newline. Turn every newline, with the spaces or
+	// backslash around it, into `<br>` for the same reason.
+	const singleLine = rendered.replace(/[ \t\\]*\n[ \t]*/g, "<br>").trim();
+
+	// GFM drops the spaces around cell text when it parses, so trim here too, or the next parse
+	// would not give the same text back.
+	//
+	// A `|` must be written as `\|`. The backslashes right in front of it must be doubled too.
+	// Without that, cell text `a\|b` would be written as `a\\|b`, and marked would then read one
+	// real backslash plus one real pipe, give the row an extra cell, and drop the whole table
+	// back to a paragraph.
+	return singleLine.replace(/(\\*)\|/g, (_match, backslashes: string) => backslashes + backslashes + "\\|");
+}
+
+/**
+ * Write a table as a GFM pipe table.
+ *
+ * The vendored `renderTableToMarkdown` cannot be used: it wraps its output in newlines, pads
+ * every column to its widest cell, never escapes `|`, drops the alignment colons, and joins a
+ * multi-block cell with a U+001F control character that would end up in the saved file.
+ */
+function files_render_table_markdown(node: TiptapJSONContent, helpers: MarkdownRendererHelpers) {
+	const rows = node.content ?? [];
+	const firstRowCells = rows[0]?.content ?? [];
+
+	// One column per colspan unit of the first row. marked fixes the column count from the
+	// delimiter row, and a row with a different count breaks the table, so every row we write
+	// gets exactly this many cells.
+	const columnCount = firstRowCells.reduce((total, cell) => total + (Number(cell.attrs?.colspan) || 1), 0);
+	if (columnCount === 0) {
+		return "";
+	}
+
+	const renderRow = (row: TiptapJSONContent) => {
+		const cells: string[] = [];
+		for (const cell of row.content ?? []) {
+			cells.push(files_render_table_cell_markdown(cell, helpers));
+			// Markdown cannot say "this cell spans N columns". Write the text once and pad the
+			// row with empty cells so the row keeps the table's column count.
+			for (let i = 1; i < (Number(cell.attrs?.colspan) || 1); i += 1) {
+				cells.push("");
+			}
+		}
+		while (cells.length < columnCount) {
+			cells.push("");
+		}
+		return `| ${cells.slice(0, columnCount).join(" | ")} |`;
+	};
+
+	const firstRowIsHeader = firstRowCells.some((cell) => cell.type === "tableHeader");
+
+	// GFM always needs a header row. When the document's first row holds body cells, write an
+	// empty header and keep every row in the body. The next parse gives that empty header back,
+	// so the round trip after this one changes nothing.
+	const headerLine = firstRowIsHeader
+		? renderRow(rows[0]!)
+		: `| ${new Array(columnCount).fill("").join(" | ")} |`;
+
+	// Read the alignment from the first row whether or not it is a header row, so a table whose
+	// header was toggled off keeps its columns aligned.
+	const alignments: Array<string | null> = [];
+	for (const cell of firstRowCells) {
+		const align = cell.attrs?.align;
+		const value = align === "left" || align === "center" || align === "right" ? align : null;
+		for (let i = 0; i < (Number(cell.attrs?.colspan) || 1); i += 1) {
+			alignments.push(value);
+		}
+	}
+
+	const delimiterCells = new Array(columnCount).fill(null).map((_unused, index) => {
+		switch (alignments[index]) {
+			case "left":
+				return ":---";
+			case "center":
+				return ":---:";
+			case "right":
+				return "---:";
+			default:
+				return "---";
+		}
+	});
+
+	const bodyRows = firstRowIsHeader ? rows.slice(1) : rows;
+
+	// No leading and no trailing newline: the `doc` node already joins blocks with `\n\n`, and
+	// `files_yjs_doc_get_text` adds the file's final newline.
+	return [headerLine, `| ${delimiterCells.join(" | ")} |`, ...bodyRows.map(renderRow)].join("\n");
+}
+
+const files_table_node = Table.extend({
+	renderMarkdown: files_render_table_markdown,
+});
+// #endregion tables
+
 export function files_tiptap_markdown_to_json(args: {
 	markdown: string;
 	extensions?: Extensions;
@@ -724,6 +900,12 @@ export const files_get_tiptap_shared_extensions = ((/* iife */) => {
 			frontmatter: files_frontmatter_node,
 			image: files_image_node,
 			video: files_video_node,
+			// Column widths cannot be written to markdown, so resizing stays off. That also keeps the
+			// extension from installing its DOM node view, which the headless Convex editors could not run.
+			table: files_table_node.configure({ resizable: false }),
+			tableRow: TableRow,
+			tableHeader: files_table_header_node,
+			tableCell: files_table_cell_node,
 			liveblocksComments: files_CommentsExtension,
 		};
 	}

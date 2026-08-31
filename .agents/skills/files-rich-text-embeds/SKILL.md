@@ -34,6 +34,9 @@ The image and video nodes live in `files_get_tiptap_shared_extensions()` in
 that same shared set, and a node type missing from it is silently dropped from the saved
 markdown. The client registers the same node objects (`extensions.ts`), and the editor-only
 parts — node views, upload flow, insertion UI — layer on top as separate extensions.
+The four GFM table nodes (`#region tables` in `shared/files-tiptap.ts`) are another consumer of
+this same contract, with their own browser-list schema test in
+`file-editor-rich-text/extensions.test.ts`.
 
 Shape caveat: this serialization story is true for `rich_text` documents only. A `plain_text`
 document (every editable text file that is not `.md`) has no ProseMirror tree and consults no

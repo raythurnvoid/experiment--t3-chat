@@ -981,6 +981,273 @@ describe("plugins_validate_manifest", () => {
 		}
 	});
 
+	// A backend block every endpoint test can extend. The entry file is the listed worker file.
+	const backend_json = {
+		entry: "dist/backend/worker.js",
+		moduleName: "dist/backend/worker.js",
+		compatibilityDate: "2026-08-14",
+		compatibilityFlags: [],
+	};
+
+	test("bounds backend endpoints and holds their id and path rules", () => {
+		const accepted = plugins_validate_manifest({
+			...manifest_json({ capabilities: ["plugin.backend.invoke"] }),
+			backend: {
+				...backend_json,
+				endpoints: [
+					{ id: "echo", path: "/echo" },
+					{ id: "send", path: "/send", serialization: "caller-key" },
+				],
+			},
+		});
+		if (accepted._nay) {
+			throw new Error(accepted._nay.message);
+		}
+		expect(accepted._yay.backend?.endpoints).toEqual([
+			{ id: "echo", path: "/echo" },
+			{ id: "send", path: "/send", serialization: "caller-key" },
+		]);
+
+		expect(
+			plugins_validate_manifest({
+				...manifest_json({ capabilities: ["plugin.backend.invoke"] }),
+				backend: {
+					...backend_json,
+					endpoints: Array.from({ length: 9 }, (_, index) => ({ id: `endpoint-${index}`, path: `/e${index}` })),
+				},
+			}),
+		).toEqual({ _nay: { message: "Plugin backends can declare at most 8 endpoints" } });
+		expect(
+			plugins_validate_manifest({
+				...manifest_json({ capabilities: ["plugin.backend.invoke"] }),
+				backend: { ...backend_json, endpoints: [{ id: "Echo", path: "/echo" }] },
+			}),
+		).toEqual({ _nay: { message: "Backend endpoint ids must be lowercase letters, digits, and dashes" } });
+		expect(
+			plugins_validate_manifest({
+				...manifest_json({ capabilities: ["plugin.backend.invoke"] }),
+				backend: { ...backend_json, endpoints: [{ id: "echo", path: "echo" }] },
+			}),
+		).toEqual({ _nay: { message: "Backend endpoint paths must start with / and use printable ASCII" } });
+		expect(
+			plugins_validate_manifest({
+				...manifest_json({ capabilities: ["plugin.backend.invoke"] }),
+				backend: { ...backend_json, endpoints: [{ id: "echo", path: "/caffè" }] },
+			}),
+		).toEqual({ _nay: { message: "Backend endpoint paths must start with / and use printable ASCII" } });
+		expect(
+			plugins_validate_manifest({
+				...manifest_json({ capabilities: ["plugin.backend.invoke"] }),
+				backend: { ...backend_json, endpoints: [{ id: "echo", path: `/${"a".repeat(256)}` }] },
+			}),
+		).toEqual({ _nay: { message: "Backend endpoint paths must be at most 256 characters" } });
+	});
+
+	test("keeps the host event prefix out of backend endpoint paths", () => {
+		// The runner delivers host events under this prefix, so an endpoint on it would let a page
+		// invoke impersonate a host event delivery to the plugin's own code.
+		for (const path of ["/__bonobo_senate", "/__bonobo_senate/run", "/__bonobo_senate-extra"]) {
+			expect(
+				plugins_validate_manifest({
+					...manifest_json({ capabilities: ["plugin.backend.invoke"] }),
+					backend: { ...backend_json, endpoints: [{ id: "echo", path }] },
+				}),
+			).toEqual({ _nay: { message: "Backend endpoint paths must not start with /__bonobo_senate" } });
+		}
+	});
+
+	test("rejects duplicate backend endpoint ids and paths", () => {
+		expect(
+			plugins_validate_manifest({
+				...manifest_json({ capabilities: ["plugin.backend.invoke"] }),
+				backend: {
+					...backend_json,
+					endpoints: [
+						{ id: "echo", path: "/echo" },
+						{ id: "echo", path: "/other" },
+					],
+				},
+			}),
+		).toEqual({ _nay: { message: 'Plugin manifest has duplicate backend endpoint id "echo"' } });
+		expect(
+			plugins_validate_manifest({
+				...manifest_json({ capabilities: ["plugin.backend.invoke"] }),
+				backend: {
+					...backend_json,
+					endpoints: [
+						{ id: "echo", path: "/echo" },
+						{ id: "other", path: "/echo" },
+					],
+				},
+			}),
+		).toEqual({ _nay: { message: 'Plugin manifest has duplicate backend endpoint path "/echo"' } });
+	});
+
+	test("keeps the plugin.backend.invoke capability and backend endpoints together", () => {
+		// The capability with no backend at all gets its own message, because endpoints live inside
+		// the backend block and "at least one endpoint" would misdirect the author.
+		expect(
+			plugins_validate_manifest({
+				...manifest_json({ capabilities: ["plugin.backend.invoke"] }),
+			}),
+		).toEqual({ _nay: { message: "The plugin.backend.invoke capability requires a plugin backend" } });
+		expect(
+			plugins_validate_manifest({
+				...manifest_json({ capabilities: ["plugin.backend.invoke"] }),
+				backend: backend_json,
+			}),
+		).toEqual({
+			_nay: { message: "The plugin.backend.invoke capability requires at least one backend endpoint" },
+		});
+		expect(
+			plugins_validate_manifest({
+				...manifest_json(),
+				backend: { ...backend_json, endpoints: [{ id: "echo", path: "/echo" }] },
+			}),
+		).toEqual({ _nay: { message: "Backend endpoints require the plugin.backend.invoke capability" } });
+	});
+
+	test("rejects workspace.files.own-write without workspace.files.write and own-access without own-write", () => {
+		expect(
+			plugins_validate_manifest({
+				...manifest_json({ capabilities: ["workspace.files.own-write"] }),
+			}),
+		).toEqual({
+			_nay: { message: "The workspace.files.own-write capability requires the workspace.files.write capability" },
+		});
+		expect(
+			plugins_validate_manifest({
+				...manifest_json({ capabilities: ["workspace.files.write", "workspace.files.own-access"] }),
+			}),
+		).toEqual({
+			_nay: {
+				message: "The workspace.files.own-access capability requires the workspace.files.own-write capability",
+			},
+		});
+		const accepted = plugins_validate_manifest({
+			...manifest_json({
+				capabilities: ["workspace.files.write", "workspace.files.own-write", "workspace.files.own-access"],
+			}),
+		});
+		if (accepted._nay) {
+			throw new Error(accepted._nay.message);
+		}
+		expect(accepted._yay.capabilities).toEqual([
+			"workspace.files.write",
+			"workspace.files.own-write",
+			"workspace.files.own-access",
+		]);
+	});
+
+	test("holds each declared service scope to its gating capability", () => {
+		expect(
+			plugins_validate_manifest({
+				...manifest_json(),
+				service: { scopes: ["plugin_data:read"] },
+			}),
+		).toEqual({
+			_nay: { message: "Plugin service declarations require the plugin.service.connect capability" },
+		});
+		expect(
+			plugins_validate_manifest({
+				...manifest_json({ capabilities: ["plugin.service.connect", "workspace.files.write"] }),
+				service: { scopes: ["plugin_data:read"] },
+			}),
+		).toEqual({
+			_nay: { message: "The plugin_data:read service scope requires the plugin.data.read capability" },
+		});
+		expect(
+			plugins_validate_manifest({
+				...manifest_json({ capabilities: ["plugin.service.connect", "plugin.data.read"] }),
+				service: { scopes: ["plugin_data:read", "plugin_data:write"] },
+			}),
+		).toEqual({
+			_nay: { message: "The plugin_data:write service scope requires the plugin.data.write capability" },
+		});
+		expect(
+			plugins_validate_manifest({
+				...manifest_json({ capabilities: ["plugin.service.connect", "plugin.data.read"] }),
+				service: { scopes: ["files:write"] },
+			}),
+		).toEqual({
+			_nay: { message: "The files:write service scope requires the workspace.files.write capability" },
+		});
+		expect(
+			plugins_validate_manifest({
+				...manifest_json({ capabilities: ["plugin.service.connect", "plugin.data.read"] }),
+				service: { scopes: [] },
+			}),
+		).toEqual({ _nay: { message: "Plugin service declarations must name at least one scope" } });
+		expect(
+			plugins_validate_manifest({
+				...manifest_json({ capabilities: ["plugin.service.connect", "plugin.data.read"] }),
+				service: { scopes: ["plugin_data:read", "plugin_data:read"] },
+			}),
+		).toEqual({ _nay: { message: 'Plugin manifest has duplicate service scope "plugin_data:read"' } });
+
+		const accepted = plugins_validate_manifest({
+			...manifest_json({
+				capabilities: [
+					"plugin.service.connect",
+					"plugin.data.read",
+					"plugin.data.write",
+					"workspace.files.write",
+				],
+			}),
+			service: { scopes: ["plugin_data:read", "plugin_data:write", "files:write"] },
+		});
+		if (accepted._nay) {
+			throw new Error(accepted._nay.message);
+		}
+		expect(accepted._yay.service).toEqual({ scopes: ["plugin_data:read", "plugin_data:write", "files:write"] });
+	});
+
+	test("bounds user-writable collections and holds them to the shared name rule", () => {
+		expect(
+			plugins_validate_manifest({
+				...manifest_json({ capabilities: ["plugin.data.read", "plugin.data.user-write"] }),
+				userWritableCollections: Array.from({ length: 17 }, (_, index) => `collection-${index}`),
+			}),
+		).toEqual({ _nay: { message: "Plugin manifests can declare at most 16 user-writable collections" } });
+		expect(
+			plugins_validate_manifest({
+				...manifest_json({ capabilities: ["plugin.data.read", "plugin.data.user-write"] }),
+				userWritableCollections: [" channels"],
+			}),
+		).toEqual({ _nay: { message: "User-writable collection names must be valid plugin-data collection names" } });
+		expect(
+			plugins_validate_manifest({
+				...manifest_json({ capabilities: ["plugin.data.read", "plugin.data.user-write"] }),
+				userWritableCollections: ["channels", "channels"],
+			}),
+		).toEqual({ _nay: { message: 'Plugin manifest has duplicate user-writable collection "channels"' } });
+		expect(
+			plugins_validate_manifest({
+				...manifest_json(),
+				userWritableCollections: ["channels"],
+			}),
+		).toEqual({ _nay: { message: "User-writable collections require the plugin.data.user-write capability" } });
+
+		// An empty array is a legal declaration: it means nothing is user-writable.
+		const emptyList = plugins_validate_manifest({
+			...manifest_json({ capabilities: ["plugin.data.read", "plugin.data.user-write"] }),
+			userWritableCollections: [],
+		});
+		if (emptyList._nay) {
+			throw new Error(emptyList._nay.message);
+		}
+		expect(emptyList._yay.userWritableCollections).toEqual([]);
+
+		const declared = plugins_validate_manifest({
+			...manifest_json({ capabilities: ["plugin.data.read", "plugin.data.user-write"] }),
+			userWritableCollections: ["channels", "cursors"],
+		});
+		if (declared._nay) {
+			throw new Error(declared._nay.message);
+		}
+		expect(declared._yay.userWritableCollections).toEqual(["channels", "cursors"]);
+	});
+
 	test("rejects duplicate file view content types within and across views", () => {
 		expect(
 			plugins_validate_manifest({
@@ -1086,6 +1353,9 @@ describe("plugins_Capability", () => {
 		"plugin.service.connect": true,
 		"ui.outbound.fetch": true,
 		"workspace.members.read": true,
+		"workspace.files.own-write": true,
+		"workspace.files.own-access": true,
+		"plugin.backend.invoke": true,
 	} satisfies Record<plugins_Capability, true>);
 
 	test("the Convex schema capability validator matches the shared capability list exactly", () => {
@@ -1120,6 +1390,8 @@ describe("plugins_Capability", () => {
 			"plugin.data.user-write": ["plugin.data.read"],
 			"workspace.files.create-read-only": ["workspace.files.write"],
 			"plugin.service.connect": ["plugin.data.read", "workspace.files.write"],
+			"workspace.files.own-write": ["workspace.files.write"],
+			"workspace.files.own-access": ["workspace.files.own-write"],
 		} satisfies Partial<Record<plugins_Capability, plugins_Capability[]>>;
 
 		const sdkTypes = readFileSync(`${process.cwd()}/../bonobo-plugin-sdk/index.d.ts`, "utf8");
@@ -1144,6 +1416,8 @@ describe("plugins_Capability", () => {
 			"plugin.data.user-write": true,
 			"workspace.files.create-read-only": true,
 			"plugin.service.connect": true,
+			"workspace.files.own-write": true,
+			"workspace.files.own-access": true,
 		});
 	});
 });

@@ -26,19 +26,30 @@ const placeholder = Placeholder;
 
 const sharedExtensions = files_get_tiptap_shared_extensions();
 
-const starterKit = StarterKit.configure({
-	// The Liveblocks extension comes with its own history handling
-	undoRedo: false,
+// Both StarterKit variants share these options. Gap cursor stays ON in the browser only. The
+// table node is isolating, so a table that is the first or last block would otherwise trap the
+// caret. It is a DOM plugin, not a schema node, so the shared server set keeps it off and both
+// sides keep the same schema.
+const starterKitSharedOptions = {
 	underline: false,
 	dropcursor: {
 		color: false,
 		width: 4,
 	},
-	gapcursor: false,
-
-	//
 	horizontalRule: false,
 	codeBlock: false,
+} as const;
+
+const starterKit = StarterKit.configure({
+	// The Liveblocks extension comes with its own history handling
+	undoRedo: false,
+	...starterKitSharedOptions,
+});
+
+// A file with collaboration turned off has no Liveblocks extension, so StarterKit's own
+// undo/redo stays on.
+const nonCollabStarterKit = StarterKit.configure({
+	...starterKitSharedOptions,
 });
 
 const taskList = TaskList.configure({
@@ -138,8 +149,9 @@ const frontmatter = sharedExtensions.frontmatter.extend({
 	},
 });
 
-export const defaultExtensions = [
-	starterKit,
+// Everything after StarterKit is identical in both lists. Neither list holds the
+// Liveblocks/Collaboration extension; the collaborative editor adds it where it is assembled.
+const extensionsAfterStarterKit = [
 	placeholder,
 	taskList,
 	taskItem,
@@ -156,6 +168,12 @@ export const defaultExtensions = [
 	// editor is assembled.
 	sharedExtensions.image,
 	sharedExtensions.video,
+	// The table nodes come from the shared set for the same reason: the client schema and the
+	// schema Convex serializes with must stay identical, or a browser save would drop tables.
+	sharedExtensions.table,
+	sharedExtensions.tableRow,
+	sharedExtensions.tableHeader,
+	sharedExtensions.tableCell,
 	sharedExtensions.highlight,
 	sharedExtensions.textStyle,
 	Color,
@@ -168,3 +186,10 @@ export const defaultExtensions = [
 	sharedExtensions.horizontalRule,
 	frontmatter,
 ];
+
+export const defaultExtensions = [starterKit, ...extensionsAfterStarterKit];
+
+// The rich editor for files with collaboration turned off mounts this list. It is the only
+// serializer that writes those files, so the idempotence suite in `./extensions.test.ts` runs
+// against exactly this list.
+export const nonCollaborativeExtensions = [nonCollabStarterKit, ...extensionsAfterStarterKit];

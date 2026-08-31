@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 
-import { internal } from "./_generated/api.js";
+import { api, internal } from "./_generated/api.js";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { public_api_PLUGIN_SERVICE_TOKEN_REGEX } from "../shared/public-api.ts";
@@ -11,11 +11,11 @@ const RENEW_PATH = "/api/internal/plugins/service-grants/renew";
 const VERIFY_LIVE_PATH = "/api/internal/plugins/service-grants/verify-live";
 const SEAL_PROCESSING_PATH = "/api/internal/plugins/service-grants/seal-processing";
 
-/** The value `setup-env.test.ts` puts in the environment for the whole convex project. */
-const EXCHANGE_SECRET = "COUNCIL_SERVICE_EXCHANGE_SECRET_TEST";
+/** The secret the seeded registration's hash is made from. */
+const EXCHANGE_SECRET = "SERVICE_EXCHANGE_SECRET_TEST";
 
-/** What a finished Council installation consents to. The exchange requires all five by name. */
-const COUNCIL_CAPABILITIES: plugins_Capability[] = [
+/** What a finished Council installation consents to. */
+const SERVICE_CAPABILITIES: plugins_Capability[] = [
 	"plugin.service.connect",
 	"plugin.data.read",
 	"plugin.data.write",
@@ -24,8 +24,9 @@ const COUNCIL_CAPABILITIES: plugins_Capability[] = [
 ];
 
 /**
- * Insert a ready plugin version and one enabled installation directly, the same way
- * `plugins_data.test.ts` does. The publish pipeline is not what these tests exercise.
+ * Insert a ready plugin version, one enabled installation, and the plugin's service registration
+ * directly, the same way `plugins_data.test.ts` does. The publish pipeline is not what these
+ * tests exercise. `registration: false` leaves the plugin unregistered.
  */
 async function seed_installation(
 	t: ReturnType<typeof test_convex>,
@@ -33,12 +34,15 @@ async function seed_installation(
 		acceptedCapabilities?: plugins_Capability[];
 		pluginName?: string;
 		organizationName?: string;
+		registration?:
+			| { scopes?: ("plugin_data:read" | "plugin_data:write" | "files:write")[]; secret?: string }
+			| false;
 	} = {},
 ) {
 	return await t.run(async (ctx) => {
 		const now = Date.now();
 		const membership = await test_mocks_fill_db_with.membership(ctx, { organizationName: args.organizationName });
-		const capabilities = args.acceptedCapabilities ?? COUNCIL_CAPABILITIES;
+		const capabilities = args.acceptedCapabilities ?? SERVICE_CAPABILITIES;
 		const pluginName = args.pluginName ?? "council";
 		const pluginVersionId = await ctx.db.insert("plugins_versions", {
 			name: pluginName,
@@ -84,6 +88,15 @@ async function seed_installation(
 			updatedBy: membership.userId,
 			updatedAt: now,
 		});
+		if (args.registration !== false) {
+			await ctx.db.insert("plugins_service_registrations", {
+				pluginName,
+				exchangeSecretHash: await crypto_sha256_hex(args.registration?.secret ?? EXCHANGE_SECRET),
+				scopes: args.registration?.scopes ?? ["plugin_data:read", "plugin_data:write", "files:write"],
+				createdBy: membership.userId,
+				updatedAt: now,
+			});
+		}
 		return { ...membership, pluginVersionId, installationId } as const;
 	});
 }
@@ -344,36 +357,68 @@ describe("/api/internal/plugins/service-grants/exchange", () => {
 		expect(await read_grants(t)).toHaveLength(0);
 	});
 
-	// The sibling above leaves out `workspace.files.write` as well, so it keeps passing even if
-	// `workspace.files.create-read-only` stops being required. Take away that one capability and
-	// nothing else, so this test is the one that notices when it leaves the required list.
-	test("refuses an installation missing only workspace.files.create-read-only, and mints nothing", async () => {
+	// The capability rule asks only for the gates of the REGISTERED scopes plus the connect
+	// consent. `create-target` still checks `workspace.files.create-read-only` on every call, so
+	// nothing is lost by not asking for it here.
+	test("exchanges without workspace.files.create-read-only, which is no longer required here", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t, {
-			acceptedCapabilities: COUNCIL_CAPABILITIES.filter(
+			acceptedCapabilities: SERVICE_CAPABILITIES.filter(
 				(capability) => capability !== ("workspace.files.create-read-only" satisfies plugins_Capability),
 			),
 		});
 		const pageToken = await seed_page_token(t, fixture);
 
 		const response = await exchange(t, pageToken);
-		expect(response.status).toBe(403);
-		expect(await response.json()).toEqual({ message: "Permission denied" });
-		expect(await read_grants(t)).toHaveLength(0);
+		expect(response.status).toBe(200);
+		expect(await read_grants(t)).toHaveLength(1);
 	});
 
-	test("refuses a page token belonging to a different plugin, and mints nothing", async () => {
+	test("the granted scopes derive from the registration, not from a fixed list", async () => {
 		const t = test_convex();
-		// Every plugin page is served from the same asset origin, so one page can read another page's
-		// `plu_` token. Without this binding the exchange would hand the Council service a grant carrying
-		// the other plugin's producer identity — and a service grant is the only principal allowed to
-		// write versioned documents, so a read-only page token would become that plugin's writer.
-		const fixture = await seed_installation(t, { pluginName: "gallery" });
+		// A read-only service: its registration names one scope, so the exchange needs only the
+		// connect consent plus that scope's gate, and the grant carries exactly that scope.
+		const fixture = await seed_installation(t, {
+			acceptedCapabilities: ["plugin.service.connect", "plugin.data.read"],
+			registration: { scopes: ["plugin_data:read"] },
+		});
 		const pageToken = await seed_page_token(t, fixture);
 
 		const response = await exchange(t, pageToken);
-		expect(response.status).toBe(403);
-		expect(await response.json()).toEqual({ message: "Permission denied" });
+		expect(response.status).toBe(200);
+		const body = (await response.json()) as { scopes: string[] };
+		expect(body.scopes).toEqual(["plugin_data:read"]);
+	});
+
+	test("refuses a page token belonging to an unregistered plugin, and mints nothing", async () => {
+		const t = test_convex();
+		// Every plugin page is served from the same asset origin, so one page can read another page's
+		// `plu_` token. The stolen token resolves to the other plugin's installation, and that plugin
+		// has no registration, so there is no hash the presented secret could match. The refusal is
+		// the same flat word as a wrong secret.
+		const fixture = await seed_installation(t, { pluginName: "gallery", registration: false });
+		const pageToken = await seed_page_token(t, fixture);
+
+		const response = await exchange(t, pageToken);
+		expect(response.status).toBe(401);
+		expect(await response.json()).toEqual({ message: "Unauthorized" });
+		expect(await read_grants(t)).toHaveLength(0);
+	});
+
+	test("refuses another registered plugin's page token with the same flat word, and mints nothing", async () => {
+		const t = test_convex();
+		// The other plugin IS registered, under its own secret. The stolen token finds that
+		// registration, and the presented secret's hash does not match it — the secret is bound to
+		// one plugin by the lookup itself, with no plugin-name allowlist left to configure.
+		const fixture = await seed_installation(t, {
+			pluginName: "gallery",
+			registration: { secret: "pse_gallery_secret" },
+		});
+		const pageToken = await seed_page_token(t, fixture);
+
+		const response = await exchange(t, pageToken);
+		expect(response.status).toBe(401);
+		expect(await response.json()).toEqual({ message: "Unauthorized" });
 		expect(await read_grants(t)).toHaveLength(0);
 	});
 
@@ -386,6 +431,60 @@ describe("/api/internal/plugins/service-grants/exchange", () => {
 		expect(response.status).toBe(401);
 		expect(await response.json()).toEqual({ message: "Unauthorized" });
 		expect(await read_grants(t)).toHaveLength(0);
+	});
+
+	test("rotating the registration through the publisher mutation kills the old secret immediately", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		// The publisher gate needs the repository claim behind the latest version, owned by the
+		// caller who also published it.
+		await t.run(async (ctx) => {
+			await ctx.db.insert("plugins_publisher_repositories", {
+				ownerUserId: fixture.userId,
+				repositoryUrl: "https://github.com/bonobo/council-plugin",
+				owner: "bonobo",
+				repo: "council-plugin",
+			});
+		});
+		const asPublisher = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: `clerk-${fixture.userId}`,
+			external_id: fixture.userId,
+		});
+
+		const baseline = await exchange(t, await seed_page_token(t, fixture));
+		expect(baseline.status).toBe(200);
+
+		const rotated = await asPublisher.mutation(api.plugins.set_plugin_service_registration, {
+			pluginName: "council",
+			scopes: ["plugin_data:read", "plugin_data:write", "files:write"],
+		});
+		expect(rotated._nay).toBeUndefined();
+		const newSecret = rotated._yay!.exchangeSecret;
+		expect(newSecret.startsWith("pse_")).toBe(true);
+
+		// The old secret dies with the rotation; the new one works at once.
+		const withOld = await exchange(t, await seed_page_token(t, fixture));
+		expect(withOld.status).toBe(401);
+		expect(await withOld.json()).toEqual({ message: "Unauthorized" });
+		const withNew = await exchange(t, await seed_page_token(t, fixture), { secret: newSecret });
+		expect(withNew.status).toBe(200);
+
+		// The publisher query reports state without the hash or the secret.
+		const state = await asPublisher.query(api.plugins.get_plugin_service_registration, { pluginName: "council" });
+		expect(state).toEqual({
+			exists: true,
+			scopes: ["plugin_data:read", "plugin_data:write", "files:write"],
+			updatedAt: expect.any(Number),
+		});
+
+		// Removal drops the registration, and with it every exchange.
+		const removed = await asPublisher.mutation(api.plugins.remove_plugin_service_registration, {
+			pluginName: "council",
+		});
+		expect(removed._nay).toBeUndefined();
+		const afterRemove = await exchange(t, await seed_page_token(t, fixture), { secret: newSecret });
+		expect(afterRemove.status).toBe(401);
 	});
 });
 

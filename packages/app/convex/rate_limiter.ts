@@ -121,6 +121,15 @@ const rate_limiter_CONFIG = {
 		period: MINUTE,
 		capacity: 10,
 	},
+	// A member invoking a plugin backend endpoint from a plugin frame. Same shape as the page
+	// write budget above: clicks come in short bursts, and the key pairs user and installation
+	// so one busy frame cannot drain the member's invoke budget in every other plugin.
+	plugins_backend_invoke: {
+		kind: "token bucket",
+		rate: 30,
+		period: MINUTE,
+		capacity: 10,
+	},
 	plugins_manage: STRICT_AUTH_OR_BILLING,
 	// Reading the candidate branch HEAD spends the shared GitHub token but must not consume the
 	// management token that the immediate publish needs. Keep a separate short retry burst here.

@@ -14990,7 +14990,7 @@ describe("files_nodes_db_apply_pending_move read-only gates", () => {
 	});
 });
 
-describe("files_nodes public read-only projection", () => {
+describe("files_nodes public read-only view", () => {
 	/**
 	 * A workspace where a second member holds a grant on the nested restricted folder but has no
 	 * workspace-wide read. The outer folder is both unreadable for them and the lock root.
@@ -15000,7 +15000,7 @@ describe("files_nodes public read-only projection", () => {
 		const asOwner = t.withIdentity({
 			issuer: "https://clerk.test",
 			external_id: db.userId,
-			name: "Projection Owner",
+			name: "Stamp Owner",
 		});
 
 		const outer = await asOwner.mutation(api.files_nodes.create_folder_node, {
@@ -15033,14 +15033,14 @@ describe("files_nodes public read-only projection", () => {
 		const member = await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", inner._yay.nodeId, {
 				restrictedScopeNodeId: inner._yay.nodeId,
-				projectionPluginName: "chitchat",
+				pluginOwnerName: "chitchat",
 			});
 			await ctx.db.patch("files_nodes", file._yay.nodeId, {
 				restrictedScopeNodeId: inner._yay.nodeId,
-				projectionPluginName: "chitchat",
+				pluginOwnerName: "chitchat",
 			});
 
-			const memberUserId = await ctx.db.insert("users", { clerkUserId: "clerk_projection_member" });
+			const memberUserId = await ctx.db.insert("users", { clerkUserId: "clerk_stamp_member" });
 			const now = Date.now();
 			const memberMembershipId = await ctx.db.insert("organizations_workspaces_users", {
 				organizationId: db.organizationId,
@@ -15065,7 +15065,7 @@ describe("files_nodes public read-only projection", () => {
 		const asMember = t.withIdentity({
 			issuer: "https://clerk.test",
 			external_id: member.memberUserId,
-			name: "Projection Member",
+			name: "Stamp Member",
 		});
 
 		// Lock the outer folder: the lock root sits above the member's readable scope.
@@ -15096,7 +15096,7 @@ describe("files_nodes public read-only projection", () => {
 			// The raw pointer must not leave the backend: it would name the hidden outer folder.
 			expect("readOnlyScopeNodeId" in node).toBe(false);
 			expect("readOnlyPluginServiceTargetId" in node).toBe(false);
-			expect("projectionPluginName" in node).toBe(false);
+			expect("pluginOwnerName" in node).toBe(false);
 		}
 
 		// The owner can read the lock root, so each returned node may name it.
@@ -15128,7 +15128,7 @@ describe("files_nodes public read-only projection", () => {
 		expect(memberView?.readOnlySourcePath).toBeUndefined();
 		expect(memberView !== null && "readOnlyScopeNodeId" in memberView).toBe(false);
 		expect(memberView !== null && "readOnlyPluginServiceTargetId" in memberView).toBe(false);
-		expect(memberView !== null && "projectionPluginName" in memberView).toBe(false);
+		expect(memberView !== null && "pluginOwnerName" in memberView).toBe(false);
 
 		const ownerView = await f.asOwner.query(api.files_nodes.get_file_node_for_membership, {
 			membershipId: f.db.membershipId,
@@ -15158,7 +15158,7 @@ describe("files_nodes public read-only projection", () => {
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
 			external_id: db.userId,
-			name: "Projection Writable User",
+			name: "Stamp Writable User",
 		});
 		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
 			membershipId: db.membershipId,
@@ -15176,6 +15176,212 @@ describe("files_nodes public read-only projection", () => {
 		expect(view).toMatchObject({ readOnlyState: "writable" });
 		expect(view?.readOnlySourceNodeId).toBeUndefined();
 		expect(view?.readOnlySourcePath).toBeUndefined();
+	});
+});
+
+describe("files_nodes_db_has_plugin_owner_authority", () => {
+	/**
+	 * One stamped folder with an unstamped file inside whose effective lock points at it, an
+	 * unstamped sibling folder, and a second member to use as a share-grant principal. This
+	 * The stamp is plugin authority, so the six public sharing and lock doors must refuse
+	 * stamped nodes.
+	 */
+	async function seed_stamped_authority(t: ReturnType<typeof test_convex>) {
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asOwner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Stamp Owner",
+		});
+
+		const stamped = await asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "stamped",
+		});
+		if (stamped._nay) {
+			throw new Error(stamped._nay.message);
+		}
+		const sibling = await asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "sibling",
+		});
+		if (sibling._nay) {
+			throw new Error(sibling._nay.message);
+		}
+		const inherited = await asOwner.action(api.files_nodes_content.create_text_node, {
+			membershipId: db.membershipId,
+			parentId: stamped._yay.nodeId,
+			path: "note.md",
+		});
+		if (inherited._nay) {
+			throw new Error(inherited._nay.message);
+		}
+
+		const memberUserId = await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", stamped._yay.nodeId, { pluginOwnerName: "chitchat" });
+			// The file carries no stamp of its own; only its effective lock names the stamped folder.
+			await ctx.db.patch("files_nodes", inherited._yay.nodeId, { readOnlyScopeNodeId: stamped._yay.nodeId });
+
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk_stamp_member" });
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				active: true,
+				updatedAt: Date.now(),
+			});
+			return userId;
+		});
+
+		return {
+			db,
+			asOwner,
+			memberUserId,
+			stampedId: stamped._yay.nodeId,
+			siblingId: sibling._yay.nodeId,
+			inheritedId: inherited._yay.nodeId,
+		};
+	}
+
+	test("a stamped node refuses all four sharing doors and both lock doors", async () => {
+		const t = test_convex();
+		const f = await seed_stamped_authority(t);
+
+		const restricted = await f.asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: f.db.membershipId,
+			nodeId: f.stampedId,
+		});
+		expect(restricted._nay?.message).toBe("Plugin-managed files cannot be shared.");
+		const unrestricted = await f.asOwner.mutation(api.files_sharing.unrestrict_node, {
+			membershipId: f.db.membershipId,
+			nodeId: f.stampedId,
+		});
+		expect(unrestricted._nay?.message).toBe("Plugin-managed files cannot be shared.");
+		const granted = await f.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: f.db.membershipId,
+			nodeId: f.stampedId,
+			principal: { kind: "user", userId: f.memberUserId },
+			level: "read",
+		});
+		expect(granted._nay?.message).toBe("Plugin-managed files cannot be shared.");
+		const removed = await f.asOwner.mutation(api.files_sharing.remove_node_share_grant, {
+			membershipId: f.db.membershipId,
+			nodeId: f.stampedId,
+			principal: { kind: "user", userId: f.memberUserId },
+		});
+		expect(removed._nay?.message).toBe("Plugin-managed files cannot be shared.");
+
+		const locked = await f.asOwner.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: f.db.membershipId,
+			nodeId: f.stampedId,
+		});
+		expect(locked._nay?.message).toBe("This item is managed by a plugin.");
+		const unlocked = await f.asOwner.mutation(api.files_nodes.set_node_writable, {
+			membershipId: f.db.membershipId,
+			nodeId: f.stampedId,
+		});
+		expect(unlocked._nay?.message).toBe("This item is managed by a plugin.");
+	});
+
+	test("a file with no stamp of its own is refused when its lock points at a stamped folder", async () => {
+		const t = test_convex();
+		const f = await seed_stamped_authority(t);
+
+		// The inherited branch of the helper: the node itself is unstamped; only the lock source is.
+		const restricted = await f.asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: f.db.membershipId,
+			nodeId: f.inheritedId,
+		});
+		expect(restricted._nay?.message).toBe("Plugin-managed files cannot be shared.");
+		const unrestricted = await f.asOwner.mutation(api.files_sharing.unrestrict_node, {
+			membershipId: f.db.membershipId,
+			nodeId: f.inheritedId,
+		});
+		expect(unrestricted._nay?.message).toBe("Plugin-managed files cannot be shared.");
+		const granted = await f.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: f.db.membershipId,
+			nodeId: f.inheritedId,
+			principal: { kind: "user", userId: f.memberUserId },
+			level: "read",
+		});
+		expect(granted._nay?.message).toBe("Plugin-managed files cannot be shared.");
+		const removed = await f.asOwner.mutation(api.files_sharing.remove_node_share_grant, {
+			membershipId: f.db.membershipId,
+			nodeId: f.inheritedId,
+			principal: { kind: "user", userId: f.memberUserId },
+		});
+		expect(removed._nay?.message).toBe("Plugin-managed files cannot be shared.");
+
+		const locked = await f.asOwner.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: f.db.membershipId,
+			nodeId: f.inheritedId,
+		});
+		expect(locked._nay?.message).toBe("This item is managed by a plugin.");
+		const unlocked = await f.asOwner.mutation(api.files_nodes.set_node_writable, {
+			membershipId: f.db.membershipId,
+			nodeId: f.inheritedId,
+		});
+		expect(unlocked._nay?.message).toBe("This item is managed by a plugin.");
+	});
+
+	test("an unstamped sibling folder still allows all six doors", async () => {
+		const t = test_convex();
+		const f = await seed_stamped_authority(t);
+
+		// Success order matters: the grant doors need the folder restricted first.
+		const restricted = await f.asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: f.db.membershipId,
+			nodeId: f.siblingId,
+		});
+		expect(restricted).toEqual({ _yay: null });
+		const granted = await f.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: f.db.membershipId,
+			nodeId: f.siblingId,
+			principal: { kind: "user", userId: f.memberUserId },
+			level: "read",
+		});
+		expect(granted).toEqual({ _yay: null });
+		const removed = await f.asOwner.mutation(api.files_sharing.remove_node_share_grant, {
+			membershipId: f.db.membershipId,
+			nodeId: f.siblingId,
+			principal: { kind: "user", userId: f.memberUserId },
+		});
+		expect(removed).toEqual({ _yay: null });
+		const unrestricted = await f.asOwner.mutation(api.files_sharing.unrestrict_node, {
+			membershipId: f.db.membershipId,
+			nodeId: f.siblingId,
+		});
+		expect(unrestricted).toEqual({ _yay: null });
+
+		const locked = await f.asOwner.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: f.db.membershipId,
+			nodeId: f.siblingId,
+		});
+		expect(locked._nay).toBeUndefined();
+		const unlocked = await f.asOwner.mutation(api.files_nodes.set_node_writable, {
+			membershipId: f.db.membershipId,
+			nodeId: f.siblingId,
+		});
+		expect(unlocked._nay).toBeUndefined();
+	});
+
+	test("get_node_share_state offers no sharing controls on a stamped node", async () => {
+		const t = test_convex();
+		const f = await seed_stamped_authority(t);
+
+		const stampedState = await f.asOwner.query(api.files_sharing.get_node_share_state, {
+			membershipId: f.db.membershipId,
+			nodeId: f.stampedId,
+		});
+		expect(stampedState).toMatchObject({ canManage: false, canRestrict: false, canShareWithRoles: false });
+
+		const siblingState = await f.asOwner.query(api.files_sharing.get_node_share_state, {
+			membershipId: f.db.membershipId,
+			nodeId: f.siblingId,
+		});
+		expect(siblingState).toMatchObject({ canManage: true, canRestrict: true, canShareWithRoles: true });
 	});
 });
 

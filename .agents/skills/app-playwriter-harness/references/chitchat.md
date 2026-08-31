@@ -562,56 +562,58 @@ At a 1440px viewport the frame is 1184px and `.sidebar-expand` is in the DOM but
 click just times out after 60 s. Read `.channel-link`'s computed `paddingRight` rather than trusting
 the stylesheet, and compare the name's right edge with the link's content box to see real clipping.
 
-## File projection (`/chitchat` in Files)
+## Channel transcript files (`/chitchat` in Files) — 0.6.0 backend flow
 
-Public Chitchat writes project into a locked `/chitchat` folder. Drive the plugin in an **owned**
-tab (see the OOPIF `bindOpenTab` bullet in `known-hazards.md`), send on a uniquely named public
-channel, wait a few seconds (2s debounce plus sync), then open
-`/w/:org/:workspace/files?nodeId=root` and open the folder with
-`getByRole("treeitem", { name: "chitchat, read-only" })` (see `files.md` for the locked-row name).
+Since Chitchat 0.6.0 the plugin's own backend writes the channel transcript files during its invoke
+runs (message send/edit/delete, reply, reaction, channel manage), through the plugin file doors. The
+host projection engine, its 2s debounce, its sync runs, and its hourly cron are gone from the app —
+its functions no longer exist in `convex function-spec`. **Until 0.6.0 is published and
+the installation upgraded, the installed 0.5.5 has no backend and transcripts do not update at all —
+expected, not a bug.** The recipes below describe the 0.6.0 flow and are NOT yet proven live; prove
+them during the 0.6.0 publish QA and replace this sentence with the evidence.
 
+- Drive the plugin in an **owned** tab (see the OOPIF `bindOpenTab` bullet in `known-hazards.md`),
+  send on a uniquely named public channel, then open `/w/:org/:workspace/files?nodeId=root` and
+  open the folder with `getByRole("treeitem", { name: "chitchat, read-only" })` (see `files.md` for
+  the locked-row name). The transcript is written by the same backend run that commits the send, so
+  it should appear within a few seconds, with no separate sync wait.
 - Folder status: `This folder is read-only.` File status: `Read-only because /chitchat is locked.`
 - Channel file: `/chitchat/<slug>.md` with `<!-- chitchat:msg:... -->` blocks. Open a row with
   `getByRole("link", { name: "Open <slug>.md" })`. Edits show `(edited)`, deletes show
   `(message deleted)` and hide the body, reactions show as `reactions:`.
 - Messages inside one file are oldest first. Send unique older then newer markers; the older
-  marker must appear first in the file text. Prove Convex is pushing before trusting that order.
-- Private channels do not appear next to the public files. They project into
-  `/chitchat/private/<slug>/<slug>.md` — see the next section. Expand `Show more` before treating a
-  missing name as proof.
+  marker must appear first in the file text.
+- Private channels do not appear next to the public files. They live under
+  `/chitchat/private/<slug>-<digest8>/` — see the next section. Expand `Show more` before treating
+  a missing name as proof.
 - The workspace agent can `cat` those paths with bash and is refused on write
   (`cannot write '...': This item is read-only.`).
-- **Prove Convex is pushing before trusting the Files UI.** `convex function-spec` must list
-  `plugins_projections`. `convex codegen` is not a push. A unique line in `readme_markdown()`,
-  then `convex dev --once`, then a public send, must show that line in `/chitchat/README.md`.
-  Restore the README text and push again so the committed copy has no QA token.
+- The store and the file system commit separately, so a backend run can crash between them. The
+  store is the source of truth: a missing or stale block in the transcript is a repair case for the
+  plugin's `reconcile` endpoint, not data loss. Check the Chitchat page before diagnosing a
+  transcript gap as a lost message.
 
-## Private projection (`/chitchat/private/<slug>/` in Files)
+## Private transcripts (`/chitchat/private/<slug>-<digest8>/` in Files)
 
-A private channel projects into its own restricted folder, `/chitchat/private/<slug>/<slug>.md`,
-readable by the channel's scope members — and by the organization owner, who reads every restricted
-file in the workspace, which is why an owner-only run proves nothing. The sync mirrors one
-`content.read` file grant per scope member onto the folder and owns that list: a hand-added grant is
-deleted when that channel next syncs (a message or a membership change there, not any sync).
-Proven live 2026-08-28 on the dev deployment with an owner tab plus a scratch-browser viewer.
+A private channel's transcript lives in its own restricted folder,
+`/chitchat/private/<slug>-<digest8(channelKey)>/<slug>-<digest8>.md`, readable by the channel's
+scope members — and by the organization owner, who reads every restricted file in the workspace,
+which is why an owner-only run proves nothing. The digest suffix comes from the channel key (a
+client UUID), so two same-named private channels get separate folders and a guessed channel name
+cannot be confirmed by probing the path. The backend binds the folder to the channel's data scope
+(`access.readScopeId`, binding table `plugins_file_access_bindings`), and the host mirrors one
+`content.read` grant per scope member onto it. Adds and removals are BOTH synchronous inside the
+scope mutation — the old "adds wait for the next sync" asymmetry is gone. Like the section above,
+this flow is NOT yet proven live; the 2026-08-28 proof covered the removed engine.
 
 - The file opens read-only like the public ones. The disclosure line naming who can read it sits in
-  the file header, on the third line, not at the end. The `-1` map row is the channel folder, and
-  that folder carries the grants. The `/chitchat/private` container above it has no map row and no
-  restriction of its own.
-- **Timing is asymmetric by design.** Removing someone from the channel (People dialog → `Remove`)
-  deletes their folder grant in the same mutation — their files tree loses the folder on the next
-  query tick, no sync wait. Adding someone only lands after the debounced sync (~2 s plus sync), so
-  wait before calling a missing folder a bug.
+  the file header, on the third line, not at the end. The `/chitchat/private` container above the
+  channel folders is plugin-locked but not restricted, so every member's tree can show it.
 - Full second-identity cycle (needs `second-user-fixtures.md`): the viewer's files tree shows the
-  empty `private` container but no channel folder inside it — the container is unrestricted, so
-  assert on the channel name, not on `private` being absent → add the viewer via the People dialog
-  → viewer sees `/chitchat/private/<slug>/` and can open the file, disclosure included → remove the
-  viewer → the folder disappears without a reload.
-- Archiving the channel (the plugin's "delete channel") archives the folder and deletes its mirrored
-  grants, so a member removed after that keeps nothing. Unarchiving builds a fresh folder and leaves
-  the archived one behind; that is the archive rule, not a bug.
-- A sync run writes channels in key order and aborts on the first conflict, keeping the dirty rows.
-  A stale public-channel file conflict (`This file changed while you were saving...`) can therefore
-  delay a `p/` channel's first projection; any later message retries the run, and the hourly cron is
-  the backstop. Send a second message before diagnosing a missing private folder.
+  `private` container but no channel folder inside it — the container is unrestricted, so assert on
+  the channel name, not on `private` being absent → add the viewer via the People dialog → the
+  viewer sees the channel folder and can open the file, disclosure included → remove the viewer →
+  the folder disappears without a reload.
+- Archiving the channel (the plugin's "delete channel") archives the folder, so a member removed
+  after that keeps nothing live. Unarchiving builds a fresh folder and leaves the archived one
+  behind; that is the archive rule, not a bug.

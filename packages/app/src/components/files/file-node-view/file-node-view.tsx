@@ -2916,14 +2916,13 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		resolvedNode?.kind === "file" && resolvedNodeHasEditableTextContent ? resolvedNode : activeEditorTreeNode;
 
 	// Clamp against the actual editor node. For a selected folder that node is its README, not the
-	// folder itself, so the header and layout must follow the README's collaboration mode too.
+	// folder itself, so the header and layout must follow the README's document shape too.
 	const requestedView: files_EditorView = searchParams.view ?? "rich_text_editor";
 	const effectiveView =
 		activeEditorNode && files_node_has_editable_text_content(activeEditorNode)
 			? files_resolve_effective_editor_view({
 					requestedView,
 					rootKind: activeEditorNode.yjsRootKind,
-					nonCollaborative: activeEditorNode.nonCollaborative === true,
 				})
 			: requestedView;
 	// The editor node can be a folder's README instead of the selected node, so read its mode from
