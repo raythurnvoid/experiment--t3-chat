@@ -5223,12 +5223,15 @@ export async function public_api_http_touch_files(ctx: ActionCtx, request: Reque
 				} as const;
 			}
 		}
-		// Plugins may only create Markdown siblings of their triggering file; the same
-		// constraint is revalidated transactionally at prepare and publish time. A run with no
-		// triggering file has no such place, so every path is refused.
+		// Upload-triggered plugins may only create Markdown siblings of their triggering file; the
+		// same constraint is revalidated transactionally at publish time. An invoke run has no source
+		// file (`outputParentPath` is null); its authority is the plugin's stamped area, which only
+		// the transactional check in `publish_file_touch` can prove, so it passes here. A non-invoke
+		// run with no source never carries the `files:write` scope, so it never reaches this line.
 		if (
 			principal.kind === "plugin_run" &&
-			(principal.outputParentPath === null || server_path_parent_of(requestedPath) !== principal.outputParentPath)
+			principal.outputParentPath !== null &&
+			server_path_parent_of(requestedPath) !== principal.outputParentPath
 		) {
 			return {
 				status: 403,

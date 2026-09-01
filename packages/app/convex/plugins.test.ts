@@ -12441,6 +12441,27 @@ describe("plugins owned-area file doors", () => {
 		expect(await vaultDead.json()).toEqual({ message: "Not found" });
 	});
 
+	test("touch creates an empty file inside the stamped area and refuses one outside it", async () => {
+		const t = test_convex();
+		const fixture = await install_owned_files_plugin(t);
+		const run = await start_owned_invoke_run(t, fixture);
+		expect((await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, { path: "/probe" })).status).toBe(
+			200,
+		);
+
+		// An invoke run has no triggering file, so it has no sibling folder either. Its authority is
+		// the stamped area, exactly as on `/api/v1/files/write`.
+		const inside = await door_call(t, "/api/v1/files/touch", run.apiToken, { paths: ["/probe/empty.md"] });
+		expect(inside.status).toBe(200);
+		expect(await find_active_node(t, fixture, "/probe/empty.md")).toMatchObject({ kind: "file" });
+
+		// The stamped area is the whole bound: root is outside it.
+		const outside = await door_call(t, "/api/v1/files/touch", run.apiToken, { paths: ["/loose.md"] });
+		expect(outside.status).toBe(403);
+		expect(await outside.json()).toEqual({ message: "Permission denied" });
+		expect(await find_active_node(t, fixture, "/loose.md")).toBeNull();
+	});
+
 	test("the doors refuse a non-invoke run, a finished run, and withdrawn consent", async () => {
 		const t = test_convex();
 		const fixture = await install_owned_files_plugin(t);
