@@ -838,8 +838,9 @@ const RoutePluginsPluginServiceControls = memo(function RoutePluginsPluginServic
 	const [selectedScopes, setSelectedScopes] = useState<RoutePluginsPluginService_Scope[]>(() =>
 		registration.exists ? registration.scopes : [...ROUTE_PLUGINS_SERVICE_SCOPES],
 	);
-	// The plaintext exists only in this state, right after a generate. A remount (the parent keys
-	// this component on the registration row) or a refresh loses it for good, on purpose.
+	// The plaintext exists only in this state, right after a generate. A refresh or any other
+	// remount loses it for good, on purpose. The parent deliberately does not remount this
+	// component when the registration row changes, so the just-issued secret survives that.
 	const [issuedSecret, setIssuedSecret] = useState<string | null>(null);
 	const [busy, setBusy] = useState(false);
 

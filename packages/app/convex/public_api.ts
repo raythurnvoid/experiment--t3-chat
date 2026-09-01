@@ -3166,16 +3166,23 @@ export const publish_file_touch = internalMutation({
 		) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
+		// A plugin that locked its own folder still creates inside it, the same way the write door
+		// lets it. Without this pass a plugin could write a file into its locked folder but never
+		// touch one there.
+		let createThroughOwnLock = false;
 		if (ancestor) {
 			const writable = files_node_require_writable(ancestor);
 			if (writable._nay) {
-				await db_abandon_file_write_stage_conflict(ctx, {
-					stage,
-					putAssetIds: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
-					refusalMessage: writable._nay.message,
-					deletionReason: "read_only_stage",
-				});
-				return writable;
+				if (!(await public_api_db_can_pass_read_only_for_plugin(ctx, { facts: revalidated._yay, node: ancestor }))) {
+					await db_abandon_file_write_stage_conflict(ctx, {
+						stage,
+						putAssetIds: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
+						refusalMessage: writable._nay.message,
+						deletionReason: "read_only_stage",
+					});
+					return writable;
+				}
+				createThroughOwnLock = true;
 			}
 		}
 
@@ -3190,6 +3197,17 @@ export const publish_file_touch = internalMutation({
 			});
 		}
 
+		// Stamp what the touch creates, the same way `publish_file_write` does. The stamp rule reads
+		// the node at the target path before it falls back to the ancestor, so an unstamped file here
+		// would refuse the plugin's own later write to fill it — and refuse the archive of the folder
+		// holding it. Driven by the principal reference, never by a request field.
+		const stampPluginName =
+			principalRef.kind === "plugin_run" &&
+			revalidated._yay.pluginRun?.event === "ui.invoke.requested" &&
+			revalidated._yay.installation
+				? revalidated._yay.installation.pluginName
+				: undefined;
+
 		const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
 			userId: stage.userId,
 			organizationId: stage.organizationId,
@@ -3203,6 +3221,11 @@ export const publish_file_touch = internalMutation({
 			assetId: stage.contentSnapshotAssetId,
 			expectsTextContent: true,
 			metadata: [{ key: "source", value: "api" }],
+			...(stampPluginName ? { stampCreatedNodesPluginName: stampPluginName } : {}),
+			// The refusing lock is the plugin's own, and the ACL questions were asked above. Skip
+			// the helper's re-check of that same lock, and keep the new nodes under the locked
+			// folder's pointer so they stay read-only for members.
+			...(createThroughOwnLock ? { skipAccessControlAndLock: true, inheritParentReadOnlyScope: true } : {}),
 			now,
 		});
 		if (created._nay) {
@@ -3267,12 +3290,28 @@ export const can_write_file_node = internalQuery({
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 		nodeId: v.id("files_nodes"),
+		/**
+		 * Set for an invoke run, whose authority is its plugin's stamped area. The touch route answers
+		 * an already-existing file from this query and never reaches `publish_file_touch`, so the stamp
+		 * rule revalidation applies on the create path has to be asked here too.
+		 */
+		requireStampedForInstallationId: v.optional(v.id("plugins_workspace_installations")),
 	},
 	returns: v.union(v.literal("ok"), v.literal("permission_denied"), v.literal("read_only")),
 	handler: async (ctx, args) => {
 		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
 		if (!fileNode || fileNode.organizationId !== args.organizationId || fileNode.workspaceId !== args.workspaceId) {
 			return "permission_denied";
+		}
+		// Without this an invoke run could touch any path in the workspace and read existence off the
+		// status: 200 for a file its actor may write, 409 for a folder or a locked file, 403 for one
+		// that is not there. The refusal is the same word the actor check below uses, so the two
+		// cases stay indistinguishable.
+		if (args.requireStampedForInstallationId) {
+			const installation = await ctx.db.get("plugins_workspace_installations", args.requireStampedForInstallationId);
+			if (!installation || fileNode.pluginOwnerName !== installation.pluginName) {
+				return "permission_denied";
+			}
 		}
 		if (
 			!(await has_workspace_content_permission(ctx, {
@@ -3285,6 +3324,10 @@ export const can_write_file_node = internalQuery({
 		) {
 			return "permission_denied";
 		}
+		// A plugin's own lock does not pass here, unlike on the create path and on the write door.
+		// `public_api_db_can_pass_read_only_for_plugin` takes a `MutationCtx`, and this is a query.
+		// The plugin loses nothing real: the file it asked for already exists, which is all a touch
+		// promises. Widen the helper's context if a plugin ever needs the 200 instead.
 		if (files_node_require_writable(fileNode)._nay) {
 			return "read_only";
 		}
@@ -3864,9 +3907,9 @@ export const cleanup_expired_file_write_stages = internalMutation({
 });
 
 /**
-	 * Ask the same node-level write question `publish_file_fill` asks at commit time, for the
-	 * skip-if-unchanged path, which never reaches a publish mutation. Return false for a read-only file
-	 * so the normal write path returns 409 instead of confirming the file content with a 200 response.
+ * Ask the same node-level write question `publish_file_fill` asks at commit time, for the
+ * skip-if-unchanged path, which never reaches a publish mutation. Return false for a read-only file
+ * so the normal write path returns 409 instead of confirming the file content with a 200 response.
  */
 export const check_file_node_write_permission = internalQuery({
 	args: {
@@ -5300,6 +5343,12 @@ export async function public_api_http_touch_files(ctx: ActionCtx, request: Reque
 				workspaceId: principal.workspaceId,
 				userId: principal.kind === "plugin_run" ? principal.actorUserId : principal.userId,
 				nodeId: activeNode._id,
+				// An invoke run is the one principal the pre-check above lets through with no path
+				// bound of its own, so its stamped area has to be proved here. An upload run is
+				// already held to its triggering file's folder, and a key holder has no plugin area.
+				...(principal.kind === "plugin_run" && principal.outputParentPath === null
+					? { requireStampedForInstallationId: principal.installationId }
+					: {}),
 			})) as "ok" | "permission_denied" | "read_only";
 			if (canWriteNode === "permission_denied") {
 				return {

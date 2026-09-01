@@ -135,7 +135,7 @@ host-maintained file-grant mirror: a plugin binds one of its owned nodes to one 
 (`access.readScopeId` on the plugin file doors), and the host restricts the node and keeps exactly one
 `content.read` grant per scope member on it — at most 4 bound nodes per scope, readers bounded by the
 50-person scope cap. BOTH directions are synchronous inside
-`user_manage_scope` (`plugins_data_db_sync_file_access_bindings`): no file write interleaves, so adds
+`user_manage_scope` (`db_sync_file_access_bindings`): no file write interleaves, so adds
 do not wait for a sync, and a removed member loses the bound files in the same transaction. The
 mirror hands out only `content.read` (a file `manage` grant would let a channel manager unrestrict or
 re-share the node). Scope deletion and stranded-scope cleanup (`cleanup_stranded_scopes`, after

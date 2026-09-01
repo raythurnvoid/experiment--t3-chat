@@ -12455,11 +12455,58 @@ describe("plugins owned-area file doors", () => {
 		expect(inside.status).toBe(200);
 		expect(await find_active_node(t, fixture, "/probe/empty.md")).toMatchObject({ kind: "file" });
 
+		// Touch stamps what it creates, so the write that fills the file is allowed. Without the stamp
+		// the stamp rule reads the touched node first, finds no owner, and refuses the plugin its own
+		// file.
+		expect(
+			(await door_call(t, "/api/v1/files/write", run.apiToken, { path: "/probe/empty.md", content: "# Filled\n" }))
+				.status,
+		).toBe(200);
+
 		// The stamped area is the whole bound: root is outside it.
 		const outside = await door_call(t, "/api/v1/files/touch", run.apiToken, { paths: ["/loose.md"] });
 		expect(outside.status).toBe(403);
 		expect(await outside.json()).toEqual({ message: "Permission denied" });
 		expect(await find_active_node(t, fixture, "/loose.md")).toBeNull();
+
+		// A member's own file is refused the same way. The route answers an already-existing file by
+		// itself and never reaches the publish mutation, so the stamp rule has to be asked there too.
+		// Otherwise the status alone tells the plugin which paths exist anywhere in the workspace.
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			await ctx.db.insert("files_nodes", {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				parentId: files_ROOT_ID,
+				name: "board-minutes.md",
+				path: "/board-minutes.md",
+				treePath: "/board-minutes.md",
+				pathDepth: 1,
+				kind: "file",
+				contentType: "text/markdown;charset=utf-8",
+				lowercaseExtension: "md",
+				createdBy: fixture.membership.userId,
+				updatedBy: fixture.membership.userId,
+				updatedAt: now,
+			});
+		});
+		const existing = await door_call(t, "/api/v1/files/touch", run.apiToken, { paths: ["/board-minutes.md"] });
+		expect(existing.status).toBe(403);
+		expect(await existing.json()).toEqual({ message: "Permission denied" });
+
+		// A plugin that locked its own folder still creates inside it, the same way the write door
+		// lets it. Otherwise a machine-managed area could take writes but no touches.
+		expect(
+			(
+				await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
+					path: "/probe",
+					access: { readOnly: true },
+				})
+			).status,
+		).toBe(200);
+		const throughLock = await door_call(t, "/api/v1/files/touch", run.apiToken, { paths: ["/probe/through-lock.md"] });
+		expect(throughLock.status).toBe(200);
+		expect(await find_active_node(t, fixture, "/probe/through-lock.md")).toMatchObject({ kind: "file" });
 	});
 
 	test("the doors refuse a non-invoke run, a finished run, and withdrawn consent", async () => {
