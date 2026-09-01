@@ -10,7 +10,7 @@ Covers the flows that regress when the image plugin worker, publisher secrets, c
 
 ## Preflight
 
-1. Confirm the dev app is running and the `image` plugin is installed and enabled (the gallery card shows an `Installed` badge, or check `plugins_workspace_installations` via the Convex CLI).
+1. Confirm the dev app is running and the `image` plugin is installed and enabled (the gallery card shows an `Installed` badge, or check `plugins_workspace_installations` via the Convex CLI). **Check the organization, not just the plugin.** On 2026-09-01 the `image`, `video`, `pdf`, `gallery`, and `video-player` installations all sat in one organization while the QA browser tab was on `personal/home` in a different one, whose only installations are `chitchat` and `council`. The gallery card there shows no `Installed` badge, which reads as "the plugin was uninstalled" and is not that. Read the `organizationId`/`workspaceId` columns from the CLI listing and compare them with the tab's own ids before concluding anything about an install.
 2. Confirm the `OPENAI_API_KEY` publisher secret exists for the image plugin's repository. Open the plugin's detail page (`/w/:organizationName/:workspaceName/plugins/image`), click `Manage secrets` in the `Secrets` section, and read the `Plugin secrets` tab — repository secrets live there, installation secrets under `Workspace secrets`.
 3. Create a Playwriter session and install the app harness (see `r2-file-content-regression.md` Preflight; same commands).
 4. Warm the Convex dev deployment first — cold starts can exceed 60s and look like a hung upload.

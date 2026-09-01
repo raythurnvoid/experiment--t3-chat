@@ -323,18 +323,23 @@ type finalize_file_content_materialization_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-const finalizationResult = (await ctx.runMutation(internal.files_nodes_content.finalize_file_content_materialization, {
-	organizationId: args.organizationId,
-	workspaceId: args.workspaceId,
-	nodeId: args.nodeId,
-	userId: args.userId,
-	sequence,
-	targetSequence: args.targetSequence,
-	markdown: reconstructed._yay.markdown,
-	versionSnapshotAssetId,
-	markdownSize: files_get_utf8_byte_size(reconstructed._yay.markdown),
-	yjsSnapshotSize: reconstructed._yay.snapshotUpdate.byteLength,
-})) as finalize_file_content_materialization_Result;
+const finalizationResult = (await ctx.runMutation(
+	internal.files_nodes_content.finalize_file_content_materialization,
+	{
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		nodeId: args.nodeId,
+		userId: args.userId,
+		expectedYjsSnapshotId: header.yjsSnapshotDoc._id,
+		expectedYjsLastSequenceId: header.yjsLastSequenceDoc._id,
+		sequence,
+		targetSequence: args.targetSequence,
+		text: extractedText._yay,
+		versionSnapshotAssetId,
+		textSize: markdownByteSize,
+		yjsSnapshotSize: snapshotUpdate.byteLength,
+	},
+)) as finalize_file_content_materialization_Result;
 ```
 
 ## Test organization
