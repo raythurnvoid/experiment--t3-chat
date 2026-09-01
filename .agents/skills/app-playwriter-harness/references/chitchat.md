@@ -570,10 +570,13 @@ the stylesheet, and compare the name's right edge with the link's content box to
 Since Chitchat 0.6.0 the plugin's own backend writes the channel transcript files during its invoke
 runs (message send/edit/delete, reply, reaction, channel manage), through the plugin file doors. The
 host projection engine, its 2s debounce, its sync runs, and its hourly cron are gone from the app —
-its functions no longer exist in `convex function-spec`. **Until 0.6.0 is published and
-the installation upgraded, the installed 0.5.5 has no backend and transcripts do not update at all —
-expected, not a bug.** The recipes below describe the 0.6.0 flow and are NOT yet proven live; prove
-them during the 0.6.0 publish QA and replace this sentence with the evidence.
+its functions no longer exist in `convex function-spec`.
+
+**Proven live 2026-09-01** against the published 0.6.0 (version doc `hn7kbydkvgax91wxvp3bn1hnc58dg1z4`)
+in the QA workspace. A freshly random marker sent on `#alpha` appeared in `/chitchat/alpha.md` about
+four seconds later, stamped `2026-09-01 02:01 UTC`, while every earlier block in that file still read
+`2026-08-24`. A random marker cannot arrive from a cache or an older run, so its presence is the
+proof that this backend wrote the file now.
 
 - Drive the plugin in an **owned** tab (see the OOPIF `bindOpenTab` bullet in `known-hazards.md`),
   send on a uniquely named public channel, then open `/w/:org/:workspace/files?nodeId=root` and

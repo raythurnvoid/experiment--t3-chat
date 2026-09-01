@@ -1378,7 +1378,9 @@ const app_convex_schema = defineSchema({
 		/**
 		 * Backend endpoints the invoke door may run, normalized to `[]` when the manifest declares
 		 * none. `serialization` is normalized to `"installation"` when the manifest omits it.
-		 * Optional only until the backfill in migrations.ts patches every stored version.
+		 * Every stored version has been backfilled. The field stays optional on purpose: a reader
+		 * treats an absent value as "no endpoint restriction", which is the safe direction, and
+		 * tightening the validator would reject any version written by an older publish path.
 		 */
 		endpoints: v.optional(
 			v.array(
@@ -1392,7 +1394,8 @@ const app_convex_schema = defineSchema({
 		/**
 		 * The manifest's service consent copy, or null when the manifest declares no service block.
 		 * The service-registration row is the exchange authority; this list is display-only.
-		 * Optional only until the backfill in migrations.ts patches every stored version.
+		 * Every stored version has been backfilled. The field stays optional on purpose: it grants
+		 * nothing, so an absent value is only a missing display string.
 		 */
 		serviceScopes: v.optional(
 			v.union(
@@ -1403,7 +1406,8 @@ const app_convex_schema = defineSchema({
 		/**
 		 * The collections a member-identity writer may write. Null means the manifest declared no
 		 * list, so every collection stays user-writable; `[]` means nothing is.
-		 * Optional only until the backfill in migrations.ts patches every stored version.
+		 * Every stored version has been backfilled. The field stays optional on purpose: readers
+		 * treat absent the same as null, which is the documented "no list declared" case.
 		 */
 		userWritableCollections: v.optional(v.union(v.array(v.string()), v.null())),
 		capabilities: v.array(plugins_capability_validator),
