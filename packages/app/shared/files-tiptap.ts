@@ -604,28 +604,50 @@ function files_render_table_markdown(node: TiptapJSONContent, helpers: MarkdownR
 	const rows = node.content ?? [];
 	const firstRowCells = rows[0]?.content ?? [];
 
-	// One column per colspan unit of the first row. marked fixes the column count from the
-	// delimiter row, and a row with a different count breaks the table, so every row we write
-	// gets exactly this many cells.
-	const columnCount = firstRowCells.reduce((total, cell) => total + (Number(cell.attrs?.colspan) || 1), 0);
+	// Lay every cell out on a grid before writing anything. A `colspan` cell covers several
+	// columns in its own row, and a `rowspan` cell keeps covering the same columns in the rows
+	// below it. Two things go wrong without this grid. A row wider than the first one loses every
+	// cell past the first row's width. And a row that is short because a rowspan covers its left
+	// side has its cells written too far left, so the text lands under the wrong heading.
+	const grid: Array<Array<TiptapJSONContent | null>> = rows.map(() => []);
+	rows.forEach((row, rowIndex) => {
+		let column = 0;
+		for (const cell of row.content ?? []) {
+			// Step over the columns a rowspan from an earlier row already claimed.
+			while (grid[rowIndex]![column] !== undefined) {
+				column += 1;
+			}
+
+			const colspan = Number(cell.attrs?.colspan) || 1;
+			const rowspan = Number(cell.attrs?.rowspan) || 1;
+			for (let coveredRow = 0; coveredRow < rowspan && rowIndex + coveredRow < rows.length; coveredRow += 1) {
+				for (let coveredColumn = 0; coveredColumn < colspan; coveredColumn += 1) {
+					// Markdown cannot say "this cell spans N columns or rows". Keep the text in the
+					// cell's own top-left column and leave every column it covers empty.
+					grid[rowIndex + coveredRow]![column + coveredColumn] =
+						coveredRow === 0 && coveredColumn === 0 ? cell : null;
+				}
+			}
+			column += colspan;
+		}
+	});
+
+	// marked fixes the column count from the delimiter row, and a row with a different count breaks
+	// the table, so every row we write gets exactly this many cells. Take the widest row, not the
+	// first one: a caption or an empty leading `<tr>` parses as a narrow first row, and measuring
+	// there would throw away the real table below it.
+	const columnCount = grid.reduce((widest, gridRow) => Math.max(widest, gridRow.length), 0);
 	if (columnCount === 0) {
 		return "";
 	}
 
-	const renderRow = (row: TiptapJSONContent) => {
+	const renderRow = (rowIndex: number) => {
 		const cells: string[] = [];
-		for (const cell of row.content ?? []) {
-			cells.push(files_render_table_cell_markdown(cell, helpers));
-			// Markdown cannot say "this cell spans N columns". Write the text once and pad the
-			// row with empty cells so the row keeps the table's column count.
-			for (let i = 1; i < (Number(cell.attrs?.colspan) || 1); i += 1) {
-				cells.push("");
-			}
+		for (let column = 0; column < columnCount; column += 1) {
+			const cell = grid[rowIndex]![column];
+			cells.push(cell ? files_render_table_cell_markdown(cell, helpers) : "");
 		}
-		while (cells.length < columnCount) {
-			cells.push("");
-		}
-		return `| ${cells.slice(0, columnCount).join(" | ")} |`;
+		return `| ${cells.join(" | ")} |`;
 	};
 
 	const firstRowIsHeader = firstRowCells.some((cell) => cell.type === "tableHeader");
@@ -633,20 +655,15 @@ function files_render_table_markdown(node: TiptapJSONContent, helpers: MarkdownR
 	// GFM always needs a header row. When the document's first row holds body cells, write an
 	// empty header and keep every row in the body. The next parse gives that empty header back,
 	// so the round trip after this one changes nothing.
-	const headerLine = firstRowIsHeader
-		? renderRow(rows[0]!)
-		: `| ${new Array(columnCount).fill("").join(" | ")} |`;
+	const headerLine = firstRowIsHeader ? renderRow(0) : `| ${new Array(columnCount).fill("").join(" | ")} |`;
 
 	// Read the alignment from the first row whether or not it is a header row, so a table whose
-	// header was toggled off keeps its columns aligned.
-	const alignments: Array<string | null> = [];
-	for (const cell of firstRowCells) {
-		const align = cell.attrs?.align;
-		const value = align === "left" || align === "center" || align === "right" ? align : null;
-		for (let i = 0; i < (Number(cell.attrs?.colspan) || 1); i += 1) {
-			alignments.push(value);
-		}
-	}
+	// header was toggled off keeps its columns aligned. Read it off the grid so a colspan cell
+	// aligns every column it covers.
+	const alignments = (grid[0] ?? []).map((cell) => {
+		const align = cell?.attrs?.align;
+		return align === "left" || align === "center" || align === "right" ? align : null;
+	});
 
 	const delimiterCells = new Array(columnCount).fill(null).map((_unused, index) => {
 		switch (alignments[index]) {
@@ -661,11 +678,12 @@ function files_render_table_markdown(node: TiptapJSONContent, helpers: MarkdownR
 		}
 	});
 
-	const bodyRows = firstRowIsHeader ? rows.slice(1) : rows;
+	const firstBodyRow = firstRowIsHeader ? 1 : 0;
+	const bodyLines = rows.slice(firstBodyRow).map((_row, index) => renderRow(firstBodyRow + index));
 
 	// No leading and no trailing newline: the `doc` node already joins blocks with `\n\n`, and
 	// `files_yjs_doc_get_text` adds the file's final newline.
-	return [headerLine, `| ${delimiterCells.join(" | ")} |`, ...bodyRows.map(renderRow)].join("\n");
+	return [headerLine, `| ${delimiterCells.join(" | ")} |`, ...bodyLines].join("\n");
 }
 
 const files_table_node = Table.extend({

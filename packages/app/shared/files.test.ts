@@ -1881,6 +1881,53 @@ describe("GFM tables round-trip through Yjs", () => {
 		expect(round_trip_markdown(markdown)).toBe(markdown + "\n");
 	});
 
+	test("measures the table by its widest row, so a narrow first row loses no cell", () => {
+		const markdown = build_markdown_from_json({
+			type: "doc",
+			content: [
+				{
+					type: "table",
+					content: [make_table_row("tableCell", ["Quarterly results"]), make_table_row("tableCell", ["Q1", "1000"])],
+				},
+			],
+		});
+		expect(markdown).toBe("|  |  |\n| --- | --- |\n| Quarterly results |  |\n| Q1 | 1000 |");
+		expect_still_a_table(markdown);
+		expect(round_trip_markdown(markdown)).toBe(markdown + "\n");
+	});
+
+	test("writes a rowspan cell once and keeps the covered row in its own columns", () => {
+		const markdown = build_markdown_from_json({
+			type: "doc",
+			content: [
+				{
+					type: "table",
+					content: [
+						make_table_row("tableHeader", ["Region", "Rep"]),
+						{
+							type: "tableRow",
+							content: [
+								{
+									type: "tableCell",
+									attrs: { rowspan: 2 },
+									content: [{ type: "paragraph", content: [{ type: "text", text: "EU" }] }],
+								},
+								{
+									type: "tableCell",
+									content: [{ type: "paragraph", content: [{ type: "text", text: "Ann" }] }],
+								},
+							],
+						},
+						make_table_row("tableCell", ["Bob"]),
+					],
+				},
+			],
+		});
+		expect(markdown).toBe("| Region | Rep |\n| --- | --- |\n| EU | Ann |\n|  | Bob |");
+		expect_still_a_table(markdown);
+		expect(round_trip_markdown(markdown)).toBe(markdown + "\n");
+	});
+
 	test("serializes direct code-marked JSON with a backslash before a pipe, stable", () => {
 		const markdown = build_markdown_from_json({
 			type: "doc",
