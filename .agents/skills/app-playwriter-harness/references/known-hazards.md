@@ -600,6 +600,70 @@ Scope the audit by the dialog's own component class instead — `.RouteApiKeysCr
 
 Then discount `smallTargets` on `.MyCheckboxButton-control`. That pattern is a visually-hidden 1x1 `<input type=checkbox>` inside a `<label>`, so the heuristic flags every row while the real hit target is the label — measured 448x54 for the API-key permission rows. Measure `input.closest("label").getBoundingClientRect()` before treating one of these as a finding. The same shape is why `getByRole("checkbox", { name: ... }).check()` times out; click the visible label text instead.
 
+## Always-mounted dialogs also own generic button names, so `Save` and `Create organization` click the wrong thing
+
+The same closed-but-mounted dialogs break plain clicks too, not only the audit above. Those dialogs
+carry buttons with the most ordinary names in the app, so an unscoped locator resolves to a hidden one
+and Playwright waits the full 60 s for it to become visible before failing. Two hit on 2026-09-01:
+
+- `page.locator('button[type="submit"]')` matched the org switcher's hidden **Create organization**
+  button while the target was a comment form's submit.
+- `page.locator("button").filter({ hasText: /^Save$/ })` matched
+  `MainAppHeaderOrganizationSwitcherModalEditModal`'s hidden **Save** while the target was the file
+  toolbar's Save. The call log names the offender — read the `locator resolved to <button disabled …
+  form="MainAppHeaderOrganizationSwitcherModal…">` line before assuming the button is missing.
+
+Scope every such click to the owning region: `.FileNodeViewToolbar button` for the file Save,
+`form[aria-label="New document comment"] button[type="submit"]` for the comment submit.
+
+The same trap makes a **presence probe** lie: `[...document.querySelectorAll("button")].find((b) =>
+b.textContent.trim() === "Save")` answered `true` on a file that had no Save button at all, because it
+found the org switcher's. Query inside the owning container, not the document.
+
+## `convex logs` prints nothing when you redirect it, and `--history` only prints a header
+
+`convex logs` follows the deployment and buffers when stdout is not a TTY, so
+`convex logs > out.txt` leaves a **0-byte file** no matter how long it runs, and backgrounding it
+gives you nothing to read. `convex logs --history 300` is accepted but printed only the three-line
+deployment header before switching to watch mode, so it is not a way to fetch past logs either
+(both observed 2026-09-01).
+
+Do not plan a check around reading Convex logs from a file. Read durable state instead — the tables
+that record what you want to prove (`plugins_event_runs` and `plugins_event_run_calls` for plugin
+work, the domain table for everything else) — or run the function directly with `convex run` and read
+its returned value and its inline `[CONVEX …] [ERROR]` output, which the CLI does print.
+
+## The Files sidebar tree reads back empty in the DOM — use `files_nodes:list_tree`
+
+`.FilesSidebarTreeItem` rows exist in the DOM but their `textContent` and `innerText` both come back
+as `""`, and only the currently-open file's row is present at all, so a DOM scan of the sidebar reports
+an almost-empty tree on a workspace that has dozens of files (observed 2026-09-01 on
+`qa-browser/home`, which really held `/chitchat` with nine descendants). A `[data-file-id]` sweep has
+the same problem: it answered with two id-only entries.
+
+Read the visible tree through the app's own query instead. It is the exact surface a visibility check
+wants, because it returns what THIS membership may see:
+
+```js
+const mem = await q("organizations:get_membership_by_organization_workspace_name", { organizationName, workspaceName });
+const tree = await q("files_nodes:list_tree", { membershipId: mem.value._id });
+tree.value.map((n) => n.path).sort();
+```
+
+For a restriction check, run it once per identity and compare the two path lists. That is far more
+reliable than expanding folders in the sidebar, and it is not fooled by the `Show more` cap.
+
+## A flat `sheet.cssRules` scan misses everything inside `@layer`, so "no rule matches" is a false negative
+
+`[...document.styleSheets].flatMap((s) => [...s.cssRules])` only reaches TOP-LEVEL rules. A rule inside
+`@layer components { … }` lives in that block's own `cssRules`, one level down, and this app puts
+nearly all of its CSS in layers. A scan written this way reported that no stylesheet mentioned
+`gapcursor` while three such rules were live in `app.css` and visibly applying (2026-09-01).
+
+Recurse into `CSSLayerBlockRule`, `CSSMediaRule`, and `CSSSupportsRule` before concluding a selector is
+absent — or skip the sheet scan and read `getComputedStyle` on the element itself, which is what the
+question usually means anyway.
+
 ## `auditAccessibility` sees nothing inside a plugin frame unless you hand it the frame
 
 A cross-origin plugin frame runs in its own process, so an audit evaluated on the top page cannot read

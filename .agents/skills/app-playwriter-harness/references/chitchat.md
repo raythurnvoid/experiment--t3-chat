@@ -612,6 +612,39 @@ cannot be confirmed by probing the path. The backend binds the folder to the cha
 scope mutation — the old "adds wait for the next sync" asymmetry is gone. Like the section above,
 this flow is NOT yet proven live; the 2026-08-28 proof covered the removed engine.
 
+> **Broken on 0.6.0 — do not plan a check around it until this is fixed (found 2026-09-01).** The
+> channel folder is never created, so there is nothing to make visible. Every projection run makes one
+> `/api/v1/files/plugin-folders/ensure` call and it answers `409` / `errorCode "conflict"` /
+> `"This item is read-only."`, so `worker.ts:522` (the `folders_ensure` that would create
+> `/chitchat/private/<slug>-<digest8>` with `readScopeId`) is never reached. `/chitchat`,
+> `/chitchat/README.md` and `/chitchat/private` are all created normally, and public transcripts keep
+> projecting fine in the same workspace — only the channel folder is missing.
+>
+> Reproduced in a **brand-new organization with a fresh install** and every capability accepted, and
+> again in an existing workspace updated to 0.6.0, so it is the product and not stale fixture data.
+> The two private folders that exist in dev (`secretfeed`, `projqapriv0826`) carry **no digest
+> suffix**, which 0.6.0 always appends, so both predate it: no private folder built by the current
+> version exists anywhere in this deployment.
+>
+> The viewer-side assertion still "passes" while this is broken — the viewer sees `/chitchat/private`
+> and no channel folder — but it proves nothing, because the folder is missing for the owner too. Do
+> not record that as a passing restriction check.
+
+Two things that will mislead you while setting this up, both hit 2026-09-01:
+
+- **A message surviving a reload does NOT mean the backend ran.** The frontend writes messages
+  straight to the plugin store over `/api/v1/plugin-data/*`; only the transcript projection needs the
+  `message-send` invoke. Check `plugins_event_runs` (and `plugins_event_run_calls` for the per-route
+  outcome) to see whether a run happened at all — `convex data plugins_event_runs --limit 5
+  --order desc`, then compare `_creationTime` against now.
+- **The plugins LIST shows the catalog version with an "Installed" badge**, which reads as "0.6.0 is
+  installed" even when the installation is older. A behind installation keeps the old
+  `acceptedCapabilities`: `qa-browser` held only `["plugin.data.read", "plugin.data.user-write",
+  "workspace.files.read", "workspace.members.read"]` — no `plugin.backend.invoke` — so no run fired on
+  send and nothing projected, with no error anywhere in the UI. Confirm on the plugin DETAIL page
+  (an "Update" button means you are behind) or read the installation's `acceptedCapabilities` from
+  `plugins_workspace_installations`.
+
 - The file opens read-only like the public ones. The disclosure line naming who can read it sits in
   the file header, on the third line, not at the end. The `/chitchat/private` container above the
   channel folders is plugin-locked but not restricted, so every member's tree can show it.

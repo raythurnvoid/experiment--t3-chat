@@ -38,6 +38,47 @@ Recreating dropped accounts is a sign-UP flow, done only when the user explicitl
 
 After sign-up, the app upgrades the tab's current anonymous user in place (`resolve_user` branch 3), and Clerk's `external_id` is backfilled asynchronously — a token read right after sign-up can show `external_id: null`. Wait a few seconds and read again with `getToken({ template: "convex", skipCache: true })`.
 
+## These accounts cannot hold billing state, and why
+
+Polar's sandbox refuses the whole `example.com` domain, so the Free-subscription bootstrap that runs
+on every sign-in fails for all of them:
+
+```
+422 RequestValidationError
+qa.perm.owner+clerk_test@example.com is not a valid email address:
+The domain name example.com does not accept email.
+```
+
+The consequence is easy to misread: these accounts have **no** `billing_usage_snapshots` row at all,
+so `billing_db_check_credits` refuses them through its "no subscription" branch. That looks like a
+drained account but is not one — do not use it to test the drained-Free branch. Verified 2026-09-01;
+at that point no signed-in user anywhere in the dev deployment had a Polar customer.
+
+Two drain routes that do NOT work here, so do not spend time on them:
+
+- `billing:grant_credit` splits on `clerkUserId` and sends a signed-in user's event to Polar, which
+  has no customer for these addresses.
+- `billing:ingest_anonymous_user_events` refuses a signed-in row outright and just logs.
+
+What does work is the registered mutation the Polar webhook itself calls, so the balance is written
+through the app's real path rather than a raw row edit:
+
+```powershell
+# state.activeMeters[0].balance is the credit balance; externalId is the Convex users id.
+vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable `
+  billing:apply_polar_customer_state_refresh $argsJson
+```
+
+Two gotchas, both hit on 2026-09-01:
+
+- **Re-apply inside the SAME `currentPeriodStart`.** A period the app has not credited yet is treated
+  as a new one, and it applies the recurring Free credit on top of what you just set — a drain to 0
+  came straight back as 1000. Set the period once, then reuse those exact dates for every later change.
+- Only the **Free** plan is refused on a low balance; a paid plan passes regardless. Prove the seeded
+  product really is Free with two points: balance 1000 -> `hasCredits: true`, balance 0 -> `false`.
+  `billing:list_products` answers `[]` unless the caller is signed in, so a CLI `convex run` of it
+  tells you nothing — call it with the account's own Clerk token.
+
 ## Isolated browser
 
 Same setup as `second-user-fixtures.md` section 1: launch the installed Chrome for Testing with a temp profile and attach over direct CDP.
