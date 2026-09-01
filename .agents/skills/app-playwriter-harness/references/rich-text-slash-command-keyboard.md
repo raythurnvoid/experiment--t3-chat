@@ -5,7 +5,9 @@ ArrowUp, and Enter through `browser-harness-js`.
 
 Route: `http://localhost:5173/w/personal/home/files`
 
-Runner: `browser-harness-js` through the local CDP skill. Use Playwriter only
+Runner: HISTORICAL. Every block below pipes into `.agents/skills/cdp/sdk/browser-harness-js`, a
+skill and runner that no longer exist in this repo. Port the steps to Playwriter (`SKILL.md`)
+before running them; only the selectors and the key sequence are still current. Use Playwriter only
 for visual screenshots if CDP evidence is insufficient.
 
 ## Setup

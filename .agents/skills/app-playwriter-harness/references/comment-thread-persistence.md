@@ -34,7 +34,7 @@ await state.qaPage.evaluate(() => { const titles = Array.from(document.querySele
 ```
 
 ```js
-const richBtn = state.qaPage.getByRole("button", { name: /^Rich$/ }).first(); if (await richBtn.count()) await richBtn.click(); await state.qaPage.locator(".FileEditorRichText-editor-content").first().waitFor({ state: "visible", timeout: 20000 });
+const richBtn = state.qaPage.locator("#app_main_header_content label").filter({ hasText: /^Rich$/ }).first(); if (await richBtn.count()) await richBtn.click(); await state.qaPage.locator(".FileEditorRichText-editor-content").first().waitFor({ state: "visible", timeout: 20000 });
 ```
 
 ## Step 4 - Create root comment

@@ -43,7 +43,7 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 ### Sidebar And Folder Browser
 
 - Sidebar tree rows: `.FilesSidebarTreeItem[data-file-id]`.
-- Sidebar selected rows: `.FilesSidebarTreeItem[data-file-id]:has(.FilesSidebarTreeItemPrimaryAction[aria-selected="true"])`.
+- Sidebar selected rows: `.FilesSidebarTreeItem[data-file-id][aria-selected="true"]`. The attribute sits on the row wrapper itself; `FilesSidebarTreeItemPrimaryAction` never carries it (the row strips it before passing props down).
 - Sidebar row primary action: `.FilesSidebarTreeItemPrimaryAction`.
 - Sidebar row more action: `.FilesSidebarTreeItemMoreAction`.
 - Locked row accessible name: `getByRole("treeitem", { name: "<name>, read-only" })` when the lock is on that node, `"<name>, read-only from /path"` when it is inherited, or `"<name>, contains read-only items"` when the folder itself is writable but a child is locked. `/meetings` after a Council meeting upload is that last shape. Expand it with `getByRole("button", { name: "Expand folder <name>, contains read-only items" })`. The visible title is an input, so `.FilesSidebarTreeItemTitle` with `hasText: /^name$/` does not match (verified 2026-08-26).
@@ -245,15 +245,16 @@ do not depend on signing in or out.
 - Fixture: one directly locked file, one locked folder with rich/plain/nested descendants, one free
   folder, and one unlocked outer folder with a locked child plus writable sibling. Create one pending
   content proposal before locking.
-- Drive `Make read-only`, `Make writable`, `Add direct lock`, and `Remove direct lock` through normal
-  row/header controls. The member must not get management controls. Query `list_tree` as each identity
+- Drive the lock through the Properties modal's `Protection` checkbox (`.FilesPropertiesModalReadOnly-checkbox`);
+  under an inherited lock it also offers `Manage /<path>` and `Also lock here`. There are no
+  `Make read-only` / `Make writable` / `Add direct lock` / `Remove direct lock` controls. The member must not get management controls. Query `list_tree` as each identity
   and assert projected `readOnlyState` and source visibility; never inspect the raw pointer from
   a public result.
 - Assert the exact accessible row descriptions for a direct lock, a visible inherited lock, a hidden
   inherited lock, and an unlocked folder that contains read-only items. Locked rows must still open,
   expand, search, and expose safe Copy and Share actions.
 - Try F2/menu rename, source drag, folder drops, archive/restore, mixed-selection archive, New file,
-  New folder, Create README, Upload, and Import folder. Check the tree and pending rows after each
+  New folder, `Create a README.md`, Upload, and Import folder. Check the tree and pending rows after each
   refusal; a toast alone does not prove zero writes. Copy a locked source out and confirm the new copy
   is writable.
 - Start rename, create/upload UI, drag, and a dirty editor in the member session. Lock from the owner
@@ -448,7 +449,8 @@ One dialog holding the file's facts, its read-only lock, and the flat key-value 
   written until that button is clicked. Read the state from
   `.FilesPropertiesModalCollaboration-description`, not from the tick: the Metadata section repeats
   the same "read-only" and "no permission" sentences, so `getByText` finds several matches.
-- Read-only is now one checkbox, `getByRole("checkbox")` inside the dialog. It writes as soon as it
+- Read-only is one checkbox, but the dialog holds two (Protection and Collaboration), so a bare
+  `getByRole("checkbox")` is a strict-mode violation — scope it to `.FilesPropertiesModalReadOnly`. It writes as soon as it
   is clicked; there is no Save for it. The line under the label says which lock is in force, and it
   is the only thing that distinguishes the four states, so assert on that text, not on the tick
   alone. Under an inherited lock the box is `disabled` and two buttons appear instead:

@@ -11,7 +11,7 @@ Covers the flows that regress when the video plugin worker, Modal extractor, pub
 ## Preflight
 
 1. Confirm the dev app is running and the `video` plugin is installed and enabled.
-2. Confirm all four repository secrets exist for the video plugin — `MISTRAL_API_KEY`, `OPENAI_API_KEY`, `MODAL_MEDIA_AUDIO_URL`, `MODAL_TOKEN` — in the Secrets section of the publisher panel on the plugin's detail page (`/w/:organizationName/:workspaceName/plugins/video`).
+2. Confirm all four repository secrets exist for the video plugin — `MISTRAL_API_KEY`, `OPENAI_API_KEY`, `MODAL_MEDIA_AUDIO_URL`, `MODAL_TOKEN` — in the `Plugin secrets` tab of the `Manage secrets` modal on the plugin's detail page (`/w/:organizationName/:workspaceName/plugins/video`). Open it from the `Secrets` section; installation secrets live under `Workspace secrets` in the same modal.
 3. Check Modal extractor health: `GET <modal origin>/health` should return 200.
 4. Create a Playwriter session and install the app harness (see `r2-file-content-regression.md` Preflight).
 5. Warm the Convex dev deployment; use one unique folder per run, `aaa-pw-video-<timestamp>`.
@@ -55,15 +55,15 @@ Expected result:
 
 ## Negative Test (Missing Secret)
 
-1. Delete the `MISTRAL_API_KEY` secret from the video plugin's publisher panel (respect the `plugins_manage` rate limiter — ~15s between mutations).
+1. Delete the `MISTRAL_API_KEY` secret from the video plugin's `Plugin secrets` tab (respect the `plugins_manage` rate limiter — ~15s between mutations).
 2. Upload `speakers.wav` again (renamed or into a second folder).
 3. Verify: run `failed` with an `errorMessage` naming the missing secret — expect the specific `MISTRAL_API_KEY secret is not configured` worker throw (runner error messages are persisted truncated to 500 chars and shown to workspace admins; a generic placeholder here is a regression); the run's calls show only a single secret-get `api_request` with no `/api/v1/files/write` call (the secret-get call settles `succeeded` — a missing secret is a successful lookup returning `value: null` — and call docs never persist the requested secret name; the missing name is only observable in the run's `errorMessage`); **no** `.transcript.md` and no `.summary.md` siblings for this upload (secrets are read before any write).
-4. Re-create `MISTRAL_API_KEY` in the same publisher panel (outbound origins come from the plugin manifest, not the secret).
+4. Re-create `MISTRAL_API_KEY` in the same `Plugin secrets` tab (outbound origins come from the plugin manifest, not the secret).
 
 ## Cleanup
 
 1. Archive the run folders.
-2. Confirm all four repository secrets are present again on the video plugin's publisher panel.
+2. Confirm all four repository secrets are present again on the video plugin's `Plugin secrets` tab.
 3. Record skipped steps with the real blocker, not as pass.
 
 ## Failure Triage

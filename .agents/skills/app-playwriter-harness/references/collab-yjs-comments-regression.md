@@ -117,10 +117,11 @@ If the span or `data-lb-thread-id` is gone, comments will silently detach from t
 
 ## 7. Awareness / presence
 
-1. Presence lives in the collapsed main sidebar as `.MainAppSidebarPresenceControl`. It is **not** a
-   `role="region"` — the only region on the page is `File editor`, so `getByRole("region", { name:
-   "Presence" })` finds nothing. Query the class, or the aria-labels `Presence` and
-   `Show details about N online users`.
+1. Presence lives in the collapsed main sidebar as `.MainAppSidebarPresenceControl`, wrapped in a
+   `MySidebarSection aria-label="Presence"` — a real `<section>`, so `getByRole("region", { name:
+   "Presence" })` does match it. A `/files` route carries at least four named regions (the workspace
+   content region, `File editor`, `Pending changes`, and this one), so scope region queries by name.
+   The class and the aria-label `Show details about N online users` work as fallbacks.
 2. If disabled, the control is `getByRole("button", { name: "Enable presence" })`.
 3. Enable it, type in the editor, wait ~2s.
 4. Assert `.MainAppSidebarPresenceControl-online-label` reads `1 Online` and the logs stay clean. The

@@ -43,15 +43,15 @@ Expected result: all commands pass. If the full app test or lint command fails, 
 ## File Tree And Markdown Creation
 
 1. Open the root files view or the currently selected folder browser.
-2. Create `aaa-pw-r2-<timestamp>` with `New folder in current folder`.
-3. Open the new folder and verify the empty-folder toolbar exposes `New file in current folder`, `New folder in current folder`, and `Upload file`.
+2. Create `aaa-pw-r2-<timestamp>` with `New folder`.
+3. Open the new folder and verify the `File actions` toolbar exposes `New file` and `New folder`. `Upload file` is not in that toolbar — it is a sidebar `More options` menu item.
 4. Create `server-seeded-<timestamp>.md`.
 5. Open the file and verify it mounts the rich text editor without client-side bootstrap fallback.
 6. Type a unique token such as `r2-playwriter-token-<timestamp>`.
 7. Switch between rich text, plain text, and diff/review modes when available; verify the token stays visible or the review surface opens cleanly.
 8. Reload the page and verify the token is still present after the Yjs snapshot is fetched from R2.
 
-Expected result: the Markdown node opens as an editable file, the server-owned initial content is present, edits persist after save/reload, and no console/page errors mention missing `assetId`, `r2Key`, `snapshotUpdate`, or `markdownContentId`. Since 2026-08-10 Markdown is one of 20 editable text extensions — the other 19 (`.json`, `.yaml`, ...) open in the Monaco plain editor instead of the rich editor — but this flow's rich-editor steps stay `.md`-specific.
+Expected result: the Markdown node opens as an editable file, the server-owned initial content is present, edits persist after save/reload, and no console/page errors mention missing `assetId`, `r2Key`, or `snapshotUpdate`. Since 2026-08-10 Markdown is one of 20 editable text extensions — the other 19 (`.json`, `.yaml`, ...) open in the Monaco plain editor instead of the rich editor — but this flow's rich-editor steps stay `.md`-specific.
 
 ## Duplicate, Rename, Move, Drag/Drop, Archive, Unarchive
 
@@ -74,7 +74,7 @@ Expected result: path operations update the tree and routing without losing edit
 5. Wait for conversion when the local environment has R2/Modal/finalizer configured.
 6. Verify the generated shadow Markdown opens through the source node once available.
 7. Upload the same PDF again in the same folder.
-8. Test `Upload renamed file` and verify the renamed source node appears.
+8. Rename in the conflict modal's `Filename` input and submit `Upload` (the destructive alternative is `Replace`); verify the renamed source node appears.
 9. Test `Replace` and verify the active source node is replaced while the previous active source is archived.
 10. Upload `.agents/skills/app-playwriter-harness/assets/files/r2-upload-markdown-sample.md` and verify it becomes a normal editable Markdown node, not a source conversion panel. Since 2026-08-10 the other 19 editable text extensions convert the same way: upload `qa-plain.yaml` (pinned fixture, see `files.md`) and verify it becomes an editable plain-text document in Monaco, not a stored card.
 

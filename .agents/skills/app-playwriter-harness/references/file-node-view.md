@@ -6,13 +6,13 @@ Use this for the selected-file editor surface under `/files?nodeId=<file-id>`. K
 
 - Editor route shape: `/w/:organizationName/:workspaceName/files?nodeId=<id>`.
 - Editor mode query values: `view=rich_text_editor`, `view=plain_text_editor`, `view=diff_editor`.
-- A `nonCollaborative` file (service uploads like Council `/meetings/<id>/transcript.md` and `summary.md`) is ALWAYS clamped to the plain (Monaco) editor: `files_resolve_effective_editor_view` (`packages/app/src/lib/files.ts`) forces `plain_text_editor` because the file has no Yjs document, even when `yjsRootKind` is `rich_text` and even with an explicit `view=rich_text_editor` in the URL. The switcher still renders `Rich` and `Diff` for such a node, and clicking them silently does nothing — the radio never checks. That is the clamp, not a click that failed to land; do not re-click or file it as a hung page. Verified 2026-08-30.
+- A `nonCollaborative` file (service uploads like Council `/meetings/<id>/transcript.md` and `summary.md`) supports every view its document shape supports, and the switcher radios do check. `files_resolve_effective_editor_view` (`packages/app/src/lib/files.ts`) takes only `requestedView` and `rootKind`; its one clamp is `plain_text` shape + `rich_text_editor` request. A non-collaborative `rich_text` file opens Rich in `FileEditorRichTextNonCollab` and Diff in `FileEditorDiffNonCollab`. Changed 2026-08-31; before that it really was clamped to Monaco.
 - Scroll owner: `.FileNodeView-editor-area`.
 - Content panel: `.FileNodeView-content-panel`.
 - Right sidebar panel: `.FileNodeView-editor-sidebar-panel`.
 - Comments tab: `#app_file_editor_sidebar_tabs_comments`.
 - Agent tab: `#app_file_editor_sidebar_tabs_agent`.
-- Details tab: `#app_file_editor_sidebar_tabs_details` (since 2026-08-10). Rows are `.FileEditorSidebarDetails-row` with `-label` / `-value` slots. Sidebar tabs depend on the node: a plain-text node shows Details and no Comments (and Details is its default), a Markdown node shows Comments; a stored selection naming a hidden tab falls back without being overwritten.
+- Details tab: `#app_file_editor_sidebar_tabs_details` (since 2026-08-10). Rows are `.FileEditorSidebarDetails-row` with `-label` / `-value` slots. Sidebar tabs depend on the node: a plain-text node shows Details and no Comments (and Details is its default), a Markdown node shows Comments only while collaboration is on — a non-collaborative `.md` node shows Details and no Comments, exactly like a plain-text node; a stored selection naming a hidden tab falls back without being overwritten.
 - Download control: `.FileNodeViewToolbarFileDownloadAction-button`, an icon button with the tooltip `Download` and the accessible name `Download <file name>` (since 2026-08-13 it no longer shows the file name as visible text). It renders for any node that has an uploaded asset, in every node view. Locate it with `getByRole("button", { name: "Download <file name>" })`, and read the result with `page.waitForEvent("download")` — the file lands in the real `~/Downloads` folder (see `known-hazards.md`). A file whose stored asset is gone answers with a `Not found` toast, so read `[data-sonner-toast]` in the same execute call as the click.
 
 ## Read-Only Selected Node
@@ -36,7 +36,7 @@ Use this for the selected-file editor surface under `/files?nodeId=<file-id>`. K
 
 ## Rich Text Editor
 
-- Toolbar: `[role="toolbar"][aria-label="Toolbar"]`.
+- Toolbar: `[role="group"][aria-label="Rich text editor actions"]` (class `.FileEditorRichTextToolbarActions`). The only `role="toolbar"` in the app is the page-level `[aria-label="File actions"]`.
 - Content root: `.FileEditorRichText-editor-content-root`.
 - Editable content: `.FileEditorRichText-editor-content`.
 - Run the destructive typing example below only in a disposable QA file. If the file already has suitable text, select that text instead of replacing the document.
@@ -171,7 +171,7 @@ The editors block over-cap content before it is pushed, so the UI cannot produce
 ```powershell
 Start-Job -ScriptBlock { vp env exec pnpx playwriter -s 13 -f <wait-runner> --timeout 30000 } -Name banner | Out-Null
 Start-Sleep -Seconds 3
-vp env exec pnpm exec convex run files_nodes:mark_file_content_too_large '{…,"sequence":4,"targetSequence":4,"byteSize":987654}'
+vp env exec pnpm exec convex run files_nodes_content:mark_file_content_too_large '{…,"sequence":4,"targetSequence":4,"byteSize":987654}'
 Receive-Job -Name banner -Wait
 ```
 
@@ -217,7 +217,7 @@ Fixture recipe: see "Non-Collaborative File Fixture" in `files.md`.
 - Switch with `#app_file_editor_sidebar_tabs_pending`.
 - Panel region: `getByRole("region", { name: "Pending changes" })` (class `.FileEditorSidebarPending`); empty state is `.FileEditorSidebarPending-empty` ("No pending changes"). Since 2026-08-12 the empty state carries the `.FileEditorSidebarPending` root class too, so that class alone does not tell the two states apart — only the populated branch has `role="region"`.
 - The panel is pinned to the viewport like the Agent tab: `.FileNodeView-editor-sidebar-panel` turns sticky and `.FileEditorSidebarPending` is `calc(100dvh - 92px)` tall at `top: 92`, with its own scroller. So on a long page (a folder after `Show more`) the panel height must stay near the viewport height, not the document height — a measured 4000+ px panel means the pinning rule stopped matching. The Comments tab is deliberately NOT pinned; it stays on the shared editor scroll surface for anchored comments.
-- Source selector: `getByRole("combobox", { name: /^Pending changes source:/ })`. It contains `All changes`, `You`, and one option per contributing persisted agent chat, newest activity first. `You` is the threadless group and stays visible at count 0. Archived chats remain available and say `Archived` in their option detail.
+- Source selector: `getByRole("combobox", { name: /^Pending changes source:/ })`. It contains `All changes`, `Your edits`, and one option per contributing persisted agent chat, newest activity first. `Your edits` is the threadless group. Only `All changes` stays visible at count 0; every other source, `Your edits` included, is filtered out when it has no rows. Archived chats remain available and say `Archived` in their option detail.
 - One pending doc can list several contributor chat ids. The same complete row must appear in each matching chat view. Counts overlap by design and do not need to add up to the All count.
 - Source filtering happens after the full row model is built. This keeps move-aware destination occupancy and replacement captions correct even when a related row belongs to a different source.
 - `Accept all` and `Discard all` act only on the currently shown rows. Their accessible names are `Accept all shown pending changes` and `Discard all shown pending changes`; both are disabled when the selected source has no rows. If accepting a shown row would also settle or invalidate a hidden row, the app asks the user to switch to `All changes`.
@@ -239,10 +239,10 @@ Use disposable files and a unique run id. Keep each browser action in its own ob
 
 1. Start with at least one threadless pending file, one file touched by chat A, one file touched by chat B, and one file touched by both chats. Reuse the same file from chat B after chat A so the stored pending doc gains both thread ids; do not expect separate per-chat diffs.
 2. Open the Pending changes tab and assert that `All changes` shows every pending doc once. Open the source selector and record each option's count.
-3. Select `You`. Assert that only docs with an empty or unset `threadIds` field remain and that bulk actions are enabled only when this view has rows.
+3. Select `Your edits`. Assert that only docs with an empty or unset `threadIds` field remain and that bulk actions are enabled only when this view has rows.
 4. Select chat A, then chat B. Assert that the shared file appears in both views with identical path, caption, and preview. Also assert that each chat-only file appears only in its own view.
 5. In a disposable source with at least two rows, accept or discard one per-row action. Assert that the count and list react without changing the selected source while that chat still contributes.
-6. On disposable data, run a bulk action from one chat view. Confirm only its shown rows settle; rows that belong only to another chat or `You` remain. A shared row settles for every source because it is one pending doc.
+6. On disposable data, run a bulk action from one chat view. Confirm only its shown rows settle; rows that belong only to another chat or `Your edits` remain. A shared row settles for every source because it is one pending doc.
 7. Create a cross-source move chain or swap, or a folder delete with a hidden descendant row. Try its source-scoped Accept and Accept all actions. Confirm both ask for `All changes` and no pending row settles.
 8. Select a chat whose last row will settle. After that action, assert that the trigger falls back to `All changes`, not an empty missing-chat selection.
 9. Refresh the page. Assert that the default source is `All changes`, thread titles resolve again without a visible error, and archived contributor chats remain in the list.

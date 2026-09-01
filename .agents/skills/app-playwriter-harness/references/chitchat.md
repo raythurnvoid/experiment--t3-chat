@@ -524,14 +524,15 @@ persistence check:
 
 ## What cannot be driven from the app
 
-- **The HTTP write door** (`POST /api/v1/plugin-data/write`). `db_authorize` checks
-  `acceptedCapabilities` before any scope logic, and Chitchat declares `plugin.data.user-write`, never
-  `plugin.data.write`. Every non-frame write for this installation is refused `Permission denied`
-  whatever key range it names, so this route cannot exercise the scope guard. Cover that surface with
-  `packages/app/convex/plugins_data.test.ts`.
-- **The member picker**, when the installed version predates `workspace.members.read`. The dialog says
-  "This workspace has not granted this plugin the member list" and offers no names. Capabilities come
-  from the installation record, so a bundle swap cannot change them — only publishing and upgrading.
+- **The member picker**, when the installed version predates `workspace.members.read`. The picker
+  renders Chitchat's own copy, keyed off the refusal name, not the SDK's message: "This workspace has
+  not allowed Chitchat to read the member list yet. An admin can accept the plugin's current
+  permissions." A `getByText` on the SDK wording matches nothing. Capabilities come from the
+  installation record, so a bundle swap cannot change them — only publishing and upgrading.
+
+Since 0.6.0 Chitchat declares **both** `plugin.data.user-write` and `plugin.data.write`, and its
+backend writes through the non-frame `POST /api/v1/plugin-data/write` door on every run. That door is
+drivable once a 0.6.0 installation exists; earlier notes here said it was permanently refused.
 
 ## Layout checks worth repeating
 
@@ -616,6 +617,8 @@ this flow is NOT yet proven live; the 2026-08-28 proof covered the removed engin
   the channel name, not on `private` being absent → add the viewer via the People dialog → the
   viewer sees the channel folder and can open the file, disclosure included → remove the viewer →
   the folder disappears without a reload.
-- Archiving the channel (the plugin's "delete channel") archives the folder, so a member removed
-  after that keeps nothing live. Unarchiving builds a fresh folder and leaves the archived one
-  behind; that is the archive rule, not a bug.
+- Archiving the channel (the plugin's "delete channel") does NOT archive its transcript folder or
+  file. The `channel-manage` `update` action stamps `archivedAt` and refreshes the projection; the
+  only `files_archive` call in the backend drops surplus rollover files. So the archived channel just
+  falls out of the README list while its file stays in place, and unarchiving reuses that same
+  folder. Read this before writing an assertion about a folder disappearing.

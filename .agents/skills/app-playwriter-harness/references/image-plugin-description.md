@@ -11,7 +11,7 @@ Covers the flows that regress when the image plugin worker, publisher secrets, c
 ## Preflight
 
 1. Confirm the dev app is running and the `image` plugin is installed and enabled (the gallery card shows an `Installed` badge, or check `plugins_workspace_installations` via the Convex CLI).
-2. Confirm the `OPENAI_API_KEY` publisher secret exists for the image plugin's repository (Secrets section of the publisher panel on the plugin's detail page, `/w/:organizationName/:workspaceName/plugins/image`).
+2. Confirm the `OPENAI_API_KEY` publisher secret exists for the image plugin's repository. Open the plugin's detail page (`/w/:organizationName/:workspaceName/plugins/image`), click `Manage secrets` in the `Secrets` section, and read the `Plugin secrets` tab — repository secrets live there, installation secrets under `Workspace secrets`.
 3. Create a Playwriter session and install the app harness (see `r2-file-content-regression.md` Preflight; same commands).
 4. Warm the Convex dev deployment first — cold starts can exceed 60s and look like a hung upload.
 5. Use one unique folder per run, for example `aaa-pw-image-<timestamp>`; archive it during cleanup.
@@ -23,14 +23,14 @@ Fixture: `.agents/skills/app-playwriter-harness/assets/files/shapes.png` — a r
 Exercise uninstall → reinstall through the plugin detail page (`/w/:organizationName/:workspaceName/plugins/image`) so the exact-set consent flow and installation secrets are covered, not just an already-installed plugin. Mind the `plugins_manage` rate limiter (token bucket, capacity 2, 6/min) — space install/uninstall mutations ~15s apart.
 
 1. On the detail page, record whether an installation-level `OPENAI_API_KEY` override exists in the installed section's Secrets list (`.RoutePluginsInstalledSecrets`). Uninstalling deletes installation secrets, so any override must be restored after reinstall.
-2. Uninstall via the installed section's `Uninstall image` button (aria-label on the `.RoutePluginsInstalled` title row). The installed section unmounts reactively; no navigation happens.
+2. Uninstall via the hero action row's button, whose accessible name is exactly `Uninstall` (no aria-label, no plugin name). The installed section unmounts reactively; no navigation happens.
 3. Click `Install` in the hero actions to open the consent modal (`.RoutePluginsPluginConsentModal`) and verify:
    - The upload baseline disclosure reads `This plugin can read the triggering upload and create Markdown files beside it.` It is gated on the manifest, not static copy: the host shows it only for a plugin that can get a run (a backend entrypoint plus at least one declared event), which `image` has. A page-only plugin such as `council` shows no such line. Several paragraphs in this dialog share the `.RoutePluginsPluginConsentModal-baseline` class, so match on the text rather than on that selector alone.
    - `This plugin can use these capabilities` lists exactly `plugin.secrets.read` and `outbound.fetch`.
    - `Backend requests can go to these origins` lists exactly `https://api.openai.com`.
    - Keyboard focus moves into the dialog (`Cancel` is the first tabbable control); both `Escape` and `Cancel` close the modal without installing.
-4. Re-open the modal and click `Accept and install` — install submits the accepted capability and origin arrays exactly as listed (exact-set consent). The hero button flips to `Reinstall` once `list_installations` updates.
-5. Restore the installation-level `OPENAI_API_KEY` through the installed section's Secrets form from a secure known value (never echo it into logs), and confirm the publisher-repository fallback secret still exists in the publisher panel.
+4. Re-open the modal and click `Accept and install` — install submits the accepted capability and origin arrays exactly as listed (exact-set consent). The hero install button disappears once `list_installations` updates and the installed version matches, leaving only `Uninstall`. There is no `Reinstall` label; when a newer version exists the button reads `Update`.
+5. Restore the installation-level `OPENAI_API_KEY` through the `Workspace secrets` tab from a secure known value (never echo it into logs), and confirm the publisher-repository fallback secret still exists under `Plugin secrets`.
 
 ## Upload And Generated Description
 
@@ -57,7 +57,7 @@ vp env exec node node_modules/convex/bin/main.js data plugins_event_run_calls --
 Expected result:
 
 - The latest `image` run has `status: "succeeded"`, `outputWriteCount` of 1, and an `apiCallCount` covering every call below (one shared 20-call quota per run).
-- The plugin detail page's Recent runs row shows the same aggregates (`calls N, writes 1`).
+- The plugin detail page's `Activity` section shows the same aggregates, as `<time> · <duration> · N API calls · M files written`.
 - Its calls are only the expected set, with none left in `started` status:
   - `api_request` on `/api/internal/plugins/host/secret-get` (`OPENAI_API_KEY`),
   - `api_request` on `/api/v1/files/touch` (the empty placeholder; does not count as an output write),
@@ -83,15 +83,15 @@ vp env exec node node_modules/convex/bin/main.js run plugins:run_installation_on
 
 ## Negative Test (Missing Secret)
 
-1. On the image plugin's detail page, delete the `OPENAI_API_KEY` secret from the publisher panel's Secrets section. Mind the `plugins_manage` rate limiter (token bucket, capacity 2, 6/min) — space mutations ~15s apart.
+1. On the image plugin's detail page, delete the `OPENAI_API_KEY` secret from the `Plugin secrets` tab of the `Manage secrets` modal. Mind the `plugins_manage` rate limiter (token bucket, capacity 2, 6/min) — space mutations ~15s apart.
 2. Upload `shapes.png` again (renamed via the duplicate-upload dialog, or into a second folder).
 3. Wait for the run to settle, then verify: the run `status` is `failed` with an `errorMessage` naming the missing secret — expect the specific `OPENAI_API_KEY secret is not configured` worker throw (runner error messages are persisted truncated to 500 chars and shown to workspace admins; a generic placeholder here is a regression), the run's calls show only a single secret-get `api_request` with no `/api/v1/files/write` call, and no `.description.md` sibling was created for this upload. Note the secret-get call itself settles `succeeded` (a missing secret is a successful lookup returning `value: null`), and call docs never persist the requested secret name — the missing name is only observable in the run's `errorMessage`.
-4. Re-create the `OPENAI_API_KEY` secret exactly as before in the same publisher panel and wait ~15s before any further plugin mutations (outbound origins come from the plugin manifest, not the secret).
+4. Re-create the `OPENAI_API_KEY` secret exactly as before in the same `Plugin secrets` tab and wait ~15s before any further plugin mutations (outbound origins come from the plugin manifest, not the secret).
 
 ## Cleanup
 
 1. Archive `aaa-pw-image-<timestamp>` and any negative-test folders.
-2. Confirm the `OPENAI_API_KEY` secret was restored in the image plugin's publisher panel (secrets are per repository, so the video plugin's own `OPENAI_API_KEY` is unaffected), and that any installation-level override recorded before the install cycle was restored too.
+2. Confirm the `OPENAI_API_KEY` secret was restored in the image plugin's `Plugin secrets` tab (secrets are per repository, so the video plugin's own `OPENAI_API_KEY` is unaffected), and that any installation-level override recorded before the install cycle was restored too.
 3. Record skipped steps with the real blocker, not as pass.
 
 ## Failure Triage

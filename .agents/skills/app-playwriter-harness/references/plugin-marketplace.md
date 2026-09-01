@@ -118,9 +118,13 @@ only as the record of that failure.
 
 ## Manage secrets dialog
 
-Reachable only for an **installed** plugin that declares `plugin.secrets.read` (`video` does,
-`video-player` does not). The panel is `.RoutePluginsPluginSecrets`; open the dialog with the
-`Manage secrets` button.
+Two ways in. An **installed** plugin that declares `plugin.secrets.read` (`video` does,
+`video-player` does not) gets the `Workspace secrets` panel. The plugin's **publisher** always gets
+the section and a usable `Plugin secrets` panel, with no installation and no `plugin.secrets.read` at
+all — and since the QA account publishes the first-party plugins, that is the common case here. When
+both apply the dialog grows a `Secret scope` tab list, and the per-row delete reads
+`Delete plugin secret <NAME>` on the publisher tab. The panel is `.RoutePluginsPluginSecrets`; open
+the dialog with the `Manage secrets` button.
 
 Inside the dialog the Name field is `input[placeholder=OPENAI_API_KEY]` — the placeholder is a
 literal example, not the stored secret. Buttons are `Save`, `Close`, and one
@@ -129,8 +133,9 @@ literal example, not the stored secret. Buttons are `Save`, `Close`, and one
 closed on this route.
 
 To drive the **batch** (`.env`) import path, write the KEY=value text to the clipboard and paste into
-the **Name** field — pasting multi-line text there is what triggers the batch mutation. A paste into
-Value refuses multi-line input by design:
+the **Name** field. A paste into **Value** runs the same batch import when the text parses as `.env`
+— including the `A=1\nB=2` fixture below. Value only refuses multi-line text (`Multi-line values are
+not supported`) when the parse fails, so use text that is not `KEY=value` to drive that refusal:
 
 ```js
 await state.page.evaluate(() => navigator.clipboard.writeText("A=1\nB=2"));
@@ -221,9 +226,13 @@ instead of touching a pre-existing one, and never uninstall an installation you 
    owner passes every permission check, so that 404 can only come from the installation-tenant check.
 5. Write a few documents under the scratch installation, snapshot the row counts, then `Uninstall` it
    from its plugin page. The drain finishes in seconds: poll until the scratch installation has zero
-   rows in all five owned tables — `plugins_data`, `plugins_data_usage`, `plugins_data_reservations`,
-   `plugins_data_revision_tombstones` and `plugin_service_grants` — and confirm the other
-   installation's rows are untouched. Counting only the first four passes while grants survive.
+   rows in all twelve installation-scoped tables the drain walks — `plugins_ui_sessions`,
+   `plugins_data_reservations`, `plugins_data_append_replay_receipts`,
+   `plugins_data_revision_tombstones`, `plugins_data`, `plugin_service_grants`,
+   `plugins_file_access_bindings`, `access_control_permission_grants` (`resourceKind:
+   "plugin_scope"`), `plugins_data_scopes`, `plugins_data_released_scope_ranges`,
+   `plugins_data_member_usage`, `plugins_data_usage` — and confirm the other installation's rows are
+   untouched. Counting a subset passes while scopes, grants, bindings, or receipts survive.
 6. Clean up: delete any QA documents under an installation you will keep, revoke both keys, and delete
 	the scratch workspace through the switcher's `More actions for workspace: <name>` -> `Delete` (it
 	deletes immediately, with no confirmation step). Do not call `/delete` for the scratch installation
@@ -232,8 +241,9 @@ instead of touching a pre-existing one, and never uninstall an installation you 
 The first accepted write **creates** a `plugins_data_usage` row for that installation, and deleting the
 last document only zeroes it. A pre-existing installation may therefore keep one zeroed accounting row;
 this is expected. Never call `drain_uninstalled_installation` to remove it from an installed or
-pre-existing installation. That mutation does not check uninstall state. It deletes all five plugin-data
-tables for the named installation, including live `plugin_service_grants`. For QA that needs a zero-table
+pre-existing installation. That mutation does not check uninstall state. It deletes all twelve
+installation-scoped tables listed above, including live `plugin_service_grants` and the plugin's
+private scopes and their member grants. For QA that needs a zero-table
 readback, create a scratch installation and uninstall it through the product flow.
 Verified 2026-08-15.
 
@@ -371,7 +381,7 @@ click provably does nothing, not before.
   Use `/Create meeting/i`. Verified 2026-08-27.
 - Prefer `page.frameLocator(".PluginsUiFrame")` over `frames().filter(...).evaluate(...)` for later
   Council clicks. A plugin-frame `evaluate` during a remount dies with `Execution context was destroyed`
-  and can take the CLI down with the libuv assertion. `Get room link` itself is a locator click; give
+  and can take the CLI down with the libuv assertion. `Get host room link` itself is a locator click; give
   it 10–15s, not 800ms retries that miss the remount window.
 - The create response is the ONLY place the join code and guest link exist (`{meeting, joinCode, guestUrl}`;
   the service stores only hashes). Capture it with a host-page `state.page.on("response")` listener filtered
@@ -410,7 +420,7 @@ click provably does nothing, not before.
   and clicks work: `#guest-code`, `#guest-name` (email optional), `#guest-submit`, and refusals render
   inline in `#guest-error` (assert `textContent` + computed visibility, not a screenshot). After create,
   the row shows a one-time join-code panel that hides the status line — dismiss it with the
-  `Done, I saved the code` button. Right after clicking `Delete`, a row-scoped `allTextContents` can
+  `Done, I saved the invite` button. Right after clicking `Delete`, a row-scoped `allTextContents` can
   transiently report both `Delete` and `Confirm delete` — just click `Confirm delete`.
 - The list always polls every 5 s (`setInterval(refresh, 5000)` in `app.tsx`). Waiting for polling to
   stop never ends. A delete or a close settles in the open page with no reload because the next poll
@@ -442,7 +452,7 @@ click provably does nothing, not before.
   direct-CDP session can list the launched tab as one page with an EMPTY url (`context.pages()` →
   `[""]`) — bind `pages()[0]` and `goto` the target instead of matching by URL. And to move the
   single-use host room link across browsers without printing or storing it: in the Edge frame click
-  `Get room link`, read the `.meeting-room-link input` value, `navigator.clipboard.writeText(value)`
+  `Get host room link`, read the `.meeting-room-link input` value, `navigator.clipboard.writeText(value)`
   from the HOST page (extension mode allows the write); in the scratch session
   `grantPermissions(["clipboard-read"], { origin })` (works in direct CDP), park the scratch tab on
   `/room?m=<id>` first

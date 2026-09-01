@@ -117,11 +117,11 @@ Expected result: moving a pending file back to its source cancels the proposal i
 3. Expect: mv exit 0 with a pending move; cp exit 1 with stderr `cp: cannot create '/pwl-m.md': the path is vacated by your pending move. Accept or discard that proposal first, or choose a different destination path.`; the panel shows ONLY the move-only row (no content or copy row); the agent's prose reports the failure.
 4. Discard the row (per-row Discard button); panel returns to empty.
 
-## Scenario 7 — Replaces caption is live and accept archives the occupant
+## Scenario 7 — Replaced caption is live and accept archives the occupant
 
 1. Chat: `mv pwl-src.md pwl-occ.md` while `/pwl-occ.md` does NOT exist. Row caption is `Moved`.
 2. Create committed `/pwl-occ.md` in the Files UI.
-3. Expect: the row caption flips to `Replaces pwl-occ.md` immediately (reactive — it is already flipped by the time a poller starts right after the rename commits).
+3. Expect: the row caption flips to the single word `Replaced` immediately (reactive — it is already flipped by the time a poller starts right after the rename commits). The caption does not name the occupant; it is `Deleted`, `Replaced`, or `Moved`.
 4. Accept the row.
 5. Expect: the status region fires and the row clears, no toasts; tree shows exactly one `pwl-occ.md` and no `pwl-src.md` (the occupant was archived, the moved file now owns the path).
 
