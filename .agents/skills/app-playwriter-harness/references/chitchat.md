@@ -649,6 +649,9 @@ proof that this backend wrote the file now.
 > `plugin-archive` only for rolled files past the live tail, never the tail itself. So do not plan a
 > repair around the Files UI or an admin mutation; it needs a Chitchat change. Reconcile still heals
 > those files on every channel open, so the duplicate they grow is transient, not permanent.
+>
+> **The user decided on 2026-09-01 to leave those files as they are.** Treat the pre-0.6.1
+> transcripts as expected state, not as a bug to report or repair.
 
 ## Private transcripts (`/chitchat/private/<slug>-<digest8>/` in Files)
 
