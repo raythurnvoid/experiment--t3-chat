@@ -307,6 +307,14 @@ vp env exec pnpx convex data plugins_publisher_repositories --limit 5
 The plugin detail page shows the same thing in the release history, including the review verdict, for
 example `data-probe@0.1.0 · published Aug 14, 10:32 AM · e0e7d066 · reviewed by gpt-5.4-mini · passed`.
 
+**A publish that fails with a bare `Error` is often just the review timing out, and the retry works.**
+Verified 2026-09-01 on Chitchat 0.6.1: the CLI `plugins:publish_version` printed only `Error`, and the
+reason was on the repository row's `lastPublishAttempt` — `"Plugin review did not finish within its
+time limit; try again"`. Re-running the exact same call published the version. So read
+`lastPublishAttempt.status` and `.message` before concluding anything about the build, and do not
+change the manifest or the commit between attempts. This is a different case from the rejection below,
+which is deterministic per commit and must not be retried.
+
 A rejection can land in ~5 seconds instead of the usual 60–120s publish: the mechanical dist gate
 (`plugins_dist_review_mechanical_findings` in `packages/app/shared/plugins.ts`) runs before the AI
 review, and its rejecting findings (dense escapes, huge base64 literal, `Function` constructor) use

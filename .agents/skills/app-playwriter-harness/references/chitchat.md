@@ -610,7 +610,9 @@ proof that this backend wrote the file now.
   check that reopens first can never see the defect.
 
 > **`<!-- chitchat:msg:<key> -->` markers do not survive storage, and an uncertain send therefore
-> duplicates its block (found 2026-09-01, Chitchat 0.6.0).** The backend writes a marker line above
+> duplicates its block (found 2026-09-01 on Chitchat 0.6.0; FIXED in 0.6.1 for files created from
+> 0.6.1 on — see the closing paragraph for the files that keep the old behaviour).**
+> The backend writes a marker line above
 > every block (`markdown.ts:202`), but **no stored transcript in the dev deployment contains a single
 > marker** — measured on `/chitchat/alpha.md` and `/chitchat/delta.md`. Markdown structure survives
 > the round trip (the `#` heading and the `**author**` bold are intact); only the HTML comment is
@@ -629,10 +631,24 @@ proof that this backend wrote the file now.
 > The plugin's own unit tests pass because they hold the file content in memory, where the marker is
 > never stripped. Only an end-to-end read of the stored file shows it.
 >
-> Fixing it by adding `nonCollaborative: true` to `files_write` would cover **new** files only:
-> `/api/v1/files/write` deliberately refuses to flip an existing collaborative file, because turning
-> collaboration off deletes the edit history and only the Properties dialog may ask for that
-> (`public_api.test.ts:752-776`). The five existing transcripts would have to be recreated.
+> **Fixed in Chitchat 0.6.1** by adding `nonCollaborative: true` to `files_write`. That covers **new**
+> files only: `/api/v1/files/write` deliberately refuses to flip an existing collaborative file,
+> because turning collaboration off deletes the edit history and only the Properties dialog may ask
+> for that (`public_api.test.ts:752-776`).
+>
+> The live A/B that proves it, both halves run by the same 0.6.1 plugin in one session on 2026-09-01:
+> a channel created after the update stored **2 markers for 2 messages** and its node carries a
+> `nonCollaborativeBaseAssetId`; `/chitchat/delta.md`, created before the update, took a new block and
+> still stored **0 markers** with `nonCollaborativeBaseAssetId: null`. Read both with the raw-text
+> recipe in `known-hazards.md` — the editor never paints a comment, so a DOM read cannot see either
+> result.
+>
+> The transcripts created before 0.6.1 keep the old behaviour, and **no door can recreate them**:
+> `files_nodes:archive_nodes` refuses a read-only node, and a plugin's own lock is releasable only by
+> `plugin-access/set`, `plugin-archive`, and that plugin's `archive-destination` — Chitchat calls
+> `plugin-archive` only for rolled files past the live tail, never the tail itself. So do not plan a
+> repair around the Files UI or an admin mutation; it needs a Chitchat change. Reconcile still heals
+> those files on every channel open, so the duplicate they grow is transient, not permanent.
 
 ## Private transcripts (`/chitchat/private/<slug>-<digest8>/` in Files)
 
