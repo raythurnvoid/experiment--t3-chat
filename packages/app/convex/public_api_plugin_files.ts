@@ -98,10 +98,18 @@ async function db_apply_owned_access(
 			parentId: args.node.parentId,
 		});
 		if (parentScopeNodeId !== undefined) {
-			return Result({ _nay: { name: "read_only", message: "This item is read-only." } });
-		}
-
-		if (args.readOnly) {
+			// Asking for read-only under a lock this plugin already holds asks for nothing new, so
+			// answer that it is done instead of refusing. A plugin that locks its own root and then
+			// builds subfolders inside it could otherwise never create one: Chitchat locks
+			// `/chitchat` and then ensures `/chitchat/private/<channel>` read-only, and every one of
+			// those calls used to come back "This item is read-only." Releasing is still refused,
+			// because the lock above would keep the node read-only anyway, and so is any request
+			// under a lock somebody else owns.
+			const parentScopeNode = await ctx.db.get("files_nodes", parentScopeNodeId);
+			if (args.readOnly !== true || parentScopeNode?.readOnlyPluginName !== args.installation.pluginName) {
+				return Result({ _nay: { name: "read_only", message: "This item is read-only." } });
+			}
+		} else if (args.readOnly) {
 			if (args.node.readOnlyScopeNodeId === args.node._id) {
 				// Already locked. On a stamped node a direct lock is always this plugin's own, because
 				// the member lock door refuses plugin-managed nodes. Repeated calls are a no-op.
@@ -314,6 +322,11 @@ export const ensure_plugin_folder = internalMutation({
 				kind: "folder",
 				// The authority questions were answered above against the deepest existing node.
 				skipAccessControlAndLock: true,
+				// A folder created under this plugin's locked root must come out locked too, the same
+				// way the write doors create files under it. Without this the new folder carries no
+				// lock pointer, so the tree above says read-only while the folder's own field says
+				// nothing, and `access: { readOnly: true }` on it becomes a no-op that locks nothing.
+				inheritParentReadOnlyScope: true,
 				stampCreatedNodesPluginName: installation.pluginName,
 				now,
 			});

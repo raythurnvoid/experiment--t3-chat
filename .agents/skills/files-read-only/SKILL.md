@@ -205,6 +205,14 @@ Both mutations resolve auth and membership, apply the tree-write rate bucket, an
   calling plugin's name, the capability is still accepted, and the node is inside the caller's
   stamped authority area; a lock made through `set_node_read_only` cannot grant that authority. Bash `replace_file_content` and `create_file_by_path` under a plugin-locked
   folder still return `_nay.name === "read_only"`.
+- A plugin asking for `readOnly: true` on a node under a lock **its own plugin** already holds is
+  asking for nothing new, so the door answers success and writes no second lock. Releasing under any
+  lock above stays refused, because the lock above would keep the node read-only anyway, and so does
+  any request under a lock somebody else owns. A plugin that locks its root and then builds subfolders
+  inside it depends on this: Chitchat locks `/chitchat` and ensures `/chitchat/private/<channel>`.
+- `plugin-folders/ensure` passes `inheritParentReadOnlyScope`, like the write doors. A folder created
+  under a locked root must come out carrying the lock pointer, or the tree above reads read-only while
+  the folder's own field says nothing and the `readOnly: true` on it locks nothing.
 - If discard or expiry finds a locked eager-created node or created ancestor, remove the pending docs
   but keep the empty committed branch. `eagerCreated` stores the creation-time committed sequence and
   optional `createdAncestorIds`. Cleanup checks every existing node's current lock before its first

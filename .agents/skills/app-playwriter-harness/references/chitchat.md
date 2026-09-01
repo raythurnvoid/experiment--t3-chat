@@ -644,26 +644,29 @@ client UUID), so two same-named private channels get separate folders and a gues
 cannot be confirmed by probing the path. The backend binds the folder to the channel's data scope
 (`access.readScopeId`, binding table `plugins_file_access_bindings`), and the host mirrors one
 `content.read` grant per scope member onto it. Adds and removals are BOTH synchronous inside the
-scope mutation — the old "adds wait for the next sync" asymmetry is gone. Like the section above,
-this flow is NOT yet proven live; the 2026-08-28 proof covered the removed engine.
+scope mutation — the old "adds wait for the next sync" asymmetry is gone.
 
-> **Broken on 0.6.0 — do not plan a check around it until this is fixed (found 2026-09-01).** The
-> channel folder is never created, so there is nothing to make visible. Every projection run makes one
-> `/api/v1/files/plugin-folders/ensure` call and it answers `409` / `errorCode "conflict"` /
-> `"This item is read-only."`, so `worker.ts:522` (the `folders_ensure` that would create
-> `/chitchat/private/<slug>-<digest8>` with `readScopeId`) is never reached. `/chitchat`,
-> `/chitchat/README.md` and `/chitchat/private` are all created normally, and public transcripts keep
-> projecting fine in the same workspace — only the channel folder is missing.
+**Proven live 2026-09-01, after the fix below.** A private channel created in `personal/home` now
+projects to `/chitchat/private/<slug>-<digest8>/<slug>-<digest8>.md` within a few seconds, holding the
+message and the disclosure header, and one `plugins_file_access_bindings` row appears for the
+channel's scope. Before the fix that table was empty across the whole deployment.
+
+> **This was broken from 0.6.0 until 2026-09-01, in the APP, not the plugin.** Worth knowing, because
+> the older private folders in dev (`secretfeed`, `projqapriv0826`) carry **no digest suffix** — they
+> predate 0.6.0, so do not treat them as evidence that the current path works.
 >
-> Reproduced in a **brand-new organization with a fresh install** and every capability accepted, and
-> again in an existing workspace updated to 0.6.0, so it is the product and not stale fixture data.
-> The two private folders that exist in dev (`secretfeed`, `projqapriv0826`) carry **no digest
-> suffix**, which 0.6.0 always appends, so both predate it: no private folder built by the current
-> version exists anywhere in this deployment.
+> Two defects, one masking the other, both in the plugin-folders ensure door:
 >
-> The viewer-side assertion still "passes" while this is broken — the viewer sees `/chitchat/private`
-> and no channel folder — but it proves nothing, because the folder is missing for the owner too. Do
-> not record that as a passing restriction check.
+> 1. `db_apply_owned_access` refused `readOnly: true` whenever ANY ancestor held a lock, including the
+>    plugin's own. Chitchat locks `/chitchat` and then ensures `/chitchat/private` read-only, so every
+>    run answered `409` / `"This item is read-only."` and `worker.ts:523` was never reached.
+> 2. `ensure_plugin_folder` created folders without `inheritParentReadOnlyScope`, unlike the write
+>    doors in `public_api.ts`, so a folder made under a locked root came out carrying no lock pointer.
+>
+> Defect 1 hid defect 2: while the call refused, nobody could see that the folder would not have been
+> locked anyway. Fixing only the refusal produces a private folder that is NOT read-only — a worse
+> outcome than the 409. If you touch this door, assert the folder's own `readOnlyScopeNodeId`, not
+> just the status code.
 
 Two things that will mislead you while setting this up, both hit 2026-09-01:
 

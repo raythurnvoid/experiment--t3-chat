@@ -11934,6 +11934,57 @@ describe("plugins owned-area file doors", () => {
 		expect(calls.map((call) => call.status)).toEqual(["succeeded", "succeeded", "failed"]);
 	});
 
+	test("the folder ensure locks a folder under the plugin's own locked root", async () => {
+		const t = test_convex();
+		const fixture = await install_owned_files_plugin(t);
+		const run = await start_owned_invoke_run(t, fixture);
+
+		// The shape every plugin with a locked root uses: lock the root, then build restricted
+		// subfolders inside it. Chitchat does exactly this for `/chitchat/private/<channel>`.
+		const root = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+			path: "/probe",
+			access: { readOnly: true },
+		});
+		expect(root.status).toBe(200);
+
+		// The root's lock cascades onto this child, so asking for read-only here changes nothing
+		// the lock above does not already say. It must succeed, not refuse.
+		const nested = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+			path: "/probe/private",
+			access: { readOnly: true },
+		});
+		expect(nested.status).toBe(200);
+
+		// The scope binding is the point of the call, and it is applied after the read-only half.
+		// The binding needs a live private scope of this installation; the door checks the scope
+		// row, not the page flow that normally creates it.
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			await ctx.db.insert("plugins_data_scopes", {
+				organizationId: fixture.membership.organizationId,
+				workspaceId: fixture.membership.workspaceId,
+				installationId: fixture.installationId,
+				scopeId: "scope-a",
+				collection: "messages",
+				keyPrefix: "scope-a",
+				createdByUserId: fixture.membership.userId,
+				createdAt: now,
+				updatedAt: now,
+			});
+		});
+		const scoped = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
+			path: "/probe/private/channel-a",
+			access: { readOnly: true, readScopeId: "scope-a" },
+		});
+		expect(scoped.status).toBe(200);
+
+		const scopedNode = await find_active_node(t, fixture, "/probe/private/channel-a");
+		const rootNode = await find_active_node(t, fixture, "/probe");
+		expect(scopedNode?.readOnlyScopeNodeId).toBe(rootNode?._id);
+		const binding = await t.run((ctx) => ctx.db.query("plugins_file_access_bindings").first());
+		expect(binding).toMatchObject({ nodeId: scopedNode?._id, scopeId: "scope-a" });
+	});
+
 	test("an invoke run reads and lists workspace files through the public doors", async () => {
 		const t = test_convex();
 		const fixture = await install_owned_files_plugin(t, [...OWNED_CAPABILITIES, "workspace.files.read"]);
