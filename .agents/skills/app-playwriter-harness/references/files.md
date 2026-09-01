@@ -32,7 +32,12 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 ### File Node View
 
 - Detailed editor-surface notes: [file-node-view.md](file-node-view.md).
-- Rich text editable content: `.FileEditorRichText-editor-content`.
+- Rich text editable content: `.FileEditorRichText-editor-content`. **Use that exact class, never bare
+  `.ProseMirror` and never `main`.** The route mounts two ProseMirror editors — the file, and the AI
+  chat composer (`.AiChatComposer-editor-content`) — so `querySelector(".ProseMirror")` can answer
+  with the composer, and `main.innerText` returns the file text glued to the whole agent panel
+  transcript. Either way a `text.includes(marker)` check reads as a pass on content the file does
+  not hold. Verified 2026-09-01 while proving a Chitchat transcript write.
 - Comments region: `getByRole("complementary", { name: "Document comments" })`.
 - Diff editor root: `[aria-label="File diff editor"]`.
 - Review changes button: `[data-testid="review-changes-button"]`.

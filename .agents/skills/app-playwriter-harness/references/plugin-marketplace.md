@@ -25,6 +25,13 @@ Read install state from the page text: the detail page shows `Installed` plus a 
 
 ## Install / update / uninstall
 
+- **Read the installed version before you QA anything.** Publishing a version does not upgrade an
+  installation — nothing does, until someone clicks `Update`. On 2026-09-01 the QA org still ran
+  council 0.2.2 a day after 0.2.3 became `isLatest`, so a Council check there was measuring the old
+  plugin and reading as a pass. The detail page shows `Installed version x.y.z` under the version
+  heading whenever the two differ; from the CLI, compare `plugins_workspace_installations
+  .pluginVersionId` with the `isLatest` row for that name. The consent modal on the update names what
+  changed — for 0.2.3 it flagged `https://council.bonobo-senate.com` as a new UI outbound origin.
 - Install: click `Install` (`exact: true`), then the consent modal's `Accept and install`.
 - Update: click `Update` (`exact: true`), then `Accept and update`. Match `/Accept and (install|update)/` when the flow may be either.
 - Uninstall: `Uninstall` (`exact: true`) applies immediately — there is no confirm dialog.
