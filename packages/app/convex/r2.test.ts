@@ -282,7 +282,9 @@ function stub_r2_and_modal_fetch(
 				return (
 					(await onPluginRunnerRequest?.(body)) ??
 					new Response(
-						JSON.stringify({ _yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, output: "", outputTruncated: false } }),
+						JSON.stringify({
+							_yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, output: "", outputTruncated: false },
+						}),
 						{
 							status: 200,
 							headers: { "Content-Type": "application/json" },
@@ -1194,7 +1196,9 @@ describe("r2 asset content", () => {
 				});
 				expect(writeResponse.status).toBe(200);
 				return new Response(
-					JSON.stringify({ _yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, output: "", outputTruncated: false } }),
+					JSON.stringify({
+						_yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, output: "", outputTruncated: false },
+					}),
 					{
 						status: 200,
 						headers: { "Content-Type": "application/json" },
@@ -1375,7 +1379,9 @@ describe("r2 asset content", () => {
 				});
 				expect(writeResponse.status).toBe(200);
 				return new Response(
-					JSON.stringify({ _yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, output: "", outputTruncated: false } }),
+					JSON.stringify({
+						_yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, output: "", outputTruncated: false },
+					}),
 					{
 						status: 200,
 						headers: { "Content-Type": "application/json" },
@@ -1547,7 +1553,9 @@ describe("r2 asset content", () => {
 					expect(writeResponse.status).toBe(200);
 				}
 				return new Response(
-					JSON.stringify({ _yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, output: "", outputTruncated: false } }),
+					JSON.stringify({
+						_yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, output: "", outputTruncated: false },
+					}),
 					{
 						status: 200,
 						headers: { "Content-Type": "application/json" },
@@ -2470,7 +2478,9 @@ describe("r2 asset content", () => {
 				});
 				expect(writeResponse.status).toBe(200);
 				return new Response(
-					JSON.stringify({ _yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, output: "", outputTruncated: false } }),
+					JSON.stringify({
+						_yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, output: "", outputTruncated: false },
+					}),
 					{
 						status: 200,
 						headers: { "Content-Type": "application/json" },

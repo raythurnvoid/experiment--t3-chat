@@ -1649,18 +1649,24 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 				nodeId,
 			});
 			if (restored._nay) {
-				console.error("[FileEditorRichTextNonCollab.handleApplySnapshotText] Error while reading the restored content", {
-					nay: restored._nay,
-				});
+				console.error(
+					"[FileEditorRichTextNonCollab.handleApplySnapshotText] Error while reading the restored content",
+					{
+						nay: restored._nay,
+					},
+				);
 				toast.error("Failed to refresh the editor after the restore. Reload the file.");
 				return;
 			}
 
 			const replacedDoc = replace_editor_document(editor, restored._yay.text);
 			if (replacedDoc._nay) {
-				console.error("[FileEditorRichTextNonCollab.handleApplySnapshotText] Error while parsing the restored content", {
-					nay: replacedDoc._nay,
-				});
+				console.error(
+					"[FileEditorRichTextNonCollab.handleApplySnapshotText] Error while parsing the restored content",
+					{
+						nay: replacedDoc._nay,
+					},
+				);
 				toast.error("Failed to refresh the editor after the restore. Reload the file.");
 				return;
 			}
@@ -1834,7 +1840,9 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 			// editor stays dirty, and the next Save gets the normal staleness refusal instead of
 			// silently overwriting the merged version.
 			if (serialize_editor_markdown(editor) !== textWithComment) {
-				toast.info("Someone else saved this file and your comment was merged into their version. Your typing since then is not saved yet.");
+				toast.info(
+					"Someone else saved this file and your comment was merged into their version. Your typing since then is not saved yet.",
+				);
 				return true;
 			}
 
@@ -2117,8 +2125,8 @@ export const FileEditorRichTextNonCollab = memo(function FileEditorRichTextNonCo
 		<FileEditorRichTextSkeleton />
 	) : fileContentData === null ? (
 		<div role="alert" className={"FileEditorRichText-refusal" satisfies FileEditorRichText_ClassNames}>
-			This file's content could not be read safely, so the editor stays closed to protect it. Reload the file or
-			contact support if this keeps happening.
+			This file's content could not be read safely, so the editor stays closed to protect it. Reload the file or contact
+			support if this keeps happening.
 		</div>
 	) : (
 		// Remount on the loaded lineage so a different stored version never reuses editor state.

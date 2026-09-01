@@ -32,10 +32,7 @@ import {
 	public_api_service_uploads_db_release_service_created_locks,
 	public_api_service_uploads_MAX_ARCHIVE_NODES,
 } from "./public_api_service_uploads.ts";
-import {
-	public_api_authorize_request,
-	public_api_settle_plugin_call_best_effort,
-} from "./public_api_http_auth.ts";
+import { public_api_authorize_request, public_api_settle_plugin_call_best_effort } from "./public_api_http_auth.ts";
 import { plugins_data_db_apply_file_access_binding } from "./plugins_data.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { files_ROOT_ID } from "../server/files.ts";
@@ -605,9 +602,7 @@ function validate_canonical_folder_path(rawPath: string) {
 
 const ensure_folder_body_validator = z.object({
 	path: z.string(),
-	access: z
-		.object({ readOnly: z.boolean().optional(), readScopeId: z.string().nullable().optional() })
-		.optional(),
+	access: z.object({ readOnly: z.boolean().optional(), readScopeId: z.string().nullable().optional() }).optional(),
 });
 
 export type public_api_plugin_files_http_ensure_folder_Body = z.infer<typeof ensure_folder_body_validator>;

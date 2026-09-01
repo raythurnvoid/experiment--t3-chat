@@ -3218,7 +3218,7 @@ async function db_get_scope_identity(
 }
 
 /** Add the durable identity marker when a live or released scope predates marker writes. */
-async function plugins_data_db_ensure_scope_identity(
+async function db_ensure_scope_identity(
 	ctx: MutationCtx,
 	args: {
 		organizationId: Id<"organizations">;
@@ -3640,7 +3640,7 @@ export async function plugins_data_db_delete_scope(ctx: MutationCtx, scopes: Doc
 
 	// Older live scopes may predate identity markers. Add the marker before their rows disappear so
 	// this id can never be used for another private area.
-	await plugins_data_db_ensure_scope_identity(ctx, {
+	await db_ensure_scope_identity(ctx, {
 		organizationId: first.organizationId,
 		workspaceId: first.workspaceId,
 		installationId: first.installationId,
@@ -3718,7 +3718,7 @@ function db_binding_file_grants(
  * does NOT un-restrict the bound nodes: the reader list is gone, so the nodes end with zero
  * readers and stay restricted — fail closed.
  */
-async function plugins_data_db_sync_file_access_bindings(
+async function db_sync_file_access_bindings(
 	ctx: MutationCtx,
 	args: {
 		installation: Doc<"plugins_workspace_installations">;
@@ -3969,7 +3969,7 @@ export async function plugins_data_db_keep_scope_managed(
 		// Account deletion and organization member drain reach scope teardown only through this
 		// branch (via cleanup_stranded_scopes), so a binding not synced here would keep mirrored
 		// `content.read` grants alive on a file whose scope no longer exists.
-		await plugins_data_db_sync_file_access_bindings(ctx, {
+		await db_sync_file_access_bindings(ctx, {
 			installation: args.installation,
 			scopeId: first.scopeId,
 			addUserIds: [],
@@ -4663,7 +4663,7 @@ export const user_manage_scope = mutation({
 				level: null,
 				now,
 			});
-			await plugins_data_db_sync_file_access_bindings(ctx, {
+			await db_sync_file_access_bindings(ctx, {
 				installation,
 				scopeId: scopeId._yay,
 				addUserIds: [],
@@ -4702,7 +4702,7 @@ export const user_manage_scope = mutation({
 
 		if (args.action.kind === "delete") {
 			await plugins_data_db_delete_scope(ctx, existing);
-			await plugins_data_db_sync_file_access_bindings(ctx, {
+			await db_sync_file_access_bindings(ctx, {
 				installation,
 				scopeId: scopeId._yay,
 				addUserIds: [],
@@ -4736,7 +4736,7 @@ export const user_manage_scope = mutation({
 				level: null,
 				now,
 			});
-			await plugins_data_db_sync_file_access_bindings(ctx, {
+			await db_sync_file_access_bindings(ctx, {
 				installation,
 				scopeId: scopeId._yay,
 				addUserIds: [],
@@ -4806,7 +4806,7 @@ export const user_manage_scope = mutation({
 			now,
 		});
 		// A level change for an existing member makes this an idempotent no-op.
-		await plugins_data_db_sync_file_access_bindings(ctx, {
+		await db_sync_file_access_bindings(ctx, {
 			installation,
 			scopeId: scopeId._yay,
 			addUserIds: [target],

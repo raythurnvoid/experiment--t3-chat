@@ -34,9 +34,7 @@ async function seed_installation(
 		acceptedCapabilities?: plugins_Capability[];
 		pluginName?: string;
 		organizationName?: string;
-		registration?:
-			| { scopes?: ("plugin_data:read" | "plugin_data:write" | "files:write")[]; secret?: string }
-			| false;
+		registration?: { scopes?: ("plugin_data:read" | "plugin_data:write" | "files:write")[]; secret?: string } | false;
 	} = {},
 ) {
 	return await t.run(async (ctx) => {

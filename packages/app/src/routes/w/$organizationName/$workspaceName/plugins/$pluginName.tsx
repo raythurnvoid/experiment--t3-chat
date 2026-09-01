@@ -898,6 +898,9 @@ const RoutePluginsPluginServiceControls = memo(function RoutePluginsPluginServic
 				}
 
 				setIssuedSecret(null);
+				// Removing drops the registration, so offer the full scope list again the way a
+				// first-time publisher sees it.
+				setSelectedScopes([...ROUTE_PLUGINS_SERVICE_SCOPES]);
 				toast.success("Service registration removed");
 			})
 			.catch((error) => {
@@ -931,7 +934,9 @@ const RoutePluginsPluginServiceControls = memo(function RoutePluginsPluginServic
 					? `Registered · updated ${format_datetime(registration.updatedAt)}`
 					: "No service registered. Generate a secret to let a server exchange this plugin's page tokens for service grants."}
 			</p>
-			<div className={"RoutePluginsPluginServiceControls-scopes" satisfies RoutePluginsPluginServiceControls_ClassNames}>
+			<div
+				className={"RoutePluginsPluginServiceControls-scopes" satisfies RoutePluginsPluginServiceControls_ClassNames}
+			>
 				{ROUTE_PLUGINS_SERVICE_SCOPES.map((scope) => (
 					<MyCheckboxButton
 						key={scope}
@@ -944,7 +949,9 @@ const RoutePluginsPluginServiceControls = memo(function RoutePluginsPluginServic
 					</MyCheckboxButton>
 				))}
 			</div>
-			<div className={"RoutePluginsPluginServiceControls-actions" satisfies RoutePluginsPluginServiceControls_ClassNames}>
+			<div
+				className={"RoutePluginsPluginServiceControls-actions" satisfies RoutePluginsPluginServiceControls_ClassNames}
+			>
 				<MyButton variant="outline" aria-busy={busy || undefined} onClick={handleGenerate}>
 					{registration.exists ? "Rotate secret" : "Generate secret"}
 				</MyButton>
@@ -955,7 +962,9 @@ const RoutePluginsPluginServiceControls = memo(function RoutePluginsPluginServic
 				) : null}
 			</div>
 			{issuedSecret ? (
-				<div className={"RoutePluginsPluginServiceControls-secret" satisfies RoutePluginsPluginServiceControls_ClassNames}>
+				<div
+					className={"RoutePluginsPluginServiceControls-secret" satisfies RoutePluginsPluginServiceControls_ClassNames}
+				>
 					<div>
 						<code
 							className={
@@ -1010,14 +1019,11 @@ const RoutePluginsPluginService = memo(function RoutePluginsPluginService(props:
 					The exchange secret a server of this plugin proves itself with.
 				</p>
 			</header>
-			{/* Keyed on existence only: a Remove resets the checklist and drops a shown-once secret,
-			    while a rotate keeps the component mounted so the new secret stays on screen until the
-			    publisher leaves. */}
-			<RoutePluginsPluginServiceControls
-				key={String(registration.exists)}
-				pluginName={pluginName}
-				registration={registration}
-			/>
+			{/* Do not key this on the registration row. The plaintext secret lives only in the child's
+			    state, and generating the first one flips `exists` from false to true, which would
+			    remount the child and throw the secret away before the publisher could copy it. The
+			    child resets its own checklist after a Remove instead. */}
+			<RoutePluginsPluginServiceControls pluginName={pluginName} registration={registration} />
 		</section>
 	);
 });

@@ -156,7 +156,9 @@ export interface api_schemas_Main {
 		typeof public_api_plugin_files_http_routes
 	>["/api/v1/files/plugin-folders/ensure"];
 
-	"/api/v1/files/plugin-archive": ReturnType<typeof public_api_plugin_files_http_routes>["/api/v1/files/plugin-archive"];
+	"/api/v1/files/plugin-archive": ReturnType<
+		typeof public_api_plugin_files_http_routes
+	>["/api/v1/files/plugin-archive"];
 
 	"/api/v1/files/plugin-access/set": ReturnType<
 		typeof public_api_plugin_files_http_routes

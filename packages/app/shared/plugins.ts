@@ -350,10 +350,7 @@ export const plugins_data_MAX_LIST_PAGE_SIZE = 100;
  */
 export function plugins_data_is_valid_name(raw: string) {
 	return (
-		raw.length > 0 &&
-		raw.length <= plugins_data_MAX_NAME_LENGTH &&
-		raw === raw.trim() &&
-		!/[\p{Cc}\p{Cf}]/u.test(raw)
+		raw.length > 0 && raw.length <= plugins_data_MAX_NAME_LENGTH && raw === raw.trim() && !/[\p{Cc}\p{Cf}]/u.test(raw)
 	);
 }
 
@@ -954,9 +951,7 @@ const manifest_schema = z
 		 */
 		service: z
 			.object({
-				scopes: z
-					.array(service_scope_schema)
-					.min(1, "Plugin service declarations must name at least one scope"),
+				scopes: z.array(service_scope_schema).min(1, "Plugin service declarations must name at least one scope"),
 			})
 			.strict()
 			.optional(),

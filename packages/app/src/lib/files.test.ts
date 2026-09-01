@@ -629,8 +629,7 @@ describe("files_yjs_reconcile_branch_with_local_text", () => {
 		const reconcileResult = files_yjs_reconcile_branch_with_local_text({
 			previousRemoteYjsDoc,
 			nextRemoteYjsDoc,
-			localText:
-				'# Notes\n\nThe <span data-type="comment" data-lb-thread-id="t1">launch</span> date is final.\n',
+			localText: '# Notes\n\nThe <span data-type="comment" data-lb-thread-id="t1">launch</span> date is final.\n',
 			rootKind: "rich_text",
 		});
 		if (reconcileResult._nay) {

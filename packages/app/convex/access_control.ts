@@ -747,10 +747,13 @@ async function db_resolve_live_restricted_scope(
  * one check, not 500.
  *
  * Every list surface proves that read first — except the public API's `plugin_run` principal, which
- * `public_api.ts` deliberately exempts from the permission check so a run can fetch its own source
- * file. That default therefore lets a run read an unrestricted node even after the actor who started
- * it lost workspace read. It stays bounded: a run may only ask for its own `sourceFileNodeId`, which
- * the actor uploaded, and the token expires. Do not lean on the default as proof of anything.
+ * `public_api_http_auth.ts` deliberately exempts from the permission check. A run with the accepted
+ * `workspace.files.read` capability now reads and lists ordinary workspace files, not only its own
+ * source upload, so that exemption covers much more than it used to. What still bounds it is the
+ * visibility filter, not this default: every run read passes `public_api_visibility_user_id`, so a
+ * run sees a restricted node only where its actor does. The gap the exemption leaves is workspace
+ * read itself — a run keeps reading unrestricted nodes after its actor loses workspace `content.read`,
+ * until the run's token expires. Do not lean on the default as proof of anything.
  *
  * Use this on every surface that returns more than one node. Without it a restricted file keeps its
  * name and path visible in the tree, in search, and in the activity list, which tells everyone in

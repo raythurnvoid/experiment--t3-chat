@@ -624,8 +624,7 @@ function files_render_table_markdown(node: TiptapJSONContent, helpers: MarkdownR
 				for (let coveredColumn = 0; coveredColumn < colspan; coveredColumn += 1) {
 					// Markdown cannot say "this cell spans N columns or rows". Keep the text in the
 					// cell's own top-left column and leave every column it covers empty.
-					grid[rowIndex + coveredRow]![column + coveredColumn] =
-						coveredRow === 0 && coveredColumn === 0 ? cell : null;
+					grid[rowIndex + coveredRow]![column + coveredColumn] = coveredRow === 0 && coveredColumn === 0 ? cell : null;
 				}
 			}
 			column += colspan;

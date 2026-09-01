@@ -189,8 +189,8 @@ function missing_service_capabilities(args: {
  * capability away instead of refusing, and it would have already written the grant doc by the time
  * the caller saw the narrowed list. So the exchange asks first and refuses without writing anything.
  *
- * The registration rides along so proving the secret costs no extra round trip. The hash stays
- * inside this internal boundary; the publisher-facing query never returns it.
+ * This query also returns the registration, so proving the secret needs no second query. The hash
+ * stays inside this internal boundary; the publisher-facing query never returns it.
  */
 export const get_installation_capabilities = internalQuery({
 	args: {
@@ -237,9 +237,7 @@ export const get_installation_capabilities = internalQuery({
 			_yay: {
 				pluginName: installation.pluginName,
 				acceptedCapabilities: installation.acceptedCapabilities,
-				registration: registration
-					? { hash: registration.exchangeSecretHash, scopes: registration.scopes }
-					: null,
+				registration: registration ? { hash: registration.exchangeSecretHash, scopes: registration.scopes } : null,
 			},
 		});
 	},

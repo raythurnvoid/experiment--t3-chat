@@ -1943,7 +1943,7 @@ export async function public_api_db_revalidate_file_write_principal(
  * The plugin facts `public_api_db_revalidate_file_write_principal` proved, handed to the checks below that
  * need the installation or the grant again.
  */
-type public_api_FileWritePluginFacts = {
+type FileWritePluginFacts = {
 	pluginRun: Doc<"plugins_event_runs"> | null;
 	installation: Doc<"plugins_workspace_installations"> | null;
 	serviceGrant: Doc<"plugin_service_grants"> | null;
@@ -1955,7 +1955,7 @@ type public_api_FileWritePluginFacts = {
  */
 async function db_service_lock_is_own_live_target(
 	ctx: MutationCtx,
-	args: { facts: public_api_FileWritePluginFacts; node: Doc<"files_nodes"> },
+	args: { facts: FileWritePluginFacts; node: Doc<"files_nodes"> },
 ) {
 	const installation = args.facts.installation;
 	const serviceGrant = args.facts.serviceGrant;
@@ -1994,7 +1994,7 @@ async function db_service_lock_is_own_live_target(
  */
 async function db_service_owns_existing_file(
 	ctx: MutationCtx,
-	args: { facts: public_api_FileWritePluginFacts; node: Doc<"files_nodes"> },
+	args: { facts: FileWritePluginFacts; node: Doc<"files_nodes"> },
 ) {
 	const installation = args.facts.installation;
 	if (!installation || !args.facts.serviceGrant) {
@@ -2025,7 +2025,7 @@ async function db_service_owns_existing_file(
 export async function public_api_db_can_pass_read_only_for_plugin(
 	ctx: MutationCtx,
 	args: {
-		facts: public_api_FileWritePluginFacts;
+		facts: FileWritePluginFacts;
 		/** The node whose lock refused the write: the target itself, or the ancestor a create sits under. */
 		node: Doc<"files_nodes">;
 	},
@@ -2132,7 +2132,7 @@ async function db_preflight_file_write_target(
 		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
 		path: string;
-		pluginFacts: public_api_FileWritePluginFacts;
+		pluginFacts: FileWritePluginFacts;
 	},
 ) {
 	const activeNode = await db_get_active_node_at_path(ctx, args);

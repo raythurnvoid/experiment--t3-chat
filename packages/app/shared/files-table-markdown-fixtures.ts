@@ -19,8 +19,7 @@ export const table_pipe_in_cell = "| a \\| b | c |\n| --- | --- |\n| 1 | 2 |\n";
 export const table_backslash_before_pipe = "| a \\\\\\| b | c |\n| --- | --- |\n| 1 | 2 |\n";
 
 export const table_empty_cell = "| a |  |\n| --- | --- |\n| 1 | 2 |\n";
-export const table_inline_marks =
-	"| **b** | `x \\| y` | [l](https://e.com) |\n| --- | --- | --- |\n| 1 | 2 | 3 |\n";
+export const table_inline_marks = "| **b** | `x \\| y` | [l](https://e.com) |\n| --- | --- | --- |\n| 1 | 2 | 3 |\n";
 export const table_comment_span =
 	'| <span data-type="comment" data-lb-thread-id="th_1">hi</span> | b |\n| --- | --- |\n| 1 | 2 |\n';
 export const table_hard_break = "| a<br>b | c |\n| --- | --- |\n| 1 | 2 |\n";

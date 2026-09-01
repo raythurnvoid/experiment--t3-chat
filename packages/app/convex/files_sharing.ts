@@ -563,8 +563,7 @@ export const get_node_share_state = query({
 			userId: userAuth.id,
 		});
 		const canShareWithRoles =
-			!pluginOwned &&
-			(organizationPermissions === "all" || organizationPermissions.has("organization.roles.manage"));
+			!pluginOwned && (organizationPermissions === "all" || organizationPermissions.has("organization.roles.manage"));
 
 		// A pointer at a node that was deleted, or that is no longer restricted, means this node uses
 		// workspace access again. Reading the scope node here, instead of trusting the pointer, keeps the

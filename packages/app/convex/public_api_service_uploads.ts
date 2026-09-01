@@ -1719,7 +1719,6 @@ export type public_api_service_uploads_delete_upload_target_Result =
  * the same ceiling.
  */
 export const public_api_service_uploads_MAX_ARCHIVE_NODES = 256;
-const MAX_ARCHIVE_NODES = public_api_service_uploads_MAX_ARCHIVE_NODES;
 
 /** Load at most `maxNodes` descendants. One extra read proves that the subtree is too large. */
 export async function public_api_service_uploads_db_collect_bounded_descendants(
@@ -1882,12 +1881,12 @@ export const archive_destination = internalMutation({
 			organizationId: args.principal.organizationId,
 			workspaceId: args.principal.workspaceId,
 			parentId: destination._id,
-			maxNodes: MAX_ARCHIVE_NODES - 1,
+			maxNodes: public_api_service_uploads_MAX_ARCHIVE_NODES - 1,
 		});
 		if (descendants === null) {
 			return Result({
 				_nay: {
-					message: `A destination archives at most ${MAX_ARCHIVE_NODES} files and folders; move some out and try again`,
+					message: `A destination archives at most ${public_api_service_uploads_MAX_ARCHIVE_NODES} files and folders; move some out and try again`,
 				},
 			});
 		}
