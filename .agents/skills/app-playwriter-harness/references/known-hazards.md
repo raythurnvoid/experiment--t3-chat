@@ -721,6 +721,51 @@ you meant before drawing any conclusion from the content. Also check the URL aft
 the route rewrites it to the node it actually opened, so the rewritten `?nodeId=` is the honest answer
 about which file you are looking at.
 
+## Reading a file's RAW text: the browser cannot give it to you, so ask Convex
+
+A `.md` file opens in the **rich text** editor (`.ProseMirror`, `FileEditor-mode-rich-text`), not in
+Monaco, so `.view-line` is empty and `window.monaco` does not exist. Three routes that all look
+right and all fail, measured 2026-09-01:
+
+- `monaco.editor.getModels()` after `await import("monaco-editor")` — the specifier does not resolve
+  in page context. Importing `/node_modules/.vite/deps/monaco-editor.js` **does** resolve and answers
+  `models: 0`, because Vite serves the app's copy with a `?v=<hash>` and a different URL is a
+  different module instance. Importing the hashed URL out of `performance.getEntriesByType("resource")`
+  still answers `0` here, because the file is not in Monaco at all.
+- `.ProseMirror.innerText` gives the rendered text, which is fine for "does the file contain X" but
+  silently drops anything the editor does not render — HTML comments most of all.
+- `files_nodes_content:get_non_collaborative_file_content` answers `_nay: "Not found"` for a
+  collaborative file. The message names neither the reason nor the four conditions it covers, so it
+  reads like a missing file.
+
+What works is the internal query, run through the Convex CLI with the ids read off the page
+(`organizations.get_membership_by_organization_workspace_name` returns `organizationId`,
+`workspaceId` and `userId`):
+
+```powershell
+$j = '{"organizationId":"...","workspaceId":"...","userId":"...","path":"/chitchat/delta.md"}'
+vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable `
+  files_nodes_content:get_file_text_content_db_state_by_path $j
+```
+
+Run it from `packages/app`. It returns the exact stored bytes in `content`, which is the only way to
+assert on markers, trailing newlines, or anything else the editor does not paint.
+
+## A stubbed plugin-backend invoke must carry the full envelope, or it reads as "the app shows no error"
+
+To fake a refusal from `/api/v1/plugin-backend/invoke`, the body must have all four fields the SDK
+checks — `runId`, `pluginStatus`, `output`, `outputTruncated` (`bonobo-plugin-sdk/frontend.js:158`).
+Miss one and `read_backend_invoke_success` returns `undefined`, the SDK maps it to `unavailable`, and
+a caller that replays on `unavailable` (Chitchat's send does) retries in a loop. Measured 2026-09-01:
+a three-field stub produced four send attempts and no visible error, which reads exactly like an app
+that swallows failures. With the full envelope and `pluginStatus: 400` the same send failed once and
+the row showed `Not sent … Retry sending message`.
+
+Two follow-ups. Refusals surface **in the message row** (`li.message.is-failed`), not as
+`role="alert"`, so an alert-only probe reports a clean page over a visibly failed send — match on
+`document.body.innerText` instead. And read the outcome later than you think: at 4 s the send was
+still retrying, and the failed state only appeared after the backoff gave up.
+
 ## A relay restart kills every session, and takes your `page.route` bundle swap with it
 
 Sessions do not survive the Playwriter relay restarting; `playwriter session list` then shows fewer

@@ -598,6 +598,41 @@ proof that this backend wrote the file now.
   store is the source of truth: a missing or stale block in the transcript is a repair case for the
   plugin's `reconcile` endpoint, not data loss. Check the Chitchat page before diagnosing a
   transcript gap as a lost message.
+- **Opening a channel fires exactly one `reconcile` invoke, and re-clicking the open channel fires
+  none.** The effect is keyed on `[client, channel.key]` (`channel-view.tsx:2286`), so it runs per
+  distinct channel open. It rebuilds the transcript from the store in the background: no spinner and
+  no error surface, so a refused reconcile leaves the composer enabled and shows nothing at all.
+  Count the invokes by patching `window.fetch` **inside the frame** — the SDK fetches
+  `/api/v1/plugin-backend/invoke` from frame context (`bonobo-plugin-sdk/frontend.js:1580`), so a
+  recorder installed on the HOST page records zero and reads as "the open fired nothing".
+- **The reconcile rebuild is also what hides the duplicate-block bug below.** Read the transcript
+  before reopening the channel: the next open heals the file back to one block per message, so a
+  check that reopens first can never see the defect.
+
+> **`<!-- chitchat:msg:<key> -->` markers do not survive storage, and an uncertain send therefore
+> duplicates its block (found 2026-09-01, Chitchat 0.6.0).** The backend writes a marker line above
+> every block (`markdown.ts:202`), but **no stored transcript in the dev deployment contains a single
+> marker** — measured on `/chitchat/alpha.md` and `/chitchat/delta.md`. Markdown structure survives
+> the round trip (the `#` heading and the `**author**` bold are intact); only the HTML comment is
+> dropped. Cause: `files_write` in the plugin backend posts
+> `{ path, content, access: { readOnly: true } }` with **no `nonCollaborative: true`**
+> (`worker.ts:199`), so the app stores the file through the collaborative Yjs/Tiptap path, and
+> ProseMirror keeps no comment nodes.
+>
+> The damage is in the replay path. A replayed send calls `repair_replayed_block`
+> (`worker.ts:712`), which appends the block only when `chatbe_file_contains_block` cannot find the
+> marker (`worker.ts:932`). The lookup is a plain `content.indexOf(marker)`, so with the markers
+> gone it always answers "absent" and always appends. Measured live: a send whose answer was thrown
+> away left **one** message in the channel and **two** identical blocks in `/chitchat/delta.md`.
+> Reopening the channel healed it back to one, because reconcile rebuilds from the store.
+>
+> The plugin's own unit tests pass because they hold the file content in memory, where the marker is
+> never stripped. Only an end-to-end read of the stored file shows it.
+>
+> Fixing it by adding `nonCollaborative: true` to `files_write` would cover **new** files only:
+> `/api/v1/files/write` deliberately refuses to flip an existing collaborative file, because turning
+> collaboration off deletes the edit history and only the Properties dialog may ask for that
+> (`public_api.test.ts:752-776`). The five existing transcripts would have to be recreated.
 
 ## Private transcripts (`/chitchat/private/<slug>-<digest8>/` in Files)
 
@@ -632,11 +667,14 @@ this flow is NOT yet proven live; the 2026-08-28 proof covered the removed engin
 
 Two things that will mislead you while setting this up, both hit 2026-09-01:
 
-- **A message surviving a reload does NOT mean the backend ran.** The frontend writes messages
-  straight to the plugin store over `/api/v1/plugin-data/*`; only the transcript projection needs the
-  `message-send` invoke. Check `plugins_event_runs` (and `plugins_event_run_calls` for the per-route
-  outcome) to see whether a run happened at all — `convex data plugins_event_runs --limit 5
-  --order desc`, then compare `_creationTime` against now.
+- **On a BEHIND installation, a message surviving a reload does NOT mean the backend ran.** The old
+  frontend bundle writes messages straight to the plugin store over `/api/v1/plugin-data/*`, so a
+  message appears with no run at all. Check `plugins_event_runs` (and `plugins_event_run_calls` for
+  the per-route outcome) to see whether a run happened — `convex data plugins_event_runs --limit 5
+  --order desc`, then compare `_creationTime` against now. On 0.6.0 the send itself IS the
+  `message-send` invoke (`channel-view.tsx:212`) and the backend mints the message key, so there a
+  delivered message really does prove the backend ran. Read the installed version before using
+  either rule.
 - **The plugins LIST shows the catalog version with an "Installed" badge**, which reads as "0.6.0 is
   installed" even when the installation is older. A behind installation keeps the old
   `acceptedCapabilities`: `qa-browser` held only `["plugin.data.read", "plugin.data.user-write",
