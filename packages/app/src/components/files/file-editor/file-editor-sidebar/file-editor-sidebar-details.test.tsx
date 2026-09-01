@@ -134,6 +134,23 @@ describe("FileEditorSidebar", () => {
 		expect(screen.queryByRole("tab", { name: "Details" })).toBeNull();
 	});
 
+	test("a non-collaborative rich text node shows Comments AND Details", () => {
+		const node = makeNode({
+			id: "node_md_non_collab",
+			name: "notes.md",
+			path: "docs/notes.md",
+			yjsRootKind: "rich_text",
+			hasEditableYjsState: false,
+		});
+
+		render(<FileEditorSidebar node={node} commentsContainerRef={() => {}} />);
+
+		// Its comment marks are saved with the file, so the threads must be reachable...
+		expect(screen.getByRole("tab", { name: "Comments", selected: true })).toBeTruthy();
+		// ...and the Details rows have no other owner, so they keep their own tab.
+		expect(screen.getByRole("tab", { name: "Details" })).toBeTruthy();
+	});
+
 	test("a stored file without editable state keeps the Comments tab", () => {
 		const node = makeNode({ id: "node_png", name: "photo.png", path: "docs/photo.png", hasEditableYjsState: false });
 

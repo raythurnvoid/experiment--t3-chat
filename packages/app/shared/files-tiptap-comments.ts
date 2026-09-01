@@ -208,14 +208,13 @@ const Comment = Mark.create<{
 			new Plugin({
 				key: files_THREADS_PLUGIN_KEY,
 				state: {
-					init() {
-						return {
-							threadPositions: new Map<string, { from: number; to: number }>(),
-							threadIds: new Set<string>(),
-							selectedThreadId: null,
-							selectedThreadPos: null,
-							decorations: DecorationSet.empty,
-						} as files_ThreadPluginState;
+					// Scan the starting document instead of beginning empty. A collaborative file
+					// receives its text as Yjs transactions after mount, so `apply` below would find
+					// the marks anyway. A non-collaborative file loads its saved Markdown as the
+					// editor's initial content, and no transaction ever follows, so its threads would
+					// stay invisible until the member happened to type something.
+					init(_config, instance) {
+						return updateState(instance.doc, null);
 					},
 					apply(tr, state) {
 						const action = tr.getMeta(files_THREADS_PLUGIN_KEY) as ThreadPluginAction;

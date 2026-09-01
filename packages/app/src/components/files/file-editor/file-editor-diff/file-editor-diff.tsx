@@ -767,9 +767,9 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 			renderLineHighlight: "all",
 			renderLineHighlightOnlyWhenFocus: true,
 
-			// Name the two panes for screen readers; both would otherwise announce as bare "Editor".
-			originalAriaLabel: "Original file content",
-			modifiedAriaLabel: "Modified file content",
+			// The two panes are named for screen readers in `handleOnMount` instead. Passing
+			// `originalAriaLabel` / `modifiedAriaLabel` here does nothing: they never reach the inner
+			// editors, so both panes keep an empty `aria-label`.
 		} satisfies NonNullable<DiffEditorProps["options"]>;
 	});
 
@@ -1589,6 +1589,20 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 	useEffect(() => {
 		editorRef.current?.updateOptions({ readOnly: !editable });
 	}, [editable]);
+
+	// Name each pane for screen readers. This has to run after the mount, not inside `onMount`:
+	// Monaco rebuilds the two inner editors' options right after the diff editor is created, and
+	// that pass overwrites the label with an empty string. The diff-level `originalAriaLabel` /
+	// `modifiedAriaLabel` options never arrive at the inner editors at all, so without this both
+	// panes announce with no name.
+	useEffect(() => {
+		if (!mountedModifiedEditor) {
+			return;
+		}
+
+		editorRef.current?.getOriginalEditor().updateOptions({ ariaLabel: "Original file content" });
+		editorRef.current?.getModifiedEditor().updateOptions({ ariaLabel: "Modified file content" });
+	}, [mountedModifiedEditor]);
 
 	useEffect(() => {
 		// In dev, React StrictMode may mount/unmount/mount to detect side effects.

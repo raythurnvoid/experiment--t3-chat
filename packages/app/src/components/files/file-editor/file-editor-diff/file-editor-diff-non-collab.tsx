@@ -269,11 +269,13 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 			ignoreTrimWhitespace: false,
 			glyphMargin: false,
 			lineDecorationsWidth: 72,
-			// Monaco's built-in per-hunk revert arrow replaces the accept/discard widgets of the
+			// Monaco's built-in per-hunk revert replaces the accept/discard widgets of the
 			// pending-updates diff editor: here every hunk is the member's own unsaved edit, and
-			// reverting one just restores the committed text for that stretch.
-			renderMarginRevertIcon: true,
-			renderGutterMenu: false,
+			// reverting one just restores the committed text for that stretch. It must come from the
+			// gutter menu, not from `renderMarginRevertIcon`. Monaco turns the margin arrow off
+			// whenever `renderSideBySide` is false, so on this inline diff that option renders
+			// nothing at all (`shouldRenderOldRevertArrows` in Monaco's diffEditorOptions).
+			renderGutterMenu: true,
 			fixedOverflowWidgets: true,
 			fontSize: 16,
 			lineHeight: 22,
@@ -287,9 +289,9 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 			renderLineHighlight: "all",
 			renderLineHighlightOnlyWhenFocus: true,
 
-			// Name the two panes for screen readers; both would otherwise announce as bare "Editor".
-			originalAriaLabel: "Original file content",
-			modifiedAriaLabel: "Modified file content",
+			// The two panes are named for screen readers in `handleOnMount` instead. Passing
+			// `originalAriaLabel` / `modifiedAriaLabel` here does nothing: they never reach the inner
+			// editors, so both panes keep an empty `aria-label`.
 		} satisfies NonNullable<DiffEditorProps["options"]>;
 	});
 
@@ -557,6 +559,20 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 	useEffect(() => {
 		editorRef.current?.updateOptions({ readOnly: !editable });
 	}, [editable]);
+
+	// Name each pane for screen readers. This has to run after the mount, not inside `onMount`:
+	// Monaco rebuilds the two inner editors' options right after the diff editor is created, and
+	// that pass overwrites the label with an empty string. The diff-level `originalAriaLabel` /
+	// `modifiedAriaLabel` options never arrive at the inner editors at all, so without this both
+	// panes announce with no name.
+	useEffect(() => {
+		if (!mountedModifiedEditor) {
+			return;
+		}
+
+		editorRef.current?.getOriginalEditor().updateOptions({ ariaLabel: "Original file content" });
+		editorRef.current?.getModifiedEditor().updateOptions({ ariaLabel: "Modified file content" });
+	}, [mountedModifiedEditor]);
 
 	useEffect(() => {
 		return () => {
