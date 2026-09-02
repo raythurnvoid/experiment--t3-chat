@@ -207,7 +207,7 @@ they no longer apply to this section — a channel with more than 100 messages i
 
 `.log-older` holds the single "Load older" button while `timeline.status` is `CanLoadMore` or
 `LoadingMore` (disabled while loading, so focus stays on it), and the whole `.log-older` block
-leaves the DOM at `Exhausted` (`channel-view.tsx:2955`). So the pass condition for "all history is
+leaves the DOM at `Exhausted` (`channel-view.tsx:2956`). So the pass condition for "all history is
 loaded" is the **button being gone**, not a sentence — 0.7.0 prints no "you have reached the start"
 line at all.
 

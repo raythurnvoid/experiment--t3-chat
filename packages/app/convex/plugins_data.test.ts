@@ -6249,12 +6249,19 @@ describe("watch_documents_page", () => {
 				paginationOpts: { numItems: 100, cursor, maximumRowsRead: 1000 },
 			});
 
-		// The first page holds the first 100 keys and says more follow. The server's own row cap wins
-		// over the caller's, so the page also carries the split status instead of a bigger page.
+		// The first page holds the first 100 keys and says more follow. The caller asked for a
+		// bigger `maximumRowsRead`; the door's own value comes after the spread, so the page is
+		// still 100 rows.
+		//
+		// Do not assert `pageStatus` here. `convex-test` and the real server disagree on it: the
+		// emulator checks the row cap after each row and reports `SplitRequired`, while the real
+		// server stops the loop as soon as the page is full, never reads the extra row, and reports
+		// `SplitRecommended`. The two are not interchangeable — `usePaginatedQuery` throws away a
+		// `SplitRequired` page and keeps a `SplitRecommended` one — so an assertion here would pin
+		// emulator behaviour the browser never shows.
 		const first = await read(null);
 		expect(first.page.map((doc) => doc.key)).toEqual(keys.slice(0, 100));
 		expect(first.isDone).toBe(false);
-		expect(first.pageStatus).toBe("SplitRequired");
 
 		const second = await read(first.continueCursor);
 		expect(second.page.map((doc) => doc.key)).toEqual(keys.slice(100));
@@ -6361,6 +6368,89 @@ describe("watch_documents_page", () => {
 
 		// An inverted pair is an empty range, and an empty range is the same empty final page.
 		expect(await read({ keyStartExclusive: "a:3", keyEndInclusive: "a:1" })).toEqual(empty_page);
+	});
+
+	test("closes every revocation flavor into the empty final page", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const written = await t.mutation(internal.plugins_data.write_document, {
+			principal: store_principal(fixture),
+			collection: "messages",
+			key: "a:1",
+			value: { text: "one" },
+		});
+		expect(written._nay).toBeUndefined();
+
+		const read = async () =>
+			await fixture.asPage.query(api.plugins_data.watch_documents_page, {
+				collection: "messages",
+				paginationOpts: { numItems: 10, cursor: null },
+			});
+
+		// The positive control. Without it every assertion below would also pass on an empty
+		// collection, which is the same shape a refusal answers.
+		expect((await read()).page.map((doc) => doc.key)).toEqual(["a:1"]);
+
+		// The flavors `watch_documents` closes into null. This door answers the empty final page
+		// for each of them instead, because `usePaginatedQuery` has no null branch.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
+				acceptedCapabilities: ["plugin.data.write", "plugin.data.user-write", "plugin.service.connect"],
+			});
+		});
+		expect(await read()).toEqual(empty_page);
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
+				acceptedCapabilities: [
+					"plugin.data.read",
+					"plugin.data.write",
+					"plugin.data.user-write",
+					"plugin.service.connect",
+				],
+			});
+		});
+		expect((await read()).page).toHaveLength(1);
+
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, { status: "disabled" });
+		});
+		expect(await read()).toEqual(empty_page);
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, { status: "enabled" });
+		});
+		expect((await read()).page).toHaveLength(1);
+
+		// The version stops declaring the read capability, even though the workspace accepted it.
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_versions", fixture.pluginVersionId, {
+				capabilities: ["plugin.data.write", "plugin.data.user-write", "plugin.service.connect"],
+			});
+		});
+		expect(await read()).toEqual(empty_page);
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_versions", fixture.pluginVersionId, {
+				capabilities: [
+					"plugin.data.read",
+					"plugin.data.write",
+					"plugin.data.user-write",
+					"plugin.service.connect",
+				] satisfies plugins_Capability[],
+			});
+		});
+		expect((await read()).page).toHaveLength(1);
+
+		// An upgrade moves the installation to a new version, so the session names the old one.
+		const upgradedVersionId = await t.run(async (ctx) => {
+			const version = await ctx.db.get("plugins_versions", fixture.pluginVersionId);
+			const { _id, _creationTime, ...rest } = version!;
+			return await ctx.db.insert("plugins_versions", { ...rest, version: "0.2.0", isLatest: false });
+		});
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
+				pluginVersionId: upgradedVersionId,
+			});
+		});
+		expect(await read()).toEqual(empty_page);
 	});
 });
 

@@ -796,6 +796,14 @@ reading then describes released code while you believe you are testing your work
 `No active sessions`, re-create the session, re-install the harness, re-install the route, and reload
 before trusting one more result. Hit 2026-08-24.
 
+**Somebody else's restart looks different, and worse.** When another agent restarts the relay while
+your sessions are alive, your next call answers `404 {"text":"Session N not found. Run 'playwriter
+session new' first."}` and exits 9 with the libuv assertion, while `session list` shows the *other*
+repo's sessions sitting there — so it reads as "my session id is wrong", not as "the relay was
+replaced". Do not run relay recovery for this and do not touch the other repo's rows. Create a new
+session on the same browser key, re-install the harness, and re-open your own tabs; the tabs you had
+opened in that browser are still there, so `context.pages()` finds them. Hit 2026-09-02, mid-run.
+
 ## A CDP-attached scratch browser is invisible to `browser list`
 
 `playwriter browser list` shows extension-connected browsers and `headless`. A Chrome you started

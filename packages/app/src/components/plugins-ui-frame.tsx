@@ -552,9 +552,10 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 		const handle_load = () => {
 			loadCount += 1;
 			// The first load is the assigned asset. Any later load is page-controlled navigation.
-			// The iframe runs its own ConvexClient, so revoking the session here is what actually
+			// The iframe runs its own Convex client, so revoking the session here is what actually
 			// ends the page's subscriptions: every plugin door re-reads the session doc, and a
-			// deleted doc turns those queries into null.
+			// deleted doc turns those queries into null — or into an empty final page for the
+			// paginated door, which cannot answer null. Either way the page stops seeing data.
 			if (loadCount > 1 && !cancelled) {
 				cancelled = true;
 				clearTimeout(startupDeadline);

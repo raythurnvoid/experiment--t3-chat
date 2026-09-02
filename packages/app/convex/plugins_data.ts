@@ -49,8 +49,9 @@ const MAX_VALUE_BYTES = 16 * 1024;
 /**
  * The name and key length caps and the list/watch page cap live in `shared/plugins.ts`
  * (`plugins_data_MAX_NAME_LENGTH`, `plugins_data_MAX_KEY_PREFIX_LENGTH`,
- * `plugins_data_MAX_LIST_PAGE_SIZE`), because the plugins UI frame pre-checks watch inputs
- * against the same numbers before subscribing.
+ * `plugins_data_MAX_LIST_PAGE_SIZE`), because the HTTP list route in `plugins_data_http.ts` and
+ * the public API share them. Since SDK 0.13.0 the frame checks nothing before it subscribes, so
+ * these numbers are the only place they are enforced.
  */
 /**
  * The largest 13-digit number. Storing `ceiling - now` as the key's time part makes a later
@@ -5032,11 +5033,11 @@ export const watch_my_scopes = query({
  * final page instead of null, because `usePaginatedQuery` cannot take null.
  *
  * The server deliberately does not cap live subscriptions per session. Convex gives a query no
- * subscribe hook to count against, so a hostile frame that talks to Convex directly can open more
- * subscriptions than the SDK's own per-frame caps allow. Those caps live inside one SDK client
- * closure and each mounted frame builds its own client, so they bound a frame and never a member or
- * an installation. Accepted risk: it is bounded only by the 30-minute session TTL and revocation,
- * and stays on the ask list for the Convex team.
+ * subscribe hook to count against, so a frame can open as many subscriptions as it likes. The SDK
+ * used to hold a per-frame budget, but 0.13.0 deleted it with the rest of the wrappers, and it was
+ * never a boundary anyway: it lived inside one client closure and each mounted frame built its own.
+ * Accepted risk: a frame is bounded only by the 30-minute session TTL and revocation, and this
+ * stays on the ask list for the Convex team.
  */
 
 /**
@@ -5280,9 +5281,9 @@ export const watch_documents = query({
  * same page. The plugin tells a refusal from an expired session with the token expiry the host
  * gave it, so the door does not need to say which one it was.
  *
- * A page holds at most 100 documents, and the server also stops the scan at 100 rows read. A
- * `numItems` outside 1..100 is refused like any other bad input, so a frame cannot ask for a
- * bigger page than the other reads allow.
+ * A page holds at most 100 documents, because a `numItems` outside 1..100 is refused like any other
+ * bad input. That is the whole bound: a frame cannot ask for a bigger page than the other reads
+ * allow. Do not read `maximumRowsRead` below as a second cap — see the comment at the query.
  */
 export const watch_documents_page = query({
 	args: {
@@ -5363,8 +5364,16 @@ export const watch_documents_page = query({
 			return emptyPage;
 		}
 
-		// Never read the usage doc here, for the reason given in `watch_documents`. The row cap comes
-		// after the spread so a caller cannot raise it.
+		// Never read the usage doc here, for the reason given in `watch_documents`.
+		//
+		// `maximumRowsRead` is a split hint, not a cap. The page is already bounded by `numItems`,
+		// which is at most 100, and Convex stops the scan as soon as the page is full, so this
+		// number never stops anything. What it does is set the soft limit to 75 rows (three
+		// quarters of it), so a full page comes back `SplitRecommended` and `usePaginatedQuery`
+		// splits it into two narrower live subscriptions. Narrower ranges re-run less work when a
+		// document in them changes, which is what we want for a long chat timeline. It stays after
+		// the spread so a caller cannot change it. The caller's `cursor` and `endCursor` do pass
+		// through, because the hook needs them to keep its pages stable across re-runs.
 		const result = await ctx.db
 			.query("plugins_data")
 			.withIndex("by_installation_collection_scope_key", (q) => {
