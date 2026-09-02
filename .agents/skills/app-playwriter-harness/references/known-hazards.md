@@ -217,6 +217,24 @@ Hit 2026-08-24 while swapping a plugin bundle. Two separate failures, one recove
   drops its handler — then make a new one and navigate the tab so the frame reloads the real
   published bundle.
 
+## Active plugin tabs cannot be frozen through Playwriter CDP
+
+Verified 2026-09-02 while testing plugin-session recovery:
+
+- Do not call `context.newCDPSession(page)` on a tab with an attached plugin OOPIF. It crashed the
+  Playwriter CLI with `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)` twice. The browser
+  tab survived, but the CLI call did not. This is stricter than the cache-disable failure above.
+- `Page.setWebLifecycleState({ state: "frozen" })` is not a sleep emulator for the active tab. The
+  command answered successfully while timers kept running.
+- `context.setOffline(true)` followed by `context.setOffline(false)` is safe while the tab is
+  active. When its renderer is suspended, the online call can wait for the OOPIF. Start it first,
+  leave the Playwriter command pending, resume the renderer, then wait for the command to finish.
+- Attribute renderer processes after every reload. Snapshot each `msedge` process's
+  `TotalProcessorTime`, run a three-second busy loop first in the host and then in the LAST
+  `/plugins-ui/` frame, and take the largest delta after each loop. Pids are valid only for that
+  load. If both loops name one pid, repeat the measurement; suspend each distinct proven pid once.
+  Suspending or resuming one guessed pid twice can make the renderer exit and invalidates the run.
+
 ## `page.route` never sees a plugin frame's subresource requests
 
 Hit 2026-08-24 while serving a working-tree plugin build at the published asset URL. Through the

@@ -129,10 +129,18 @@ Create the R2 notification after Convex and the Worker are deployed:
 pnpx wrangler r2 bucket notification create bonobo-senate-press-files --event-type object-create --queue bonobo-senate-press-r2-upload-events --prefix "organizations/"
 ```
 
-The Files page loads Yjs snapshots and media with signed R2 URLs from the browser. Convex
-`ALLOWED_ORIGINS` already includes GitHub Pages. The bucket CORS policy must list the same
-origins, or `fetch()` of those URLs fails on `https://raythurnvoid.github.io`. Apply
-[r2-files-cors.json](r2-files-cors.json) after changing origins. Do not drop localhost.
+The browser uploads (`PUT`) and reads (`GET`) files with signed R2 URLs, straight to the
+bucket: the Files sidebar and the rich text media upload put files, and the Files page loads
+Yjs snapshots and media. Convex `ALLOWED_ORIGINS` only covers Convex routes. The bucket has
+its own CORS policy, and it must list the same app origins, or those `fetch()` calls fail with
+a CORS error on `https://raythurnvoid.github.io`. Apply [r2-files-cors.json](r2-files-cors.json)
+after changing origins. Do not drop localhost.
+
+Nothing reads that file automatically. `wrangler.jsonc` does not reference it, `wrangler deploy`
+ignores it, and no script or CI step applies it. Wrangler reads it only as the `--file` argument
+of the command below, sends its `rules` array to the R2 API once, and forgets it. So if you edit
+the file and do not re-run the command, the bucket keeps the old policy. The file must stay
+strict JSON: wrangler parses it with comments disallowed.
 
 ```powershell
 vp env exec pnpx wrangler r2 bucket cors set bonobo-senate-press-files --file packages/r2-upload-finalizer/r2-files-cors.json --force

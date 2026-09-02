@@ -1148,10 +1148,10 @@ const FileNodeViewPluginView = memo(function FileNodeViewPluginView(props: FileN
 	const { membershipId, organizationId, workspaceId } = AppTenantProvider.useContext();
 	const retryButtonRef = useRef<HTMLButtonElement | null>(null);
 	const [sessionError, setSessionError] = useState<{ frameKey: string; message: string } | null>(null);
-	// Incremented by Retry. It keys the iframe so each attempt gets a fresh document and bridge nonce.
+	// Incremented by Retry. It keys the iframe so each attempt gets a fresh document and nonce.
 	const [attempt, setAttempt] = useState(0);
 
-	// Any tenant, version, view, file, or Retry change creates a new iframe and bridge nonce.
+	// Any tenant, version, view, file, or Retry change creates a new iframe and nonce.
 	const frameKey = `${membershipId}:${pluginVersionId}:${fileViewId}:${node._id}:${attempt}`;
 	const activeSessionError = sessionError?.frameKey === frameKey ? sessionError.message : null;
 	// useCallback on frameKey, not useFn: an error from a stale frame must record the old key so it
@@ -1214,7 +1214,6 @@ const FileNodeViewPluginView = memo(function FileNodeViewPluginView(props: FileN
 					kindLabel="plugin view"
 					mintSession={mintSession}
 					getInitContext={getInitContext}
-					onSessionLost={handleRetry}
 					onError={handleFrameError}
 				/>
 			)}

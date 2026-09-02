@@ -149,14 +149,14 @@ type PluginsUiFrame_ClassNames = "PluginsUiFrame";
 type RefreshResponse =
 	| {
 			type: "bonobo:token";
-			bridgeNonce: string;
+			nonce: string;
 			requestId: string;
 			token: string;
 			tokenExpiresAt: number;
 	  }
 	| {
 			type: "bonobo:token-error";
-			bridgeNonce: string;
+			nonce: string;
 			requestId: string;
 			message: string;
 	  };
@@ -178,8 +178,9 @@ type PluginsUiFrame_Props = {
 	/** Human label used inside frame error messages, e.g. "plugin page" or "plugin view". */
 	kindLabel: string;
 	/**
-	 * Mints this frame's session. Wrap in `useFn`: a new identity re-runs the bridge effect, which
-	 * tears the frame down.
+	 * Mints this frame's session. Called once while the iframe loads, and again when a token
+	 * refresh finds the session gone, to replace it for the same frame. Wrap in `useFn`: a new
+	 * identity re-runs the bridge effect, which tears the frame down.
 	 */
 	mintSession: () => Promise<PluginsUiFrame_MintSessionResult>;
 	/**
@@ -188,14 +189,6 @@ type PluginsUiFrame_Props = {
 	 * as `mintSession`.
 	 */
 	getInitContext: () => Record<string, unknown>;
-	/**
-	 * Called at most once per frame generation when a token refresh finds the session gone
-	 * (`refresh_ui_session` answers "Unauthorized"). That happens when the device slept past the
-	 * session expiry and the server deleted the session doc. The owner should remount the frame
-	 * with a fresh key, the same way its Retry button does, so the page comes back with a fresh
-	 * session instead of dying. Wrap in `useFn` for the same reason as `mintSession`.
-	 */
-	onSessionLost: () => void;
 	onError: (message: string) => void;
 };
 
@@ -206,7 +199,17 @@ type PluginsUiFrame_Props = {
  * all the host does: the page talks to Convex itself, with a plugin-session JWT it gets from the
  * `/plugins-ui/session-jwt` exchange (init hands it the deployment URL for that). The caller keys
  * this component so that every meaningful change (tenant, version, view, retry) gets a fresh
- * document and bridge nonce.
+ * document and nonce. A session that expired while the device slept is not such a change: the
+ * host mints a new session for the same document and answers the pending refresh with it, so the
+ * page keeps its state and its live subscriptions.
+ *
+ * Trust is layered, and each layer answers one question. CSP `frame-ancestors` on the asset
+ * response decides which origins may embed the frame at all. The `event.source` and
+ * `event.origin` checks in the message handler decide which window is talking. The nonce decides
+ * which mount a message belongs to, so a late reply from an earlier mount is dropped; it is
+ * visible to the page and is not a secret. The `parentOrigin` in the fragment only tells the SDK
+ * where to address its messages, so it never posts with `"*"`. Authority comes from none of
+ * these: only the session mint below produces a token, and only for a signed-in member.
  */
 export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame_Props) {
 	const {
@@ -218,14 +221,13 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 		kindLabel,
 		mintSession,
 		getInitContext,
-		onSessionLost,
 		onError,
 	} = props;
 	// The frame only mounts for an authenticated member, and the SDK requires `userId` in the init
 	// context of both kinds.
 	const { userId } = AppAuthProvider.useAuthenticated();
 	const iframeRef = useRef<HTMLIFrameElement | null>(null);
-	const [bridgeNonce] = useState(() => crypto.randomUUID());
+	const [nonce] = useState(() => crypto.randomUUID());
 	// The bridge effect owns the frame's origin and its ready state, and it must never re-run for a
 	// theme change: that would tear the frame down and remount the plugin page. It installs a sender
 	// here instead, and the theme effect below calls whatever is installed.
@@ -251,12 +253,15 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 		);
 		iframeSrc.hash = new URLSearchParams({
 			parentOrigin: window.location.origin,
-			bridgeNonce,
+			nonce,
 		}).toString();
 		let cancelled = false;
 		let loadCount = 0;
 		let sessionId: Id<"plugins_ui_sessions"> | null = null;
-		let revokeStarted = false;
+		// Per id, not one flag for the frame: a re-mint gives the frame a second session id, and that
+		// one must still be revocable after the first was marked gone.
+		const revokedSessionIds = new Set<Id<"plugins_ui_sessions">>();
+		let remintPending = false;
 		let frameReady = false;
 		let initMessage: unknown = null;
 		let refreshInFlight: { requestId: string; promise: Promise<RefreshResponse> } | null = null;
@@ -272,10 +277,10 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 		}, STARTUP_DEADLINE_MS);
 
 		const revoke_session = (id: Id<"plugins_ui_sessions"> | null) => {
-			if (!id || revokeStarted) {
+			if (!id || revokedSessionIds.has(id)) {
 				return;
 			}
-			revokeStarted = true;
+			revokedSessionIds.add(id);
 			void app_convex
 				.mutation(app_convex_api.plugins_ui.revoke_ui_session, {
 					membershipId,
@@ -305,12 +310,12 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 				return;
 			}
 			lastThemeSent = serialized;
-			post_to_iframe({ type: "bonobo:theme", bridgeNonce, theme });
+			post_to_iframe({ type: "bonobo:theme", nonce, theme });
 		};
 
 		const token_error = (requestId: string, message: string): RefreshResponse => ({
 			type: "bonobo:token-error",
-			bridgeNonce,
+			nonce,
 			requestId,
 			message,
 		});
@@ -362,7 +367,7 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 				lastThemeSent = JSON.stringify(theme);
 				initMessage = {
 					type: "bonobo:init",
-					bridgeNonce,
+					nonce,
 					// A cross-origin frame inherits no custom properties, so the page gets values it can
 					// paint with immediately instead of a name it would have to resolve.
 					theme,
@@ -416,34 +421,70 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 					membershipId,
 					sessionId: currentSessionId,
 				})
-				.then((result) => {
+				.then(async (result) => {
 					if (result._nay) {
-						// "Unauthorized" means the session is gone for good: the server deleted the
-						// session doc (the device slept past the session expiry), or the membership
-						// ended. Answering token-error would leave the page dead until a manual
-						// reload, so stop this frame and ask the owner to remount it with a fresh
-						// session, the same path its Retry button takes. Setting `cancelled` caps
-						// this at one automatic remount per frame generation: if the fresh mint
-						// still refuses, the next generation shows the error state instead of
-						// looping. Host-initiated kills (ready flood, second load) set `cancelled`
-						// before this handler can run, so a page the host revoked on purpose never
-						// remints itself. Every other refresh failure is transient and still
-						// answers token-error so the SDK's own retry handles it.
-						if (result._nay.message === "Unauthorized" && !cancelled) {
-							cancelled = true;
-							// The session doc is already gone, so there is nothing left to revoke.
-							revokeStarted = true;
-							clearTimeout(startupDeadline);
-							onSessionLost();
+						// Every refresh failure except "Unauthorized" is transient and answers
+						// token-error, so the SDK's own retry handles it. Host-initiated kills (ready
+						// flood, second load) set `cancelled` before this handler can run, so a page
+						// the host revoked on purpose never mints itself a new session.
+						if (result._nay.message !== "Unauthorized" || cancelled) {
+							return token_error(requestId, result._nay.message);
 						}
-						return token_error(requestId, result._nay.message);
+						// "Unauthorized" means the session doc is gone for good: the server deleted
+						// it because the device slept past the session expiry. Answering token-error
+						// would leave the page dead, and remounting the frame would lose its state,
+						// its draft, and its live subscriptions. So mint a new session for this same
+						// document and answer this refresh with it. The gone doc has nothing left to
+						// revoke.
+						revokedSessionIds.add(currentSessionId);
+						// One re-mint per session: a re-minted session that is gone again before it
+						// ever refreshed means something keeps deleting sessions, so stop instead of
+						// minting in a loop.
+						if (remintPending) {
+							cancelled = true;
+							clearTimeout(startupDeadline);
+							onError(`The ${kindLabel} session was lost`);
+							return token_error(requestId, result._nay.message);
+						}
+						const minted = await mintSession();
+						if (cancelled || iframeRef.current !== iframeNode) {
+							// Same rule as the first mint: never hand a token to a stale frame.
+							if (minted._yay) {
+								revoke_session(minted._yay.sessionId);
+							}
+							return token_error(requestId, result._nay.message);
+						}
+						if (minted._nay) {
+							cancelled = true;
+							clearTimeout(startupDeadline);
+							onError(minted._nay.message);
+							return token_error(requestId, minted._nay.message);
+						}
+						if (minted._yay.pluginVersionId !== pluginVersionId) {
+							revoke_session(minted._yay.sessionId);
+							cancelled = true;
+							clearTimeout(startupDeadline);
+							onError("The installed plugin version changed");
+							return token_error(requestId, "The installed plugin version changed");
+						}
+						sessionId = minted._yay.sessionId;
+						remintPending = true;
+						return {
+							type: "bonobo:token",
+							nonce,
+							requestId,
+							token: minted._yay.token,
+							tokenExpiresAt: minted._yay.expiresAt,
+						} satisfies RefreshResponse;
 					}
 					if (result._yay.pluginVersionId !== pluginVersionId) {
 						return token_error(requestId, "The installed plugin version changed");
 					}
+					// A refresh that succeeds proves the current session is healthy again.
+					remintPending = false;
 					return {
 						type: "bonobo:token",
-						bridgeNonce,
+						nonce,
 						requestId,
 						token: result._yay.token,
 						tokenExpiresAt: result._yay.expiresAt,
@@ -478,10 +519,10 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 			}
 			const message = data as {
 				type?: unknown;
-				bridgeNonce?: unknown;
+				nonce?: unknown;
 				requestId?: unknown;
 			};
-			if (message.bridgeNonce !== bridgeNonce) {
+			if (message.nonce !== nonce) {
 				return;
 			}
 			if (message.type === "bonobo:ready") {
@@ -520,7 +561,7 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 			iframeNode.removeEventListener("load", handle_load);
 			revoke_session(sessionId);
 		};
-	}, [bridgeNonce, entry, getInitContext, kindLabel, membershipId, mintSession, onError, onSessionLost, pluginName, pluginVersionId, userId]);
+	}, [nonce, entry, getInitContext, kindLabel, membershipId, mintSession, onError, pluginName, pluginVersionId, userId]);
 
 	// Watch the root element rather than the theme context. The provider stamps the class in its own
 	// effect and it is an ancestor of this frame, so a descendant effect keyed on the resolved theme

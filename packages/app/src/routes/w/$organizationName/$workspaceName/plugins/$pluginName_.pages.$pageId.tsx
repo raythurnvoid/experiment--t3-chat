@@ -25,14 +25,14 @@ function RoutePluginsPluginPage() {
 	const uiPages = useQuery(app_convex_api.plugins_ui.list_ui_pages, { membershipId });
 	const retryButtonRef = useRef<HTMLButtonElement | null>(null);
 	const [sessionError, setSessionError] = useState<{ frameKey: string; message: string } | null>(null);
-	// Incremented by Retry. It keys the iframe so each attempt gets a fresh document and bridge nonce.
+	// Incremented by Retry. It keys the iframe so each attempt gets a fresh document and nonce.
 	const [attempt, setAttempt] = useState(0);
 
 	const plugin = uiPages?.find((item) => item.pluginName === pluginName) ?? null;
 	const page = plugin?.pages.find((item) => item.id === pageId) ?? null;
 
 	const pluginVersionId = plugin?.pluginVersionId ?? null;
-	// Any tenant, version, page, or Retry change creates a new iframe and bridge nonce.
+	// Any tenant, version, page, or Retry change creates a new iframe and nonce.
 	const frameKey = `${membershipId}:${pluginVersionId ?? "missing"}:${pageId ?? "missing"}:${attempt}`;
 	const activeSessionError = sessionError?.frameKey === frameKey ? sessionError.message : null;
 	// useCallback on frameKey, not useFn: an error from a stale frame must record the old key so it
@@ -122,7 +122,6 @@ function RoutePluginsPluginPage() {
 					kindLabel="plugin page"
 					mintSession={mintSession}
 					getInitContext={getInitContext}
-					onSessionLost={handleRetry}
 					onError={handleFrameError}
 				/>
 			)}

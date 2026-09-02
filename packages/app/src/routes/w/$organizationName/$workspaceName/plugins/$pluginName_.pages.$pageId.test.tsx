@@ -102,19 +102,19 @@ function bridge_for(container: HTMLElement) {
 	}
 	const iframeUrl = new URL(src);
 	const fragment = new URLSearchParams(iframeUrl.hash.slice(1));
-	const bridgeNonce = fragment.get("bridgeNonce");
-	if (!bridgeNonce) {
-		throw new Error("iframe bridge nonce not assigned");
+	const nonce = fragment.get("nonce");
+	if (!nonce) {
+		throw new Error("iframe nonce not assigned");
 	}
-	return { iframe, iframeUrl, fragment, bridgeNonce };
+	return { iframe, iframeUrl, fragment, nonce };
 }
 
 function post_from_frame(data: unknown, origin = CONVEX_HTTP_ORIGIN) {
 	window.dispatchEvent(new MessageEvent("message", { data, origin, source: frameWindow }));
 }
 
-function post_ready(bridgeNonce: string) {
-	post_from_frame({ type: "bonobo:ready", bridgeNonce });
+function post_ready(nonce: string) {
+	post_from_frame({ type: "bonobo:ready", nonce });
 }
 
 // The app tokens the frame resolves, with the real values from `app.css`. jsdom loads no
@@ -166,7 +166,7 @@ const EXPECTED_THEME_TOKENS = {
 
 function latest_theme_message() {
 	return postMessageMock.mock.calls.findLast(([value]) => (value as { type?: string }).type === "bonobo:theme")?.[0] as
-		| { bridgeNonce: string; theme: { mode: string; tokens: Record<string, string> } }
+		| { nonce: string; theme: { mode: string; tokens: Record<string, string> } }
 		| undefined;
 }
 
@@ -175,7 +175,7 @@ function latest_init_message() {
 		([value]) => (value as { type?: string }).type === "bonobo:init",
 	)?.[0] as
 		| {
-				bridgeNonce: string;
+				nonce: string;
 				token: string;
 				context: Record<string, unknown>;
 				theme: { mode: string; tokens: Record<string, string> };
@@ -235,9 +235,9 @@ describe("RoutePluginsPluginPage", () => {
 		expect([...secondBridge.iframeUrl.searchParams]).toEqual([]);
 		expect([...secondBridge.fragment]).toEqual([
 			["parentOrigin", window.location.origin],
-			["bridgeNonce", secondBridge.bridgeNonce],
+			["nonce", secondBridge.nonce],
 		]);
-		expect(secondBridge.bridgeNonce).not.toBe(firstBridge.bridgeNonce);
+		expect(secondBridge.nonce).not.toBe(firstBridge.nonce);
 		expect(secondBridge.iframe.getAttribute("referrerpolicy")).toBe("no-referrer");
 		// `allow-forms` lets plugin JS handle submit events; the asset CSP's `form-action 'none'`
 		// keeps real HTTP form submissions blocked.
@@ -274,7 +274,7 @@ describe("RoutePluginsPluginPage", () => {
 
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const { container } = render(<PageComponent />);
-		const { bridgeNonce } = bridge_for(container);
+		const { nonce } = bridge_for(container);
 		expect(mutationMock).toHaveBeenCalledWith("plugins_ui.mint_page_session", expect.anything());
 
 		await act(async () => {
@@ -293,7 +293,7 @@ describe("RoutePluginsPluginPage", () => {
 			CONVEX_HTTP_ORIGIN,
 		);
 
-		await act(async () => post_ready(bridgeNonce));
+		await act(async () => post_ready(nonce));
 		expect(postMessageMock).toHaveBeenCalledWith(
 			expect.objectContaining({ type: "bonobo:init" }),
 			CONVEX_HTTP_ORIGIN,
@@ -303,14 +303,14 @@ describe("RoutePluginsPluginPage", () => {
 	test("init hands the page its own Convex connection: the deployment url and the session token", async () => {
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const { container } = render(<PageComponent />);
-		const { bridgeNonce } = bridge_for(container);
-		await act(async () => post_ready(bridgeNonce));
+		const { nonce } = bridge_for(container);
+		await act(async () => post_ready(nonce));
 
 		// The page's SDK opens its own ConvexClient against convexUrl and exchanges the token at
 		// apiOrigin for a plugin-session JWT. The host posts these once and is out of the data path.
 		expect(latest_init_message()).toMatchObject({
 			type: "bonobo:init",
-			bridgeNonce,
+			nonce,
 			apiOrigin: import.meta.env.VITE_CONVEX_HTTP_URL,
 			convexUrl: "https://deployment.convex.test",
 			token: "plu_default",
@@ -322,8 +322,8 @@ describe("RoutePluginsPluginPage", () => {
 
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const { container } = render(<PageComponent />);
-		const { bridgeNonce } = bridge_for(container);
-		await act(async () => post_ready(bridgeNonce));
+		const { nonce } = bridge_for(container);
+		await act(async () => post_ready(nonce));
 
 		// A plugin page is a cross-origin document: it inherits none of the app's custom properties and
 		// cannot read them. So init has to carry every value it needs, resolved — a name would leave the
@@ -344,7 +344,7 @@ describe("RoutePluginsPluginPage", () => {
 		});
 
 		expect(latest_theme_message()).toMatchObject({
-			bridgeNonce,
+			nonce,
 			theme: {
 				mode: "light",
 				tokens: { ...EXPECTED_THEME_TOKENS, surface: "oklch(0.98 0.002 85)" },
@@ -357,8 +357,8 @@ describe("RoutePluginsPluginPage", () => {
 
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const { container } = render(<PageComponent />);
-		const { bridgeNonce } = bridge_for(container);
-		await act(async () => post_ready(bridgeNonce));
+		const { nonce } = bridge_for(container);
+		await act(async () => post_ready(nonce));
 
 		expect(latest_init_message()?.theme.mode).toBe("dark");
 
@@ -388,7 +388,7 @@ describe("RoutePluginsPluginPage", () => {
 		});
 
 		expect(latest_theme_message()).toMatchObject({
-			bridgeNonce,
+			nonce,
 			theme: { mode: "light", tokens: { ...EXPECTED_THEME_TOKENS, surface: "oklch(0.98 0.002 85)" } },
 		});
 	});
@@ -418,8 +418,8 @@ describe("RoutePluginsPluginPage", () => {
 
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const { container } = render(<PageComponent />);
-		const { bridgeNonce } = bridge_for(container);
-		post_ready(bridgeNonce);
+		const { nonce } = bridge_for(container);
+		post_ready(nonce);
 		act(() => vi.advanceTimersByTime(14_999));
 		await act(async () => {
 			resolveMint?.({
@@ -453,8 +453,8 @@ describe("RoutePluginsPluginPage", () => {
 
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const { container } = render(<PageComponent />);
-		const { bridgeNonce } = bridge_for(container);
-		post_ready(bridgeNonce);
+		const { nonce } = bridge_for(container);
+		post_ready(nonce);
 		act(() => vi.advanceTimersByTime(15_000));
 
 		await act(async () => {
@@ -490,8 +490,8 @@ describe("RoutePluginsPluginPage", () => {
 
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const mounted = render(<PageComponent />);
-		const { bridgeNonce } = bridge_for(mounted.container);
-		post_ready(bridgeNonce);
+		const { nonce } = bridge_for(mounted.container);
+		post_ready(nonce);
 		mounted.unmount();
 
 		await act(async () => {
@@ -519,28 +519,28 @@ describe("RoutePluginsPluginPage", () => {
 	test("drops messages with a foreign source, origin, nonce, or malformed request id", async () => {
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const { container } = render(<PageComponent />);
-		const { bridgeNonce } = bridge_for(container);
+		const { nonce } = bridge_for(container);
 
 		await act(async () => {
 			// Correct origin but a foreign source window, so only the source guard can drop it.
 			window.dispatchEvent(
 				new MessageEvent("message", {
-					data: { type: "bonobo:ready", bridgeNonce },
+					data: { type: "bonobo:ready", nonce },
 					origin: CONVEX_HTTP_ORIGIN,
 					source: {} as Window,
 				}),
 			);
-			post_from_frame({ type: "bonobo:ready", bridgeNonce }, "https://host.test");
+			post_from_frame({ type: "bonobo:ready", nonce }, "https://host.test");
 			post_from_frame({ type: "bonobo:ready" });
-			post_from_frame({ type: "bonobo:ready", bridgeNonce: crypto.randomUUID() });
+			post_from_frame({ type: "bonobo:ready", nonce: crypto.randomUUID() });
 			post_from_frame({
 				type: "bonobo:token-refresh-request",
-				bridgeNonce,
+				nonce,
 				requestId: "",
 			});
 			post_from_frame({
 				type: "bonobo:token-refresh-request",
-				bridgeNonce,
+				nonce,
 				requestId: "x".repeat(65),
 			});
 		});
@@ -567,11 +567,11 @@ describe("RoutePluginsPluginPage", () => {
 
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const { container } = render(<PageComponent />);
-		const { bridgeNonce } = bridge_for(container);
+		const { nonce } = bridge_for(container);
 
 		await act(async () => {
-			post_ready(bridgeNonce);
-			post_ready(bridgeNonce);
+			post_ready(nonce);
+			post_ready(nonce);
 		});
 
 		expect(mutationMock.mock.calls.filter(([reference]) => reference === "plugins_ui.mint_page_session")).toHaveLength(
@@ -609,20 +609,20 @@ describe("RoutePluginsPluginPage", () => {
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const { container } = render(<PageComponent />);
 		const bridge = bridge_for(container);
-		await act(async () => post_ready(bridge.bridgeNonce));
-		const { bridgeNonce } = latest_init_message();
-		expect(bridgeNonce).toBe(bridge.bridgeNonce);
+		await act(async () => post_ready(bridge.nonce));
+		const { nonce } = latest_init_message();
+		expect(nonce).toBe(bridge.nonce);
 		postMessageMock.mockClear();
 
 		await act(async () => {
 			post_from_frame({
 				type: "bonobo:token-refresh-request",
-				bridgeNonce,
+				nonce,
 				requestId: "refresh_1",
 			});
 			post_from_frame({
 				type: "bonobo:token-refresh-request",
-				bridgeNonce,
+				nonce,
 				requestId: "refresh_2",
 			});
 		});
@@ -639,7 +639,7 @@ describe("RoutePluginsPluginPage", () => {
 		});
 		post_from_frame({
 			type: "bonobo:token-refresh-request",
-			bridgeNonce,
+			nonce,
 			requestId: "refresh_1",
 		});
 
@@ -677,13 +677,13 @@ describe("RoutePluginsPluginPage", () => {
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const mounted = render(<PageComponent />);
 		const bridge = bridge_for(mounted.container);
-		await act(async () => post_ready(bridge.bridgeNonce));
-		const { bridgeNonce } = latest_init_message();
-		expect(bridgeNonce).toBe(bridge.bridgeNonce);
+		await act(async () => post_ready(bridge.nonce));
+		const { nonce } = latest_init_message();
+		expect(nonce).toBe(bridge.nonce);
 		postMessageMock.mockClear();
 		post_from_frame({
 			type: "bonobo:token-refresh-request",
-			bridgeNonce,
+			nonce,
 			requestId: "refresh_after_unmount",
 		});
 		mounted.unmount();
@@ -698,7 +698,251 @@ describe("RoutePluginsPluginPage", () => {
 		expect(postMessageMock).not.toHaveBeenCalled();
 	});
 
-	test("a refresh that finds the session gone remounts the frame instead of answering token-error", async () => {
+	test("a refresh that finds the session gone mints a new session for the same frame and answers bonobo:token", async () => {
+		let mintCount = 0;
+		const refreshedSessionIds: string[] = [];
+		mutationMock.mockImplementation((reference: string, args: { sessionId?: string }) => {
+			if (reference === "plugins_ui.mint_page_session") {
+				mintCount += 1;
+				return Promise.resolve({
+					_yay: {
+						token: `plu_${mintCount}`,
+						expiresAt: Date.now() + 60_000,
+						pluginVersionId: "version_1",
+						sessionId: `session_${mintCount}`,
+					},
+				});
+			}
+			// The server deleted the first session doc (the device slept past the session expiry), so
+			// its refresh answers "Unauthorized". The re-minted session rotates normally.
+			if (reference === "plugins_ui.refresh_ui_session") {
+				refreshedSessionIds.push(args.sessionId ?? "");
+				return Promise.resolve(
+					args.sessionId === "session_1"
+						? { _nay: { message: "Unauthorized" } }
+						: { _yay: { token: "plu_rotated", expiresAt: Date.now() + 60_000, pluginVersionId: "version_1" } },
+				);
+			}
+			return Promise.resolve({ _yay: {} });
+		});
+
+		const PageComponent = Route.options.component as () => JSX.Element;
+		const mounted = render(<PageComponent />);
+		const bridge = bridge_for(mounted.container);
+		await act(async () => post_ready(bridge.nonce));
+		const { nonce } = latest_init_message();
+		expect(nonce).toBe(bridge.nonce);
+		postMessageMock.mockClear();
+
+		await act(async () => {
+			post_from_frame({
+				type: "bonobo:token-refresh-request",
+				nonce,
+				requestId: "refresh_lost",
+			});
+		});
+
+		// The page keeps its document, its state, and its watches: same iframe, same nonce, and the
+		// refresh that found the session gone is answered with the new session's token.
+		expect(bridge_for(mounted.container).nonce).toBe(nonce);
+		expect(postMessageMock).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "bonobo:token", nonce, requestId: "refresh_lost", token: "plu_2" }),
+			CONVEX_HTTP_ORIGIN,
+		);
+		expect(postMessageMock).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "bonobo:token-error" }),
+			CONVEX_HTTP_ORIGIN,
+		);
+		expect(screen.queryByRole("alert")).toBeNull();
+		expect(mintCount).toBe(2);
+		// The first session doc is already gone server-side, so the host does not try to revoke it.
+		expect(mutationMock).not.toHaveBeenCalledWith(
+			"plugins_ui.revoke_ui_session",
+			expect.objectContaining({ sessionId: "session_1" }),
+		);
+
+		// From here on the frame refreshes the new session, and unmount revokes that one.
+		await act(async () => {
+			post_from_frame({
+				type: "bonobo:token-refresh-request",
+				nonce,
+				requestId: "refresh_next",
+			});
+		});
+		expect(refreshedSessionIds).toEqual(["session_1", "session_2"]);
+		expect(postMessageMock).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "bonobo:token", requestId: "refresh_next", token: "plu_rotated" }),
+			CONVEX_HTTP_ORIGIN,
+		);
+		expect(mintCount).toBe(2);
+
+		mounted.unmount();
+		expect(mutationMock).toHaveBeenCalledWith("plugins_ui.revoke_ui_session", {
+			membershipId: "membership_1",
+			sessionId: "session_2",
+		});
+	});
+
+	test("a lost session whose re-mint is refused shows the mint error and moves focus to Retry", async () => {
+		let mintCount = 0;
+		mutationMock.mockImplementation((reference: string) => {
+			if (reference === "plugins_ui.mint_page_session") {
+				mintCount += 1;
+				// The plugin was uninstalled while the device slept, so the re-mint refuses.
+				return Promise.resolve(
+					mintCount === 1
+						? {
+								_yay: {
+									token: "plu_1",
+									expiresAt: Date.now() + 60_000,
+									pluginVersionId: "version_1",
+									sessionId: "session_1",
+								},
+							}
+						: { _nay: { message: "Not found" } },
+				);
+			}
+			if (reference === "plugins_ui.refresh_ui_session") {
+				return Promise.resolve({ _nay: { message: "Unauthorized" } });
+			}
+			return Promise.resolve({ _yay: {} });
+		});
+
+		const PageComponent = Route.options.component as () => JSX.Element;
+		const { container } = render(<PageComponent />);
+		const { nonce } = bridge_for(container);
+		await act(async () => post_ready(nonce));
+		postMessageMock.mockClear();
+
+		await act(async () => {
+			post_from_frame({
+				type: "bonobo:token-refresh-request",
+				nonce,
+				requestId: "refresh_lost",
+			});
+		});
+
+		expect(mintCount).toBe(2);
+		expect(screen.getByRole("alert").textContent).toContain("Not found");
+		const retry = screen.getByRole("button", { name: "Retry" });
+		await waitFor(() => expect(document.activeElement).toBe(retry));
+		expect(postMessageMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: "bonobo:token" }), CONVEX_HTTP_ORIGIN);
+		// Nothing was minted, and the first session doc is already gone, so nothing is revoked.
+		expect(mutationMock).not.toHaveBeenCalledWith("plugins_ui.revoke_ui_session", expect.anything());
+	});
+
+	test("a re-mint that returns another plugin version revokes it and stops the frame", async () => {
+		let mintCount = 0;
+		mutationMock.mockImplementation((reference: string) => {
+			if (reference === "plugins_ui.mint_page_session") {
+				mintCount += 1;
+				// The installation was upgraded while the device slept, so the re-mint binds to the
+				// new version while this frame still runs the old bundle.
+				return Promise.resolve({
+					_yay: {
+						token: `plu_${mintCount}`,
+						expiresAt: Date.now() + 60_000,
+						pluginVersionId: mintCount === 1 ? "version_1" : "version_2",
+						sessionId: `session_${mintCount}`,
+					},
+				});
+			}
+			if (reference === "plugins_ui.refresh_ui_session") {
+				return Promise.resolve({ _nay: { message: "Unauthorized" } });
+			}
+			return Promise.resolve({ _yay: {} });
+		});
+
+		const PageComponent = Route.options.component as () => JSX.Element;
+		const { container } = render(<PageComponent />);
+		const { nonce } = bridge_for(container);
+		await act(async () => post_ready(nonce));
+		postMessageMock.mockClear();
+
+		await act(async () => {
+			post_from_frame({
+				type: "bonobo:token-refresh-request",
+				nonce,
+				requestId: "refresh_lost",
+			});
+		});
+
+		expect(mintCount).toBe(2);
+		expect(screen.getByRole("alert").textContent).toContain("installed plugin version changed");
+		expect(postMessageMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: "bonobo:token" }), CONVEX_HTTP_ORIGIN);
+		expect(mutationMock).toHaveBeenCalledWith("plugins_ui.revoke_ui_session", {
+			membershipId: "membership_1",
+			sessionId: "session_2",
+		});
+	});
+
+	test("a re-mint that finishes after unmount revokes the new session without posting", async () => {
+		let resolveRemint: ((value: unknown) => void) | null = null;
+		const remintPromise = new Promise((resolve) => {
+			resolveRemint = resolve;
+		});
+		let mintCount = 0;
+		mutationMock.mockImplementation((reference: string) => {
+			if (reference === "plugins_ui.mint_page_session") {
+				mintCount += 1;
+				return mintCount === 1
+					? Promise.resolve({
+							_yay: {
+								token: "plu_1",
+								expiresAt: Date.now() + 60_000,
+								pluginVersionId: "version_1",
+								sessionId: "session_1",
+							},
+						})
+					: remintPromise;
+			}
+			if (reference === "plugins_ui.refresh_ui_session") {
+				return Promise.resolve({ _nay: { message: "Unauthorized" } });
+			}
+			return Promise.resolve({ _yay: {} });
+		});
+
+		const PageComponent = Route.options.component as () => JSX.Element;
+		const mounted = render(<PageComponent />);
+		const { nonce } = bridge_for(mounted.container);
+		await act(async () => post_ready(nonce));
+		postMessageMock.mockClear();
+
+		await act(async () => {
+			post_from_frame({
+				type: "bonobo:token-refresh-request",
+				nonce,
+				requestId: "refresh_lost",
+			});
+		});
+		expect(mintCount).toBe(2);
+		mounted.unmount();
+
+		await act(async () => {
+			resolveRemint?.({
+				_yay: {
+					token: "plu_2",
+					expiresAt: Date.now() + 60_000,
+					pluginVersionId: "version_1",
+					sessionId: "session_2",
+				},
+			});
+			await remintPromise;
+		});
+
+		expect(postMessageMock).not.toHaveBeenCalled();
+		// The first session doc was already gone, so only the late re-mint has something to revoke.
+		expect(mutationMock).not.toHaveBeenCalledWith(
+			"plugins_ui.revoke_ui_session",
+			expect.objectContaining({ sessionId: "session_1" }),
+		);
+		expect(mutationMock).toHaveBeenCalledWith("plugins_ui.revoke_ui_session", {
+			membershipId: "membership_1",
+			sessionId: "session_2",
+		});
+	});
+
+	test("a re-minted session that dies before it ever refreshed stops the frame instead of minting again", async () => {
 		let mintCount = 0;
 		mutationMock.mockImplementation((reference: string) => {
 			if (reference === "plugins_ui.mint_page_session") {
@@ -712,8 +956,7 @@ describe("RoutePluginsPluginPage", () => {
 					},
 				});
 			}
-			// The server deleted the session doc (the device slept past the session expiry), so the
-			// refresh answers "Unauthorized".
+			// Every refresh finds its session gone, so a host that re-minted on each one would loop.
 			if (reference === "plugins_ui.refresh_ui_session") {
 				return Promise.resolve({ _nay: { message: "Unauthorized" } });
 			}
@@ -722,40 +965,37 @@ describe("RoutePluginsPluginPage", () => {
 
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const { container } = render(<PageComponent />);
-		const firstBridge = bridge_for(container);
-		await act(async () => post_ready(firstBridge.bridgeNonce));
-		const firstNonce = latest_init_message().bridgeNonce;
-		expect(firstNonce).toBe(firstBridge.bridgeNonce);
+		const { nonce } = bridge_for(container);
+		await act(async () => post_ready(nonce));
 		postMessageMock.mockClear();
 
 		await act(async () => {
 			post_from_frame({
 				type: "bonobo:token-refresh-request",
-				bridgeNonce: firstNonce,
+				nonce,
 				requestId: "refresh_lost",
 			});
 		});
-
-		// The frame recovers by remounting instead of leaving the page dead behind a token-error.
-		expect(postMessageMock).not.toHaveBeenCalledWith(
-			expect.objectContaining({ type: "bonobo:token-error" }),
+		expect(postMessageMock).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "bonobo:token", requestId: "refresh_lost", token: "plu_2" }),
 			CONVEX_HTTP_ORIGIN,
 		);
 		expect(screen.queryByRole("alert")).toBeNull();
-		const secondBridge = bridge_for(container);
-		expect(secondBridge.bridgeNonce).not.toBe(firstNonce);
-		expect(mintCount).toBe(2);
-		// The session doc is already gone server-side, so the host does not try to revoke it.
-		expect(mutationMock).not.toHaveBeenCalledWith(
-			"plugins_ui.revoke_ui_session",
-			expect.objectContaining({ sessionId: "session_1" }),
-		);
 
-		await act(async () => post_ready(secondBridge.bridgeNonce));
-		expect(latest_init_message()).toMatchObject({ bridgeNonce: secondBridge.bridgeNonce, token: "plu_2" });
+		await act(async () => {
+			post_from_frame({
+				type: "bonobo:token-refresh-request",
+				nonce,
+				requestId: "refresh_lost_again",
+			});
+		});
+
+		expect(mintCount).toBe(2);
+		expect(screen.getByRole("alert").textContent).toContain("The plugin page session was lost");
+		expect(document.activeElement).toBe(screen.getByRole("button", { name: "Retry" }));
 	});
 
-	test("a transient refresh failure answers token-error without remounting", async () => {
+	test("a transient refresh failure answers token-error without minting again", async () => {
 		let mintCount = 0;
 		mutationMock.mockImplementation((reference: string) => {
 			if (reference === "plugins_ui.mint_page_session") {
@@ -779,13 +1019,13 @@ describe("RoutePluginsPluginPage", () => {
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const { container } = render(<PageComponent />);
 		const firstBridge = bridge_for(container);
-		await act(async () => post_ready(firstBridge.bridgeNonce));
+		await act(async () => post_ready(firstBridge.nonce));
 		postMessageMock.mockClear();
 
 		await act(async () => {
 			post_from_frame({
 				type: "bonobo:token-refresh-request",
-				bridgeNonce: firstBridge.bridgeNonce,
+				nonce: firstBridge.nonce,
 				requestId: "refresh_transient",
 			});
 		});
@@ -794,7 +1034,7 @@ describe("RoutePluginsPluginPage", () => {
 			expect.objectContaining({ type: "bonobo:token-error", requestId: "refresh_transient", message: "Not found" }),
 			CONVEX_HTTP_ORIGIN,
 		);
-		expect(bridge_for(container).bridgeNonce).toBe(firstBridge.bridgeNonce);
+		expect(bridge_for(container).nonce).toBe(firstBridge.nonce);
 		expect(mintCount).toBe(1);
 		expect(screen.queryByRole("alert")).toBeNull();
 	});
@@ -810,8 +1050,8 @@ describe("RoutePluginsPluginPage", () => {
 
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const { container } = render(<PageComponent />);
-		const { iframe, bridgeNonce } = bridge_for(container);
-		post_ready(bridgeNonce);
+		const { iframe, nonce } = bridge_for(container);
+		post_ready(nonce);
 		fireEvent.load(iframe);
 		fireEvent.load(iframe);
 		expect(screen.getByRole("alert").textContent).toContain("navigated away");
@@ -838,7 +1078,7 @@ describe("RoutePluginsPluginPage", () => {
 		});
 	});
 
-	test("Retry remounts with a fresh session and bridge nonce", async () => {
+	test("Retry remounts with a fresh session and nonce", async () => {
 		let mintCount = 0;
 		mutationMock.mockImplementation((reference: string) => {
 			if (reference === "plugins_ui.mint_page_session") {
@@ -857,24 +1097,24 @@ describe("RoutePluginsPluginPage", () => {
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const { container } = render(<PageComponent />);
 		const firstBridge = bridge_for(container);
-		await act(async () => post_ready(firstBridge.bridgeNonce));
-		const firstNonce = latest_init_message().bridgeNonce;
-		expect(firstNonce).toBe(firstBridge.bridgeNonce);
+		await act(async () => post_ready(firstBridge.nonce));
+		const firstNonce = latest_init_message().nonce;
+		expect(firstNonce).toBe(firstBridge.nonce);
 
 		fireEvent.load(firstBridge.iframe);
 		fireEvent.load(firstBridge.iframe);
 		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
 		const secondBridge = bridge_for(container);
-		expect(secondBridge.bridgeNonce).not.toBe(firstNonce);
+		expect(secondBridge.nonce).not.toBe(firstNonce);
 		postMessageMock.mockClear();
 
 		await act(async () => post_ready(firstNonce));
 		expect(mintCount).toBe(2);
 		expect(postMessageMock).not.toHaveBeenCalled();
 
-		await act(async () => post_ready(secondBridge.bridgeNonce));
-		const secondNonce = latest_init_message().bridgeNonce;
-		expect(secondNonce).toBe(secondBridge.bridgeNonce);
+		await act(async () => post_ready(secondBridge.nonce));
+		const secondNonce = latest_init_message().nonce;
+		expect(secondNonce).toBe(secondBridge.nonce);
 		expect(mintCount).toBe(2);
 	});
 
@@ -882,7 +1122,7 @@ describe("RoutePluginsPluginPage", () => {
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const page = render(<PageComponent />);
 		const pageBridge = bridge_for(page.container);
-		await act(async () => post_ready(pageBridge.bridgeNonce));
+		await act(async () => post_ready(pageBridge.nonce));
 		expect(latest_init_message().context).toMatchObject({ kind: "page", userId: "user_1" });
 		page.unmount();
 		postMessageMock.mockClear();
@@ -913,12 +1153,11 @@ describe("RoutePluginsPluginPage", () => {
 				workspaceId: "ws_1",
 				file: { fileNodeId: "node_1", name: "a.png", path: "/a.png", contentType: "image/png" },
 			}),
-			onSessionLost: () => {},
 			onError: () => {},
 		} as unknown as ComponentProps<typeof PluginsUiFrame>;
 		const view = render(<PluginsUiFrame {...fileViewProps} />);
 		const viewBridge = bridge_for(view.container);
-		await act(async () => post_ready(viewBridge.bridgeNonce));
+		await act(async () => post_ready(viewBridge.nonce));
 		expect(latest_init_message().context).toMatchObject({ kind: "file_view", fileViewId: "viewer", userId: "user_1" });
 	});
 
@@ -940,15 +1179,15 @@ describe("RoutePluginsPluginPage", () => {
 		stub_override();
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const { container } = render(<PageComponent />);
-		const { iframeUrl, bridgeNonce } = bridge_for(container);
+		const { iframeUrl, nonce } = bridge_for(container);
 		expect(iframeUrl.origin).toBe(OVERRIDE_ORIGIN);
 
 		// A different port on the same host is a different origin, and the frame holds a session
 		// token, so it must be refused exactly like any other stranger.
-		await act(async () => post_from_frame({ type: "bonobo:ready", bridgeNonce }, "http://localhost:5175"));
+		await act(async () => post_from_frame({ type: "bonobo:ready", nonce }, "http://localhost:5175"));
 		expect(postMessageMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: "bonobo:init" }), expect.anything());
 
-		await act(async () => post_from_frame({ type: "bonobo:ready", bridgeNonce }, OVERRIDE_ORIGIN));
+		await act(async () => post_from_frame({ type: "bonobo:ready", nonce }, OVERRIDE_ORIGIN));
 		expect(postMessageMock).toHaveBeenCalledWith(expect.objectContaining({ type: "bonobo:init" }), OVERRIDE_ORIGIN);
 	});
 
@@ -969,10 +1208,10 @@ describe("RoutePluginsPluginPage", () => {
 		stub_override();
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const { container } = render(<PageComponent />);
-		const { iframeUrl, bridgeNonce } = bridge_for(container);
+		const { iframeUrl, nonce } = bridge_for(container);
 		expect(iframeUrl.origin).toBe(CONVEX_HTTP_ORIGIN);
 
-		await act(async () => post_from_frame({ type: "bonobo:ready", bridgeNonce }, OVERRIDE_ORIGIN));
+		await act(async () => post_from_frame({ type: "bonobo:ready", nonce }, OVERRIDE_ORIGIN));
 		expect(postMessageMock).not.toHaveBeenCalledWith(expect.objectContaining({ type: "bonobo:init" }), expect.anything());
 	});
 

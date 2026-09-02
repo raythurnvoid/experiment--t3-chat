@@ -739,12 +739,50 @@ Windows and CAS (verified 2026-08-17, two-user E2E on 0.1.3):
   `app_convex.mutation(api.plugins_ui.revoke_ui_session, { membershipId, sessionId })` (Vite serves
   the same module singletons the app runs). Within seconds the revoked tab renders "Access to this
   plugin's data ended…" with the composer disabled while other tabs stay live (one session per
-  mount, 1:1 — verified); a reload mints a fresh session and recovers. Since the host's
-  sleep-recovery change (2026-08-18) the tab also recovers on its own: when the page's ConvexClient
-  refetches its JWT (~10 min after boot), the refresh chain hits the gone session, the host gets
-  "Unauthorized" and remounts the frame with a fresh session and nonce — verified live (revoke →
-  dead state → one auto-remount ~9 min later, exactly one new session doc, no loop). To watch it,
-  poll the iframe `src` fragment for a `bridgeNonce` change instead of holding a frame reference.
+  mount, 1:1 — verified). That watch is dead and does not recover in place; a reload mints a fresh
+  session and recovers. A revoke while the page is ONLINE is not the sleep path: the doors answer
+  null at once and the SDK reports `denied`.
+
+  A page kept offline while its session disappears is different. When its Convex client later
+  needs a JWT, the refresh chain hits the gone session and the host gets "Unauthorized". Since the
+  host's re-mint change (2026-09-02), it mints a new session for the SAME frame and answers that
+  refresh with `bonobo:token`: the iframe `src` and its `nonce` do not change, the composer draft
+  survives, and exactly one new `plugins_ui_sessions` doc appears. To watch this, poll the table for
+  the new doc and read the iframe `src` fragment; a `nonce` change now means a remount, which is a
+  regression. Use the offline recipe below.
+
+Offline session re-mint recipe (Windows, updated 2026-09-02):
+
+1. Use a dedicated Playwriter session and install any plugin-bundle swap route before opening the
+   plugin page. Confirm the served bundle has the current SDK and read a bundle-only marker from the
+   frame. Keep one app tab as the owned primary page.
+2. Temporarily set `SESSION_JWT_LIFETIME_MS` in `plugins_ui.ts` to 90 seconds, push with
+   `vp env exec pnpm --dir packages/app exec convex dev --once`, and require `Convex functions
+   ready`. Restore 10 minutes and push again as soon as the run ends.
+3. Navigate to the plugin page, record T0 after the host document loads, wait 10 seconds, and record
+   the frame nonce, one unsent draft, and the one `plugins_ui_sessions` doc S1. A stale doc makes the
+   result ambiguous; navigate away and revoke it before restarting.
+4. Find the renderer process ids for THIS load. Snapshot `Get-Process msedge` CPU time, run a
+   three-second busy loop in the host, and take the largest delta. Repeat for the last
+   `/plugins-ui/` frame. Reloading invalidates the ids. If both probes name one pid, repeat the
+   attribution; suspend each distinct proven pid once, never the same pid twice.
+5. Before T0 +45 seconds, call `context.setOffline(true)`, prove both documents report offline, then
+   suspend the proven renderer ids with `suspend-process.ps1`. Revoke S1 through
+   `plugins_ui:revoke_ui_session` and require the session-table readback to be empty.
+6. Wait until at least T0 +100 seconds. Start `context.setOffline(false)` before resume. On this
+   relay it can wait for the suspended OOPIF; leave that Playwriter command pending, resume each
+   distinct renderer once, then require the online command to finish. Wait 15 seconds.
+7. Require the same nonce, the exact draft, the bundle marker, no host alert, and exactly one new
+   session doc S2 for the same user. Open one owned second page with its own swap route, send a
+   unique Chitchat message, and require the first frame to receive it. This proves the old live
+   subscriptions were not replaced with a dead document.
+8. Navigate owned pages away before cleanup, revoke every remaining test doc, require the table to
+   be empty, delete the Playwriter session, and stop any scratch static server.
+
+The SDK's one-second wake poll is part of this proof. A wall-clock gap of 30 seconds calls
+`ConvexClient.setAuth` again before the old socket can reconnect. Without it, the host can create S2
+but the old identity can still deliver a permanent null first and kill the page.
+
 - The composer swallows Enter while a send is in flight and keeps the unsent text in place. For
   scripted sends, wait for the composer to empty between messages; a single composer maxes out
   around 3 sends per 10 seconds, below the write bucket's refill, so UI-driven sending cannot trip
