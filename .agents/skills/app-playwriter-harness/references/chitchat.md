@@ -11,6 +11,11 @@ same day against the working-tree 0.2.0 build, with two signed-in identities. Th
 sections were verified 2026-08-24 against the working-tree 0.3.0 build, with the owner and viewer
 `+clerk_test` accounts in two scratch Chromes.
 
+**0.7.0 (2026-09-02) rewrote the data seam.** The plugin now calls the Convex doors directly with
+`convex/react` hooks, because SDK 0.13.0 deleted the `client.data` / `client.members` /
+`client.scopes` wrappers. Sections marked below as 0.5.x history no longer reproduce; the sections
+on selectors, rows, threads, theme and transcripts still do.
+
 ## Route and frame
 
 - The page is `/w/:organizationName/:workspaceName/plugins/chitchat/pages/chat`.
@@ -45,12 +50,12 @@ Everything below lives inside the frame.
 | Thread summary | `.message-thread-summary` — body content on a root with replies, so it needs no hover |
 | Thread panel | `section.thread` (NOT `.thread-panel`) |
 | Resize handle | `[role=separator][aria-label="Resize thread panel"]` |
-| Window grow control | `getByRole("button", { name: "Load older", exact: true })` |
-| HTTP deep-history control | `getByRole("button", { name: "Load older messages", exact: true })` |
+| Load older control | `getByRole("button", { name: "Load older", exact: true })`, inside `.log-older` |
 
-**Use `exact: true` on both "Load older" buttons.** Without it, `name: "Load older"` also matches
-"Load older messages", so a growth loop silently starts paging history over HTTP and the run reads
-as a window that grew further than it can.
+**There is only one "Load older" button since 0.7.0.** The separate "Load older messages" HTTP
+control is gone with the deep-history door, so an older recipe that presses two different buttons
+now presses one and reads the second press as a hang. The remaining button is the paginated
+timeline's `loadMore` (see "Loading older messages" below).
 
 **The channel row's accessible name changes with its unread state (0.3.0).** The name is the rail
 initial plus the channel name plus a suffix: `D#design-reviewunread` when unread, or
@@ -192,25 +197,48 @@ history" is about fast unverified sends, not about the composer.
 7. **Read the rail state back** instead of eyeballing the shot: `.channel-link.is-unread`,
    `.unread-dot`, `.mention-badge`, and `aria-current="page"` on the selected row.
 
-## Reaching the deep-history control
+## Loading older messages (0.7.0 paginated timeline)
 
-The control only appears once the messages window reports `atCapacity`, which is 6 intervals of 100
-— 600 real messages. Serve the bundle with `state.patchVariant = "smallwindow"`
-(`runners/swap-plugin-bundle-v3.js`): it drops the window page size to 2 and the HTTP page size to
-3, so a small channel reaches the same state and one press is observable.
+Since Chitchat 0.7.0 the timeline is one Convex hook and nothing else:
+`usePaginatedQuery(client.api.plugins_data.watch_documents_page, { collection: "messages", keyPrefix
+}, { initialNumItems: 100 })` (`channel-view.tsx:2210`). There is no window manager, no capacity
+state and no HTTP door. The old `smallwindow` bundle swaps existed to reach the capacity state, so
+they no longer apply to this section — a channel with more than 100 messages is all you need.
 
-Then the sequence is: open the channel, press "Load older" until it disappears, and read
-`.log-older`. At capacity it holds a `role="status"` line ("The live view stopped growing. Older
-messages load on request.") and the "Load older messages" button. One press merges the next HTTP
-page and, when the server reports `isDone`, replaces both with "You have reached the start of
-#<channel>."
+`.log-older` holds the single "Load older" button while `timeline.status` is `CanLoadMore` or
+`LoadingMore` (disabled while loading, so focus stays on it), and the whole `.log-older` block
+leaves the DOM at `Exhausted` (`channel-view.tsx:2955`). So the pass condition for "all history is
+loaded" is the **button being gone**, not a sentence — 0.7.0 prints no "you have reached the start"
+line at all.
 
-**Seed about 28 messages, not 13.** With the small window the channel opens on 2 rows and reaches
-capacity at 12, after exactly 5 presses of "Load older". Everything below row 12 is what the HTTP
-door then walks. A 14-message channel leaves only 2 there, so the very first press comes back
-`isDone: true` and never exercises the full-page branch — the one that answers a **non-null cursor**
-beside a key range. Measured 2026-08-24: 28 messages gave five full pages of 3 with `isDone: false`
-and a non-null cursor, then a final page of 1 with `isDone: true` and `cursor: null`.
+**The load must not touch `/api/v1/plugin-data/list`.** That is the whole point of the door, and it
+is cheap to prove from inside the frame:
+
+```js
+performance.getEntriesByType("resource").filter((e) => e.name.includes("/api/v1/plugin-data/list")).length
+```
+
+Measured 2026-09-02 on published Chitchat 0.7.0 (`personal` / `home`, channel `#deephist`, 103
+messages): before the press 100 `li.message` rows and an enabled button, after it 103 rows and no
+button, with the count staying at 4 across the press. It is 4 and not 0 because Chitchat's HTTP
+**companion** lists (reactions, replies) still use that route; watch the count not change, do not
+expect a zero.
+
+**Read the live subscriptions from `client.convex.sync.state.querySet`.** It is a Map whose values
+carry `canonicalizedUdfPath` and `args`. Two traps: `args` is the **args object**, not a positional
+array, so `q.args[0].paginationOpts` answers `undefined` for every field and the probe reports rows
+that look empty rather than failing; and the path key is `canonicalizedUdfPath`, not `udfPath`.
+Same run, after the press: 12 subscriptions in total —
+`watch_documents` ×4, `watch_changes` ×3, `watch_documents_page` ×3, `watch_recent`, `watch_my_scopes`
+— with all three paginated ones on the same collection and `keyPrefix`, `numItems: 100`, one at
+`cursor: null` and two at stored cursors. **Do not assert one subscription per press.** Convex's own
+`usePaginatedQuery` splits a loaded page in two when the server flags `SplitRecommended` or
+`SplitRequired` (`convex/dist/esm/react/use_paginated_query.js:160`), and the door pins
+`maximumRowsRead: 100` beside a 100-row request, so the first page reaches that cap by design.
+
+The runner that does all of this in one call is
+`t3-chat-+personal/+ai/plugin-infra-primitives-2026-09-02/load-older.js` (row counts, button state,
+resource count) with `query-set.js` beside it for the subscription read.
 
 **0.5.1 swap runner.** After Chitchat 0.5.1 is published, the asset prefix is
 `/plugins-ui/hn7j9kpdh4h76he1njpf33dny18d4q1v/`. The working-tree swap for that version lives at
@@ -267,6 +295,12 @@ A row loaded through "Load older messages" is outside the live window. 0.5.1 app
 (edit, delete, thread reply, reaction add/remove). Say in the report that the cap was patched
 when you used `smallwindow`.
 
+**This whole section describes 0.5.x and no longer reproduces.** Since 0.7.0 every loaded page is a
+live Convex subscription, so there are no frozen rows to thaw: an edit to a row loaded by "Load
+older" arrives through the timeline itself. The change feed is still there
+(`useQuery(client.api.plugins_data.watch_changes, …)`), but it can no longer be proven by freezing a
+row. Keep the section for reading old reports, not for planning new ones.
+
 Live proof, two tabs, **same user**, no `bringToFront`:
 
 1. Tab A: `page.route` with `smallwindow` **before** opening the plugin page, then seed ~28
@@ -313,13 +347,21 @@ Take it off again — or reload the frame — before running any other network p
 
 ## Proving the browser runs your Convex tree
 
-Chitchat's deep-history door is the cheapest end-to-end probe of `plugins_data_http.ts`. Comment out
-`keyStartExclusive` in `list_body_validator`, push with
-`vp env exec pnpm --dir packages/app exec convex dev --once`, and press the control: the row grows a
-`role="alert"` line reading `/api/v1/plugin-data/list responded 400: {"message":"Request body
-validation failed"}` and no rows merge. Restore, push again, press again, and the page merges. Done
-on 2026-08-24; it takes about two minutes and it is the only thing that proves a green run was not
-green against a stale deployment.
+Chitchat's timeline is the cheapest end-to-end probe of `plugins_data.ts`, and it takes about a
+minute. Put a temporary `return emptyPage;` at the top of the `watch_documents_page` handler
+(`packages/app/convex/plugins_data.ts`), let the running `convex dev` watcher push it (about 20 s;
+with no watcher, `vp env exec pnpm --dir packages/app exec convex dev --once`), then reload the page
+and open a channel that has messages.
+
+Done 2026-09-02 on published Chitchat 0.7.0, `#deephist` in `personal` / `home`: with the break in,
+the channel answered 0 `li.message` rows, one `.channel-status` reading "No messages yet" and no
+"Load older" button; after restoring and pushing again it answered 100 rows and the button was back.
+**The sidebar kept all 15 channels through the broken pass**, because the channel list reads
+`watch_documents`, a different door — that is what makes this probe isolate the paginated door
+instead of just proving the frame loaded.
+
+Read `git status --short` after restoring. A break-on-purpose that stays in the tree is worse than
+no proof at all.
 
 ## The bundle swap captures `dist/` once, so a rebuild needs the runner re-run
 
@@ -360,6 +402,13 @@ The harness screen needs the frame handed to it — `auditAccessibility({ frame,
 Without `frame` it reads the host page and reports a clean route it never looked at. A clean screen of
 the frame on 2026-08-24 was 10 controls, none unlabeled, none undersized, and four blocked hit targets
 that are the hover-revealed message actions at rest.
+
+A bigger clean screen, 2026-09-02 on published 0.7.0 with a 103-message channel open: 445 controls,
+`unlabeled: 0`, `smallTargets: 0`, `negativeTabIndex: 0`, and 183 blocked hit targets. Every blocked
+one was a `ChannelRowMenu-trigger` or a `button message-action`, covered by the row's own
+`channel-link`, `message-text` or composer — the hover-revealed clusters at rest, which is the
+designed state (see the row-actions section below). The count scales with the number of rows on
+screen, so compare the **classes** in `blockedHitTargets`, never the count.
 
 ## Row actions hide with opacity, and only hover or real keyboard focus reveals them
 
@@ -435,11 +484,12 @@ all four collections. Two things follow for QA:
 
 - **A member who is not in the scope sees nothing at all** — no row, no name, no placeholder.
   "Nothing rendered" is the pass condition, so assert on the absence of the name in `.channel-name`,
-  and back it with `scopes.watchMine` answering `[]` and a ranged read of the prefix dying denied. A
+  and back it with `watch_my_scopes` answering `[]` and a ranged read of the prefix dying denied. A
   screenshot alone cannot tell "correctly hidden" from "broken sidebar". The cheapest live tell is
   `document.body.innerText` inside the frame: the insider's text includes the channel name, the
   outsider's does not (verified 2026-08-25 on published 0.5.1 in `qa-browser` / `home`, channel
-  `#secretfeed`).
+  `#secretfeed`; re-verified 2026-09-02 on published 0.7.0 in the same workspace, insider sidebar
+  `#secretfeed (private)` present, outsider sidebar three public rows and neither private name).
 - **The organization owner reads every scope**, so an owner-only run proves nothing about a refusal.
   Use a second identity — `second-user-fixtures.md` and `clerk-test-accounts.md` — in an isolated
   scratch browser, never in the signed-in profile the user works in. Two anonymous members in
@@ -447,27 +497,31 @@ all four collections. Two things follow for QA:
   ticked, then open Chitchat as the other. If `create_organization` answers `Organization quota
   reached`, invite into `qa-browser` instead of making a new org.
 
-With the swap runner's `expose-client` variant, `window.__ccClient` is the live SDK client, which is
-the only practical way to drive scope membership from the browser:
+Driving scope membership from the browser means calling the doors yourself. Since SDK 0.13.0 the
+`client.scopes` wrapper is gone and `window.__ccClient` with it; reach the live client through the
+React fiber walk in `plugin-marketplace.md` ("Calling the plugin doors from inside a frame"), then:
 
 ```js
 await frame.evaluate(async ({ key, userId }) => {
-	const write = await window.__ccClient.scopes.setPrincipal({ scopeId: key, userId, level: "member" });
-	if ("_nay" in write) throw new Error(write._nay.message);
-	const read = await window.__ccClient.scopes.listPrincipals({ scopeId: key });
-	if ("_nay" in read) throw new Error(read._nay.message);
-	return read._yay;
+	const client = /* fiber walk, see plugin-marketplace.md */;
+	const write = await client.convex.mutation(client.api.plugins_data.user_manage_scope, {
+		action: { kind: "set_principal", scopeId: key, userId, level: "member" },
+	});
+	if (write._nay) throw new Error(write._nay.message);
+	// Raw `principals | null`, not a Result — an exact `null` is "unreadable or absent".
+	return await client.convex.query(client.api.plugins_data.watch_scope_principals, { scopeId: key });
 }, { key: privateChannelKey, userId: otherUserId });
 ```
 
-An exact `null` result means the scope is absent or no longer readable. A `_nay unavailable` result
-means the read failed, so retry it instead of treating the member as removed.
+An exact `null` result means the scope is absent or no longer readable. A **rejected promise** is a
+transport failure, not a refusal, so retry it instead of treating the member as removed — 0.13.0
+removed the `unavailable` `_nay` name that used to say this.
 
 Adding and removing a principal must change the other browser's sidebar **live**, with no reload —
-that is what the `scopes.watchMine` subscription is for, so read the other session's sidebar without
+that is what the `watch_my_scopes` subscription is for, so read the other session's sidebar without
 navigating it.
 
-Cleaning up afterwards: delete the scope first (`scopes.delete`), which takes its grants with it, then
+Cleaning up afterwards: delete the scope first (`{ kind: "delete", scopeId }`), which takes its grants with it, then
 remove the channel documents. The private channel's own document stays behind on purpose — a deleted
 scope leaves its documents in place so nobody can claim that key range again — and the uninstall drain
 is what removes it.
@@ -496,8 +550,9 @@ persistence check:
 - **Channel keys are UUIDs.** `chat_channel_key` is a client UUID, so a hand-built append with a
   name-shaped prefix (`"random:"`) succeeds at the store and lands in NO channel — the fold maps
   messages to channels by key prefix, so the doc is invisible everywhere except the raw feed. Read the
-  real key first (a message row's `data-key` up to the second-to-last `:`-part, or `scopes.watchMine`
-  for private ones), and `data.remove` any stray doc you created.
+  real key first (a message row's `data-key` up to the second-to-last `:`-part, or the
+  `watch_my_scopes` door for private ones), and remove any stray doc you created with
+  `client.convex.mutation(client.api.plugins_data.user_remove_document, { collection, key })`.
 - **The @-menu**: since the 0.3.0 publish (2026-08-24) the installable version declares
   `workspace.members.read`, so a fresh install answers the roster and the menu is drivable live.
   Type `@` in the composer (`pressSequentially`, the menu opens on the query change), read
@@ -509,10 +564,11 @@ persistence check:
   value's `mentions` array carries the member's users id, not the name. An installed version that
   predates the capability still answers `not_consented` and degrades the composer to plain text by
   design — capabilities come from the installation record, so a bundle swap cannot change them. On
-  such an install, drive the mention path with `window.__ccClient.data.append({ collection:
-  "messages", keyPrefix: "<channelKey>:", value: { text, attachments: [], editedAt: null, deletedAt:
-  null, mentions: [<userId>] }, clientRequestId: crypto.randomUUID() })` — the same write the
-  composer makes — and leave the menu to the unit tests.
+  such an install, drive the mention path with
+  `client.convex.mutation(client.api.plugins_data.user_append_document, { collection: "messages",
+  keyPrefix: "<channelKey>:", value: { text, attachments: [], editedAt: null, deletedAt: null,
+  mentions: [<userId>] }, clientRequestId: crypto.randomUUID() })` — the same write the composer
+  makes — and leave the menu to the unit tests.
 - **The swap runner's `versionId` is a hardcoded constant.** `swap-plugin-bundle-v3.js` routes on the
   asset prefix of one published version, and the installed version moved when 0.3.0 was published
   (`hn7x5j1hg4e630j7t4mkcr3h118d3632`). 0.5.1 is `hn7j9kpdh4h76he1njpf33dny18d4q1v` (see the 051

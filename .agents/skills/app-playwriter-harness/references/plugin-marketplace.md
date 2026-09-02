@@ -348,7 +348,7 @@ all asynchronous. Then read `plugins_event_runs` to see whether the run happened
 
 `raythurnvoid/bonobo-plugin-data-probe` is the fixture plugin for plugin-data QA — its backend writes one
 document per upload and its page lists them. Its page still runs a hand-vendored pre-0.8.0 bridge
-(`fetchJson` reads, no `client.data.*`), and it works on the direct-Convex host — verified 2026-08-18
+(`fetchJson` reads, none of the SDK data wrappers that 0.13.0 later deleted), and it works on the direct-Convex host — verified 2026-08-18
 on 0.1.0 (`/w/personal/home/plugins/data-probe/pages/data-probe` renders "Recorded uploads (N)"). Do
 not chase a "data-probe page hangs" report without re-checking it live.
 
@@ -709,7 +709,9 @@ Windows and CAS (verified 2026-08-17, two-user E2E on 0.1.3):
   the newest 100 rows with a `Load older` button; each click adds up to 100 older rows (`fetchJson`
   is not involved — the HTTP paging path is gone), and the button disappears at full history. A
   remote arrival appends without collapsing loaded history. Since 0.1.4 the windows run inside the
-  page on the SDK's own ConvexClient — there is no data bridge to observe (see below).
+  page on the SDK's own Convex client — there is no data bridge to observe (see below). Since
+  Chitchat 0.7.0 the page reads `watch_documents_page` through `usePaginatedQuery`, so the `Load
+  older` button is that hook's `loadMore` (see `chitchat.md`).
 - Channel rename/archive are hover-revealed row actions: `li.channel-item` holds
   `aria-label="Rename #<name>"` / `"Archive #<name>"` buttons. Rename is compare-and-set: save from
   a dialog opened before someone else's rename keeps the dialog open with a `role="alert"` reading
@@ -808,7 +810,8 @@ Offline session re-mint recipe (Windows, updated 2026-09-02):
    be empty, delete the Playwriter session, and stop any scratch static server.
 
 The SDK's one-second wake poll is part of this proof. A wall-clock gap of 30 seconds calls
-`ConvexClient.setAuth` again before the old socket can reconnect. Without it, the host can create S2
+`setAuth` on the SDK's Convex client again (a `ConvexReactClient` since SDK 0.13.0) before the old
+socket can reconnect. Without it, the host can create S2
 but the old identity can still deliver a permanent null first and kill the page.
 
 Plugin-session JWT startup check (added 2026-09-02 with SDK 0.11.0). A frame on the current host
@@ -911,12 +914,23 @@ count drops to 103. Remove the override and toggle again to get 104 back. Chitch
 
 ## Calling the plugin doors from inside a frame
 
-Since SDK 0.12.0 the SDK client carries `convex` (the frame's own authenticated `ConvexClient`) and
-`api` (references to the plugin doors). A plugin never puts that client on `window`, so reach it
+Since SDK 0.12.0 the SDK client carries `convex` (the frame's own authenticated Convex client) and
+`api` (references to the plugin doors). Since SDK 0.13.0 that client is a **`ConvexReactClient`**,
+because the plugin's own tree runs `convex/react` hooks on it, and the client also carries
+`session` (`expiresAt()` and `fetchJwt`). A plugin never puts the client on `window`, so reach it
 through the plugin's React root: Chitchat renders `<App client={client} />`, and the `client` prop
 sits on the first fiber below the container. Verified 2026-09-02 on Chitchat 0.6.4 (dev host); the
 same walk on 0.6.3 found the client with `convex` and `api` both `undefined`, which is the negative
 control for "this frame really runs the 0.12.0 SDK".
+
+Re-verified 2026-09-02 on Chitchat 0.7.0 / SDK 0.13.0 (dev host, QA workspace). `Object.keys(client)`
+answered `api, apiOrigin, backend, context, convex, fetchJson, getToken, refreshToken, session,
+theme` — so the fastest live check for a 0.13.0 frame is that `data`, `members` and `scopes` are all
+**absent**. In the same call `client.session.expiresAt()` sat 27 minutes ahead of `Date.now()`,
+`client.convex.query(client.api.plugins_data.list_members, { limit: 5 })` answered the one QA member,
+and `client.convex.query(client.api.plugins_data.watch_documents_page, { collection: "channels",
+paginationOpts: { numItems: 3, cursor: null } })` answered 3 documents with `isDone: false`. The
+runner is `t3-chat-+personal/+ai/plugin-infra-primitives-2026-09-02/probe-frame.js`.
 
 ```js
 const frame = state.page.frames().filter((f) => f.url().includes("/plugins-ui/")).at(-1);
@@ -950,6 +964,36 @@ const out = await frame.evaluate(async () => {
   Read `ai_chat_threads` back after the mutation attempt (0 rows with the probe title).
 - Gallery is Preact, not React: the `__reactContainer$` key does not exist there. Judge its frame by
   the `.gallery-grid` render instead (`plugin-gallery.md`).
+
+## Proving a page really pages over Convex, not over HTTP
+
+A plugin that grows a history with `usePaginatedQuery` must load the next page over the Convex
+websocket. The claim to check is that pressing the page's "load more" control sends **no** request to
+`/api/v1/plugin-data/list`. `page.route` never sees a plugin frame's subresource requests, so read
+the frame's own resource timeline instead:
+
+```js
+await frame.evaluate(() =>
+	performance.getEntriesByType("resource").filter((e) => e.name.includes("/api/v1/plugin-data/list")).length,
+);
+```
+
+Take the count before and after the press. **Watch it not change; do not expect zero** — a page can
+use that route for other reads at the same time (Chitchat's reaction and reply companion lists do).
+
+The live subscriptions are readable too, on `client.convex.sync.state.querySet` (a Map). Each value
+carries `canonicalizedUdfPath` (not `udfPath`) and `args`, and `args` is the **args object**, not a
+positional array — indexing `args[0]` answers `undefined` for every field, so the probe reports rows
+that look empty instead of failing, and the run reads as "the door was never called". Do not turn a
+subscription count into a press count: Convex splits a loaded page in two when the server flags
+`SplitRecommended` or `SplitRequired` (`convex/dist/esm/react/use_paginated_query.js:160`), which the
+`watch_documents_page` door invites by pinning `maximumRowsRead: 100`.
+
+Measured 2026-09-02 on Chitchat 0.7.0, a 103-message channel: one press moved the list from 100 to
+103 rows, removed the "Load older" button, left the `/plugin-data/list` count at 4, and left three
+live `plugins_data:watch_documents_page` subscriptions on the same collection and `keyPrefix`
+(`numItems: 100`, one at `cursor: null`, two at stored cursors). Runners: `load-older.js` and
+`query-set.js` in `t3-chat-+personal/+ai/plugin-infra-primitives-2026-09-02/`.
 
 ## Reading a table count without fooling yourself
 
