@@ -981,6 +981,8 @@ await frame.evaluate(() =>
 Take the count before and after the press. **Watch it not change; do not expect zero** — a page can
 use that route for other reads at the same time (Chitchat's reaction and reply companion lists do).
 
+Published versions as of 2026-09-02 (SDK 0.13.1 round): Chitchat `0.7.1` / `hn7t5780nb6dyjpdmhhjvktqf18dn0w8`, Gallery `0.1.17` / `hn7hkf4qebbqy9beawgpw3t8en8dmzrs`, Video Player `0.1.6` / `hn7j3axtf1ej0pbf0svdf30csh8dm06x`, Council `0.2.8` / `hn7h3m0cd1j07cbnqaj836906h8dnd0p`. The version id is the fastest check that a frame runs the release you think it does: it is the `/plugins-ui/<versionId>/` segment of the frame URL.
+
 The live subscriptions are readable too, on `client.convex.sync.state.querySet` (a Map). Each value
 carries `canonicalizedUdfPath` (not `udfPath`) and `args`, and `args` is the **args object**, not a
 positional array — indexing `args[0]` answers `undefined` for every field, so the probe reports rows

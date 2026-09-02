@@ -6269,6 +6269,34 @@ describe("watch_documents_page", () => {
 		expect(second.isDone).toBe(true);
 	});
 
+	test("drops a caller's byte limit instead of letting it shrink the page", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const keys = ["a:1", "a:2", "a:3"];
+		for (const key of keys) {
+			const written = await t.mutation(internal.plugins_data.write_document, {
+				principal: store_principal(fixture),
+				collection: "messages",
+				key,
+				value: { key },
+			});
+			expect(written._nay).toBeUndefined();
+		}
+
+		// The door names every option it passes to `.paginate`, so a caller's `maximumBytesRead`
+		// never reaches the query. A tiny value would otherwise cut the page down to one document.
+		// The real reason for naming them is one the emulator cannot show: on the server
+		// `maximumBytesRead: 0` throws `InvalidPaginationLimit` before the handler runs. This door
+		// must never throw at a frame, and now it cannot, because the option never reaches the
+		// query. Proven in the browser on 2026-09-02: the same call threw before this change.
+		const page = await fixture.asPage.query(api.plugins_data.watch_documents_page, {
+			collection: "messages",
+			paginationOpts: { numItems: 100, cursor: null, maximumBytesRead: 1 },
+		});
+		expect(page.page.map((doc) => doc.key)).toEqual(keys);
+		expect(page.isDone).toBe(true);
+	});
+
 	test("refuses a page size outside 1..100 with an empty final page", async () => {
 		const t = test_convex();
 		const fixture = await seed_user_write_door(t);

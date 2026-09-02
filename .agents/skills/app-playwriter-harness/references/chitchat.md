@@ -236,6 +236,8 @@ Same run, after the press: 12 subscriptions in total —
 `SplitRequired` (`convex/dist/esm/react/use_paginated_query.js:160`), and the door pins
 `maximumRowsRead: 100` beside a 100-row request, so the first page reaches that cap by design.
 
+**A loaded page subscribes with `endCursor`, and that run has no row bound at all.** Measured 2026-09-02 on published 0.7.1 in `#deephist`: before the press the two paginated subscriptions both carried `endCursor`, and after it the three were one at `cursor: null` with `endCursor` set, one at a stored cursor with `endCursor` set, and one at a stored cursor with no `endCursor` (the newest page, still growing). Those end cursors come from the split, not from the press: `splitQuery` is the only place `usePaginatedQuery` sets `endCursor`, so a page carries one only after the hook split it, and then keeps it. That is why two of the three carry it before any press. On a run that carries an end cursor Convex ignores `numItems`, reads to that cursor, and also stops enforcing `maximumRowsRead`, because the whole interval has to come back for the answer to be correct. So such a page can hold more than 100 documents, and it can never come back `SplitRequired` from the row cap. What survives there is the soft limit of 75 rows, which flags `SplitRecommended`. Do not expect a `SplitRequired` from this door in the browser.
+
 The runner that does all of this in one call is
 `t3-chat-+personal/+ai/plugin-infra-primitives-2026-09-02/load-older.js` (row counts, button state,
 resource count) with `query-set.js` beside it for the subscription read.
