@@ -809,6 +809,51 @@ Deeper driving anchors (verified 2026-08-17, two-user E2E on 0.1.0):
   dead state (since 0.1.4 a watch dying to null on the page's own Convex client) never renders for
   org-membership revocation. Use the session revocation break-test above for a narrower kill.
 
+## Reading the host theme inside any plugin frame
+
+Since SDK 0.10.0 the host sends the frame the app's nine numbered colour scales (104 custom
+properties, `--color-base-1-01` … `--color-red-12`) plus `mode`, and the SDK writes them onto the
+frame's `document.documentElement.style` and toggles a root `light` / `dark` class. This holds for a
+plugin page and for a file view alike, and for plugins that never read the theme themselves (Gallery,
+Video Player, Council). Verified 2026-09-02 on the dev host in all four frames (Gallery page, Council
+page, Video Player file view, Chitchat page).
+
+Read it with a real `Frame` handle (never `snapshot()`, see `known-hazards.md`), and compare against
+the host's computed value in the same call:
+
+```js
+const frame = state.page.frames().filter((f) => f.url().includes("/plugins-ui/")).at(-1);
+const inFrame = await frame.evaluate(() => {
+	const r = document.documentElement;
+	return {
+		cls: r.className, // "dark" or "light" — from the surface lightness, NOT the host class
+		scales: [...r.style].filter((n) => n.startsWith("--color-")).length, // 104
+		base: r.style.getPropertyValue("--color-base-1-01"),
+	};
+});
+const hostBase = await state.page.evaluate(() =>
+	getComputedStyle(document.documentElement).getPropertyValue("--color-base-1-01").trim(),
+);
+// pass: inFrame.scales === 104 && inFrame.base === hostBase
+```
+
+Three things that look wrong and are not:
+
+- The host root says `light` while every frame says `dark`. The app's palette does not swap with the
+  theme yet, so `mode` is read from the lightness of `--color-base-1-01`; a member on "light" still
+  paints dark surfaces and the frame follows the paint.
+- A frame that has been open for a while can read `scales: 104` from a theme message that arrived
+  after init. The count is the same either way; read `base` to know which theme is applied.
+- The host's frame observer watches the root `class` attribute only. Changing a scale value on the host
+  root sends nothing until the class also changes. To push a change live, set the property, then
+  toggle `light` and `dark` on the root; the frame receives one `bonobo:theme` and the SDK repaints.
+
+Break-on-purpose: set `--color-green-12` to `initial` on the host root (its computed value becomes
+empty) and toggle the class. The SDK writes the empty string, which removes the property, so the frame
+count drops to 103. Remove the override and toggle again to get 104 back. Chitchat's own readback is
+`getComputedStyle(frame.document.documentElement).getPropertyValue("--cc-surface")`, which must equal
+`hostBase` — the recipe with the light-surface fixture lives in `chitchat.md`.
+
 ## Reading a table count without fooling yourself
 
 `convex data <table>` prints "There are no documents in this table" for a table that does not exist, so
