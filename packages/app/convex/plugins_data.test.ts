@@ -6252,16 +6252,17 @@ describe("watch_documents_page", () => {
 		// The first page holds the first 100 keys and says more follow. The caller asked for a
 		// bigger `maximumRowsRead`; the door's own value comes after the spread, so the page is
 		// still 100 rows.
-		//
-		// Do not assert `pageStatus` here. `convex-test` and the real server disagree on it: the
-		// emulator checks the row cap after each row and reports `SplitRequired`, while the real
-		// server stops the loop as soon as the page is full, never reads the extra row, and reports
-		// `SplitRecommended`. The two are not interchangeable — `usePaginatedQuery` throws away a
-		// `SplitRequired` page and keeps a `SplitRecommended` one — so an assertion here would pin
-		// emulator behaviour the browser never shows.
 		const first = await read(null);
 		expect(first.page.map((doc) => doc.key)).toEqual(keys.slice(0, 100));
 		expect(first.isDone).toBe(false);
+
+		// A full page must ask the hook to split, so accept either split status. `convex-test` and
+		// the real server disagree on which one: the emulator checks the row cap after each row and
+		// reports `SplitRequired`, while the real server stops the loop as soon as the page is full,
+		// never reads the extra row, and reports `SplitRecommended`. Pinning one exact value would
+		// pin emulator behaviour the browser never shows. What both values prove is that the door's
+		// own `maximumRowsRead` reached the query: without it there is no split status at all.
+		expect(["SplitRecommended", "SplitRequired"]).toContain(first.pageStatus);
 
 		const second = await read(first.continueCursor);
 		expect(second.page.map((doc) => doc.key)).toEqual(keys.slice(100));

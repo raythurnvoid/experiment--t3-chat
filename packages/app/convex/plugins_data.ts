@@ -5282,8 +5282,10 @@ export const watch_documents = query({
  * gave it, so the door does not need to say which one it was.
  *
  * A page holds at most 100 documents, because a `numItems` outside 1..100 is refused like any other
- * bad input. That is the whole bound: a frame cannot ask for a bigger page than the other reads
- * allow. Do not read `maximumRowsRead` below as a second cap — see the comment at the query.
+ * bad input. That is the whole bound on a normal page run: a frame cannot ask for a bigger page than
+ * the other reads allow. Do not read `maximumRowsRead` below as a second page-size cap on that run.
+ * It is a split hint there, and it becomes the only bound on an end-cursor re-run. See the comment
+ * at the query.
  */
 export const watch_documents_page = query({
 	args: {
@@ -5366,14 +5368,24 @@ export const watch_documents_page = query({
 
 		// Never read the usage doc here, for the reason given in `watch_documents`.
 		//
-		// `maximumRowsRead` is a split hint, not a cap. The page is already bounded by `numItems`,
-		// which is at most 100, and Convex stops the scan as soon as the page is full, so this
-		// number never stops anything. What it does is set the soft limit to 75 rows (three
-		// quarters of it), so a full page comes back `SplitRecommended` and `usePaginatedQuery`
+		// `maximumRowsRead` does two different jobs, one per kind of run.
+		//
+		// On a normal page run it is a split hint, not a cap. The page is already bounded by
+		// `numItems`, which is at most 100, and Convex stops the scan as soon as the page is full,
+		// so this value does not cut the page. What it does is set the soft limit to 75 rows (three
+		// quarters of it), so a full page comes back `SplitRecommended`. `usePaginatedQuery` then
 		// splits it into two narrower live subscriptions. Narrower ranges re-run less work when a
-		// document in them changes, which is what we want for a long chat timeline. It stays after
-		// the spread so a caller cannot change it. The caller's `cursor` and `endCursor` do pass
-		// through, because the hook needs them to keep its pages stable across re-runs.
+		// document in them changes, which is what we want for a long chat timeline.
+		//
+		// On an end-cursor re-run it is the only bound. That run happens when the hook refetches a
+		// page it already holds, so it sends both `cursor` and `endCursor`. Convex then reads until
+		// the end cursor and ignores `numItems`. If more than 100 rows now sit between the two
+		// cursors, this value is what makes the door answer `SplitRequired`, and the hook splits
+		// that page instead of showing a stale one.
+		//
+		// It stays after the spread so a caller cannot change it. The caller's `cursor` and
+		// `endCursor` do pass through, because the hook needs them to keep its pages stable across
+		// re-runs.
 		const result = await ctx.db
 			.query("plugins_data")
 			.withIndex("by_installation_collection_scope_key", (q) => {
