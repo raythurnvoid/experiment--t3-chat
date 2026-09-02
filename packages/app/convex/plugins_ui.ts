@@ -10,10 +10,12 @@
  *   to the iframe over postMessage only — tokens never appear in URLs. The public API resolves
  *   it as a `plugin_ui` principal; its scopes depend on the `workspace.files.read` capability
  *   the workspace consented to (see resolve_principal in public_api.ts).
- * - The iframe's own ConvexClient authenticates with a plugin-session JWT from the
- *   `POST /plugins-ui/session-jwt` exchange below (subject = session id). Member functions refuse
- *   that identity (see server-utils.ts); only the plugin-facing doors resolve it, and they load the
- *   session doc on every call, so revocation and expiry still win over a signed-valid JWT.
+ * - The iframe's own ConvexClient authenticates with a plugin-session JWT (subject = session id).
+ *   The mint and refresh actions below deliver it beside the `plu_` token, and the
+ *   `POST /plugins-ui/session-jwt` exchange signs the same JWT for a frame whose host sent none.
+ *   Member functions refuse that identity (see server-utils.ts); only the plugin-facing doors
+ *   resolve it, and they load the session doc on every call, so revocation and expiry still win
+ *   over a signed-valid JWT.
  * - Secret values never reach plugin frontends: `plugin_ui` principals never get `secrets:read`
  *   or `outbound:fetch`, no matter what the installation accepted. Only the plugin backend can
  *   read secrets (plr_ runs via the runner host routes).
@@ -24,8 +26,17 @@
  *   no tenant data and are already public: anyone can browse them as source in GLOBAL/PLUGINS.
  */
 import { ConvexError, v } from "convex/values";
+import type { RegisteredMutation } from "convex/server";
 import { SignJWT } from "jose";
-import { internalMutation, internalQuery, mutation, query, type ActionCtx, type QueryCtx } from "./_generated/server.js";
+import {
+	action,
+	internalMutation,
+	internalQuery,
+	mutation,
+	query,
+	type ActionCtx,
+	type QueryCtx,
+} from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { Result } from "common/errors-as-values-utils.ts";
@@ -61,10 +72,23 @@ async function db_plugin_workspace_is_live(
 	);
 }
 
-// Plugin-session JWTs (minted by the /plugins-ui/session-jwt exchange below) stay much shorter
-// than the session. The plugin-facing doors load the session doc on every call, so the JWT lifetime only
-// bounds how long Convex keeps trusting an identity after the frame's refresh path breaks.
-const SESSION_JWT_LIFETIME_MS = 10 * 60 * 1000;
+/**
+ * Sign the plugin-session JWT for one session. The frame's own ConvexClient authenticates with it
+ * (issuer = the plugins-ui provider in auth.config.ts, subject = the session id). Its `exp` is the
+ * session `expiresAt`, nothing shorter: the plugin-facing doors load the session doc on every call,
+ * so a deleted or expired session stops them at once and a shorter JWT bought nothing.
+ */
+async function sign_session_jwt(sessionId: Id<"plugins_ui_sessions">, expiresAt: number) {
+	const key = await users_get_anonymous_jwt_private_key();
+	return await new SignJWT({})
+		.setProtectedHeader({ alg: "ES256", kid: users_ANONYMOUS_JWT_DEFAULT_KID, typ: "JWT" })
+		.setIssuer(PLUGINS_UI_SESSIONS_JWT_ISSUER)
+		.setAudience("convex")
+		.setSubject(sessionId)
+		.setIssuedAt()
+		.setExpirationTime(Math.floor(expiresAt / 1000))
+		.sign(key);
+}
 
 if (!process.env.R2_ENDPOINT) {
 	throw new Error("R2_ENDPOINT is not set in Convex env");
@@ -170,7 +194,11 @@ function plugin_page_csp(uiOutboundOrigins: readonly string[]) {
 	].join("; ");
 }
 
-export const mint_page_session = mutation({
+/**
+ * Insert the session doc for a plugin page. Internal on purpose: `mint_page_session` (the action
+ * below) runs it and then adds the JWT.
+ */
+export const insert_page_session = internalMutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		pluginName: v.string(),
@@ -267,7 +295,52 @@ export const mint_page_session = mutation({
 	},
 });
 
-export const mint_file_view_session = mutation({
+type insert_page_session_Result =
+	typeof insert_page_session extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * Mint the session for a plugin page: insert the session doc, then sign its JWT. This is an action
+ * because ECDSA signing needs cryptographic randomness, which Convex allows only in actions. Auth
+ * flows from this action into the mutation.
+ */
+export const mint_page_session = action({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		pluginName: v.string(),
+	},
+	returns: v_result({
+		_yay: v.object({
+			token: v.string(),
+			expiresAt: v.number(),
+			jwt: v.string(),
+			jwtExpiresAt: v.number(),
+			pluginVersionId: v.id("plugins_versions"),
+			sessionId: v.id("plugins_ui_sessions"),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const inserted = (await ctx.runMutation(
+			internal.plugins_ui.insert_page_session,
+			args,
+		)) as insert_page_session_Result;
+		if (inserted._nay) {
+			return inserted;
+		}
+
+		// The JWT rides with the token, so the frame gets both credentials in one message and needs
+		// no exchange round trip.
+		const jwt = await sign_session_jwt(inserted._yay.sessionId, inserted._yay.expiresAt);
+		return Result({ _yay: { ...inserted._yay, jwt, jwtExpiresAt: inserted._yay.expiresAt } });
+	},
+});
+
+/**
+ * Insert the session doc for a plugin file view. Internal on purpose: `mint_file_view_session` (the
+ * action below) runs it and then adds the JWT.
+ */
+export const insert_file_view_session = internalMutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		pluginName: v.string(),
@@ -374,16 +447,50 @@ export const mint_file_view_session = mutation({
 	},
 });
 
+type insert_file_view_session_Result =
+	typeof insert_file_view_session extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
 /**
- * Rotates the bearer token for an open plugin page or file view so the frame can keep working past
- * the 30-minute token lifetime. The SDK calls this shortly before expiry or after a 401 response.
- *
- * The existing session doc is updated instead of creating another session. This keeps one session
- * to revoke and makes the previous token stop working immediately. Refresh succeeds only while the
- * current user still owns the session and the same plugin version remains enabled in the workspace.
- * A file-view session also re-checks that the user can still read its file node.
+ * Mint the session for a plugin file view. Same two-step shape as `mint_page_session`.
  */
-export const refresh_ui_session = mutation({
+export const mint_file_view_session = action({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		pluginName: v.string(),
+		fileViewId: v.string(),
+		fileNodeId: v.id("files_nodes"),
+	},
+	returns: v_result({
+		_yay: v.object({
+			token: v.string(),
+			expiresAt: v.number(),
+			jwt: v.string(),
+			jwtExpiresAt: v.number(),
+			pluginVersionId: v.id("plugins_versions"),
+			sessionId: v.id("plugins_ui_sessions"),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const inserted = (await ctx.runMutation(
+			internal.plugins_ui.insert_file_view_session,
+			args,
+		)) as insert_file_view_session_Result;
+		if (inserted._nay) {
+			return inserted;
+		}
+
+		const jwt = await sign_session_jwt(inserted._yay.sessionId, inserted._yay.expiresAt);
+		return Result({ _yay: { ...inserted._yay, jwt, jwtExpiresAt: inserted._yay.expiresAt } });
+	},
+});
+
+/**
+ * Rotate the token hash on an existing session doc. Internal on purpose: `refresh_ui_session` (the
+ * action below) runs it and then adds the JWT.
+ */
+export const rotate_ui_session = internalMutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		sessionId: v.id("plugins_ui_sessions"),
@@ -478,6 +585,46 @@ export const refresh_ui_session = mutation({
 		});
 
 		return Result({ _yay: { token, expiresAt, pluginVersionId: session.pluginVersionId } });
+	},
+});
+
+type rotate_ui_session_Result =
+	typeof rotate_ui_session extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * Rotates the bearer token for an open plugin page or file view so the frame can keep working past
+ * the 30-minute token lifetime. The SDK calls this shortly before expiry or after a 401 response.
+ * The answer carries the new `plu_` token and a new JWT signed for the same new expiry.
+ *
+ * The existing session doc is updated instead of creating another session. This keeps one session
+ * to revoke and makes the previous token stop working immediately. Refresh succeeds only while the
+ * current user still owns the session and the same plugin version remains enabled in the workspace.
+ * A file-view session also re-checks that the user can still read its file node.
+ */
+export const refresh_ui_session = action({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		sessionId: v.id("plugins_ui_sessions"),
+	},
+	returns: v_result({
+		_yay: v.object({
+			token: v.string(),
+			expiresAt: v.number(),
+			jwt: v.string(),
+			jwtExpiresAt: v.number(),
+			pluginVersionId: v.id("plugins_versions"),
+		}),
+	}),
+	handler: async (ctx, args) => {
+		const rotated = (await ctx.runMutation(internal.plugins_ui.rotate_ui_session, args)) as rotate_ui_session_Result;
+		if (rotated._nay) {
+			return rotated;
+		}
+
+		const jwt = await sign_session_jwt(args.sessionId, rotated._yay.expiresAt);
+		return Result({ _yay: { ...rotated._yay, jwt, jwtExpiresAt: rotated._yay.expiresAt } });
 	},
 });
 
@@ -843,9 +990,11 @@ export async function plugins_ui_http_handle_request(ctx: ActionCtx, request: Re
 export type plugins_ui_http_session_jwt_Body = { token?: string };
 
 /**
- * Exchanges a live `plu_` session token for a short-lived plugin-session JWT. The iframe's own
+ * Fallback exchange: signs the plugin-session JWT for a live `plu_` session token. The iframe's own
  * ConvexClient authenticates with that JWT (subject = session id), which is how a plugin page
- * subscribes to Convex queries directly instead of proxying through the host window.
+ * subscribes to Convex queries directly instead of proxying through the host window. The mint and
+ * refresh actions already deliver the same JWT beside the token, so the SDK calls this route only
+ * when its host sent none.
  *
  * Registered on the plain router ON PURPOSE: the frame calls this route from the same origin, so
  * it needs no CORS — and the response must never gain CORS headers, because that would make the
@@ -858,8 +1007,7 @@ export type plugins_ui_http_session_jwt_Body = { token?: string };
  * the variable, which restores today's behavior exactly.
  *
  * The exchange never extends the session. Only `refresh_ui_session` (member auth in the host
- * window) moves `expiresAt`; the SDK refreshes the `plu_` token through the host shortly before
- * expiry, and each refreshed token exchanges here for a new JWT.
+ * window) moves `expiresAt`, and it signs the JWT for the new expiry itself.
  */
 export async function plugins_ui_http_session_jwt(ctx: ActionCtx, request: Request) {
 	const devExchangeOrigin = dev_exchange_origin();
@@ -898,17 +1046,7 @@ export async function plugins_ui_http_session_jwt(ctx: ActionCtx, request: Reque
 		} as const;
 	}
 
-	// Cap the JWT at the session expiry: it must never authenticate past the session it stands for.
-	const jwtExpiresAt = Math.min(now + SESSION_JWT_LIFETIME_MS, principal.sessionExpiresAt);
-	const key = await users_get_anonymous_jwt_private_key();
-	const jwt = await new SignJWT({})
-		.setProtectedHeader({ alg: "ES256", kid: users_ANONYMOUS_JWT_DEFAULT_KID, typ: "JWT" })
-		.setIssuer(PLUGINS_UI_SESSIONS_JWT_ISSUER)
-		.setAudience("convex")
-		.setSubject(principal.sessionId)
-		.setIssuedAt()
-		.setExpirationTime(Math.floor(jwtExpiresAt / 1000))
-		.sign(key);
+	const jwt = await sign_session_jwt(principal.sessionId, principal.sessionExpiresAt);
 
 	return {
 		status: 200,

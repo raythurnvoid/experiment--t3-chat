@@ -853,7 +853,7 @@ describe("public API routes", () => {
 				pages: [{ id: "meetings", title: "Meetings", entry: "pages/meetings.js", navItem: null }],
 			});
 		});
-		const minted = await fixture.asUser.mutation(api.plugins_ui.mint_page_session, {
+		const minted = await fixture.asUser.action(api.plugins_ui.mint_page_session, {
 			membershipId: fixture.membershipId,
 			pluginName: "council",
 		});
@@ -1315,7 +1315,7 @@ describe("public API routes", () => {
 			value: { title: "Weekly sync" },
 		});
 
-		const minted = await fixture.asUser.mutation(api.plugins_ui.mint_page_session, {
+		const minted = await fixture.asUser.action(api.plugins_ui.mint_page_session, {
 			membershipId: fixture.membershipId,
 			pluginName: "council",
 		});

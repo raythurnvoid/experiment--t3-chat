@@ -137,8 +137,10 @@ const rate_limiter_CONFIG = {
 	// Two kinds of charge share this bucket. A plugin page mints here. Every token rotation also
 	// charges here, because `refresh_ui_session` serves both frame kinds: a plugin page and a file
 	// view. Only the file-view mint goes to the separate bucket below. Rotations stay rare. The token
-	// lives 30 minutes, and the SDK rotates it shortly before expiry or after a 401. So browsing
-	// files does not fill this bucket. A file switch mints instead, and that mint is charged below.
+	// and its plugin-session JWT live 30 minutes and expire together; the frame's Convex client asks
+	// for a new JWT 10 seconds before that, and the SDK answers that ask with one rotation here. A
+	// 401 on the public API rotates too. So browsing files does not fill this bucket. A file switch
+	// mints instead, and that mint is charged below.
 	plugins_ui_session_mint: STRICT_WRITE,
 	// File views mint on every file switch and every details/view toggle, so browsing a few videos
 	// in quick succession must not read as broken. Only the mint is split out here. A file-view
@@ -149,10 +151,12 @@ const rate_limiter_CONFIG = {
 		period: MINUTE,
 		capacity: 8,
 	},
-	// The iframe exchanges its `plu_` token for a ~10-minute plugin-session JWT, so steady state is
-	// one exchange per open frame per JWT lifetime. Both frame kinds exchange here: a plugin page
-	// and a file view. Keyed by session id, and only a token that resolved to a live session reaches
-	// the charge — a garbage token is refused before it.
+	// Fallback for a frame whose host delivered no plugin-session JWT: it exchanges its `plu_` token
+	// here for the same JWT the mint would have delivered. A current host delivers the JWT with the
+	// session, so a frame on the current SDK never charges this bucket; an older frame charges it
+	// once per token lifetime. Both frame kinds exchange here: a plugin page and a file view. Keyed
+	// by session id, and only a token that resolved to a live session reaches the charge — a garbage
+	// token is refused before it.
 	plugins_ui_session_jwt_exchange: {
 		kind: "token bucket",
 		rate: 12,

@@ -135,7 +135,7 @@ A plugin-session JWT identifies a person with fewer permissions: the member behi
 
 The classifier in [server-utils.ts](../../../packages/app/server/server-utils.ts) is fail-closed: `server_convex_get_user_fallback_to_anonymous` returns `null` for this issuer, so member functions treat a plugin frame as unauthenticated. That covers both frame kinds. A plugin page and a file view mint from the same `plugins_ui_sessions` table and carry the same issuer, so the classifier cannot tell them apart, and `server_convex_get_plugin_session` hands back only the session id — no frame kind. Only that helper resolves this issuer, and only the plugin-facing doors call it. The classifier treats every unknown issuer as Clerk, so adding a fourth provider to `auth.config.ts` requires extending the classifier first — both files carry a comment saying so.
 
-The SDK obtains this JWT by exchanging the host-minted UI session token (`plu_...`, minted for a page and for a file view alike) at `POST /plugins-ui/session-jwt` (10-minute life, capped at session expiry; the exchange never extends the session). Full exchange-route contract and door model: `../plugin-system/SKILL.md`.
+The host mints this JWT together with the UI session token (`plu_...`, for a page and for a file view alike) and delivers both to the frame in one bridge message; the JWT's `exp` is the session expiry, so both credentials die together. `POST /plugins-ui/session-jwt` remains as a fallback that trades a live `plu_` token for the same JWT (a frame on an SDK older than 0.11.0 uses it; the exchange never extends the session). Full contract and door model: `../plugin-system/SKILL.md`.
 
 ### `GET /.well-known/jwks.json`
 

@@ -36,6 +36,9 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 
 vi.mock("@/lib/app-convex-client.ts", () => ({
 	app_convex: {
+		// Mint and refresh are actions, revoke is a mutation. One mock records all three, keyed by
+		// the function reference each test filters on.
+		action: (...args: unknown[]) => mutationMock(...args),
 		mutation: (...args: unknown[]) => mutationMock(...args),
 	},
 	app_convex_api: {
@@ -180,6 +183,8 @@ describe("RoutePluginsPluginPage", () => {
 						_yay: {
 							token: "plu_default",
 							expiresAt: Date.now() + 60_000,
+							jwt: "jwt_default",
+							jwtExpiresAt: Date.now() + 60_000,
 							pluginVersionId: "version_1",
 							sessionId: "session_default",
 						},
@@ -278,20 +283,22 @@ describe("RoutePluginsPluginPage", () => {
 		);
 	});
 
-	test("init hands the page its own Convex connection: the deployment url and the session token", async () => {
+	test("init hands the page its own Convex connection: the deployment url, the session token, and its JWT", async () => {
 		const PageComponent = Route.options.component as () => JSX.Element;
 		const { container } = render(<PageComponent />);
 		const { nonce } = bridge_for(container);
 		await act(async () => post_ready(nonce));
 
-		// The page's SDK opens its own ConvexClient against convexUrl and exchanges the token at
-		// apiOrigin for a plugin-session JWT. The host posts these once and is out of the data path.
+		// The page's SDK opens its own ConvexClient against convexUrl and authenticates it with the
+		// JWT minted beside the token. The host posts these once and is out of the data path.
 		expect(latest_init_message()).toMatchObject({
 			type: "bonobo:init",
 			nonce,
 			apiOrigin: import.meta.env.VITE_CONVEX_HTTP_URL,
 			convexUrl: "https://deployment.convex.test",
 			token: "plu_default",
+			jwt: "jwt_default",
+			jwtExpiresAt: expect.any(Number),
 		});
 	});
 
@@ -644,7 +651,13 @@ describe("RoutePluginsPluginPage", () => {
 
 		await act(async () => {
 			resolveRefresh?.({
-				_yay: { token: "plu_2", expiresAt: Date.now() + 60_000, pluginVersionId: "version_1" },
+				_yay: {
+					token: "plu_2",
+					expiresAt: Date.now() + 60_000,
+					jwt: "jwt_2",
+					jwtExpiresAt: Date.now() + 60_000,
+					pluginVersionId: "version_1",
+				},
 			});
 			await refreshPromise;
 		});
@@ -657,8 +670,9 @@ describe("RoutePluginsPluginPage", () => {
 		expect(
 			mutationMock.mock.calls.filter(([reference]) => reference === "plugins_ui.refresh_ui_session"),
 		).toHaveLength(1);
+		// The rotation answer carries the new JWT too, so the frame never exchanges.
 		expect(postMessageMock).toHaveBeenCalledWith(
-			expect.objectContaining({ type: "bonobo:token", requestId: "refresh_1", token: "plu_2" }),
+			expect.objectContaining({ type: "bonobo:token", requestId: "refresh_1", token: "plu_2", jwt: "jwt_2" }),
 			CONVEX_HTTP_ORIGIN,
 		);
 	});
@@ -719,6 +733,8 @@ describe("RoutePluginsPluginPage", () => {
 					_yay: {
 						token: `plu_${mintCount}`,
 						expiresAt: Date.now() + 60_000,
+						jwt: `jwt_${mintCount}`,
+						jwtExpiresAt: Date.now() + 60_000,
 						pluginVersionId: "version_1",
 						sessionId: `session_${mintCount}`,
 					},
@@ -731,7 +747,15 @@ describe("RoutePluginsPluginPage", () => {
 				return Promise.resolve(
 					args.sessionId === "session_1"
 						? { _nay: { message: "Unauthorized" } }
-						: { _yay: { token: "plu_rotated", expiresAt: Date.now() + 60_000, pluginVersionId: "version_1" } },
+						: {
+								_yay: {
+									token: "plu_rotated",
+									expiresAt: Date.now() + 60_000,
+									jwt: "jwt_rotated",
+									jwtExpiresAt: Date.now() + 60_000,
+									pluginVersionId: "version_1",
+								},
+							},
 				);
 			}
 			return Promise.resolve({ _yay: {} });
@@ -754,10 +778,10 @@ describe("RoutePluginsPluginPage", () => {
 		});
 
 		// The page keeps its document, its state, and its watches: same iframe, same nonce, and the
-		// refresh that found the session gone is answered with the new session's token.
+		// refresh that found the session gone is answered with the new session's token and JWT.
 		expect(bridge_for(mounted.container).nonce).toBe(nonce);
 		expect(postMessageMock).toHaveBeenCalledWith(
-			expect.objectContaining({ type: "bonobo:token", nonce, requestId: "refresh_lost", token: "plu_2" }),
+			expect.objectContaining({ type: "bonobo:token", nonce, requestId: "refresh_lost", token: "plu_2", jwt: "jwt_2" }),
 			CONVEX_HTTP_ORIGIN,
 		);
 		expect(postMessageMock).not.toHaveBeenCalledWith(
@@ -782,7 +806,12 @@ describe("RoutePluginsPluginPage", () => {
 		});
 		expect(refreshedSessionIds).toEqual(["session_1", "session_2"]);
 		expect(postMessageMock).toHaveBeenCalledWith(
-			expect.objectContaining({ type: "bonobo:token", requestId: "refresh_next", token: "plu_rotated" }),
+			expect.objectContaining({
+				type: "bonobo:token",
+				requestId: "refresh_next",
+				token: "plu_rotated",
+				jwt: "jwt_rotated",
+			}),
 			CONVEX_HTTP_ORIGIN,
 		);
 		expect(mintCount).toBe(2);

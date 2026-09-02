@@ -40,7 +40,7 @@ function RoutePluginsPluginPage() {
 	const handleFrameError = useCallback((message: string) => setSessionError({ frameKey, message }), [frameKey]);
 
 	const mintSession = useFn(() =>
-		app_convex.mutation(app_convex_api.plugins_ui.mint_page_session, {
+		app_convex.action(app_convex_api.plugins_ui.mint_page_session, {
 			membershipId,
 			pluginName,
 		}),

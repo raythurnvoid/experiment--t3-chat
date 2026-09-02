@@ -31,11 +31,11 @@ const CONVEX_HTTP_ORIGIN = new URL(CONVEX_HTTP_URL).origin;
  * The local origin serves the page at its ROOT: a dev server has no
  * `/plugins-ui/<versionId>/<entry>` path, that shape belongs to the published asset route.
  *
- * Plugin data needs one more switch. The SDK exchanges its session token at
- * `<apiOrigin>/plugins-ui/session-jwt`, which refuses every origin but its own unless the Convex
- * deployment sets PLUGINS_UI_DEV_EXCHANGE_ORIGIN to this same bare origin (a development-only
- * exception; see plugins_ui.ts). With that variable set, the frame completes the exchange and its
- * own Convex client authenticates, so pages that read plugin data work here too.
+ * Plugin data needs no extra switch: the host delivers the plugin-session JWT together with the
+ * session, so the frame's own Convex client authenticates from the init message. Only the fallback
+ * exchange at `<apiOrigin>/plugins-ui/session-jwt` (used by an SDK that got no JWT) refuses every
+ * origin but its own unless the Convex deployment sets PLUGINS_UI_DEV_EXCHANGE_ORIGIN to this same
+ * bare origin (a development-only exception; see plugins_ui.ts).
  */
 function plugin_ui_dev_override() {
 	if (!import.meta.env.DEV) {
@@ -159,6 +159,8 @@ type RefreshResponse =
 			requestId: string;
 			token: string;
 			tokenExpiresAt: number;
+			jwt: string;
+			jwtExpiresAt: number;
 	  }
 	| {
 			type: "bonobo:token-error";
@@ -172,7 +174,7 @@ function is_bridge_message_id(value: unknown): value is string {
 	return typeof value === "string" && value.length > 0 && value.length <= 64;
 }
 
-// Both mint mutations return the same Result shape, so the page mint's type is the shared contract.
+// Both mint actions return the same Result shape, so the page mint's type is the shared contract.
 type PluginsUiFrame_MintSessionResult = app_convex_FunctionReturnType<typeof app_convex_api.plugins_ui.mint_page_session>;
 
 type PluginsUiFrame_Props = {
@@ -202,8 +204,8 @@ type PluginsUiFrame_Props = {
  * The sandboxed iframe host shared by plugin pages and plugin file views. It loads the plugin's
  * published HTML entry, mints a `plu_` session through `mintSession`, and speaks the
  * bonobo:ready/init/token postMessage protocol with the SDK inside the frame. That protocol is
- * all the host does: the page talks to Convex itself, with a plugin-session JWT it gets from the
- * `/plugins-ui/session-jwt` exchange (init hands it the deployment URL for that). The caller keys
+ * all the host does: the page talks to Convex itself, with the plugin-session JWT that init and
+ * every token message carry beside the `plu_` token (init also hands it the deployment URL). The caller keys
  * this component so that every meaningful change (tenant, version, view, retry) gets a fresh
  * document and nonce. A session that expired while the device slept is not such a change: the
  * host mints a new session for the same document and answers the pending refresh with it, so the
@@ -382,11 +384,12 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 					// paint with immediately instead of a name it would have to resolve.
 					theme,
 					apiOrigin: CONVEX_HTTP_URL,
-					// The SDK's own ConvexClient connects here and authenticates with the JWT it gets
-					// from exchanging the session token at the asset origin.
+					// The SDK's own ConvexClient connects here and authenticates with the JWT below.
 					convexUrl: app_convex_deployment_url,
 					token: result._yay.token,
 					tokenExpiresAt: result._yay.expiresAt,
+					jwt: result._yay.jwt,
+					jwtExpiresAt: result._yay.jwtExpiresAt,
 					// userId comes after the spread so the frame's authenticated value always wins.
 					context: { ...getInitContext(), userId },
 				};
@@ -427,7 +430,7 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 
 			const currentSessionId = sessionId;
 			const promise: Promise<RefreshResponse> = app_convex
-				.mutation(app_convex_api.plugins_ui.refresh_ui_session, {
+				.action(app_convex_api.plugins_ui.refresh_ui_session, {
 					membershipId,
 					sessionId: currentSessionId,
 				})
@@ -485,6 +488,8 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 							requestId,
 							token: minted._yay.token,
 							tokenExpiresAt: minted._yay.expiresAt,
+							jwt: minted._yay.jwt,
+							jwtExpiresAt: minted._yay.jwtExpiresAt,
 						} satisfies RefreshResponse;
 					}
 					if (result._yay.pluginVersionId !== pluginVersionId) {
@@ -498,6 +503,8 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 						requestId,
 						token: result._yay.token,
 						tokenExpiresAt: result._yay.expiresAt,
+						jwt: result._yay.jwt,
+						jwtExpiresAt: result._yay.jwtExpiresAt,
 					} satisfies RefreshResponse;
 				})
 				.catch((error) => {

@@ -13774,7 +13774,7 @@ describe("plugins admin hard delete", () => {
 		if (installed._nay) {
 			throw new Error(installed._nay.message);
 		}
-		const pageSession = await asOwner.mutation(api.plugins_ui.mint_page_session, {
+		const pageSession = await asOwner.action(api.plugins_ui.mint_page_session, {
 			membershipId: membership.membershipId,
 			pluginName: "media",
 		});
@@ -13835,7 +13835,7 @@ describe("plugins admin hard delete", () => {
 		).toMatchObject({ status: "disabled" });
 		expect(
 			(
-				await asOwner.mutation(api.plugins_ui.mint_page_session, {
+				await asOwner.action(api.plugins_ui.mint_page_session, {
 					membershipId: membership.membershipId,
 					pluginName: "media",
 				})

@@ -70,15 +70,17 @@ browser some other way. There are two doors: the app's dev override (simplest; n
 variable to give the page working data) and swapping the served bytes at the published URL (exact
 production CSP and headers).
 
-**The app's own dev override needs one deployment variable for data.** `VITE_PLUGIN_UI_DEV_VERSION_ID` +
-`VITE_PLUGIN_UI_DEV_ORIGIN` in `packages/app/.env.local` really do point one plugin's frame at a
-local dev server, and the bridge really does hand that frame its session token. But the SDK then
-exchanges the token at the **asset** origin's `/plugins-ui/session-jwt`, which is same-origin only
-for a published bundle. From a dev origin that POST is cross-origin, and the route refuses it on
-purpose (`plugins_ui.ts`: it must never gain CORS headers). Without help the frame loads and shows
-its access-ended state: fine for markup, CSS and layout, not for anything that reads plugin data.
+**The app's own dev override gives the page working data by itself since SDK 0.11.0.**
+`VITE_PLUGIN_UI_DEV_VERSION_ID` + `VITE_PLUGIN_UI_DEV_ORIGIN` in `packages/app/.env.local` really do
+point one plugin's frame at a local dev server, and the bridge hands that frame its session token
+together with its plugin-session JWT, so the frame's own Convex client authenticates from the init
+message. A frame on an SDK older than 0.11.0 exchanges the token at the **asset** origin's
+`/plugins-ui/session-jwt` instead, which is same-origin only for a published bundle. From a dev
+origin that POST is cross-origin, and the route refuses it on purpose (`plugins_ui.ts`: it must
+never gain CORS headers). Such a frame loads and shows its access-ended state: fine for markup, CSS
+and layout, not for anything that reads plugin data.
 
-To get data too, set the matching Convex env var once per dev deployment:
+For that older SDK, set the matching Convex env var once per dev deployment:
 `convex env set PLUGINS_UI_DEV_EXCHANGE_ORIGIN http://localhost:5174` (the same bare origin as
 `VITE_PLUGIN_UI_DEV_ORIGIN`). The exchange then accepts exactly that origin, answers its preflight,
 and the frame's own Convex client authenticates. Unset the variable to return to production
@@ -170,7 +172,8 @@ const membership = await app_convex.query(
 const views = await app_convex.query(app_convex_api.plugins_ui.list_file_views, {
 	membershipId: membership._id,
 });
-const minted = await app_convex.mutation(app_convex_api.plugins_ui.mint_file_view_session, {
+// An action since 2026-09-02: the mint signs the plugin-session JWT, which a mutation cannot do.
+const minted = await app_convex.action(app_convex_api.plugins_ui.mint_file_view_session, {
 	membershipId: membership._id,
 	pluginName: views[0].pluginName,
 	fileViewId: views[0].fileViews[0].id,
@@ -756,9 +759,10 @@ Offline session re-mint recipe (Windows, updated 2026-09-02):
 1. Use a dedicated Playwriter session and install any plugin-bundle swap route before opening the
    plugin page. Confirm the served bundle has the current SDK and read a bundle-only marker from the
    frame. Keep one app tab as the owned primary page.
-2. Temporarily set `SESSION_JWT_LIFETIME_MS` in `plugins_ui.ts` to 90 seconds, push with
+2. Temporarily set `SESSION_TTL_MS` in `plugins_ui.ts` to 90 seconds (the JWT expires with the
+   session, so this is the only clock), push with
    `vp env exec pnpm --dir packages/app exec convex dev --once`, and require `Convex functions
-   ready`. Restore 10 minutes and push again as soon as the run ends.
+   ready`. Restore 30 minutes and push again as soon as the run ends.
 3. Navigate to the plugin page, record T0 after the host document loads, wait 10 seconds, and record
    the frame nonce, one unsent draft, and the one `plugins_ui_sessions` doc S1. A stale doc makes the
    result ambiguous; navigate away and revoke it before restarting.
@@ -782,6 +786,31 @@ Offline session re-mint recipe (Windows, updated 2026-09-02):
 The SDK's one-second wake poll is part of this proof. A wall-clock gap of 30 seconds calls
 `ConvexClient.setAuth` again before the old socket can reconnect. Without it, the host can create S2
 but the old identity can still deliver a permanent null first and kill the page.
+
+Plugin-session JWT startup check (added 2026-09-02 with SDK 0.11.0). A frame on the current host
+and SDK must start with ZERO `POST /plugins-ui/session-jwt` requests, because the host delivers the
+JWT inside `bonobo:init`. Open the plugin page in an owned tab, wait about 12 seconds so the client
+has confirmed its auth, then read the frame's own resource timing from inside the OOPIF with
+`frame.evaluate` (never `snapshot()` inside a plugin frame):
+
+```js
+const frame = page.frames().findLast((f) => f.url().includes("/plugins-ui/"));
+await frame.evaluate(() =>
+	performance
+		.getEntriesByType("resource")
+		.filter((entry) => entry.name.includes("/plugins-ui/session-jwt"))
+		.map((entry) => Math.round(entry.startTime)),
+);
+```
+
+The old-code baseline (Chitchat 0.6.2 on SDK 0.10.0, host before the mint change) answered two
+entries at about 1.8 and 2.8 seconds: the initial exchange and the client's forced refetch right
+after it confirmed the first. An older-SDK bundle against the new host still shows those two —
+that is the fallback working, not a regression. Observed 2026-09-02 on the dev host: the 0.6.2
+frame on the new host answered 1598 and 2312 ms; the Chitchat 0.6.3, Council 0.2.5, and Gallery
+0.1.14 frames on SDK 0.11.0 answered an empty list with no host alert. Pair the empty list with the composer being
+enabled and the channel list rendered, so an empty list cannot come from a frame that never
+authenticated at all.
 
 - The composer swallows Enter while a send is in flight and keeps the unsent text in place. For
   scripted sends, wait for the composer to empty between messages; a single composer maxes out

@@ -210,7 +210,7 @@ async function install_gallery_plugin(
 }
 
 async function mint_session_token(fixture: Awaited<ReturnType<typeof install_gallery_plugin>>) {
-	const minted = await fixture.asOwner.mutation(api.plugins_ui.mint_page_session, {
+	const minted = await fixture.asOwner.action(api.plugins_ui.mint_page_session, {
 		membershipId: fixture.membership.membershipId,
 		pluginName: "gallery",
 	});
@@ -256,7 +256,7 @@ async function mint_reader_session(
 ) {
 	const reader = await seed_reader_member(t, fixture);
 	const asReader = t.withIdentity(user_identity(reader.userId));
-	const minted = await asReader.mutation(api.plugins_ui.mint_page_session, {
+	const minted = await asReader.action(api.plugins_ui.mint_page_session, {
 		membershipId: reader.membershipId,
 		pluginName: "gallery",
 	});
@@ -642,7 +642,7 @@ describe("plugin ui sessions", () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
 
-		const minted = await fixture.asOwner.mutation(api.plugins_ui.mint_page_session, {
+		const minted = await fixture.asOwner.action(api.plugins_ui.mint_page_session, {
 			membershipId: fixture.membership.membershipId,
 			pluginName: "gallery",
 		});
@@ -655,7 +655,7 @@ describe("plugin ui sessions", () => {
 			subject: minted._yay.sessionId,
 		});
 
-		const remint = await asPluginSession.mutation(api.plugins_ui.mint_page_session, {
+		const remint = await asPluginSession.action(api.plugins_ui.mint_page_session, {
 			membershipId: fixture.membership.membershipId,
 			pluginName: "gallery",
 		});
@@ -686,7 +686,7 @@ describe("plugin ui sessions", () => {
 		});
 		expect(pages).toEqual([]);
 
-		const minted = await asOwner.mutation(api.plugins_ui.mint_page_session, {
+		const minted = await asOwner.action(api.plugins_ui.mint_page_session, {
 			membershipId: membership.membershipId,
 			pluginName: "gallery",
 		});
@@ -705,7 +705,7 @@ describe("plugin ui sessions", () => {
 				}),
 			).toEqual([]);
 			expect(
-				await fixture.asOwner.mutation(api.plugins_ui.mint_page_session, {
+				await fixture.asOwner.action(api.plugins_ui.mint_page_session, {
 					membershipId: fixture.membership.membershipId,
 					pluginName: "gallery",
 				}),
@@ -749,7 +749,7 @@ describe("plugin ui sessions", () => {
 				body: JSON.stringify({ recursive: true }),
 			});
 
-		const refreshed = await fixture.asOwner.mutation(api.plugins_ui.refresh_ui_session, {
+		const refreshed = await fixture.asOwner.action(api.plugins_ui.refresh_ui_session, {
 			membershipId: fixture.membership.membershipId,
 			sessionId: initial.sessionId,
 		});
@@ -783,7 +783,7 @@ describe("plugin ui sessions", () => {
 		const reader = await seed_reader_member(t, fixture);
 		const asReader = t.withIdentity(user_identity(reader.userId));
 
-		const stolen = await asReader.mutation(api.plugins_ui.refresh_ui_session, {
+		const stolen = await asReader.action(api.plugins_ui.refresh_ui_session, {
 			membershipId: reader.membershipId,
 			sessionId: owned.sessionId,
 		});
@@ -1517,7 +1517,7 @@ describe("plugin ui sessions", () => {
 			ctx.db.patch("plugins_workspace_installations", fixture.installationId, { status: "disabled" }),
 		);
 
-		const minted = await fixture.asOwner.mutation(api.plugins_ui.mint_page_session, {
+		const minted = await fixture.asOwner.action(api.plugins_ui.mint_page_session, {
 			membershipId: fixture.membership.membershipId,
 			pluginName: "gallery",
 		});
@@ -1563,7 +1563,7 @@ describe("plugin ui file view sessions", () => {
 		fixture: Awaited<ReturnType<typeof install_gallery_plugin>>,
 		args: { fileViewId?: string; fileNodeId: Id<"files_nodes"> },
 	) {
-		return await fixture.asOwner.mutation(api.plugins_ui.mint_file_view_session, {
+		return await fixture.asOwner.action(api.plugins_ui.mint_file_view_session, {
 			membershipId: fixture.membership.membershipId,
 			pluginName: "gallery",
 			fileViewId: args.fileViewId ?? "player",
@@ -1689,7 +1689,7 @@ describe("plugin ui file view sessions", () => {
 		const reader = await seed_member_reader(t, fixture);
 		const asReader = t.withIdentity(user_identity(reader.userId));
 		const mint_as_reader = () =>
-			asReader.mutation(api.plugins_ui.mint_file_view_session, {
+			asReader.action(api.plugins_ui.mint_file_view_session, {
 				membershipId: reader.membershipId,
 				pluginName: "gallery",
 				fileViewId: "player",
@@ -1709,7 +1709,7 @@ describe("plugin ui file view sessions", () => {
 		const seeded = await seed_upload_node(t, fixture, { filename: "clip.mp4", contentType: "video/mp4" });
 		const reader = await seed_member_reader(t, fixture);
 		const asReader = t.withIdentity(user_identity(reader.userId));
-		const minted = await asReader.mutation(api.plugins_ui.mint_file_view_session, {
+		const minted = await asReader.action(api.plugins_ui.mint_file_view_session, {
 			membershipId: reader.membershipId,
 			pluginName: "gallery",
 			fileViewId: "player",
@@ -1719,7 +1719,7 @@ describe("plugin ui file view sessions", () => {
 			throw new Error(minted._nay.message);
 		}
 		const refresh = () =>
-			asReader.mutation(api.plugins_ui.refresh_ui_session, {
+			asReader.action(api.plugins_ui.refresh_ui_session, {
 				membershipId: reader.membershipId,
 				sessionId: minted._yay.sessionId,
 			});
@@ -1741,7 +1741,7 @@ describe("plugin ui file view sessions", () => {
 			throw new Error(minted._nay.message);
 		}
 		const refresh = () =>
-			fixture.asOwner.mutation(api.plugins_ui.refresh_ui_session, {
+			fixture.asOwner.action(api.plugins_ui.refresh_ui_session, {
 				membershipId: fixture.membership.membershipId,
 				sessionId: minted._yay.sessionId,
 			});
@@ -1770,7 +1770,7 @@ describe("plugin ui file view sessions", () => {
 		});
 
 		// Page mints stay on their own bucket, so the file-view burst does not break opening a page.
-		const pageMint = await fixture.asOwner.mutation(api.plugins_ui.mint_page_session, {
+		const pageMint = await fixture.asOwner.action(api.plugins_ui.mint_page_session, {
 			membershipId: fixture.membership.membershipId,
 			pluginName: "gallery",
 		});
@@ -1807,7 +1807,7 @@ describe("plugin ui session expiry", () => {
 
 		// Let time pass so the refreshed expiry lands later than the minted one.
 		vi.advanceTimersByTime(60 * 1000);
-		const refreshed = await fixture.asOwner.mutation(api.plugins_ui.refresh_ui_session, {
+		const refreshed = await fixture.asOwner.action(api.plugins_ui.refresh_ui_session, {
 			membershipId: fixture.membership.membershipId,
 			sessionId: session.sessionId,
 		});
@@ -1844,6 +1844,76 @@ describe("plugin ui session expiry", () => {
 	});
 });
 
+describe("plugin session jwt in mint and refresh", () => {
+	async function verify_session_jwt(jwt: string) {
+		const publicKey = await importSPKI(process.env.ANONYMOUS_USERS_JWT_PUBLIC_KEY_PEM!, "ES256");
+		return await jwtVerify(jwt, publicKey, {
+			issuer: `${process.env.VITE_CONVEX_HTTP_URL!}/plugins-ui`,
+			audience: "convex",
+		});
+	}
+
+	test("a page mint delivers a verifiable JWT that expires with the session", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		const session = await mint_session_token(fixture);
+
+		// One expiry for both credentials: the doors re-read the session doc on every call, so a
+		// shorter JWT would buy nothing and only add a second refresh cadence.
+		expect(session.jwtExpiresAt).toBe(session.expiresAt);
+		const verified = await verify_session_jwt(session.jwt);
+		expect(verified.payload.sub).toBe(session.sessionId);
+		expect(verified.protectedHeader.kid).toBe("anonymous-user-jwt-2025-12");
+		expect(verified.payload.exp).toBe(Math.floor(session.expiresAt / 1000));
+	});
+
+	test("a file-view mint delivers the same kind of JWT", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t, {
+			fileViews: [
+				{ id: "player", title: "Video player", entry: "dist/frontend/index.html", contentTypes: ["video/mp4"] },
+			],
+		});
+		const seeded = await seed_upload_node(t, fixture, { filename: "clip.mp4", contentType: "video/mp4" });
+
+		const minted = await fixture.asOwner.action(api.plugins_ui.mint_file_view_session, {
+			membershipId: fixture.membership.membershipId,
+			pluginName: "gallery",
+			fileViewId: "player",
+			fileNodeId: seeded.nodeId,
+		});
+		if (minted._nay) {
+			throw new Error(minted._nay.message);
+		}
+		expect(minted._yay.jwtExpiresAt).toBe(minted._yay.expiresAt);
+		const verified = await verify_session_jwt(minted._yay.jwt);
+		expect(verified.payload.sub).toBe(minted._yay.sessionId);
+		expect(verified.payload.exp).toBe(Math.floor(minted._yay.expiresAt / 1000));
+	});
+
+	test("a refresh delivers a new JWT signed for the new expiry", async () => {
+		const t = test_convex();
+		vi.useFakeTimers();
+		const fixture = await install_gallery_plugin(t);
+		const initial = await mint_session_token(fixture);
+
+		// Let time pass so the refreshed expiry lands later than the minted one.
+		vi.advanceTimersByTime(60 * 1000);
+		const refreshed = await fixture.asOwner.action(api.plugins_ui.refresh_ui_session, {
+			membershipId: fixture.membership.membershipId,
+			sessionId: initial.sessionId,
+		});
+		if (refreshed._nay) {
+			throw new Error(refreshed._nay.message);
+		}
+		expect(refreshed._yay.jwtExpiresAt).toBe(refreshed._yay.expiresAt);
+		const verified = await verify_session_jwt(refreshed._yay.jwt);
+		expect(verified.payload.sub).toBe(initial.sessionId);
+		expect(verified.payload.exp).toBe(Math.floor(refreshed._yay.expiresAt / 1000));
+		expect(verified.payload.exp).toBeGreaterThan(Math.floor(initial.expiresAt / 1000));
+	});
+});
+
 describe("plugin session jwt exchange", () => {
 	test("exchanges a live token for a verifiable plugin-session JWT without extending the session", async () => {
 		const t = test_convex();
@@ -1866,19 +1936,20 @@ describe("plugin session jwt exchange", () => {
 		});
 		expect(verified.payload.sub).toBe(session.sessionId);
 		expect(verified.protectedHeader.kid).toBe("anonymous-user-jwt-2025-12");
-		// A 10-minute JWT inside a 30-minute session: the expiry comes from the JWT lifetime.
-		expect(verified.payload.exp! * 1000).toBeLessThanOrEqual(Date.now() + 10 * 60 * 1000);
+		// The JWT expires with the session it stands for, nothing shorter: the same rule as the JWT
+		// the mint delivered, so the fallback and the delivered credential are interchangeable.
+		expect(verified.payload.exp).toBe(Math.floor(session.expiresAt / 1000));
 
 		// The exchange must never extend the session; only refresh_ui_session (member auth) does.
 		const stored = await t.run((ctx) => ctx.db.get("plugins_ui_sessions", session.sessionId));
 		expect(stored?.expiresAt).toBe(session.expiresAt);
 	});
 
-	test("caps the JWT at the session expiry when the session is nearly over", async () => {
+	test("signs the JWT for whatever is left of the session", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
 		const session = await mint_session_token(fixture);
-		// Two minutes left on the session, so the 10-minute JWT lifetime must not win.
+		// Two minutes left on the session: the JWT gets exactly those two minutes.
 		const nearExpiry = Date.now() + 2 * 60 * 1000;
 		await t.run((ctx) => ctx.db.patch("plugins_ui_sessions", session.sessionId, { expiresAt: nearExpiry }));
 
@@ -1895,7 +1966,7 @@ describe("plugin session jwt exchange", () => {
 			issuer: `${process.env.VITE_CONVEX_HTTP_URL!}/plugins-ui`,
 			audience: "convex",
 		});
-		expect(verified.payload.exp! * 1000).toBeLessThanOrEqual(nearExpiry);
+		expect(verified.payload.exp).toBe(Math.floor(nearExpiry / 1000));
 	});
 
 	test("refuses wrong origins, garbage tokens, other principal kinds, and dead sessions", async () => {
