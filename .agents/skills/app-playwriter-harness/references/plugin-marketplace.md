@@ -740,11 +740,14 @@ Windows and CAS (verified 2026-08-17, two-user E2E on 0.1.3):
   `state.page.evaluate` with `const { app_convex } = await import("/src/lib/app-convex-client.ts")`
   and `const { api } = await import("/convex/_generated/api.js")`, then
   `app_convex.mutation(api.plugins_ui.revoke_ui_session, { membershipId, sessionId })` (Vite serves
-  the same module singletons the app runs). Within seconds the revoked tab renders "Access to this
-  plugin's data ended…" with the composer disabled while other tabs stay live (one session per
-  mount, 1:1 — verified). That watch is dead and does not recover in place; a reload mints a fresh
-  session and recovers. A revoke while the page is ONLINE is not the sleep path: the doors answer
-  null at once and the SDK reports `denied`.
+  the same module singletons the app runs). Within seconds the revoked tab renders the plugin's
+  `denied` screen (Chitchat 0.6.3: "Chitchat can no longer read its data. Reload the page to try
+  again." with the composer unmounted; older builds said "Access to this plugin's data ended…")
+  while other tabs stay live (one session per mount, 1:1 — verified). That watch is dead and does
+  not recover in place; a reload mints a fresh session and recovers. A revoke while the page is
+  ONLINE is not the sleep path: the doors answer null at once and the SDK reports `denied`, never
+  `session_expired` (that reason needs the token's own expiry to have passed). Re-verified
+  2026-09-02 on SDK 0.11.0 with the JWT delivered in init: same nonce, zero exchange requests.
 
   A page kept offline while its session disappears is different. When its Convex client later
   needs a JWT, the refresh chain hits the gone session and the host gets "Unauthorized". Since the
@@ -766,16 +769,31 @@ Offline session re-mint recipe (Windows, updated 2026-09-02):
 3. Navigate to the plugin page, record T0 after the host document loads, wait 10 seconds, and record
    the frame nonce, one unsent draft, and the one `plugins_ui_sessions` doc S1. A stale doc makes the
    result ambiguous; navigate away and revoke it before restarting.
-4. Find the renderer process ids for THIS load. Snapshot `Get-Process msedge` CPU time, run a
-   three-second busy loop in the host, and take the largest delta. Repeat for the last
-   `/plugins-ui/` frame. Reloading invalidates the ids. If both probes name one pid, repeat the
-   attribution; suspend each distinct proven pid once, never the same pid twice.
+4. Find the renderer process ids for THIS load. Take a three-second idle baseline of
+   `Get-CimInstance Win32_Process` CPU time for `msedge.exe` (read the `--type=` value from each
+   command line) and drop every process that was busy in it. Then run a three-second busy loop in
+   the host and take the largest delta among the remaining `--type=renderer` processes. Repeat for
+   the last `/plugins-ui/` frame; the host and the OOPIF normally name two different pids. On
+   2026-09-02 a renderer burning 4 s of CPU per window at idle won "largest delta" for both probes,
+   and the tab was never suspended. Reloading invalidates the ids. Suspend each proven pid with
+   its own `suspend-process.ps1` call: the script takes `[int[]]`, and both `-Pids "a,b"` and
+   `-Pids a,b` fail to bind through `pwsh -File`. Prove the suspension without CDP: every thread
+   in `(Get-Process -Id <pid>).Threads` reports `WaitReason` `Suspended`. A CDP command sent to a
+   suspended renderer (an evaluate, or `setOffline` itself) wedges the extension for every session
+   on that profile until Edge is restarted (see `known-hazards.md`).
 5. Before T0 +45 seconds, call `context.setOffline(true)`, prove both documents report offline, then
    suspend the proven renderer ids with `suspend-process.ps1`. Revoke S1 through
-   `plugins_ui:revoke_ui_session` and require the session-table readback to be empty.
-6. Wait until at least T0 +100 seconds. Start `context.setOffline(false)` before resume. On this
-   relay it can wait for the suspended OOPIF; leave that Playwriter command pending, resume each
-   distinct renderer once, then require the online command to finish. Wait 15 seconds.
+   `plugins_ui:revoke_ui_session` and require the session-table readback to be empty. Close every
+   other tab of the Playwriter session before this step (the dead tabs of an earlier run):
+   `setOffline` sends one CDP command per attached target and waits 30 seconds for each one that
+   does not answer, which is what made the online step take 31–34 s in the runs of 2026-09-02.
+6. Wait until at least T0 +100 seconds. Resume each renderer first (one script call per pid), then
+   call `context.setOffline(false)` at once and require it to finish. The network must be back
+   within the SDK's 10-second refresh deadline: otherwise the refresh the frame sends on wake times
+   out, its two retries get "Another session refresh is in progress", the auth callback answers
+   null, and the page dies as `session_expired` while the host still re-mints a session nobody
+   uses (seen 2026-09-02 in three awake-offline runs; that deadline is unchanged since SDK 0.10.0).
+   Wait 15 seconds.
 7. Require the same nonce, the exact draft, the bundle marker, no host alert, and exactly one new
    session doc S2 for the same user. Open one owned second page with its own swap route, send a
    unique Chitchat message, and require the first frame to receive it. This proves the old live
@@ -807,10 +825,12 @@ The old-code baseline (Chitchat 0.6.2 on SDK 0.10.0, host before the mint change
 entries at about 1.8 and 2.8 seconds: the initial exchange and the client's forced refetch right
 after it confirmed the first. An older-SDK bundle against the new host still shows those two —
 that is the fallback working, not a regression. Observed 2026-09-02 on the dev host: the 0.6.2
-frame on the new host answered 1598 and 2312 ms; the Chitchat 0.6.3, Council 0.2.5, and Gallery
-0.1.14 frames on SDK 0.11.0 answered an empty list with no host alert. Pair the empty list with the composer being
-enabled and the channel list rendered, so an empty list cannot come from a frame that never
-authenticated at all.
+frame on the new host answered 1598 and 2312 ms; the Chitchat 0.6.3, Council 0.2.5, Gallery
+0.1.14, and Video Player 0.1.3 (file view on `/meetings/<id>/recording.mp4`) frames on SDK 0.11.0
+answered an empty list with no host alert, and so did Chitchat 0.6.3 on the Pages host
+(`chitchat-qa/home`, deploy of `af9d0968`). Pair the empty list with the composer being enabled and
+the channel list rendered (or the `<video>` element carrying a source), so an empty list cannot
+come from a frame that never authenticated at all.
 
 - The composer swallows Enter while a send is in flight and keeps the unsent text in place. For
   scripted sends, wait for the composer to empty between messages; a single composer maxes out
