@@ -127,34 +127,17 @@ export interface BonoboUiFileViewContext {
 export type BonoboUiContext = BonoboUiPageContext | BonoboUiFileViewContext;
 
 /**
- * One colour role in the host's theme. The host resolves its own palette and sends the finished
- * values, so a plugin gets colours that match the app without knowing anything about the host's
- * custom properties.
- */
-export type BonoboUiThemeToken =
-	| "surface"
-	| "surfaceRaised"
-	| "surfaceOverlay"
-	| "surfaceHover"
-	| "border"
-	| "borderStrong"
-	| "text"
-	| "textMuted"
-	| "textSubtle"
-	| "accent"
-	| "accentHover"
-	| "selection"
-	| "success"
-	| "danger";
-
-/**
  * The host's theme, as the plugin frame sees it. `mode` says which of the two the member is in, so
- * a page can pick its own shadows and image treatments. `tokens` holds one CSS colour value per
- * role, ready to write into a custom property or a style.
+ * a page can pick its own shadows and image treatments. `tokens` holds the app's numbered colour
+ * scales under their real custom property names, `--` prefix included: `--color-base-1-01` …
+ * `--color-base-1-12`, and the same for `base-2`, `base-alt-1`, `base-alt-2`, `fg`, `accent`,
+ * `accent-alt`, `green`, and `red` (`accent` and `accent-alt` have 10 steps, the rest 12). Each
+ * value is a finished CSS colour. The SDK writes every entry onto the frame's root element, so a
+ * stylesheet can use `var(--color-base-1-03)` exactly as the app does.
  */
 export interface BonoboUiTheme {
 	mode: "light" | "dark";
-	tokens: Record<BonoboUiThemeToken, string>;
+	tokens: Record<string, string>;
 }
 
 /**
@@ -178,8 +161,8 @@ export interface BonoboUiInitMessage {
 	tokenExpiresAt: number;
 	context: BonoboUiContext;
 	/**
-	 * The host theme at startup. It is optional because an older host sends none, and then
-	 * `client.theme.current()` stays `null` and the page falls back to its own colours.
+	 * The host theme at startup. A host may send none; then `client.theme.current()` stays `null`,
+	 * nothing is written onto the document, and the page keeps its own colours.
 	 */
 	theme?: BonoboUiTheme;
 }
@@ -576,8 +559,11 @@ export interface BonoboUiFrontendClient {
 		}): Promise<BonoboUiDataRemoveResult>;
 	};
 	/**
-	 * The host's theme. Read `current()` once at startup and `subscribe()` for later switches; a
-	 * plugin page never sees the host's theme change on its own.
+	 * The host's theme. The SDK has already applied it to this document: every token sits on
+	 * `document.documentElement.style` under its own name, and the root element carries the same
+	 * `light` or `dark` class the app puts on its root. A stylesheet needs nothing from here. Read
+	 * `current()` and `subscribe()` only for what CSS cannot do, such as picking a canvas colour or
+	 * an image treatment by `mode`; a plugin page never sees the host's theme change on its own.
 	 */
 	theme: {
 		/**
@@ -585,8 +571,8 @@ export interface BonoboUiFrontendClient {
 		 */
 		current(): BonoboUiTheme | null;
 		/**
-		 * Calls `onChange` on every later theme the host sends, and never for the current one.
-		 * Returns the unsubscribe function.
+		 * Calls `onChange` on every later theme the host sends, after the SDK has applied it to the
+		 * document, and never for the current one. Returns the unsubscribe function.
 		 */
 		subscribe(onChange: (theme: BonoboUiTheme) => void): () => void;
 	};

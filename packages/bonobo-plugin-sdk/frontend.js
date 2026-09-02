@@ -84,9 +84,9 @@ const MAX_PAGE_SERVER_SUBSCRIPTIONS = 100;
 /**
  * Reads a host theme off a bridge message.
  *
- * The host resolves its colours and sends the values, because a plugin page is a cross-origin
- * document and inherits none of the host's custom properties. This comes over postMessage, so every
- * field is checked before the page can see it.
+ * The host resolves its colour scales and sends the values under their custom property names,
+ * because a plugin page is a cross-origin document and inherits none of the host's custom
+ * properties. This comes over postMessage, so every field is checked before the page can see it.
  *
  * @param {unknown} value
  * @returns {import("bonobo-plugin-sdk/frontend").BonoboUiTheme | null}
@@ -112,6 +112,25 @@ function read_theme(value) {
 	}
 
 	return /** @type {import("bonobo-plugin-sdk/frontend").BonoboUiTheme} */ ({ mode: candidate.mode, tokens });
+}
+
+/**
+ * Paints a host theme onto this document.
+ *
+ * The frame is a cross-origin document, so the host's stylesheet never reaches it. The SDK writes
+ * each scale value onto the root element under the app's own custom property name, and puts the
+ * app's `light` / `dark` class on the root too. A plugin stylesheet can then use
+ * `var(--color-base-1-03)` and `.dark &` exactly as the app does, and no plugin has to copy this loop.
+ *
+ * @param {import("bonobo-plugin-sdk/frontend").BonoboUiTheme} theme
+ */
+function apply_theme(theme) {
+	const root = document.documentElement;
+	for (const [name, value] of Object.entries(theme.tokens)) {
+		root.style.setProperty(name, value);
+	}
+	root.classList.toggle("light", theme.mode === "light");
+	root.classList.toggle("dark", theme.mode === "dark");
 }
 
 /**
@@ -1548,8 +1567,8 @@ export async function bonobo_ui_connect() {
 
 	/**
 	 * Theme state — set by `bonobo:init`, replaced by `bonobo:theme` when the member switches the
-	 * host's theme. It stays null when the host sends none, so an older host keeps working and the
-	 * page can fall back to its own colours.
+	 * host's theme. Each one is painted onto the document as it arrives. It stays null when the host
+	 * sends none, and then the document keeps the page's own colours.
 	 *
 	 * @type {import("bonobo-plugin-sdk/frontend").BonoboUiTheme | null}
 	 */
@@ -1854,6 +1873,9 @@ export async function bonobo_ui_connect() {
 					{ once: true },
 				);
 				theme = read_theme(message.theme);
+				if (theme) {
+					apply_theme(theme);
+				}
 				const { data, members, scopes } = bonobo_ui_create_data_api({
 					...create_convex_data_deps(convexClient),
 					// The one thing that tells a lapsed session apart from a broken connection. The
@@ -1902,6 +1924,8 @@ export async function bonobo_ui_connect() {
 				const next = read_theme(message.theme);
 				if (next) {
 					theme = next;
+					// Paint first, so a subscriber that reads computed styles sees the new theme.
+					apply_theme(next);
 					for (const onChange of themeSubscribers) {
 						onChange(next);
 					}

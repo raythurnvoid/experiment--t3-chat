@@ -5,6 +5,8 @@
  * sandbox navigation, and concrete-origin delivery require the browser-project coverage.
  */
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ComponentProps, ReactNode, Ref } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
@@ -117,52 +119,29 @@ function post_ready(nonce: string) {
 	post_from_frame({ type: "bonobo:ready", nonce });
 }
 
-// The app tokens the frame resolves, with the real values from `app.css`. jsdom loads no
-// stylesheet, so the root element carries them inline and `getComputedStyle` reads them back.
-const HOST_THEME_PROPERTIES = {
-	"--color-base-1-01": "oklch(0.14 0.001 85)",
-	"--color-base-1-03": "oklch(0.2 0.004 85)",
-	"--color-base-1-05": "oklch(0.25 0.006 85)",
-	"--color-base-1-06": "oklch(0.27 0.007 85)",
-	"--color-base-1-08": "oklch(0.335 0.009 85)",
-	"--color-base-1-11": "oklch(0.43 0.012 85)",
-	"--color-fg-07": "oklch(0.609 0.012 81)",
-	"--color-fg-09": "oklch(0.745 0.015 81)",
-	"--color-fg-12": "oklch(0.95 0.01 81)",
-	"--color-accent-05": "oklch(0.617 0.15 52)",
-	"--color-accent-06": "oklch(0.681 0.158 56)",
-	"--color-accent-alt-05": "oklch(0.6 0.148 270)",
-	"--color-green-07": "oklch(0.619 0.176 147)",
-	"--color-red-09": "oklch(0.65 0.2 29.2)",
-};
+// Every `--color-<scale>-NN` declaration of the nine numbered scales in `app.css`, name to value.
+// Read from the stylesheet on purpose: the frame keeps its own static list of these names (computed
+// styles cannot be enumerated), and comparing the posted theme against the stylesheet is what
+// catches a scale added, renamed, or resized there without the list following. The shadcn aliases
+// in the same file (`--color-accent: var(--accent)`, `--color-border`, …) have no two-digit step
+// and stay out, as they must.
+const APP_COLOR_SCALES: Record<string, string> = Object.fromEntries(
+	[
+		...readFileSync(join(process.cwd(), "src", "app.css"), "utf8").matchAll(
+			/^\s*(--color-(?:base-1|base-2|base-alt-1|base-alt-2|fg|accent|accent-alt|green|red)-\d{2}):\s*([^;]+);/gmu,
+		),
+	].map((match) => [match[1], match[2]]),
+);
 
+// jsdom loads no stylesheet, so the root element carries the values inline and `getComputedStyle`
+// reads them back.
 function paint_host_theme(mode: "light" | "dark") {
-	for (const [property, value] of Object.entries(HOST_THEME_PROPERTIES)) {
+	for (const [property, value] of Object.entries(APP_COLOR_SCALES)) {
 		document.documentElement.style.setProperty(property, value);
 	}
 	document.documentElement.classList.remove("light", "dark");
 	document.documentElement.classList.add(mode);
 }
-
-// The public token names a plugin writes against, each carrying the value of the app token it is
-// mapped to. Written out here on purpose: the map is module-private in the frame, and a test that
-// imported it could not tell a renamed token from a repointed one.
-const EXPECTED_THEME_TOKENS = {
-	surface: "oklch(0.14 0.001 85)",
-	surfaceRaised: "oklch(0.2 0.004 85)",
-	surfaceOverlay: "oklch(0.25 0.006 85)",
-	surfaceHover: "oklch(0.27 0.007 85)",
-	border: "oklch(0.335 0.009 85)",
-	borderStrong: "oklch(0.43 0.012 85)",
-	text: "oklch(0.95 0.01 81)",
-	textMuted: "oklch(0.745 0.015 81)",
-	textSubtle: "oklch(0.609 0.012 81)",
-	accent: "oklch(0.617 0.15 52)",
-	accentHover: "oklch(0.681 0.158 56)",
-	selection: "oklch(0.6 0.148 270)",
-	success: "oklch(0.619 0.176 147)",
-	danger: "oklch(0.65 0.2 29.2)",
-};
 
 function latest_theme_message() {
 	return postMessageMock.mock.calls.findLast(([value]) => (value as { type?: string }).type === "bonobo:theme")?.[0] as
@@ -327,10 +306,13 @@ describe("RoutePluginsPluginPage", () => {
 
 		// A plugin page is a cross-origin document: it inherits none of the app's custom properties and
 		// cannot read them. So init has to carry every value it needs, resolved — a name would leave the
-		// page with nothing to resolve it against.
+		// page with nothing to resolve it against. The whole map, under the app's own names and
+		// nothing else: a scale the frame's list misses shows up here as a missing key, and a name
+		// the list invents shows up as an extra key with an empty value.
+		expect(Object.keys(APP_COLOR_SCALES)).toHaveLength(104);
 		expect(latest_init_message()?.theme).toEqual({
 			mode: "dark",
-			tokens: EXPECTED_THEME_TOKENS,
+			tokens: APP_COLOR_SCALES,
 		});
 		expect(latest_theme_message()).toBeUndefined();
 
@@ -347,7 +329,7 @@ describe("RoutePluginsPluginPage", () => {
 			nonce,
 			theme: {
 				mode: "light",
-				tokens: { ...EXPECTED_THEME_TOKENS, surface: "oklch(0.98 0.002 85)" },
+				tokens: { ...APP_COLOR_SCALES, "--color-base-1-01": "oklch(0.98 0.002 85)" },
 			},
 		});
 	});
@@ -389,7 +371,7 @@ describe("RoutePluginsPluginPage", () => {
 
 		expect(latest_theme_message()).toMatchObject({
 			nonce,
-			theme: { mode: "light", tokens: { ...EXPECTED_THEME_TOKENS, surface: "oklch(0.98 0.002 85)" } },
+			theme: { mode: "light", tokens: { ...APP_COLOR_SCALES, "--color-base-1-01": "oklch(0.98 0.002 85)" } },
 		});
 	});
 

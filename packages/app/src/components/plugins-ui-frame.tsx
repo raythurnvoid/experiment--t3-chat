@@ -68,44 +68,45 @@ const MAX_READY_MESSAGES = 64;
 
 // #region theme
 /**
- * The colours the host hands a plugin frame, mapped from a public name to the app token that
- * currently supplies it.
+ * The app's numbered colour scales, as `<scale>: <step count>`, and the custom property names they
+ * declare in `app.css` (`--color-base-1-01` … `--color-base-1-12`).
  *
  * A plugin page is a cross-origin document, so it inherits none of the app's custom properties and
- * cannot read them. The host resolves them and posts the values. The public names are the contract a
- * plugin writes against, which is why this is a map and not the app's raw scale: the scales can be
- * renumbered behind these names without breaking a published plugin.
+ * cannot read them. The host resolves every scale value and posts it under its real name. That is
+ * one colour vocabulary for the app and its plugins: a plugin stylesheet uses the exact
+ * `var(--color-base-1-03)` the app uses, and copies app CSS one to one. The list is static because
+ * computed styles cannot be enumerated; the page route test parses `app.css` and fails when the two
+ * drift apart. The shadcn tokens (`--background`, `--border`, `--primary`, …) are placeholders on
+ * their way out, so they are not sent.
  */
-const PLUGIN_THEME_TOKENS = {
-	surface: "--color-base-1-01",
-	surfaceRaised: "--color-base-1-03",
-	surfaceOverlay: "--color-base-1-05",
-	surfaceHover: "--color-base-1-06",
-	border: "--color-base-1-08",
-	borderStrong: "--color-base-1-11",
-	text: "--color-fg-12",
-	textMuted: "--color-fg-09",
-	textSubtle: "--color-fg-07",
-	accent: "--color-accent-05",
-	accentHover: "--color-accent-06",
-	selection: "--color-accent-alt-05",
-	success: "--color-green-07",
-	danger: "--color-red-09",
-} as const;
+const PLUGIN_THEME_SCALES = {
+	"base-1": 12,
+	"base-2": 12,
+	"base-alt-1": 12,
+	"base-alt-2": 12,
+	fg: 12,
+	accent: 10,
+	"accent-alt": 10,
+	green: 12,
+	red: 12,
+};
 
-type PluginsUiFrame_ThemeToken = keyof typeof PLUGIN_THEME_TOKENS;
+const PLUGIN_THEME_PROPERTY_NAMES = Object.entries(PLUGIN_THEME_SCALES).flatMap(([scale, steps]) =>
+	Array.from({ length: steps }, (_, index) => `--color-${scale}-${String(index + 1).padStart(2, "0")}`),
+);
 
 type PluginsUiFrame_Theme = {
 	mode: "light" | "dark";
-	tokens: Record<PluginsUiFrame_ThemeToken, string>;
+	/** Keyed by the full custom property name, `--` prefix included, so a page can `setProperty` it as is. */
+	tokens: Record<string, string>;
 };
 
 /**
  * Is this colour a dark one?
  *
- * Every colour the map above points at is written as a complete `oklch()` value in `app.css`, and
- * OKLCH's first component is perceived lightness from 0 to 1. So one number answers the question. A
- * value this cannot read answers dark, which is what the app paints today.
+ * Every scale value is written as a complete `oklch()` value in `app.css`, and OKLCH's first
+ * component is perceived lightness from 0 to 1. So one number answers the question. A value this
+ * cannot read answers dark, which is what the app paints today.
  */
 function is_dark_theme_color(color: string) {
 	const lightness = /^oklch\(\s*([\d.]+)(%?)/u.exec(color);
@@ -121,8 +122,8 @@ function is_dark_theme_color(color: string) {
  * Read the theme the app is painted with right now.
  *
  * The values come from the root element, so they are whatever the current theme class resolves them
- * to. **The mode is read from the surface colour and not from that class**, so the two halves of one
- * message can never disagree. Today the app's numbered palette is dark-oriented and the theme
+ * to. **The mode is read from the surface colour (`--color-base-1-01`) and not from that class**, so
+ * the two halves of one message can never disagree. Today the app's numbered palette is dark-oriented and the theme
  * provider does not swap it: a member who picks "light" still sees the same dark surfaces. A frame
  * told `mode: "light"` beside those dark values paints its own light panels and its own dark text,
  * then reads the host's dark surface and its light text back over them, and the page ends up
@@ -131,13 +132,13 @@ function is_dark_theme_color(color: string) {
  */
 function read_plugin_theme(): PluginsUiFrame_Theme {
 	const styles = getComputedStyle(document.documentElement);
-	const tokens = {} as Record<PluginsUiFrame_ThemeToken, string>;
-	for (const name of Object.keys(PLUGIN_THEME_TOKENS) as PluginsUiFrame_ThemeToken[]) {
-		tokens[name] = styles.getPropertyValue(PLUGIN_THEME_TOKENS[name]).trim();
+	const tokens: Record<string, string> = {};
+	for (const name of PLUGIN_THEME_PROPERTY_NAMES) {
+		tokens[name] = styles.getPropertyValue(name).trim();
 	}
 
 	return {
-		mode: is_dark_theme_color(tokens.surface) ? "dark" : "light",
+		mode: is_dark_theme_color(tokens["--color-base-1-01"]) ? "dark" : "light",
 		tokens,
 	};
 }

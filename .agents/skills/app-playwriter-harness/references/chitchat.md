@@ -85,22 +85,30 @@ await row.locator("[role=group][aria-label='Choose a reaction']").getByRole("but
 
 ## Theme: the host's light class does not mean a light plugin
 
-The host sends the frame resolved colour values plus a `mode`. Since 2026-08-24 `mode` is read from
-the **surface colour** the host actually paints, not from the root `.light` / `.dark` class
-(`plugins-ui-frame.tsx`). The app's palette is dark-oriented and the theme provider does not swap
-it, so a member on "light" still sees dark surfaces — and the frame now correctly stays on its dark
-palette there. A run that expects `theme-light` on the document element under the host's light
-theme is reading the old bug, not a regression.
+The host sends the frame the app's raw colour scales plus a `mode`. The SDK then writes every scale
+onto the frame's `document.documentElement.style` and toggles a root `light` / `dark` class (the
+same class names the app's theme provider uses). `chitchat.css` reads ten of those scales as
+`var(--color-<scale>-NN, <fallback>)` and keeps its own literals for the rest.
+
+Since 2026-08-24 `mode` is read from the **surface colour** the host actually paints
+(`--color-base-1-01`), not from the root `.light` / `.dark` class (`plugins-ui-frame.tsx`). The
+app's palette is dark-oriented and the theme provider does not swap it, so a member on "light"
+still sees dark surfaces — and the frame correctly stays `dark` there. A run that expects the frame
+root to say `light` under the host's light theme is reading the old bug, not a regression.
 
 Check it by reading both sides:
 
 ```js
 await state.page.evaluate(() => document.documentElement.className) // "light" or "dark"
 await frame.evaluate(() => ({
-	cls: document.documentElement.className, // "" for dark, "theme-light" for light
+	cls: document.documentElement.className, // "dark" or "light", set by the SDK
+	scales: [...document.documentElement.style].filter((n) => n.startsWith("--color-")).length, // 104
+	base: document.documentElement.style.getPropertyValue("--color-base-1-01"), // oklch(...)
 	surface: getComputedStyle(document.documentElement).getPropertyValue("--cc-surface").trim(),
 }))
 ```
+
+`surface` must equal the host's own `getComputedStyle(document.documentElement).getPropertyValue("--color-base-1-01")`.
 
 To exercise the light branch live, make the host surface genuinely light and then toggle the root
 class — the frame's observer watches `class` only, so a style-only change sends nothing:
@@ -115,29 +123,31 @@ await state.page.evaluate(() => {
 })
 ```
 
-The frame then reports `theme-light` while the host class says `dark`, which is the whole point.
-Remove both properties and put the original class back afterwards — this writes to the user's own
-tab.
+The frame then reports `light` while the host class says `dark`, which is the whole point. Remove
+both properties and put the original class back afterwards — this writes to the user's own tab.
 
-**That recipe proves the mode switch, but it does NOT give you a screenshot of the light theme.** The
-host writes all fourteen roles as inline `--bonobo-*` properties on the frame's documentElement, and
-`chitchat.css` reads each one as `var(--bonobo-x, <light-fallback>)`. Overriding only the two surface
-variables leaves every text role still holding the host's **dark** value, so the frame paints
-near-white text on a white ground and almost nothing is readable. That is the fixture being
-incoherent, not a plugin bug: a real host sends one consistent set. Measured 2026-08-24.
+**That recipe proves the mode switch, but it does NOT give you a screenshot of the light theme.**
+Overriding only the two surface scales leaves every `--color-fg-*` step still holding the host's
+**dark** value, so the frame paints near-white text on a white ground and almost nothing is
+readable. That is the fixture being incoherent, not a plugin bug: a real host sends one consistent
+set. Measured 2026-08-24, still true on the raw scales (2026-09-02).
 
-To actually see the plugin's own light palette, strip the host roles so the fallbacks stand:
+To actually see the plugin's own light palette, strip the host scales so the fallbacks stand:
 
 ```js
 await frame.evaluate(() => {
 	const root = document.documentElement;
-	for (const p of [...root.style].filter((n) => n.startsWith("--bonobo-"))) root.style.removeProperty(p);
-	root.classList.add("theme-light");
+	for (const p of [...root.style].filter((n) => n.startsWith("--color-"))) root.style.removeProperty(p);
+	root.classList.remove("dark");
+	root.classList.add("light");
 });
 // --cc-surface #ffffff, --cc-text #1b1b20, color-scheme light
 ```
 
-`color-scheme` is declared in both palette blocks (`dark` on `:root`, `light` on `:root.theme-light`)
+The next `bonobo:theme` message from the host writes the scales and the class back, so do the
+readback right after the strip.
+
+`color-scheme` is declared in both palette blocks (`dark` on `:root`, `light` on `:root.light`)
 and a test asserts it. It is what makes the scrollbar match: the frame is its own document, so the
 app's own `html.dark { color-scheme: dark }` never reaches it, and without it Chrome painted a light
 scrollbar with stepper arrows down the middle of the dark message list.

@@ -2044,25 +2044,24 @@ describe("data writes", () => {
 });
 
 describe("client.theme", () => {
+	// A slice of the app's scales, under the names the host really sends. The full set is 104
+	// entries; the SDK writes whatever arrives, so a few are enough here.
 	const HOST_THEME = {
 		mode: "dark",
 		tokens: {
-			surface: "oklch(0.2 0.01 260)",
-			surfaceRaised: "oklch(0.24 0.01 260)",
-			surfaceOverlay: "oklch(0.28 0.01 260)",
-			surfaceHover: "oklch(0.3 0.01 260)",
-			border: "oklch(0.34 0.01 260)",
-			borderStrong: "oklch(0.44 0.01 260)",
-			text: "oklch(0.96 0.01 260)",
-			textMuted: "oklch(0.74 0.01 260)",
-			textSubtle: "oklch(0.6 0.01 260)",
-			accent: "oklch(0.62 0.16 260)",
-			accentHover: "oklch(0.68 0.16 260)",
-			selection: "oklch(0.4 0.1 260)",
-			success: "oklch(0.66 0.14 150)",
-			danger: "oklch(0.6 0.2 25)",
+			"--color-base-1-01": "oklch(0.14 0.001 85)",
+			"--color-base-1-03": "oklch(0.2 0.004 85)",
+			"--color-fg-12": "oklch(0.95 0.01 81)",
+			"--color-accent-05": "oklch(0.617 0.15 52)",
+			"--color-red-09": "oklch(0.65 0.2 29.2)",
 		},
 	};
+
+	afterEach(() => {
+		// The SDK paints onto the document, so a theme one test applied must not reach the next.
+		document.documentElement.removeAttribute("style");
+		document.documentElement.classList.remove("light", "dark");
+	});
 
 	test("carries the host theme from init and replaces it on every later switch", async () => {
 		spy_on_post_message();
@@ -2073,16 +2072,32 @@ describe("client.theme", () => {
 		// A plugin frame is its own document and inherits none of the host's custom properties, so
 		// the finished values have to arrive over the bridge.
 		expect(client.theme.current()).toEqual(HOST_THEME);
+		// And the SDK paints them onto the document itself, under the app's own names and with the
+		// app's own theme class, so a plugin stylesheet can use `var(--color-base-1-03)` and
+		// `.dark &` exactly as the app does without any plugin code in between.
+		const root = document.documentElement;
+		expect(root.style.getPropertyValue("--color-base-1-01")).toBe("oklch(0.14 0.001 85)");
+		expect(root.style.getPropertyValue("--color-red-09")).toBe("oklch(0.65 0.2 29.2)");
+		expect(root.classList.contains("dark")).toBe(true);
+		expect(root.classList.contains("light")).toBe(false);
 
 		const onChange = vi.fn();
 		const unsubscribe = client.theme.subscribe(onChange);
 		// Subscribing never replays the theme the page already read.
 		expect(onChange).not.toHaveBeenCalled();
 
-		const lightTheme = { mode: "light", tokens: { ...HOST_THEME.tokens, surface: "oklch(0.99 0 0)" } };
+		const lightTheme = {
+			mode: "light",
+			tokens: { ...HOST_THEME.tokens, "--color-base-1-01": "oklch(0.99 0 0)" },
+		};
 		post_from_host({ type: "bonobo:theme", nonce: NONCE, theme: lightTheme });
 		expect(onChange).toHaveBeenNthCalledWith(1, lightTheme);
 		expect(client.theme.current()).toEqual(lightTheme);
+		// A switch repaints the document the same way, and swaps the class instead of stacking a
+		// second one.
+		expect(root.style.getPropertyValue("--color-base-1-01")).toBe("oklch(0.99 0 0)");
+		expect(root.classList.contains("light")).toBe(true);
+		expect(root.classList.contains("dark")).toBe(false);
 
 		unsubscribe();
 		post_from_host({ type: "bonobo:theme", nonce: NONCE, theme: HOST_THEME });
@@ -2090,6 +2105,7 @@ describe("client.theme", () => {
 		// The store keeps following the host after the last subscriber left, so a page that only
 		// reads current() on demand still sees the theme the member is in.
 		expect(client.theme.current()).toEqual(HOST_THEME);
+		expect(root.classList.contains("dark")).toBe(true);
 	});
 
 	test("keeps the last good theme when the host sends something else", async () => {
@@ -2103,19 +2119,28 @@ describe("client.theme", () => {
 		// Every field crosses an origin boundary, so a message that fails the check is dropped
 		// whole. Half a theme would paint a page with one wrong colour and no way to notice.
 		post_from_host({ type: "bonobo:theme", nonce: NONCE, theme: { mode: "dusk", tokens: {} } });
-		post_from_host({ type: "bonobo:theme", nonce: NONCE, theme: { mode: "light", tokens: { text: 7 } } });
+		post_from_host({
+			type: "bonobo:theme",
+			nonce: NONCE,
+			theme: { mode: "light", tokens: { "--color-fg-12": 7 } },
+		});
 		// The nonce is what proves the message came from this frame's host.
 		post_from_host({ type: "bonobo:theme", nonce: "other-nonce", theme: { mode: "light", tokens: {} } });
 
 		expect(onChange).not.toHaveBeenCalled();
 		expect(client.theme.current()).toEqual(HOST_THEME);
+		// Nothing reached the document either: the dropped light theme left the dark class alone.
+		expect(document.documentElement.classList.contains("dark")).toBe(true);
+		expect(document.documentElement.classList.contains("light")).toBe(false);
 	});
 
 	test("stays null when the host sends no theme at all", async () => {
-		// An older host knows nothing about this channel. The page must be able to tell that apart
-		// from a theme, so it can fall back to its own colours instead of reading empty strings.
+		// The page must be able to tell "no theme" apart from a theme, so it can keep its own colours
+		// instead of reading empty strings. The document is left alone too.
 		const client = await connect_client();
 		expect(client.theme.current()).toBeNull();
+		expect(document.documentElement.getAttribute("style")).toBeNull();
+		expect(document.documentElement.className).toBe("");
 	});
 });
 
