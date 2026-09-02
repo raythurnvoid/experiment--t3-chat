@@ -755,7 +755,13 @@ Windows and CAS (verified 2026-08-17, two-user E2E on 0.1.3):
   refresh with `bonobo:token`: the iframe `src` and its `nonce` do not change, the composer draft
   survives, and exactly one new `plugins_ui_sessions` doc appears. To watch this, poll the table for
   the new doc and read the iframe `src` fragment; a `nonce` change now means a remount, which is a
-  regression. Use the offline recipe below.
+  regression. Use the offline recipe below. Verified again 2026-09-02 on SDK 0.11.0 with the JWT
+  delivered over the bridge: after a proven 80-second renderer suspension with the network back
+  2.6 s after resume, the host saw one `bonobo:token-refresh-request` 1.5 s after resume and
+  minted S2 4.9 s after resume; the frame kept its nonce, its draft, an enabled composer, and zero
+  exchange requests. The frame's client first logged `Failed to authenticate: … Token expired 9
+  seconds ago` for the old JWT, then authenticated with the delivered one, and a message sent from
+  a second tab arrived in the first frame.
 
 Offline session re-mint recipe (Windows, updated 2026-09-02):
 
