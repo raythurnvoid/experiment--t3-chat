@@ -108,7 +108,7 @@ await frame.evaluate(() => ({
 }))
 ```
 
-`surface` must equal the host's own `getComputedStyle(document.documentElement).getPropertyValue("--color-base-1-01")`.
+`surface` must equal the host's own `getComputedStyle(document.documentElement).getPropertyValue("--color-base-1-01").trim()`.
 
 To exercise the light branch live, make the host surface genuinely light and then toggle the root
 class — the frame's observer watches `class` only, so a style-only change sends nothing:

@@ -68,16 +68,16 @@ const MAX_READY_MESSAGES = 64;
 
 // #region theme
 /**
- * The app's numbered colour scales, as `<scale>: <step count>`, and the custom property names they
- * declare in `app.css` (`--color-base-1-01` … `--color-base-1-12`).
+ * The app's numbered colour scales from `app.css`, as `<scale>: <step count>`. Each scale declares
+ * one custom property per step, `--color-<scale>-01` up to `--color-<scale>-<count>`.
  *
  * A plugin page is a cross-origin document, so it inherits none of the app's custom properties and
- * cannot read them. The host resolves every scale value and posts it under its real name. That is
- * one colour vocabulary for the app and its plugins: a plugin stylesheet uses the exact
- * `var(--color-base-1-03)` the app uses, and copies app CSS one to one. The list is static because
- * computed styles cannot be enumerated; the page route test parses `app.css` and fails when the two
- * drift apart. The shadcn tokens (`--background`, `--border`, `--primary`, …) are placeholders on
- * their way out, so they are not sent.
+ * cannot read them. The host resolves every scale value and posts it under its real name. So the app
+ * and its plugins share one colour vocabulary: a plugin stylesheet writes the same
+ * `var(--color-base-1-03)` the app writes. The list is static because computed styles cannot be
+ * enumerated. The page route test parses `app.css` and fails when a scale is added, renamed, or
+ * resized there without this list following. The shadcn tokens (`--background`, `--border`,
+ * `--primary`, …) are placeholders that will be removed, so they are not sent.
  */
 const PLUGIN_THEME_SCALES = {
 	"base-1": 12,
@@ -91,13 +91,17 @@ const PLUGIN_THEME_SCALES = {
 	red: 12,
 };
 
+// The 104 custom property names the scales above declare, in the same two-digit form as `app.css`.
 const PLUGIN_THEME_PROPERTY_NAMES = Object.entries(PLUGIN_THEME_SCALES).flatMap(([scale, steps]) =>
 	Array.from({ length: steps }, (_, index) => `--color-${scale}-${String(index + 1).padStart(2, "0")}`),
 );
 
 type PluginsUiFrame_Theme = {
 	mode: "light" | "dark";
-	/** Keyed by the full custom property name, `--` prefix included, so a page can `setProperty` it as is. */
+	/**
+	 * Keyed by the full custom property name, `--` prefix included, so a page can pass the key to
+	 * `setProperty` as it is.
+	 */
 	tokens: Record<string, string>;
 };
 
@@ -123,8 +127,9 @@ function is_dark_theme_color(color: string) {
  *
  * The values come from the root element, so they are whatever the current theme class resolves them
  * to. **The mode is read from the surface colour (`--color-base-1-01`) and not from that class**, so
- * the two halves of one message can never disagree. Today the app's numbered palette is dark-oriented and the theme
- * provider does not swap it: a member who picks "light" still sees the same dark surfaces. A frame
+ * the two halves of one message can never disagree. Today the app's numbered palette is
+ * dark-oriented and the theme provider does not swap it: a member who picks "light" still sees the
+ * same dark surfaces. A frame
  * told `mode: "light"` beside those dark values paints its own light panels and its own dark text,
  * then reads the host's dark surface and its light text back over them, and the page ends up
  * unreadable. Reading the mode off the colour keeps the frame matching the app around it, and when
@@ -336,6 +341,10 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 			if (initMessage) {
 				post_to_iframe(initMessage);
 				clearTimeout(startupDeadline);
+				// init carries the theme read when the session was minted. If the member switched theme
+				// while the frame was still loading, the sender above dropped that switch because the
+				// frame was not ready. Send it now; the sender skips it when nothing changed.
+				postThemeRef.current?.(read_plugin_theme());
 			}
 		};
 

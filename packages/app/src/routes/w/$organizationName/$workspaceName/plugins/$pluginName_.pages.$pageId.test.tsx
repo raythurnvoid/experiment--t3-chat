@@ -119,18 +119,17 @@ function post_ready(nonce: string) {
 	post_from_frame({ type: "bonobo:ready", nonce });
 }
 
-// Every `--color-<scale>-NN` declaration of the nine numbered scales in `app.css`, name to value.
-// Read from the stylesheet on purpose: the frame keeps its own static list of these names (computed
-// styles cannot be enumerated), and comparing the posted theme against the stylesheet is what
-// catches a scale added, renamed, or resized there without the list following. The shadcn aliases
-// in the same file (`--color-accent: var(--accent)`, `--color-border`, …) have no two-digit step
-// and stay out, as they must.
+// Every `--color-<scale>-NN` step declared in `app.css`, name to value: 104 entries across the nine
+// numbered scales today. Read from the stylesheet on purpose, and match any scale name rather than
+// the nine the frame knows: the frame keeps its own static list of these names (computed styles
+// cannot be enumerated), and comparing the posted theme against the stylesheet is what catches a
+// scale added, renamed, or resized there without the list following. A scale new to both would slip
+// past a list of names here. The shadcn aliases in the same file (`--color-accent: var(--accent)`,
+// `--color-border`, …) have no two-digit step and stay out, as they must.
 const APP_COLOR_SCALES: Record<string, string> = Object.fromEntries(
-	[
-		...readFileSync(join(process.cwd(), "src", "app.css"), "utf8").matchAll(
-			/^\s*(--color-(?:base-1|base-2|base-alt-1|base-alt-2|fg|accent|accent-alt|green|red)-\d{2}):\s*([^;]+);/gmu,
-		),
-	].map((match) => [match[1], match[2]]),
+	[...readFileSync(join(process.cwd(), "src", "app.css"), "utf8").matchAll(/^\s*(--color-[a-z0-9-]+-\d{2}):\s*([^;]+);/gmu)].map(
+		(match) => [match[1], match[2]],
+	),
 );
 
 // jsdom loads no stylesheet, so the root element carries the values inline and `getComputedStyle`
@@ -331,6 +330,36 @@ describe("RoutePluginsPluginPage", () => {
 				mode: "light",
 				tokens: { ...APP_COLOR_SCALES, "--color-base-1-01": "oklch(0.98 0.002 85)" },
 			},
+		});
+	});
+
+	test("a theme switch while the frame is still loading is sent right after init", async () => {
+		paint_host_theme("dark");
+
+		const PageComponent = Route.options.component as () => JSX.Element;
+		const { container } = render(<PageComponent />);
+		const { nonce } = bridge_for(container);
+		// Let the session mint settle, so init already holds the dark theme.
+		await act(async () => {
+			await Promise.resolve();
+		});
+
+		// The member switches to light before the frame has said ready. Nothing can be sent yet.
+		await act(async () => {
+			document.documentElement.style.setProperty("--color-base-1-01", "oklch(0.98 0.002 85)");
+			document.documentElement.classList.remove("dark");
+			document.documentElement.classList.add("light");
+			await Promise.resolve();
+		});
+		expect(latest_theme_message()).toBeUndefined();
+
+		// Ready arrives: init still carries the theme from mint time, so the switch must follow it,
+		// or the frame paints dark until the member toggles again.
+		await act(async () => post_ready(nonce));
+		expect(latest_init_message()?.theme.mode).toBe("dark");
+		expect(latest_theme_message()).toMatchObject({
+			nonce,
+			theme: { mode: "light", tokens: { "--color-base-1-01": "oklch(0.98 0.002 85)" } },
 		});
 	});
 

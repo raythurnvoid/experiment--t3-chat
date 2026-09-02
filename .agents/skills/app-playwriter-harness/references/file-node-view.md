@@ -6,6 +6,7 @@ Use this for the selected-file editor surface under `/files?nodeId=<file-id>`. K
 
 - Editor route shape: `/w/:organizationName/:workspaceName/files?nodeId=<id>`.
 - Editor mode query values: `view=rich_text_editor`, `view=plain_text_editor`, `view=diff_editor`.
+- Plugin file views (Video Player and any plugin whose manifest declares a `fileViews` match for the content type) are extra tabs in the same switcher, named by the view's title (`getByRole("tab", { name: "Video player" })`, class `MyTabsTab`). They are never the default and there is no `view=` query value for them. Selecting the tab mints the frame session and mounts `.PluginsUiFrame` inside `.FileNodeViewPluginView`; wait ~10 s and take the frame from `page.frames()` as for a plugin page. A non-plugin video node therefore shows `File details` and no iframe until the tab is clicked. Verified 2026-09-02 on `recording.mp4` with Video Player 0.1.2.
 - A `nonCollaborative` file (service uploads like Council `/meetings/<id>/transcript.md` and `summary.md`) supports every view its document shape supports, and the switcher radios do check. `files_resolve_effective_editor_view` (`packages/app/src/lib/files.ts`) takes only `requestedView` and `rootKind`; its one clamp is `plain_text` shape + `rich_text_editor` request. A non-collaborative `rich_text` file opens Rich in `FileEditorRichTextNonCollab` and Diff in `FileEditorDiffNonCollab`. Changed 2026-08-31; before that it really was clamped to Monaco.
 - Scroll owner: `.FileNodeView-editor-area`.
 - Content panel: `.FileNodeView-content-panel`.

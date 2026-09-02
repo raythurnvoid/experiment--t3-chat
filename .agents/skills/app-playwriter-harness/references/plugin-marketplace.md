@@ -816,7 +816,7 @@ properties, `--color-base-1-01` … `--color-red-12`) plus `mode`, and the SDK w
 frame's `document.documentElement.style` and toggles a root `light` / `dark` class. This holds for a
 plugin page and for a file view alike, and for plugins that never read the theme themselves (Gallery,
 Video Player, Council). Verified 2026-09-02 on the dev host in all four frames (Gallery page, Council
-page, Video Player file view, Chitchat page).
+page, Video Player file view, Chitchat page) and on the Pages host (Chitchat page in `chitchat-qa`).
 
 Read it with a real `Frame` handle (never `snapshot()`, see `known-hazards.md`), and compare against
 the host's computed value in the same call:
@@ -851,7 +851,7 @@ Three things that look wrong and are not:
 Break-on-purpose: set `--color-green-12` to `initial` on the host root (its computed value becomes
 empty) and toggle the class. The SDK writes the empty string, which removes the property, so the frame
 count drops to 103. Remove the override and toggle again to get 104 back. Chitchat's own readback is
-`getComputedStyle(frame.document.documentElement).getPropertyValue("--cc-surface")`, which must equal
+`frame.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--cc-surface").trim())`, which must equal
 `hostBase` — the recipe with the light-surface fixture lives in `chitchat.md`.
 
 ## Reading a table count without fooling yourself
