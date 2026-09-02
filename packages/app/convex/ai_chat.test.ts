@@ -610,7 +610,8 @@ describe("thread_create", () => {
 		// A plugin frame's Convex client authenticates with the plugin-session JWT, and a plugin may
 		// call any function of the app with it. This mutation lets an anonymous member through, so
 		// it is the case where reading that JWT as an anonymous user would change the outcome: the
-		// classifier must answer no user at all, not a user with fewer permissions.
+		// classifier must answer no user at all, not a user with fewer permissions. This first call
+		// only proves the `/plugins-ui` issuer is not matched as the anonymous issuer it starts with.
 		const asPluginSession = t.withIdentity({
 			issuer: `${process.env.VITE_CONVEX_HTTP_URL!}/plugins-ui`,
 			subject: seeded.userId,
@@ -625,7 +626,8 @@ describe("thread_create", () => {
 		expect(refused._nay?.message).toBe("Unauthenticated");
 
 		// The plugin branch must win by issuer alone. A crafted `external_id` claim must not upgrade
-		// the token to a signed-in member.
+		// the token to a signed-in member. This is the call that fails when the plugin branch is
+		// removed from the classifier: these claims would then read as a Clerk member.
 		const asPluginSessionWithExternalId = t.withIdentity({
 			issuer: `${process.env.VITE_CONVEX_HTTP_URL!}/plugins-ui`,
 			subject: seeded.userId,

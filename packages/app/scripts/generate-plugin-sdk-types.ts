@@ -181,7 +181,7 @@ function generate_plugin_sdk_types_inline_alias(
 	const { program, options } = emitted;
 	const checker = program.getTypeChecker();
 
-	const relative_from_entry = (fileName: string) => {
+	const relativeFromEntry = (fileName: string) => {
 		const relative = path.posix.relative(path.posix.dirname(entryPath), fileName).replace(/\.ts$/, ".js");
 		return relative.startsWith(".") ? relative : `./${relative}`;
 	};
@@ -255,7 +255,7 @@ function generate_plugin_sdk_types_inline_alias(
 				const importedName = (localDeclaration.propertyName ?? localDeclaration.name).text;
 				const pointer = importedModule.isExternalLibraryImport
 					? importedSpecifier
-					: relative_from_entry(importedModule.resolvedFileName);
+					: relativeFromEntry(importedModule.resolvedFileName);
 				edits.push({
 					start: node.typeName.getStart(declarationFile),
 					end: node.typeName.getEnd(),
@@ -265,7 +265,7 @@ function generate_plugin_sdk_types_inline_alias(
 				edits.push({
 					start: node.typeName.getStart(declarationFile),
 					end: node.typeName.getEnd(),
-					text: `import("${relative_from_entry(localFile.fileName)}").${node.typeName.text}`,
+					text: `import("${relativeFromEntry(localFile.fileName)}").${node.typeName.text}`,
 				});
 			}
 		}
