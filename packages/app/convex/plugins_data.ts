@@ -2,6 +2,7 @@ import { compareValues, v, type Infer } from "convex/values";
 import {
 	paginationOptsValidator,
 	paginationResultValidator,
+	type PaginationResult,
 	type RegisteredMutation,
 	type RegisteredQuery,
 } from "convex/server";
@@ -5027,7 +5028,8 @@ export const watch_my_scopes = query({
  * These are public queries: the plugin iframe subscribes to them directly with its plugin-session
  * JWT (see plugins_ui.ts). Their answer is also the kill signal: the query throws only when there
  * is no auth identity at all, and answers null for every denial, so a revoked frame sees its
- * subscription die instead of an error.
+ * subscription die instead of an error. One door differs: `watch_documents_page` answers an empty
+ * final page instead of null, because `usePaginatedQuery` cannot take null.
  *
  * The server deliberately does not cap live subscriptions per session. Convex gives a query no
  * subscribe hook to count against, so a hostile frame that talks to Convex directly can open more
@@ -5261,6 +5263,130 @@ export const watch_documents = query({
 
 		const truncated = documents.length > args.limit;
 		return { docs: (truncated ? documents.slice(0, args.limit) : documents).map(to_public_document), truncated };
+	},
+});
+
+/**
+ * The paginated twin of `watch_documents`, for a timeline that keeps its older pages alive.
+ *
+ * `usePaginatedQuery` in `convex/react` subscribes to every page it has loaded. So a plugin can
+ * scroll back through a channel and still see edits and deletions inside every page it holds. The
+ * session check, the scope rule, and the index are the same as in `watch_documents`. Only the
+ * window shape differs.
+ *
+ * The answer differs from the other reads in one way: a refusal is an empty final page, never
+ * null. `usePaginatedQuery` cannot take null, and an empty final page is what the app's own
+ * paginated queries answer on refusal (see `threads_list` in ai_chat.ts). Bad input answers the
+ * same page. The plugin tells a refusal from an expired session with the token expiry the host
+ * gave it, so the door does not need to say which one it was.
+ *
+ * A page holds at most 100 documents, and the server also stops the scan at 100 rows read. A
+ * `numItems` outside 1..100 is refused like any other bad input, so a frame cannot ask for a
+ * bigger page than the other reads allow.
+ */
+export const watch_documents_page = query({
+	args: {
+		collection: v.string(),
+		keyPrefix: v.optional(v.string()),
+		keyStartExclusive: v.optional(v.string()),
+		keyEndInclusive: v.optional(v.string()),
+		paginationOpts: paginationOptsValidator,
+	},
+	returns: paginationResultValidator(document_validator),
+	// The explicit return type keeps the generated SDK type one `PaginationResult`. Without it the
+	// empty page below infers as a second union member with `page: never[]`, which hides
+	// `pageStatus` from the plugin.
+	handler: async (ctx, args): Promise<PaginationResult<Infer<typeof document_validator>>> => {
+		// One answer for every refusal, every bad input, and an empty range: the hook keeps
+		// rendering, and it renders nothing.
+		const emptyPage = { page: [], isDone: true, continueCursor: "" };
+
+		const authorized = await db_authorize_page_read(ctx);
+		if (!authorized || !db_page_grants(authorized, "plugin.data.read")) {
+			return emptyPage;
+		}
+		const installation = authorized.installation;
+
+		const collection = validate_name(args.collection, "Collection names");
+		if (collection._nay) {
+			return emptyPage;
+		}
+		const numItems = args.paginationOpts.numItems;
+		if (!Number.isInteger(numItems) || numItems < 1 || numItems > plugins_data_MAX_LIST_PAGE_SIZE) {
+			return emptyPage;
+		}
+		const keyPrefix = args.keyPrefix === undefined ? Result({ _yay: null }) : validate_key_prefix(args.keyPrefix);
+		if (keyPrefix._nay) {
+			return emptyPage;
+		}
+		const keyStartExclusive =
+			args.keyStartExclusive === undefined ? Result({ _yay: null }) : validate_name(args.keyStartExclusive, "Keys");
+		if (keyStartExclusive._nay) {
+			return emptyPage;
+		}
+		const keyEndInclusive =
+			args.keyEndInclusive === undefined ? Result({ _yay: null }) : validate_name(args.keyEndInclusive, "Keys");
+		if (keyEndInclusive._nay) {
+			return emptyPage;
+		}
+
+		const keyRange =
+			keyPrefix._yay === null ? null : { lower: keyPrefix._yay, upper: key_prefix_upper_bound(keyPrefix._yay) };
+		const range = intersect_key_ranges({
+			prefixRange: keyRange,
+			startExclusive: keyStartExclusive._yay,
+			endInclusive: keyEndInclusive._yay,
+		});
+		if (range === "empty") {
+			return emptyPage;
+		}
+
+		// Same scope rule as `watch_documents`: the prefix decides which half of the collection this
+		// read may see, and the scope goes into the index range, never into a filter.
+		const readScope =
+			keyPrefix._yay === null
+				? null
+				: await db_resolve_scope(ctx, {
+						installationId: installation._id,
+						collection: collection._yay,
+						key: keyPrefix._yay,
+					});
+		if (
+			readScope &&
+			!(await db_can_use_scope(ctx, {
+				installation,
+				scopeId: readScope.scopeId,
+				userId: authorized.userId,
+				permission: "content.read",
+			}))
+		) {
+			return emptyPage;
+		}
+
+		// Never read the usage doc here, for the reason given in `watch_documents`. The row cap comes
+		// after the spread so a caller cannot raise it.
+		const result = await ctx.db
+			.query("plugins_data")
+			.withIndex("by_installation_collection_scope_key", (q) => {
+				const base = q
+					.eq("installationId", installation._id)
+					.eq("collection", collection._yay)
+					.eq("scopeId", readScope?.scopeId);
+				const lowerBounded =
+					range.lower === null
+						? base
+						: range.lower.inclusive
+							? base.gte("key", range.lower.value)
+							: base.gt("key", range.lower.value);
+				return range.upper === null
+					? lowerBounded
+					: range.upper.inclusive
+						? lowerBounded.lte("key", range.upper.value)
+						: lowerBounded.lt("key", range.upper.value);
+			})
+			.paginate({ ...args.paginationOpts, numItems, maximumRowsRead: plugins_data_MAX_LIST_PAGE_SIZE });
+
+		return { ...result, page: result.page.map(to_public_document) };
 	},
 });
 

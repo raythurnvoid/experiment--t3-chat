@@ -6192,6 +6192,178 @@ describe("watch_documents", () => {
 	});
 });
 
+describe("watch_documents_page", () => {
+	const empty_page = { page: [], isDone: true, continueCursor: "" };
+
+	test("throws with no auth identity and answers an empty final page for non-page and dead-session callers", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const read = async (reader: typeof fixture.asPage) =>
+			await reader.query(api.plugins_data.watch_documents_page, {
+				collection: "messages",
+				paginationOpts: { numItems: 10, cursor: null },
+			});
+
+		await expect(
+			t.query(api.plugins_data.watch_documents_page, {
+				collection: "messages",
+				paginationOpts: { numItems: 10, cursor: null },
+			}),
+		).rejects.toThrow(/Unauthenticated/);
+
+		// The member's own Clerk identity is not a plugin page. Where the other reads answer null,
+		// this door answers an empty final page, so `usePaginatedQuery` keeps rendering.
+		expect(await read(fixture.asUser)).toEqual(empty_page);
+
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_ui_sessions", fixture.sessionId, { expiresAt: Date.now() - 1000 });
+		});
+		expect(await read(fixture.asPage)).toEqual(empty_page);
+
+		// A revoked session answers the same page, never null.
+		await t.run(async (ctx) => {
+			await ctx.db.delete("plugins_ui_sessions", fixture.sessionId);
+		});
+		const revoked = await read(fixture.asPage);
+		expect(revoked).not.toBeNull();
+		expect(revoked).toEqual(empty_page);
+	});
+
+	test("pages the range in ascending key order and stops the scan at 100 rows", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const keys = Array.from({ length: 120 }, (_, index) => `a:${String(index).padStart(3, "0")}`);
+		for (const key of keys) {
+			const written = await t.mutation(internal.plugins_data.write_document, {
+				principal: store_principal(fixture),
+				collection: "messages",
+				key,
+				value: { key },
+			});
+			expect(written._nay).toBeUndefined();
+		}
+		const read = async (cursor: string | null) =>
+			await fixture.asPage.query(api.plugins_data.watch_documents_page, {
+				collection: "messages",
+				keyPrefix: "a:",
+				paginationOpts: { numItems: 100, cursor, maximumRowsRead: 1000 },
+			});
+
+		// The first page holds the first 100 keys and says more follow. The server's own row cap wins
+		// over the caller's, so the page also carries the split status instead of a bigger page.
+		const first = await read(null);
+		expect(first.page.map((doc) => doc.key)).toEqual(keys.slice(0, 100));
+		expect(first.isDone).toBe(false);
+		expect(first.pageStatus).toBe("SplitRequired");
+
+		const second = await read(first.continueCursor);
+		expect(second.page.map((doc) => doc.key)).toEqual(keys.slice(100));
+		expect(second.isDone).toBe(true);
+	});
+
+	test("refuses a page size outside 1..100 with an empty final page", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		const written = await t.mutation(internal.plugins_data.write_document, {
+			principal: store_principal(fixture),
+			collection: "messages",
+			key: "a:1",
+			value: { key: "a:1" },
+		});
+		expect(written._nay).toBeUndefined();
+		const read = async (numItems: number) =>
+			await fixture.asPage.query(api.plugins_data.watch_documents_page, {
+				collection: "messages",
+				paginationOpts: { numItems, cursor: null },
+			});
+
+		// The baseline answers, so every refusal below comes from the page size alone.
+		expect((await read(1)).page).toHaveLength(1);
+
+		expect(await read(0)).toEqual(empty_page);
+		expect(await read(101)).toEqual(empty_page);
+		expect(await read(2.5)).toEqual(empty_page);
+	});
+
+	test("a member outside a private scope gets an empty final page, never null", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t, { clerkUserId: "page-scope-owner" });
+		const outsider = await join_member_with_role(t, fixture, {
+			clerkUserId: "page-scope-outsider",
+			role: "member",
+		});
+		const created = await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "create", scopeId: "p/stable", collections: ["messages"], keyPrefix: "p/stable/" },
+		});
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+		const appended = await fixture.asPage.mutation(api.plugins_data.user_append_document, {
+			collection: "messages",
+			keyPrefix: "p/stable/",
+			value: { text: "inside" },
+			clientRequestId: "page-scope-inside",
+		});
+		if (appended._nay) {
+			throw new Error(appended._nay.message);
+		}
+		const read = async (reader: typeof fixture.asPage) =>
+			await reader.query(api.plugins_data.watch_documents_page, {
+				collection: "messages",
+				keyPrefix: "p/stable/",
+				paginationOpts: { numItems: 10, cursor: null },
+			});
+
+		expect((await read(fixture.asPage)).page.map((doc) => doc.value)).toEqual([{ text: "inside" }]);
+
+		const refused = await read(outsider.asPage);
+		expect(refused).not.toBeNull();
+		expect(refused).toEqual(empty_page);
+	});
+
+	test("bad input and an empty interval answer the empty final page", async () => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		for (const key of ["a:1", "a:2", "a:3"]) {
+			const written = await t.mutation(internal.plugins_data.write_document, {
+				principal: store_principal(fixture),
+				collection: "messages",
+				key,
+				value: { key },
+			});
+			expect(written._nay).toBeUndefined();
+		}
+		const read = async (args: {
+			collection?: string;
+			keyPrefix?: string;
+			keyStartExclusive?: string;
+			keyEndInclusive?: string;
+		}) =>
+			await fixture.asPage.query(api.plugins_data.watch_documents_page, {
+				collection: args.collection ?? "messages",
+				...(args.keyPrefix === undefined ? {} : { keyPrefix: args.keyPrefix }),
+				...(args.keyStartExclusive === undefined ? {} : { keyStartExclusive: args.keyStartExclusive }),
+				...(args.keyEndInclusive === undefined ? {} : { keyEndInclusive: args.keyEndInclusive }),
+				paginationOpts: { numItems: 10, cursor: null },
+			});
+
+		// The interval bounds intersect with the prefix the same way as in `watch_documents`.
+		expect((await read({ keyStartExclusive: "a:1", keyEndInclusive: "a:3" })).page.map((doc) => doc.key)).toEqual([
+			"a:2",
+			"a:3",
+		]);
+		expect((await read({ keyPrefix: "a:", keyStartExclusive: "a:2" })).page.map((doc) => doc.key)).toEqual(["a:3"]);
+
+		expect(await read({ collection: "bad name" })).toEqual(empty_page);
+		expect(await read({ keyPrefix: "no space" })).toEqual(empty_page);
+		expect(await read({ keyStartExclusive: "" })).toEqual(empty_page);
+		expect(await read({ keyEndInclusive: " padded " })).toEqual(empty_page);
+
+		// An inverted pair is an empty range, and an empty range is the same empty final page.
+		expect(await read({ keyStartExclusive: "a:3", keyEndInclusive: "a:1" })).toEqual(empty_page);
+	});
+});
+
 describe("watch_recent", () => {
 	/** Appends `count` documents five seconds apart and answers their keys, oldest first. */
 	async function append_over_time(

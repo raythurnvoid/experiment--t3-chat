@@ -2447,9 +2447,15 @@ importers:
         specifier: 1.42.2
         version: 1.42.2(@clerk/clerk-react@5.61.3(react-dom@19.2.4(react@19.2.4))(react@19.2.4))(react@19.2.4)
     devDependencies:
+      '@types/react':
+        specifier: ^19.2.14
+        version: 19.2.14
       happy-dom:
         specifier: 20.0.11
         version: 20.0.11
+      react:
+        specifier: 19.2.4
+        version: 19.2.4
       typescript:
         specifier: ^7.0.2
         version: 7.0.2
