@@ -909,6 +909,48 @@ count drops to 103. Remove the override and toggle again to get 104 back. Chitch
 `frame.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue("--cc-surface").trim())`, which must equal
 `hostBase` — the recipe with the light-surface fixture lives in `chitchat.md`.
 
+## Calling the plugin doors from inside a frame
+
+Since SDK 0.12.0 the SDK client carries `convex` (the frame's own authenticated `ConvexClient`) and
+`api` (references to the plugin doors). A plugin never puts that client on `window`, so reach it
+through the plugin's React root: Chitchat renders `<App client={client} />`, and the `client` prop
+sits on the first fiber below the container. Verified 2026-09-02 on Chitchat 0.6.4 (dev host); the
+same walk on 0.6.3 found the client with `convex` and `api` both `undefined`, which is the negative
+control for "this frame really runs the 0.12.0 SDK".
+
+```js
+const frame = state.page.frames().filter((f) => f.url().includes("/plugins-ui/")).at(-1);
+const out = await frame.evaluate(async () => {
+	const container = document.getElementById("root");
+	const key = Object.keys(container).find((k) => k.startsWith("__reactContainer$"));
+	const queue = [container[key]];
+	let client = null;
+	while (queue.length && !client) {
+		const f = queue.shift();
+		if (f?.memoizedProps?.client?.context) client = f.memoizedProps.client;
+		if (f?.child) queue.push(f.child);
+		if (f?.sibling) queue.push(f.sibling);
+	}
+	const page = await client.convex.query(client.api.plugins_data.list_members, { limit: 5 });
+	// A door outside `api`: a string "file:function" is a valid function reference at run time.
+	const anagraphic = await client.convex.query("users:get_anagraphic", { userId: client.context.userId });
+	return { hasConvex: !!client.convex, members: page?.members?.length, anagraphic };
+});
+```
+
+- `Object.keys(client.api.plugins_data)` is `[]`: the runtime object is Convex's `anyApi` proxy, and
+  only the types are generated. Read a door's name with `ref[Symbol.for("functionName")]`
+  (`"plugins_data:list_members"`), not by enumerating.
+- The roster call answers the real members (the QA workspace has one, the anonymous QA user). The
+  `users:get_anagraphic` call answers `null` and `ai_chat:thread_create` answers
+  `{ _nay: { message: "Unauthenticated" } }`, because the plugin-session JWT resolves to a member only
+  inside the doors. Pair every refusal with a positive control from the host tab as the same user:
+  `await state.page.evaluate(async () => (await import("/src/lib/app-convex-client.ts")).app_convex.query("users:get_anagraphic", { userId }))`
+  returned the anagraphic row on 2026-09-02, so the frame's `null` is a refusal and not an absent row.
+  Read `ai_chat_threads` back after the mutation attempt (0 rows with the probe title).
+- Gallery is Preact, not React: the `__reactContainer$` key does not exist there. Judge its frame by
+  the `.gallery-grid` render instead (`plugin-gallery.md`).
+
 ## Reading a table count without fooling yourself
 
 `convex data <table>` prints "There are no documents in this table" for a table that does not exist, so

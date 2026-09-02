@@ -174,8 +174,10 @@ const RETRY_HORIZON_MS = 24 * 60 * 60 * 1000;
  */
 export type plugins_data_RefusalName = "conflict" | "storage_full";
 
-const REFUSAL_CONFLICT: plugins_data_RefusalName = "conflict";
-const REFUSAL_STORAGE_FULL: plugins_data_RefusalName = "storage_full";
+// `satisfies` keeps each constant a literal, so a door's `_nay.name` type says which refusal that
+// branch answers. The plugin SDK types are generated from these types.
+const REFUSAL_CONFLICT = "conflict" satisfies plugins_data_RefusalName;
+const REFUSAL_STORAGE_FULL = "storage_full" satisfies plugins_data_RefusalName;
 
 export type plugins_data_LastAppend = {
 	at: number;

@@ -7,9 +7,11 @@
 	"scripts": {
 		"dev": "vite",
 		"build": "vite build",
-		"lint": "pnpm lint:tsc && pnpm lint:eslint",
+		"lint": "pnpm lint:tsc && pnpm lint:eslint && pnpm check:plugin-sdk-types",
 		"lint:tsc": "tsc-silent --project tsconfig.app.json --suppress @vendor @node_modules",
 		"lint:eslint": "eslint --cache src server shared convex --ignore-pattern convex/_generated/**",
+		"generate:plugin-sdk-types": "tsx scripts/generate-plugin-sdk-types.ts",
+		"check:plugin-sdk-types": "tsx scripts/generate-plugin-sdk-types.ts --check",
 		"patch:typescript-hover": "tsx src/script/patch-typescript-hover.ts",
 		"preview": "vite preview",
 		"format": "prettier --write .",

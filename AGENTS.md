@@ -12,6 +12,7 @@
   - If it is already running, use it. If it is NOT running and you need it, start it — `vp env exec pnpm --dir packages/app run dev` for Vite, `vp env exec pnpm --dir packages/app exec convex dev` for the Convex watcher (background it). Do not ask permission for the dev deployment and do not skip a verification step because a server was down.
   - `convex dev --once` pushes the working tree once and exits. Use it for a one-shot push; use the watcher when you are about to iterate against the browser.
 - Full app lint: run `vp env exec pnpm --dir packages/app run lint`. The root package does not have a `lint` script, and `pnpm --dir packages/app lint:tsc` is only the TypeScript check, not the full ESLint/React Compiler lint.
+- Plugin SDK types: `packages/bonobo-plugin-sdk/convex-api.d.ts` is generated from the app's plugin doors. After changing a public function in `packages/app/convex/plugins_data.ts`, run `vp env exec pnpm --dir packages/app run generate:plugin-sdk-types` and commit the result. The app `lint` runs `check:plugin-sdk-types`, which fails while that file is stale. The generator is [packages/app/scripts/generate-plugin-sdk-types.ts](packages/app/scripts/generate-plugin-sdk-types.ts).
 - Full app tests: run `vp env exec pnpm --dir packages/app run test:once` for a one-shot test run.
 - Full app lint and test commands can take up to 20 minutes to complete. Use a long enough timeout when running them through tooling.
 

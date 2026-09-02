@@ -572,3 +572,76 @@ describe("ai_chat thread read cursor", () => {
 		expect((branchedThread?.lastMessageAt ?? 0) > (branchedThread?.readAt ?? 0)).toBe(false);
 	});
 });
+
+describe("thread_create", () => {
+	// The positive control for the refusal below: the same issuer shape with the anonymous issuer
+	// creates a thread, so the refusal is about the plugin issuer and nothing else.
+	test("lets an anonymous member create a thread", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, {
+				organizationName: "personal",
+				workspaceName: "home",
+			}),
+		);
+		const asAnonymous = t.withIdentity({
+			issuer: process.env.VITE_CONVEX_HTTP_URL!,
+			subject: seeded.userId,
+		});
+
+		const created = await asAnonymous.mutation(api.ai_chat.thread_create, {
+			membershipId: seeded.membershipId,
+			clientGeneratedId: "client_ai_chat_thread_anonymous",
+			title: "Anonymous",
+			lastMessageAt: Date.now(),
+		});
+		expect(created._yay?.threadId).toBeTruthy();
+	});
+
+	test("refuses a plugin-session identity even though an anonymous member may create threads", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) =>
+			test_mocks_fill_db_with.membership(ctx, {
+				organizationName: "personal",
+				workspaceName: "home",
+			}),
+		);
+
+		// A plugin frame's Convex client authenticates with the plugin-session JWT, and a plugin may
+		// call any function of the app with it. This mutation lets an anonymous member through, so
+		// it is the case where reading that JWT as an anonymous user would change the outcome: the
+		// classifier must answer no user at all, not a user with fewer permissions.
+		const asPluginSession = t.withIdentity({
+			issuer: `${process.env.VITE_CONVEX_HTTP_URL!}/plugins-ui`,
+			subject: seeded.userId,
+		});
+
+		const refused = await asPluginSession.mutation(api.ai_chat.thread_create, {
+			membershipId: seeded.membershipId,
+			clientGeneratedId: "client_ai_chat_thread_plugin_session",
+			title: "Plugin session",
+			lastMessageAt: Date.now(),
+		});
+		expect(refused._nay?.message).toBe("Unauthenticated");
+
+		// The plugin branch must win by issuer alone. A crafted `external_id` claim must not upgrade
+		// the token to a signed-in member.
+		const asPluginSessionWithExternalId = t.withIdentity({
+			issuer: `${process.env.VITE_CONVEX_HTTP_URL!}/plugins-ui`,
+			subject: seeded.userId,
+			external_id: seeded.userId,
+			email: "thread-plugin-session@test.local",
+		});
+
+		const refusedWithClaims = await asPluginSessionWithExternalId.mutation(api.ai_chat.thread_create, {
+			membershipId: seeded.membershipId,
+			clientGeneratedId: "client_ai_chat_thread_plugin_session_claims",
+			title: "Plugin session with claims",
+			lastMessageAt: Date.now(),
+		});
+		expect(refusedWithClaims._nay?.message).toBe("Unauthenticated");
+
+		const threads = await t.run((ctx) => ctx.db.query("ai_chat_threads").collect());
+		expect(threads).toHaveLength(0);
+	});
+});
