@@ -7757,7 +7757,7 @@ describe("plugins publish_version", () => {
 		vi.mocked(plugins_ai_review.generate_step).mockReset();
 		vi.mocked(plugins_ai_review.generate_step).mockImplementation(async ({ prompt }) => {
 			const shown = prompt.match(/read_file(?:_bytes)? (\S+)(?: lines \d+-\d+,)? bytes (\d+)-\d+ of \d+\n([\s\S])/u);
-			if (!shown || !prompt.includes("Cannot finish yet")) {
+			if (!shown || !prompt.includes("Not finished yet")) {
 				return review_move({});
 			}
 			const startByte = Number(shown[2]);
@@ -7788,7 +7788,7 @@ describe("plugins publish_version", () => {
 		expect(complete).toMatchObject({ _yay: { status: "passed" } });
 		expect(verdict).toHaveBeenCalledOnce();
 		expect(reviewer_saw()).toContain(
-			'Cannot finish yet. Record source-bound evidence for these typed subjects: ["capability:plugin.secrets.read","backend_origin:https://api.example.com"]',
+			'Not finished yet. These declared subjects have no standing note: ["capability:plugin.secrets.read","backend_origin:https://api.example.com"]',
 		);
 		const stored = await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect());
 		expect(stored[0]!.capabilityMap).toEqual([
@@ -7828,7 +7828,7 @@ describe("plugins publish_version", () => {
 		expect(missing).toMatchObject({
 			_nay: { message: "Plugin review verdict did not explain every declared capability and origin; try again" },
 		});
-		expect(reviewer_saw()).toContain("Cannot finish yet. Record source-bound evidence");
+		expect(reviewer_saw()).toContain("Not finished yet. These declared subjects have no standing note");
 		expect(await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect())).toEqual([]);
 	});
 
@@ -8097,7 +8097,7 @@ describe("plugins publish_version", () => {
 
 		expect(reviewed).toMatchObject({ _yay: { status: "passed" } });
 		const shown = steps.mock.calls.map((call) => call[0].prompt);
-		expect(shown.join("\n")).toContain("dist/backend/worker.js:1: export default { fetch:");
+		expect(shown.join("\n")).toContain("dist/backend/worker.js hit at byte 17, context bytes 0-");
 		expect(shown.join("\n")).toContain("Searching is not reading");
 		// The supported filters match; brace expansion and an empty pattern are refused rather than guessed at.
 		expect(shown[3]).toContain("is not a supported path filter");
@@ -8107,13 +8107,52 @@ describe("plugins publish_version", () => {
 		expect(shown.join("\n")).toContain("dist/backend/worker.js: complete (");
 	});
 
-	test("caps a multibyte grep result by UTF-8 bytes", async () => {
+	test("finds every hit on one minified line and reports its byte offset", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
+		mock_ai_review();
+		const steps = mock_review_steps([{ tool: "grep", literal: "/api/v1/plugin-data/" }]);
+		// One line, the shape a bundler emits. The three calls are the only thing a reviewer has to find,
+		// and they sit far apart inside padding that mentions nothing.
+		const padding = `;const pad${"0".repeat(4_000)}=1`;
+		const source =
+			`export default{fetch:async()=>{await fetch("/api/v1/plugin-data/read")${padding}` +
+			`;await fetch("/api/v1/plugin-data/write")${padding}` +
+			`;await fetch("/api/v1/plugin-data/list")${padding}}}`;
+
+		const reviewed = await request_fresh_review(t, {
+			requestedBy: membership.userId,
+			repositoryId,
+			hashChar: "f",
+			capabilities: [],
+			source,
+		});
+
+		expect(reviewed).toMatchObject({ _yay: { status: "passed" } });
+		const shown = steps.mock.calls.map((call) => call[0].prompt).join("\n");
+		// All three call sites come back, not just the first one on the line.
+		for (const door of ["read", "write", "list"]) {
+			const at = source.indexOf(`/api/v1/plugin-data/${door}`);
+			expect(shown).toContain(`dist/backend/worker.js hit at byte ${at}, context bytes `);
+			expect(shown).toContain(`fetch("/api/v1/plugin-data/${door}")`);
+		}
+		// The offsets are the file's own, so a note may cite them once that range has been read.
+		const offsets = Array.from(shown.matchAll(/hit at byte (\d+), context bytes (\d+)-(\d+):/gu));
+		expect(offsets).toHaveLength(3);
+		for (const [, hit, start, end] of offsets) {
+			expect(Number(start)).toBeLessThanOrEqual(Number(hit));
+			expect(Number(end)).toBeGreaterThan(Number(hit));
+		}
+	});
+
+	test("stops a grep at fifty hits and never cuts a character", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
 		mock_ai_review();
 		const steps = mock_review_steps([{ tool: "grep", literal: "needle" }]);
-		const source = Array.from({ length: 50 }, () => `// ${"€".repeat(500)} needle`).join("\n");
+		const source = Array.from({ length: 60 }, () => `// ${"€".repeat(500)} needle`).join("\n");
 
 		const reviewed = await request_fresh_review(t, {
 			requestedBy: membership.userId,
@@ -8128,7 +8167,7 @@ describe("plugins publish_version", () => {
 		const sentinel = steps.mock.calls[1]![0].system.match(/--bonobo-review-[0-9a-f]{32}--/)![0];
 		const toolResult = secondPrompt.split(`${sentinel}\nLast tool result\n${sentinel}\n`)[1]!.replace(/\n$/u, "");
 		expect(new TextEncoder().encode(toolResult).byteLength).toBeLessThanOrEqual(40_000);
-		expect(toolResult).toContain("tool result truncated at the byte limit");
+		expect(toolResult).toContain("(stopped at 50 matches)");
 		expect(toolResult).not.toContain("\uFFFD");
 	});
 
