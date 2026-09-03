@@ -6286,9 +6286,12 @@ describe("watch_documents_page", () => {
 		// The door names every option it passes to `.paginate`, so a caller's `maximumBytesRead`
 		// never reaches the query. A tiny value would otherwise cut the page down to one document.
 		// The real reason for naming them is one the emulator cannot show: on the server
-		// `maximumBytesRead: 0` throws `InvalidPaginationLimit` before the handler runs. This door
-		// must never throw at a frame, and now it cannot, because the option never reaches the
-		// query. Proven in the browser on 2026-09-02: the same call threw before this change.
+		// `maximumBytesRead: 0` makes the `.paginate` call itself throw `InvalidPaginationLimit`.
+		// Naming the options closes that route, so the option spread can no longer make this door
+		// throw.
+		// Proven in the browser on 2026-09-02: the same call threw before this change. It is not a
+		// promise that the door never throws. A garbage `cursor` or `endCursor` string still throws
+		// `InvalidCursor` on the server, because Convex decrypts those before the handler runs.
 		const page = await fixture.asPage.query(api.plugins_data.watch_documents_page, {
 			collection: "messages",
 			paginationOpts: { numItems: 100, cursor: null, maximumBytesRead: 1 },

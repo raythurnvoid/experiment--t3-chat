@@ -5281,11 +5281,11 @@ export const watch_documents = query({
  * same page. The plugin tells a refusal from an expired session with the token expiry the host
  * gave it, so the door does not need to say which one it was.
  *
- * A normal page run holds at most 100 documents, because a `numItems` outside 1..100 is refused like
- * any other bad input. A frame cannot ask for a bigger page than the other reads allow. The one
- * exception is a page the hook has split: each half carries an end cursor, and Convex then returns
- * every document between the two cursors, however many that is. Do not read `maximumRowsRead` below
- * as a second cap. It never caps this door on either run. See the comment at the query.
+ * The first run of a page holds at most 100 documents, because a `numItems` outside 1..100 is
+ * refused like any other bad input. A frame cannot ask for a bigger page than the other reads allow.
+ * A page the hook already holds is different: every re-run of it carries an end cursor, and Convex
+ * then returns every document in that range, however many that is. Do not read `maximumRowsRead`
+ * below as a second cap. It never caps this door on either run. See the comment at the query.
  */
 export const watch_documents_page = query({
 	args: {
@@ -5369,9 +5369,10 @@ export const watch_documents_page = query({
 		// Never read the usage doc here, for the reason given in `watch_documents`.
 		//
 		// Name every option instead of spreading the caller's. A frame may put anything the
-		// pagination validator accepts into `paginationOpts`, and `maximumBytesRead: 0` makes
-		// Convex throw `InvalidPaginationLimit` before this handler runs its own checks. That
-		// throw would break the promise above that every bad input answers the empty final page.
+		// pagination validator accepts into `paginationOpts`, and `maximumBytesRead: 0` makes the
+		// `.paginate` call below throw `InvalidPaginationLimit`. The door's own checks have already
+		// passed by then, so the throw takes the place of the page they were about to answer, and
+		// it breaks the promise above that every bad input answers the empty final page.
 		// Only these three options may reach the query, plus the door's own row limit. `cursor` and
 		// `endCursor` are the hook's own, and it needs them to keep its pages stable across
 		// re-runs. The validator also accepts `id`, but `.paginate` never reads it.
@@ -5385,14 +5386,21 @@ export const watch_documents_page = query({
 		// into two narrower live subscriptions. Narrower ranges re-run less work when a document
 		// in them changes, which is what we want for a long chat timeline.
 		//
-		// A split is also the only thing that puts an end cursor on a page. `usePaginatedQuery`
-		// gives each half of a split a fixed `endCursor` and those halves keep it for the rest of
-		// their life. On a run that has an end cursor Convex ignores `numItems` and reads the whole
-		// interval, and it turns the row cap off as well, because the whole interval has to come
-		// back for the answer to be correct (`enforce_limits` in the backend's `index_range.rs`).
-		// So such a page can hold more than 100 documents once rows are written between its two
-		// cursors. The soft limit still applies there, so the page comes back `SplitRecommended`
-		// again and the hook splits it once more.
+		// An end cursor reaches this query in two ways. The hook sets one when it splits a page:
+		// `usePaginatedQuery` gives each half a fixed `endCursor` and those halves keep it for the
+		// rest of their life. Convex sets one by itself on every re-run: each paginated run stores
+		// the end of its page in the query journal, the server saves that journal on the
+		// subscription, and it hands it back when the next run of that subscription sends no
+		// `endCursor` of its own (`crates/sync/src/state.rs` saves it, `async_syscall.rs` reads it).
+		// So only the very first run of a page has no end cursor. Every later run of a page the
+		// hook already holds is an end-cursor run.
+		//
+		// On a run that has an end cursor Convex ignores `numItems` and reads the whole interval,
+		// and it turns the row cap off as well, because the whole interval has to come back for the
+		// answer to be correct (`enforce_limits` in the backend's `index_range.rs`). So a loaded
+		// page can hold more than 100 documents once rows are written inside its range. The soft
+		// limit still applies there, so the page comes back `SplitRecommended` again and the hook
+		// splits it once more.
 		const result = await ctx.db
 			.query("plugins_data")
 			.withIndex("by_installation_collection_scope_key", (q) => {
