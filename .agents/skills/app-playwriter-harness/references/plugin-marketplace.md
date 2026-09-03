@@ -967,6 +967,31 @@ const out = await frame.evaluate(async () => {
 - Gallery is Preact, not React: the `__reactContainer$` key does not exist there. Judge its frame by
   the `.gallery-grid` render instead (`plugin-gallery.md`).
 
+Since SDK 0.17.0 the client also carries `authorize` and no longer carries `backend`, and `fetchJson`
+takes the request body as its own second argument and resolves the route's own `{ status, body }`
+answer. So the same walk gives four probes that no earlier SDK can pass:
+
+```js
+const answers = { clientKeys: Object.keys(client).sort() };
+// The new two-argument call. On 0.16.0 the body went inside init, so this call sent none.
+const list = await client.fetchJson("/api/v1/plugin-data/list", { collection: "channels", limit: 1 });
+answers.list = { status: list.status, bodyKeys: Object.keys(list.body ?? {}).sort() };
+// A refusal a frame token cannot avoid. It must RESOLVE; on 0.16.0 it threw.
+const write = await client.fetchJson("/api/v1/files/write", { path: "/never.md", content: "" });
+answers.write = { status: write.status, message: write.body?.message };
+// Read the bearer as a boolean. Never print the token.
+const headers = await client.authorize();
+answers.bearerOk = (headers.get("authorization") ?? "").startsWith("Bearer plu_");
+```
+
+- The `files/write` probe is the one with teeth, and it needs a path no plugin owns (`/never.md`):
+  the route answers 403 `Permission denied` before it looks at anything, and the point is that the
+  answer arrives as a resolved value. Verified 2026-09-03 on Chitchat 0.7.5, on the dev host and on
+  the Pages host. It still logs a browser-level `Failed to load resource: … 403` in the console,
+  because a resolved refusal is still a 403 response — do not read that log line as a bug.
+- `authorize(headers)` merges: pass a `Headers` with your own entry and check that both it and the
+  bearer survive. The token itself must never reach a log, a report, or a file.
+
 ## Proving a page really pages over Convex, not over HTTP
 
 A plugin that grows a history with `usePaginatedQuery` must load the next page over the Convex
@@ -983,7 +1008,7 @@ await frame.evaluate(() =>
 Take the count before and after the press. **Watch it not change; do not expect zero** — a page can
 use that route for other reads at the same time (Chitchat's reaction and reply companion lists do).
 
-Published versions as of 2026-09-03 (SDK 0.16.0 round): Chitchat `0.7.4` / `hn7rchdpr2dcsm1375vhq4gfh98dq5vs`, Gallery `0.1.20` / `hn7tp00ypg5a2v9xz14hkz0tyx8dpg3m`, Video Player `0.1.9` / `hn7q60scz653znc3cae06cr0yh8dqtv9`, Council `0.2.11` / `hn7x1fyv5hrbqm43wtdmpk0p0s8dpks4`. The round before it (SDK 0.15.0, earlier the same day) was Chitchat `0.7.3` / `hn7nqkgsbd4zcssx0fahmedfkd8dqz5x`, Gallery `0.1.19` / `hn7jje647vn6y5f0s6nsnj77598dq7tw`, Video Player `0.1.8` / `hn7htf5cnceke0nhdbnyq65y1n8dprbb`, Council `0.2.10` / `hn7mmzcjrmmw5q3y7npxnmcr9s8dq99t`. The version id is the fastest check that a frame runs the release you think it does: it is the `/plugins-ui/<versionId>/` segment of the frame URL.
+Published versions as of 2026-09-03 (SDK 0.17.0 round): Chitchat `0.7.5` / `hn7gxq6w16ytjfeckn5gwm8xt98dpytt`, Gallery `0.1.21` / `hn7vtsyrqem8rmzcrky3mj4t5h8dpefe`, Video Player `0.1.10` / `hn7vpc9tdb8j68zpfkr3zmtc0s8dpx2x`. Council did NOT move in that round: its latest published version is still `0.2.11` / `hn7x1fyv5hrbqm43wtdmpk0p0s8dpks4`, because the OpenAI account ran out of credits and every review attempt for 0.2.12 answered `Plugin review model step failed`. The round before it (SDK 0.16.0, earlier the same day) was Chitchat `0.7.4` / `hn7rchdpr2dcsm1375vhq4gfh98dq5vs`, Gallery `0.1.20` / `hn7tp00ypg5a2v9xz14hkz0tyx8dpg3m`, Video Player `0.1.9` / `hn7q60scz653znc3cae06cr0yh8dqtv9`. The version id is the fastest check that a frame runs the release you think it does: it is the `/plugins-ui/<versionId>/` segment of the frame URL.
 
 Keeping the previous round's ids is worth the two lines. The old bundles stay served at `/plugins-ui/<old id>/dist/frontend/assets/index.js`, so a plain `curl` of both gives a release check that can come back false: grep the new bytes for the symbol the release removed and the old bytes for the same symbol. If both answer the same, the check is not measuring anything. Used on 2026-09-03 for the `BonoboUi*` rename — Gallery, Video Player and Council each answered 6 hits on `0.1.17`/`0.1.6`/`0.2.8` and 0 on the new ones. Chitchat's build minifies, so its bundle answers 0 either way and proves nothing.
 

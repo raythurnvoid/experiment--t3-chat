@@ -194,6 +194,10 @@ history" is about fast unverified sends, not about the composer.
    **Click `Send` after it is enabled.** Enter while a send is still in flight drops the next
    message (observed 2026-08-25 while seeding 28 rows). Wait for the Send button to be enabled,
    then click it. Do not hold a loop on Enter.
+   The Send control is an **icon button with no text**: `button.composer-send[aria-label="Send"]`.
+   A locator built on visible text (`button:has-text("Send")`) matches nothing and just waits until
+   the call times out, which reads as a wedged frame. The attach control beside it is
+   `button.composer-action[aria-label="Attach file"]`. Hit 2026-09-03.
 4. **Alternate authors by alternating sessions**, one CLI call per author run. Each session drives its
    own tab, so the other side's rows arrive live and the leader/continuation grouping comes out real.
 5. **Threads**: click `.message-thread-summary` when the root already has replies (no hover needed);
