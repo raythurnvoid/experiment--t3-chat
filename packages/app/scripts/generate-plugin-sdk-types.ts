@@ -19,6 +19,11 @@ import * as ts from "typescript";
  * aliases the compiler still prints by name. The result imports only from `convex/server` and
  * `convex/values`.
  *
+ * The Convex target emits one type. The HTTP target emits three: the route table itself, the union
+ * of its paths, and `BonoboHttpResponse<P>`, the `{ status, body }` union one route can answer. The
+ * last two are written by the render step, not by the compiler, because they are one line each over
+ * the table the compiler already printed.
+ *
  * The two entries reach a plain structure by different routes. The doors are values, so the
  * compiler already prints their types in full. The route schema is built from `typeof` and the
  * inliner refuses that, so `plugin-sdk-http-api-entry.ts` wraps it in an `Expand` mapped type that
@@ -69,6 +74,11 @@ type generate_plugin_sdk_types_Target = {
 	typeName: string;
 	/** Emitted after the main type as `export type <pathTypeName> = keyof <typeName>;`. */
 	pathTypeName: string | null;
+	/**
+	 * Emitted after `pathTypeName` as the `{ status, body }` union a caller gets back. It needs
+	 * `pathTypeName`, because it is generic over that path union.
+	 */
+	responseTypeName: string | null;
 	/** The header lines between "GENERATED FILE" and the "how it is written" sentence. */
 	description: string;
 };
@@ -89,6 +99,7 @@ function generate_plugin_sdk_types_get_paths() {
 			constName: "bonobo_convex_api",
 			typeName: "BonoboConvexApi",
 			pathTypeName: null,
+			responseTypeName: null,
 			description:
 				" * The public Convex functions a plugin frame may call on its own client, typed as the app\n * declares them.\n *",
 		},
@@ -98,6 +109,7 @@ function generate_plugin_sdk_types_get_paths() {
 			constName: "bonobo_http_api",
 			typeName: "BonoboHttpApi",
 			pathTypeName: "BonoboHttpApiPath",
+			responseTypeName: "BonoboHttpResponse",
 			description:
 				" * The host HTTP routes a plugin may call, typed as the app declares them: the request body of\n * each route, and the body of every status it answers.\n *",
 		},
@@ -406,8 +418,40 @@ function generate_plugin_sdk_types_render(text: string, target: generate_plugin_
 
 	const header = generate_plugin_sdk_types_header(target.description);
 	const pathType = target.pathTypeName ? `\nexport type ${target.pathTypeName} = keyof ${target.typeName};\n` : "";
+	// The response union maps over the route's declared statuses and drops every 5xx member. The
+	// SDK's `fetchJson` throws a 5xx instead of resolving it, so a resolved answer is always a
+	// declared status with a typed body, and the type says exactly that.
+	//
+	// The runtime tests `status >= 500`, which a conditional type cannot do, so the list below
+	// spells out every 5xx code IANA registers. A route that answers a status outside it would put
+	// a member in the union that `fetchJson` never resolves, so the SDK test scans this file for
+	// declared 5xx statuses and fails when one is not in the list.
+	const responseType =
+		target.pathTypeName && target.responseTypeName
+			? `
+export type ${target.responseTypeName}<P extends ${target.pathTypeName}> = {
+	[S in keyof ${target.typeName}[P]["POST"]["response"]]: S extends
+		| 500
+		| 501
+		| 502
+		| 503
+		| 504
+		| 505
+		| 506
+		| 507
+		| 508
+		| 510
+		| 511
+		? never
+		: {
+				status: S;
+				body: ${target.typeName}[P]["POST"]["response"][S]["body"];
+			};
+}[keyof ${target.typeName}[P]["POST"]["response"]];
+`
+			: "";
 
-	return `${header}export type ${target.typeName} = ${tabbed}${pathType}`.replace(/\r\n/g, "\n");
+	return `${header}export type ${target.typeName} = ${tabbed}${pathType}${responseType}`.replace(/\r\n/g, "\n");
 }
 
 async function generate_plugin_sdk_types_main() {
