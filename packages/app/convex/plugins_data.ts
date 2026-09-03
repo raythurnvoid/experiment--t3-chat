@@ -1593,6 +1593,15 @@ export const list_documents = internalQuery({
 	},
 	returns: v_result({ _yay: paginationResultValidator(document_validator) }),
 	handler: async (ctx, args) => {
+		// Write the page element type out. A bare `page: []` infers as `never[]`, and the route's
+		// 200 body then reaches the SDK as a union of that and the real document array. Same reason
+		// as `watch_documents_page`, which pins its handler's return type instead.
+		const emptyPage: PaginationResult<Infer<typeof document_validator>> = {
+			page: [],
+			isDone: true,
+			continueCursor: "",
+		};
+
 		const authorized = await db_authorize(ctx, { principal: args.principal, permission: "content.read" });
 		if (authorized._nay) {
 			return authorized;
@@ -1634,7 +1643,7 @@ export const list_documents = internalQuery({
 		// asks for the same empty page forever. A fencepost reused against a different `keyPrefix`
 		// crosses the bounds, so this is reachable from ordinary client code.
 		if (range === "empty") {
-			return Result({ _yay: { page: [], isDone: true, continueCursor: "" } });
+			return Result({ _yay: emptyPage });
 		}
 
 		// Same split as the reactive window: a prefix inside a private scope reads that scope once the
@@ -1658,7 +1667,7 @@ export const list_documents = internalQuery({
 				permission: "content.read",
 			}))
 		) {
-			return Result({ _yay: { page: [], isDone: true, continueCursor: "" } });
+			return Result({ _yay: emptyPage });
 		}
 
 		// The bounds ride the index as a range, never a post-index filter, so the pagination cursor

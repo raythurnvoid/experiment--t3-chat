@@ -8,14 +8,21 @@ import { fileURLToPath } from "url";
 import * as ts from "typescript";
 
 /**
- * Writes `packages/bonobo-plugin-sdk/convex-api.d.ts`, the file a plugin type-checks its direct
- * Convex calls against. Run with `--check` to compare a fresh result with the committed file
- * instead of writing it; the app lint runs that mode.
+ * Writes the two generated files the SDK ships: `convex-api.d.ts`, which a plugin type-checks its
+ * direct Convex calls against, and `http-api.d.ts`, which types the host HTTP routes it may call.
+ * Run with `--check` to compare fresh results with the committed files instead of writing them;
+ * the app lint runs that mode and names the file that is stale.
  *
- * How it works: `plugin-sdk-api-entry.ts` exports the plugin doors as one value. This script
- * builds the app's own TypeScript program (`tsconfig.app.json`) with that entry added, asks the
- * compiler for the entry's declaration file, and then inlines the few app-owned type aliases the
- * compiler still prints by name. The result imports only from `convex/server` and `convex/values`.
+ * How it works: each entry under `scripts/` exports one value whose type is the whole surface.
+ * This script builds the app's own TypeScript program (`tsconfig.app.json`) with that entry added,
+ * asks the compiler for the entry's declaration file, and then inlines the few app-owned type
+ * aliases the compiler still prints by name. The result imports only from `convex/server` and
+ * `convex/values`.
+ *
+ * The two entries reach a plain structure by different routes. The doors are values, so the
+ * compiler already prints their types in full. The route schema is built from `typeof` and the
+ * inliner refuses that, so `plugin-sdk-http-api-entry.ts` wraps it in an `Expand` mapped type that
+ * makes the compiler resolve the shape before it prints. That file's docblock says why.
  *
  * The compiler is used directly instead of a d.ts bundler. A bundler roots its own program at the
  * entry and stops on any diagnostic, and this app only type-checks cleanly under `tsc-silent`
@@ -30,14 +37,16 @@ const CHECK_FLAG = "--check";
  */
 const ALLOWED_IMPORT_SPECIFIERS = new Set(["convex/server", "convex/values"]);
 
-const GENERATED_HEADER = `/**
+function generate_plugin_sdk_types_header(description: string) {
+	return `/**
  * GENERATED FILE. Do not edit by hand.
  *
- * The public Convex functions a plugin frame may call on its own client, typed as the app
- * declares them. \`packages/app/scripts/generate-plugin-sdk-types.ts\` writes this file from the
- * app (\`pnpm run generate:plugin-sdk-types\`), and the app lint fails when it is stale.
+${description}
+ * \`packages/app/scripts/generate-plugin-sdk-types.ts\` writes this file from the app
+ * (\`pnpm run generate:plugin-sdk-types\`), and the app lint fails when it is stale.
  */
 `;
+}
 
 /**
  * One `import("../app-file.js").Name<Args>` reference found in the emitted declaration text.
@@ -50,19 +59,54 @@ type generate_plugin_sdk_types_AppAliasRef = {
 	typeArguments: string[];
 };
 
+/**
+ * One entry file and the SDK file it produces.
+ */
+type generate_plugin_sdk_types_Target = {
+	entryPath: string;
+	outputPath: string;
+	constName: string;
+	typeName: string;
+	/** Emitted after the main type as `export type <pathTypeName> = keyof <typeName>;`. */
+	pathTypeName: string | null;
+	/** The header lines between "GENERATED FILE" and the "how it is written" sentence. */
+	description: string;
+};
+
 function generate_plugin_sdk_types_get_paths() {
 	const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 	const appRootDir = path.resolve(scriptDir, "..");
+	const sdkDir = path.resolve(appRootDir, "..", "bonobo-plugin-sdk");
 
-	// The compiler reports file names with forward slashes on every platform. Keep the entry in
-	// that form so it can be looked up in the program.
-	const entryPath = path.resolve(scriptDir, "plugin-sdk-api-entry.ts").split(path.sep).join("/");
+	// The compiler reports file names with forward slashes on every platform. Keep the entries in
+	// that form so they can be looked up in the program.
+	const entryPath = (fileName: string) => path.resolve(scriptDir, fileName).split(path.sep).join("/");
+
+	const targets: generate_plugin_sdk_types_Target[] = [
+		{
+			entryPath: entryPath("plugin-sdk-api-entry.ts"),
+			outputPath: path.resolve(sdkDir, "convex-api.d.ts"),
+			constName: "bonobo_convex_api",
+			typeName: "BonoboConvexApi",
+			pathTypeName: null,
+			description:
+				" * The public Convex functions a plugin frame may call on its own client, typed as the app\n * declares them.\n *",
+		},
+		{
+			entryPath: entryPath("plugin-sdk-http-api-entry.ts"),
+			outputPath: path.resolve(sdkDir, "http-api.d.ts"),
+			constName: "bonobo_http_api",
+			typeName: "BonoboHttpApi",
+			pathTypeName: "BonoboHttpApiPath",
+			description:
+				" * The host HTTP routes a plugin may call, typed as the app declares them: the request body of\n * each route, and the body of every status it answers.\n *",
+		},
+	];
 
 	return {
 		appRootDir,
 		tsconfigPath: path.resolve(appRootDir, "tsconfig.app.json"),
-		entryPath,
-		outputPath: path.resolve(appRootDir, "..", "bonobo-plugin-sdk", "convex-api.d.ts"),
+		targets,
 	};
 }
 
@@ -81,9 +125,12 @@ function generate_plugin_sdk_types_format_diagnostics(diagnostics: readonly ts.D
 }
 
 /**
- * Builds the app program with the entry added and returns the entry's declaration text.
+ * Builds the app program with both entries added.
+ *
+ * One program serves both targets. Building the whole app twice would cost about twice the time
+ * and answer the same thing.
  */
-function generate_plugin_sdk_types_emit_entry(paths: ReturnType<typeof generate_plugin_sdk_types_get_paths>) {
+function generate_plugin_sdk_types_build_program(paths: ReturnType<typeof generate_plugin_sdk_types_get_paths>) {
 	const config = ts.readConfigFile(paths.tsconfigPath, ts.sys.readFile);
 	if (config.error) {
 		throw new Error(generate_plugin_sdk_types_format_diagnostics([config.error]));
@@ -104,15 +151,29 @@ function generate_plugin_sdk_types_emit_entry(paths: ReturnType<typeof generate_
 	};
 
 	// The whole app is in the program so every ambient type the app relies on is present. A
-	// program rooted at the entry alone would miss them and type some values as `any`.
-	const program = ts.createProgram([...parsed.fileNames, paths.entryPath], options);
-	const entry = program.getSourceFile(paths.entryPath);
+	// program rooted at the entries alone would miss them and type some values as `any`.
+	const program = ts.createProgram(
+		[...parsed.fileNames, ...paths.targets.map((target) => target.entryPath)],
+		options,
+	);
+
+	return { program, options };
+}
+
+/**
+ * Returns one entry's declaration text.
+ */
+function generate_plugin_sdk_types_emit_entry(
+	built: ReturnType<typeof generate_plugin_sdk_types_build_program>,
+	entryPath: string,
+) {
+	const entry = built.program.getSourceFile(entryPath);
 	if (!entry) {
-		throw new Error(`Entry ${paths.entryPath} is not in the program`);
+		throw new Error(`Entry ${entryPath} is not in the program`);
 	}
 
 	let text = "";
-	const result = program.emit(
+	const result = built.program.emit(
 		entry,
 		(_fileName, data) => {
 			text = data;
@@ -124,10 +185,10 @@ function generate_plugin_sdk_types_emit_entry(paths: ReturnType<typeof generate_
 		throw new Error(`Declaration emit failed:\n${generate_plugin_sdk_types_format_diagnostics(result.diagnostics)}`);
 	}
 	if (result.emitSkipped || text === "") {
-		throw new Error("Declaration emit produced no output");
+		throw new Error(`Declaration emit produced no output for ${entryPath}`);
 	}
 
-	return { program, options, text };
+	return { ...built, text };
 }
 
 /**
@@ -313,56 +374,78 @@ function generate_plugin_sdk_types_inline_app_aliases(
 		throw new Error(`The generated file would still import app types: ${names}`);
 	}
 
+	// The render step keeps the declaration and drops everything above it, so a top-level
+	// `import type { X } from "../app-file.js"` would be dropped and leave `X` dangling in the SDK
+	// file. The loop above cannot see one: it looks for inline `import("...")` types, and a real
+	// import statement is not one. This fires when an entry hands the compiler a type it can print
+	// by name instead of a shape it has to write out.
+	const source = ts.createSourceFile("emitted.d.ts", text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+	const importedNames = source.statements
+		.filter((statement) => ts.isImportDeclaration(statement))
+		.map((statement) => statement.getText(source));
+	if (importedNames.length > 0) {
+		throw new Error(`The emitted declaration still imports app types by name:\n${importedNames.join("\n")}`);
+	}
+
 	return text;
 }
 
 /**
- * Turns the entry's declaration into the file the SDK ships: one exported type, a header, tabs.
+ * Turns one entry's declaration into the file the SDK ships: the exported type, a header, tabs.
  */
-function generate_plugin_sdk_types_render(text: string) {
-	const declarationPrefix = "export declare const bonobo_convex_api: ";
+function generate_plugin_sdk_types_render(text: string, target: generate_plugin_sdk_types_Target) {
+	const declarationPrefix = `export declare const ${target.constName}: `;
 	const declarationStart = text.indexOf(declarationPrefix);
 	if (declarationStart === -1 || text.indexOf(declarationPrefix, declarationStart + 1) !== -1) {
-		throw new Error("Expected exactly one `bonobo_convex_api` declaration in the emitted text");
+		throw new Error(`Expected exactly one \`${target.constName}\` declaration in the emitted text`);
 	}
 
 	const body = text.slice(declarationStart + declarationPrefix.length);
 	// The compiler indents with four spaces; the SDK package uses tabs.
 	const tabbed = body.replace(/^(?: {4})+/gm, (indent) => "\t".repeat(indent.length / 4));
 
-	return `${GENERATED_HEADER}export type BonoboConvexApi = ${tabbed}`.replace(/\r\n/g, "\n");
+	const header = generate_plugin_sdk_types_header(target.description);
+	const pathType = target.pathTypeName ? `\nexport type ${target.pathTypeName} = keyof ${target.typeName};\n` : "";
+
+	return `${header}export type ${target.typeName} = ${tabbed}${pathType}`.replace(/\r\n/g, "\n");
 }
 
 async function generate_plugin_sdk_types_main() {
 	const check = process.argv.includes(CHECK_FLAG);
 	const paths = generate_plugin_sdk_types_get_paths();
+	const built = generate_plugin_sdk_types_build_program(paths);
 
-	const emitted = generate_plugin_sdk_types_emit_entry(paths);
-	const output = generate_plugin_sdk_types_render(generate_plugin_sdk_types_inline_app_aliases(emitted, paths.entryPath));
+	for (const target of paths.targets) {
+		const emitted = generate_plugin_sdk_types_emit_entry(built, target.entryPath);
+		const output = generate_plugin_sdk_types_render(
+			generate_plugin_sdk_types_inline_app_aliases(emitted, target.entryPath),
+			target,
+		);
 
-	if (!check) {
-		await fs.writeFile(paths.outputPath, output, "utf8");
-		console.log(`[generate_plugin_sdk_types] Wrote ${paths.outputPath}`);
-		return;
+		if (!check) {
+			await fs.writeFile(target.outputPath, output, "utf8");
+			console.log(`[generate_plugin_sdk_types] Wrote ${target.outputPath}`);
+			continue;
+		}
+
+		// An editor may save a committed file with CRLF; only the content matters.
+		const committed = await fs.readFile(target.outputPath, "utf8").then(
+			(content) => content.replace(/\r\n/g, "\n"),
+			() => null,
+		);
+		if (committed === output) {
+			console.log(`[generate_plugin_sdk_types] ${target.outputPath} is up to date`);
+			continue;
+		}
+
+		const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "plugin-sdk-types-"));
+		const freshPath = path.join(tempDir, path.basename(target.outputPath));
+		await fs.writeFile(freshPath, output, "utf8");
+		console.error(
+			`[generate_plugin_sdk_types] ${target.outputPath} is stale. Run "pnpm run generate:plugin-sdk-types" in packages/app. Fresh output: ${freshPath}`,
+		);
+		process.exitCode = 1;
 	}
-
-	// An editor may save the committed file with CRLF; only the content matters.
-	const committed = await fs.readFile(paths.outputPath, "utf8").then(
-		(content) => content.replace(/\r\n/g, "\n"),
-		() => null,
-	);
-	if (committed === output) {
-		console.log(`[generate_plugin_sdk_types] ${paths.outputPath} is up to date`);
-		return;
-	}
-
-	const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "plugin-sdk-types-"));
-	const freshPath = path.join(tempDir, "convex-api.d.ts");
-	await fs.writeFile(freshPath, output, "utf8");
-	console.error(
-		`[generate_plugin_sdk_types] ${paths.outputPath} is stale. Run "pnpm run generate:plugin-sdk-types" in packages/app. Fresh output: ${freshPath}`,
-	);
-	process.exitCode = 1;
 }
 
 generate_plugin_sdk_types_main().catch((error: unknown) => {
