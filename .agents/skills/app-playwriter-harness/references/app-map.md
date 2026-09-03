@@ -116,6 +116,18 @@ Use this file for stable app browser facts that are worth reusing across Playwri
   - Signed-in: `.RoutePluginsPublisherPlugins` contains the claim form and claimed-repository cards. Published entries link to `/plugins/:pluginName`; unpublished claims stay as non-link cards until their first publish. The header identity chip `.RoutePluginsPublisherIdentity` shows `-name` (anagraphic display name) and `-email`.
   - Anonymous: sign-in gate `.RoutePluginsPublisherSignIn` with a `Log in` button that opens the Clerk sign-in modal; the claim form and management sections must not render.
 - Plugin page host route: `/w/:organizationName/:workspaceName/plugins/:pluginName/pages/:pageId`. Root `.RoutePluginsPluginPage`; the plugin SPA runs in the sandboxed iframe `.PluginsUiFrame`. The frame keeps the Convex asset/API origin, which differs from the app origin, so app-level DOM access still returns a null `contentDocument`; find its Playwright frame handle and evaluate there. Loading state has `role="status"`; startup failure replaces the iframe with a `role="alert"` `.RoutePluginsPluginPage-error` containing a focused Retry button. Canonical iframe assets use `/plugins-ui/<versionId>/<path>`; Retry creates a fresh frame generation. Sidebar items come from passed-review `list_ui_pages` results. The plugin's own detail page links to none of its pages — `main-app-sidebar.tsx` is the only caller of `list_ui_pages` that renders links — so reach a plugin page from the sidebar or by typing the URL. See `references/plugin-gallery.md` for driving Gallery and `references/chitchat.md` for Chitchat.
+- **Do not guess which workspace holds an installed plugin.** The QA Edge profile is signed in as an
+  **anonymous** user, not as the publisher account that owns the plugin repositories, and the two have
+  different tenants. On 2026-09-03 the profile was anonymous user `m57akt4q…`, whose `/w/personal/home`
+  had all four first-party plugins installed, while the publisher `m577heyg…` had Chitchat in a
+  separate `chitchat-qa` org — opening `/w/chitchat-qa/home/plugins/…` in that profile renders
+  `You do not have access to this organization/workspace.` and no iframe, which reads like a broken
+  route. Read the signed-in identity first: the sidebar account button's accessible name is
+  `Anonymous account: Anonymous user <userId>` or `Account: <email>`. Then map installations to routes
+  over the Convex CLI before navigating, joining `plugins_workspace_installations` to `organizations`
+  and `organizations_workspaces` by name. Two field names bite here: the version row's plugin name is
+  `plugins_versions.name` (not `pluginName`, which is the field on the *installation*), and the
+  installation points at its version through `pluginVersionId` (not `versionId`).
 
 ## Stable App Element IDs
 

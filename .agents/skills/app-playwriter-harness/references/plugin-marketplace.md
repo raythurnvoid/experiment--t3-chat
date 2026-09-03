@@ -1021,3 +1021,47 @@ for t in plugins_data plugins_data_usage totally_bogus_table_xyz plugins_workspa
 	printf "%-36s " "$t"; vp env exec pnpx convex data "$t" --limit 200 2>&1 | grep -c '^"'
 done
 ```
+
+## Proving the registry serves the bytes you built, for every plugin at once
+
+After a release round, check that each published version's served bundle is the file the plugin's
+local `dist` holds. One plugin frame is enough for all of them: the asset host is the Convex site
+origin, the frame's CSP allows `connect-src 'self'`, and every version's assets live on that same
+origin — so from inside **one** open frame you can fetch any other version's bundle by id. No second
+page load, no session per plugin.
+
+```js
+const frame = state.page.frames().filter((f) => f.url().includes("/plugins-ui/")).at(-1);
+const rows = await frame.evaluate(async (versions) => {
+	const out = {};
+	for (const [name, id] of Object.entries(versions)) {
+		const resp = await fetch(`/plugins-ui/${id}/dist/frontend/assets/index.js`);
+		if (!resp.ok) { out[name] = { status: resp.status }; continue; }
+		const buf = await resp.arrayBuffer();
+		const digest = await crypto.subtle.digest("SHA-256", buf);
+		out[name] = {
+			bytes: buf.byteLength,
+			sha256: Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join(""),
+		};
+	}
+	return out;
+}, { chitchat: "<versionId>", gallery: "<versionId>" /* … */ });
+```
+
+Compare against `sha256sum plugins/<plugin>/dist/frontend/assets/index.js` and `wc -c` on the same
+file. Compare **both** the hash and the byte count: a length that matches while the hash does not is
+a different failure (a rebuilt bundle of the same size) from a short read. Verified 2026-09-03 across
+all four first-party plugins in the SDK 0.16.0 round; all four matched on both numbers.
+
+A release that changes no runtime code has an extra use for this, but the obvious version of the
+check is wrong. The SDK 0.16.0 round was types only, so no frontend bundle should have gained a byte
+— and none did, all four kept their exact 0.15.0 byte count. Only Chitchat's **hash** matched the
+previous round. Gallery, Video Player and Council each changed by exactly one line: the
+`//#region node_modules/.pnpm/bonobo-plugin-sdk@https+++c_<hash>/…` comment naming the pnpm store
+path, whose hash the SDK re-pin changes. One hex hash is the same length as another, so the file
+comes out the same size with a different sha256.
+
+So compare sizes against the previous round, not hashes. When a size matches but the hash does not,
+fold both files to a fixed width and diff them (`diff <(fold -w 200 old.js) <(fold -w 200 new.js)`)
+before concluding anything — a one-line store-path comment and a real code change look identical
+from the hash alone.

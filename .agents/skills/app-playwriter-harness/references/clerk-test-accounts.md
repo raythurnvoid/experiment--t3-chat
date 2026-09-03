@@ -117,6 +117,12 @@ await state.page.waitForFunction(() => window.Clerk?.user != null, { timeout: 15
 
 - `exact: true` on `Continue` is mandatory. Without it the locator matches `Continue with Google` first and opens a real Google account chooser (see `known-hazards.md`).
 - **Code-before-send race:** if the modal says `You need to send a verification code before attempting to verify`, the code was typed before Clerk finished preparing the email factor. Click `Resend`, wait a moment, and fill `424242` again. Observed on the second sign-in of a session; the recovery works every time.
+  Re-hit 2026-09-03 on the **first** sign-in of a session, so do not expect it only on the second.
+- **A failed runner call does not mean a failed sign-in.** On 2026-09-03 the `Resend` recovery runner
+  ended with a long `hono` stack trace and `[HINT: If this is an internal Playwright error, page/browser
+  closed, or connection issue, call reset to reconnect.]`, but the sign-in had already landed: a plain
+  follow-up read answered `qa.perm.owner+clerk_test@example.com`. Read `window.Clerk.user` before
+  retrying a sign-in, or the retry opens a modal on an already signed-in session.
 
 ## Verify who you are
 
