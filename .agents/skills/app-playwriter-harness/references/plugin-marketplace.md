@@ -983,9 +983,17 @@ await frame.evaluate(() =>
 Take the count before and after the press. **Watch it not change; do not expect zero** — a page can
 use that route for other reads at the same time (Chitchat's reaction and reply companion lists do).
 
-Published versions as of 2026-09-03 (SDK 0.14.0 round): Chitchat `0.7.2` / `hn7y12agx30s8w8c447gvxn4px8dm1tj`, Gallery `0.1.18` / `hn7tggavmbqdjpqxhtmkj95jmd8dnwym`, Video Player `0.1.7` / `hn7vtq0xh79dnj7hr2j6q9f7t98dmnsa`, Council `0.2.9` / `hn7pv6p2z6y9myt556xnvc4k9x8dnccz`. The round before it (SDK 0.13.1, 2026-09-02) was Chitchat `0.7.1` / `hn7t5780nb6dyjpdmhhjvktqf18dn0w8`, Gallery `0.1.17` / `hn7hkf4qebbqy9beawgpw3t8en8dmzrs`, Video Player `0.1.6` / `hn7j3axtf1ej0pbf0svdf30csh8dm06x`, Council `0.2.8` / `hn7h3m0cd1j07cbnqaj836906h8dnd0p`. The version id is the fastest check that a frame runs the release you think it does: it is the `/plugins-ui/<versionId>/` segment of the frame URL.
+Published versions as of 2026-09-03 (SDK 0.15.0 round): Chitchat `0.7.3` / `hn7nqkgsbd4zcssx0fahmedfkd8dqz5x`, Gallery `0.1.19` / `hn7jje647vn6y5f0s6nsnj77598dq7tw`, Video Player `0.1.8` / `hn7htf5cnceke0nhdbnyq65y1n8dprbb`, Council `0.2.10` / `hn7mmzcjrmmw5q3y7npxnmcr9s8dq99t`. The round before it (SDK 0.14.0, earlier the same day) was Chitchat `0.7.2` / `hn7y12agx30s8w8c447gvxn4px8dm1tj`, Gallery `0.1.18` / `hn7tggavmbqdjpqxhtmkj95jmd8dnwym`, Video Player `0.1.7` / `hn7vtq0xh79dnj7hr2j6q9f7t98dmnsa`, Council `0.2.9` / `hn7pv6p2z6y9myt556xnvc4k9x8dnccz`. The version id is the fastest check that a frame runs the release you think it does: it is the `/plugins-ui/<versionId>/` segment of the frame URL.
 
 Keeping the previous round's ids is worth the two lines. The old bundles stay served at `/plugins-ui/<old id>/dist/frontend/assets/index.js`, so a plain `curl` of both gives a release check that can come back false: grep the new bytes for the symbol the release removed and the old bytes for the same symbol. If both answer the same, the check is not measuring anything. Used on 2026-09-03 for the `BonoboUi*` rename — Gallery, Video Player and Council each answered 6 hits on `0.1.17`/`0.1.6`/`0.2.8` and 0 on the new ones. Chitchat's build minifies, so its bundle answers 0 either way and proves nothing.
+
+A types-only SDK release (the 0.15.0 round removed a type alias and changed no runtime byte) has no
+symbol to grep for, so the served-bytes check above measures nothing there. The check that fits is
+that the registry serves exactly the bytes you built: `curl` the served
+`/plugins-ui/<versionId>/dist/frontend/assets/index.js` from `VITE_CONVEX_HTTP_URL` and compare its
+sha256 with the plugin's own `dist/frontend/assets/index.js`. Used 2026-09-03 on all four plugins:
+every served hash equalled the local one, at the byte sizes the release chain records. A mismatch
+means the published version was built from a different tree than the one you tested.
 
 The live subscriptions are readable too, on `client.convex.sync.state.querySet` (a Map). Each value
 carries `canonicalizedUdfPath` (not `udfPath`) and `args`, and `args` is the **args object**, not a

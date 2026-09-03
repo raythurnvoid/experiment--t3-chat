@@ -34,7 +34,7 @@ on selectors, rows, threads, theme and transcripts still do.
   `/w/qa-browser/home/plugins/chitchat/pages/chat`. That workspace has Chitchat installed with
   seeded channels: `#build-pipeline`, `#design-review`, `#general` (2 messages) and one private
   `#qapriv…`. The Pages origin talks to the same Convex deployment, so the frame URL carries the
-  same `/plugins-ui/<versionId>/` id as the dev host. Verified 2026-09-03 on published 0.7.2.
+  same `/plugins-ui/<versionId>/` id as the dev host. Verified 2026-09-03 on published 0.7.2, and again the same day on 0.7.3.
 
 ## Selectors
 
