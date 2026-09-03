@@ -16,8 +16,10 @@ await state.page.goto("http://localhost:5173/w/personal/home/plugins/video-playe
 	waitUntil: "domcontentloaded",
 	timeout: 45000,
 });
-await state.page.waitForFunction(() => document.body.innerText.includes("Version"), { timeout: 30000 });
+await state.page.getByText(/^Version \d+\.\d+\.\d+$/).waitFor({ timeout: 30000 });
 ```
+
+Wait for the version **line**, not for the word. The bootstrap shell can already contain the string `Version` before the detail page renders, so `innerText.includes("Version")` resolves early and the reads that follow answer `null`. Hit again 2026-09-03 with a fixed 2500 ms wait, which fails the same way for the same reason.
 
 These in-script waits exceed the CLI's default 10s execute timeout. Size the CLI flag above the longest in-script wait (for example `--timeout 50000`), or split the `goto` and the readiness poll into separate short calls.
 
@@ -981,7 +983,9 @@ await frame.evaluate(() =>
 Take the count before and after the press. **Watch it not change; do not expect zero** — a page can
 use that route for other reads at the same time (Chitchat's reaction and reply companion lists do).
 
-Published versions as of 2026-09-02 (SDK 0.13.1 round): Chitchat `0.7.1` / `hn7t5780nb6dyjpdmhhjvktqf18dn0w8`, Gallery `0.1.17` / `hn7hkf4qebbqy9beawgpw3t8en8dmzrs`, Video Player `0.1.6` / `hn7j3axtf1ej0pbf0svdf30csh8dm06x`, Council `0.2.8` / `hn7h3m0cd1j07cbnqaj836906h8dnd0p`. The version id is the fastest check that a frame runs the release you think it does: it is the `/plugins-ui/<versionId>/` segment of the frame URL.
+Published versions as of 2026-09-03 (SDK 0.14.0 round): Chitchat `0.7.2` / `hn7y12agx30s8w8c447gvxn4px8dm1tj`, Gallery `0.1.18` / `hn7tggavmbqdjpqxhtmkj95jmd8dnwym`, Video Player `0.1.7` / `hn7vtq0xh79dnj7hr2j6q9f7t98dmnsa`, Council `0.2.9` / `hn7pv6p2z6y9myt556xnvc4k9x8dnccz`. The round before it (SDK 0.13.1, 2026-09-02) was Chitchat `0.7.1` / `hn7t5780nb6dyjpdmhhjvktqf18dn0w8`, Gallery `0.1.17` / `hn7hkf4qebbqy9beawgpw3t8en8dmzrs`, Video Player `0.1.6` / `hn7j3axtf1ej0pbf0svdf30csh8dm06x`, Council `0.2.8` / `hn7h3m0cd1j07cbnqaj836906h8dnd0p`. The version id is the fastest check that a frame runs the release you think it does: it is the `/plugins-ui/<versionId>/` segment of the frame URL.
+
+Keeping the previous round's ids is worth the two lines. The old bundles stay served at `/plugins-ui/<old id>/dist/frontend/assets/index.js`, so a plain `curl` of both gives a release check that can come back false: grep the new bytes for the symbol the release removed and the old bytes for the same symbol. If both answer the same, the check is not measuring anything. Used on 2026-09-03 for the `BonoboUi*` rename — Gallery, Video Player and Council each answered 6 hits on `0.1.17`/`0.1.6`/`0.2.8` and 0 on the new ones. Chitchat's build minifies, so its bundle answers 0 either way and proves nothing.
 
 The live subscriptions are readable too, on `client.convex.sync.state.querySet` (a Map). Each value
 carries `canonicalizedUdfPath` (not `udfPath`) and `args`, and `args` is the **args object**, not a

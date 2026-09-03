@@ -26,6 +26,15 @@ on selectors, rows, threads, theme and transcripts still do.
   `state.page.frames().filter((f) => f.url().includes("/plugins-ui/")).at(-1)`.
 - The frame attaches a beat after `domcontentloaded`. A `frames()` read taken immediately after
   `goto` returns the host page only; wait ~8-10 s, or re-read, before deciding the frame is missing.
+- **On the GitHub Pages host the route is the same, but the identity is not.** The deployed app is
+  `https://raythurnvoid.github.io/experiment--t3-chat/` and the QA Edge profile is often anonymous
+  there, which is why an earlier Pages pass found zero channels and proved only that the frame
+  mounted. Do the run in the isolated scratch browser instead, signed in as
+  `qa.perm.owner+clerk_test@example.com` (see `clerk-test-accounts.md`), and open
+  `/w/qa-browser/home/plugins/chitchat/pages/chat`. That workspace has Chitchat installed with
+  seeded channels: `#build-pipeline`, `#design-review`, `#general` (2 messages) and one private
+  `#qapriv…`. The Pages origin talks to the same Convex deployment, so the frame URL carries the
+  same `/plugins-ui/<versionId>/` id as the dev host. Verified 2026-09-03 on published 0.7.2.
 
 ## Selectors
 
