@@ -969,7 +969,8 @@ const out = await frame.evaluate(async () => {
 
 Since SDK 0.17.0 the client also carries `authorize` and no longer carries `backend`, and `fetchJson`
 takes the request body as its own second argument and resolves the route's own `{ status, body }`
-answer. So the same walk gives four probes that no earlier SDK can pass:
+answer. Since 0.18.0 it resolves **every** answer, so a body that is not JSON comes back as `null`
+instead of throwing. The same walk gives five probes that no earlier SDK can pass:
 
 ```js
 const answers = { clientKeys: Object.keys(client).sort() };
@@ -982,6 +983,10 @@ answers.write = { status: write.status, message: write.body?.message };
 // Read the bearer as a boolean. Never print the token.
 const headers = await client.authorize();
 answers.bearerOk = (headers.get("authorization") ?? "").startsWith("Bearer plu_");
+// SDK 0.18.0 and later: an unrouted path. Convex's router answers plain text, which 0.17.0
+// threw ("the body was not JSON"). Now it resolves with a null body.
+const unrouted = await client.fetchJson("/api/v1/nope", {});
+answers.unrouted = { status: unrouted.status, bodyIsNull: unrouted.body === null };
 ```
 
 - The `files/write` probe is the one with teeth, and it needs a path no plugin owns (`/never.md`):
@@ -991,6 +996,10 @@ answers.bearerOk = (headers.get("authorization") ?? "").startsWith("Bearer plu_"
   because a resolved refusal is still a 403 response — do not read that log line as a bug.
 - `authorize(headers)` merges: pass a `Headers` with your own entry and check that both it and the
   bearer survive. The token itself must never reach a log, a report, or a file.
+- The unrouted-path probe is the 0.18.0 release check, and it is the only probe here that
+  separates 0.18.0 from 0.17.0. Wrap it in a `try/catch` and report which branch ran: on 0.17.0 it
+  throws, on 0.18.0 it resolves `{ status: 404, body: null }`. TypeScript refuses `"/api/v1/nope"`
+  in real plugin code, which is the point of the type, so a probe script casts the path away.
 
 ## Proving a page really pages over Convex, not over HTTP
 
@@ -1008,7 +1017,7 @@ await frame.evaluate(() =>
 Take the count before and after the press. **Watch it not change; do not expect zero** — a page can
 use that route for other reads at the same time (Chitchat's reaction and reply companion lists do).
 
-Published versions as of 2026-09-03 (SDK 0.17.0 round): Chitchat `0.7.5` / `hn7gxq6w16ytjfeckn5gwm8xt98dpytt`, Gallery `0.1.21` / `hn7vtsyrqem8rmzcrky3mj4t5h8dpefe`, Video Player `0.1.10` / `hn7vpc9tdb8j68zpfkr3zmtc0s8dpx2x`. Council did NOT move in that round: its latest published version is still `0.2.11` / `hn7x1fyv5hrbqm43wtdmpk0p0s8dpks4`, because 0.2.12 came back `review_flagged` on four capabilities its page bundle has no call site for — see the Council entry in `plugin-system/SKILL.md`, and do not republish it until that is settled. The round before it (SDK 0.16.0, earlier the same day) was Chitchat `0.7.4` / `hn7rchdpr2dcsm1375vhq4gfh98dq5vs`, Gallery `0.1.20` / `hn7tp00ypg5a2v9xz14hkz0tyx8dpg3m`, Video Player `0.1.9` / `hn7q60scz653znc3cae06cr0yh8dqtv9`. The version id is the fastest check that a frame runs the release you think it does: it is the `/plugins-ui/<versionId>/` segment of the frame URL.
+Published versions as of 2026-09-03 (SDK 0.18.0 round): Gallery `0.1.22` / `hn7napdaqxwg04vrfy23ftfwhs8dqkyh`, Video Player `0.1.11` / `hn7qe8w0q99rkdbnsxy0n4sf7d8dpczd`. **Two plugins did not move in that round, for two different reasons.** Chitchat `0.7.6` came back `review_flagged` on `plugin.data.user-write` and `workspace.members.read`, and the flag is WRONG: both are used through the frame Convex client, not over HTTP, and the built bundle carries `plugins_data.user_put_owned_document` at bytes 748032, 752159 and 763873 and `plugins_data.list_members` at 499209. Its latest published version is still `0.7.5` / `hn7gxq6w16ytjfeckn5gwm8xt98dpytt`. Council `0.2.13` was never submitted, because its 0.2.12 flag from the round before is still unsettled and that flag is CORRECT; its latest published version is still `0.2.11` / `hn7x1fyv5hrbqm43wtdmpk0p0s8dpks4`. Read both entries in `plugin-system/SKILL.md` before republishing either. The round before it (SDK 0.17.0, earlier the same day) was Chitchat `0.7.5` / `hn7gxq6w16ytjfeckn5gwm8xt98dpytt`, Gallery `0.1.21` / `hn7vtsyrqem8rmzcrky3mj4t5h8dpefe`, Video Player `0.1.10` / `hn7vpc9tdb8j68zpfkr3zmtc0s8dpx2x`. The version id is the fastest check that a frame runs the release you think it does: it is the `/plugins-ui/<versionId>/` segment of the frame URL.
 
 Keeping the previous round's ids is worth the two lines. The old bundles stay served at `/plugins-ui/<old id>/dist/frontend/assets/index.js`, so a plain `curl` of both gives a release check that can come back false: grep the new bytes for the symbol the release removed and the old bytes for the same symbol. If both answer the same, the check is not measuring anything. Used on 2026-09-03 for the `BonoboUi*` rename — Gallery, Video Player and Council each answered 6 hits on `0.1.17`/`0.1.6`/`0.2.8` and 0 on the new ones. Chitchat's build minifies, so its bundle answers 0 either way and proves nothing.
 

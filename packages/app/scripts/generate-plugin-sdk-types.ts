@@ -418,35 +418,19 @@ function generate_plugin_sdk_types_render(text: string, target: generate_plugin_
 
 	const header = generate_plugin_sdk_types_header(target.description);
 	const pathType = target.pathTypeName ? `\nexport type ${target.pathTypeName} = keyof ${target.typeName};\n` : "";
-	// The response union maps over the route's declared statuses and drops every 5xx member. The
-	// SDK's `fetchJson` throws a 5xx instead of resolving it, so a resolved answer is always a
-	// declared status with a typed body, and the type says exactly that.
+	// The response union maps over every status the route declares, including 5xx: `fetchJson`
+	// resolves an HTTP answer whatever its status.
 	//
-	// The runtime tests `status >= 500`, which a conditional type cannot do, so the list below
-	// spells out every 5xx code IANA registers. A route that answers a status outside it would put
-	// a member in the union that `fetchJson` never resolves, so the SDK test scans this file for
-	// declared 5xx statuses and fails when one is not in the list.
+	// `body` is `| null` because a body that is not JSON parses to nothing, and `fetchJson`
+	// resolves that as `null` instead of rejecting.
 	const responseType =
 		target.pathTypeName && target.responseTypeName
 			? `
 export type ${target.responseTypeName}<P extends ${target.pathTypeName}> = {
-	[S in keyof ${target.typeName}[P]["POST"]["response"]]: S extends
-		| 500
-		| 501
-		| 502
-		| 503
-		| 504
-		| 505
-		| 506
-		| 507
-		| 508
-		| 510
-		| 511
-		? never
-		: {
-				status: S;
-				body: ${target.typeName}[P]["POST"]["response"][S]["body"];
-			};
+	[S in keyof ${target.typeName}[P]["POST"]["response"]]: {
+		status: S;
+		body: ${target.typeName}[P]["POST"]["response"][S]["body"] | null;
+	};
 }[keyof ${target.typeName}[P]["POST"]["response"]];
 `
 			: "";
