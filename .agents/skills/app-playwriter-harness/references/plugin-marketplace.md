@@ -964,8 +964,13 @@ const out = await frame.evaluate(async () => {
   `await state.page.evaluate(async () => (await import("/src/lib/app-convex-client.ts")).app_convex.query("users:get_anagraphic", { userId }))`
   returned the anagraphic row on 2026-09-02, so the frame's `null` is a refusal and not an absent row.
   Read `ai_chat_threads` back after the mutation attempt (0 rows with the probe title).
-- Gallery is Preact, not React: the `__reactContainer$` key does not exist there. Judge its frame by
-  the `.gallery-grid` render instead (`plugin-gallery.md`).
+- Gallery is Preact, not React: the `__reactContainer$` key does not exist there. The client is
+  still reachable, so do not fall back to judging that frame by its `.gallery-grid` render. Preact
+  hangs its vnode on the container as `_children`, and a component keeps the client on `props`
+  rather than `memoizedProps`. One walk covers both runtimes: start at
+  `container[reactKey] ?? container._children`, accept `node.memoizedProps?.client ?? node.props?.client`,
+  and push `child`, `sibling`, `_children` (an array) and `_component`. Keep a `Set` of visited nodes,
+  because `_component` points back up. Verified 2026-09-03 on Gallery 0.1.22.
 
 Since SDK 0.17.0 the client also carries `authorize` and no longer carries `backend`, and `fetchJson`
 takes the request body as its own second argument and resolves the route's own `{ status, body }`
@@ -989,6 +994,10 @@ const unrouted = await client.fetchJson("/api/v1/nope", {});
 answers.unrouted = { status: unrouted.status, bodyIsNull: unrouted.body === null };
 ```
 
+- **`plugin-data/list` only works in a frame that consented to `plugin.data.read`.** Gallery and
+  Video Player both declare `workspace.files.read` alone, so in their frames that probe answers 403
+  and proves nothing about the body shape. Swap it for `client.fetchJson("/api/v1/files/list", {
+  limit: 3, kind: "file" })`, whose 200 body carries `items`, `cursor` and `isDone`.
 - The `files/write` probe is the one with teeth, and it needs a path no plugin owns (`/never.md`):
   the route answers 403 `Permission denied` before it looks at anything, and the point is that the
   answer arrives as a resolved value. Verified 2026-09-03 on Chitchat 0.7.5, on the dev host and on
@@ -1000,6 +1009,27 @@ answers.unrouted = { status: unrouted.status, bodyIsNull: unrouted.body === null
   separates 0.18.0 from 0.17.0. Wrap it in a `try/catch` and report which branch ran: on 0.17.0 it
   throws, on 0.18.0 it resolves `{ status: 404, body: null }`. TypeScript refuses `"/api/v1/nope"`
   in real plugin code, which is the point of the type, so a probe script casts the path away.
+
+### Running the release probe when the plugin you usually drive is behind
+
+The probes need a frame on the SDK you are releasing. Chitchat is the usual host for them, but it
+stayed on `0.7.5` in the 0.18.0 round, so the probes moved to the frames that did ship:
+
+- **Dev host**: the **Video Player file view**. Open the video node directly
+  (`/w/personal/home/files?nodeId=<id>`), then click the `Video player` tab — the frame does not
+  mount until you do (see `file-node-view.md`). Find a video node without hunting the tree:
+  `files_nodes:list_tree` from page context, filtered on `contentType.startsWith("video/")`.
+- **Pages host, as `qa.perm.owner`**: that account owns no workspace with a 0.18.0 plugin. Install
+  **Gallery** into `qa-browser/home` from the catalog, run the probes on
+  `/w/qa-browser/home/plugins/gallery/pages/gallery`, then uninstall it. A page needs no fixture
+  file, which a file view would.
+
+**A plugin left behind is a free negative control, so use it.** With Chitchat still on 0.7.5 the same
+deployment serves a live 0.17.0 frame, and the release probe run there is the other half of the A/B.
+On 2026-09-03 the identical probe answered `{ threw: true, message: "/api/v1/nope responded 404: the
+body was not JSON" }` in the Chitchat frame and `{ threw: false, status: 404, body: null }` in the
+Video Player frame, minutes apart, against the same host. That pair is the evidence; either half
+alone is not.
 
 ## Proving a page really pages over Convex, not over HTTP
 

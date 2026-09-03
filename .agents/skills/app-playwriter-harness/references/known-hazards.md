@@ -1066,15 +1066,21 @@ fine, but every `state.appPlaywriterHarness.*` helper still targets whatever tab
 that is plainly on screen — and it fails the same way on `.FilesSidebar`, so the message points at
 the selector while the real cause is the binding. Hit 2026-08-18.
 
-Worse: the timeout is the *loud* version. `install-harness.js` seeds its pinned page from the
-global `page` when `state.page` does not exist yet, so installing the harness before you open your
-tab pins whatever unrelated app the shared browser already had open. Every helper then answers about
-that tab without failing — `auditAccessibility` returns a clean report for another product and
-`latestLogs` returns `[]`, which reads as "no console errors on my route". Hit 2026-08-20, where an
+Worse: the timeout is the *loud* version. Until harness 0.6.5, `install-harness.js` seeded its
+pinned page from the global `page` when `state.page` did not exist yet, so installing the harness
+before you opened your tab pinned whatever unrelated app the shared browser already had open.
+Every helper then answered about that tab without failing — `auditAccessibility` returned a clean
+report for another product and `latestLogs` returned `[]`, which reads as "no console errors on my
+route". Hit 2026-08-20, where an
 audit of the files route came back describing `personal-market-radar` widgets. Hit again
 2026-08-23: a session that never called `bindOpenTab` ran `auditAccessibility(...)` with its page
 held only in its own `state`, and the report silently described a peer agent's dashboard-preview
 tab on `localhost:5199` — a surface from this same repo, so nothing about the numbers looked wrong.
+
+Harness 0.6.5 removes that `|| page` fallback, so a fresh install pins nothing and the helpers
+resolve `state.page` at call time — the tab you opened yourself. Hit once more on 2026-09-03 on
+0.6.4, where an `auditAccessibility` of a file-view route answered about the user's own Chitchat tab
+on the Pages host. The install-order trap is gone; the two binding traps below are not.
 
 Call `await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: "/files" })` first; it sets
 `state.page` too, so the hand assignment is not needed. The audit also tells you which tab it
@@ -1083,6 +1089,23 @@ believing the report is the check — the peer-tab and `about:blank` entries bel
 field. When a helper times out on a selector you
 can see in a screenshot, re-probe it against a selector that certainly exists (`.FilesSidebar`)
 before editing the selector — a helper that fails on both is not a selector problem.
+
+## An installed harness helper cannot print anything, so its own warnings never reach you
+
+Every `playwriter -e` / `-f` call runs in a fresh sandbox with a fresh `console`. A function stored
+on `state` in an earlier call keeps the `console` of the call that created it, and that one is dead:
+the text goes nowhere and no error is raised. Proven 2026-09-03 by storing `state.f = () => {
+console.log("x") }` in one call and invoking it in the next — no output. `globalThis.console` behaves
+the same, because the sandbox does not re-point a shared global. Passing the live `console` in as an
+argument is the only thing that works.
+
+Two consequences:
+
+- Every `console.log(JSON.stringify(result, null, 2))` inside `install-harness.js` is dead code after
+  the install call. Print the value the helper **returns**; do not wait for the helper to print it.
+- `getHarnessPage` has a guard that is supposed to say "state.page is not the bound tab; using the
+  bound tab". It has never printed. That is why the pinned-tab trap above is silent, and why reading
+  the `url` field on the returned report is the only check that actually works.
 
 ## `bindOpenTab` can bind you to another agent's tab
 

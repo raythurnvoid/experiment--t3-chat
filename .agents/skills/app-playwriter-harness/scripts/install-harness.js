@@ -1,5 +1,5 @@
 (() => {
-	const VERSION = "0.6.4";
+	const VERSION = "0.6.5";
 	const SKILL_DIR = ".agents/skills/app-playwriter-harness";
 	/** Somewhere harmless to move the pointer from, so the next move has a non-zero screen delta. */
 	const HOVERCARD_PARK_POINT = { x: 900, y: 500 };
@@ -715,7 +715,12 @@
 
 	state.appPlaywriterHarness = {
 		version: VERSION,
-		page: state.appPlaywriterHarness?.page || state.t3ChatHarness?.page || state.page || page,
+		// Do NOT fall back to the shared `page` here. Installing the harness before you open your
+		// own tab would pin whatever tab happened to be in front — usually the user's — and every
+		// later observation would silently read that tab instead of yours. With no fallback,
+		// `getHarnessPage` resolves `state.page` at call time and follows the tab you actually made.
+		// `bindOpenTab` still pins on purpose when you want pinning.
+		page: state.appPlaywriterHarness?.page || state.t3ChatHarness?.page || state.page || null,
 		boundUrl: state.appPlaywriterHarness?.boundUrl || state.t3ChatHarness?.boundUrl,
 		observations: state.appPlaywriterHarness?.observations || state.t3ChatHarness?.observations || [],
 		tabs,
