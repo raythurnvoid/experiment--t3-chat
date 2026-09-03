@@ -6507,7 +6507,7 @@ describe("plugins publish_version", () => {
 			mechanicalAdvisoryFindings: [],
 			aiFindings: [],
 			capabilityMap: [],
-			model: "gpt-5.4-mini",
+			model: "gpt-5.6-luna",
 		});
 		if (review._nay) throw new Error(review._nay.message);
 		await t.run((ctx) => ctx.db.patch("users", publisher.userId, { deletedAt: Date.now() }));
@@ -6625,7 +6625,7 @@ describe("plugins publish_version", () => {
 			mechanicalAdvisoryFindings: [],
 			aiFindings: [],
 			capabilityMap: [],
-			model: "gpt-5.4-mini",
+			model: "gpt-5.6-luna",
 		});
 
 		expect(review).toEqual({
@@ -6656,7 +6656,7 @@ describe("plugins publish_version", () => {
 				mechanicalAdvisoryFindings: [],
 				aiFindings: [],
 				capabilityMap: [],
-				model: "gpt-5.4-mini",
+				model: "gpt-5.6-luna",
 				updatedAt: Date.now(),
 			}),
 		);
@@ -6714,7 +6714,7 @@ describe("plugins publish_version", () => {
 				mechanicalAdvisoryFindings: [],
 				aiFindings: [],
 				capabilityMap: [],
-				model: "gpt-5.4-mini",
+				model: "gpt-5.6-luna",
 				updatedAt: Date.now(),
 			}),
 		);
@@ -6901,7 +6901,7 @@ describe("plugins publish_version", () => {
 						endByte: 1,
 					},
 				],
-				model: "gpt-5.4-mini",
+				model: "gpt-5.6-luna",
 			},
 		]);
 		expect(reviews[0]!.reviewPolicyVersion).toBe(plugins_REVIEW_POLICY_VERSION);
@@ -7575,6 +7575,7 @@ describe("plugins publish_version", () => {
 		);
 		expect(call.system).not.toContain("the secrets listed below");
 		expect(call.system).toContain('"Secret values" means every raw value returned by the host secret API');
+		expect(call.prompt).toContain("Subjects with no standing note");
 		// The verdict is decided over the notebook, so the source is not in that call at all.
 		expect(call.system).not.toContain(source);
 		expect(call.prompt).not.toContain(source);
@@ -7814,7 +7815,7 @@ describe("plugins publish_version", () => {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
 		vi.spyOn(console, "error").mockImplementation(() => {});
-		mock_ai_review();
+		const verdict = mock_ai_review();
 		vi.mocked(plugins_ai_review.generate_step).mockReset();
 		vi.mocked(plugins_ai_review.generate_step).mockResolvedValue(review_move({}));
 
@@ -7829,7 +7830,41 @@ describe("plugins publish_version", () => {
 			_nay: { message: "Plugin review verdict did not explain every declared capability and origin; try again" },
 		});
 		expect(reviewer_saw()).toContain("Not finished yet. These declared subjects have no standing note");
+		// The host counted the unwritten subjects for the nag, so it hands the verdict the same list
+		// instead of making it re-derive coverage by eye from the whole notebook.
+		const missingPrompt = verdict.mock.calls[0]![0].prompt;
+		expect(missingPrompt).toContain("Subjects with no standing note");
+		expect(missingPrompt.split("Subjects with no standing note")[1]).toContain("capability:plugin.secrets.read");
 		expect(await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect())).toEqual([]);
+	});
+
+	test("stores a flagged verdict for a capability nothing in the artifact accounts for", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const repositoryId = await insert_claimed_repository(t, { ownerUserId: membership.userId });
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		// A pass with an unaccounted subject only fails the review as an operation error, and the next
+		// publish attempt samples the model again. Flagging it is the answer that reaches the publisher.
+		mock_ai_review({
+			verdict: "flagged",
+			findings: ["capability:plugin.secrets.read has no call site in this artifact"],
+			capabilityMap: [],
+		});
+		vi.mocked(plugins_ai_review.generate_step).mockReset();
+		vi.mocked(plugins_ai_review.generate_step).mockResolvedValue(review_move({}));
+
+		const flagged = await request_fresh_review(t, {
+			requestedBy: membership.userId,
+			repositoryId,
+			hashChar: "4",
+			capabilities: ["plugin.secrets.read"],
+		});
+
+		expect(flagged).toMatchObject({ _yay: { status: "flagged" } });
+		const stored = await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect());
+		expect(stored).toHaveLength(1);
+		expect(stored[0]!.status).toBe("flagged");
+		expect(stored[0]!.aiFindings).toEqual(["capability:plugin.secrets.read has no call site in this artifact"]);
 	});
 
 	test("keeps backend and page roles separate when they declare the same origin", async () => {
@@ -8387,7 +8422,7 @@ describe("plugins publish_version", () => {
 
 		expect(reviewed).toMatchObject({ _yay: { status: "passed" } });
 		expect(steps.mock.calls[1]![0].prompt).toContain(
-			"Refused a note because its evidence range is not a covered source range",
+			"Refused a note because its evidence range is not a source range the host has shown",
 		);
 		expect(aiReview.mock.calls[0]![0].prompt).not.toContain("claims evidence before reading it");
 	});
@@ -9069,7 +9104,7 @@ describe("plugins publish_version", () => {
 			version: "0.2.0",
 			mechanicalFindings: [] as string[],
 			mechanicalAdvisoryFindings: [],
-			model: "gpt-5.4-mini",
+			model: "gpt-5.6-luna",
 		};
 		const first = await t.mutation(internal.plugins.upsert_version_review, {
 			...base,
@@ -9114,7 +9149,7 @@ describe("plugins publish_version", () => {
 			mechanicalAdvisoryFindings: [],
 			aiFindings: Array.from({ length: 110 }, (_, index) => `${index} ${"x".repeat(596)}`),
 			capabilityMap: [],
-			model: "gpt-5.4-mini",
+			model: "gpt-5.6-luna",
 		});
 
 		expect(result).toEqual({ _nay: { message: "Plugin review result stores more than 64 KiB of findings" } });
@@ -9140,7 +9175,7 @@ describe("plugins publish_version", () => {
 			mechanicalAdvisoryFindings: [],
 			aiFindings: [],
 			capabilityMap: [],
-			model: "gpt-5.4-mini",
+			model: "gpt-5.6-luna",
 		});
 
 		expect(result).toEqual({
@@ -9404,7 +9439,7 @@ describe("plugins publish_version", () => {
 				mechanicalAdvisoryFindings: [],
 				aiFindings: ["Cached rejection"],
 				capabilityMap: [],
-				model: "gpt-5.4-mini",
+				model: "gpt-5.6-luna",
 				updatedAt: Date.now(),
 			}),
 		);
@@ -9517,7 +9552,7 @@ describe("plugins publish_version", () => {
 					mechanicalAdvisoryFindings: [],
 					aiFindings: ["Cached rejection"],
 					capabilityMap: [],
-					model: "gpt-5.4-mini",
+					model: "gpt-5.6-luna",
 					updatedAt: Date.now(),
 				});
 			const orphanReviewId = await insertReview("1");
@@ -9581,7 +9616,7 @@ describe("plugins publish_version", () => {
 				mechanicalAdvisoryFindings: [],
 				aiFindings: ["Cached rejection"],
 				capabilityMap: [],
-				model: "gpt-5.4-mini",
+				model: "gpt-5.6-luna",
 				updatedAt: Date.now(),
 			});
 			await ctx.db.patch("plugins_publisher_repositories", repositoryId, {
@@ -10087,7 +10122,7 @@ describe("plugins publish_version", () => {
 				mechanicalAdvisoryFindings: [],
 				aiFindings: ["Gallery-only rejection"],
 				capabilityMap: [],
-				model: "gpt-5.4-mini",
+				model: "gpt-5.6-luna",
 				updatedAt: Date.now(),
 			});
 			await ctx.db.patch("plugins_publisher_repositories", repositoryId, {
@@ -13217,7 +13252,7 @@ describe("plugins admin hard delete", () => {
 				mechanicalAdvisoryFindings: [],
 				aiFindings: [],
 				capabilityMap: [],
-				model: "gpt-5.4-mini",
+				model: "gpt-5.6-luna",
 				updatedAt: Date.now(),
 			});
 			await Promise.all([
@@ -13713,7 +13748,7 @@ describe("plugins admin hard delete", () => {
 					mechanicalAdvisoryFindings: [],
 					aiFindings: [],
 					capabilityMap: [],
-					model: "gpt-5.4-mini",
+					model: "gpt-5.6-luna",
 				})
 			)._nay?.message,
 		).toBe("Plugin registry deletion is in progress");

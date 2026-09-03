@@ -785,7 +785,7 @@ type preflight_publish_plugin_version_Result =
 
 // #region ai review
 
-const REVIEW_MODEL_ID = "gpt-5.4-mini" as const satisfies ai_chat_ModelId;
+const REVIEW_MODEL_ID = "gpt-5.6-luna" as const satisfies ai_chat_ModelId;
 
 const REVIEW_VERDICT_SCHEMA = z.object({
 	verdict: z.enum(["passed", "rejected", "flagged"]),
@@ -974,8 +974,10 @@ type ReviewOpenFile = {
 	lines: string[];
 	/** Byte offset where each line starts, in the same order as `lines`. */
 	lineStarts: number[];
-	/** Byte ranges already shown to the model. Sorted, merged, and never overlapping. */
+	/** Byte ranges already read to the model. Sorted, merged, and never overlapping. */
 	covered: Array<{ start: number; end: number }>;
+	/** Byte ranges a search result printed. Same shape as `covered`, but they never count as read. */
+	quoted: Array<{ start: number; end: number }>;
 };
 
 type ReviewPendingReads = {
@@ -1005,6 +1007,7 @@ function review_open_file(file: ReviewFile): ReviewOpenFile {
 		lines: file.source.split("\n"),
 		lineStarts,
 		covered: [],
+		quoted: [],
 	};
 }
 
@@ -1038,14 +1041,14 @@ function review_char_boundary_after(bytes: Uint8Array, offset: number) {
 /**
  * Record that the model has now seen this byte range, merging it into what it had already seen.
  */
-function review_cover(file: ReviewOpenFile, start: number, end: number) {
+function review_merge_range(ranges: Array<{ start: number; end: number }>, start: number, end: number) {
 	if (end <= start) {
-		return;
+		return ranges;
 	}
 
 	const merged: Array<{ start: number; end: number }> = [];
 	let next = { start, end };
-	for (const range of file.covered) {
+	for (const range of ranges) {
 		// Ranges that only touch at an endpoint still describe one continuous run, so merge those too.
 		if (range.end < next.start || range.start > next.end) {
 			merged.push(range);
@@ -1057,7 +1060,22 @@ function review_cover(file: ReviewOpenFile, start: number, end: number) {
 
 	merged.push(next);
 	merged.sort((left, right) => left.start - right.start);
-	file.covered = merged;
+	return merged;
+}
+
+function review_cover(file: ReviewOpenFile, start: number, end: number) {
+	file.covered = review_merge_range(file.covered, start, end);
+}
+
+/**
+ * Record that a search result printed this range.
+ *
+ * The model saw these bytes, so a note may cite them. They are kept apart from `covered` because a
+ * search still does not count as reading: the coverage gate reads `covered` alone, so a reviewer
+ * cannot search its way to a finished artifact.
+ */
+function review_quote(file: ReviewOpenFile, start: number, end: number) {
+	file.quoted = review_merge_range(file.quoted, start, end);
 }
 
 /**
@@ -1193,8 +1211,8 @@ type ReviewStep = z.infer<typeof REVIEW_STEP_SCHEMA>;
  * A refused entry is reported back to the model and changes nothing. Only the notebook filling up is
  * fatal, and the caller turns that into an operational failure before anything is dropped.
  */
-function review_range_is_covered(file: ReviewOpenFile, start: number, end: number) {
-	return file.covered.some((range) => range.start <= start && range.end >= end);
+function review_range_is_shown(file: ReviewOpenFile, start: number, end: number) {
+	return [...file.covered, ...file.quoted].some((range) => range.start <= start && range.end >= end);
 }
 
 function review_apply_notes(
@@ -1255,9 +1273,9 @@ function review_apply_notes(
 			patch.endByte - patch.startByte > REVIEW_NOTE_EVIDENCE_MAX_BYTES ||
 			review_char_boundary_before(file.bytes, patch.startByte) !== patch.startByte ||
 			review_char_boundary_before(file.bytes, patch.endByte) !== patch.endByte ||
-			!review_range_is_covered(file, patch.startByte, patch.endByte)
+			!review_range_is_shown(file, patch.startByte, patch.endByte)
 		) {
-			refusals.push(`Refused a note because its evidence range is not a covered source range`);
+			refusals.push(`Refused a note because its evidence range is not a source range the host has shown`);
 			continue;
 		}
 
@@ -1466,6 +1484,7 @@ function review_run_tool(
 	step: ReviewStep,
 	inventory: string,
 	pendingRead: ReviewPendingReads,
+	pendingQuoted: ReviewPendingReads,
 ) {
 	const byPath = new Map(files.map((file) => [file.path, file]));
 
@@ -1515,6 +1534,7 @@ function review_run_tool(
 				matches.push(
 					`${file.path} hit at byte ${at}, context bytes ${window.start}-${window.end}:\n${window.text}`,
 				);
+				pendingQuoted.ranges.push({ file, start: window.start, end: window.end });
 				from = at + needle.length;
 			}
 
@@ -1529,8 +1549,9 @@ function review_run_tool(
 			`grep ${JSON.stringify(step.literal)}${step.pathGlob === "" ? "" : ` in ${JSON.stringify(step.pathGlob)}`}\n` +
 				(matches.length === 0 ? "(no matches)" : matches.join("\n")) +
 				(truncated ? `\n(stopped at ${REVIEW_GREP_MAX_MATCHES} matches)` : "") +
-				"\nSearching is not reading: these bytes do not count towards coverage. The offsets are exact, so " +
-					"a context range printed above can be cited in a note once that range has been read.",
+				"\nSearching is not reading: these bytes do not count towards coverage, and every file still has " +
+					"to be read to its last byte. The offsets are exact and you have now seen them, so a context " +
+					"range printed above can be cited in a note right away.",
 		);
 	}
 
@@ -1839,27 +1860,29 @@ function review_step_prompt(args: {
 		"Use `notes` to record what you find. Leave `aboutId` empty for a new observation, which is always " +
 		'a "hypothesis". To confirm, refute, or supersede an earlier note, put its id in `aboutId` and use ' +
 		"the matching status. Notes are never edited or deleted, so correct an earlier note by answering " +
-		"it. Every note must name a real reviewed path and a covered `startByte`/`endByte` range no more " +
-		`than ${REVIEW_NOTE_EVIDENCE_MAX_BYTES} bytes long. The host quotes that exact source range next ` +
-		"to your explanation.\n" +
-		"A capability-map subject is a claim about one place in the code. Put a subject in a note's " +
-		"`subjects` array only when the range you cite is the code that uses that power: the call, the " +
-		"request, or the argument that needs it. A range you happened to read is not evidence. Boot markup, " +
-		"an import list, a bundle header, or a name that only mentions the feature never shows a capability " +
-		"being used, and attaching a subject to one is a false statement about this plugin.\n" +
-		"How to find a use: the host's doors are HTTP paths that start with /api/v1/ and named host " +
-		"functions the plugin calls through its SDK. Search a shared prefix such as /api/v1/ first. One such " +
-		"search returns many call sites with their byte offsets, which is far faster than hoping to notice " +
-		"them while a bundle is read end to end. Then decide which declared capability each call needs and " +
-		"record a note on the range that search printed.\n" +
+		"it. Every note must name a real reviewed path and a `startByte`/`endByte` range the host has already " +
+		`shown you, no more than ${REVIEW_NOTE_EVIDENCE_MAX_BYTES} bytes long. A range counts as shown when ` +
+		"it was read to you or printed around a search hit, so a search result can be cited straight away. " +
+		"The host quotes that exact source range next to your explanation.\n" +
+		"A capability-map subject is a claim about one place in the code: the call, the request, or the " +
+		"argument that needs that power. Put a subject in a note only when the range you cite is that code. " +
+		"A range you happened to read is not evidence, and neither is a hit you found while searching for " +
+		"something else. Boot markup, an import list, or a name that only mentions the feature shows nothing.\n" +
+		"The host's doors are HTTP paths that start with /api/v1/ and named host functions the plugin calls " +
+		"through its SDK, so search a shared prefix such as /api/v1/ first. One search returns many call " +
+		"sites with their byte offsets, which is far faster than noticing them while reading. For a subject " +
+		"with no hit there, search the distinctive words of its own name before you conclude that nothing " +
+		"uses it.\n" +
+		"Copy the hit's `context bytes A-B` into the note exactly as printed. Working out a narrower range " +
+		"of your own goes wrong in minified text, and a range that starts a few bytes late cuts off the " +
+		"very call it was meant to show. The printed window always fits inside a note.\n" +
+		"If a subject still has no call site once you have read everything, leave it off every note and " +
+		"write a note saying the plugin declares it and you found no code that uses it. That answer is " +
+		"correct and the host accepts it: a capability nobody can account for is a finding the publisher " +
+		"needs. Never attach a subject to an unrelated range to clear the list.\n" +
 		"Write the note while the bytes are in front of you. A tool result is shown once and never comes " +
 		"back, so a call site you notice and do not record is lost. Most steps should carry at least one " +
 		"note.\n" +
-		"Before you answer `done`, every declared subject must be settled one of two ways: a standing note " +
-		"whose cited range is its call site, or a standing note saying the plugin declares it and you found " +
-		"no code that uses it. The second answer is correct and the host accepts it, because a capability " +
-		"nobody can account for is a finding the publisher needs. Never attach a subject to an unrelated " +
-		"range to clear the list.\n" +
 		"Your steps are limited and the `Steps left` line counts them down. Searching and reading cost a " +
 		"step each and record nothing by themselves, so spend them on finding call sites, record what you " +
 		"find, and answer `done` once every subject is settled.\n" +
@@ -1886,6 +1909,7 @@ function review_verdict_prompt(args: {
 	inventory: string;
 	coverage: string;
 	notebook: string;
+	unaccountedSubjects: Array<string>;
 }) {
 	const system =
 		"You decide the verdict for a workspace plugin that has just been read end to end by a reviewer.\n" +
@@ -1902,7 +1926,9 @@ function review_verdict_prompt(args: {
 		"or the artifact clearly does something outside its declared capabilities.\n" +
 		'- "flagged": suspicious but not clearly malicious — especially module-level mutable state that ' +
 		"outlives one run (a module-level cache can be legitimate, but state shared across runs " +
-		"deserves a manual look).\n" +
+		"deserves a manual look). Also flagged: a declared capability, backend origin, or UI origin that " +
+		"no standing note accounts for. The plugin is asking for power nothing in its code appears to " +
+		"use, and a person should look at that.\n" +
 		'- "passed": none of the above. Apply these rules strictly: when no rejected or flagged ' +
 		'condition holds, the verdict is "passed" even if findings note secret usage.\n' +
 		'"Secret values" means every raw value returned by the host secret API, whether or not its name ' +
@@ -1920,17 +1946,21 @@ function review_verdict_prompt(args: {
 		"A secret read whose name is not shown is not a violation by itself.\n" +
 		"List one finding per concern; findings are shown to the plugin publisher.\n" +
 		"Repeat the standing notebook's typed subject evidence in `capabilityMap`. The host builds the " +
-		"stored map from those source-bound notes, not from this repeated list. A declared capability nobody " +
-		"can account for is itself the finding, so say so in `findings` rather than inventing an entry.\n" +
-		"An entry is only worth as much as the source its note quotes. When a note attaches a subject to " +
-		"bytes that do not show that power being used, such as boot markup, an import list, or a bundle " +
-		"header, the capability is unaccounted for. Say that in `findings` and leave the entry out.\n";
+		"stored map from those source-bound notes, not from this repeated list.\n" +
+		"The host already counted which declared subjects the reviewer never wrote a note for. They are " +
+		"listed below under \"Subjects with no standing note\". Report each one in `findings` and leave it " +
+		"out of `capabilityMap`. Every other subject does have a note, so do not call it unaccounted unless " +
+		"its own note quotes bytes that do not show that power being used, such as boot markup, an import " +
+		"list, or a bundle header. When you do say that, leave its entry out too: `findings` and " +
+		"`capabilityMap` must never disagree about the same subject.\n";
 
 	const prompt =
 		args.facts +
 		`\n${args.sentinel}\nFile inventory\n${args.sentinel}\n${args.inventory}\n` +
 		`\n${args.sentinel}\nReading progress\n${args.sentinel}\n${args.coverage}\n` +
-		`\n${args.sentinel}\nReviewer notebook\n${args.sentinel}\n${args.notebook}\n`;
+		`\n${args.sentinel}\nReviewer notebook\n${args.sentinel}\n${args.notebook}\n` +
+		`\n${args.sentinel}\nSubjects with no standing note\n${args.sentinel}\n` +
+		(args.unaccountedSubjects.length === 0 ? "none\n" : `${args.unaccountedSubjects.join("\n")}\n`);
 
 	return { system, prompt };
 }
@@ -2490,6 +2520,9 @@ export const run_version_review = internalAction({
 		// Bytes the last tool run returned. They are not read yet: the text only reaches the model in the
 		// next step's prompt, so the range is marked read once that prompt has been sent.
 		const pendingRead: ReviewPendingReads = { ranges: [] };
+		// Ranges the last search printed. Same timing rule as a read: the text only reaches the model in
+		// the next prompt, so the range counts as shown once that prompt has been sent.
+		const pendingQuoted: ReviewPendingReads = { ranges: [] };
 		const startedAt = Date.now();
 		// Pass one deadline through every provider request. A slow request must not consume the rest of
 		// the Convex action after this review's own five-minute budget has ended.
@@ -2518,6 +2551,12 @@ export const run_version_review = internalAction({
 					review_cover(range.file, range.start, range.end);
 				}
 				pendingRead.ranges = [];
+			}
+			if (pendingQuoted.ranges.length > 0) {
+				for (const range of pendingQuoted.ranges) {
+					review_quote(range.file, range.start, range.end);
+				}
+				pendingQuoted.ranges = [];
 			}
 
 			const stepsLeft = REVIEW_MAX_STEPS - step;
@@ -2649,12 +2688,22 @@ export const run_version_review = internalAction({
 			// unread ranges from several files into each result. This keeps the full-coverage gate without
 			// turning a legal 64-file artifact into about ninety sequential provider calls.
 			if (unreadFile && (chosen.tool === "done" || step >= REVIEW_MAX_EXPLORATION_STEPS)) {
-				toolResult = review_run_forced_read_batch(openFiles, pendingRead);
+				// A search reads nothing, so answering it costs the reading schedule nothing. Dropping it used
+				// to cost a lot: the reviewer asked where the capability calls were, the host replied with the
+				// next unread chunk, and the reviewer ended up citing whatever chunk it had just been handed.
+				const searched =
+					chosen.tool === "grep" ? review_run_tool(openFiles, chosen, inventory, pendingRead, pendingQuoted) : null;
+				const forced = review_run_forced_read_batch(openFiles, pendingRead);
+				toolResult =
+					searched === null
+						? forced
+						: { text: `${searched}
+${forced.text}`, recordSeparator: forced.recordSeparator };
 				continue;
 			}
 
 			toolResult = {
-				text: review_run_tool(openFiles, chosen, inventory, pendingRead),
+				text: review_run_tool(openFiles, chosen, inventory, pendingRead, pendingQuoted),
 				recordSeparator: null,
 			};
 		}
@@ -2702,12 +2751,18 @@ export const run_version_review = internalAction({
 			return Result({ _nay: { message: "Plugin review could not create a safe prompt boundary; try again" } });
 		}
 
+		// The reviewer can answer `done` with subjects it never found. Hand the verdict the same list the
+		// exploration nag used, so it reads a fact instead of re-deriving coverage from the whole notebook.
+		const verdictStandingSubjects = new Set(
+			notebook.filter((note) => note.answeredByNoteId === null).flatMap((note) => note.subjects),
+		);
 		const prompt = review_verdict_prompt({
 			sentinel: verdictSentinel,
 			facts,
 			inventory,
 			coverage: format_review_coverage(openFiles),
 			notebook: format_review_notebook(notebook, openFiles),
+			unaccountedSubjects: requiredReviewSubjects.filter((subject) => !verdictStandingSubjects.has(subject)),
 		});
 
 		let inputTokens: number;
