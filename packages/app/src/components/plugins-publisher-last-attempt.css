@@ -1,11 +1,11 @@
 @layer components {
-	.RoutePluginsPublisherLastAttempt {
+	.PluginsPublisherLastAttempt {
 		display: flex;
 		align-items: start;
 		gap: 8px;
 	}
 
-	.RoutePluginsPublisherLastAttempt-message {
+	.PluginsPublisherLastAttempt-message {
 		overflow-wrap: anywhere;
 
 		font-size: 12px;

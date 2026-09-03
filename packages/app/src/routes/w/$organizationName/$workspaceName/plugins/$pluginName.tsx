@@ -59,6 +59,8 @@ import {
 } from "@/components/my-modal.tsx";
 import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/components/my-tabs.tsx";
 import { PluginsHeaderBreadcrumb } from "@/components/plugins-header-breadcrumb.tsx";
+import { PluginsPublishButton } from "@/components/plugins-publish-button.tsx";
+import { PluginsPublishSessionProvider } from "@/components/plugins-publish-session.tsx";
 import { useFn, useLiveRef } from "@/hooks/utils-hooks.ts";
 import {
 	app_convex,
@@ -78,8 +80,6 @@ import {
 	plugins_parse_env_text,
 	plugins_validate_secret_name,
 } from "../../../../../../shared/plugins.ts";
-import { PluginPublishConfirmationModal } from "./publisher/-plugin-publish-confirmation-modal.tsx";
-import { PluginPublishSessionProvider } from "./publisher/-plugin-publish-session.tsx";
 
 type RoutePlugins_Installation = app_convex_FunctionReturnType<
 	typeof app_convex_api.plugins.list_installations
@@ -2026,7 +2026,7 @@ function get_publisher_version(publisherPlugin: RoutePlugins_PublisherPlugin): R
 function RoutePluginsPlugin() {
 	const { pluginName } = Route.useParams();
 	const { membershipId, workspaceId } = AppTenantProvider.useContext();
-	const publishSessionManager = PluginPublishSessionProvider.useContext();
+	const publishSessionManager = PluginsPublishSessionProvider.useContext();
 	const organizationList = useQuery(app_convex_api.organizations.list);
 	const workspacePermissions = organizationList?.workspaceIdsPermissionsDict[workspaceId];
 	const canManagePlugins =
@@ -2416,7 +2416,7 @@ function RoutePluginsPlugin() {
 					<div className={"RoutePluginsPluginHero-actions" satisfies RoutePluginsPlugin_ClassNames}>
 						<div className={"RoutePluginsPluginHero-actions-buttons" satisfies RoutePluginsPlugin_ClassNames}>
 							{publisherPlugin ? (
-								<PluginPublishConfirmationModal
+								<PluginsPublishButton
 									repositoryId={publisherPlugin.repository._id}
 									repositoryLabel={`${publisherPlugin.repository.owner}/${publisherPlugin.repository.repo}`}
 									buttonVariant={showInstall ? "outline" : "default"}

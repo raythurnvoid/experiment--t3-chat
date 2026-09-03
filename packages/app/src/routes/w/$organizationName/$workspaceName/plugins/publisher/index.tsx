@@ -19,13 +19,13 @@ import {
 } from "@/components/my-input.tsx";
 import { PluginsGalleryCard } from "@/components/plugins-gallery-card.tsx";
 import { PluginsHeaderBreadcrumb } from "@/components/plugins-header-breadcrumb.tsx";
+import { PluginsPublishButton } from "@/components/plugins-publish-button.tsx";
+import { PluginsPublishSessionProvider } from "@/components/plugins-publish-session.tsx";
+import { PluginsPublisherLastAttempt } from "@/components/plugins-publisher-last-attempt.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex, app_convex_api, type app_convex_FunctionReturnType } from "@/lib/app-convex-client.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
-import { RoutePluginsPublisherLastAttempt } from "./-publisher-last-attempt.tsx";
-import { PluginPublishConfirmationModal } from "./-plugin-publish-confirmation-modal.tsx";
-import { PluginPublishSessionProvider } from "./-plugin-publish-session.tsx";
 
 type Repositories = app_convex_FunctionReturnType<typeof app_convex_api.plugins.list_user_published_repositories>;
 
@@ -93,7 +93,7 @@ const RoutePluginsPublisherUnpublishedCard = memo(function RoutePluginsPublisher
 	props: RoutePluginsPublisherUnpublishedCard_Props,
 ) {
 	const { repository, onPublished, onRemoved } = props;
-	const publishSessionManager = PluginPublishSessionProvider.useContext();
+	const publishSessionManager = PluginsPublishSessionProvider.useContext();
 	const publishBusy = publishSessionManager.session !== null;
 	const managementBusy = publishSessionManager.managementAction !== null;
 	const [removing, setRemoving] = useState(false);
@@ -162,7 +162,7 @@ const RoutePluginsPublisherUnpublishedCard = memo(function RoutePluginsPublisher
 				Never published. Publish builds and registers the first version from the default branch.
 			</span>
 			<span className={"RoutePluginsPublisherUnpublishedCard-footer" satisfies RoutePluginsPublisherPlugins_ClassNames}>
-				<PluginPublishConfirmationModal
+				<PluginsPublishButton
 					repositoryId={repository._id}
 					repositoryLabel={`${repository.owner}/${repository.repo}`}
 					disabled={removing}
@@ -191,7 +191,7 @@ const RoutePluginsPublisherPlugins = memo(function RoutePluginsPublisherPlugins(
 	props: RoutePluginsPublisherPlugins_Props,
 ) {
 	const { repositories } = props;
-	const publishSessionManager = PluginPublishSessionProvider.useContext();
+	const publishSessionManager = PluginsPublishSessionProvider.useContext();
 	const repositoryInputRef = useRef<HTMLInputElement>(null);
 	const claimButtonRef = useRef<HTMLButtonElement>(null);
 	const [repositoryUrl, setRepositoryUrl] = useState("");
@@ -326,7 +326,7 @@ const RoutePluginsPublisherPlugins = memo(function RoutePluginsPublisherPlugins(
 									/>
 								))
 							)}
-							<RoutePluginsPublisherLastAttempt attempt={repository.lastPublishAttempt} />
+							<PluginsPublisherLastAttempt attempt={repository.lastPublishAttempt} />
 						</div>
 					))}
 				</div>

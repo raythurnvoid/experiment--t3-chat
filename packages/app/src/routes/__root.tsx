@@ -12,7 +12,7 @@ import { app_convex_api, type app_convex_FunctionReturnType } from "../lib/app-c
 import { cn } from "../lib/utils.ts";
 import { app_scrollbar_measure_width } from "../lib/app-scrollbar.ts";
 import type { AppElementId } from "../lib/dom-utils.ts";
-import { PluginPublishSessionProvider } from "./w/$organizationName/$workspaceName/plugins/publisher/-plugin-publish-session.tsx";
+import { PluginsPublishSessionProvider } from "../components/plugins-publish-session.tsx";
 
 export type RootLayout_ClassNames =
 	| "RootLayout"
@@ -74,7 +74,7 @@ function RootLayoutInner() {
 	}, []);
 
 	return (
-		<PluginPublishSessionProvider>
+		<PluginsPublishSessionProvider>
 			<Outlet />
 			<AppTanStackRouterDevTools />
 			<div id={"app_tiptap_hoisting_container" satisfies AppElementId}></div>
@@ -85,7 +85,7 @@ function RootLayoutInner() {
 			opened from tiptap and monaco floating elements are shown on top.
 			*/}
 			<div id={"app_hoisting_container" satisfies AppElementId}></div>
-		</PluginPublishSessionProvider>
+		</PluginsPublishSessionProvider>
 	);
 }
 

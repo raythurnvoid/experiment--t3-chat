@@ -65,8 +65,8 @@ vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	},
 }));
 
-vi.mock("./plugins/publisher/-plugin-publish-session.tsx", () => ({
-	PluginPublishSessionProvider: {
+vi.mock("@/components/plugins-publish-session.tsx", () => ({
+	PluginsPublishSessionProvider: {
 		useContext: () => ({ setWorkspaceFocusTarget: setWorkspaceFocusTargetMock }),
 	},
 }));

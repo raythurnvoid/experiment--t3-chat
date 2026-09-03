@@ -199,12 +199,12 @@ vi.mock("@/components/my-menu.tsx", () => ({
 }));
 
 import { Route } from "./$pluginName.tsx";
-import { PluginPublishSessionProvider } from "./publisher/-plugin-publish-session.tsx";
+import { PluginsPublishSessionProvider } from "@/components/plugins-publish-session.tsx";
 
 const PageComponent = Route.options.component as () => JSX.Element;
 
 function render(ui: ReactElement) {
-	return testingRender(ui, { wrapper: PluginPublishSessionProvider });
+	return testingRender(ui, { wrapper: PluginsPublishSessionProvider });
 }
 
 function route_remount_key() {

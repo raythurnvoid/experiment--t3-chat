@@ -1,4 +1,4 @@
-import "./-plugin-publish-confirmation-modal.css";
+import "./plugins-publish-session.css";
 
 import { createContext, memo, use, useId, useRef, useState, type ReactNode, type RefObject } from "react";
 import { toast } from "sonner";
@@ -25,12 +25,12 @@ import {
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 
-type PluginPublishSessionProvider_ClassNames =
-	| "PluginPublishConfirmationModal"
-	| "PluginPublishConfirmationModal-head"
-	| "PluginPublishConfirmationModal-error";
+type PluginsPublishSessionProvider_ClassNames =
+	| "PluginsPublishSessionProvider"
+	| "PluginsPublishSessionProvider-head"
+	| "PluginsPublishSessionProvider-error";
 
-type PluginPublishSessionPhase = "check_failed" | "checking" | "review" | "publishing";
+type PluginsPublishSessionPhase = "check_failed" | "checking" | "review" | "publishing";
 
 type PluginManagementActionKind = "claim_repository" | "install" | "remove_repository" | "uninstall";
 
@@ -39,7 +39,7 @@ type PluginManagementAction = {
 	kind: PluginManagementActionKind;
 };
 
-type PluginPublishSessionRequest = {
+type PluginsPublishSessionRequest = {
 	repositoryId: app_convex_Id<"plugins_publisher_repositories">;
 	repositoryLabel: string;
 	triggerRef: RefObject<HTMLButtonElement | null>;
@@ -48,39 +48,39 @@ type PluginPublishSessionRequest = {
 	onPublished?: () => void;
 };
 
-type PluginPublishSession = PluginPublishSessionRequest & {
+type PluginsPublishSession = PluginsPublishSessionRequest & {
 	version: number;
 	workspaceKey: string | null;
 	routeKey: string | null;
-	phase: PluginPublishSessionPhase;
+	phase: PluginsPublishSessionPhase;
 	sourceCommitSha: string;
 	reviewedCommitSha: string;
 	publishError?: string;
 };
 
-type PluginPublishSessionContextValue = {
-	session: PluginPublishSession | null;
+type PluginsPublishSessionContextValue = {
+	session: PluginsPublishSession | null;
 	managementAction: PluginManagementAction | null;
-	start: (request: PluginPublishSessionRequest) => void;
+	start: (request: PluginsPublishSessionRequest) => void;
 	beginManagementAction: (kind: PluginManagementActionKind) => number | null;
 	finishManagementAction: (version: number, options?: { repairFocusIfLost: boolean }) => void;
 	setRouteFocusTarget: (target: HTMLElement | null, routeKey: string) => void;
 	setWorkspaceFocusTarget: (target: HTMLElement | null, workspaceKey: string) => void;
 };
 
-const PluginPublishSessionContext = createContext<PluginPublishSessionContextValue | null>(null);
+const PluginsPublishSessionContext = createContext<PluginsPublishSessionContextValue | null>(null);
 
-type PluginPublishSessionProvider_Props = {
+type PluginsPublishSessionProvider_Props = {
 	children: ReactNode;
 };
 
-const PluginPublishSessionProvider = Object.assign(
-	memo(function PluginPublishSessionProvider(props: PluginPublishSessionProvider_Props) {
+const PluginsPublishSessionProvider = Object.assign(
+	memo(function PluginsPublishSessionProvider(props: PluginsPublishSessionProvider_Props) {
 		const { children } = props;
 		const cancelRef = useRef<HTMLButtonElement>(null);
 		const dialogRef = useRef<HTMLDivElement>(null);
 		const sessionVersionRef = useRef(0);
-		const sessionRef = useRef<PluginPublishSession | null>(null);
+		const sessionRef = useRef<PluginsPublishSession | null>(null);
 		const managementActionVersionRef = useRef(0);
 		const managementActionRef = useRef<PluginManagementAction | null>(null);
 		const routeFocusTargetRef = useRef<{ target: HTMLElement; routeKey: string } | null>(null);
@@ -88,7 +88,7 @@ const PluginPublishSessionProvider = Object.assign(
 		const activePreflightRef = useRef<number | null>(null);
 		const activePublishRef = useRef<number | null>(null);
 		const errorId = useId();
-		const [session, setSession] = useState<PluginPublishSession | null>(null);
+		const [session, setSession] = useState<PluginsPublishSession | null>(null);
 		const [managementAction, setManagementAction] = useState<PluginManagementAction | null>(null);
 		const [finalFocus, setFinalFocus] = useState<RefObject<HTMLButtonElement | null>>();
 		const setRouteFocusTarget = useFn((target: HTMLElement | null, routeKey: string) => {
@@ -157,7 +157,9 @@ const PluginPublishSessionProvider = Object.assign(
 		const updateSession = useFn(
 			(
 				version: number,
-				update: Partial<Pick<PluginPublishSession, "phase" | "sourceCommitSha" | "reviewedCommitSha" | "publishError">>,
+				update: Partial<
+					Pick<PluginsPublishSession, "phase" | "sourceCommitSha" | "reviewedCommitSha" | "publishError">
+				>,
 			) => {
 				const current = sessionRef.current;
 				if (!current || current.version !== version) {
@@ -215,11 +217,12 @@ const PluginPublishSessionProvider = Object.assign(
 						return;
 					}
 					if (!current.triggerRef.current?.isConnected || locationChanged) {
-						const replacementTarget = workspaceChanged && !routeChanged
-							? currentWorkspace?.target
-							: currentRoute?.target.isConnected
-								? currentRoute.target
-								: currentWorkspace?.target;
+						const replacementTarget =
+							workspaceChanged && !routeChanged
+								? currentWorkspace?.target
+								: currentRoute?.target.isConnected
+									? currentRoute.target
+									: currentWorkspace?.target;
 						replacementTarget?.focus();
 					}
 				});
@@ -271,7 +274,7 @@ const PluginPublishSessionProvider = Object.assign(
 						return;
 					}
 
-					console.error("[PluginPublishSessionProvider.readCandidateHead] Failed to read repository HEAD:", {
+					console.error("[PluginsPublishSessionProvider.readCandidateHead] Failed to read repository HEAD:", {
 						error,
 						repositoryId: current.repositoryId,
 					});
@@ -298,13 +301,13 @@ const PluginPublishSessionProvider = Object.assign(
 				});
 		});
 
-		const start = useFn((request: PluginPublishSessionRequest) => {
+		const start = useFn((request: PluginsPublishSessionRequest) => {
 			if (sessionRef.current || managementActionRef.current) {
 				return;
 			}
 
 			sessionVersionRef.current += 1;
-			const startedSession: PluginPublishSession = {
+			const startedSession: PluginsPublishSession = {
 				...request,
 				version: sessionVersionRef.current,
 				workspaceKey: workspaceFocusTargetRef.current?.workspaceKey ?? null,
@@ -373,7 +376,7 @@ const PluginPublishSessionProvider = Object.assign(
 						return;
 					}
 
-					console.error("[PluginPublishSessionProvider.handlePublish] Failed to publish plugin:", {
+					console.error("[PluginsPublishSessionProvider.handlePublish] Failed to publish plugin:", {
 						error,
 						repositoryId: current.repositoryId,
 					});
@@ -399,7 +402,7 @@ const PluginPublishSessionProvider = Object.assign(
 		const publishing = session?.phase === "publishing";
 
 		return (
-			<PluginPublishSessionContext.Provider
+			<PluginsPublishSessionContext.Provider
 				value={{
 					session,
 					managementAction,
@@ -414,7 +417,7 @@ const PluginPublishSessionProvider = Object.assign(
 				<MyModal open={Boolean(session)} setOpen={(open) => !open && close()}>
 					<MyModalPopover
 						ref={dialogRef}
-						className={"PluginPublishConfirmationModal" satisfies PluginPublishSessionProvider_ClassNames}
+						className={"PluginsPublishSessionProvider" satisfies PluginsPublishSessionProvider_ClassNames}
 						tabIndex={-1}
 						initialFocus={cancelRef}
 						finalFocus={finalFocus}
@@ -452,7 +455,7 @@ const PluginPublishSessionProvider = Object.assign(
 								{visibleError ? (
 									<p
 										id={errorId}
-										className={"PluginPublishConfirmationModal-error" satisfies PluginPublishSessionProvider_ClassNames}
+										className={"PluginsPublishSessionProvider-error" satisfies PluginsPublishSessionProvider_ClassNames}
 										role="alert"
 									>
 										{visibleError}
@@ -463,7 +466,7 @@ const PluginPublishSessionProvider = Object.assign(
 							<MyModalScrollableArea>
 								<p>Current default-branch HEAD</p>
 								<code
-									className={"PluginPublishConfirmationModal-head" satisfies PluginPublishSessionProvider_ClassNames}
+									className={"PluginsPublishSessionProvider-head" satisfies PluginsPublishSessionProvider_ClassNames}
 								>
 									{session?.sourceCommitSha}
 								</code>
@@ -498,7 +501,7 @@ const PluginPublishSessionProvider = Object.assign(
 								{visibleError ? (
 									<p
 										id={errorId}
-										className={"PluginPublishConfirmationModal-error" satisfies PluginPublishSessionProvider_ClassNames}
+										className={"PluginsPublishSessionProvider-error" satisfies PluginsPublishSessionProvider_ClassNames}
 										role="alert"
 									>
 										{visibleError}
@@ -522,18 +525,18 @@ const PluginPublishSessionProvider = Object.assign(
 						<MyModalCloseTrigger disabled={publishing} />
 					</MyModalPopover>
 				</MyModal>
-			</PluginPublishSessionContext.Provider>
+			</PluginsPublishSessionContext.Provider>
 		);
 	}),
 	{
 		useContext: function useContext() {
-			const value = use(PluginPublishSessionContext);
+			const value = use(PluginsPublishSessionContext);
 			if (!value) {
-				throw new Error("PluginPublishSessionProvider.useContext must be used within PluginPublishSessionProvider");
+				throw new Error("PluginsPublishSessionProvider.useContext must be used within PluginsPublishSessionProvider");
 			}
 			return value;
 		},
 	},
 );
 
-export { PluginPublishSessionProvider };
+export { PluginsPublishSessionProvider };

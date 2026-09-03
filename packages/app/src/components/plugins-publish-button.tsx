@@ -3,9 +3,9 @@ import { memo, useRef } from "react";
 
 import { MyButton, type MyButton_Props } from "@/components/my-button.tsx";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
-import { PluginPublishSessionProvider } from "./-plugin-publish-session.tsx";
+import { PluginsPublishSessionProvider } from "./plugins-publish-session.tsx";
 
-type PluginPublishConfirmationModal_Props = {
+type PluginsPublishButton_Props = {
 	repositoryId: app_convex_Id<"plugins_publisher_repositories">;
 	repositoryLabel: string;
 	disabled?: boolean;
@@ -15,9 +15,7 @@ type PluginPublishConfirmationModal_Props = {
 	onPublished?: () => void;
 };
 
-const PluginPublishConfirmationModal = memo(function PluginPublishConfirmationModal(
-	props: PluginPublishConfirmationModal_Props,
-) {
+const PluginsPublishButton = memo(function PluginsPublishButton(props: PluginsPublishButton_Props) {
 	const {
 		repositoryId,
 		repositoryLabel,
@@ -28,7 +26,7 @@ const PluginPublishConfirmationModal = memo(function PluginPublishConfirmationMo
 		onPublished,
 	} = props;
 	const triggerRef = useRef<HTMLButtonElement>(null);
-	const publishSession = PluginPublishSessionProvider.useContext();
+	const publishSession = PluginsPublishSessionProvider.useContext();
 	const active = publishSession.session?.repositoryId === repositoryId;
 	const checking = active && publishSession.session?.phase === "checking";
 	const publishing = active && publishSession.session?.phase === "publishing";
@@ -61,4 +59,4 @@ const PluginPublishConfirmationModal = memo(function PluginPublishConfirmationMo
 	);
 });
 
-export { PluginPublishConfirmationModal };
+export { PluginsPublishButton };

@@ -117,6 +117,7 @@ For recoverable auth and permission failures, follow the Convex skill's handler-
 
 The app runs at http://localhost:5173/ during development.
 
+- Placement: `packages/app/src/routes/` holds route modules, their paired CSS, and their tests. Shared route UI goes to `packages/app/src/components/`. Do not keep a non-route module under `src/routes/` behind TanStack Router's `-` ignore prefix.
 - Frontend shell: `packages/app/src/main.tsx` mounts the app-wide providers. `packages/app/src/routes/__root.tsx` waits for auth and billing bootstrap, renders the route outlet, and owns the shared Tiptap, Monaco, and app portal containers.
 - Chat: The workspace chat route at `packages/app/src/routes/w/$organizationName/$workspaceName/chat/index.tsx` renders the UI from `packages/app/src/components/ai-chat/`. It sends messages to Convex HTTP actions (`packages/app/convex/http.ts`, `packages/app/convex/ai_chat.ts`). Responses stream token-by-token and may call tools. Tool calls and their outputs render inside the message UI.
 - Agent file access: Server-side tools in `packages/app/server/server-ai-tools.ts` let the agent read files and propose file changes as pending updates. Users review those changes before saving them. The tools run in Node and are called from the chat flow.

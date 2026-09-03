@@ -8,14 +8,14 @@ import { useFn } from "@/hooks/utils-hooks.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import { cn } from "@/lib/utils.ts";
-import { PluginPublishSessionProvider } from "./plugins/publisher/-plugin-publish-session.tsx";
+import { PluginsPublishSessionProvider } from "@/components/plugins-publish-session.tsx";
 
 import type { RootLayout_ClassNames } from "@/routes/__root.tsx";
 
 function RouteTenantOrganizationWorkspaceLayout() {
 	const params = Route.useParams();
 	const { organizationName, workspaceName } = params;
-	const publishSessionManager = PluginPublishSessionProvider.useContext();
+	const publishSessionManager = PluginsPublishSessionProvider.useContext();
 	const focusTargetRef = useRef<HTMLElement>(null);
 	const focusScopeRef = useRef<HTMLElement>(null);
 	const focusTargetWasFocusedRef = useRef(false);

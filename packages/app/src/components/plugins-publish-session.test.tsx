@@ -46,17 +46,17 @@ vi.mock("@/hooks/utils-hooks.ts", () => ({
 	useFn: <T,>(fn: T) => fn,
 }));
 
-import { PluginPublishConfirmationModal } from "./-plugin-publish-confirmation-modal.tsx";
-import { PluginPublishSessionProvider } from "./-plugin-publish-session.tsx";
-import { Route as appRootRoute } from "../../../../../__root.tsx";
+import { PluginsPublishButton } from "./plugins-publish-button.tsx";
+import { PluginsPublishSessionProvider } from "./plugins-publish-session.tsx";
+import { Route as appRootRoute } from "../routes/__root.tsx";
 
 function render(ui: ReactElement) {
-	return testingRender(ui, { wrapper: PluginPublishSessionProvider });
+	return testingRender(ui, { wrapper: PluginsPublishSessionProvider });
 }
 
 function WorkspaceOnlyPublishPage(props: { repositoryName: string }) {
 	const { repositoryName } = props;
-	const publishSession = PluginPublishSessionProvider.useContext();
+	const publishSession = PluginsPublishSessionProvider.useContext();
 	const workspaceRef = useRef<HTMLDivElement>(null);
 	const workspaceKey = "org/workspace";
 
@@ -67,7 +67,7 @@ function WorkspaceOnlyPublishPage(props: { repositoryName: string }) {
 
 	return (
 		<div ref={workspaceRef} role="region" aria-label="Workspace content" tabIndex={-1}>
-			<PluginPublishConfirmationModal
+			<PluginsPublishButton
 				key={repositoryName}
 				repositoryId={`repository_${repositoryName}` as never}
 				repositoryLabel={`octo/${repositoryName}`}
@@ -89,7 +89,7 @@ const routerManagementActions = [
 
 function RouterPublishPage() {
 	const { pluginName } = publishRoute.useParams();
-	const publishSession = PluginPublishSessionProvider.useContext();
+	const publishSession = PluginsPublishSessionProvider.useContext();
 	const titleRef = useRef<HTMLHeadingElement>(null);
 	const routeKey = `plugin:${pluginName}`;
 	const [runningManagementAction, setRunningManagementAction] =
@@ -130,7 +130,7 @@ function RouterPublishPage() {
 					{runningManagementAction === action.kind ? `${action.label} running` : action.label}
 				</button>
 			))}
-			<PluginPublishConfirmationModal
+			<PluginsPublishButton
 				repositoryId={`repository_${pluginName}` as never}
 				repositoryLabel={`octo/${pluginName}`}
 				onPublished={routerPublishedMock}
@@ -144,7 +144,7 @@ const workspaceRoute = createRoute({
 	path: "w/$organizationName/$workspaceName",
 	component: function WorkspaceRoute() {
 		const { organizationName, workspaceName } = workspaceRoute.useParams();
-		const publishSession = PluginPublishSessionProvider.useContext();
+		const publishSession = PluginsPublishSessionProvider.useContext();
 		const focusTargetRef = useRef<HTMLElement>(null);
 		const workspaceKey = `${organizationName}/${workspaceName}`;
 		const setFocusTargetRef = (target: HTMLElement | null) => {
@@ -212,7 +212,7 @@ const reviewedSha = "0123456789abcdef0123456789abcdef01234567";
 const headSha = "fedcba9876543210fedcba9876543210fedcba98";
 const repositoryLabel = "octo/plugin";
 
-describe("PluginPublishConfirmationModal", () => {
+describe("PluginsPublishSessionProvider", () => {
 	beforeEach(() => {
 		routerPermission = true;
 		finishRouterManagementAction = undefined;
@@ -229,7 +229,7 @@ describe("PluginPublishConfirmationModal", () => {
 	test("requires an independently entered matching SHA and sends it to publish", async () => {
 		const onSessionChange = vi.fn();
 		render(
-			<PluginPublishConfirmationModal
+			<PluginsPublishButton
 				repositoryId={"repository_1" as never}
 				repositoryLabel={repositoryLabel}
 				onSessionChange={onSessionChange}
@@ -293,7 +293,7 @@ describe("PluginPublishConfirmationModal", () => {
 				}),
 			)
 			.mockResolvedValueOnce({ _yay: { sourceCommitSha: nextHeadSha } });
-		render(<PluginPublishConfirmationModal repositoryId={"repository_1" as never} repositoryLabel={repositoryLabel} />);
+		render(<PluginsPublishButton repositoryId={"repository_1" as never} repositoryLabel={repositoryLabel} />);
 
 		fireEvent.click(screen.getByRole("button", { name: `Publish ${repositoryLabel}` }));
 		const input = await screen.findByRole("textbox", { name: "Reviewed commit SHA" });
@@ -343,7 +343,7 @@ describe("PluginPublishConfirmationModal", () => {
 			})
 			.mockResolvedValueOnce({ _nay: { name: "unavailable", message: "GitHub unavailable" } })
 			.mockResolvedValueOnce({ _yay: { sourceCommitSha: nextHeadSha } });
-		render(<PluginPublishConfirmationModal repositoryId={"repository_1" as never} repositoryLabel={repositoryLabel} />);
+		render(<PluginsPublishButton repositoryId={"repository_1" as never} repositoryLabel={repositoryLabel} />);
 
 		fireEvent.click(screen.getByRole("button", { name: `Publish ${repositoryLabel}` }));
 		const input = await screen.findByRole("textbox", { name: "Reviewed commit SHA" });
@@ -389,7 +389,7 @@ describe("PluginPublishConfirmationModal", () => {
 					finishFreshPreflight = resolve;
 				}),
 			);
-		render(<PluginPublishConfirmationModal repositoryId={"repository_1" as never} repositoryLabel={repositoryLabel} />);
+		render(<PluginsPublishButton repositoryId={"repository_1" as never} repositoryLabel={repositoryLabel} />);
 
 		fireEvent.click(screen.getByRole("button", { name: `Publish ${repositoryLabel}` }));
 		const input = await screen.findByRole("textbox", { name: "Reviewed commit SHA" });
@@ -413,7 +413,7 @@ describe("PluginPublishConfirmationModal", () => {
 	});
 
 	test("Escape closes the dialog and returns focus to the trigger", async () => {
-		render(<PluginPublishConfirmationModal repositoryId={"repository_1" as never} repositoryLabel={repositoryLabel} />);
+		render(<PluginsPublishButton repositoryId={"repository_1" as never} repositoryLabel={repositoryLabel} />);
 		const trigger = screen.getByRole("button", { name: `Publish ${repositoryLabel}` });
 		fireEvent.click(trigger);
 		const dialog = await screen.findByRole("dialog", { name: `Publish ${repositoryLabel}` });
@@ -474,7 +474,7 @@ describe("PluginPublishConfirmationModal", () => {
 			.mockReset()
 			.mockResolvedValueOnce({ _yay: { sourceCommitSha: headSha } })
 			.mockReturnValueOnce(pendingPublish);
-		render(<PluginPublishConfirmationModal repositoryId={"repository_1" as never} repositoryLabel={repositoryLabel} />);
+		render(<PluginsPublishButton repositoryId={"repository_1" as never} repositoryLabel={repositoryLabel} />);
 		const trigger = screen.getByRole("button", { name: `Publish ${repositoryLabel}` });
 		fireEvent.click(trigger);
 		const dialog = await screen.findByRole("dialog", { name: `Publish ${repositoryLabel}` });
@@ -699,7 +699,7 @@ describe("PluginPublishConfirmationModal", () => {
 			.mockResolvedValueOnce({ _yay: { sourceCommitSha: headSha } })
 			.mockReturnValueOnce(retryPublish);
 		const { rerender } = render(
-			<PluginPublishConfirmationModal
+			<PluginsPublishButton
 				repositoryId={"repository_1" as never}
 				repositoryLabel="octo/plugin"
 				onBusyChange={onFirstBusyChange}
@@ -717,7 +717,7 @@ describe("PluginPublishConfirmationModal", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Publish reviewed commit" }));
 
 		rerender(
-			<PluginPublishConfirmationModal
+			<PluginsPublishButton
 				repositoryId={"repository_2" as never}
 				repositoryLabel="fork/plugin"
 				onBusyChange={onNextBusyChange}
@@ -776,7 +776,7 @@ describe("PluginPublishConfirmationModal", () => {
 		actionMock.mockReset().mockReturnValueOnce(pendingPreflight);
 		const onSessionChange = vi.fn();
 		render(
-			<PluginPublishConfirmationModal
+			<PluginsPublishButton
 				repositoryId={"repository_1" as never}
 				repositoryLabel={repositoryLabel}
 				onSessionChange={onSessionChange}
@@ -844,11 +844,11 @@ describe("PluginPublishConfirmationModal", () => {
 			.mockReturnValueOnce(nextPreflight)
 			.mockResolvedValueOnce({ _yay: { sourceCommitSha: nextHeadSha } });
 		const { rerender } = render(
-			<PluginPublishConfirmationModal repositoryId={"repository_1" as never} repositoryLabel="octo/plugin" />,
+			<PluginsPublishButton repositoryId={"repository_1" as never} repositoryLabel="octo/plugin" />,
 		);
 
 		fireEvent.click(screen.getByRole("button", { name: "Publish octo/plugin" }));
-		rerender(<PluginPublishConfirmationModal repositoryId={"repository_2" as never} repositoryLabel="fork/plugin" />);
+		rerender(<PluginsPublishButton repositoryId={"repository_2" as never} repositoryLabel="fork/plugin" />);
 		expect((screen.getByRole("button", { name: "Publish fork/plugin" }) as HTMLButtonElement).disabled).toBe(true);
 
 		await act(async () => finishFirstPreflight({ _yay: { sourceCommitSha: headSha } }));
@@ -884,7 +884,7 @@ describe("PluginPublishConfirmationModal", () => {
 			.mockResolvedValueOnce({ _yay: { sourceCommitSha: headSha } })
 			.mockResolvedValueOnce({ _yay: { sourceCommitSha: nextHeadSha } });
 		const { rerender } = render(
-			<PluginPublishConfirmationModal repositoryId={"repository_1" as never} repositoryLabel="octo/plugin" />,
+			<PluginsPublishButton repositoryId={"repository_1" as never} repositoryLabel="octo/plugin" />,
 		);
 
 		fireEvent.click(screen.getByRole("button", { name: "Publish octo/plugin" }));
@@ -892,12 +892,12 @@ describe("PluginPublishConfirmationModal", () => {
 		await within(firstDialog).findByRole("textbox", { name: "Reviewed commit SHA" });
 		expect(firstDialog.textContent).toContain(headSha);
 
-		rerender(<PluginPublishConfirmationModal repositoryId={"repository_2" as never} repositoryLabel="fork/plugin" />);
+		rerender(<PluginsPublishButton repositoryId={"repository_2" as never} repositoryLabel="fork/plugin" />);
 		expect(screen.getByRole("dialog", { name: "Publish octo/plugin" }).textContent).toContain(headSha);
 		expect((screen.getByRole("button", { name: "Publish fork/plugin" }) as HTMLButtonElement).disabled).toBe(true);
 		fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
 		await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-		rerender(<PluginPublishConfirmationModal repositoryId={"repository_1" as never} repositoryLabel="octo/plugin" />);
+		rerender(<PluginsPublishButton repositoryId={"repository_1" as never} repositoryLabel="octo/plugin" />);
 		await waitFor(() => {
 			expect(screen.queryByRole("dialog")).toBeNull();
 			expect(screen.queryByText(headSha)).toBeNull();
@@ -914,8 +914,8 @@ describe("PluginPublishConfirmationModal", () => {
 		actionMock.mockReset().mockResolvedValue({ _yay: { sourceCommitSha: headSha } });
 		render(
 			<>
-				<PluginPublishConfirmationModal repositoryId={"repository_1" as never} repositoryLabel="octo/plugin" />
-				<PluginPublishConfirmationModal repositoryId={"repository_2" as never} repositoryLabel="fork/plugin" />
+				<PluginsPublishButton repositoryId={"repository_1" as never} repositoryLabel="octo/plugin" />
+				<PluginsPublishButton repositoryId={"repository_2" as never} repositoryLabel="fork/plugin" />
 			</>,
 		);
 

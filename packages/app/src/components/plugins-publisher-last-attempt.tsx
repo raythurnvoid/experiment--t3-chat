@@ -3,7 +3,7 @@ import { memo } from "react";
 import { MyBadge } from "@/components/my-badge.tsx";
 import { format_datetime } from "@/lib/date.ts";
 import { cn } from "@/lib/utils.ts";
-import "./-publisher-last-attempt.css";
+import "./plugins-publisher-last-attempt.css";
 
 type PublisherLastAttempt = {
 	at: number;
@@ -27,16 +27,14 @@ function plugins_publisher_get_visible_last_attempt(lastPublishAttempt: Publishe
 	return lastPublishAttempt;
 }
 
-type RoutePluginsPublisherLastAttempt_ClassNames =
-	| "RoutePluginsPublisherLastAttempt"
-	| "RoutePluginsPublisherLastAttempt-message";
+type PluginsPublisherLastAttempt_ClassNames = "PluginsPublisherLastAttempt" | "PluginsPublisherLastAttempt-message";
 
-type RoutePluginsPublisherLastAttempt_Props = {
+type PluginsPublisherLastAttempt_Props = {
 	attempt: PublisherLastAttempt | undefined;
 };
 
-export const RoutePluginsPublisherLastAttempt = memo(function RoutePluginsPublisherLastAttempt(
-	props: RoutePluginsPublisherLastAttempt_Props,
+export const PluginsPublisherLastAttempt = memo(function PluginsPublisherLastAttempt(
+	props: PluginsPublisherLastAttempt_Props,
 ) {
 	const attempt = plugins_publisher_get_visible_last_attempt(props.attempt);
 	if (!attempt) {
@@ -48,11 +46,9 @@ export const RoutePluginsPublisherLastAttempt = memo(function RoutePluginsPublis
 	const pluginOrRepository = attempt.pluginName ?? "this repository";
 
 	return (
-		<span className={cn("RoutePluginsPublisherLastAttempt" satisfies RoutePluginsPublisherLastAttempt_ClassNames)}>
+		<span className={cn("PluginsPublisherLastAttempt" satisfies PluginsPublisherLastAttempt_ClassNames)}>
 			<MyBadge variant={attempt.status === "flagged" ? "outline" : "destructive"}>{attempt.status}</MyBadge>
-			<span
-				className={cn("RoutePluginsPublisherLastAttempt-message" satisfies RoutePluginsPublisherLastAttempt_ClassNames)}
-			>
+			<span className={cn("PluginsPublisherLastAttempt-message" satisfies PluginsPublisherLastAttempt_ClassNames)}>
 				Last publish for {pluginOrRepository} {format_datetime(attempt.at)} · {attempt.message}
 			</span>
 		</span>
@@ -82,10 +78,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 	});
 
-	describe("RoutePluginsPublisherLastAttempt", () => {
+	describe("PluginsPublisherLastAttempt", () => {
 		const render_attempt = async (attempt: PublisherLastAttempt | undefined) => {
 			const { renderToStaticMarkup } = await import("react-dom/server");
-			return renderToStaticMarkup(<RoutePluginsPublisherLastAttempt attempt={attempt} />);
+			return renderToStaticMarkup(<PluginsPublisherLastAttempt attempt={attempt} />);
 		};
 
 		test("names the plugin when a shared repository's publish fails", async () => {

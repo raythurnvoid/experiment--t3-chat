@@ -98,8 +98,8 @@ vi.mock("@/components/plugins-header-breadcrumb.tsx", () => ({
 	},
 }));
 
-vi.mock("./-plugin-publish-confirmation-modal.tsx", () => ({
-	PluginPublishConfirmationModal: function PluginPublishConfirmationModal(props: {
+vi.mock("@/components/plugins-publish-button.tsx", () => ({
+	PluginsPublishButton: function PluginsPublishButton(props: {
 		repositoryLabel: string;
 		onPublished?: () => void;
 	}) {
@@ -111,8 +111,8 @@ vi.mock("./-plugin-publish-confirmation-modal.tsx", () => ({
 	},
 }));
 
-vi.mock("./-plugin-publish-session.tsx", () => ({
-	PluginPublishSessionProvider: {
+vi.mock("@/components/plugins-publish-session.tsx", () => ({
+	PluginsPublishSessionProvider: {
 		useContext: () => publishSessionMock(),
 	},
 }));
@@ -234,7 +234,7 @@ describe("RoutePluginsPublisher", () => {
 		const failure = within(repositoryItem as HTMLElement).getByText(/Last publish for previous-plugin/);
 		expect(failure.textContent).toContain("Artifact file hash mismatch");
 		expect(pluginLink.contains(failure)).toBe(false);
-		expect(failure.closest(".RoutePluginsPublisherLastAttempt")?.parentElement).toBe(repositoryItem);
+		expect(failure.closest(".PluginsPublisherLastAttempt")?.parentElement).toBe(repositoryItem);
 	});
 
 	test("shows a pre-manifest failure outside the unpublished repository card", () => {
@@ -252,7 +252,7 @@ describe("RoutePluginsPublisher", () => {
 		const failure = within(repositoryItem as HTMLElement).getByText(/Last publish for this repository/);
 		expect(failure.textContent).toContain("Plugin manifest is invalid JSON");
 		expect(unpublishedCard?.contains(failure)).toBe(false);
-		expect(failure.closest(".RoutePluginsPublisherLastAttempt")?.parentElement).toBe(repositoryItem);
+		expect(failure.closest(".PluginsPublisherLastAttempt")?.parentElement).toBe(repositoryItem);
 	});
 
 	test("passes distinct owner and repository labels to two unpublished fork actions", () => {
