@@ -532,6 +532,20 @@ Save. Scope it: `locator('[aria-label="Rich text editor actions"] button', { has
 `.FileEditorDiffNonCollabToolbarActions-button`. A second `Save` button lives in an always-mounted
 modal footer, so an unscoped `getByRole("button", { name: "Save" })` can match the wrong one.
 
+**"Save is disabled" does not mean "the save finished".** `isSaveDisabled` is `isSaving || dirty
+state !== "dirty"`, so the button disables on the click itself, before the server answers (measured
+2026-09-04: disabled ~0.5 s after the click, `replace_file_content` answered ~1.8 s). A runner that
+waits for `disabled` and then switches view unmounts the editor while the save is still in flight —
+and gets the `Your unsaved changes to this file were discarded.` toast even though that save lands.
+For a clean-state check, wait for the recorder's `replace_file_content` result (install the
+page-side recorder from `snippets.md`, "Watch Convex Mutations On The Wire", patching `action` too),
+then switch. Verified 2026-09-04: with the result awaited, Markdown → Diff → Rich shows no toast.
+
+Fixture typing in the Rich view: `Control+a` then `keyboard.type(...)` replaced only the block under
+the caret in this session, not the whole document, so word-count fixtures came out as 20/11/13
+words instead of 12/3/5. That is fine for a "clearly different counts" check; to control the whole
+text, set it in the Markdown view (`window.__qa.monaco().plainText.getModel().setValue(...)`) and Save.
+
 **Two-tab refused save.** Open the same file in two tabs. Reload the tab that saves first, so its
 base asset is current, then have it save. The other tab is now stale. Type in it and click Save:
 the toast reads `This file changed while you were saving. Copy your local changes before reloading,
@@ -564,14 +578,29 @@ await state.tab1.evaluate(async () => {
 Submit the comment, then type into `.ProseMirror` during the wait. The commit refuses with
 `Save your changes before adding a comment.`, the new mark is taken back out of the document, and
 the other person's text is NOT merged in. The same patch is how you prove the plain editor keeps
-Save armed for text typed while a save was in flight.
+Save armed for text typed while a save was in flight. Match the delay on the args (`typeof
+args.text === "string" && args.baseAssetId`), not on the function reference — the generated `api`
+builds a new proxy on every access, so `ref === api.files_nodes_content.replace_file_content` is
+never true. Expected readings (verified 2026-09-04, 4 s delay): Save `disabled: true` while the save
+waits; typing during the wait flips `aria-busy` to `"true"` for the dirty debounce; once the delayed
+call resolves, Save is `disabled: false` and `aria-busy="false"`; the second Save sends the longer
+text with `baseAssetId` equal to the `assetId` the first save answered; a reload shows both edits.
+
+Recorder tip for these flows: also record `query` calls that carry `nodeId`. The comment merge then
+reads as refused `replace_file_content` (`_nay` = the stale message) → `get_non_collaborative_file_content`
+→ second `replace_file_content` against the asset that query answered, result `_yay`. The refused
+save toast is `type="error"`; the merge toast is `type="info"`.
 
 **Unsaved-text warning.** Every non-collaborative editor warns when it goes away with text it never
 saved: switch view, reload, or close the file. The toast is `Your unsaved changes to this file were
 discarded.` with a `Copy text` action. After a clean save there is no toast.
 
-Do not assert the clipboard with `navigator.clipboard.readText()` — see `known-hazards.md`; spy on
-`writeText` instead:
+Assert the clipboard through a `writeText` spy, not through `navigator.clipboard.readText()` alone:
+the read worked in one session and answered empty in another (see `known-hazards.md`), so an empty
+read is inconclusive. When it does answer, it hands back CRLF line endings, so compare with
+`includes(sentence)`, not with equality. The toast's `Copy text` button clicks fine with a plain
+`locator("[data-sonner-toast] button", { hasText: "Copy text" }).first().click()`; with several
+warning toasts stacked, `first()` was the newest one. The spy:
 
 ```js
 await state.tab1.evaluate(() => {
@@ -584,9 +613,16 @@ await state.tab1.evaluate(() => {
 **Snapshot restore.** The list button is the timestamp (`55m ago`); clicking it opens a second
 dialog, `.FileEditorSnapshotsModalPreviewModal`, whose `Confirm` performs the restore. Scope every
 follow-up click to that preview modal — the list dialog stays mounted underneath and intercepts
-clicks. After `Confirm` the Rich view must refresh with no further interaction: the word badge, the
-`span.lb-tiptap-thread-mark` elements, and the anchored-comments Convex subscription all follow the
-restored document. Read the subscription without a click:
+clicks. Versions saved seconds apart all read `Just now`, newest first, so pick by index
+(`.FileEditorSnapshotsModalListItem:visible`, `nth(i)`) and prove which one you opened from the
+preview's diff block: it is `diffWordsWithSpace(current, snapshot)`, so the snapshot text is every
+`.FileEditorSnapshotsModalPreviewModalDiffBlock-word` that is NOT `-removed`, joined. After `Confirm`
+the Rich view must refresh with no further interaction: the word badge
+(`.FileEditorRichTextNonCollabToolbarActions-word-count-badge`), the `span.lb-tiptap-thread-mark`
+elements, and the anchored-comments Convex subscription all follow the restored document. Poll the
+badge from the click without touching the page; on 2026-09-04 it moved from the old count to the
+restored one in the same poll in which the preview closed (~3.5 s, the restore action plus the
+re-read), never later. Read the subscription without a click:
 
 ```js
 window.__qa.convexSubscriptions().filter((s) => JSON.stringify(s.args).includes("threadIds"));
