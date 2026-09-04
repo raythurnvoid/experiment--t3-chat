@@ -408,11 +408,15 @@
 		line-height: 1.45;
 		color: var(--color-fg-08);
 	}
+	/* #endregion secrets */
 
+	/* #region secrets modal */
 	.RoutePluginsPluginSecretsModal .MyTabsPanels {
 		margin-block-start: 14px;
 	}
+	/* #endregion secrets modal */
 
+	/* #region secrets modal panel */
 	.RoutePluginsPluginSecretsModalPanel {
 		display: flex;
 		flex-direction: column;
@@ -497,7 +501,7 @@
 		font-size: 12px;
 		color: var(--color-fg-08);
 	}
-	/* #endregion secrets */
+	/* #endregion secrets modal panel */
 
 	/* #region service */
 	.RoutePluginsPluginService {
@@ -541,7 +545,9 @@
 		line-height: 1.45;
 		color: var(--color-fg-08);
 	}
+	/* #endregion service */
 
+	/* #region service controls */
 	.RoutePluginsPluginServiceControls {
 		display: flex;
 		flex-direction: column;
@@ -593,7 +599,7 @@
 		line-height: 1.4;
 		color: var(--color-fg-07);
 	}
-	/* #endregion service */
+	/* #endregion service controls */
 
 	/* #region configuration */
 	.RoutePluginsPluginConfiguration {

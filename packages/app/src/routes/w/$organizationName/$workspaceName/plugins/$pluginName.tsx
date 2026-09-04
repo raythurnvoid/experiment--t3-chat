@@ -256,7 +256,7 @@ const RoutePluginsPluginHealth = memo(function RoutePluginsPluginHealth(props: R
 });
 // #endregion health
 
-// #region secrets
+// #region secrets modal panel
 type RoutePluginsPluginSecretsModalPanel_ClassNames =
 	| "RoutePluginsPluginSecretsModalPanel"
 	| "RoutePluginsPluginSecretsModalPanel-note"
@@ -651,7 +651,9 @@ const RoutePluginsPluginSecretsModalPanel = memo(function RoutePluginsPluginSecr
 		</div>
 	);
 });
+// #endregion secrets modal panel
 
+// #region secrets modal
 type RoutePluginsPluginSecretsModal_ClassNames = "RoutePluginsPluginSecretsModal";
 
 type RoutePluginsPluginSecretsModal_Props = {
@@ -744,7 +746,9 @@ const RoutePluginsPluginSecretsModal = memo(function RoutePluginsPluginSecretsMo
 		</MyModal>
 	);
 });
+// #endregion secrets modal
 
+// #region secrets
 type RoutePluginsPluginSecrets_ClassNames =
 	| "RoutePluginsPluginSecrets"
 	| "RoutePluginsPluginSecrets-header"
@@ -804,7 +808,7 @@ const RoutePluginsPluginSecrets = memo(function RoutePluginsPluginSecrets(props:
 });
 // #endregion secrets
 
-// #region service
+// #region service controls
 type RoutePluginsPluginService_Registration = NonNullable<
 	app_convex_FunctionReturnType<typeof app_convex_api.plugins.get_plugin_service_registration>
 >;
@@ -990,7 +994,9 @@ const RoutePluginsPluginServiceControls = memo(function RoutePluginsPluginServic
 		</div>
 	);
 });
+// #endregion service controls
 
+// #region service
 type RoutePluginsPluginService_ClassNames =
 	| "RoutePluginsPluginService"
 	| "RoutePluginsPluginService-header"
@@ -1433,8 +1439,10 @@ type RoutePluginsPluginAccess_Props = {
 	events: RoutePlugins_Installation["version"]["events"] | null;
 };
 
-// This spells out both capability names and event types, so it stays one plain rule instead of a list
-// of per-value labels. It also splits on `-` so a hyphenated name reads like every other one.
+/**
+ * This spells out both capability names and event types, so it stays one plain rule instead of a
+ * list of per-value labels. It also splits on `-` so a hyphenated name reads like every other one.
+ */
 function format_access_label(value: string) {
 	return value
 		.split(/[._-]/)
@@ -1442,10 +1450,12 @@ function format_access_label(value: string) {
 		.join(" ");
 }
 
-// A capability name is consent copy: an admin reads it to decide whether to grant the access. Three
-// names come out of the plain rule above saying the wrong thing, so each one gets a written label
-// here instead of inside `format_access_label`. Keeping the overrides out of the shared rule means
-// it carries no capability spellings and event types keep using it unchanged.
+/**
+ * A capability name is consent copy. An admin reads it to decide whether to grant the access. Some
+ * names come out of the plain rule above saying the wrong thing, so each one gets a written label
+ * here instead of inside `format_access_label`. Keeping the overrides out of the shared rule means
+ * it carries no capability spellings and event types keep using it unchanged.
+ */
 function format_capability_label(value: string) {
 	// The plain rule writes "Workspace Files Create Read Only", which reads as create-and-read
 	// access. That is the opposite of what this capability does, because it lets a plugin lock the
