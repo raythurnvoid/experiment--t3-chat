@@ -1,15 +1,17 @@
 @layer components {
 	/* #region root */
-	.FileEditorDiff {
+	.FileEditorDiff,
+	.FileEditorDiffNonCollab {
 		display: flex;
 		flex-direction: column;
 
 		height: 100%;
 	}
 
-	/* Shown instead of the editor when the pending-state read was refused: mounting fabricated
-	   empty documents would let Save overwrite the real content. */
-	.FileEditorDiff-refusal {
+	/* Shown instead of the editor when the content read was refused: mounting fabricated empty
+	   documents would let Save overwrite the real content. */
+	.FileEditorDiff-refusal,
+	.FileEditorDiffNonCollab-refusal {
 		margin: 32px auto;
 		max-width: 480px;
 		padding: 16px;
@@ -20,7 +22,8 @@
 	/* #endregion root */
 
 	/* #region toolbar */
-	.FileEditorDiffToolbarActions {
+	.FileEditorDiffToolbarActions,
+	.FileEditorDiffNonCollabToolbarActions {
 		display: flex;
 		flex-direction: row;
 		align-items: center;
@@ -31,11 +34,13 @@
 		contain: layout style;
 	}
 
-	.FileEditorDiffToolbarActions-button {
+	.FileEditorDiffToolbarActions-button,
+	.FileEditorDiffNonCollabToolbarActions-button {
 		gap: 4px;
 	}
 
-	.FileEditorDiffToolbarActions-size-badge {
+	.FileEditorDiffToolbarActions-size-badge,
+	.FileEditorDiffNonCollabToolbarActions-size-badge {
 		padding: 4px 8px;
 		font-size: 0.9rem;
 		white-space: nowrap;
@@ -63,7 +68,8 @@
 		}
 	}
 
-	.FileEditorDiffToolbarActions-button-discard-all {
+	.FileEditorDiffToolbarActions-button-discard-all,
+	.FileEditorDiffNonCollabToolbarActions-button-discard-all {
 		&:not(:disabled) {
 			color: var(--color-red-10);
 
@@ -74,7 +80,8 @@
 		}
 	}
 
-	.FileEditorDiffToolbarActions-icon {
+	.FileEditorDiffToolbarActions-icon,
+	.FileEditorDiffNonCollabToolbarActions-icon {
 		width: 20px;
 		height: 20px;
 	}
@@ -102,9 +109,22 @@
 		anchor-name: var(--FileEditorDiff-anchor-name);
 	}
 
+	/* Same box as the collaborative editor, without the anchor: only the pending-update accept and
+	   discard widgets anchor to a pane, and this view has none. */
+	.FileEditorDiffNonCollab-editor {
+		position: relative;
+
+		height: 100%;
+		flex: 1;
+		contain: strict;
+	}
+
 	.FileEditorDiff-editor .monaco-editor,
 	.FileEditorDiff-editor .monaco-diff-editor,
-	.FileEditorDiff-editor .monaco-editor-container {
+	.FileEditorDiff-editor .monaco-editor-container,
+	.FileEditorDiffNonCollab-editor .monaco-editor,
+	.FileEditorDiffNonCollab-editor .monaco-diff-editor,
+	.FileEditorDiffNonCollab-editor .monaco-editor-container {
 		height: 100%;
 	}
 	/* #endregion editor */

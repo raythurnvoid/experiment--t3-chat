@@ -6,8 +6,7 @@ import { FileEditorPlainText } from "./file-editor-plain-text/file-editor-plain-
 import { FileEditorPlainTextSkeleton } from "./file-editor-plain-text/file-editor-plain-text-skeleton.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { cn, sx } from "@/lib/utils.ts";
-import { FileEditorDiff } from "./file-editor-diff/file-editor-diff.tsx";
-import { FileEditorDiffNonCollab } from "./file-editor-diff/file-editor-diff-non-collab.tsx";
+import { FileEditorDiff, FileEditorDiffNonCollab } from "./file-editor-diff/file-editor-diff.tsx";
 import { useMutation, useQuery } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
