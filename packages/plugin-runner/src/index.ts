@@ -411,13 +411,20 @@ const RUN_REQUEST_SCHEMA = z.strictObject({
 		.string({ error: "requestPath is invalid" })
 		.max(256, "requestPath is invalid")
 		.regex(/^\/[\x21-\x7E]*$/u, "requestPath is invalid")
-		// The URL built below collapses `.` and `..` segments, so a dotted path could reach the
-		// reserved prefix past the startsWith check. Refuse dot segments before it.
+		.refine((value) => !value.startsWith("/__bonobo_senate"), "requestPath must not use the reserved prefix")
+		// Keep this rule in sync with packages/app/shared/plugins.ts: URL parsing or
+		// router decoding must not turn an endpoint into a host event path.
 		.refine(
-			(value) => value.split("/").every((segment) => segment !== "." && segment !== ".."),
+			(path) => {
+				try {
+					if (new URL(path, "http://plugin.invalid").pathname !== path) return false;
+					return !decodeURIComponent(path).startsWith("/__bonobo_senate");
+				} catch {
+					return false;
+				}
+			},
 			"requestPath is invalid",
 		)
-		.refine((value) => !value.startsWith("/__bonobo_senate"), "requestPath must not use the reserved prefix")
 		.optional(),
 	input: z.unknown(),
 	host: HOST_RUNTIME_SCHEMA,

@@ -235,11 +235,27 @@ describe("validation", () => {
 			// The URL built for the plugin fetch collapses dot segments, so this path would reach
 			// the reserved prefix past the startsWith check.
 			{ requestPath: "/x/../__bonobo_senate/run", message: "requestPath is invalid" },
+			{ requestPath: "/x/%2e%2e/__bonobo_senate/run", message: "requestPath is invalid" },
+			{ requestPath: "/x/%2E%2E/__bonobo_senate/run", message: "requestPath is invalid" },
+			{ requestPath: "/x/.%2e/__bonobo_senate/run", message: "requestPath is invalid" },
 			{ requestPath: "/./run", message: "requestPath is invalid" },
+			{ requestPath: "/x\\..\\__bonobo_senate/run", message: "requestPath is invalid" },
+			{ requestPath: "/echo?query", message: "requestPath is invalid" },
+			{ requestPath: "/echo#fragment", message: "requestPath is invalid" },
+			{ requestPath: "//other/echo", message: "requestPath is invalid" },
+			{ requestPath: "/echo%", message: "requestPath is invalid" },
+			{ requestPath: "/echo%GG", message: "requestPath is invalid" },
+			{ requestPath: "/echo%C0%AF", message: "requestPath is invalid" },
+			{ requestPath: "/%5F%5Fbonobo_senate/run", message: "requestPath is invalid" },
+			{ requestPath: "/%5f%5fbonobo_senate-extra", message: "requestPath is invalid" },
 		];
 		for (const { requestPath, message } of cases) {
-			const res = await worker.fetch(run_request(await make_run_body({ body: { requestPath } })), make_env());
-			expect(res.status).toBe(400);
+			const res = await worker.fetch(
+				run_request(await make_run_body({ body: { requestPath } })),
+				make_env(),
+				make_ctx(),
+			);
+			expect(res.status, requestPath).toBe(400);
 			expect((await res.json())._nay.message).toBe(message);
 		}
 	});
@@ -413,17 +429,23 @@ describe("dynamic worker loading", () => {
 			},
 		});
 
-		const withPath = await worker.fetch(
-			run_request(await make_run_body({ body: { requestPath: "/echo" } })),
-			env,
-			make_ctx(),
-		);
-		expect(withPath.status).toBe(200);
+		const paths = ["/echo", "/", "/nested/echo.json", "/echo%20value", "/echo%2Fvalue", "/%E2%98%83"];
+		for (const requestPath of paths) {
+			const withPath = await worker.fetch(
+				run_request(await make_run_body({ body: { requestPath } })),
+				env,
+				make_ctx(),
+			);
+			expect(withPath.status, requestPath).toBe(200);
+		}
 
 		const withoutPath = await worker.fetch(run_request(await make_run_body()), env, make_ctx());
 		expect(withoutPath.status).toBe(200);
 
-		expect(seenUrls).toEqual(["https://plugin.local/echo", "https://plugin.local/__bonobo_senate/run"]);
+		expect(seenUrls).toEqual([
+			...paths.map((path) => `https://plugin.local${path}`),
+			"https://plugin.local/__bonobo_senate/run",
+		]);
 	});
 
 	it("keys the dynamic worker per run so a cached isolate never carries another run's bindings", async () => {

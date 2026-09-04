@@ -467,7 +467,7 @@ if (res.status === 401) {
 
 ### Backend invoke (`POST /api/v1/plugin-backend/invoke`)
 
-With the `plugin.backend.invoke` capability, a frame may run the plugin's backend on demand. The manifest must declare the endpoints (at most 8; each `path` starts with `/`, is at most 256 printable ASCII characters, and may not use the reserved `/__bonobo_senate` prefix):
+With the `plugin.backend.invoke` capability, a frame may run the plugin's backend on demand. The manifest must declare the endpoints (at most 8; each `path` starts with `/` and is at most 256 printable ASCII characters). Each path must stay unchanged when parsed as a URL. Dot segments (`.`, `..`, or encoded forms), backslashes, `?`, and `#` are refused. The path must not start with the reserved `/__bonobo_senate` prefix, either as written or after one percent-decode; invalid percent escapes are refused too:
 
 ```jsonc
 "backend": {

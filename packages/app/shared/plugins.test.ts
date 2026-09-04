@@ -1067,7 +1067,68 @@ describe("plugins_validate_manifest", () => {
 					...manifest_json({ capabilities: ["plugin.backend.invoke"] }),
 					backend: { ...backend_json, endpoints: [{ id: "echo", path }] },
 				}),
-			).toEqual({ _nay: { message: "Backend endpoint paths must not contain . or .. segments" } });
+			).toEqual({
+				_nay: {
+					message:
+						"Backend endpoint paths must already be normalized, with no . or .. segments, encoded dot segments, \\, ? or #, and must not decode to the reserved prefix",
+				},
+			});
+		}
+	});
+
+	test.each([
+		"/x/%2e%2e/__bonobo_senate/run",
+		"/x/%2E%2E/__bonobo_senate/run",
+		"/x/.%2e/__bonobo_senate/run",
+	])("refuses encoded dot segments in %s", (path) => {
+		expect(
+			plugins_validate_manifest({
+				...manifest_json({ capabilities: ["plugin.backend.invoke"] }),
+				backend: { ...backend_json, endpoints: [{ id: "echo", path }] },
+			}),
+		).toEqual({
+			_nay: {
+				message:
+					"Backend endpoint paths must already be normalized, with no . or .. segments, encoded dot segments, \\, ? or #, and must not decode to the reserved prefix",
+			},
+		});
+	});
+
+	test("refuses rewritten URLs, decoded reserved prefixes, and invalid percent escapes", () => {
+		for (const path of [
+			"/x\\..\\__bonobo_senate/run",
+			"/echo?query",
+			"/echo#fragment",
+			"//other/echo",
+			"/echo%",
+			"/echo%GG",
+			"/echo%C0%AF",
+			"/%5F%5Fbonobo_senate/run",
+			"/%5f%5fbonobo_senate-extra",
+		]) {
+			expect(
+				plugins_validate_manifest({
+					...manifest_json({ capabilities: ["plugin.backend.invoke"] }),
+					backend: { ...backend_json, endpoints: [{ id: "echo", path }] },
+				}),
+				path,
+			).toEqual({
+				_nay: {
+					message:
+						"Backend endpoint paths must already be normalized, with no . or .. segments, encoded dot segments, \\, ? or #, and must not decode to the reserved prefix",
+				},
+			});
+		}
+	});
+
+	test("keeps canonical endpoint paths unchanged, including valid percent escapes", () => {
+		for (const path of ["/", "/nested/echo.json", "/echo%20value", "/echo%2Fvalue", "/%E2%98%83"]) {
+			expect(
+				plugins_validate_manifest({
+					...manifest_json({ capabilities: ["plugin.backend.invoke"] }),
+					backend: { ...backend_json, endpoints: [{ id: "echo", path }] },
+				}),
+			).toMatchObject({ _yay: { backend: { endpoints: [{ id: "echo", path }] } } });
 		}
 	});
 

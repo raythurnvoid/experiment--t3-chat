@@ -204,8 +204,9 @@ export interface BonoboInvokeRequestedEventInvoke {
  * `client.fetchJson` on that path in the frontend SDK) and the host runs the backend synchronously. The
  * request URL is `https://plugin.local<endpoint.path>` for the declared endpoint, so `fetch` can
  * route on `request.url` like a small router; host events keep the reserved
- * `/__bonobo_senate/run` path, which a manifest endpoint can never use. `source` is always null —
- * there is no triggering file, so the sibling-write rule does not apply; with
+ * `/__bonobo_senate/run` path. Endpoint paths must stay unchanged by URL parsing and must not
+ * start with `/__bonobo_senate` as written or after one percent-decode; invalid escapes are refused.
+ * `source` is always null — there is no triggering file, so the sibling-write rule does not apply; with
  * `workspace.files.own-write` the run writes inside the folders the plugin owns instead.
  *
  * The response the plugin returns (status and body text) is relayed to the page as the invoke
