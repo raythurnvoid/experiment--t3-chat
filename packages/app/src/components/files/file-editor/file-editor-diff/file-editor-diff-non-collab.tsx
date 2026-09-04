@@ -11,6 +11,7 @@ import {
 	file_editor_get_size_badge_text,
 	file_editor_get_size_error_message,
 	file_editor_get_size_status_message,
+	file_editor_warn_unsaved_text_dropped,
 } from "@/lib/file-editor.ts";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -580,6 +581,32 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 		editorRef.current?.getOriginalEditor().updateOptions({ ariaLabel: "Original file content" });
 		editorRef.current?.getModifiedEditor().updateOptions({ ariaLabel: "Modified file content" });
 	}, [mountedModifiedEditor]);
+
+	/**
+	 * Warn before this editor goes away with text that was never saved.
+	 *
+	 * The committed pane is the baseline, so the unsaved text is whatever the modified pane holds
+	 * on top of it. Read both models instead of the debounced dirty state, because that state is
+	 * up to 250 ms behind and would miss the last words typed.
+	 */
+	const warnIfUnsavedTextIsDropped = useFn(() => {
+		const editorModels = editorModelsRef.current;
+		if (!editorModels) {
+			return;
+		}
+
+		const currentModified = editorModels.modified.getValue();
+		if (currentModified === editorModels.original.getValue()) {
+			return;
+		}
+
+		file_editor_warn_unsaved_text_dropped(currentModified);
+	});
+
+	// Run only on unmount, and before the cleanup below disposes the models. The cleanup reads a
+	// stable callback, so no other change may re-run it: a rerun would warn about text that is
+	// still on screen.
+	useEffect(() => warnIfUnsavedTextIsDropped, [warnIfUnsavedTextIsDropped]);
 
 	useEffect(() => {
 		return () => {

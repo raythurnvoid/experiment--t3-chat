@@ -65,6 +65,7 @@ import {
 	file_editor_get_size_badge_text,
 	file_editor_get_size_error_message,
 	file_editor_get_size_status_message,
+	file_editor_warn_unsaved_text_dropped,
 } from "@/lib/file-editor.ts";
 import { file_editor_rich_text_SizeLimitExtension } from "@/lib/file-editor-rich-text-size-limit-extension.ts";
 import { file_editor_rich_text_MediaExtension } from "./file-editor-rich-text-media-extension.ts";
@@ -1906,6 +1907,29 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 			setIsSaving(false);
 		});
 	});
+
+	/**
+	 * Warn before this editor goes away with text that was never saved.
+	 *
+	 * Serialize the live document instead of reading the debounced dirty state. That state is up
+	 * to 400 ms behind, so the last words typed would not count as a change.
+	 */
+	const warnIfUnsavedTextIsDropped = useFn(() => {
+		if (!editor || editor.isDestroyed) {
+			return;
+		}
+
+		const currentText = serialize_editor_markdown(editor);
+		if (currentText === baselineMarkdownRef.current) {
+			return;
+		}
+
+		file_editor_warn_unsaved_text_dropped(currentText);
+	});
+
+	// Run only on unmount. The cleanup reads the editor through a stable callback, so no other
+	// change may re-run it: a rerun would warn about text that is still on screen.
+	useEffect(() => warnIfUnsavedTextIsDropped, [warnIfUnsavedTextIsDropped]);
 
 	// Same pattern as the comments composer: the editor instance is created once, so a later answer
 	// to "may this user write here" has to go through `setEditable`.

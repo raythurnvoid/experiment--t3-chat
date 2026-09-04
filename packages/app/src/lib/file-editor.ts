@@ -5,10 +5,34 @@
 // message for the `files_nodes.contentTooLargeByteSize` state. Materialization sets that state when
 // the reconstructed document is over the cap.
 //
+// The module also holds the small shared pieces of editor feedback, such as the warning about
+// unsaved text that was dropped.
+//
 // Imports `shared/files.ts` directly rather than `@/lib/files.ts` to stay out of the Convex,
 // Monaco and Yjs module graph: these are plain functions shared by both editors.
 
+import { toast } from "sonner";
 import { files_MAX_TEXT_CONTENT_BYTES, files_format_size } from "../../shared/files.ts";
+
+/**
+ * Tell the member that text they never saved is gone, and offer it back through the clipboard.
+ *
+ * A file with collaboration turned off keeps unsaved text only inside the open editor. Closing
+ * the file, switching the view, or another member turning collaboration on all replace that
+ * editor, and the text goes with it. All three non-collaborative editors call this from their
+ * unmount cleanup, so the warning reads the same everywhere.
+ *
+ * The toast stays up for 30 seconds because copying the text back is the only way to keep it.
+ */
+export function file_editor_warn_unsaved_text_dropped(lostText: string) {
+	toast.warning("Your unsaved changes to this file were discarded.", {
+		duration: 30_000,
+		action: {
+			label: "Copy text",
+			onClick: () => navigator.clipboard.writeText(lostText),
+		},
+	});
+}
 
 /** Editors show the content-size badge from here up. 80% of `files_MAX_TEXT_CONTENT_BYTES`. */
 export const file_editor_SIZE_WARN_BYTES = 720_000;

@@ -4,11 +4,14 @@ import { toast } from "sonner";
 
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 
-const { tenantContextMock, convexQueryMock, convexActionMock, stableQueryMock } = vi.hoisted(() => ({
+const { tenantContextMock, convexQueryMock, convexActionMock, stableQueryMock, editorHarness } = vi.hoisted(() => ({
 	tenantContextMock: vi.fn(),
 	convexQueryMock: vi.fn(),
 	convexActionMock: vi.fn(),
 	stableQueryMock: vi.fn(),
+	// The drag handle is the one mounted child that already receives the Tiptap instance, so the
+	// stub below hands it to the tests. That is how a test types into the real document.
+	editorHarness: { editor: null as null | import("@tiptap/core").Editor },
 }));
 
 // Spy target: tests assert on the toasts the editor shows.
@@ -67,8 +70,17 @@ vi.mock("../file-editor-comments-sidebar.tsx", () => ({
 	},
 }));
 
+// The real drag handle measures DOM boxes the test environment does not lay out. The stub keeps
+// the editor instance it is given so tests can edit the document the way a member would.
+vi.mock("./file-editor-rich-text-drag-handle.tsx", () => ({
+	FileEditorRichTextDragHandle: function FileEditorRichTextDragHandle(props: { editor: never }) {
+		editorHarness.editor = props.editor;
+		return null;
+	},
+}));
+
 import { FileEditorRichTextNonCollab } from "./file-editor-rich-text.tsx";
-import type { files_PresenceStore } from "@/lib/files.ts";
+import { files_REPLACE_FILE_CONTENT_STALE_MESSAGE, type files_PresenceStore } from "@/lib/files.ts";
 
 const MEMBERSHIP_ID = "membership_1" as app_convex_Id<"organizations_workspaces_users">;
 const NODE_ID = "node_markdown" as app_convex_Id<"files_nodes">;
@@ -123,7 +135,31 @@ function last_requested_thread_ids() {
  */
 async function flushEditorMount() {
 	await act(async () => {});
+	// Novel creates the editor from a timer, so a test on fake timers has to let it run.
+	if (vi.isFakeTimers()) {
+		await act(async () => {
+			await vi.advanceTimersByTimeAsync(1);
+		});
+	}
 	await act(async () => {});
+}
+
+/**
+ * Type at the end of the document, then let the 400 ms dirty debounce land.
+ */
+async function typeIntoEditor(content: string) {
+	const editor = editorHarness.editor;
+	if (!editor) {
+		throw new Error("Expected the mounted editor to be captured");
+	}
+
+	act(() => {
+		// Append at the end of the last text block; the mounted selection sits at the start.
+		editor.commands.insertContentAt(editor.state.doc.content.size - 1, content);
+	});
+	await act(async () => {
+		await vi.advanceTimersByTimeAsync(400);
+	});
 }
 
 beforeEach(() => {
@@ -179,5 +215,134 @@ describe("FileEditorRichTextNonCollab", () => {
 		// threads of the text that was replaced, and every mark renders at the old position.
 		expect(screen.getByText("1 Words")).toBeTruthy();
 		expect(last_requested_thread_ids()).toEqual(["thread_b"]);
+	});
+
+	test("Save replaces the whole text and the next Save names the asset it wrote", async () => {
+		vi.useFakeTimers();
+		try {
+			resolveQueryWithNonCollaborativeContent("alpha\n");
+			convexActionMock.mockResolvedValue({ _yay: { assetId: "asset_saved" } });
+
+			renderNonCollabRichEditor();
+			await flushEditorMount();
+
+			const saveButton = screen.getByRole("button", { name: "Save" });
+			expect(saveButton.hasAttribute("disabled")).toBe(true);
+
+			await typeIntoEditor(" beta");
+			expect(saveButton.hasAttribute("disabled")).toBe(false);
+
+			fireEvent.click(saveButton);
+			await act(async () => {});
+
+			expect(convexActionMock).toHaveBeenCalledWith("replace_file_content", {
+				membershipId: MEMBERSHIP_ID,
+				nodeId: NODE_ID,
+				text: "alpha beta\n",
+				baseAssetId: BASE_ASSET_ID,
+			});
+			expect(toast.error).not.toHaveBeenCalled();
+			expect(saveButton.hasAttribute("disabled")).toBe(true);
+
+			// The next Save must name the asset this one wrote, or the server would call it stale.
+			await typeIntoEditor(" gamma");
+			fireEvent.click(saveButton);
+			await act(async () => {});
+			expect(convexActionMock).toHaveBeenLastCalledWith("replace_file_content", {
+				membershipId: MEMBERSHIP_ID,
+				nodeId: NODE_ID,
+				text: "alpha beta gamma\n",
+				baseAssetId: "asset_saved",
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("a refused Save shows the refusal and keeps the text in the editor", async () => {
+		vi.useFakeTimers();
+		try {
+			resolveQueryWithNonCollaborativeContent("alpha\n");
+			convexActionMock.mockResolvedValue({ _nay: { message: files_REPLACE_FILE_CONTENT_STALE_MESSAGE } });
+
+			renderNonCollabRichEditor();
+			await flushEditorMount();
+
+			const saveButton = screen.getByRole("button", { name: "Save" });
+			await typeIntoEditor(" beta");
+			fireEvent.click(saveButton);
+			await act(async () => {});
+
+			// The refusal must be visible, and Save must stay armed: the text is still only local.
+			expect(toast.error).toHaveBeenCalledWith(files_REPLACE_FILE_CONTENT_STALE_MESSAGE);
+			expect(saveButton.hasAttribute("disabled")).toBe(false);
+			expect(screen.getByText("2 Words")).toBeTruthy();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("warns about the reformat only while the serializer would rewrite the stored bytes", async () => {
+		// Two spaces after the heading marker: the serializer writes one, so the first save rewrites
+		// a line the member never touched.
+		resolveQueryWithNonCollaborativeContent("#  Title\n");
+		renderNonCollabRichEditor();
+		await flushEditorMount();
+
+		expect(screen.getByText("Saving from the rich editor will reformat this file's Markdown.")).toBeTruthy();
+	});
+
+	test("no reformat warning when the stored bytes already match the serializer", async () => {
+		resolveQueryWithNonCollaborativeContent("alpha\n");
+		renderNonCollabRichEditor();
+		await flushEditorMount();
+
+		expect(screen.queryByText("Saving from the rich editor will reformat this file's Markdown.")).toBeNull();
+	});
+
+	test("warns with the lost text when the editor closes on unsaved changes", async () => {
+		vi.useFakeTimers();
+		try {
+			resolveQueryWithNonCollaborativeContent("alpha\n");
+			const { unmount } = renderNonCollabRichEditor();
+			await flushEditorMount();
+
+			await typeIntoEditor(" beta");
+			unmount();
+
+			expect(toast.warning).toHaveBeenCalledWith("Your unsaved changes to this file were discarded.", {
+				duration: 30_000,
+				action: { label: "Copy text", onClick: expect.any(Function) },
+			});
+
+			// The action has to hand back exactly what was in the editor, or the offer is useless.
+			const clipboardWrite = vi.fn();
+			vi.stubGlobal("navigator", { clipboard: { writeText: clipboardWrite } });
+			vi.mocked(toast.warning).mock.calls[0]?.[1]?.action?.onClick?.(new MouseEvent("click"));
+			expect(clipboardWrite).toHaveBeenCalledWith("alpha beta\n");
+			vi.unstubAllGlobals();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("no warning when the editor closes right after a successful Save", async () => {
+		vi.useFakeTimers();
+		try {
+			resolveQueryWithNonCollaborativeContent("alpha\n");
+			convexActionMock.mockResolvedValue({ _yay: { assetId: "asset_saved" } });
+
+			const { unmount } = renderNonCollabRichEditor();
+			await flushEditorMount();
+
+			await typeIntoEditor(" beta");
+			fireEvent.click(screen.getByRole("button", { name: "Save" }));
+			await act(async () => {});
+			unmount();
+
+			expect(toast.warning).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

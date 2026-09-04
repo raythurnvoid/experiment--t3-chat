@@ -20,6 +20,7 @@ import {
 	file_editor_get_size_badge_text,
 	file_editor_get_size_error_message,
 	file_editor_get_size_status_message,
+	file_editor_warn_unsaved_text_dropped,
 } from "@/lib/file-editor.ts";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -878,6 +879,31 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	useEffect(() => {
 		mountedEditor?.updateOptions({ readOnly: !editable });
 	}, [editable, mountedEditor]);
+
+	/**
+	 * Warn before this editor goes away with text that was never saved.
+	 *
+	 * Only a file with collaboration turned off can lose text this way. A collaborative file keeps
+	 * every keystroke in its shared document. Read the model instead of the debounced dirty state,
+	 * because that state is up to 250 ms behind and would miss the last words typed.
+	 */
+	const warnIfUnsavedTextIsDropped = useFn(() => {
+		if (!nonCollaborativeBaseAssetId) {
+			return;
+		}
+
+		const currentMarkdown = modelRef.current?.getValue();
+		if (currentMarkdown === undefined || currentMarkdown === baselineMarkdownRef.current) {
+			return;
+		}
+
+		file_editor_warn_unsaved_text_dropped(currentMarkdown);
+	});
+
+	// Run only on unmount, and before the cleanup below drops the model reference. The cleanup
+	// reads a stable callback, so no other change may re-run it: a rerun would warn about text
+	// that is still on screen.
+	useEffect(() => warnIfUnsavedTextIsDropped, [warnIfUnsavedTextIsDropped]);
 
 	useEffect(() => {
 		return () => {

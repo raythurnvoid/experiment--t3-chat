@@ -30,9 +30,9 @@ vi.mock("convex/react", () => ({
 	useMutation: () => pushMutationMock,
 }));
 
-// Spy target: tests assert on toast.error calls.
+// Spy target: tests assert on the toasts the editor shows.
 vi.mock("sonner", () => ({
-	toast: { error: vi.fn() },
+	toast: { error: vi.fn(), warning: vi.fn() },
 }));
 
 // Provider boundary: the real useContext throws without an AppTenantProvider mounted above.
@@ -210,6 +210,7 @@ beforeEach(() => {
 	monacoHarness.createdModels.length = 0;
 	monacoHarness.changeListeners.length = 0;
 	vi.mocked(toast.error).mockClear();
+	vi.mocked(toast.warning).mockClear();
 
 	// The component renders Monaco only when the app's overflow-widget host exists.
 	hoistingContainer = document.createElement("div");
@@ -596,6 +597,74 @@ describe("FileEditorPlainText", () => {
 			);
 			expect(saveButton.hasAttribute("disabled")).toBe(false);
 			expect(model?.getValue()).toBe('{"answer": 42}\n');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("warns with the lost text when the editor closes on unsaved changes", async () => {
+		resolveQueryWithNonCollaborativeContent("{}\n");
+		const { unmount } = renderPlainTextEditor({ nonCollaborative: true });
+		await act(async () => {});
+
+		const model = monacoHarness.createdModels[0]?.model;
+		act(() => {
+			model?.setValue('{"answer": 42}\n');
+			for (const listener of monacoHarness.changeListeners) listener();
+		});
+		unmount();
+
+		expect(toast.warning).toHaveBeenCalledWith("Your unsaved changes to this file were discarded.", {
+			duration: 30_000,
+			action: { label: "Copy text", onClick: expect.any(Function) },
+		});
+
+		// The action has to hand back exactly what was in the editor, or the offer is useless.
+		const clipboardWrite = vi.fn();
+		vi.stubGlobal("navigator", { clipboard: { writeText: clipboardWrite } });
+		vi.mocked(toast.warning).mock.calls[0]?.[1]?.action?.onClick?.(new MouseEvent("click"));
+		expect(clipboardWrite).toHaveBeenCalledWith('{"answer": 42}\n');
+		vi.unstubAllGlobals();
+	});
+
+	test("no warning when a collaborative file closes with local edits", async () => {
+		// A collaborative file keeps every keystroke in its shared document, so nothing is lost.
+		resolveFetchWithPlainTextDoc("{}\n");
+		const { unmount } = renderPlainTextEditor();
+		await act(async () => {});
+
+		const model = monacoHarness.createdModels[0]?.model;
+		act(() => {
+			model?.setValue('{"answer": 42}\n');
+			for (const listener of monacoHarness.changeListeners) listener();
+		});
+		unmount();
+
+		expect(toast.warning).not.toHaveBeenCalled();
+	});
+
+	test("no warning when the editor closes right after a successful Save", async () => {
+		vi.useFakeTimers();
+		try {
+			resolveQueryWithNonCollaborativeContent("{}\n");
+			convexActionMock.mockResolvedValue({ _yay: { assetId: "asset_saved" } });
+
+			const { unmount } = renderPlainTextEditor({ nonCollaborative: true });
+			await act(async () => {});
+
+			const model = monacoHarness.createdModels[0]?.model;
+			act(() => {
+				model?.setValue('{"answer": 42}\n');
+				for (const listener of monacoHarness.changeListeners) listener();
+			});
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(250);
+			});
+			fireEvent.click(screen.getByRole("button", { name: "Save" }));
+			await act(async () => {});
+			unmount();
+
+			expect(toast.warning).not.toHaveBeenCalled();
 		} finally {
 			vi.useRealTimers();
 		}
