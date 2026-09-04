@@ -159,6 +159,22 @@
 	}
 	/* #endregion sign in */
 
+	/* #region last attempt */
+	.RoutePluginsPublisherLastAttempt {
+		display: flex;
+		align-items: start;
+		gap: 8px;
+	}
+
+	.RoutePluginsPublisherLastAttempt-message {
+		overflow-wrap: anywhere;
+
+		font-size: 12px;
+		line-height: 1.45;
+		color: var(--color-fg-08);
+	}
+	/* #endregion last attempt */
+
 	/* #region plugins */
 	.RoutePluginsPublisherPlugins {
 		display: flex;

@@ -8,6 +8,7 @@ import { memo, useEffect, useRef, useState, type FormEvent, type Ref } from "rea
 import { toast } from "sonner";
 
 import { AppAuthProvider } from "@/components/app-auth.tsx";
+import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import {
 	MyInput,
@@ -21,10 +22,10 @@ import { PluginsGalleryCard } from "@/components/plugins-gallery-card.tsx";
 import { PluginsHeaderBreadcrumb } from "@/components/plugins-header-breadcrumb.tsx";
 import { PluginsPublishButton } from "@/components/plugins-publish-button.tsx";
 import { PluginsPublishSessionProvider } from "@/components/plugins-publish-session.tsx";
-import { PluginsPublisherLastAttempt } from "@/components/plugins-publisher-last-attempt.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex, app_convex_api, type app_convex_FunctionReturnType } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { format_datetime } from "@/lib/date.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 
@@ -67,6 +68,62 @@ const RoutePluginsPublisherSignIn = memo(function RoutePluginsPublisherSignIn() 
 	);
 });
 // #endregion sign in
+
+// #region last attempt
+type PublisherLastAttempt = {
+	at: number;
+	pluginName: string | null;
+	status: "succeeded" | "rejected" | "flagged" | "failed";
+	message: string;
+};
+
+/**
+ * Show a publish attempt only when it still needs the publisher's attention.
+ *
+ * A succeeded attempt is hidden because the card already shows the version it produced. Everything
+ * else stays on the card, including on a repository that has published before, because the toast
+ * that reported the failure is long gone by the time the publisher looks again.
+ */
+function plugins_publisher_get_visible_last_attempt(lastPublishAttempt: PublisherLastAttempt | undefined) {
+	if (!lastPublishAttempt || lastPublishAttempt.status === "succeeded") {
+		return undefined;
+	}
+
+	return lastPublishAttempt;
+}
+
+type RoutePluginsPublisherLastAttempt_ClassNames =
+	| "RoutePluginsPublisherLastAttempt"
+	| "RoutePluginsPublisherLastAttempt-message";
+
+type RoutePluginsPublisherLastAttempt_Props = {
+	attempt: PublisherLastAttempt | undefined;
+};
+
+const RoutePluginsPublisherLastAttempt = memo(function RoutePluginsPublisherLastAttempt(
+	props: RoutePluginsPublisherLastAttempt_Props,
+) {
+	const attempt = plugins_publisher_get_visible_last_attempt(props.attempt);
+	if (!attempt) {
+		return null;
+	}
+
+	// A publish that failed before the manifest was read has no plugin name. Say "this repository" so
+	// the line does not read as a failure of whichever plugin the card above happens to show.
+	const pluginOrRepository = attempt.pluginName ?? "this repository";
+
+	return (
+		<span className={"RoutePluginsPublisherLastAttempt" satisfies RoutePluginsPublisherLastAttempt_ClassNames}>
+			<MyBadge variant={attempt.status === "flagged" ? "outline" : "destructive"}>{attempt.status}</MyBadge>
+			<span
+				className={"RoutePluginsPublisherLastAttempt-message" satisfies RoutePluginsPublisherLastAttempt_ClassNames}
+			>
+				Last publish for {pluginOrRepository} {format_datetime(attempt.at)} · {attempt.message}
+			</span>
+		</span>
+	);
+});
+// #endregion last attempt
 
 // #region plugins
 type RoutePluginsPublisherPlugins_ClassNames =
@@ -324,7 +381,7 @@ const RoutePluginsPublisherPlugins = memo(function RoutePluginsPublisherPlugins(
 									/>
 								))
 							)}
-							<PluginsPublisherLastAttempt attempt={repository.lastPublishAttempt} />
+							<RoutePluginsPublisherLastAttempt attempt={repository.lastPublishAttempt} />
 						</div>
 					))}
 				</div>

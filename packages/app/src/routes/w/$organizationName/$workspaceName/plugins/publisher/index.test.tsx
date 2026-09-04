@@ -124,12 +124,14 @@ type RepositoryFixture = {
 		owner: string;
 		repo: string;
 		repositoryUrl: string;
-		lastPublishAttempt: {
-			at: number;
-			pluginName: string | null;
-			status: string;
-			message: string;
-		};
+		lastPublishAttempt:
+			| {
+					at: number;
+					pluginName: string | null;
+					status: string;
+					message: string;
+			  }
+			| undefined;
 	};
 	readyVersions: Array<{
 		name: string;
@@ -232,7 +234,7 @@ describe("RoutePluginsPublisher", () => {
 		const failure = within(repositoryItem as HTMLElement).getByText(/Last publish for previous-plugin/);
 		expect(failure.textContent).toContain("Artifact file hash mismatch");
 		expect(pluginLink.contains(failure)).toBe(false);
-		expect(failure.closest(".PluginsPublisherLastAttempt")?.parentElement).toBe(repositoryItem);
+		expect(failure.closest(".RoutePluginsPublisherLastAttempt")?.parentElement).toBe(repositoryItem);
 	});
 
 	test("shows a pre-manifest failure outside the unpublished repository card", () => {
@@ -250,7 +252,47 @@ describe("RoutePluginsPublisher", () => {
 		const failure = within(repositoryItem as HTMLElement).getByText(/Last publish for this repository/);
 		expect(failure.textContent).toContain("Plugin manifest is invalid JSON");
 		expect(unpublishedCard?.contains(failure)).toBe(false);
-		expect(failure.closest(".PluginsPublisherLastAttempt")?.parentElement).toBe(repositoryItem);
+		expect(failure.closest(".RoutePluginsPublisherLastAttempt")?.parentElement).toBe(repositoryItem);
+	});
+
+	test("hides a succeeded attempt because the card already shows its version", () => {
+		const repositories = makeRepositories();
+		repositories[0].repository.lastPublishAttempt = {
+			...repositories[0].repository.lastPublishAttempt!,
+			status: "succeeded",
+		};
+		setRepositories(repositories);
+		render(<PageComponent />);
+
+		expect(screen.queryByText(/Last publish for previous-plugin/)).toBeNull();
+	});
+
+	test("shows no attempt line when the repository never tried to publish", () => {
+		const repositories = makeRepositories();
+		repositories[0].repository.lastPublishAttempt = undefined;
+		setRepositories(repositories);
+		render(<PageComponent />);
+
+		const pluginLink = screen.getByRole("link", { name: "Open plugin page for Current Plugin" });
+		const repositoryItem = pluginLink.closest(".RoutePluginsPublisherRepositoryItem") as HTMLElement;
+		expect(repositoryItem.querySelector(".RoutePluginsPublisherLastAttempt")).toBeNull();
+	});
+
+	test("colours a failed attempt as a failure and a flagged one as a note", () => {
+		const repositories = makeRepositories();
+		repositories[1].repository.lastPublishAttempt = {
+			...repositories[1].repository.lastPublishAttempt!,
+			status: "flagged",
+		};
+		setRepositories(repositories);
+		render(<PageComponent />);
+
+		const failed = screen.getByText(/Last publish for previous-plugin/).closest(".RoutePluginsPublisherLastAttempt");
+		expect(failed?.querySelector(".MyBadge-variant-destructive")?.textContent).toBe("failed");
+
+		const flagged = screen.getByText(/Last publish for this repository/).closest(".RoutePluginsPublisherLastAttempt");
+		expect(flagged?.querySelector(".MyBadge-variant-outline")?.textContent).toBe("flagged");
+		expect(flagged?.querySelector(".MyBadge-variant-destructive")).toBeNull();
 	});
 
 	test("passes distinct owner and repository labels to two unpublished fork actions", () => {
