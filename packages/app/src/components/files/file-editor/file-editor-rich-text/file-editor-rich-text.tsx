@@ -306,7 +306,7 @@ const FileEditorRichTextTopStickyFloatingContainer = memo(function FileEditorRic
 // #endregion top sticky floating container
 
 // #region bubble content actions
-export type FileEditorRichTextBubbleContentActions_ClassNames =
+type FileEditorRichTextBubbleContentActions_ClassNames =
 	| "FileEditorRichTextBubbleContentActions"
 	| "FileEditorRichTextBubbleContentActions-button"
 	| "FileEditorRichTextBubbleContentActions-icon";
@@ -380,7 +380,7 @@ const FileEditorRichTextBubbleContentActions = memo(function FileEditorRichTextB
 // #endregion bubble content actions
 
 // #region bubble content
-export type FileEditorRichTextBubbleContent_ClassNames = "FileEditorRichTextBubbleContent";
+type FileEditorRichTextBubbleContent_ClassNames = "FileEditorRichTextBubbleContent";
 
 type FileEditorRichTextBubbleContent_Props = {
 	editor: Editor;
@@ -426,9 +426,9 @@ const FileEditorRichTextBubbleContent = memo(function FileEditorRichTextBubbleCo
 // Derived from Liveblocks:
 // liveblocks\examples\nextjs-tiptap-novel\src\components\editor\generative\generative-menu-switch.tsx
 
-export type FileEditorRichTextBubble_ClassNames = "FileEditorRichTextBubble" | "FileEditorRichTextBubble-rendered";
+type FileEditorRichTextBubble_ClassNames = "FileEditorRichTextBubble" | "FileEditorRichTextBubble-rendered";
 
-export type FileEditorRichTextBubble_Props = {
+type FileEditorRichTextBubble_Props = {
 	editor: Editor;
 	nodeId: app_convex_Id<"files_nodes">;
 	/** See `FileEditorRichTextToolsComment_Props`; the bubble threads both comment props through. */
@@ -453,7 +453,7 @@ export type FileEditorRichTextBubble_Props = {
  * - The user interacts with portaled/hoisted popovers opened from the bubble (`isElContainedInManagedAreas`)
  * - The user presses Escape to close a popover in the bubble (popover closes, bubble stays visible)
  */
-export const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(props: FileEditorRichTextBubble_Props) {
+const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(props: FileEditorRichTextBubble_Props) {
 	const { editor, nodeId, disabledReason, commitComment, showAiAction } = props;
 
 	const bubbleSurfaceRef = useRef<HTMLDivElement>(null);
@@ -807,8 +807,8 @@ const FileEditorRichTextAnchoredCommentsLayer = memo(function FileEditorRichText
 });
 // #endregion anchored comments layer
 
-// #region root
-export type FileEditorRichText_ClassNames =
+// #region collaborative root
+type FileEditorRichText_ClassNames =
 	| "FileEditorRichText"
 	| "FileEditorRichText-visible"
 	| "FileEditorRichText-load-error"
@@ -1244,7 +1244,7 @@ FileEditorRichText.clearDecorationHighlightProperly = (editor: Editor, triggerEl
 		}
 	});
 };
-// #endregion root
+// #endregion collaborative root
 
 // #region non-collaborative toolbar
 type FileEditorRichTextNonCollabToolbarActions_ClassNames =
@@ -1392,7 +1392,19 @@ const FileEditorRichTextNonCollabToolbarActions = memo(function FileEditorRichTe
 });
 // #endregion non-collaborative toolbar
 
-// #region non-collaborative inner
+// #region non-collaborative root
+/**
+ * The non-collaborative editor has its own class names, so the markup says which variant is
+ * mounted. The two still look the same: the CSS file lists both selectors on every rule they
+ * share, so there is one place to change those rules.
+ */
+type FileEditorRichTextNonCollab_ClassNames =
+	| "FileEditorRichTextNonCollab"
+	| "FileEditorRichTextNonCollab-visible"
+	| "FileEditorRichTextNonCollab-refusal"
+	| "FileEditorRichTextNonCollab-editor-content-root"
+	| "FileEditorRichTextNonCollab-editor-content-container"
+	| "FileEditorRichTextNonCollab-editor-content";
 
 // The replace door names this exact message when `baseAssetId` no longer matches the stored
 // asset. The comment save dispatches its merge retry on it.
@@ -2069,21 +2081,6 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 		</>
 	);
 });
-// #endregion non-collaborative inner
-
-// #region non-collaborative root
-/**
- * The non-collaborative editor owns its own class names instead of borrowing the collaborative
- * ones. The look is still shared: the CSS file lists both selectors on the rules the two variants
- * have in common, so there is still one place to change them.
- */
-type FileEditorRichTextNonCollab_ClassNames =
-	| "FileEditorRichTextNonCollab"
-	| "FileEditorRichTextNonCollab-visible"
-	| "FileEditorRichTextNonCollab-refusal"
-	| "FileEditorRichTextNonCollab-editor-content-root"
-	| "FileEditorRichTextNonCollab-editor-content-container"
-	| "FileEditorRichTextNonCollab-editor-content";
 
 export type FileEditorRichTextNonCollab_Props = {
 	nodeId: app_convex_Id<"files_nodes">;

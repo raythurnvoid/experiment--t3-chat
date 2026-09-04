@@ -244,7 +244,7 @@
 	}
 	/* #endregion comments sidebar */
 
-	/* #region widgets */
+	/* #region widget accept discard */
 	/* File Editor Diff Widget Accept Discard - Widget container */
 	.FileEditorDiffWidgetAcceptDiscard {
 		position: absolute;
@@ -337,5 +337,5 @@
 
 		pointer-events: none;
 	}
-	/* #endregion widgets */
+	/* #endregion widget accept discard */
 }

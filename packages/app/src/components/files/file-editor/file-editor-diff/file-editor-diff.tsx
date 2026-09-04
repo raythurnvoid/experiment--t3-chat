@@ -243,15 +243,15 @@ const FileEditorDiffTopStickyFloatingContainer = memo(function FileEditorDiffTop
 });
 // #endregion top sticky floating container
 
-// #region FileEditorDiffWidgetAcceptDiscard
-export type FileEditorDiffWidgetAcceptDiscard_ClassNames =
+// #region widget accept discard
+type FileEditorDiffWidgetAcceptDiscard_ClassNames =
 	| "FileEditorDiffWidgetAcceptDiscard"
 	| "FileEditorDiffWidgetAcceptDiscard-monaco-decoration"
 	| "FileEditorDiffWidgetAcceptDiscard-accept-button"
 	| "FileEditorDiffWidgetAcceptDiscard-discard-button"
 	| "FileEditorDiffWidgetAcceptDiscard-icon";
 
-export type FileEditorDiffWidgetAcceptDiscard_Props = {
+type FileEditorDiffWidgetAcceptDiscard_Props = {
 	onAccept: () => void;
 	onDiscard: () => void;
 };
@@ -364,7 +364,7 @@ class FileEditorDiffWidgetAcceptDiscard_Monaco implements monaco_editor.IContent
 	}
 }
 
-export const FileEditorDiffWidgetAcceptDiscard = memo(function FileEditorDiffWidgetAcceptDiscard(
+const FileEditorDiffWidgetAcceptDiscard = memo(function FileEditorDiffWidgetAcceptDiscard(
 	props: FileEditorDiffWidgetAcceptDiscard_Props,
 ) {
 	const { onAccept, onDiscard } = props;
@@ -435,7 +435,7 @@ export const FileEditorDiffWidgetAcceptDiscard = memo(function FileEditorDiffWid
 		</>
 	);
 });
-// #endregion FileEditorDiffWidgetAcceptDiscard
+// #endregion widget accept discard
 
 // #region root
 type RemoteEditorContentState = {
