@@ -188,8 +188,9 @@ export interface BonoboUploadCompletedEvent {
  * The invoke payload of a {@link BonoboInvokeRequestedEvent}. `input` is whatever the page sent —
  * it is UNTRUSTED page data: any code running in the frame can fill it with anything, so never
  * read an acting identity from it. The member behind the run is the envelope's `actorUserId`,
- * which the host verified from the frame's session. `serializationKey` echoes the page's key for
- * a `"caller-key"` endpoint and is `null` otherwise.
+ * which the host verified from the frame's session.
+ *
+ * `serializationKey` echoes the page's key for a `"caller-key"` endpoint and is `null` otherwise.
  */
 export interface BonoboInvokeRequestedEventInvoke {
 	endpointId: string;

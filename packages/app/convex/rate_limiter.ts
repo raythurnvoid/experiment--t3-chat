@@ -111,10 +111,11 @@ const rate_limiter_CONFIG = {
 	// A member writing plugin data from a plugin frame. Most calls change one document; atomic private
 	// setup creates its scope, grants, and first document under one charge. The name says "page",
 	// but both frame kinds charge here: a plugin page and a file view. Nothing in `plugins_data.ts`
-	// reads the session's `fileNodeId`, so a file view writes exactly as a page does. Chat-like use
-	// is bursty — a few messages or reactions in a row — so the capacity covers a short burst and
-	// the rate sustains one write every two seconds. Keyed by user and installation together, so one
-	// busy frame cannot drain the member's write budget in every other plugin.
+	// reads the session's `fileNodeId`, so a file view writes exactly as a page does.
+	//
+	// Chat-like use is bursty — a few messages or reactions in a row — so the capacity covers a short
+	// burst and the rate sustains one write every two seconds. Keyed by user and installation
+	// together, so one busy frame cannot drain the member's write budget in every other plugin.
 	plugins_data_page_user_write: {
 		kind: "token bucket",
 		rate: 30,
@@ -136,11 +137,12 @@ const rate_limiter_CONFIG = {
 	plugins_publish_preflight: STRICT_AUTH_OR_BILLING,
 	// Two kinds of charge share this bucket. A plugin page mints here. Every token rotation also
 	// charges here, because `refresh_ui_session` serves both frame kinds: a plugin page and a file
-	// view. Only the file-view mint goes to the separate bucket below. Rotations stay rare. The token
-	// and its plugin-session JWT live 30 minutes and expire together; the frame's Convex client asks
-	// for a new JWT 10 seconds before that, and the SDK answers that ask with one rotation here. A
-	// 401 on the public API rotates too. So browsing files does not fill this bucket. A file switch
-	// mints instead, and that mint is charged below.
+	// view. Only the file-view mint goes to the separate bucket below.
+	//
+	// Rotations stay rare. The token and its plugin-session JWT live 30 minutes and expire together;
+	// the frame's Convex client asks for a new JWT 10 seconds before that, and the SDK answers that
+	// ask with one rotation here. A 401 on the public API rotates too. So browsing files does not
+	// fill this bucket. A file switch mints instead, and that mint is charged below.
 	plugins_ui_session_mint: STRICT_WRITE,
 	// File views mint on every file switch and every details/view toggle, so browsing a few videos
 	// in quick succession must not read as broken. Only the mint is split out here. A file-view
@@ -154,9 +156,10 @@ const rate_limiter_CONFIG = {
 	// Fallback for a frame whose host delivered no plugin-session JWT: it exchanges its `plu_` token
 	// here for the same JWT the mint would have delivered. A current host delivers the JWT with the
 	// session, so a frame on the current SDK never charges this bucket; an older frame charges it
-	// once per token lifetime. Both frame kinds exchange here: a plugin page and a file view. Keyed
-	// by session id, and only a token that resolved to a live session reaches the charge — a garbage
-	// token is refused before it.
+	// once per token lifetime.
+	//
+	// Both frame kinds exchange here: a plugin page and a file view. Keyed by session id, and only a
+	// token that resolved to a live session reaches the charge — a garbage token is refused before it.
 	plugins_ui_session_jwt_exchange: {
 		kind: "token bucket",
 		rate: 12,

@@ -327,8 +327,10 @@ const FilesPropertiesModalReadOnly = memo(function FilesPropertiesModalReadOnly(
 				// Do not disable this while the write runs. A browser blurs a focused element the moment it
 				// becomes disabled, so a keyboard user who pressed Space would be thrown out of the dialog
 				// and land on <body>. `aria-busy` reports the write instead, and `handleCheckedChange`
-				// ignores a second press. Only the static reasons below can disable the box, and those are
-				// already true before anybody focuses it.
+				// ignores a second press.
+				//
+				// Only the static reasons below can disable the box, and those are already true before
+				// anybody focuses it.
 				disabled={!canToggle}
 				aria-describedby={descriptionId}
 				aria-busy={isRunning || undefined}

@@ -109,6 +109,7 @@ export async function billing_db_check_paid_plan(
  * Send the one-cent `file_save` usage event for a file write that just committed.
  * Call it inside the same mutation as the write, after the write succeeded, so a rolled-back
  * write emits nothing and a committed write emits exactly once.
+ *
  * The one-cent amount lives here on purpose: this helper is the call site for every public-API
  * write door, so a new door bills the same as the old ones without repeating the number. The four
  * app save doors keep their own inline literal (see the billing-system skill).

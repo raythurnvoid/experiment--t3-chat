@@ -110,6 +110,7 @@ const SITE_ORIGIN = new URL(process.env.VITE_CONVEX_HTTP_URL).origin;
 /**
  * Deliberately optional, read at call time like EXA_API_KEY: production deployments never set it,
  * so an unset variable must behave exactly as before instead of failing the deploy or the request.
+ *
  * When set to one bare origin, the session-jwt exchange ALSO accepts that exact origin — this is
  * what lets the app's development-only plugin frame override (`VITE_PLUGIN_UI_DEV_*` in
  * packages/app/.env) complete its exchange from a local dev server. Exact string match on the
@@ -856,6 +857,7 @@ export const get_ui_asset = internalQuery({
 /**
  * Scheduled per session at its `expiresAt` by the mints, and moved by refresh. The deletion is
  * what ends live plugin subscriptions at expiry (see the schema comment on `expiryJobId`).
+ *
  * Revoke, uninstall, cleanup, or account deletion may have deleted the doc first, and a refresh
  * racing this run may have moved the expiry forward — both make this run a no-op.
  */

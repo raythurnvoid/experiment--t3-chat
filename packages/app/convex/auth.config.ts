@@ -24,9 +24,11 @@ export default {
 		{
 			// Plugin-session JWTs for plugin UI iframes. Same signing key and JWKS as the anonymous
 			// provider; the path-suffixed issuer is what tells the identities apart, because `aud` is
-			// never exposed to app code. server-utils.ts classifies identities by issuer and treats
-			// every issuer it does not know as Clerk — when you add a provider here, extend that
-			// classifier first or its tokens could be accepted as signed-in members.
+			// never exposed to app code.
+			//
+			// server-utils.ts classifies identities by issuer and treats every issuer it does not know
+			// as Clerk — when you add a provider here, extend that classifier first or its tokens could
+			// be accepted as signed-in members.
 			type: "customJwt",
 			issuer: `${process.env.VITE_CONVEX_HTTP_URL}/plugins-ui`,
 			jwks: `${process.env.VITE_CONVEX_HTTP_URL}/.well-known/jwks.json`,

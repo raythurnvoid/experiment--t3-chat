@@ -2165,11 +2165,12 @@ describe("plugin ui assets", () => {
 		const csp = response.headers.get("Content-Security-Policy");
 		// Pin the whole policy, not one directive at a time. A `toContain` check on a directive stays
 		// true after that directive is widened, and `frame-ancestors` is the last one and carries no
-		// trailing semicolon, so appending a second origin to it passed the old check. Several
-		// directives had no test at all, while the app argues from them: plugins_ui.ts explains
-		// `img-src`/`media-src` as what stops a frame from leaking data through image and media loads,
-		// and plugins-ui-frame.tsx allows the iframe `allow-forms` because `form-action 'none'` blocks
-		// every real submission. Widening any of them must fail here.
+		// trailing semicolon, so appending a second origin to it passed the old check.
+		//
+		// Several directives had no test at all, while the app argues from them: plugins_ui.ts
+		// explains `img-src`/`media-src` as what stops a frame from leaking data through image and
+		// media loads, and plugins-ui-frame.tsx allows the iframe `allow-forms` because
+		// `form-action 'none'` blocks every real submission. Widening any of them must fail here.
 		expect(csp).toBe(
 			[
 				"default-src 'none'",

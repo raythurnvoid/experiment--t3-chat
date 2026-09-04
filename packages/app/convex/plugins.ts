@@ -1705,8 +1705,9 @@ export const plugins_ai_review = {
 			// The AI SDK joins the text of every message into one string before it parses the structured
 			// output, so the parser saw `{...}{...}{...}` and every step failed with "could not parse the
 			// response". Chat completions returns exactly one message, and it still sends the strict JSON
-			// schema and the reasoning effort. Do not switch this back to `openai(...)` without a way to
-			// read only the final message.
+			// schema and the reasoning effort.
+			//
+			// Do not switch this back to `openai(...)` without a way to read only the final message.
 			model: openai.chat(REVIEW_MODEL_ID),
 			// The AI SDK honors Retry-After. The review deadline still bounds every attempt and wait.
 			maxRetries: REVIEW_MODEL_MAX_RETRIES,
@@ -2242,9 +2243,11 @@ async function fetch_stored_review_files(args: {
 
 /**
  * Runs the pre-registration review of every executable or renderable artifact file and persists the
- * verdict. Cheap outcomes short-circuit in order: review-subject cache, deterministic findings,
- * then an empty non-page artifact. Only then does the single system-billed, per-user rate-limited AI
- * review run with an optional whole-artifact diff.
+ * verdict.
+ *
+ * Cheap outcomes short-circuit in order: review-subject cache, deterministic findings, then an empty
+ * non-page artifact. Only then does the single system-billed, per-user rate-limited AI review run
+ * with an optional whole-artifact diff.
  */
 export const run_version_review = internalAction({
 	args: {
@@ -3701,6 +3704,7 @@ export const list_user_published_repositories = query({
 		const docs = await Promise.all(
 			repositories.map(async (repository) => {
 				// A reclaimed URL does not transfer another publisher's versions into this panel.
+				//
 				// Keep the newest ready row per plugin name so one repository that publishes two
 				// names shows both cards. Walk every ready version for this claim: a take(64) of the
 				// newest rows can hide an older second name behind 64 retries of the busy one.
@@ -4881,6 +4885,7 @@ export const list_published_plugins = query({
 			/**
 			 * True when this version can ever get a run over an uploaded file, which is what the
 			 * platform baseline (download the triggering asset, write Markdown siblings) is attached to.
+			 *
 			 * It needs both halves: without a backend entrypoint neither run door opens, and without
 			 * declared events the install writes no event handler rows, which both doors look up first.
 			 */

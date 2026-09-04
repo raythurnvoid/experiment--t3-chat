@@ -413,8 +413,10 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 		// `archivesSourceOnAccept`: the target keeps its identity and history, and accepting saves
 		// the replacement as a new version and archives the source. The proposal lives on the
 		// target, so only the target needs a Yjs document; the source only has to be readable text,
-		// and a non-collaborative file is. Refuse a non-collaborative target because falling through
-		// to a structural move would archive the target instead and reverse which file survives.
+		// and a non-collaborative file is.
+		//
+		// Refuse a non-collaborative target because falling through to a structural move would
+		// archive the target instead and reverse which file survives.
 		if (
 			replaceTargetNode?.nonCollaborative === true &&
 			files_node_has_editable_text_content(sourceNode) &&

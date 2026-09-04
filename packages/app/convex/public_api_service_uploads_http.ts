@@ -42,6 +42,7 @@ const REFUSAL_OUTSIDE_DESTINATION: public_api_service_uploads_RefusalName = "out
  * Turn one refusal from the storage module into a status. Storage ceilings, the plan gate, and the
  * destination fence answer 403 like the other permission refusals; replays that no longer match
  * answer 409.
+ *
  * `read_only` is what `files_node_require_writable` tags a locked ancestor with.
  */
 function upload_failure(failure: { name?: string; message: string }) {

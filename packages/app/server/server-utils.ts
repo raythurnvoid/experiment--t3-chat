@@ -97,6 +97,7 @@ export async function server_convex_get_user_fallback_to_anonymous(ctx: ConvexCt
 
 	// Convex only verifies tokens that match a provider in auth.config.ts, and both custom
 	// issuers are handled above, so any issuer that reaches this point is the Clerk provider.
+	//
 	// If a fourth provider is ever added, extend this classifier first: a new provider whose
 	// tokens carry `external_id` would otherwise be accepted here as a signed-in member.
 	const userId = (identity["external_id"] as Id<"users"> | undefined) ?? null;

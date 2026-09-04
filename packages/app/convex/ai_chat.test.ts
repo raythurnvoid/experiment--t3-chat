@@ -610,8 +610,10 @@ describe("thread_create", () => {
 		// A plugin frame's Convex client authenticates with the plugin-session JWT, and a plugin may
 		// call any function of the app with it. This mutation lets an anonymous member through, so
 		// it is the case where reading that JWT as an anonymous user would change the outcome: the
-		// classifier must answer no user at all, not a user with fewer permissions. This first call
-		// only proves the `/plugins-ui` issuer is not matched as the anonymous issuer it starts with.
+		// classifier must answer no user at all, not a user with fewer permissions.
+		//
+		// This first call only proves the `/plugins-ui` issuer is not matched as the anonymous issuer
+		// it starts with.
 		const asPluginSession = t.withIdentity({
 			issuer: `${process.env.VITE_CONVEX_HTTP_URL!}/plugins-ui`,
 			subject: seeded.userId,

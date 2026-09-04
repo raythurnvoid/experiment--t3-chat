@@ -1737,6 +1737,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 		// file's current pending content either: treat it as no pending content and resolve
 		// from the committed tree. The doc keeps its `pendingUpdateId` below, so the agent's
 		// next write mixes onto it and rebuilds the family from the live state.
+		//
 		// A non-collaborative file has no last-sequence doc and, by the same rule, no pending
 		// content, so the second condition skips a lookup that would find nothing.
 		if (pendingUpdateContent && fileNode.yjsLastSequenceId) {
@@ -5450,6 +5451,7 @@ export const set_file_non_collaborative = mutation({
 			// Clear both pointers in the same mutation that deletes their docs. A node left holding
 			// one pointer to a deleted doc makes the materialization header throw into a pool that
 			// retries forever, which would stop materialization for every file in the deployment.
+			//
 			// Three markers go too, because all three describe the document that is being deleted.
 			// `contentTooLargeByteSize` is set when the text INSIDE the document grew past the cap,
 			// so the committed text this toggle keeps is the older one that still fit. Leaving the

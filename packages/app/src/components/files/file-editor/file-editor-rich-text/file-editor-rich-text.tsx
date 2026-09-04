@@ -1415,6 +1415,7 @@ function serialize_editor_markdown(editor: Editor) {
 
 /**
  * Replace the whole editor document from Markdown by swapping the editor state.
+ *
  * `commands.setContent` fits the new blocks into the old document with a ProseMirror replace
  * step, and that fitting appends an empty trailing paragraph when the content ends in an atom
  * block (a trailing video embed, for example). Same rule as `headless_editor_replace_doc` in
@@ -1697,8 +1698,9 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 
 		// Block Save while the commit is in flight: both send `replace_file_content` with the same
 		// base asset id, so a mid-commit Save would race it into a duplicate version and a second
-		// billed save. Use an async IIFE because the React compiler has problems with try catch
-		// finally blocks.
+		// billed save.
+		//
+		// Use an async IIFE because the React compiler has problems with try catch finally blocks.
 		setIsSaving(true);
 		const commit = async (/* iife */) => {
 			const textWithComment = serialize_editor_markdown(editor);

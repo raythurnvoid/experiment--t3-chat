@@ -127,8 +127,10 @@ function post_ready(nonce: string) {
 // the nine the frame knows: the frame keeps its own static list of these names (computed styles
 // cannot be enumerated), and comparing the posted theme against the stylesheet is what catches a
 // scale added, renamed, or resized there without the list following. A scale new to both would slip
-// past a list of names here. The shadcn aliases in the same file (`--color-accent: var(--accent)`,
-// `--color-border`, …) have no two-digit step and stay out, as they must.
+// past a list of names here.
+//
+// The shadcn aliases in the same file (`--color-accent: var(--accent)`, `--color-border`, …) have
+// no two-digit step and stay out, as they must.
 const APP_COLOR_SCALES: Record<string, string> = Object.fromEntries(
 	[...readFileSync(join(process.cwd(), "src", "app.css"), "utf8").matchAll(/^\s*(--color-[a-z0-9-]+-\d{2}):\s*([^;]+);/gmu)].map(
 		(match) => [match[1], match[2]],
@@ -383,10 +385,11 @@ describe("RoutePluginsPluginPage", () => {
 		// The app's numbered palette is dark-oriented and the theme provider does not swap it, so a
 		// member who picks "light" still sees the same dark surfaces — measured in the running app on
 		// 2026-08-24, where the app's own body stayed `oklch(0.14 …)` under `.light`. Nothing the
-		// frame paints with changed, so it hears nothing. When the mode came from the class instead,
-		// this sent `mode: "light"` beside those dark values: the frame painted its own light panels
-		// and dark text, then read the host's dark surface and light text back over them, and the page
-		// went unreadable.
+		// frame paints with changed, so it hears nothing.
+		//
+		// When the mode came from the class instead, this sent `mode: "light"` beside those dark
+		// values: the frame painted its own light panels and dark text, then read the host's dark
+		// surface and light text back over them, and the page went unreadable.
 		await act(async () => {
 			document.documentElement.classList.remove("dark");
 			document.documentElement.classList.add("light");

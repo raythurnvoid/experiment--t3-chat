@@ -862,6 +862,7 @@ test("edit_file tool saves a non-collaborative file instead of proposing an upda
 
 	// The read is followed by the save itself: no operation batch, no staged text input, and no
 	// pending update to look up afterwards.
+	//
 	// Compare call counts, not the mocks: a failing `toHaveBeenCalled` prints the recorded
 	// arguments, and Convex function references throw while vitest formats them.
 	expect(runMutation.mock.calls.length).toBe(0);

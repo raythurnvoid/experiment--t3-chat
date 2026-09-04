@@ -15220,6 +15220,7 @@ describe("files_nodes_db_has_plugin_owner_authority", () => {
 	/**
 	 * One stamped folder with an unstamped file inside whose effective lock points at it, an
 	 * unstamped sibling folder, and a second member to use as a share-grant principal.
+	 *
 	 * The stamp is plugin authority, so the six public sharing and lock doors must refuse
 	 * stamped nodes.
 	 */

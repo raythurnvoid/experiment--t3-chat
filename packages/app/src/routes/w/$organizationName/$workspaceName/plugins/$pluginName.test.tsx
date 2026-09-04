@@ -160,9 +160,10 @@ vi.mock("@/components/my-icon-button.tsx", () => ({
 
 // The real menu is an Ariakit popover: it portals, only mounts its items while open, closes on
 // item activation, and returns the menu's focus to the trigger. None of that runs here — this mock
-// renders the trigger and the items inline so a test can reach both. Ariakit also blocks a
-// disabled item's activation; the mocked item deliberately keeps firing onClick instead, so a
-// re-entry test proves a handler's own in-flight guard and not the UI block.
+// renders the trigger and the items inline so a test can reach both.
+//
+// Ariakit also blocks a disabled item's activation; the mocked item deliberately keeps firing
+// onClick instead, so a re-entry test proves a handler's own in-flight guard and not the UI block.
 vi.mock("@/components/my-menu.tsx", () => ({
 	MyMenu: function MyMenu(props: { children?: ReactNode }) {
 		return <div>{props.children}</div>;

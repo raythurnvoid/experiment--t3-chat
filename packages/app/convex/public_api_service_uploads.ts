@@ -376,6 +376,7 @@ export async function public_api_service_uploads_db_can_clean_up_service_created
 
 	const target = await ctx.db.get("plugin_service_storage_targets", args.node.readOnlyPluginServiceTargetId);
 	// One question asked in parts: is this still the same read-only target, in the same place, alive?
+	//
 	// Tenancy and installation come first, so a grant cannot reach a lock in another workspace or one
 	// another plugin created. Then the destination binding, so a grant only ever reaches the file its
 	// own sealed prefix and destination produced. Then liveness: a target that moved out, was asked to
@@ -675,6 +676,7 @@ async function db_settle_canonicalized_target(
 	// Nothing is free: the stored file bills the workspace payer one cent, once per target.
 	// Every caller refuses a non-pending target before reaching this settle, so the emit runs at
 	// most once; the target id keeps the event's externalId deterministic on top of that.
+	//
 	// A missing organization or payer doc throws, which rolls back the `committed` patch above,
 	// so a service write can never commit without its one billing event; the R2 event retries.
 	const organization = await ctx.db.get("organizations", args.target.organizationId);
@@ -1085,6 +1087,7 @@ export const create_upload_target = internalMutation({
 		// Nothing is charged here. The size in the request is only the service's guess, and a signed
 		// PUT does not bind how many bytes actually arrive, so charging it would bill a number nobody
 		// can hold the caller to. The real size is charged once, when R2 confirms the stored object.
+		//
 		// What this door does is refuse a workspace that is already over its budget, which stops the
 		// next file rather than the current one. Seeded lazily because existing workspaces have no
 		// doc for this quota.
@@ -1107,9 +1110,11 @@ export const create_upload_target = internalMutation({
 
 		// A recognized text extension runs the same upload conversion as a member upload, so a
 		// service-uploaded `.md` or `.txt` becomes a normal editable file. Everything else stays a
-		// stored blob with `processingWorkId: null` up front. Plugin upload events stay off for
-		// every service upload either way; `plugins_runtime_db_enqueue_upload_completed_runs`
-		// refuses assets owned by a service storage target.
+		// stored blob with `processingWorkId: null` up front.
+		//
+		// Plugin upload events stay off for every service upload either way;
+		// `plugins_runtime_db_enqueue_upload_completed_runs` refuses assets owned by a service
+		// storage target.
 		const assetId = await ctx.db.insert("files_r2_assets", {
 			organizationId: args.principal.organizationId,
 			workspaceId: args.principal.workspaceId,

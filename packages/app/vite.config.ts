@@ -47,11 +47,13 @@ function vite_plugin_css_layer_order(appCssPath: string): Plugin {
 		name: "app-css-layer-order",
 
 		// Prepend per module rather than only per built file. Two reasons. The dev server does not
-		// split css, so this is the only hook that reaches it. And in the build this text becomes
-		// part of each module's content, which is what the asset hash is computed from, so editing
-		// the order in app.css gives every css file a new name. generateBundle runs after hashing,
-		// so a prepend there alone would change the bytes while leaving the file name untouched,
-		// and a returning browser would keep serving the old order out of its cache.
+		// split css, so this is the only hook that reaches it.
+		//
+		// And in the build this text becomes part of each module's content, which is what the asset
+		// hash is computed from, so editing the order in app.css gives every css file a new name.
+		// generateBundle runs after hashing, so a prepend there alone would change the bytes while
+		// leaving the file name untouched, and a returning browser would keep serving the old order
+		// out of its cache.
 		transform(code, id) {
 			if (!id.split("?")[0].endsWith(".css")) return null;
 

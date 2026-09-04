@@ -290,9 +290,10 @@ export async function r2_copy_object_to_immutable_key(
 
 	// Copy on the R2 server side. Streaming the staged body through a signed PUT sends it chunked
 	// without Content-Length, and R2 refuses that with 411 for bodies the runtime does not buffer
-	// (observed live 2026-08-16 on a 2MB upload). The component action heads the staged object,
-	// refuses when it no longer matches the event, and copies with the head's own eTag as the
-	// precondition, so it never copies bytes it did not verify.
+	// (observed live 2026-08-16 on a 2MB upload).
+	//
+	// The component action heads the staged object, refuses when it no longer matches the event, and
+	// copies with the head's own eTag as the precondition, so it never copies bytes it did not verify.
 	const copied = await r2_server_side_copy.copy_object(ctx, {
 		sourceKey: args.sourceKey,
 		destinationKey: args.destinationKey,

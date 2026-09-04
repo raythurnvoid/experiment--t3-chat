@@ -5198,6 +5198,7 @@ export const unarchive_nodes = mutation({
 
 /**
  * Fields for a node returned by public queries.
+ *
  * Do not return raw lock or provenance fields. They are internal authority, and the scope may name
  * a hidden folder.
  * Return `readOnlyState`, and return the lock source only when the caller can read it.

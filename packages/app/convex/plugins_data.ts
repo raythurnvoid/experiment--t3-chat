@@ -50,8 +50,10 @@ const MAX_VALUE_BYTES = 16 * 1024;
  * The name and key length caps and the list/watch page cap live in `shared/plugins.ts`
  * (`plugins_data_MAX_NAME_LENGTH`, `plugins_data_MAX_KEY_PREFIX_LENGTH`,
  * `plugins_data_MAX_LIST_PAGE_SIZE`), because the HTTP list route in `plugins_data_http.ts` and
- * the public API share them. Since SDK 0.13.0 the frame checks nothing before it subscribes, so
- * these numbers are the only place they are enforced.
+ * the public API share them.
+ *
+ * Since SDK 0.13.0 the frame checks nothing before it subscribes, so these numbers are the only
+ * place they are enforced.
  */
 /**
  * The largest 13-digit number. Storing `ceiling - now` as the key's time part makes a later
@@ -401,8 +403,10 @@ async function db_authorize(
 		 * Collections a write is about to touch, checked against the installed version's
 		 * user-writable list for `user_api_key` only. A `pk_` key is a member-identity writer like
 		 * the frame door, and without this gate a member bypasses the collection list with their
-		 * own key. Machine principals (`plugin_run`, `plugin_service`) stay ungated — the list
-		 * exists so the backend can own some collections alone.
+		 * own key.
+		 *
+		 * Machine principals (`plugin_run`, `plugin_service`) stay ungated — the list exists so the
+		 * backend can own some collections alone.
 		 */
 		collections?: string[];
 	},
@@ -1353,8 +1357,10 @@ async function db_release_reservation(
 		/**
 		 * True when this reservation still holds the document slot. False when a write already
 		 * converted reserved -> used (or a delete already moved the used slot to a revision
-		 * tombstone). The document may already be gone by the time this runs, so callers pass the
-		 * fact instead of looking it up here.
+		 * tombstone).
+		 *
+		 * The document may already be gone by the time this runs, so callers pass the fact instead
+		 * of looking it up here.
 		 */
 		reservedSlotStillHeld: boolean;
 		/**
@@ -2139,6 +2145,7 @@ export const delete_document = internalMutation({
 			key: key._yay,
 		});
 		// A versioned key belongs to the producer's ordered outbox, so a normal delete may not take it.
+		//
 		// The write path refuses two more things here, a live reservation and a tombstone. Neither can
 		// apply to a delete. A reservation is never taken over a normal document, and a tombstone only
 		// exists once the value is already gone.
@@ -2709,8 +2716,10 @@ export const user_append_document = mutation({
 
 		// The same request replayed after a lost response must answer with the key the first call
 		// stored, and a different request under the same idempotency key must be refused rather than
-		// quietly appending a second document. The value can be large, so the doc keeps a digest of
-		// the request instead of the request itself.
+		// quietly appending a second document.
+		//
+		// The value can be large, so the doc keeps a digest of the request instead of the request
+		// itself.
 		const requestFingerprint = await crypto_sha256_hex(
 			canonical_json({
 				collection: collection._yay,
@@ -3881,6 +3890,7 @@ export async function plugins_data_db_apply_file_access_binding(
 	// Exactly one `content.read` grant per active scope member. The kept set makes a duplicate
 	// grant for the same user get deleted. Deleting every other grant is safe because the member
 	// share door refuses stamped nodes, so nothing else writes grants here.
+	//
 	// The node's own tenant fields are typed with the special workspace literals, so use the
 	// installation's ids — the door already proved the node lives in this workspace.
 	const resourceId = scope_resource_id(args.installation._id, args.readScopeId);
@@ -4431,9 +4441,10 @@ export const user_manage_scope = mutation({
 
 				// The range has to be empty. A document written before the scope existed would carry no
 				// scope id, so it would stay readable by the whole workspace inside a range that now
-				// claims to be private. It also closes the way back in after a delete: the scope's old
-				// documents are still there, so the same range cannot be claimed again and handed to
-				// somebody else.
+				// claims to be private.
+				//
+				// It also closes the way back in after a delete: the scope's old documents are still
+				// there, so the same range cannot be claimed again and handed to somebody else.
 				const upperBound = key_prefix_upper_bound(keyPrefix._yay);
 				const [occupant, liveReservation, tombstone] = await Promise.all([
 					ctx.db
@@ -4897,8 +4908,10 @@ export const watch_scope_principals = query({
 
 		// One grant row per permission, so fold the rows back into the level that issued them. Manage
 		// is the only permission `member` does not carry, so it decides the level whichever order the
-		// rows arrive in. Retained grants for inactive members stay hidden so this count matches the
-		// leave mutation's active-principal count.
+		// rows arrive in.
+		//
+		// Retained grants for inactive members stay hidden so this count matches the leave mutation's
+		// active-principal count.
 		const levels = new Map<Id<"users">, "member" | "manage">();
 		for (const grant of grants) {
 			if (!grant.userId || !activeUserIds.has(grant.userId)) {
@@ -6099,9 +6112,10 @@ export const delete_versioned_document = internalMutation({
 
 		// Deleting a key that was never stored is a different thing. Nothing is given back, so the
 		// tombstone is a brand new slot and has to fit. Without this a producer could delete keys that
-		// never existed all day and fill the store with tombstones alone. A live reservation already
-		// holds that slot, so the tombstone converts it instead of charging a second one. A released
-		// never-stored retry record already holds it the same way.
+		// never existed all day and fill the store with tombstones alone.
+		//
+		// A live reservation already holds that slot, so the tombstone converts it instead of charging
+		// a second one. A released never-stored retry record already holds it the same way.
 		if (!existing && ownedReservation === null && !releasedSlotAlreadyHeld) {
 			const capacity = check_capacity(usage, { addedBytes: 0, addedSlots: 1, addedCollections: 0 }, maxDocumentSlots);
 			if (capacity._nay) {

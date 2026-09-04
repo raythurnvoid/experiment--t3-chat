@@ -71,9 +71,10 @@ async function db_get_active_node_at_path(
  * Apply the declared access to one of this plugin's own nodes: `readOnly: true` writes the direct
  * plugin-named lock, `readOnly: false` releases it, and `readScopeId` binds or releases the
  * node's reader list against a plugin-data scope. Own-access is the consent for all of it — the
- * capability that creates a lock or a binding also removes it. The lock release here is the only
- * unlock for a stamped read-only node, because the member unlock door refuses everything
- * plugin-managed.
+ * capability that creates a lock or a binding also removes it.
+ *
+ * The lock release here is the only unlock for a stamped read-only node, because the member unlock
+ * door refuses everything plugin-managed.
  */
 async function db_apply_owned_access(
 	ctx: MutationCtx,
@@ -102,9 +103,10 @@ async function db_apply_owned_access(
 			// answer that it is done instead of refusing. A plugin that locks its own root and then
 			// builds subfolders inside it could otherwise never create one: Chitchat locks
 			// `/chitchat` and then ensures `/chitchat/private/<channel>` read-only, and every one of
-			// those calls used to come back "This item is read-only." Releasing is still refused,
-			// because the lock above would keep the node read-only anyway, and so is any request
-			// under a lock somebody else owns.
+			// those calls used to come back "This item is read-only."
+			//
+			// Releasing is still refused, because the lock above would keep the node read-only anyway,
+			// and so is any request under a lock somebody else owns.
 			const parentScopeNode = await ctx.db.get("files_nodes", parentScopeNodeId);
 			if (args.readOnly !== true || parentScopeNode?.readOnlyPluginName !== args.installation.pluginName) {
 				return Result({ _nay: { name: "read_only", message: "This item is read-only." } });

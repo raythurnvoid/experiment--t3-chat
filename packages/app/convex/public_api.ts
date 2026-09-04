@@ -213,9 +213,10 @@ const plugin_run_scopes_validator = v.array(
 // Read-only by design: UI sessions never get write, secrets, or outbound scopes. Plugin data
 // writes never use this token: a frame calls the `user_*` mutations in plugins_data.ts, which
 // write as the acting member and check both the `plugin.data.user-write` capability and the
-// member's own workspace content.write permission. `backend:invoke` is not a write scope on the
-// frame itself: it only lets the frame start a plugin run, and that run's own token is what the
-// backend writes with.
+// member's own workspace content.write permission.
+//
+// `backend:invoke` is not a write scope on the frame itself: it only lets the frame start a plugin
+// run, and that run's own token is what the backend writes with.
 const plugin_ui_scopes_validator = v.array(
 	v.union(
 		v.literal("files:list" satisfies public_api_Scope),
@@ -1224,8 +1225,9 @@ export const resolve_principal = internalQuery({
 		if (public_api_PLUGIN_UI_TOKEN_REGEX.test(args.presented)) {
 			// A page and a file view both get their `plu_` token from the same table, and nothing on this
 			// path can tell the two apart: the lookup below is by token hash alone, and the principal this
-			// branch returns carries no frame kind at all. So read every rule here as a rule for both. The
-			// file-view row keeps one extra field, `fileNodeId`, and the token-refresh route in
+			// branch returns carries no frame kind at all. So read every rule here as a rule for both.
+			//
+			// The file-view row keeps one extra field, `fileNodeId`, and the token-refresh route in
 			// `plugins_ui.ts` is the only place in the backend that reads it.
 			const tokenHash = await crypto_sha256_hex(args.presented);
 			const session = await ctx.db
@@ -1386,9 +1388,10 @@ export const resolve_principal = internalQuery({
 			// `pluginVersionId`, and the version check above refuses the grant, so an upgrade revokes it
 			// instead of narrowing it. Install acceptance is all-or-nothing today, and the only two writers
 			// of `acceptedCapabilities` set it from the version they are installing, so a version change is
-			// the only way a capability can disappear. Keep the rechecks below as defence in depth: they
-			// are cheap, and they still hold the ceiling if someone later writes `acceptedCapabilities`
-			// without moving the version.
+			// the only way a capability can disappear.
+			//
+			// Keep the rechecks below as defence in depth: they are cheap, and they still hold the ceiling
+			// if someone later writes `acceptedCapabilities` without moving the version.
 			const scopes: Infer<typeof plugin_service_scopes_validator> = [];
 			if (grant.scopes.includes("plugin_data:read") && installation.acceptedCapabilities.includes("plugin.data.read")) {
 				scopes.push("plugin_data:read");
@@ -1769,6 +1772,7 @@ export async function public_api_db_revalidate_file_write_principal(
 
 		// The sibling-write constraint is checked against the source node's CURRENT parent in this
 		// transaction, so a concurrent source move cannot smuggle plugin output somewhere else.
+		//
 		// Archived counts as missing: publishing beside an archived source would recreate the
 		// user-deleted parent folder as a new active node. A run that fired on no file has no source
 		// to write beside, so it falls into the refusal below.
@@ -1987,9 +1991,10 @@ async function db_service_lock_is_own_live_target(
 /**
  * Whether a service principal may replace or fill this exact existing file. A path inside the
  * seal is only a location bound, not proof the service created the file — without this gate a
- * service could overwrite a member-created Markdown file inside its destination. Proof is the
- * write-door provenance stamp, or the installation's own live read-only upload target on the
- * node (a file created read-only through `create-target` carries no stamp but must stay
+ * service could overwrite a member-created Markdown file inside its destination.
+ *
+ * Proof is the write-door provenance stamp, or the installation's own live read-only upload target
+ * on the node (a file created read-only through `create-target` carries no stamp but must stay
  * updatable by the service that created it).
  */
 async function db_service_owns_existing_file(
@@ -4197,6 +4202,7 @@ async function write_one_markdown_file(
 			// Re-running an import must not mint new versions for files whose content did not
 			// change. A null diff means projecting the incoming Markdown was a semantic no-op,
 			// so return before staging: no stage, no asset docs, no uploads, no version snapshot.
+			//
 			// A service never takes this shortcut: its proof that it created the file lives in
 			// the publish mutation, and a 200 here would let a service confirm the exact content
 			// of a member file inside its destination.

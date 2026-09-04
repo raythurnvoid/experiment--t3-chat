@@ -271,10 +271,12 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 			lineDecorationsWidth: 72,
 			// Monaco's built-in per-hunk revert replaces the accept/discard widgets of the
 			// pending-updates diff editor: here every hunk is the member's own unsaved edit, and
-			// reverting one just restores the committed text for that stretch. It must come from the
-			// gutter menu, not from `renderMarginRevertIcon`. Monaco turns the margin arrow off
-			// whenever `renderSideBySide` is false, so on this inline diff that option renders
-			// nothing at all (`shouldRenderOldRevertArrows` in Monaco's diffEditorOptions).
+			// reverting one just restores the committed text for that stretch.
+			//
+			// It must come from the gutter menu, not from `renderMarginRevertIcon`. Monaco turns the
+			// margin arrow off whenever `renderSideBySide` is false, so on this inline diff that
+			// option renders nothing at all (`shouldRenderOldRevertArrows` in Monaco's
+			// diffEditorOptions).
 			renderGutterMenu: true,
 			fixedOverflowWidgets: true,
 			fontSize: 16,

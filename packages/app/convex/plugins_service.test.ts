@@ -627,9 +627,11 @@ describe("/api/internal/plugins/service-grants/verify-live", () => {
 
 		// Drop exactly one field at a time. A body missing several proves much less: any one field
 		// could stop being required and the remaining missing one would still answer 400, so the
-		// lost check would never show up. The field that matters most is `scopes` — a capability the
-		// workspace takes back NARROWS a live grant instead of killing it, so the scopes claim is the
-		// only thing that turns a quietly narrowed grant into a refusal.
+		// lost check would never show up.
+		//
+		// The field that matters most is `scopes` — a capability the workspace takes back NARROWS a
+		// live grant instead of killing it, so the scopes claim is the only thing that turns a
+		// quietly narrowed grant into a refusal.
 		const complete: Record<string, unknown> = {
 			installationId: String(fixture.installationId),
 			phase: "interactive",

@@ -43,6 +43,7 @@ const CAPABILITIES = [
 	// read-only, and it may release that one lock again to archive its own file. That release is the
 	// only way this installation can remove a lock, and it matches a lock this exact service target
 	// created, so this grants no write over content a member owns and no lock access anywhere else.
+	//
 	// It narrows `workspace.files.write` instead of replacing it, because a read-only file is still
 	// a file this installation writes.
 	"workspace.files.create-read-only",

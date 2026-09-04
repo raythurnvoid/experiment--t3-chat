@@ -1378,6 +1378,7 @@ const app_convex_schema = defineSchema({
 		/**
 		 * Backend endpoints the invoke door may run, normalized to `[]` when the manifest declares
 		 * none. `serialization` is normalized to `"installation"` when the manifest omits it.
+		 *
 		 * Every stored version has been backfilled. The field stays optional on purpose: a reader
 		 * treats an absent value as "no endpoint restriction", which is the safe direction, and
 		 * tightening the validator would reject any version written by an older publish path.
@@ -1394,6 +1395,7 @@ const app_convex_schema = defineSchema({
 		/**
 		 * The manifest's service consent copy, or null when the manifest declares no service block.
 		 * The service-registration row is the exchange authority; this list is display-only.
+		 *
 		 * Every stored version has been backfilled. The field stays optional on purpose: it grants
 		 * nothing, so an absent value is only a missing display string.
 		 */
@@ -1406,6 +1408,7 @@ const app_convex_schema = defineSchema({
 		/**
 		 * The collections a member-identity writer may write. Null means the manifest declared no
 		 * list, so every collection stays user-writable; `[]` means nothing is.
+		 *
 		 * Every stored version has been backfilled. The field stays optional on purpose: readers
 		 * treat absent the same as null, which is the documented "no list declared" case.
 		 */
@@ -1847,10 +1850,12 @@ const app_convex_schema = defineSchema({
 		.index("by_installation_collection_scope_key", ["installationId", "collection", "scopeId", "key"])
 		/**
 		 * Reads one collection in creation order. Convex appends `_creationTime` as the final sort
-		 * key, so this index needs no stored timestamp field and no backfill. It must not carry
-		 * `updatedAt`: an edit and a soft delete both patch the document, so an `updatedAt` order
-		 * would push a three-month-old message a member just fixed a typo in to the top of everyone's
-		 * catch-up read, and would make a "Message deleted" tombstone the newest item there.
+		 * key, so this index needs no stored timestamp field and no backfill.
+		 *
+		 * It must not carry `updatedAt`: an edit and a soft delete both patch the document, so an
+		 * `updatedAt` order would push a three-month-old message a member just fixed a typo in to the
+		 * top of everyone's catch-up read, and would make a "Message deleted" tombstone the newest
+		 * item there.
 		 */
 		.index("by_installation_collection", ["installationId", "collection"])
 		/**
@@ -2120,10 +2125,12 @@ const app_convex_schema = defineSchema({
 	 * Durable private-scope lifecycle records. One row whose `collectionName` and `keyPrefix` are both
 	 * empty reserves each scope id for this installation's lifetime. Creation stops at 1,000 identity
 	 * rows, so these durable records stay bounded. Real collection names and key prefixes cannot be
-	 * empty, so that identity row can never fence a write. Other rows keep every released key range
-	 * closed, including an empty scope: an old frame may still send private data
-	 * after deletion, and that write must not become public. Scope creation refuses parent or child
-	 * overlap with those real range rows, so the greatest-prefix lookup stays exact.
+	 * empty, so that identity row can never fence a write.
+	 *
+	 * Other rows keep every released key range closed, including an empty scope: an old frame may
+	 * still send private data after deletion, and that write must not become public. Scope creation
+	 * refuses parent or child overlap with those real range rows, so the greatest-prefix lookup stays
+	 * exact.
 	 */
 	plugins_data_released_scope_ranges: defineTable({
 		organizationId: v.id("organizations"),
