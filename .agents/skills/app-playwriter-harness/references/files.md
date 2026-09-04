@@ -513,6 +513,85 @@ One dialog holding the file's facts, its read-only lock, and the flat key-value 
   takes bare keys (`status`), and the model tends to paste the bash mount path — both are covered by
   the tool description now, but a run that fails with `Not found` is usually the path, not permissions.
 
+### Non-collaborative editors
+
+Verified 2026-09-04 on `qa-noncollab-*.md` (a `.md` node with collaboration turned off). All three
+views — Rich (`FileEditorRichTextNonCollab`), Markdown (`FileEditorPlainText`) and Diff
+(`FileEditorDiffNonCollab`, now folded into `file-editor-diff.tsx`) — save the whole text through
+`replace_file_content` and name the asset they read. There is no Yjs document, so nothing syncs
+between tabs: each tab has its own base asset, and the server refuses a save built on an old one.
+
+Drive the editors through the dev QA hook instead of typing into Monaco. `window.__qa.monaco()`
+returns `{ plainText }` in the Markdown view and `{ diffOriginal, diffModified }` in the Diff view.
+`model.setValue(...)` fires the same change event as typing, so the dirty debounce runs normally.
+The Rich view has no Monaco: click `.ProseMirror`, press `Control+End`, then `keyboard.type(...)`.
+
+Watch the button you assert on. `[aria-label="Rich text editor actions"] button` picks Undo, not
+Save. Scope it: `locator('[aria-label="Rich text editor actions"] button', { hasText: "Save" })`,
+`.FileEditorPlainTextToolbarActions-button` with `hasText: "Save"`, or
+`.FileEditorDiffNonCollabToolbarActions-button`. A second `Save` button lives in an always-mounted
+modal footer, so an unscoped `getByRole("button", { name: "Save" })` can match the wrong one.
+
+**Two-tab refused save.** Open the same file in two tabs. Reload the tab that saves first, so its
+base asset is current, then have it save. The other tab is now stale. Type in it and click Save:
+the toast reads `This file changed while you were saving. Copy your local changes before reloading,
+then try again.` (`files_REPLACE_FILE_CONTENT_STALE_MESSAGE`), the text stays exactly as it was, and
+Save stays enabled. Reload the losing tab before the next round, or its base asset stays stale and
+every later save is refused for the old reason.
+
+**Comment merge.** Only the Rich view can add a comment, and only while it is clean — the button
+carries `title="Save your changes before adding a comment."` while it is not. Make the tab stale
+first (see above), then select text, `getByRole("button", { name: "Add comment" })`, fill
+`form[name="New document comment"]`, submit. The stale save is merged into the other person's
+version and the toast reads `Someone else saved this file. Your comment was merged into their
+version.` The other person's text appears in the editor and `span.lb-tiptap-thread-mark` carries
+the new thread id.
+
+**Typed while the comment save was waiting.** The real save is too fast to type into, so slow it
+down from page context. Vite serves the app modules, so the live Convex client is reachable:
+
+```js
+await state.tab1.evaluate(async () => {
+	const m = await import("/src/lib/app-convex-client.ts");
+	const orig = m.app_convex.action.bind(m.app_convex);
+	m.app_convex.action = async (ref, args) => {
+		await new Promise((r) => setTimeout(r, 6000));
+		return orig(ref, args);
+	};
+});
+```
+
+Submit the comment, then type into `.ProseMirror` during the wait. The commit refuses with
+`Save your changes before adding a comment.`, the new mark is taken back out of the document, and
+the other person's text is NOT merged in. The same patch is how you prove the plain editor keeps
+Save armed for text typed while a save was in flight.
+
+**Unsaved-text warning.** Every non-collaborative editor warns when it goes away with text it never
+saved: switch view, reload, or close the file. The toast is `Your unsaved changes to this file were
+discarded.` with a `Copy text` action. After a clean save there is no toast.
+
+Do not assert the clipboard with `navigator.clipboard.readText()` — see `known-hazards.md`; spy on
+`writeText` instead:
+
+```js
+await state.tab1.evaluate(() => {
+	window.__clipSpy = [];
+	const orig = navigator.clipboard.writeText.bind(navigator.clipboard);
+	navigator.clipboard.writeText = (t) => (window.__clipSpy.push(t), orig(t));
+});
+```
+
+**Snapshot restore.** The list button is the timestamp (`55m ago`); clicking it opens a second
+dialog, `.FileEditorSnapshotsModalPreviewModal`, whose `Confirm` performs the restore. Scope every
+follow-up click to that preview modal — the list dialog stays mounted underneath and intercepts
+clicks. After `Confirm` the Rich view must refresh with no further interaction: the word badge, the
+`span.lb-tiptap-thread-mark` elements, and the anchored-comments Convex subscription all follow the
+restored document. Read the subscription without a click:
+
+```js
+window.__qa.convexSubscriptions().filter((s) => JSON.stringify(s.args).includes("threadIds"));
+```
+
 ## Script Pattern
 
 For anything longer than a one-liner, keep the runner in a dated personal AI folder:

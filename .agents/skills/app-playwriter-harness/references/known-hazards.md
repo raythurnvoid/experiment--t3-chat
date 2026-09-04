@@ -873,6 +873,38 @@ Observed 2026-07-26: every route rendered `Something went wrong`, with `Too many
 - Do not "fix" the render loop by adding `useMemo` to the component. That contradicts the repo guideline and hides a dead compiler that is also silently costing every other component its memoization.
 - The same loop can also be a source-level bug while the compiler is fully live: the compiler memoizes arguments flowing into hook calls in some shapes but not others. Observed 2026-08-03 after a cleanup removed the `useMemo` wrappers around the `useQueries` arguments in `files-sidebar.tsx` and `file-node-view.tsx` — the served output had cache slots on neighboring values but none on the queries objects, and every `/files` load crashed with the same `Too many re-renders`. Tell the two cases apart with the probe above: `_c(` slots present but the suspect hook argument unmemoized means a source bug (restore the `useMemo` with a comment, like `app-notifications.tsx` does), zero slots means a dead compiler (restart the dev server).
 
+## `useAppAuth must be used within AppAuthProvider` after an HMR update is dev noise, not an app error
+
+Editing a source file while a tab is open logs `[vite] hot updated: <file>` and then
+`[pageerror] useAppAuth must be used within AppAuthProvider`, followed by a React warning about
+`<ConvexProviderWithAuth>`. HMR replaces the module while the provider tree is being rebuilt, and the
+consumer renders for one frame without its provider. The app recovers on its own and a plain reload
+logs none of it.
+
+Two things follow. Do not chase it as a live auth bug — reload the tab and read the log again before
+believing it. And remember `latestLogs({ sinceLastCall: true })` hands back the whole accumulated
+buffer, so these lines keep reappearing long after the HMR update that caused them; take a baseline
+call, act, then read, and judge only the new lines. Verified 2026-09-04.
+
+## A long-lived dev server can serve ONE file's old transform, and the app crashes on code you already fixed
+
+Observed 2026-09-04. The editor route rendered `Editor failed to load.` with `ReferenceError: disabledReason is not defined` pointing at `file-editor-rich-text-tools-comment.tsx`. That name had been renamed to `commentCommit` hours earlier, the type check passed, and the whole test suite passed. A page reload did not help.
+
+The dev server was serving the file as it looked **before** the rename, while every other file it served was current. So this is not the dead-compiler case above: the compiler was live and the rest of the app was fresh. Only one module's transform was stale, and the app crashed on code that no longer exists on disk.
+
+- Suspect this whenever a browser error names a symbol your working tree does not contain any more. The stack line carries an HMR query (`?t=1788516059594`), which is a hint that the module came from the HMR graph rather than a fresh transform.
+- Confirm it by reading the module the browser reads, with a cache buster so nothing between you and Vite can answer instead:
+
+```js
+await state.page.evaluate(async () => {
+	const r = await fetch("/src/path/to/file.tsx?probe=" + Date.now());
+	return (await r.text()).includes("theSymbolYouExpect");
+});
+```
+
+- Fix it by rewriting the file so the watcher fires again. `perl -i -pe '' <file>` rewrites the same bytes with a new mtime and leaves the content and the line endings alone; do not use a PowerShell `Get-Content`/`Set-Content` round trip, which rewrites every line ending. Restarting the dev server also works but is the user's server, so try the rewrite first.
+- Do the same cache-busted fetch when you need to prove the browser runs your working tree at all. A deleted module is a clean signal there: Vite falls back to the SPA `index.html`, so the response is `200` with `content-type: text/html`, not a 404. Check the content type, not the status.
+
 ## A backtick inside the room's CSS wedges the whole local Worker, for every agent using it
 
 **FIXED by the 2026-08-31 room refactor**: the CSS is a real file now (`packages/council/room-client/room.css`), not a JS template literal, so a backtick in a CSS comment is just a character. The entry stays as history and for the shared-blast-radius lesson.
@@ -1346,6 +1378,23 @@ So a bare evaluate cannot distinguish "the policy denies this" from "there was n
 blanket advice to avoid `navigator.clipboard.writeText` in a QA session is wrong for the click case.
 Drive the app's own button and read the status the app renders. Verified 2026-08-22 on the Council
 plugin's Copy control.
+
+Reading the clipboard back is a separate problem. `navigator.clipboard.readText()` returns an empty
+string in this extension-driven session even right after a real click whose handler wrote to it, and
+even with `context.grantPermissions(["clipboard-read", "clipboard-write"])`. So an empty read proves
+nothing about the app. When the app renders no status of its own, wrap `writeText` before the click
+and assert on what the handler passed it:
+
+```js
+await state.page.evaluate(() => {
+	window.__clipSpy = [];
+	const orig = navigator.clipboard.writeText.bind(navigator.clipboard);
+	navigator.clipboard.writeText = (t) => (window.__clipSpy.push(t), orig(t));
+});
+```
+
+The wrapper still calls through, so the real permission behaviour is unchanged and a rejection still
+shows up. Verified 2026-09-04 on the non-collaborative editors' `Copy text` toast action.
 
 ## `auditAccessibility` on `about:blank` looks exactly like a clean audit
 
