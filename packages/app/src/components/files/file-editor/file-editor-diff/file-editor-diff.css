@@ -180,11 +180,9 @@
 	}
 
 	.FileEditorDiffSidebar-background {
-		/*
-		Set a container to support position absolute and
-		ensure that the arbitrarily large height of the background
-		does not affect the ancestor's scrollable area size.
-		*/
+		/* Set a container to support position absolute and
+		   ensure that the arbitrarily large height of the background
+		   does not affect the ancestor's scrollable area size. */
 		contain: layout style size;
 		z-index: -1;
 
@@ -193,19 +191,15 @@
 			display: block;
 			position: absolute;
 
-			/*
-			Negative inset matches the padding of the container while
-			allows the element to grow vertically.
-			*/
+			/* Negative inset matches the padding of the container while
+			   allows the element to grow vertically. */
 			inset: 0 0 auto 0;
 
 			background-color: var(--color-base-1-04);
 			pointer-events: none;
 
-			/*
-			Arbitrarily large height to ensure the background 
-			spans across the whole file height.
-			*/
+			/* Arbitrarily large height to ensure the background
+			   spans across the whole file height. */
 			height: 9999px;
 		}
 	}
@@ -274,17 +268,13 @@
 		white-space: nowrap;
 		z-index: 10;
 
-		/*
-		Save monaco a bit of work by specifying a fixed size
-		so it doesn't have to measure the widget's size in the render path.
-		*/
+		/* Save monaco a bit of work by specifying a fixed size
+		   so it doesn't have to measure the widget's size in the render path. */
 		width: 52px;
 		height: 24px;
 
-		/*
-		In read-only mode the widget container stays mounted but empty, so it must not swallow
-		clicks on the text under it. The buttons re-enable pointer events for the writable mode.
-		*/
+		/* In read-only mode the widget container stays mounted but empty, so it must not swallow
+		   clicks on the text under it. The buttons re-enable pointer events for the writable mode. */
 		pointer-events: none;
 	}
 

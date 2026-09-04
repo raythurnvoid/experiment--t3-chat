@@ -423,10 +423,8 @@
 	#app_hoisting_container,
 	#app_tiptap_hoisting_container,
 	#app_monaco_hoisting_container {
-		/*
-		`z-index` required by `react-resizable-panels` that
-		calculates stacking in js using the `z-index` of elements.
-		*/
+		/* `z-index` required by `react-resizable-panels` that
+		   calculates stacking in js using the `z-index` of elements. */
 		z-index: 10;
 		isolation: isolate;
 	}
@@ -496,10 +494,8 @@
 	.app-doc {
 		position: relative;
 		word-wrap: break-word;
-		/*
-		break-spaces causes issues with text rendered from markdown in ai-chats because it
-		has newlines characters
-		*/
+		/* break-spaces causes issues with text rendered from markdown in ai-chats because it
+		   has newlines characters */
 		/* white-space: break-spaces; */
 		white-space: normal;
 		-webkit-font-variant-ligatures: none;
@@ -647,10 +643,8 @@
 			text-align-last: start;
 		}
 
-		/*
-		The native checkbox is 13px. Clicking a label toggles its checkbox, so the label pads
-		the 16px box out to the 24px minimum target size without making the box itself bigger.
-		*/
+		/* The native checkbox is 13px. Clicking a label toggles its checkbox, so the label pads
+		   the 16px box out to the 24px minimum target size without making the box itself bigger. */
 		ul[data-type="taskList"] {
 			li > label {
 				display: flex;
@@ -727,11 +721,9 @@
 		color: var(--color-fg-11);
 	}
 
-	/*
-	Tables are scoped to .ProseMirror only, NOT .app-doc: the AI chat renders its own tables
-	with its own CSS in ai-chat-markdown.css, and its root carries `app-doc`, so bare table
-	rules under .app-doc would leak into every chat table.
-	*/
+	/* Tables are scoped to .ProseMirror only, NOT .app-doc: the AI chat renders its own tables
+	   with its own CSS in ai-chat-markdown.css, and its root carries `app-doc`, so bare table
+	   rules under .app-doc would leak into every chat table. */
 	.ProseMirror {
 		table {
 			width: 100%;

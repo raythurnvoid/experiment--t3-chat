@@ -967,6 +967,17 @@ A component module that uses vanilla CSS owns a paired file with the same base n
 - For new styles when local code does not decide, prefer `px` for component sizing and spacing and `rem` for typography. Avoid new `rem` or `em` sizing and spacing unless the local module or the user requires it.
 - Add layout or paint containment only for a measured need and after checking clipping, portals, sticky elements, and subgrid behavior.
 
+### CSS comment layout
+
+Write the same "why" comments the TypeScript rules above ask for, in one layout. Start the text on the `/*` line, align every later line three spaces past the indent so it sits under that text, and close with ` */` at the end of the last line. Keep the whole comment inside the 120-column print width; a comment that outgrows it gets one more wrapped line, never a longer one.
+
+```css
+/* Keep the text on the opening line. Later lines line up under it, and the comment
+   closes on the last line of text. */
+```
+
+Do not put `/*` or `*/` alone on its own line, and do not prefix the lines with `*`. A one-line comment stays on one line.
+
 ### Color and themes
 
 The custom `--color-base-*`, `--color-fg-*`, `--color-accent-*`, `--color-green-*`, and `--color-red-*` scales are complete `oklch()` values in `packages/app/src/app.css`. Use them directly with `var(...)`; do not wrap them in `hsl()`.

@@ -81,10 +81,8 @@
 	}
 
 	.AiChatThread-scroll-to-bottom {
-		/*
-		Anchored to the composer top so the button stays visible no matter how
-		tall the composer block grows (pending strip, multi line drafts).
-		*/
+		/* Anchored to the composer top so the button stays visible no matter how
+		   tall the composer block grows (pending strip, multi line drafts). */
 		position: absolute;
 		/* 8px gap between the button and the composer below it. */
 		bottom: calc(100% + 8px);

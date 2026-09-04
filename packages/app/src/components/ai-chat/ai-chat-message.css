@@ -35,10 +35,8 @@
 		display: flex;
 		align-items: center;
 
-		/*
-			This needs to match the size of the composer actions to ensure
-			the conent is not shifted when switching in editing mode.
-			*/
+		/* This needs to match the size of the composer actions to ensure
+		   the conent is not shifted when switching in editing mode. */
 		min-height: 48px;
 
 		color: var(--color-fg-08);

@@ -199,10 +199,8 @@
 
 		/* File button */
 		&::file-selector-button {
-			/*
-			The `size of the input area` less the `padding`.
-			36px - 8px
-			*/
+			/* The `size of the input area` less the `padding`.
+			   36px - 8px */
 			height: 28px;
 			margin-right: 12px;
 			border: 0;

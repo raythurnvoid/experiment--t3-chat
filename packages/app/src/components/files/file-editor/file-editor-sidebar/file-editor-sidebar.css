@@ -33,11 +33,9 @@
 		flex: 1;
 		/* TODO: check if needed min-height: 0; */
 
-		/*
-		Allow the descendants to be sized based on this,
-		necessary for the anchored comments to take the whole
-		height as the editor content grows in size.
-		*/
+		/* Allow the descendants to be sized based on this,
+		   necessary for the anchored comments to take the whole
+		   height as the editor content grows in size. */
 		container-type: size;
 	}
 

@@ -43,10 +43,8 @@
 	}
 
 	.FileNodeView-content-group {
-		/*
-		Keep the content/comments panel group as the page-sized scroll content so
-		anchored comments move in the same scroll surface as the editor body.
-		*/
+		/* Keep the content/comments panel group as the page-sized scroll content so
+		   anchored comments move in the same scroll surface as the editor body. */
 		flex: 1 0 auto;
 		height: max-content;
 		overflow: visible;
@@ -79,10 +77,8 @@
 		align-items: center;
 		justify-content: flex-end;
 		gap: 8px;
-		/*
-		Keep a real 40px centering box for the floating pills.
-		The route safe area reserves this 40px plus 4px of extra spacing.
-		*/
+		/* Keep a real 40px centering box for the floating pills.
+		   The route safe area reserves this 40px plus 4px of extra spacing. */
 		height: 40px;
 		margin-bottom: -40px;
 		padding: 0 16px;
@@ -100,15 +96,13 @@
 		/* Let anchored comments size themselves against the full-height route sidebar. */
 		contain: inline-size style;
 
-		/*
-		Scope the sidebar's sticky `z-index: 1` chrome (the toolbar, and each tab's
-		sticky header) to this panel so it can't tie with the sibling resize handle
-		(also `z-index: 1`) in the shared editor-area stacking context and paint over
-		the hovered handle track. `.MyPanel` normally gets this from `contain: layout`,
-		but this panel replaces that with `container-type: size` (which is not a
-		stacking context). The Agent tab only avoided the bug because the rule below
-		makes the panel `position: sticky` (a stacking context) when it's open.
-		*/
+		/* Scope the sidebar's sticky `z-index: 1` chrome (the toolbar, and each tab's
+		   sticky header) to this panel so it can't tie with the sibling resize handle
+		   (also `z-index: 1`) in the shared editor-area stacking context and paint over
+		   the hovered handle track. `.MyPanel` normally gets this from `contain: layout`,
+		   but this panel replaces that with `container-type: size` (which is not a
+		   stacking context). The Agent tab only avoided the bug because the rule below
+		   makes the panel `position: sticky` (a stacking context) when it's open. */
 		isolation: isolate;
 
 		> .MyPanelInfiniteBackground::before {
@@ -163,11 +157,9 @@
 		font-size: 0.875rem;
 		color: var(--gray-800);
 
-		/*
-		`MyLink` puts its class on the inner surface, so the anchor itself stays `display: inline`
-		and its box collapses under the 36px surface. Make the anchor match the surface so the
-		focus ring and the reported hit target are the real 36px control.
-		*/
+		/* `MyLink` puts its class on the inner surface, so the anchor itself stays `display: inline`
+		   and its box collapses under the 36px surface. Make the anchor match the surface so the
+		   focus ring and the reported hit target are the real 36px control. */
 		a {
 			display: inline-flex;
 		}
@@ -454,20 +446,16 @@
 	.FileNodeViewToolbar {
 		position: sticky;
 		top: 0;
-		/*
-		Paint above the folder explorer table. Its cells use z-index 1 and come
-		later in the DOM, so a z-index 1 tie here would let scrolled rows paint
-		over the toolbar.
-		*/
+		/* Paint above the folder explorer table. Its cells use z-index 1 and come
+		   later in the DOM, so a z-index 1 tie here would let scrolled rows paint
+		   over the toolbar. */
 		z-index: 2;
 
 		width: 100%;
 		min-width: 0;
-		/*
-		Reserve the horizontal scrollbar gutter up front so the editor content below
-		does not shift when toolbar actions overflow. The extra pixel is the bottom
-		border, so the whole bar is 44px + gutter + border tall.
-		*/
+		/* Reserve the horizontal scrollbar gutter up front so the editor content below
+		   does not shift when toolbar actions overflow. The extra pixel is the bottom
+		   border, so the whole bar is 44px + gutter + border tall. */
 		height: calc(44px + var(--app-scrollbar-w) + 1px);
 		flex: 0 0 auto;
 
@@ -478,7 +466,8 @@
 		background: var(--color-base-1-03);
 		border-bottom: 1px solid var(--color-fg-02);
 
-		/* Use the assembled toolbar as the scroll container because folder/file actions and editor actions portal in separately. */
+		/* Use the assembled toolbar as the scroll container because folder/file actions and editor
+		   actions portal in separately. */
 		overflow: auto hidden;
 		scrollbar-width: initial;
 		/* Pin this structural bar dim. scrollbar-color inherits, so without this rule the
@@ -605,11 +594,9 @@
 		flex: 0 0 auto;
 		gap: 16px;
 
-		/*
-		Keep the folder browser content below the route toolbar safe area.
-		Use a component-owned safe-area variable so the route can calculate the
-		exact shared top reserve in JavaScript and pass it down.
-		*/
+		/* Keep the folder browser content below the route toolbar safe area.
+		   Use a component-owned safe-area variable so the route can calculate the
+		   exact shared top reserve in JavaScript and pass it down. */
 		padding: var(--FileNodeViewFolderBody-top-safe-area, 0px) 0 0;
 	}
 	/* #endregion folder body */
@@ -770,10 +757,8 @@
 
 	.FileNodeViewFolderExplorer-show-more,
 	.FileNodeViewFolderExplorer-show-less {
-		/*
-		Looks like an extra table row attached below the table. The table's
-		bottom border draws the break line between the last row and this button.
-		*/
+		/* Looks like an extra table row attached below the table. The table's
+		   bottom border draws the break line between the last row and this button. */
 		/* Match the 44px table rows height, plus the 1px bottom border. */
 		height: 45px;
 		padding: 8px 12px;
@@ -782,11 +767,9 @@
 		border: 1px solid var(--color-fg-03);
 		border-top: none;
 		border-radius: 0 0 8px 8px;
-		/*
-		Plain background colors, no gradients: gradients never animate in CSS
-		transitions, so they snap between states. The pressed depth comes from
-		the inset shadows, which are the animated part of regular buttons too.
-		*/
+		/* Plain background colors, no gradients: gradients never animate in CSS
+		   transitions, so they snap between states. The pressed depth comes from
+		   the inset shadows, which are the animated part of regular buttons too. */
 		background: var(--color-base-1-04);
 		color: var(--color-fg-07);
 
@@ -805,10 +788,8 @@
 			background: var(--color-base-1-06);
 			color: var(--color-fg-12);
 
-			/*
-			Pressed depth like regular buttons. Keep the -1px line so the
-			sticky show less button keeps its top break line while pressed.
-			*/
+			/* Pressed depth like regular buttons. Keep the -1px line so the
+			   sticky show less button keeps its top break line while pressed. */
 			box-shadow:
 				0 -1px 0 var(--color-fg-03),
 				inset 0 3px 4px color-mix(in oklch, black 40%, transparent),
@@ -817,32 +798,26 @@
 	}
 
 	.FileNodeViewFolderExplorer-show-less {
-		/*
-		Stick to the bottom of the editor scroll area so the user can collapse
-		the list without scrolling back up. Paint above the table cells, which
-		use z-index 1.
-		*/
+		/* Stick to the bottom of the editor scroll area so the user can collapse
+		   the list without scrolling back up. Paint above the table cells, which
+		   use z-index 1. */
 		position: sticky;
 		bottom: 16px;
 		z-index: 1;
 
-		/*
-		Paint a top break line for when the button floats over the rows. When
-		the button rests attached to the table, this line overlaps the table
-		bottom border, so nothing changes visually.
-		*/
+		/* Paint a top break line for when the button floats over the rows. When
+		   the button rests attached to the table, this line overlaps the table
+		   bottom border, so nothing changes visually. */
 		box-shadow: 0 -1px 0 var(--color-fg-03);
 	}
 
 	.FileNodeViewFolderExplorer-show-less-cover {
-		/*
-		Cover the 16px gap between the floating show less button and the
-		scrollport bottom with the page background, so table rows do not show
-		through that strip while the button is stuck. Paint above the table
-		cells, which use z-index 1. When the button rests attached to the
-		table, the cover overlaps the page background below, so nothing
-		changes visually.
-		*/
+		/* Cover the 16px gap between the floating show less button and the
+		   scrollport bottom with the page background, so table rows do not show
+		   through that strip while the button is stuck. Paint above the table
+		   cells, which use z-index 1. When the button rests attached to the
+		   table, the cover overlaps the page background below, so nothing
+		   changes visually. */
 		position: sticky;
 		bottom: 0;
 		z-index: 1;

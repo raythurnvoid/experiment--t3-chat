@@ -1,9 +1,7 @@
 @layer components {
 	.FileEditorRichTextAnchoredComments {
-		/*
-		Fill the comments host so sticky search and empty states can pin
-		while the shared editor scroller moves.
-		*/
+		/* Fill the comments host so sticky search and empty states can pin
+		   while the shared editor scroller moves. */
 		flex: 1 0 auto;
 		position: relative;
 		padding: 16px;
@@ -15,10 +13,8 @@
 		justify-content: center;
 		color: var(--color-fg-06);
 
-		/* 
-		Sticky relative to `FileEditorSidebar-toolbar` and 
-		the padding of `FileEditorRichTextAnchoredComments`.
-		*/
+		/* Sticky relative to `FileEditorSidebar-toolbar` and
+		   the padding of `FileEditorRichTextAnchoredComments`. */
 		position: sticky;
 		top: 60px;
 	}

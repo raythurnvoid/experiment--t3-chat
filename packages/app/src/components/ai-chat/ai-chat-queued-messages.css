@@ -208,10 +208,8 @@
 	}
 }
 
-/*
-Match the agent tabs. The message stays a normal primary action until the user starts dragging it.
-This must stay unlayered because the drag library injects its cursor rule outside every CSS layer.
-*/
+/* Match the agent tabs. The message stays a normal primary action until the user starts dragging it.
+   This must stay unlayered because the drag library injects its cursor rule outside every CSS layer. */
 .AiChatQueuedMessages-edit[data-rfd-drag-handle-context-id] {
 	cursor: pointer;
 }

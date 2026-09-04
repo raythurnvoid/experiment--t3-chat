@@ -26,10 +26,8 @@
 
 		padding: 0;
 
-		/* 
-		Significantly improves performance
-		when rendering many items inside the tree
-		*/
+		/* Significantly improves performance
+		   when rendering many items inside the tree */
 		contain: strict;
 	}
 	/* #endregion root */
@@ -285,7 +283,8 @@
 	}
 
 	.FilesSidebarTreeDropZoneIndicator {
-		/* Rest at the tree bottom (margin-top auto); sticky keeps it on the visible scrollport bottom when the tree overflows. */
+		/* Rest at the tree bottom (margin-top auto); sticky keeps it on the visible scrollport
+		   bottom when the tree overflows. */
 		position: sticky;
 		bottom: 16px;
 		margin-top: auto;
@@ -445,15 +444,13 @@
 		box-shadow: none;
 	}
 
-	/*
-	Fill for the file that is currently open. The row-left accent rail already carries the
-	"current" signal, so the fill stays a quiet base tint instead of an accent one. Opening a file
-	also marks its row `[data-selected]`, so this must win over the selected and hover backgrounds
-	above. It survives hover and keyboard focus so the current-file signal never disappears; only
-	the pressed state replaces it, which keeps normal press feedback. The drop-zone guard keeps an
-	active drop enclosure visible, and the tree scope makes this selector tie with the hover rule,
-	so source order decides and the fill wins.
-	*/
+	/* Fill for the file that is currently open. The row-left accent rail already carries the
+	   "current" signal, so the fill stays a quiet base tint instead of an accent one. Opening a file
+	   also marks its row `[data-selected]`, so this must win over the selected and hover backgrounds
+	   above. It survives hover and keyboard focus so the current-file signal never disappears; only
+	   the pressed state replaces it, which keeps normal press feedback. The drop-zone guard keeps an
+	   active drop enclosure visible, and the tree scope makes this selector tie with the hover rule,
+	   so source order decides and the fill wins. */
 	.FilesSidebarTree
 		.FilesSidebarTreeItem-content-navigated
 		> .FilesSidebarTreeItemPrimaryAction:not([data-disabled]):not(:active):not(
@@ -464,19 +461,15 @@
 	}
 
 	.FilesSidebarTreeItem-content-renaming {
-		/*
-				Disable pointer events for the primary action while renaming 
-				otherwise the user cannot select text in the input.
-				*/
+		/* Disable pointer events for the primary action while renaming
+		   otherwise the user cannot select text in the input. */
 		> .FilesSidebarTreeItemPrimaryAction {
 			pointer-events: none;
 		}
 
-		/*
-				Enable pointer events for the primary content while renaming
-				so the user can select text in the input that is a descendant
-				of the primary content.
-				*/
+		/* Enable pointer events for the primary content while renaming
+		   so the user can select text in the input that is a descendant
+		   of the primary content. */
 		> .FilesSidebarTreeItemPrimaryContent {
 			pointer-events: auto;
 		}
@@ -691,10 +684,8 @@
 		user-select: none;
 
 		> .FilesSidebarTreeItemPrimaryContent {
-			/*
-			Keep this equal to the regular row's 1px
-			content gap plus the title input's 3px inline padding.
-			*/
+			/* Keep this equal to the regular row's 1px
+			   content gap plus the title input's 3px inline padding. */
 			gap: 4px;
 
 			padding-left: calc((var(--FilesSidebarTreeItemPlaceholder-depth) * 20px) + 44px);

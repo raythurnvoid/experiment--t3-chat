@@ -62,10 +62,8 @@
 	.FileEditorRichTextNonCollab-editor-content-container {
 		width: 100%;
 
-		/*
-		Make this the `offsetElement` for the editor.
-		Some floating elements are injected in the `offsetElement`.
-		*/
+		/* Make this the `offsetElement` for the editor.
+		   Some floating elements are injected in the `offsetElement`. */
 		contain: content;
 		/* position: relative; */
 
@@ -93,10 +91,8 @@
 	.FileEditorRichTextNonCollab-editor-content {
 		width: 100%;
 
-		/*
-		Add a large bottom safe area so the shared FileNodeView scroller can move
-		the final editable block above bubble menus and anchored comment cards.
-		*/
+		/* Add a large bottom safe area so the shared FileNodeView scroller can move
+		   the final editable block above bubble menus and anchored comment cards. */
 		padding: max(16px, var(--FileEditor-top-safe-area, 0px)) 64px var(--FileEditorRichText-safe-bottom-padding) 64px;
 
 		color: var(--FileEditorRichText-text-color-fg-default);
@@ -117,11 +113,9 @@
 				z-index: -1;
 			}
 
-			/*
-			Suppress the native text-selection highlight on the node-selected block so the soft
-			block fill above is the only selection indicator. Otherwise the node selection paints
-			a second, clashing accent-alt highlight over the text on top of the fill.
-			*/
+			/* Suppress the native text-selection highlight on the node-selected block so the soft
+			   block fill above is the only selection indicator. Otherwise the node selection paints
+			   a second, clashing accent-alt highlight over the text on top of the fill. */
 			&::selection,
 			& ::selection {
 				background-color: transparent;
@@ -426,15 +420,13 @@
 		}
 		/* #endregion media embeds */
 
-		/*
-		Give a remote user a caret
+		/* Give a remote user a caret
 
-		See:
-		- Class names are defined by @tiptap/extension-collaboration-caret:
-		  /tiptap-3.8.0/packages/extension-collaboration-caret/src/collaboration-caret.ts
-		- Demo styles reference:
-		  /tiptap-3.8.0/demos/src/Extensions/CollaborationCaret/React/styles.scss
-		*/
+		   See:
+		   - Class names are defined by @tiptap/extension-collaboration-caret:
+		     /tiptap-3.8.0/packages/extension-collaboration-caret/src/collaboration-caret.ts
+		   - Demo styles reference:
+		     /tiptap-3.8.0/demos/src/Extensions/CollaborationCaret/React/styles.scss */
 		.collaboration-carets__caret {
 			border-left: 1px solid #0d0d0d;
 			border-right: 1px solid #0d0d0d;

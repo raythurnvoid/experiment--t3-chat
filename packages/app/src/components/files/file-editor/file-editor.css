@@ -21,10 +21,8 @@
 	}
 
 	.FileEditor-mode-rich-text .FileEditor-editor-area {
-		/*
-		Let rich text content define the editor height so the comments
-		panel reserves matching scroll space for anchored threads.
-		*/
+		/* Let rich text content define the editor height so the comments
+		   panel reserves matching scroll space for anchored threads. */
 		overflow: visible;
 		contain: inline-size style;
 	}

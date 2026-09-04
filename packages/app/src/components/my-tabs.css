@@ -192,12 +192,10 @@
 	/* #endregion panel */
 }
 
-/*
-Unlayered, on purpose: @hello-pangea/dnd injects an unlayered `[data-rfd-drag-handle-context-id]
-{ cursor: grab }` at runtime, and unlayered rules outrank every @layer rule. Match it unlayered
-with higher specificity so non-selected draggable tabs show the pointer (and the selected one the
-arrow); the library still sets `grabbing` while a drag is actually in progress.
-*/
+/* Unlayered, on purpose: @hello-pangea/dnd injects an unlayered `[data-rfd-drag-handle-context-id]
+   { cursor: grab }` at runtime, and unlayered rules outrank every @layer rule. Match it unlayered
+   with higher specificity so non-selected draggable tabs show the pointer (and the selected one the
+   arrow); the library still sets `grabbing` while a drag is actually in progress. */
 .MyTabsTabPrimaryAction[data-rfd-drag-handle-context-id] {
 	cursor: pointer;
 

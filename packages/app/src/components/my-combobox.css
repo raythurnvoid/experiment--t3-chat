@@ -1,9 +1,7 @@
 @layer common_components {
 	/* #region input */
-	/*
-	MyComboboxInput reuses MyInputArea, MyInputControl,
-	MyInputIcon, MyInputBackground, and MyInputBox classes from my-input.css
-	*/
+	/* MyComboboxInput reuses MyInputArea, MyInputControl,
+	   MyInputIcon, MyInputBackground, and MyInputBox classes from my-input.css */
 	.MyComboboxInput {
 		position: relative;
 	}
