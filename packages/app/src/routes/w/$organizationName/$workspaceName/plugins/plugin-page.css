@@ -2,6 +2,10 @@
 	/* #region root */
 	/* Column filling the content area (viewport minus header) so the iframe gets all leftover height. */
 	.RoutePluginsPluginPage {
+		/* Anchors the starting cover in the frame region below. The breadcrumb goes to the app header
+		   through a portal, so this element holds nothing the cover has to stay clear of. */
+		position: relative;
+
 		display: flex;
 		flex-direction: column;
 
@@ -9,6 +13,8 @@
 		height: 100%;
 	}
 
+	/* Shown while the list of plugin pages is still loading. There is no frame under it yet, so it
+	   keeps a box of its own instead of covering anything. */
 	.RoutePluginsPluginPage-loading {
 		display: flex;
 		align-items: center;
@@ -30,8 +36,41 @@
 		font-size: 13px;
 		color: var(--color-fg-07);
 	}
+	/* #endregion root */
 
-	.RoutePluginsPluginPage-error {
+	/* #region frame */
+	.RoutePluginsPluginPageFrame {
+		display: flex;
+		flex-direction: column;
+
+		flex: 1;
+		min-height: 0;
+	}
+
+	/* Covers the frame while it starts, instead of sitting above it. An in-flow placeholder took
+	   180px off the frame, so the plugin laid itself out in a viewport that short and the page jumped
+	   when the handshake finished. The element carrying this class swaps to `sr-only` once the frame
+	   starts, so this rule describes the waiting state only.
+
+	   `inset: 0` measures against the parent `.RoutePluginsPluginPage`, which is `position: relative`
+	   for exactly this. Drop that and the cover falls back to the initial containing block, which
+	   means it covers the app header and the sidebar too. */
+	.RoutePluginsPluginPageFrame-starting {
+		position: absolute;
+		inset: 0;
+
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
+
+		color: var(--color-fg-08);
+
+		/* The same surface as the page around it, so the blank frame does not show through. */
+		background-color: var(--color-base-1-01);
+	}
+
+	.RoutePluginsPluginPageFrame-error {
 		display: flex;
 		flex-direction: column;
 		align-items: center;
@@ -46,5 +85,5 @@
 		font-size: 13px;
 		color: var(--color-destructive);
 	}
-	/* #endregion root */
+	/* #endregion frame */
 }

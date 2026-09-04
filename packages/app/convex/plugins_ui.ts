@@ -211,6 +211,9 @@ export const insert_page_session = internalMutation({
 			pluginVersionId: v.id("plugins_versions"),
 			sessionId: v.id("plugins_ui_sessions"),
 		}),
+		// Only the rate-limit refusal fills this in. The frame turns the wait into a sentence the
+		// member can act on, because a mint refusal is the whole alert they get.
+		_nay: { data: v.object({ retryAfterMs: v.optional(v.number()) }) },
 	}),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
@@ -231,7 +234,10 @@ export const insert_page_session = internalMutation({
 
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "plugins_ui_session_mint", key: userAuth.id });
 		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
+			// Carry the wait back to the caller, the same way `rotate_ui_session` does. The frame does
+			// not retry a mint by itself, so this number is only there to tell the member how long to
+			// wait before pressing Retry.
+			return Result({ _nay: { message: rateLimit.message, data: { retryAfterMs: rateLimit.retryAfterMs } } });
 		}
 
 		// Opening an installed page is not managing plugins, so we do not ask for
@@ -320,6 +326,8 @@ export const mint_page_session = action({
 			pluginVersionId: v.id("plugins_versions"),
 			sessionId: v.id("plugins_ui_sessions"),
 		}),
+		// Passed straight through from `insert_page_session`; see the note on its own validator.
+		_nay: { data: v.object({ retryAfterMs: v.optional(v.number()) }) },
 	}),
 	handler: async (ctx, args) => {
 		const inserted = (await ctx.runMutation(
@@ -355,6 +363,9 @@ export const insert_file_view_session = internalMutation({
 			pluginVersionId: v.id("plugins_versions"),
 			sessionId: v.id("plugins_ui_sessions"),
 		}),
+		// Same as `insert_page_session`: only the rate-limit refusal fills this in, and the frame turns
+		// it into a sentence the member can act on.
+		_nay: { data: v.object({ retryAfterMs: v.optional(v.number()) }) },
 	}),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
@@ -380,7 +391,8 @@ export const insert_file_view_session = internalMutation({
 			key: userAuth.id,
 		});
 		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
+			// Carry the wait back, same reason as the page mint above.
+			return Result({ _nay: { message: rateLimit.message, data: { retryAfterMs: rateLimit.retryAfterMs } } });
 		}
 
 		const fileNode = await ctx.db.get("files_nodes", args.fileNodeId);
@@ -472,6 +484,8 @@ export const mint_file_view_session = action({
 			pluginVersionId: v.id("plugins_versions"),
 			sessionId: v.id("plugins_ui_sessions"),
 		}),
+		// Passed straight through from `insert_file_view_session`; see the note on its own validator.
+		_nay: { data: v.object({ retryAfterMs: v.optional(v.number()) }) },
 	}),
 	handler: async (ctx, args) => {
 		const inserted = (await ctx.runMutation(
@@ -502,6 +516,9 @@ export const rotate_ui_session = internalMutation({
 			expiresAt: v.number(),
 			pluginVersionId: v.id("plugins_versions"),
 		}),
+		// Only the rate-limit refusal fills this in. The frame waits that long and rotates once more
+		// instead of leaving the page with a token it cannot renew.
+		_nay: { data: v.object({ retryAfterMs: v.optional(v.number()) }) },
 	}),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
@@ -543,7 +560,9 @@ export const rotate_ui_session = internalMutation({
 			key: userAuth.id,
 		});
 		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
+			// Carry the wait back to the caller. A frame that only has to pause a moment keeps its
+			// document, its state, and its live subscriptions instead of dying with no message.
+			return Result({ _nay: { message: rateLimit.message, data: { retryAfterMs: rateLimit.retryAfterMs } } });
 		}
 
 		// Rotating a token creates a new one, so it follows the same rule as the mint that created the
@@ -617,6 +636,8 @@ export const refresh_ui_session = action({
 			jwtExpiresAt: v.number(),
 			pluginVersionId: v.id("plugins_versions"),
 		}),
+		// Passed straight through from `rotate_ui_session`; see the note on its own validator.
+		_nay: { data: v.object({ retryAfterMs: v.optional(v.number()) }) },
 	}),
 	handler: async (ctx, args) => {
 		const rotated = (await ctx.runMutation(internal.plugins_ui.rotate_ui_session, args)) as rotate_ui_session_Result;

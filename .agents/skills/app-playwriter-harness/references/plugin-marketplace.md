@@ -739,8 +739,11 @@ Windows and CAS (verified 2026-08-17, two-user E2E on 0.1.3):
   can hang every locator call until the execute timeout). One `<iframe>` element in the DOM with two
   reported frames is that artifact, not a leaked node.
 - Since 0.1.4 there are no `bonobo:data-*` messages, so the old crafted-message bridge recipe is
-  gone; window payloads are not observable via postMessage in either direction. Refusal reasons
-  (`capacity`/`invalid`; `budget` is retired) live in the SDK's own suite
+  gone; window payloads are not observable via postMessage in either direction. SDK 0.13.0 deleted
+  the watch wrappers and every death reason with them (`capacity`, `invalid`, `denied`,
+  `session_expired`, `unavailable`), so do not look for those words in a current frame. A page now
+  reads a refused door as the door's own answer: `null`, or the empty final page for
+  `watch_documents_page`. What the SDK still owns is in its suite
   (`packages/bonobo-plugin-sdk/frontend.test.ts`). To prove bridge absence: install a top-window
   `message` listener recording `event.data.type` (in `page.evaluate` — a `page.goto` wipes it, so
   remount the frame with SPA sidebar navigation instead), then drive sends and deliveries; expect
@@ -753,13 +756,15 @@ Windows and CAS (verified 2026-08-17, two-user E2E on 0.1.3):
   and `const { api } = await import("/convex/_generated/api.js")`, then
   `app_convex.mutation(api.plugins_ui.revoke_ui_session, { membershipId, sessionId })` (Vite serves
   the same module singletons the app runs). Within seconds the revoked tab renders the plugin's
-  `denied` screen (Chitchat 0.6.3: "Chitchat can no longer read its data. Reload the page to try
+  dead-data screen (Chitchat 0.6.3: "Chitchat can no longer read its data. Reload the page to try
   again." with the composer unmounted; older builds said "Access to this plugin's data ended…")
-  while other tabs stay live (one session per mount, 1:1 — verified). That watch is dead and does
+  while other tabs stay live (one session per mount, 1:1 — verified). That read is dead and does
   not recover in place; a reload mints a fresh session and recovers. A revoke while the page is
-  ONLINE is not the sleep path: the doors answer null at once and the SDK reports `denied`, never
-  `session_expired` (that reason needs the token's own expiry to have passed). Re-verified
-  2026-09-02 on SDK 0.11.0 with the JWT delivered in init: same nonce, zero exchange requests.
+  ONLINE is not the sleep path: the doors answer null at once, so the page sees an empty read and
+  says so. Since SDK 0.13.0 there is no reason word to read here — the plugin decides what an empty
+  read means, and `client.session.expiresAt()` is what tells it a session simply ran out.
+  Re-verified 2026-09-02 on SDK 0.11.0 with the JWT delivered in init: same nonce, zero exchange
+  requests.
 
   A page kept offline while its session disappears is different. When its Convex client later
   needs a JWT, the refresh chain hits the gone session and the host gets "Unauthorized". Since the
@@ -809,7 +814,7 @@ Offline session re-mint recipe (Windows, updated 2026-09-02):
    call `context.setOffline(false)` at once and require it to finish. The network must be back
    within the SDK's 10-second refresh deadline: otherwise the refresh the frame sends on wake times
    out, its two retries get "Another session refresh is in progress", the auth callback answers
-   null, and the page dies as `session_expired` while the host still re-mints a session nobody
+   null, and the page dies unauthenticated while the host still re-mints a session nobody
    uses (seen 2026-09-02 in three awake-offline runs; that deadline is unchanged since SDK 0.10.0).
    Wait 15 seconds.
 7. Require the same nonce, the exact draft, the bundle marker, no host alert, and exactly one new
@@ -1137,3 +1142,96 @@ So compare sizes against the previous round, not hashes. When a size matches but
 fold both files to a fixed width and diff them (`diff <(fold -w 200 old.js) <(fold -w 200 new.js)`)
 before concluding anything — a one-line store-path comment and a real code change look identical
 from the hash alone.
+
+## Drain the session-mint bucket to see a rate-limited refresh (verified 2026-09-04)
+
+`plugins_ui_session_mint` is a token bucket of capacity 2, refilling at 12 per minute, keyed by the
+user. A page mint charges it, and so does every session rotation, for both frame kinds. A file-view
+mint does not: it charges `plugins_ui_file_view_session_mint`, its own bucket of capacity 8 refilling
+at 30 per minute. So budget by frame kind — on a file view only the rotations drain this bucket. To
+reach the refusal, ask the frame's own SDK client to rotate several times in a row from inside the
+iframe.
+
+The client is not on a global. Walk the frame's React tree for a prop named `client` that has a
+`context` field, then call `client.refreshToken()` in a loop:
+
+```js
+const frame = state.page.frames().findLast((f) => f.url().includes("/plugins-ui/"));
+const out = await frame.evaluate(async () => {
+	const container = document.getElementById("root") ?? document.body.firstElementChild;
+	const reactKey = Object.keys(container).find((k) => k.startsWith("__reactContainer$"));
+	const seen = new Set();
+	const queue = [container[reactKey] ?? container._children];
+	let client = null;
+	while (queue.length && !client) {
+		const node = queue.shift();
+		if (!node || typeof node !== "object" || seen.has(node)) continue;
+		seen.add(node);
+		const candidate = node.memoizedProps?.client ?? node.props?.client;
+		if (candidate?.context) { client = candidate; break; }
+		for (const next of [node.child, node.sibling, node._component, ...(Array.isArray(node._children) ? node._children : [])]) {
+			if (next) queue.push(next);
+		}
+	}
+	const attempts = [];
+	for (let i = 0; i < 5; i += 1) {
+		const startedAt = Date.now();
+		try { await client.refreshToken(); attempts.push({ i, ms: Date.now() - startedAt, outcome: "ok" }); }
+		catch (error) { attempts.push({ i, ms: Date.now() - startedAt, outcome: String(error?.message ?? error) }); }
+	}
+	return attempts;
+});
+```
+
+Read the host side with the Convex call recorder from `snippets.md` ("Watch Convex Mutations On The
+Wire"). On a page, two tokens are already gone to StrictMode's double mint (see `known-hazards.md`),
+so the bucket is usually empty from the start. A file view's double mint spends the other bucket, so
+its first rotations still find tokens here.
+
+- Before the retry fix, at commit `c8bc76f3`: attempts 3-5 returned `Rate limit exceeded` in about
+  330 ms each, the recorder showed `refresh_ui_session -> _nay "Rate limit exceeded"` with no
+  `data`, and the host raised **no** alert. That is the silent death — the SDK gives up, its auth
+  callback answers null, and the page stops working with nothing on screen.
+- After the fix: every attempt returns `ok`. Attempts 2-4 take 4.7-5.1 s because the host waits the
+  server's `retryAfterMs` and rotates once more; the recorder shows refuse-then-ok pairs carrying
+  `data: { retryAfterMs: ~4100-4300 }`.
+
+The `retryAfterMs` field is also the cheapest proof that the browser is running YOUR Convex working
+tree: it cannot appear in a recorded `_nay` unless the watcher pushed your `plugins_ui.ts`.
+
+## A file view is keyed by node id, so switching files swaps the session (verified 2026-09-04)
+
+Open one file a plugin file view renders, then click a second file of the same kind, clicking the
+plugin's tab each time. With the recorder installed the calls read, in order: `mint_file_view_session`
+twice and one `revoke_ui_session` for the first file (the double mint is StrictMode), then one
+`revoke_ui_session` when the first file's frame unmounts, then the same mint/mint/revoke for the
+second file. The table then holds no row at all for the first file's `fileNodeId`.
+
+Two traps cost a run each on 2026-09-04:
+
+- The fixture videos live inside `meetings/<uuid>/` folders. A collapsed tree exposes no `.mp4`
+  treeitem, and any `goto` re-collapses it — so a runner that navigates first and expands second
+  finds nothing. Expand inside the same runner, after the last navigation.
+- The treeitem accessible names carry a suffix: `recording.mp4, read-only`. A locator anchored with
+  `/\.mp4$/` matches zero rows. Use `/\.mp4/`.
+
+Install the recorder exactly once per document. Re-running an installer that wraps
+`app_convex.mutation` without an installed-already guard stacks wrappers, and every later call is
+recorded once per layer — a switch that made three calls reports twelve.
+
+## Raise the host's error alert on demand
+
+The frame's own bridge messages are the switch. From inside the iframe, post more than
+`MAX_READY_MESSAGES` (64) ready messages with the frame's real nonce:
+
+```js
+await frame.evaluate(() => {
+	const nonce = new URLSearchParams(location.hash.slice(1)).get("nonce");
+	for (let i = 0; i < 70; i += 1) parent.postMessage({ type: "bonobo:ready", nonce }, "*");
+});
+```
+
+Within about 3 s the host revokes the session, unmounts the iframe (`frames: 0`) and renders
+`The plugin page flooded the bridge and was stopped` with a `Retry`. Verified 2026-09-04. Use it to
+screen the error UI without breaking a plugin or editing the server. `Retry` restores the frame in
+about 12 s and mints a new session.

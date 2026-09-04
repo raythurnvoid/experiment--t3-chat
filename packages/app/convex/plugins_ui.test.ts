@@ -1523,6 +1523,35 @@ describe("plugin ui sessions", () => {
 		});
 		expect(minted).toMatchObject({ _nay: { message: "Not found" } });
 	});
+
+	test("a rate limited page mint answers with the wait the frame shows", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		const mint = () =>
+			fixture.asOwner.action(api.plugins_ui.mint_page_session, {
+				membershipId: fixture.membership.membershipId,
+				pluginName: "gallery",
+			});
+
+		// `plugins_ui_session_mint` holds two tokens, so the third mint in a burst is refused.
+		expect(await mint()).toMatchObject({ _yay: expect.any(Object) });
+		expect(await mint()).toMatchObject({ _yay: expect.any(Object) });
+		const refused = await mint();
+		expect(refused).toMatchObject({ _nay: { message: "Rate limit exceeded" } });
+		if (!refused._nay) {
+			throw new Error("the third page mint was not refused");
+		}
+
+		// The frame turns this number into "Wait N seconds, then press Retry". If the refusal carries
+		// no number, the frame shows a fixed 5 seconds instead (`mint_error_message` in
+		// `plugins-ui-frame.tsx`), which is a guess and not this bucket's own wait. `retryAfterMs` is
+		// optional in the validator, so nothing else catches a refusal that drops it.
+		expect(refused._nay.data?.retryAfterMs).toEqual(expect.any(Number));
+		expect(refused._nay.data!.retryAfterMs!).toBeGreaterThan(0);
+		// The refusal asks for one token, and the bucket refills 12 tokens a minute
+		// (`plugins_ui_session_mint` in `rate_limiter.ts`), so the wait is one refill step at most.
+		expect(refused._nay.data!.retryAfterMs!).toBeLessThanOrEqual(60_000 / 12);
+	});
 });
 
 describe("plugin ui file view sessions", () => {
@@ -1775,6 +1804,69 @@ describe("plugin ui file view sessions", () => {
 			pluginName: "gallery",
 		});
 		expect(pageMint).toMatchObject({ _yay: expect.any(Object) });
+	});
+
+	test("a rate limited file view mint answers with the wait the frame shows", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t, { fileViews: [video_file_view] });
+		const seeded = await seed_upload_node(t, fixture, { filename: "clip.mp4", contentType: "video/mp4" });
+
+		// Fill the eight tokens this bucket holds, so the next mint is the refused one.
+		for (let mint = 0; mint < 8; mint += 1) {
+			expect(await mint_file_view(fixture, { fileNodeId: seeded.nodeId })).toMatchObject({
+				_yay: expect.any(Object),
+			});
+		}
+		const refused = await mint_file_view(fixture, { fileNodeId: seeded.nodeId });
+		expect(refused).toMatchObject({ _nay: { message: "Rate limit exceeded" } });
+		if (!refused._nay) {
+			throw new Error("the ninth file view mint was not refused");
+		}
+
+		// Same alert as the page mint: the frame prints this wait and stops. Without the number it
+		// prints a fixed 5 seconds (`mint_error_message` in `plugins-ui-frame.tsx`), which is longer
+		// than this faster bucket ever needs, so the member waits for nothing.
+		expect(refused._nay.data?.retryAfterMs).toEqual(expect.any(Number));
+		expect(refused._nay.data!.retryAfterMs!).toBeGreaterThan(0);
+		// One token asked for, and this bucket refills 30 tokens a minute
+		// (`plugins_ui_file_view_session_mint` in `rate_limiter.ts`), so one refill step is the most
+		// the member can be asked to wait.
+		expect(refused._nay.data!.retryAfterMs!).toBeLessThanOrEqual(60_000 / 30);
+	});
+
+	test("a rate limited rotation answers with the wait the frame pauses for", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t, { fileViews: [video_file_view] });
+		const seeded = await seed_upload_node(t, fixture, { filename: "clip.mp4", contentType: "video/mp4" });
+		const minted = await mint_file_view(fixture, { fileNodeId: seeded.nodeId });
+		if (minted._nay) {
+			throw new Error(minted._nay.message);
+		}
+		const refresh = () =>
+			fixture.asOwner.action(api.plugins_ui.refresh_ui_session, {
+				membershipId: fixture.membership.membershipId,
+				sessionId: minted._yay.sessionId,
+			});
+
+		// A rotation charges `plugins_ui_session_mint`, and the file-view mint above charges its own
+		// bucket instead. So this bucket is still full here, it holds two tokens, and the third
+		// rotation in a burst is refused.
+		expect(await refresh()).toMatchObject({ _yay: expect.any(Object) });
+		expect(await refresh()).toMatchObject({ _yay: expect.any(Object) });
+		const refused = await refresh();
+		expect(refused).toMatchObject({ _nay: { message: "Rate limit exceeded" } });
+		if (!refused._nay) {
+			throw new Error("the third rotation was not refused");
+		}
+
+		// The frame reads this wait, sleeps, and rotates once more (`plugins-ui-frame.tsx`). Without
+		// the wait it stops the page, and the member gets an error alert instead of a page that heals
+		// itself. So the refusal must carry a real number.
+		expect(refused._nay.data?.retryAfterMs).toEqual(expect.any(Number));
+		expect(refused._nay.data!.retryAfterMs!).toBeGreaterThan(0);
+		// The refusal asks for one token, and the bucket refills 12 tokens a minute
+		// (`plugins_ui_session_mint` in `rate_limiter.ts`), so the wait is one refill step at most.
+		expect(refused._nay.data!.retryAfterMs!).toBeLessThanOrEqual(60_000 / 12);
 	});
 });
 

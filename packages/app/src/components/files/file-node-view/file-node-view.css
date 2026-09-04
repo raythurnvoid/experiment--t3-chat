@@ -340,6 +340,9 @@
 	/* #region plugin view */
 	/* Column filling the tab panel so the plugin iframe gets all leftover height. */
 	.FileNodeViewPluginView {
+		/* Anchors the loading cover below, which is absolute and fills this column. */
+		position: relative;
+
 		display: flex;
 		flex-direction: column;
 
@@ -347,7 +350,35 @@
 		min-height: 0;
 	}
 
-	.FileNodeViewPluginView-error {
+	/* Wraps the frame so the component can mark it inert while the cover below is up. It passes the
+	   panel's leftover height down to the iframe, which fills it. */
+	.FileNodeViewPluginViewFrame {
+		display: flex;
+		flex-direction: column;
+
+		flex: 1;
+		min-height: 0;
+	}
+
+	/* Covers the frame while it starts. The frame paints nothing until the plugin view runs, so
+	   without this the member looks at an empty panel for up to 15 seconds. */
+	.FileNodeViewPluginViewFrame-loading {
+		position: absolute;
+		inset: 0;
+
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		gap: 8px;
+
+		/* The same surface as the file view around it, so the blank frame does not show through. */
+		background-color: var(--color-base-1-02);
+
+		font-size: 0.8125rem;
+		color: var(--color-fg-07);
+	}
+
+	.FileNodeViewPluginViewFrame-error {
 		display: flex;
 		flex-direction: column;
 		align-items: center;

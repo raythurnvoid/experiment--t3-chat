@@ -62,9 +62,14 @@ function plugin_ui_dev_override() {
 // Max time a frame attempt gets from mount to posting bonobo:init before it counts as failed.
 const STARTUP_DEADLINE_MS = 15_000;
 
-// An honest SDK repeats bonobo:ready only until init arrives (≈30 sends worst case). A page
-// spamming ready past this allowance is misbehaving, and the frame dies.
+// The SDK sends ready every 500 ms until init arrives. Within the 15-second startup deadline that
+// is about 30 sends. A page that sends many more is misbehaving, and the frame stops.
 const MAX_READY_MESSAGES = 64;
+
+// Two replacement sessions minted closer together than this are a mint loop, and the frame stops.
+// Nothing an honest frame does can ask for a second one this soon. The guard in `handle_refresh`
+// tells the whole story.
+const REMINT_MIN_GAP_MS = 5 * 60_000;
 
 // #region theme
 /**
@@ -109,8 +114,8 @@ type PluginsUiFrame_Theme = {
  * Is this colour a dark one?
  *
  * Every scale value is written as a complete `oklch()` value in `app.css`, and OKLCH's first
- * component is perceived lightness from 0 to 1. So one number answers the question. A value this
- * cannot read answers dark, which is what the app paints today.
+ * component is perceived lightness from 0 to 1. So one number answers the question. If the value is
+ * not an `oklch()` colour, treat it as dark. That is what the app paints today.
  */
 function is_dark_theme_color(color: string) {
 	const lightness = /^oklch\(\s*([\d.]+)(%?)/u.exec(color);
@@ -129,11 +134,10 @@ function is_dark_theme_color(color: string) {
  * to. **The mode is read from the surface colour (`--color-base-1-01`) and not from that class**, so
  * the two halves of one message can never disagree. Today the app's numbered palette is
  * dark-oriented and the theme provider does not swap it: a member who picks "light" still sees the
- * same dark surfaces. A frame
- * told `mode: "light"` beside those dark values paints its own light panels and its own dark text,
- * then reads the host's dark surface and its light text back over them, and the page ends up
- * unreadable. Reading the mode off the colour keeps the frame matching the app around it, and when
- * the palette does start swapping the mode follows it with no edit here.
+ * same dark surfaces. A frame told `mode: "light"` next to those dark values would paint light
+ * panels with dark text, then apply the host's dark surface and light text over them, and the page
+ * would be unreadable. Reading the mode from the colour keeps the frame matching the app. When the
+ * palette starts swapping, the mode follows it with no edit here.
  */
 function read_plugin_theme(): PluginsUiFrame_Theme {
 	const styles = getComputedStyle(document.documentElement);
@@ -169,7 +173,7 @@ type RefreshResponse =
 			message: string;
 	  };
 
-// Page-chosen correlation ids for token refresh requests.
+// The page picks the request id of a token refresh. Accept only a short non-empty string.
 function is_bridge_message_id(value: unknown): value is string {
 	return typeof value === "string" && value.length > 0 && value.length <= 64;
 }
@@ -177,14 +181,54 @@ function is_bridge_message_id(value: unknown): value is string {
 // Both mint actions return the same Result shape, so the page mint's type is the shared contract.
 type PluginsUiFrame_MintSessionResult = app_convex_FunctionReturnType<typeof app_convex_api.plugins_ui.mint_page_session>;
 
-type PluginsUiFrame_Props = {
+/**
+ * The `context` a mount point builds for bonobo:init, mirroring the SDK's `BonoboPageContext` and
+ * `BonoboFileViewContext` minus `userId`, which the frame adds itself.
+ *
+ * The SDK drops an init whose context is missing a field, and it says nothing about why. The host
+ * does not notice either: `handle_ready` clears the startup deadline the moment it posts init, so
+ * that deadline can never fire for a context the SDK then rejects. The SDK stops its ready loop in
+ * two places: when an init passes its context check (`frontend.js:554`), and when the page goes away
+ * (its `pagehide` listener, `frontend.js:669`). A rejected context reaches neither of them, and the
+ * page is still open, so the ready loop keeps running every 500 ms. The 65th ready lands at about 32
+ * seconds and takes the flood branch below, and the member is told the page "flooded the bridge and
+ * was stopped". That message blames the plugin, while the real cause is a context field this host
+ * built wrong. So a renamed or forgotten field has to fail here, at compile time. Keep this in step
+ * with `frontend.d.ts` in `packages/bonobo-plugin-sdk`.
+ */
+type PluginsUiFrame_InitContext =
+	| {
+			kind: "page";
+			pluginName: string;
+			pageId: string;
+			pageTitle: string;
+			organizationId: string;
+			workspaceId: string;
+	  }
+	| {
+			kind: "file_view";
+			pluginName: string;
+			fileViewId: string;
+			fileViewTitle: string;
+			organizationId: string;
+			workspaceId: string;
+			file: {
+				fileNodeId: string;
+				name: string;
+				path: string;
+				contentType: string;
+			};
+	  };
+
+// Exported so both mount points can type their `useFn` callbacks against this contract.
+export type PluginsUiFrame_Props = {
 	membershipId: Id<"organizations_workspaces_users">;
 	pluginName: string;
 	pluginVersionId: Id<"plugins_versions">;
 	entry: string;
 	title: string;
-	/** Human label used inside frame error messages, e.g. "plugin page" or "plugin view". */
-	kindLabel: string;
+	/** Human label used inside frame error messages. */
+	kindLabel: "plugin page" | "plugin view";
 	/**
 	 * Mints this frame's session. Called once while the iframe loads, and again when a token
 	 * refresh finds the session gone, to replace it for the same frame. Wrap in `useFn`: a new
@@ -196,18 +240,94 @@ type PluginsUiFrame_Props = {
 	 * context kinds carry it without each caller repeating it. Wrap in `useFn` for the same reason
 	 * as `mintSession`.
 	 */
-	getInitContext: () => Record<string, unknown>;
+	getInitContext: () => PluginsUiFrame_InitContext;
+	/**
+	 * Called when the bridge handshake finishes: the frame answered ready and the host has posted
+	 * init to it. A mount point uses this to take down the placeholder it shows over the iframe,
+	 * which paints nothing of its own for as long as the startup takes.
+	 *
+	 * It says the handshake finished. It does NOT say the plugin has painted anything. The page's
+	 * own code starts running when init arrives, and how long it takes to draw after that is the
+	 * plugin's business, not something this host can see.
+	 *
+	 * It fires at most once per mount. The SDK repeats ready every 500 ms until init reaches it, and
+	 * the host answers every one of those with the same init, so without that rule a caller would be
+	 * told "started" again and again.
+	 *
+	 * It does not fire when the frame is stopped before init goes out. A mint that was refused or
+	 * threw, a mint whose plugin version changed under it, and the 15-second startup deadline all end
+	 * the frame with no handshake. A caller that must also take its placeholder down in those cases
+	 * does that from `onError`.
+	 *
+	 * `onStarted` is not the last word, and an `onError` does not mean it fired. A ready flood and a
+	 * self-navigation stop the frame whether or not it ever started: the flood branch returns before
+	 * init goes out, and the second-load branch never looks at init.
+	 *
+	 * Optional because a mount point that shows no placeholder has nothing to do with this. Unlike
+	 * `onError`, a caller that drops it costs the member nothing.
+	 *
+	 * Its identity is free: the frame reads it from a ref, so a new closure on every render is fine
+	 * and does not need `useFn`.
+	 */
+	onStarted?: () => void;
 	onError: (message: string) => void;
 };
+
+/**
+ * Turn a mint refusal into the sentence the member reads. Both mount points show this message in an
+ * alert that replaces the frame, so it is the whole thing the member is left looking at, and the raw
+ * "Rate limit exceeded" tells them nothing they can do about it. Only that one refusal is rewritten,
+ * and it names the wait the server sent. "Rate limit exceeded" is the literal from
+ * `rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE`.
+ *
+ * Every other refusal is passed through with the words the server chose, and none of those words
+ * name the frame, the plugin, or anything the member can do. The mint doors in
+ * `convex/plugins_ui.ts` answer only "Unauthenticated", "Unauthorized", "Not found", "Rate limit
+ * exceeded", or "Permission denied" (that last one comes from
+ * `access_control_db_authorize_membership`), so a member can end up reading two words beside a Retry
+ * button. Usually those words only flash by. An uninstall or a disable refuses the mint, and it also
+ * drops the page from the live `list_ui_pages` query, so the route replaces this alert with its own
+ * "not available" message a moment later. Changing this message set is not a local edit, because the
+ * route test pins the pass-through.
+ *
+ * There are two call sites and they are not the same event for the member.
+ *
+ * The first one is the first mint of a frame that has not started yet. Nothing is lost, the member
+ * has a Retry button under the alert, and the rate-limit sentence fits what they did: they started
+ * the page a moment ago.
+ *
+ * The second one is the re-mint that `handle_refresh` does after the server deleted the session doc.
+ * It runs on a frame that already initialised, so the alert takes away a running page together with
+ * the member's state, their draft, and their live subscriptions. The rate-limit sentence reads wrong
+ * there. A member whose laptop slept for half an hour started the page once, not "too many times in
+ * a row". Both call sites still share this one sentence. Giving the second one its own wording is a
+ * product decision nobody has made yet.
+ *
+ * The host does not wait and mint again, the way `handle_refresh` waits and rotates again. A
+ * rotation can wait because the page is still running and keeps its state while it waits. By the
+ * time this function runs the frame is stopped at both call sites, and Retry is the only way back,
+ * so waiting inside the host would only delay the same alert. Do not "fix" that asymmetry.
+ */
+function mint_error_message(kindLabel: PluginsUiFrame_Props["kindLabel"], message: string, retryAfterMs?: number) {
+	if (message !== "Rate limit exceeded") {
+		return message;
+	}
+
+	// The server sends the wait in milliseconds. Round it up so the member never retries too early.
+	// The bucket always sends a number; the fallback covers a deployment older than this field.
+	const waitSeconds = typeof retryAfterMs === "number" ? Math.ceil(retryAfterMs / 1000) : 5;
+	const wait = waitSeconds === 1 ? "1 second" : `${waitSeconds} seconds`;
+	return `The ${kindLabel} was started too many times in a row. Wait ${wait}, then press Retry.`;
+}
 
 /**
  * The sandboxed iframe host shared by plugin pages and plugin file views. It loads the plugin's
  * published HTML entry, mints a `plu_` session through `mintSession`, and speaks the
  * bonobo:ready/init/token postMessage protocol with the SDK inside the frame. That protocol is
  * all the host does: the page talks to Convex itself, with the plugin-session JWT that init and
- * every token message carry beside the `plu_` token (init also hands it the deployment URL). The caller keys
- * this component so that every meaningful change (tenant, version, view, retry) gets a fresh
- * document and nonce. A session that expired while the device slept is not such a change: the
+ * every token message carry beside the `plu_` token (init also hands it the deployment URL). The
+ * caller keys this component so that every meaningful change (tenant, version, view, retry) gets a
+ * fresh document and nonce. A session that expired while the device slept is not such a change: the
  * host mints a new session for the same document and answers the pending refresh with it, so the
  * page keeps its state and its live subscriptions.
  *
@@ -217,7 +337,8 @@ type PluginsUiFrame_Props = {
  * which mount a message belongs to, so a late reply from an earlier mount is dropped; it is
  * visible to the page and is not a secret. The `parentOrigin` in the fragment only tells the SDK
  * where to address its messages, so it never posts with `"*"`. Authority comes from none of
- * these: only the session mint below produces a token, and only for a signed-in member.
+ * these: only the session mint below produces a token, and only for a member the host has already
+ * authenticated, a Clerk user or an anonymous one.
  */
 export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame_Props) {
 	const {
@@ -229,6 +350,7 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 		kindLabel,
 		mintSession,
 		getInitContext,
+		onStarted,
 		onError,
 	} = props;
 	// The frame only mounts for an authenticated member, and the SDK requires `userId` in the init
@@ -240,6 +362,23 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 	// theme change: that would tear the frame down and remount the plugin page. It installs a sender
 	// here instead, and the theme effect below calls whatever is installed.
 	const postThemeRef = useRef<((theme: PluginsUiFrame_Theme) => void) | null>(null);
+	// `onStarted` is deliberately kept OUT of the bridge effect's dependency array, so the effect
+	// reads the latest one from here. Its identity belongs to the mount point, and a mount point that
+	// passes a plain arrow would hand the effect a new value on every render; the effect would then
+	// re-run, revoke the session, and mint again while the page is already initialized, which is the
+	// failure the comment above the `src` assignment describes. `onError` may be a dependency because
+	// a mount point has to give it an identity that never changes, or one that changes only together
+	// with the `key` that remounts the frame. A state setter and a `useCallback` on `frameKey` both
+	// do that. Nothing forces that on `onStarted`.
+	const onStartedRef = useRef(onStarted);
+
+	// Keep the ref pointing at the current callback. This is a plain effect, so on mount it runs
+	// AFTER the layout effect below installs the bridge. That is safe: the first bonobo:ready is a
+	// message event from the frame, so it can never arrive before this render has finished. The
+	// initial `useRef` value covers the callback the mount started with anyway.
+	useEffect(() => {
+		onStartedRef.current = onStarted;
+	}, [onStarted]);
 
 	// Attach the message and load listeners before assigning src so the first page event cannot be missed.
 	useLayoutEffect(() => {
@@ -269,8 +408,11 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 		// Per id, not one flag for the frame: a re-mint gives the frame a second session id, and that
 		// one must still be revocable after the first was marked gone.
 		const revokedSessionIds = new Set<Id<"plugins_ui_sessions">>();
-		let remintPending = false;
+		// When the last replacement session was minted. `handle_refresh` reads it to tell a mint loop
+		// from a device that slept twice.
+		let lastRemintAt: number | null = null;
 		let frameReady = false;
+		let startedNotified = false;
 		let initMessage: unknown = null;
 		let refreshInFlight: { requestId: string; promise: Promise<RefreshResponse> } | null = null;
 		let lastRefreshResponse: RefreshResponse | null = null;
@@ -328,6 +470,18 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 			message,
 		});
 
+		// Tell the caller the frame is running, once per mount. Init goes out from two places, and
+		// which one sends it depends on whether the mint or the frame finished first, so both call
+		// this. The flag is what keeps it to one call: the SDK repeats ready every 500 ms until it
+		// gets an init, and every one of those repeats is answered with the same init again.
+		const notify_started = () => {
+			if (startedNotified) {
+				return;
+			}
+			startedNotified = true;
+			onStartedRef.current?.();
+		};
+
 		const handle_ready = () => {
 			// An honest SDK stops sending ready at init, so past the allowance the frame dies.
 			readyCount += 1;
@@ -339,10 +493,13 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 				return;
 			}
 			frameReady = true;
-			// The SDK repeats ready until init arrives, so replay the same init when it is available.
+			// A ready that arrives after init is answered with the same init again, because the SDK's
+			// 500 ms retry can race the first init. A reload or a navigation is caught by the next
+			// `load` event, which stops the frame and revokes the session.
 			if (initMessage) {
 				post_to_iframe(initMessage);
 				clearTimeout(startupDeadline);
+				notify_started();
 				// init carries the theme read when the session was minted. If the member switched theme
 				// while the frame was still loading, the sender above dropped that switch because the
 				// frame was not ready. Send it now; the sender skips it when nothing changed.
@@ -364,7 +521,7 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 				}
 				if (result._nay) {
 					cancelled = true;
-					onError(result._nay.message);
+					onError(mint_error_message(kindLabel, result._nay.message, result._nay.data?.retryAfterMs));
 					return;
 				}
 				if (result._yay.pluginVersionId !== pluginVersionId) {
@@ -393,9 +550,12 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 					// userId comes after the spread so the frame's authenticated value always wins.
 					context: { ...getInitContext(), userId },
 				};
+				// The frame answered ready while the mint was still running, so this is where init goes
+				// out and where the frame counts as started.
 				if (frameReady) {
 					post_to_iframe(initMessage);
 					clearTimeout(startupDeadline);
+					notify_started();
 				}
 			})
 			.catch((error) => {
@@ -429,17 +589,78 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 			}
 
 			const currentSessionId = sessionId;
-			const promise: Promise<RefreshResponse> = app_convex
-				.action(app_convex_api.plugins_ui.refresh_ui_session, {
+			const rotate_session = () =>
+				app_convex.action(app_convex_api.plugins_ui.refresh_ui_session, {
 					membershipId,
 					sessionId: currentSessionId,
-				})
-				.then(async (result) => {
+				});
+			const promise: Promise<RefreshResponse> = rotate_session()
+				.then(async (first) => {
+					let result = first;
+					// Every rotation, page or file view, charges `plugins_ui_session_mint`, and that bucket
+					// holds two tokens. A page also mints on that same bucket, so for a page a Retry, a
+					// second plugin tab, or StrictMode's double mint in development can leave it empty for
+					// a few seconds. A file view mints on its own larger bucket
+					// (`plugins_ui_file_view_session_mint`, eight tokens), so only its rotations reach this
+					// bucket and it sees this refusal far less often. Answering token-error here used to
+					// end the page: the SDK's auth callback tries the refresh three times in all, waiting
+					// one second and then two seconds in between. When the third try fails it answers null,
+					// the frame's Convex client drops to unauthenticated, and the member sees a page that
+					// stopped working with no host alert and no Retry.
+					//
+					// So wait the delay the server sent and rotate once more. "Rate limit exceeded" is the
+					// literal from `rate_limiter_RATE_LIMIT_EXCEEDED_MESSAGE`.
+					if (result._nay?.message === "Rate limit exceeded" && !cancelled) {
+						const retryAfterMs = result._nay.data?.retryAfterMs;
+						// This wait plus the two round trips around it must fit inside the SDK's 10-second
+						// refresh deadline (`REFRESH_DEADLINE_MS` in
+						// `packages/bonobo-plugin-sdk/frontend.js`). If the host answers after that, the SDK
+						// has already dropped the request, the host still thinks it answered, so it never
+						// calls `onError` and the member gets a dead page with no alert. What bounds the
+						// wait is the bucket's rate: the refusal asks for one token, so the wait cannot
+						// exceed `period / rate`, which is 5 seconds for `plugins_ui_session_mint` in
+						// `packages/app/convex/rate_limiter.ts`. Changing that bucket to a slower rate
+						// breaks this.
+						if (typeof retryAfterMs === "number" && iframeRef.current === iframeNode) {
+							await new Promise((resolve) => setTimeout(resolve, retryAfterMs));
+							if (!cancelled && iframeRef.current === iframeNode) {
+								result = await rotate_session();
+							}
+						}
+						// A refusal with no delay to wait, or a bucket still empty after waiting it, leaves
+						// the page nothing left to wait for. Stop the frame so the member gets the alert and
+						// its Retry button instead of a page that quietly stopped. Any other refusal from
+						// the second try falls through to the branches below, so a session that went away
+						// during the wait is still re-minted rather than killed.
+						//
+						// Answer the frame before setting `cancelled`, because `post_to_iframe` goes silent
+						// as soon as that flag is set. Today the answer changes nothing the member sees.
+						// Both mount points render their alert INSTEAD of the frame, so `onError` unmounts
+						// the iframe in the same commit and takes the SDK's document with it, together
+						// with its pending refresh and its refresh deadline. The stop paths below set
+						// `cancelled` first, so their `token_error` return is dropped; that is the same
+						// no-op written the other way round. Keep this order anyway. It costs nothing, and
+						// it is the answer the SDK needs if a mount point ever shows its error beside a
+						// frame it keeps alive.
+						if (result._nay?.message === "Rate limit exceeded" && !cancelled) {
+							const answer = token_error(requestId, result._nay.message);
+							post_to_iframe(answer);
+							cancelled = true;
+							clearTimeout(startupDeadline);
+							onError(`The ${kindLabel} could not renew its session`);
+							return answer;
+						}
+					}
+
 					if (result._nay) {
-						// Every refresh failure except "Unauthorized" is transient and answers
-						// token-error, so the SDK's own retry handles it. Host-initiated kills (ready
-						// flood, second load) set `cancelled` before this handler can run, so a page
-						// the host revoked on purpose never mints itself a new session.
+						// A refusal other than "Unauthorized" is answered with token-error. The SDK retries
+						// it a few times and then gives up. Several of them are permanent — "Not found"
+						// for a disabled installation, a changed version, a purged workspace or a deleted
+						// file node, and the read-permission refusal for a restriction added mid-session —
+						// but for uninstall, disable, upgrade, and purge the owner's live query replaces
+						// or removes this frame before that matters. Host-initiated kills (ready flood,
+						// second load) set `cancelled` before this handler can run, so a page the host
+						// revoked on purpose never mints itself a new session.
 						if (result._nay.message !== "Unauthorized" || cancelled) {
 							return token_error(requestId, result._nay.message);
 						}
@@ -450,10 +671,26 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 						// document and answer this refresh with it. The gone doc has nothing left to
 						// revoke.
 						revokedSessionIds.add(currentSessionId);
-						// One re-mint per session: a re-minted session that is gone again before it
-						// ever refreshed means something keeps deleting sessions, so stop instead of
-						// minting in a loop.
-						if (remintPending) {
+						// Stop a mint loop, and tell it from a slept device by how fast the second ask
+						// arrives.
+						//
+						// The page picks the request ids, so it can post one refresh request after
+						// another. If every rotation finds the session gone, the host would mint a new
+						// session for each one, seconds apart. That is the loop this stops.
+						//
+						// An honest frame cannot ask again that soon. The re-mint hands the SDK a JWT
+						// that lasts the whole new session, and `jwt_is_fresh()`
+						// (`packages/bonobo-plugin-sdk/frontend.js:304`) answers every ask from that JWT
+						// until it is a minute from expiry. A session lasts `SESSION_TTL_MS` in
+						// `convex/plugins_ui.ts`, half an hour, so the next ask is about half an hour
+						// away. A device that sleeps through a second session lands far past this gap
+						// and keeps its running page.
+						//
+						// This does not catch a slow loop. If something outside the frame keeps deleting
+						// sessions, the host mints a new one at every session end, about twice an hour.
+						// That is not a runaway, and each of those mints makes the page work again until
+						// its session goes too.
+						if (lastRemintAt !== null && Date.now() - lastRemintAt < REMINT_MIN_GAP_MS) {
 							cancelled = true;
 							clearTimeout(startupDeadline);
 							onError(`The ${kindLabel} session was lost`);
@@ -472,7 +709,13 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 						if (minted._nay) {
 							cancelled = true;
 							clearTimeout(startupDeadline);
-							onError(minted._nay.message);
+							// The member gets the readable sentence from `onError`. The token-error below
+							// never reaches the page: `cancelled` was set two lines up, so `post_to_iframe`
+							// drops it, and the mount point replaces the iframe with its alert in the same
+							// commit. It still carries the raw message because every arm of this function
+							// must return a response, and because that is the right value to send if a
+							// mount point ever keeps a stopped frame on screen.
+							onError(mint_error_message(kindLabel, minted._nay.message, minted._nay.data?.retryAfterMs));
 							return token_error(requestId, minted._nay.message);
 						}
 
@@ -484,7 +727,7 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 							return token_error(requestId, "The installed plugin version changed");
 						}
 						sessionId = minted._yay.sessionId;
-						remintPending = true;
+						lastRemintAt = Date.now();
 						return {
 							type: "bonobo:token",
 							nonce,
@@ -498,8 +741,8 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 					if (result._yay.pluginVersionId !== pluginVersionId) {
 						return token_error(requestId, "The installed plugin version changed");
 					}
-					// A refresh that succeeds proves the current session is healthy again.
-					remintPending = false;
+					// A rotation that succeeds proves the session is alive, so the gap above starts over.
+					lastRemintAt = null;
 					return {
 						type: "bonobo:token",
 						nonce,
@@ -571,6 +814,30 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 		window.addEventListener("message", handle_message);
 		iframeNode.addEventListener("load", handle_load);
 		// src is assigned last, after every guard above is active.
+		//
+		// Under StrictMode the effect runs twice on mount. Setting the same src again would reload the
+		// frame, so skip it when it is already set.
+		//
+		// What decides whether that skip is safe is timing, not whether the frame remounts. A re-run
+		// before the frame has loaded is harmless: the SDK has not sent ready yet, so the new run tears
+		// down and mints again while nothing is waiting for an answer. A re-run after the first init is
+		// the fatal one: the cleanup revokes the session and the new run mints another, but the SDK
+		// stops repeating ready once it is initialized, so no init reaches the page and the startup
+		// deadline kills it.
+		//
+		// So a new dependency below must be one of two things: stable for the whole life of this mount,
+		// or part of `frameKey`, which both mount points pass as this component's `key`, so a change
+		// there remounts the frame instead of re-running this effect. `entry`, `pluginName`, and
+		// `userId` are in neither group. They are safe only because they cannot change on their own:
+		// `entry` and `pluginName` come from the version doc, and `pluginVersionId` pins both of them.
+		// `pluginName` is that doc's `name`, and `entry` comes from its `pages` or `fileViews`. A
+		// `plugins_versions` doc is not frozen. `convex/plugins.ts` patches that table in four places.
+		// Only one of them rewrites those fields: the republish of an artifact that never became ready
+		// (`convex/plugins.ts:535`). That patch selects its row by `name` and `artifactHash`, so it
+		// cannot change the name. It also runs only while `sourceStatus` is not "ready", and a mint
+		// refuses a version that is not ready. So a frame never runs on a doc that patch can still
+		// touch. `userId` is pinned the same way by `membershipId`, because a membership doc belongs to
+		// one user. Both `pluginVersionId` and `membershipId` ARE in `frameKey`.
 		if (iframeNode.getAttribute("src") !== iframeSrc.href) {
 			iframeNode.setAttribute("src", iframeSrc.href);
 		}

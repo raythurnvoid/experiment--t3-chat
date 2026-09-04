@@ -154,8 +154,10 @@ included; the rest are about the cross-origin plugin frame:
 - **A tab you bound with `bindOpenTab` can show a Chitchat `<iframe title="Chitchat">` in the host DOM while `page.frames()` still lists only the host.** `page.frameLocator('iframe[title="Chitchat"]')` then fails with `Failed to find frame for selector "iframe[title=\"Chitchat\"] >> internal:control=enter-frame"` and the CLI exits 9. A tab the run owns with `context.newPage()` (set both `state.page` and `state.appPlaywriterHarness.page`, then fire-and-forget `goto`) attaches the OOPIF: `frames()` includes the `/plugins-ui/` URL and Frame-handle locators work. Verified 2026-08-26. Do not retry `frameLocator` on the bound tab — open an owned tab.
 - A long `page.evaluate` (30 s+) through the **extension** relay can die with `Execution context was destroyed, most likely because of a navigation` while the in-page loop KEEPS RUNNING — its writes still land, only the result is lost. Direct-CDP sessions do not suffer this. Put long in-page loops in the direct-CDP scratch session, or split them into short batches; recount server-side instead of trusting the lost return value.
 - A scratch-browser anonymous user's page-context Convex calls start throwing `Unauthenticated` after the tab idles a few minutes. The UI recovers on its own auth loop, but `page.evaluate` callers should reload the tab and wait ~5 s to re-mint before retrying.
-- Uninstalling a plugin while its page route is open never reaches the plugin's own in-frame dead-state UI: the host route reacts first, unmounts the frame, and shows `This plugin page is not available.`. The same is true for org-membership removal (route-level kill). Today no revocation flavor exercises the in-frame `docs: null` dead path end to end; it stays unit-covered. The teardown also fired a host pageerror `useAppAuth must be used within AppAuthProvider` followed by a recovery reload — a host-app bug, not a plugin bug; do not chase it as a plugin regression.
+- Uninstalling a plugin while its page route is open never reaches the plugin's own in-frame dead-state UI: the host route reacts first, unmounts the frame, and shows `This plugin page is not available.`. The same is true for org-membership removal (route-level kill). Today no revocation flavor exercises the in-frame dead-read path end to end; it stays unit-covered. Since SDK 0.13.0 that path is the door's own answer, not an SDK watch update: a refused read is a bare `null`, or the empty final page for `watch_documents_page`. The teardown also fired a host pageerror `useAppAuth must be used within AppAuthProvider` followed by a recovery reload — a host-app bug, not a plugin bug; do not chase it as a plugin regression.
 - **A file-view tab clicked in a freshly opened background tab can miss the host's 15 s startup deadline once.** On 2026-09-02 the `Video player` tab on `files?nodeId=<recording.mp4 id>`, clicked 14 s after a `context.newPage()` + `goto`, ended in the host alert `The plugin view did not start in time` with a `Retry` button and no iframe left in the DOM, so `frames()` listed the host only. One click on `Retry` attached the `/plugins-ui/` frame within 5 s and the `<video>` reached `readyState` 4 at 12 s. The plugin had not changed (Video Player 0.1.4 is a pin-only release of 0.1.3, which passed the same check earlier that day). Click `Retry` once and re-read `frames()` before reporting a file view as broken; report it only when the retry fails too.
+- **Every plugin frame mints TWO sessions in development, then revokes one. This is React StrictMode, not a bug.** The bridge lives in a layout effect, and StrictMode runs mount effects twice, so both runs mint. The revoke does not come from the effect cleanup. That cleanup runs in the same commit, before the first run's mint has answered, so it still holds no session id and revokes nothing. The revoke comes later, from the stale-frame branch in `plugins-ui-frame.tsx`: the first mint answers into a frame that is already cancelled, so the branch revokes the session it just minted. Do not weaken that branch — it is also what cleans up a mint that lands after a Retry or an unmount. The table settles on exactly one live doc per open frame. Verified 2026-09-04 on both mount points: a Gallery page showed `mint_page_session` x2 5 ms apart then one `revoke_ui_session`, and a Video Player file view showed `mint_file_view_session` x2 6 ms apart then one `revoke_ui_session`. Two consequences for QA. A call recorder that counts mints must expect two per mount in dev and one in a production build, so never read "two mints" as a leak. And which bucket the two mints charge depends on the frame kind, so budget against the right one or the refusal will not reproduce. A page mints on `plugins_ui_session_mint`, a token bucket of capacity 2 keyed by user, so a dev page frame starts with an empty bucket: the next rotation or Retry within a few seconds is refused with `Rate limit exceeded` until the bucket refills at 12/min. A file view mints on `plugins_ui_file_view_session_mint` instead, capacity 8 refilling at 30/min, so its double mint leaves that bucket with room. But every session rotation, page or file view, charges `plugins_ui_session_mint`, so a file view still reaches the same refusal — it just needs a few rotations to get there. That is why the rate-limit retry in `plugins-ui-frame.tsx` matters in development long before it would matter in production.
+- **A full browser reload leaks the frame's session doc until its TTL.** A reload destroys the document without running React effect cleanups, so the revoke never fires and the row sits in `plugins_ui_sessions` for the rest of its 30 minutes. Expected, and the expiry job clears it. It matters only when you assert on the table: after a few reloads a "one live doc per open view" check reads several rows for the same view. Assert that the row for the view you CLOSED is gone, or revoke the strays before you start.
 
 ## A plugin frame keeps its last hover after the pointer leaves it, and the OS cursor lands in the screenshot
 
@@ -331,6 +333,25 @@ dev server answered 200 for all three files but with **1,380,727 bytes for a 431
 status code and the path both look right, which is what makes it dangerous — the check runs against
 a different program. Serve a build with a plain static server (a ten-line `node:http` script) when
 the bytes have to be the built ones.
+
+## `packages/app/dist` still holds an August plugin-frame bundle, and it is not your code
+
+`packages/app/dist/assets/plugins-ui-frame-DkMuVHW8.js` is dated 30 August. It is untracked:
+`git ls-files packages/app/dist` returns nothing and `.gitignore` ignores `**/dist`. Being ignored
+does not mean nothing rewrites the folder. `packages/app/package.json:9` is `"build": "vite build"`,
+and `packages/app/vite.config.ts` sets neither `outDir` nor `emptyOutDir`, so Vite's defaults write
+`packages/app/dist` and empty it first. The folder is stale only because nobody has run that build
+since August. A QA step that served `packages/app/dist` instead of the dev server would drive that
+old bridge, and every plugin-frame check would pass for the wrong reason.
+
+The served bundle's own vocabulary is the tell. That file writes `bridgeNonce` where the current
+bridge writes `nonce` (renamed in the commit that shipped SDK 0.10.0), it carries an `onSessionLost`
+prop the component no longer has, it sends the theme as named tokens (`surface`, `surfaceRaised`,
+`textMuted`, `accentHover`) where the current frame sends the numbered `base-1` / `fg` / `accent`
+scales, and it puts no `jwt` in its init message. So grep the file you are about to serve for
+`bridgeNonce` and for `jwt`. A hit on the first, or a miss on the second, means you are not looking
+at the working tree. The fix is to run `vp env exec pnpm --dir packages/app run build` first: it
+empties `packages/app/dist` and writes your working tree there. Checked 2026-09-04.
 
 ## An action button that is `pointer-events: none` until hover reads as an overlay bug
 
@@ -1395,6 +1416,18 @@ await state.page.evaluate(() => {
 
 The wrapper still calls through, so the real permission behaviour is unchanged and a rejection still
 shows up. Verified 2026-09-04 on the non-collaborative editors' `Copy text` toast action.
+
+The empty read is not deterministic. In a second extension-mode session the same day, on the
+top-level `localhost:5173` page, `navigator.clipboard.readText()` from a plain `page.evaluate`
+returned the copied text every time (5/5), with and without a focus click first, on a backgrounded
+tab — and a plain-evaluate `writeText` succeeded there too. The `NotAllowedError` above was measured
+inside the Council plugin frame, not on the top-level page. Do not read that as a permissions-policy
+difference: the host gives every plugin frame `allow="clipboard-write"` (`plugins-ui-frame.tsx`), so
+the policy grants the feature in both places. Why the top-level evaluate wrote and the in-frame one
+did not was not established here. Two rules follow: treat an empty read as inconclusive rather than
+as proof of anything, and when it does answer, expect CRLF line endings (`\r\n`) in place of the
+`\n` the app wrote, so compare with `includes`, not equality.
+The `writeText` spy stays the assertion that works in both cases.
 
 ## `auditAccessibility` on `about:blank` looks exactly like a clean audit
 

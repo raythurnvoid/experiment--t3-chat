@@ -58,7 +58,7 @@ import { MySeparator } from "@/components/my-separator.tsx";
 import { MySkeleton } from "@/components/my-skeleton.tsx";
 import { MySpinner } from "@/components/my-spinner.tsx";
 import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/components/my-tabs.tsx";
-import { PluginsUiFrame } from "@/components/plugins-ui-frame.tsx";
+import { PluginsUiFrame, type PluginsUiFrame_Props } from "@/components/plugins-ui-frame.tsx";
 import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import { useFn, useRenderPromise } from "@/hooks/utils-hooks.ts";
 import { useFileNodeActivities } from "@/lib/activities.ts";
@@ -116,17 +116,8 @@ import {
 	LockKeyhole,
 	Users,
 } from "lucide-react";
-import React, {
-	memo,
-	useCallback,
-	useEffect,
-	useId,
-	useImperativeHandle,
-	useLayoutEffect,
-	useMemo,
-	useRef,
-	useState,
-} from "react";
+import React, { memo, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { RefObject } from "react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
 import { FilesSidebar } from "../files-sidebar.tsx";
@@ -904,6 +895,7 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 	// Every matching view becomes a tab, ordered by installation creation time.
 	const fileViewMatches = plugins_list_file_view_matches(fileViewPlugins, node.contentType);
 
+	const detailsSectionRef = useRef<HTMLElement | null>(null);
 	const [selectedTabId, setSelectedTabId] = useState<string | null | undefined>(STORED_FILE_DETAILS_TAB_ID);
 	// The matches come from a live query, so the selected view's tab can disappear mid-session
 	// (its plugin was uninstalled, or a version update dropped the view). Fall back to the
@@ -912,6 +904,26 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 		selectedTabId === STORED_FILE_DETAILS_TAB_ID ||
 		fileViewMatches.some((match) => stored_file_view_tab_id(match) === selectedTabId);
 	const activeTabId = selectedTabIsAlive ? selectedTabId : STORED_FILE_DETAILS_TAB_ID;
+
+	// The swap above is silent: the tab the member was reading is gone and the details tab is
+	// suddenly in front. Say what happened, and pick focus up again. Removing the tab or its frame
+	// leaves focus on the document body, and from there the next Tab starts at the top of the page.
+	// Focus goes to the details section and not to the details tab, because the tab strip is gone
+	// when the view that disappeared was the only match. `plugins_list_file_view_matches` then has
+	// nothing left to return, and the tab layout below is replaced by the plain details section in
+	// the same commit, tab strip included. The section renders in both layouts, so it is still there
+	// when this runs. A single matching view is the normal case: Gallery on an image, Video Player
+	// on a video.
+	useEffect(() => {
+		if (selectedTabIsAlive) {
+			return;
+		}
+
+		toast.info("This file view is no longer available. Showing file details.");
+		if (document.activeElement === document.body) {
+			detailsSectionRef.current?.focus();
+		}
+	}, [selectedTabIsAlive]);
 
 	// The plugin views stream the stored object, so wait until the upload pipeline is finished.
 	const uploadPipelineComplete = !storedFileMetadataIsLoading && activeUploadStatusText === null;
@@ -943,7 +955,15 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 	const location = node.path.slice(0, node.path.lastIndexOf("/")) || "/";
 
 	const detailsSection = (
-		<section className={"FileNodeViewStoredFile" satisfies FileNodeViewStoredFile_ClassNames}>
+		// tabIndex -1 makes this section the place focus lands when a file view disappears. It stays
+		// out of the tab order, so nothing changes while every view is still there. The label names
+		// the region, so a screen reader announces where the focus landed.
+		<section
+			ref={detailsSectionRef}
+			tabIndex={-1}
+			aria-label="File details"
+			className={"FileNodeViewStoredFile" satisfies FileNodeViewStoredFile_ClassNames}
+		>
 			<header className={"FileNodeViewStoredFile-header" satisfies FileNodeViewStoredFile_ClassNames}>
 				<MyIcon className={"FileNodeViewStoredFile-icon" satisfies FileNodeViewStoredFile_ClassNames}>
 					<FileDigit />
@@ -1130,7 +1150,21 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
 // #endregion stored file
 
 // #region plugin view
-type FileNodeViewPluginView_ClassNames = "FileNodeViewPluginView" | "FileNodeViewPluginView-error";
+/**
+ * May this view move focus right now?
+ *
+ * Yes when the member's focus is already inside the view. Yes too when focus sits on the document
+ * body, because that is where the browser leaves it after the iframe holding it is removed, and yes
+ * when the document reports no focused element at all. No while the member is working somewhere else
+ * on the screen: this view is one tab panel next to the files sidebar, and that sidebar cancels a
+ * rename when its input loses focus. The moves below run on events the member never asked for.
+ */
+function can_take_focus(region: HTMLElement | null) {
+	const focused = document.activeElement;
+	return focused === null || focused === document.body || region?.contains(focused) === true;
+}
+
+type FileNodeViewPluginView_ClassNames = "FileNodeViewPluginView";
 
 type FileNodeViewPluginView_Props = {
 	node: app_convex_Doc<"files_nodes">;
@@ -1145,18 +1179,115 @@ type FileNodeViewPluginView_Props = {
 
 const FileNodeViewPluginView = memo(function FileNodeViewPluginView(props: FileNodeViewPluginView_Props) {
 	const { node, contentType, pluginName, pluginVersionId, fileViewId, fileViewTitle, entry } = props;
-	const { membershipId, organizationId, workspaceId } = AppTenantProvider.useContext();
-	const retryButtonRef = useRef<HTMLButtonElement | null>(null);
-	const [sessionError, setSessionError] = useState<{ frameKey: string; message: string } | null>(null);
-	// Incremented by Retry. It keys the iframe so each attempt gets a fresh document and nonce.
+	const { membershipId } = AppTenantProvider.useContext();
+	const sectionRef = useRef<HTMLElement | null>(null);
+	// Incremented by Retry. It is part of the frame key below, so each attempt gets a fresh frame.
 	const [attempt, setAttempt] = useState(0);
 
-	// Any tenant, version, view, file, or Retry change creates a new iframe and nonce.
+	// Any tenant, version, view, file, or Retry change creates a new iframe and nonce. The key also
+	// keys the child below, so React throws that child away and builds a new one for every new frame.
+	// That remount is what keeps the child's error and its "started" flag honest: each belongs to one
+	// frame and dies with it, so the child never has to ask which frame a message came from.
 	const frameKey = `${membershipId}:${pluginVersionId}:${fileViewId}:${node._id}:${attempt}`;
-	const activeSessionError = sessionError?.frameKey === frameKey ? sessionError.message : null;
-	// useCallback on frameKey, not useFn: an error from a stale frame must record the old key so it
-	// gets ignored instead of being blamed on the new frame.
-	const handleFrameError = useCallback((message: string) => setSessionError({ frameKey, message }), [frameKey]);
+	// The frame key the effect below has already handled. It is how that effect tells the first frame
+	// apart from a frame that replaced a running one. A plain "first run" flag would not do: React
+	// StrictMode runs a mount effect twice in development, so the second run would read the flag as a
+	// replacement and steal focus the first time the member opens this tab.
+	const handledFrameKeyRef = useRef(frameKey);
+
+	const handleRetry = useFn(() => {
+		// The press is about to unmount this button, and focus would fall back to the document body:
+		// a keyboard member would lose their place and have to tab from the top of the page. So take
+		// focus to this view while the button is still there, and let the next Tab reach the frame.
+		sectionRef.current?.focus();
+		setAttempt((current) => current + 1);
+	});
+
+	// A new frame key throws the running iframe away. An admin upgrading the plugin does that while
+	// nobody asked for it: the member can be reading the view with focus inside the iframe, and the
+	// browser then leaves them on the document body. The new frame is covered and inert while it
+	// starts, so there is nothing inside this view to tab to until the handshake finishes. Park focus
+	// on this view instead. The first frame is skipped: opening the tab took nobody's focus away.
+	useEffect(() => {
+		if (handledFrameKeyRef.current === frameKey) {
+			return;
+		}
+
+		handledFrameKeyRef.current = frameKey;
+		if (can_take_focus(sectionRef.current)) {
+			sectionRef.current?.focus();
+		}
+	}, [frameKey]);
+
+	return (
+		// tabIndex -1 makes this view the target the focus moves above land on. It stays out of the tab
+		// order, so nothing changes for a member whose frame never fails and never gets replaced. The
+		// label is what turns the section into a named region, so a screen reader announces where the
+		// focus landed.
+		<section
+			ref={sectionRef}
+			tabIndex={-1}
+			aria-label={fileViewTitle}
+			className={"FileNodeViewPluginView" satisfies FileNodeViewPluginView_ClassNames}
+		>
+			<FileNodeViewPluginViewFrame
+				key={frameKey}
+				regionRef={sectionRef}
+				node={node}
+				contentType={contentType}
+				pluginName={pluginName}
+				pluginVersionId={pluginVersionId}
+				fileViewId={fileViewId}
+				fileViewTitle={fileViewTitle}
+				entry={entry}
+				onRetry={handleRetry}
+			/>
+		</section>
+	);
+});
+
+type FileNodeViewPluginViewFrame_ClassNames =
+	| "FileNodeViewPluginViewFrame"
+	| "FileNodeViewPluginViewFrame-loading"
+	| "FileNodeViewPluginViewFrame-error";
+
+type FileNodeViewPluginViewFrame_Props = {
+	/** The `<section>` the view above renders. The focus move below asks whether focus is still in it. */
+	regionRef: RefObject<HTMLElement | null>;
+	node: app_convex_Doc<"files_nodes">;
+	/** The file's content type that matched the view's declared list. Sent to the plugin in bonobo:init. */
+	contentType: string;
+	pluginName: string;
+	pluginVersionId: app_convex_Id<"plugins_versions">;
+	fileViewId: string;
+	fileViewTitle: string;
+	entry: string;
+	onRetry: () => void;
+};
+
+/**
+ * One plugin frame and the two things the member sees around it: the alert when the frame fails, and
+ * the cover until the frame starts.
+ *
+ * The view above keys this component with the frame key, so all of its state belongs to exactly one
+ * frame. A frame that goes away takes that state with it, and the frame replacing it starts clean.
+ */
+const FileNodeViewPluginViewFrame = memo(function FileNodeViewPluginViewFrame(
+	props: FileNodeViewPluginViewFrame_Props,
+) {
+	const { regionRef, node, contentType, pluginName, pluginVersionId, fileViewId, fileViewTitle, entry, onRetry } =
+		props;
+	const { membershipId, organizationId, workspaceId } = AppTenantProvider.useContext();
+	const retryButtonRef = useRef<HTMLButtonElement | null>(null);
+	// Names the message inside the alert, so the Retry button can point at it and say what failed.
+	const errorMessageId = `FileNodeViewPluginViewFrame-${useId()}-error`;
+	const [sessionError, setSessionError] = useState<string | null>(null);
+	const [isFrameStarted, setIsFrameStarted] = useState(false);
+	// What the live region below says. It starts empty on purpose; the effect that fills it says why.
+	const [statusMessage, setStatusMessage] = useState("");
+
+	const loadingMessage = `Loading ${fileViewTitle}...`;
+	const readyMessage = `${fileViewTitle} is ready.`;
 
 	const mintSession = useFn(() =>
 		app_convex.action(app_convex_api.plugins_ui.mint_file_view_session, {
@@ -1167,7 +1298,7 @@ const FileNodeViewPluginView = memo(function FileNodeViewPluginView(props: FileN
 		}),
 	);
 
-	const getInitContext = useFn(() => ({
+	const getInitContext = useFn<PluginsUiFrame_Props["getInitContext"]>(() => ({
 		kind: "file_view",
 		pluginName,
 		fileViewId,
@@ -1182,30 +1313,74 @@ const FileNodeViewPluginView = memo(function FileNodeViewPluginView(props: FileN
 		},
 	}));
 
-	const handleRetry = useFn(() => {
-		setAttempt((current) => current + 1);
-	});
-
-	// The error replaces the iframe (and any focus that was inside it), so move focus to the one
-	// available action.
+	// The error replaces the iframe, and any focus that was inside it, so move focus to the one
+	// available action. The move is not unconditional. The frame reports failures nobody is waiting
+	// for: the mint refusing a session, the startup deadline running out, the plugin flooding the
+	// bridge with ready messages, the frame loading a second document, or a renewal refused much
+	// later. By then the member may be working elsewhere on the screen, so ask where focus is first.
 	useEffect(() => {
-		if (activeSessionError !== null) {
+		if (sessionError !== null && can_take_focus(regionRef.current)) {
 			retryButtonRef.current?.focus();
 		}
-	}, [activeSessionError]);
+	}, [sessionError]);
+
+	// A polite live region is read out when new text lands in a region the screen reader is already
+	// watching. Inserting the region with its text already inside it is the one case that is not
+	// reliably announced. So the region below is always in the DOM and starts empty, and this effect
+	// writes the sentence one commit later. The same region also says when the wait is over. A start
+	// that fails already tells the member: the alert speaks, and focus moves onto Retry. A start that
+	// works moves no focus, and the cover is hidden from screen readers, so without this second
+	// sentence the member would hear the wait begin and never hear it end.
+	useEffect(() => {
+		setStatusMessage(isFrameStarted ? readyMessage : loadingMessage);
+	}, [isFrameStarted, loadingMessage, readyMessage]);
+
+	if (sessionError !== null) {
+		return (
+			<div
+				className={"FileNodeViewPluginViewFrame-error" satisfies FileNodeViewPluginViewFrame_ClassNames}
+				role="alert"
+			>
+				{/* Focus moves onto Retry as this alert appears, and a screen reader then describes the
+				    focused button. Its whole name is "Retry", so the member would hear nothing about what
+				    failed. aria-describedby ties the message to the button and gives them the reason. */}
+				<span id={errorMessageId}>{sessionError}</span>
+				<MyButton ref={retryButtonRef} aria-describedby={errorMessageId} onClick={onRetry}>
+					Retry
+				</MyButton>
+			</div>
+		);
+	}
 
 	return (
-		<section className={"FileNodeViewPluginView" satisfies FileNodeViewPluginView_ClassNames}>
-			{activeSessionError ? (
-				<div className={"FileNodeViewPluginView-error" satisfies FileNodeViewPluginView_ClassNames} role="alert">
-					{activeSessionError}
-					<MyButton ref={retryButtonRef} onClick={handleRetry}>
-						Retry
-					</MyButton>
+		<>
+			{/* What a screen reader announces. This region is always here and starts empty; the effect
+			    above says why. */}
+			<div className="sr-only" role="status" aria-live="polite">
+				{statusMessage}
+			</div>
+			{/* The same sentence on screen, hidden from screen readers so it is not said twice. The
+			    frame stays mounted under this cover: it is the frame that reports the handshake, so
+			    unmounting it would remove the very thing being waited for. */}
+			{isFrameStarted ? null : (
+				<div
+					className={"FileNodeViewPluginViewFrame-loading" satisfies FileNodeViewPluginViewFrame_ClassNames}
+					aria-hidden
+				>
+					<MySpinner size="16px" />
+					<span>{loadingMessage}</span>
 				</div>
-			) : (
+			)}
+			{/* `inert` while the cover is up. The cover is opaque, but the iframe underneath still takes
+			    clicks and still sits in the tab order. Without this a keyboard member can tab into a
+			    frame this view just told them has not started, and land inside a cross-origin document
+			    with nothing on screen. It goes on this wrapper because `PluginsUiFrame` renders the
+			    iframe from its own fixed prop list and forwards nothing else. */}
+			<div
+				className={"FileNodeViewPluginViewFrame" satisfies FileNodeViewPluginViewFrame_ClassNames}
+				inert={!isFrameStarted}
+			>
 				<PluginsUiFrame
-					key={frameKey}
 					membershipId={membershipId}
 					pluginName={pluginName}
 					pluginVersionId={pluginVersionId}
@@ -1214,10 +1389,14 @@ const FileNodeViewPluginView = memo(function FileNodeViewPluginView(props: FileN
 					kindLabel="plugin view"
 					mintSession={mintSession}
 					getInitContext={getInitContext}
-					onError={handleFrameError}
+					onStarted={() => setIsFrameStarted(true)}
+					// The state setter is the handler: the frame hands over the sentence and this component
+					// shows it. A setter identity never changes, and the frame's bridge effect lists
+					// `onError` in its dependencies, so a changing one would tear the frame down.
+					onError={setSessionError}
 				/>
-			)}
-		</section>
+			</div>
+		</>
 	);
 });
 // #endregion plugin view
