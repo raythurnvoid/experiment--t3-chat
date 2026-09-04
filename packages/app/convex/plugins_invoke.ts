@@ -35,7 +35,9 @@ const INVOKE_RESPONSE_MAX_BYTES = 262_144;
 // lands while the run record is still live and this action settles it instead of the expiry cron.
 const INVOKE_RUNNER_TIMEOUT_MS = 35_000;
 
-/** Stop reading an invoke request as soon as it crosses this route's limit. */
+/**
+ * Stop reading an invoke request as soon as it crosses this route's limit.
+ */
 async function read_request_text_bounded(request: Request, maxBytes: number) {
 	if (!request.body) return "";
 	const reader = request.body.getReader();

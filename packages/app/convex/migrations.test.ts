@@ -192,7 +192,9 @@ async function seed_member_share_door(t: ReturnType<typeof test_convex>) {
 	});
 }
 
-/** One document as it was stored before the per-member share existed: no `chargedTo`, no `machineBytes`. */
+/**
+ * One document as it was stored before the per-member share existed: no `chargedTo`, no `machineBytes`.
+ */
 async function seed_pre_share_document(
 	t: ReturnType<typeof test_convex>,
 	fixture: Awaited<ReturnType<typeof seed_member_share_door>>,

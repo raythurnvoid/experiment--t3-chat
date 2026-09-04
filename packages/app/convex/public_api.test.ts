@@ -5247,7 +5247,9 @@ describe("service file writes", () => {
 		destinationPathPrefix?: string;
 		phase?: "interactive" | "processing";
 		actorUserId?: Id<"users">;
-		/** A second plugin in the same workspace, for the tests about one plugin's lock. */
+		/**
+		 * A second plugin in the same workspace, for the tests about one plugin's lock.
+		 */
 		pluginName?: string;
 	}) {
 		const token = `psg_${crypto_random_hex(32)}`;

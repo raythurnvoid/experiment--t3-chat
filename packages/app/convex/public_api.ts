@@ -1051,7 +1051,10 @@ export const resolve_principal = internalQuery({
 				 * `public_api_visibility_user_id`.
 				 */
 				actorUserId: v.id("users"),
-				/** The file the event fired for. All three are null for an event that fires on no file, including every invoke run. */
+				/**
+				 * The file the event fired for. All three are null for an event that fires on no file,
+				 * including every invoke run.
+				 */
 				sourceFileNodeId: v.union(v.id("files_nodes"), v.null()),
 				sourceAssetId: v.union(v.id("files_r2_assets"), v.null()),
 				/** Current path of the source node's parent; plugin writes must land exactly here. */
@@ -2031,7 +2034,9 @@ export async function public_api_db_can_pass_read_only_for_plugin(
 	ctx: MutationCtx,
 	args: {
 		facts: FileWritePluginFacts;
-		/** The node whose lock refused the write: the target itself, or the ancestor a create sits under. */
+		/**
+		 * The node whose lock refused the write: the target itself, or the ancestor a create sits under.
+		 */
 		node: Doc<"files_nodes">;
 	},
 ) {
@@ -3963,7 +3968,9 @@ async function write_one_markdown_file(
 	args: {
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
-		/** Authoring user: the credential owner, or the plugin run's or service grant's actorUserId. */
+		/**
+		 * Authoring user: the credential owner, or the plugin run's or service grant's actorUserId.
+		 */
 		userId: Id<"users">;
 		visibilityUserId: Id<"users">;
 		principalRef: Infer<typeof file_write_principal_ref_validator>;
@@ -4974,7 +4981,9 @@ const write_many_body_validator = z.object({
 				path: z.string(),
 				content: z.string(),
 				overwrite: z.enum(["replace", "fail"]).optional(),
-				/** Same meaning as on the single write route. */
+				/**
+				 * Same meaning as on the single write route.
+				 */
 				nonCollaborative: z.boolean().optional(),
 			}),
 		)

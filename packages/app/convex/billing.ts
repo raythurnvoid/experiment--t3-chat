@@ -1800,7 +1800,9 @@ const billing_event_validator = v.union(
 			organizationId: v.string(),
 			workspaceId: v.string(),
 			nodeId: v.string(),
-			/** See the `version` tuple item in `AppCompositeIds.billing`. */
+			/**
+			 * See the `version` tuple item in `AppCompositeIds.billing`.
+			 */
 			version: v.string(),
 		}),
 	}),

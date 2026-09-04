@@ -251,7 +251,9 @@ const app_convex_schema = defineSchema({
 		callId: v.optional(v.id("plugins_event_run_calls")),
 		/** Present only for user_api_key writes; publication revalidates the credential. */
 		credentialId: v.optional(v.id("api_credentials")),
-		/** Present only for plugin_service writes; publication revalidates the sealed grant. */
+		/**
+		 * Present only for plugin_service writes; publication revalidates the sealed grant.
+		 */
 		grantId: v.optional(v.id("plugin_service_grants")),
 		/** Normalized absolute target path; parents are resolved again at publication. */
 		path: v.string(),
@@ -1229,12 +1231,16 @@ const app_convex_schema = defineSchema({
 		lastPublishAttempt: v.optional(
 			v.object({
 				at: v.number(),
-				/** Plugin read from the validated manifest. Null when publishing failed before that point. */
+				/**
+				 * Plugin read from the validated manifest. Null when publishing failed before that point.
+				 */
 				pluginName: v.union(v.string(), v.null()),
 				status: v.union(v.literal("succeeded"), v.literal("rejected"), v.literal("flagged"), v.literal("failed")),
 				message: v.string(),
 				commitSha: v.union(v.string(), v.null()),
-				/** The build this attempt was about. Null before the manifest could be read and hashed. */
+				/**
+				 * The build this attempt was about. Null before the manifest could be read and hashed.
+				 */
 				artifactHash: v.union(v.string(), v.null()),
 				/**
 				 * The review that decided this attempt. Set only when a review reached a verdict, so an
@@ -1289,7 +1295,9 @@ const app_convex_schema = defineSchema({
 		version: v.string(),
 		description: v.string(),
 		reviewStatus: v.union(v.literal("pending"), v.literal("passed"), v.literal("rejected"), v.literal("flagged")),
-		/** The review that decided this version. Null only for a version that has not reached review. */
+		/**
+		 * The review that decided this version. Null only for a version that has not reached review.
+		 */
 		reviewId: v.union(v.id("plugins_version_reviews"), v.null()),
 		/**
 		 * True only on the version that most recently became ready for this name.
@@ -1460,7 +1468,9 @@ const app_convex_schema = defineSchema({
 		]),
 
 	plugins_version_reviews: defineTable({
-		/** Null after the creator is deleted while a registered version still points at this review. */
+		/**
+		 * Null after the creator is deleted while a registered version still points at this review.
+		 */
 		createdBy: v.union(v.id("users"), v.null()),
 		/**
 		 * The exact build this verdict was first produced for. Kept for release traceability only. It is
@@ -1483,7 +1493,9 @@ const app_convex_schema = defineSchema({
 		pluginName: v.string(),
 		version: v.string(),
 		status: v.union(v.literal("passed"), v.literal("rejected"), v.literal("flagged")),
-		/** Mechanical findings that rejected this version. A non-empty array means `status: "rejected"`. */
+		/**
+		 * Mechanical findings that rejected this version. A non-empty array means `status: "rejected"`.
+		 */
 		mechanicalFindings: v.array(v.string()),
 		/**
 		 * Mechanical findings the publisher should see that block nothing. A normal vendored or
@@ -1616,7 +1628,9 @@ const app_convex_schema = defineSchema({
 		// Both are absent for an event that fires on something other than a file.
 		assetId: v.optional(v.id("files_r2_assets")),
 		fileNodeId: v.optional(v.id("files_nodes")),
-		/** Whoever the event is about: the uploader, the admin who asked for a run, or the deleted user. */
+		/**
+		 * Whoever the event is about: the uploader, the admin who asked for a run, or the deleted user.
+		 */
 		actorUserId: v.id("users"),
 		installationId: v.id("plugins_workspace_installations"),
 		pluginVersionId: v.id("plugins_versions"),
@@ -1627,7 +1641,9 @@ const app_convex_schema = defineSchema({
 			v.literal("ui.invoke.requested"),
 		),
 		eventId: v.string(),
-		/** The manifest backend endpoint an invoke run targets. Only invoke runs set it. */
+		/**
+		 * The manifest backend endpoint an invoke run targets. Only invoke runs set it.
+		 */
 		endpointId: v.optional(v.string()),
 		/**
 		 * The serialization lock this run holds while queued or running: the literal
@@ -1766,7 +1782,9 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		installationId: v.id("plugins_workspace_installations"),
-		/** Denormalized from the installation so a doc states its own scope without a second read. */
+		/**
+		 * Denormalized from the installation so a doc states its own scope without a second read.
+		 */
 		pluginName: v.string(),
 		collection: v.string(),
 		key: v.string(),
@@ -1775,7 +1793,9 @@ const app_convex_schema = defineSchema({
 		 * unknown values like the other externally-owned payloads in this schema.
 		 */
 		value: v.record(v.string(), v.any()),
-		/** UTF-8 byte size of the canonical JSON encoding of `value`, charged to the installation total. */
+		/**
+		 * UTF-8 byte size of the canonical JSON encoding of `value`, charged to the installation total.
+		 */
 		byteSize: v.number(),
 		/**
 		 * Grows by one on every accepted write. A `versioned` document accepts revision n only when
@@ -1787,21 +1807,27 @@ const app_convex_schema = defineSchema({
 		 * then refuse that key, so a plugin page cannot race the producer's ordered outbox.
 		 */
 		writeMode: v.union(v.literal("normal"), v.literal("versioned")),
-		/** Set only for `versioned`: the one service principal allowed to write this key. */
+		/**
+		 * Set only for `versioned`: the one service principal allowed to write this key.
+		 */
 		producerPrincipalKey: v.optional(v.string()),
 		/**
 		 * `owned` binds the doc to its `createdBy`: only that member may change or delete it through
 		 * any interactive writer. `shared` docs follow the normal content.write rule.
 		 */
 		ownership: v.union(v.literal("shared"), v.literal("owned")),
-		/** Set only by the user-write door's append: the caller's idempotency key, scoped per creator. */
+		/**
+		 * Set only by the user-write door's append: the caller's idempotency key, scoped per creator.
+		 */
 		userWriteRequestId: v.optional(v.string()),
 		/**
 		 * Digest of the append request that created this doc. A replayed append with the same digest
 		 * answers with the stored key; a different digest under the same request id is refused.
 		 */
 		userWriteRequestFingerprint: v.optional(v.string()),
-		/** Original append byte size, kept so a delete can preserve the exact lost-response answer. */
+		/**
+		 * Original append byte size, kept so a delete can preserve the exact lost-response answer.
+		 */
 		userWriteResultByteSize: v.optional(v.number()),
 		createdBy: v.id("users"),
 		updatedBy: v.id("users"),
@@ -1815,7 +1841,9 @@ const app_convex_schema = defineSchema({
 		 * exact counter row receives that credit after a member leaves and later rejoins.
 		 */
 		chargedTo: v.optional(v.id("users")),
-		/** Exact member counter generation that owns this document's share. Absent legacy docs are uncharged. */
+		/**
+		 * Exact member counter generation that owns this document's share. Absent legacy docs are uncharged.
+		 */
 		chargedToMemberUsageId: v.optional(v.id("plugins_data_member_usage")),
 		/**
 		 * How many of this document's current bytes a plugin backend wrote. A backend write or patch
@@ -1893,7 +1921,9 @@ const app_convex_schema = defineSchema({
 		requestId: v.string(),
 		requestFingerprint: v.string(),
 		result: v.object({ key: v.string(), revision: v.number(), byteSize: v.number() }),
-		/** The exact member counter row whose held slot this receipt owns. */
+		/**
+		 * The exact member counter row whose held slot this receipt owns.
+		 */
 		memberUsageId: v.optional(v.id("plugins_data_member_usage")),
 		expiresAt: v.number(),
 	})
@@ -1918,14 +1948,22 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.id("organizations_workspaces"),
 		installationId: v.id("plugins_workspace_installations"),
 		pluginName: v.string(),
-		/** Sum of `plugins_data.byteSize` for this installation. */
+		/**
+		 * Sum of `plugins_data.byteSize` for this installation.
+		 */
 		usedBytes: v.number(),
-		/** Bytes promised to live reservations that no stored value has claimed yet. */
+		/**
+		 * Bytes promised to live reservations that no stored value has claimed yet.
+		 */
 		reservedBytes: v.number(),
-		/** Live documents. A deleted append moves its slot to `tombstoneDocuments`. */
+		/**
+		 * Live documents. A deleted append moves its slot to `tombstoneDocuments`.
+		 */
 		usedDocuments: v.number(),
 		reservedDocuments: v.number(),
-		/** Released reservations, revision tombstones, and deleted-append receipts inside their retry horizon. */
+		/**
+		 * Released reservations, revision tombstones, and deleted-append receipts inside their retry horizon.
+		 */
 		tombstoneDocuments: v.number(),
 		/**
 		 * Every collection that currently holds a document or a live reservation. It is bounded by the
@@ -1953,11 +1991,17 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.id("organizations_workspaces"),
 		installationId: v.id("plugins_workspace_installations"),
 		userId: v.id("users"),
-		/** Present on rows whose documents point back to this exact counter generation. */
+		/**
+		 * Present on rows whose documents point back to this exact counter generation.
+		 */
 		generation: v.optional(v.literal("document_bound")),
-		/** Sum of `plugins_data.byteSize` for the documents charged to this member. */
+		/**
+		 * Sum of `plugins_data.byteSize` for the documents charged to this member.
+		 */
 		usedBytes: v.number(),
-		/** Live documents plus deleted-append receipts charged to this member. */
+		/**
+		 * Live documents plus deleted-append receipts charged to this member.
+		 */
 		usedDocuments: v.number(),
 		/**
 		 * Sum of `plugins_data.machineBytes` over the same documents. The member ceiling compares
@@ -1995,14 +2039,22 @@ const app_convex_schema = defineSchema({
 		pluginName: v.string(),
 		collection: v.string(),
 		key: v.string(),
-		/** The service principal that owns this reservation. It survives token rotation. */
+		/**
+		 * The service principal that owns this reservation. It survives token rotation.
+		 */
 		ownerPrincipalKey: v.string(),
 		maximumBytes: v.number(),
-		/** Bytes still held. Storing or growing the value moves the delta from here into `usedBytes`. */
+		/**
+		 * Bytes still held. Storing or growing the value moves the delta from here into `usedBytes`.
+		 */
 		remainingBytes: v.number(),
-		/** `released` keeps the doc as a retry record until `retryHorizonExpiresAt`. */
+		/**
+		 * `released` keeps the doc as a retry record until `retryHorizonExpiresAt`.
+		 */
 		state: v.union(v.literal("live"), v.literal("released")),
-		/** Unique per installation and principal. It is what makes a replay recognizable. */
+		/**
+		 * Unique per installation and principal. It is what makes a replay recognizable.
+		 */
 		idempotencyKey: v.string(),
 		/**
 		 * The canonical encoding of the reserve request, compared as a whole string. A replay with
@@ -2020,12 +2072,18 @@ const app_convex_schema = defineSchema({
 				releasedBytes: v.number(),
 			}),
 		),
-		/** True only while this released retry doc owns one `tombstoneDocuments` slot. */
+		/**
+		 * True only while this released retry doc owns one `tombstoneDocuments` slot.
+		 */
 		holdsUsageTombstoneSlot: v.boolean(),
 		releasedAt: v.optional(v.number()),
-		/** A live reservation past this time is released by the expiry cron. */
+		/**
+		 * A live reservation past this time is released by the expiry cron.
+		 */
 		expiresAt: v.number(),
-		/** After this time the released retry record is deleted and its slot returns. */
+		/**
+		 * After this time the released retry record is deleted and its slot returns.
+		 */
 		retryHorizonExpiresAt: v.number(),
 		updatedAt: v.number(),
 	})
@@ -2062,7 +2120,9 @@ const app_convex_schema = defineSchema({
 		pluginName: v.string(),
 		collection: v.string(),
 		key: v.string(),
-		/** The delete's revision. Every lower revision and every later write is refused. */
+		/**
+		 * The delete's revision. Every lower revision and every later write is refused.
+		 */
 		revision: v.number(),
 		producerPrincipalKey: v.string(),
 		deletedAt: v.number(),
@@ -2096,23 +2156,33 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		installationId: v.id("plugins_workspace_installations"),
-		/** Minted by the plugin, unique inside one installation. */
+		/**
+		 * Minted by the plugin, unique inside one installation.
+		 */
 		scopeId: v.string(),
 		collection: v.string(),
 		keyPrefix: v.string(),
-		/** The member who created the scope. They receive the first `manage` grant on it. */
+		/**
+		 * The member who created the scope. They receive the first `manage` grant on it.
+		 */
 		createdByUserId: v.id("users"),
 		createdAt: v.number(),
-		/** Durable last accepted append in this collection. Optional while old rows are backfilled. */
+		/**
+		 * Durable last accepted append in this collection. Optional while old rows are backfilled.
+		 */
 		lastAppend: v.optional(
 			v.union(
 				v.null(),
 				v.object({ at: v.number(), key: v.string(), createdByUserId: v.id("users") }),
 			),
 		),
-		/** Count accepted appends in this collection. Optional while old rows are backfilled. */
+		/**
+		 * Count accepted appends in this collection. Optional while old rows are backfilled.
+		 */
 		appendSequence: v.optional(v.number()),
-		/** Shared by every row of one scope. Increase it for each accepted membership change. */
+		/**
+		 * Shared by every row of one scope. Increase it for each accepted membership change.
+		 */
 		updatedAt: v.number(),
 	})
 		.index("by_installation_scope", ["installationId", "scopeId"])
@@ -2174,7 +2244,9 @@ const app_convex_schema = defineSchema({
 		installationId: v.id("plugins_workspace_installations"),
 		pluginVersionId: v.id("plugins_versions"),
 		pluginName: v.string(),
-		/** The member whose plugin-page token was exchanged for this grant. Kept for audit. */
+		/**
+		 * The member whose plugin-page token was exchanged for this grant. Kept for audit.
+		 */
 		actorUserId: v.id("users"),
 		tokenHash: v.string(),
 		scopes: v.array(v.union(v.literal("plugin_data:read"), v.literal("plugin_data:write"), v.literal("files:write"))),
@@ -2191,7 +2263,9 @@ const app_convex_schema = defineSchema({
 		 * whether its member may still write.
 		 */
 		phase: v.union(v.literal("interactive"), v.literal("processing")),
-		/** Absolute path prefix this grant may write under. Null means it may not write files. */
+		/**
+		 * Absolute path prefix this grant may write under. Null means it may not write files.
+		 */
 		destinationPathPrefix: v.union(v.string(), v.null()),
 		expiresAt: v.number(),
 		revokedAt: v.optional(v.number()),
@@ -2221,16 +2295,22 @@ const app_convex_schema = defineSchema({
 		 * key for all its files, so the same `targetKey` in a later run is a different file.
 		 */
 		idempotencyKey: v.string(),
-		/** Stable key for this one file inside its upload run. */
+		/**
+		 * Stable key for this one file inside its upload run.
+		 */
 		targetKey: v.string(),
-		/** A different request under the same run and target key is refused, not stored twice. */
+		/**
+		 * A different request under the same run and target key is refused, not stored twice.
+		 */
 		requestFingerprint: v.string(),
 		/**
 		 * Historical targets omit these flags and behave as false. New targets always store both.
 		 */
 		readOnly: v.optional(v.boolean()),
 		nonCollaborative: v.optional(v.boolean()),
-		/** The authoritative sealed replay fence and its stable destination node id at create time. */
+		/**
+		 * The authoritative sealed replay fence and its stable destination node id at create time.
+		 */
 		destinationPath: v.string(),
 		destinationNodeId: v.id("files_nodes"),
 		/**
@@ -2240,7 +2320,9 @@ const app_convex_schema = defineSchema({
 		destinationEpoch: v.optional(v.number()),
 		path: v.string(),
 		contentType: v.string(),
-		/** The size the service guessed at create time. Nothing is charged for it. */
+		/**
+		 * The size the service guessed at create time. Nothing is charged for it.
+		 */
 		declaredBytes: v.number(),
 		/**
 		 * The stored size R2 confirmed, and the amount already charged for this target. `null` until an
@@ -2256,14 +2338,18 @@ const app_convex_schema = defineSchema({
 		 * charged stay charged either way.
 		 */
 		state: v.union(v.literal("pending"), v.literal("committed"), v.literal("released")),
-		/** Set after the file leaves this service door through a member move or service destination archive. */
+		/**
+		 * Set after the file leaves this service door through a member move or service destination archive.
+		 */
 		movedOutAt: v.optional(v.number()),
 		/**
 		 * Set when the service's delete route archived a committed file. It marks that actualBytes is
 		 * the immutable canonical size and keeps the released target as the replay answer.
 		 */
 		deleteRequestedAt: v.optional(v.number()),
-		/** The member whose sealed grant created this target. Kept for audit and file authorship. */
+		/**
+		 * The member whose sealed grant created this target. Kept for audit and file authorship.
+		 */
 		createdBy: v.id("users"),
 		updatedAt: v.number(),
 	})
@@ -2318,7 +2404,9 @@ const app_convex_schema = defineSchema({
 			"targetKey",
 		]),
 
-	/** Close every older target generation when the service archives one sealed destination. */
+	/**
+	 * Close every older target generation when the service archives one sealed destination.
+	 */
 	plugin_service_storage_destinations: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
@@ -2612,7 +2700,9 @@ const app_convex_schema = defineSchema({
 		name: v.string(),
 		description: v.string(),
 		default: v.boolean(),
-		/** Keep every plugin authority door closed across delayed or bounded workspace purge. */
+		/**
+		 * Keep every plugin authority door closed across delayed or bounded workspace purge.
+		 */
 		pluginDataPurgeStartedAt: v.optional(v.number()),
 		updatedAt: v.number(),
 	}).index("by_organization_default", ["organizationId", "default"]),
@@ -2729,7 +2819,9 @@ const app_convex_schema = defineSchema({
 		defaultWorkspaceId: v.optional(v.id("organizations_workspaces")),
 		anagraphic: v.optional(v.id("users_anagraphics")),
 		deletedAt: v.optional(v.number()),
-		/** Block account recovery while destructive deletion spans more than one transaction. */
+		/**
+		 * Block account recovery while destructive deletion spans more than one transaction.
+		 */
 		deletionFinalizationStartedAt: v.optional(v.number()),
 	}).index("by_clerkUser", ["clerkUserId"]),
 

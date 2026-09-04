@@ -51,7 +51,9 @@ type FileEditorDiffNonCollabToolbarActions_Props = {
 	isSaveDebouncing: boolean;
 	isDiscardAllDisabled: boolean;
 	nodeId: app_convex_Id<"files_nodes">;
-	/** The asset the open text was read from; a version restore goes through the replace door. */
+	/**
+	 * The asset the open text was read from; a version restore goes through the replace door.
+	 */
 	nonCollaborativeBaseAssetId: app_convex_Id<"files_r2_assets">;
 	sessionId: string;
 	toolbarPortalHost: HTMLElement;
@@ -201,7 +203,9 @@ type FileEditorDiffNonCollab_LoadedContent = {
 type FileEditorDiffNonCollabInner_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	editable: boolean;
-	/** The Monaco language id derived from the node name (`files_get_monaco_language_id`). */
+	/**
+	 * The Monaco language id derived from the node name (`files_get_monaco_language_id`).
+	 */
 	monacoLanguageId: string;
 	initialData: FileEditorDiffNonCollab_LoadedContent;
 	topSafeArea?: number;
@@ -647,7 +651,9 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 export type FileEditorDiffNonCollab_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	editable: boolean;
-	/** The Monaco language id derived from the node name (`files_get_monaco_language_id`). */
+	/**
+	 * The Monaco language id derived from the node name (`files_get_monaco_language_id`).
+	 */
 	monacoLanguageId: string;
 	presenceStore: files_PresenceStore;
 	commentsPortalHost: HTMLElement | null;

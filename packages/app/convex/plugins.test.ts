@@ -6181,7 +6181,9 @@ describe("plugins publish_version", () => {
 
 	type ReviewMove = Awaited<ReturnType<typeof plugins_ai_review.generate_step>>;
 
-	/** One navigation move with every unused field at its empty value, the way the schema requires. */
+	/**
+	 * One navigation move with every unused field at its empty value, the way the schema requires.
+	 */
 	function review_move(move: Partial<ReviewMove>): ReviewMove {
 		return {
 			tool: "done",
@@ -6197,7 +6199,9 @@ describe("plugins publish_version", () => {
 		};
 	}
 
-	/** Scripts the reviewer's moves in order, then lets it stop navigating. */
+	/**
+	 * Scripts the reviewer's moves in order, then lets it stop navigating.
+	 */
 	function mock_review_steps(moves: Array<Partial<ReviewMove>>) {
 		const spy = vi.mocked(plugins_ai_review.generate_step);
 		spy.mockReset();
@@ -11890,11 +11894,15 @@ describe("plugins owned-area file doors", () => {
 		};
 	}
 
-	/** Start a live invoke run and mint the API token its file-door calls present. */
+	/**
+	 * Start a live invoke run and mint the API token its file-door calls present.
+	 */
 	async function start_owned_invoke_run(
 		t: ReturnType<typeof test_convex>,
 		fixture: Awaited<ReturnType<typeof install_owned_files_plugin>>,
-		/** The member who pressed the button. A run reads files with this person's eyes. */
+		/**
+		 * The member who pressed the button. A run reads files with this person's eyes.
+		 */
 		args: { userId?: Id<"users">; tokenSeed?: string } = {},
 	) {
 		const apiToken = `plr_${(args.tokenSeed ?? "d").repeat(64)}`;

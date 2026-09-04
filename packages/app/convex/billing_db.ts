@@ -122,7 +122,9 @@ export async function billing_db_emit_file_save(
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		nodeId: Id<"files_nodes">;
-		/** Unique per save: a Yjs sequence, a version snapshot asset id, or a target id. */
+		/**
+		 * Unique per save: a Yjs sequence, a version snapshot asset id, or a target id.
+		 */
 		version: string | number;
 	},
 ) {

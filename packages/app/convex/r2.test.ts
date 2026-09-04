@@ -420,7 +420,9 @@ async function post_r2_put_event(
 		messageId: string;
 		etag?: string;
 		preserveObjectMetadata?: boolean;
-		/** Omitted means the real bearer header. `null` sends no `Authorization` header at all. */
+		/**
+		 * Omitted means the real bearer header. `null` sends no `Authorization` header at all.
+		 */
 		authorization?: string | null;
 	},
 ) {

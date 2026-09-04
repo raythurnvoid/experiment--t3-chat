@@ -1208,7 +1208,9 @@ describe("RoutePluginsPluginPage", () => {
 
 	const OVERRIDE_ORIGIN = "http://localhost:5174";
 
-	/** Points the override at `version_1`, the id every fixture in this file mints. */
+	/**
+	 * Points the override at `version_1`, the id every fixture in this file mints.
+	 */
 	function stub_override(origin = OVERRIDE_ORIGIN) {
 		vi.stubEnv("VITE_PLUGIN_UI_DEV_VERSION_ID", "version_1");
 		vi.stubEnv("VITE_PLUGIN_UI_DEV_ORIGIN", origin);

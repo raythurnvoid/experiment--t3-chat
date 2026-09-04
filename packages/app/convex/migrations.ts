@@ -909,7 +909,9 @@ function migrations_plugin_scope_append_state_is_defaulted(
 		: migrations_plugin_scope_append_sequence_is_valid(scope.appendSequence, 1);
 }
 
-/** Preserve the newest accepted scoped append before old scope rows receive a default marker. */
+/**
+ * Preserve the newest accepted scoped append before old scope rows receive a default marker.
+ */
 export const backfill_plugin_scope_last_append_from_documents = app_migrations.define({
 	table: "plugins_data",
 	batchSize: 20,
@@ -952,7 +954,9 @@ export const backfill_plugin_scope_last_append_from_documents = app_migrations.d
 	},
 });
 
-/** Give every old live scope row explicit append defaults after append history was preserved. */
+/**
+ * Give every old live scope row explicit append defaults after append history was preserved.
+ */
 export const default_plugin_scope_last_append = app_migrations.define({
 	table: "plugins_data_scopes",
 	batchSize: 20,
@@ -1011,7 +1015,9 @@ function migrations_plugin_scope_installation_id(
 	return ctx.db.normalizeId("plugins_workspace_installations", grant.resourceId.slice(0, separator));
 }
 
-/** Remove grants whose valid installation id no longer names an installation. */
+/**
+ * Remove grants whose valid installation id no longer names an installation.
+ */
 export const delete_orphan_plugin_scope_grants = app_migrations.define({
 	table: "access_control_permission_grants",
 	batchSize: PLUGIN_SCOPE_AUDIT_PAGE_SIZE,
@@ -1025,7 +1031,9 @@ export const delete_orphan_plugin_scope_grants = app_migrations.define({
 	},
 });
 
-/** Remove dead-installation scopes, release empty scopes, and restore one active manager. */
+/**
+ * Remove dead-installation scopes, release empty scopes, and restore one active manager.
+ */
 export const delete_stranded_plugin_data_scopes = app_migrations.define({
 	table: "plugins_data_scopes",
 	batchSize: PLUGIN_SCOPE_AUDIT_PAGE_SIZE,
@@ -1109,7 +1117,9 @@ export const audit_stranded_plugin_data_scopes_page = internalQuery({
 	},
 });
 
-/** Find old append rows whose live collection marker still does not cover them. */
+/**
+ * Find old append rows whose live collection marker still does not cover them.
+ */
 export const audit_plugin_scope_append_activity_page = internalQuery({
 	args: { cursor: v.union(v.null(), v.string()) },
 	returns: v.object({ candidateCount: v.number(), continueCursor: v.string(), isDone: v.boolean() }),
@@ -1143,7 +1153,9 @@ export const audit_plugin_scope_append_activity_page = internalQuery({
 	},
 });
 
-/** Find live scope rows with missing, invalid, or inconsistent append defaults. */
+/**
+ * Find live scope rows with missing, invalid, or inconsistent append defaults.
+ */
 export const audit_plugin_scope_last_append_defaults_page = internalQuery({
 	args: { cursor: v.union(v.null(), v.string()) },
 	returns: v.object({ candidateCount: v.number(), continueCursor: v.string(), isDone: v.boolean() }),
@@ -1159,7 +1171,9 @@ export const audit_plugin_scope_last_append_defaults_page = internalQuery({
 	},
 });
 
-/** Prove every surviving member counter uses exact document-bound generations. */
+/**
+ * Prove every surviving member counter uses exact document-bound generations.
+ */
 export const audit_legacy_plugins_data_member_usage_page = internalQuery({
 	args: { cursor: v.union(v.null(), v.string()) },
 	returns: v.object({ candidateCount: v.number(), continueCursor: v.string(), isDone: v.boolean() }),

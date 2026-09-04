@@ -972,11 +972,17 @@ type ReviewOpenFile = {
 	contentType: string;
 	bytes: Uint8Array;
 	lines: string[];
-	/** Byte offset where each line starts, in the same order as `lines`. */
+	/**
+	 * Byte offset where each line starts, in the same order as `lines`.
+	 */
 	lineStarts: number[];
-	/** Byte ranges already read to the model. Sorted, merged, and never overlapping. */
+	/**
+	 * Byte ranges already read to the model. Sorted, merged, and never overlapping.
+	 */
 	covered: Array<{ start: number; end: number }>;
-	/** Byte ranges a search result printed. Same shape as `covered`, but they never count as read. */
+	/**
+	 * Byte ranges a search result printed. Same shape as `covered`, but they never count as read.
+	 */
 	quoted: Array<{ start: number; end: number }>;
 };
 
@@ -5946,9 +5952,13 @@ export const delete_plugin_source_tree_batch = internalMutation({
 	},
 });
 
-/** Large registry docs share one cap; their stored manifest or review payload can be tens of KiB. */
+/**
+ * Large registry docs share one cap; their stored manifest or review payload can be tens of KiB.
+ */
 const REGISTRY_PREVIEW_LARGE_DOC_LIMIT = 50;
-/** Child rows are smaller, but every nested query still shares one transaction-wide cap. */
+/**
+ * Child rows are smaller, but every nested query still shares one transaction-wide cap.
+ */
 const REGISTRY_PREVIEW_CHILD_DOC_LIMIT = 320;
 
 async function plugins_db_take_registry_preview_docs<T>(

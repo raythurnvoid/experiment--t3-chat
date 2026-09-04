@@ -68,7 +68,9 @@ function is_well_formed_string(value: string) {
 	return true;
 }
 
-/** Stop reading a plugin-data request as soon as it crosses this route's limit. */
+/**
+ * Stop reading a plugin-data request as soon as it crosses this route's limit.
+ */
 async function read_request_text_bounded(request: Request, maxBytes: number) {
 	if (!request.body) return "";
 	const reader = request.body.getReader();
@@ -328,7 +330,9 @@ function to_store_principal(principal: AuthorizedPrincipal, bodyInstallationId: 
 	return { _nay: { status: 403, body: { message: "Permission denied" } } } as const;
 }
 
-/** The same failure vocabulary the file routes report on a settled plugin call. */
+/**
+ * The same failure vocabulary the file routes report on a settled plugin call.
+ */
 const ERROR_CODE_BY_STATUS: Record<number, string> = {
 	400: "invalid_input",
 	401: "unauthenticated",
@@ -480,7 +484,9 @@ function decode_list_cursor(token: string) {
 	}
 }
 
-/** Names the first scope field the replay changed, so the caller is not left diffing their own body. */
+/**
+ * Names the first scope field the replay changed, so the caller is not left diffing their own body.
+ */
 function find_changed_cursor_field(sent: Partial<ListCursorScope>, current: ListCursorScope) {
 	const fields = [
 		"route",

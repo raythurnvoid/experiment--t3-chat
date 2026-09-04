@@ -72,14 +72,18 @@ type generate_plugin_sdk_types_Target = {
 	outputPath: string;
 	constName: string;
 	typeName: string;
-	/** Emitted after the main type as `export type <pathTypeName> = keyof <typeName>;`. */
+	/**
+	 * Emitted after the main type as `export type <pathTypeName> = keyof <typeName>;`.
+	 */
 	pathTypeName: string | null;
 	/**
 	 * Emitted after `pathTypeName` as the `{ status, body }` union a caller gets back. It needs
 	 * `pathTypeName`, because it is generic over that path union.
 	 */
 	responseTypeName: string | null;
-	/** The header lines between "GENERATED FILE" and the "how it is written" sentence. */
+	/**
+	 * The header lines between "GENERATED FILE" and the "how it is written" sentence.
+	 */
 	description: string;
 };
 

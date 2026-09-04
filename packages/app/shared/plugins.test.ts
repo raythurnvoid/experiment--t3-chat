@@ -333,7 +333,9 @@ describe("plugins_validate_manifest", () => {
 			outboundOrigins?: string[];
 			uiOutboundOrigins?: string[];
 			capabilities?: string[];
-			/** Declare one file view and no `pages` key at all, the way bonobo-plugin-video-player ships. */
+			/**
+			 * Declare one file view and no `pages` key at all, the way bonobo-plugin-video-player ships.
+			 */
 			fileViewsOnly?: boolean;
 			duplicateFilePath?: boolean;
 			nonDistFilePath?: boolean;

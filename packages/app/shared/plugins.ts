@@ -334,7 +334,9 @@ export function plugins_validate_secret_value(raw: string) {
 
 // #region plugin data store
 
-/** Collection names and keys in the plugin data store. Same length a plugin secret name may have. */
+/**
+ * Collection names and keys in the plugin data store. Same length a plugin secret name may have.
+ */
 export const plugins_data_MAX_NAME_LENGTH = 128;
 /**
  * An append completes the caller's prefix into a full key by adding the 13-digit inverted
@@ -342,7 +344,9 @@ export const plugins_data_MAX_NAME_LENGTH = 128;
  * plus one spare, so the composed key always fits the key length limit.
  */
 export const plugins_data_MAX_KEY_PREFIX_LENGTH = plugins_data_MAX_NAME_LENGTH - (13 + 1 + 4 + 1);
-/** The largest page or window one plugin-data read may return. */
+/**
+ * The largest page or window one plugin-data read may return.
+ */
 export const plugins_data_MAX_LIST_PAGE_SIZE = 100;
 
 /**
@@ -937,7 +941,9 @@ const manifest_schema = z
 						MAX_COMPATIBILITY_FLAGS,
 						`Plugin backends can declare at most ${MAX_COMPATIBILITY_FLAGS} compatibility flags`,
 					),
-				/** HTTP-invokable entrypoints for the invoke door; requires `plugin.backend.invoke`. */
+				/**
+				 * HTTP-invokable entrypoints for the invoke door; requires `plugin.backend.invoke`.
+				 */
 				endpoints: z
 					.array(backend_endpoint_schema)
 					.max(MAX_BACKEND_ENDPOINTS, `Plugin backends can declare at most ${MAX_BACKEND_ENDPOINTS} endpoints`)

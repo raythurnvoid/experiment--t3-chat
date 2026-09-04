@@ -917,9 +917,13 @@ export type FileEditorPlainText_Props = {
 	editable: boolean;
 	/** The Monaco language id derived from the node name (`files_get_monaco_language_id`). */
 	monacoLanguageId: string;
-	/** Collaboration is off for this file: it has no Yjs document, so Save replaces the whole text. */
+	/**
+	 * Collaboration is off for this file: it has no Yjs document, so Save replaces the whole text.
+	 */
 	nonCollaborative: boolean;
-	/** Reload the construction-owned baseline when the server replaces this exact lineage. */
+	/**
+	 * Reload the construction-owned baseline when the server replaces this exact lineage.
+	 */
 	yjsLastSequenceId?: app_convex_Id<"files_yjs_docs_last_sequences">;
 	presenceStore: files_PresenceStore;
 	commentsPortalHost: HTMLElement | null;

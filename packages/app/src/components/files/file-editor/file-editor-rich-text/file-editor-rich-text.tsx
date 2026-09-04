@@ -314,10 +314,14 @@ type FileEditorRichTextBubbleContentActions_ClassNames =
 type FileEditorRichTextBubbleContentActions_Props = {
 	editor: Editor;
 	nodeId: app_convex_Id<"files_nodes">;
-	/** See `FileEditorRichTextToolsComment_Props`; the bubble threads both comment props through. */
+	/**
+	 * See `FileEditorRichTextToolsComment_Props`; the bubble threads both comment props through.
+	 */
 	disabledReason: string | null;
 	commitComment?: (threadId: string) => Promise<boolean>;
-	/** `null` hides the Ask AI action: the inline AI extension runs on Yjs. */
+	/**
+	 * `null` hides the Ask AI action: the inline AI extension runs on Yjs.
+	 */
 	onClickAi: MyButton_Props["onClick"] | null;
 };
 
@@ -385,7 +389,9 @@ type FileEditorRichTextBubbleContent_ClassNames = "FileEditorRichTextBubbleConte
 type FileEditorRichTextBubbleContent_Props = {
 	editor: Editor;
 	nodeId: app_convex_Id<"files_nodes">;
-	/** See `FileEditorRichTextToolsComment_Props`; the bubble threads both comment props through. */
+	/**
+	 * See `FileEditorRichTextToolsComment_Props`; the bubble threads both comment props through.
+	 */
 	disabledReason: string | null;
 	commitComment?: (threadId: string) => Promise<boolean>;
 	openAi: boolean;
@@ -431,10 +437,14 @@ type FileEditorRichTextBubble_ClassNames = "FileEditorRichTextBubble" | "FileEdi
 type FileEditorRichTextBubble_Props = {
 	editor: Editor;
 	nodeId: app_convex_Id<"files_nodes">;
-	/** See `FileEditorRichTextToolsComment_Props`; the bubble threads both comment props through. */
+	/**
+	 * See `FileEditorRichTextToolsComment_Props`; the bubble threads both comment props through.
+	 */
 	disabledReason: string | null;
 	commitComment?: (threadId: string) => Promise<boolean>;
-	/** Ask AI runs on the Yjs-backed inline AI extension, so the non-collaborative editor hides it. */
+	/**
+	 * Ask AI runs on the Yjs-backed inline AI extension, so the non-collaborative editor hides it.
+	 */
 	showAiAction: boolean;
 };
 
@@ -1264,7 +1274,9 @@ type FileEditorRichTextNonCollabToolbarActions_Props = {
 	byteSize: number;
 	isSaveDisabled: boolean;
 	isSaveDebouncing: boolean;
-	/** The serializer's output differs from the stored bytes, so the first save reformats the file. */
+	/**
+	 * The serializer's output differs from the stored bytes, so the first save reformats the file.
+	 */
 	showReformatHint: boolean;
 	nonCollaborativeBaseAssetId: app_convex_Id<"files_r2_assets">;
 	toolbarPortalHost: HTMLElement;
@@ -1444,9 +1456,13 @@ function replace_editor_document(mut_editor: Editor, markdown: string) {
 type FileEditorRichTextNonCollabInner_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	editable: boolean;
-	/** The stored bytes the loader read; the mount-time baseline is re-serialized from them. */
+	/**
+	 * The stored bytes the loader read; the mount-time baseline is re-serialized from them.
+	 */
 	initialText: string;
-	/** Parsed from `initialText` against the mounted extension list, so the two cannot drift. */
+	/**
+	 * Parsed from `initialText` against the mounted extension list, so the two cannot drift.
+	 */
 	initialJson: NonNullable<ReturnType<typeof files_tiptap_markdown_to_json>["_yay"]>;
 	initialBaseAssetId: app_convex_Id<"files_r2_assets">;
 	presenceStore: files_PresenceStore;

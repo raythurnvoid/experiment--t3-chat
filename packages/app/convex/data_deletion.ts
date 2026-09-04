@@ -1331,7 +1331,9 @@ async function db_drain_user_direct_permission_grants_batch(
 	return grants.length;
 }
 
-/** Deletes one bounded batch of service grants owned by the deleting user. */
+/**
+ * Deletes one bounded batch of service grants owned by the deleting user.
+ */
 async function db_drain_user_plugin_service_grants_batch(
 	ctx: MutationCtx,
 	args: { userId: Id<"users">; batchSize: number },
@@ -1429,7 +1431,9 @@ async function db_drain_user_memberships_batch(
 	return memberships.length;
 }
 
-/** Deletes one pending-update child family, then its parent in a later pass. */
+/**
+ * Deletes one pending-update child family, then its parent in a later pass.
+ */
 async function db_drain_user_pending_updates_batch(ctx: MutationCtx, args: { userId: Id<"users">; batchSize: number }) {
 	const pendingUpdates = await ctx.db
 		.query("files_pending_updates")
@@ -1498,7 +1502,9 @@ async function db_drain_user_pending_updates_batch(ctx: MutationCtx, args: { use
 	return 1;
 }
 
-/** Deletes one Yjs page batch, then its state parent in a later pass. */
+/**
+ * Deletes one Yjs page batch, then its state parent in a later pass.
+ */
 async function db_drain_user_pending_yjs_states_batch(
 	ctx: MutationCtx,
 	args: { userId: Id<"users">; batchSize: number },
@@ -1525,7 +1531,9 @@ async function db_drain_user_pending_yjs_states_batch(
 	return 1;
 }
 
-/** Deletes the first non-empty user-scoped finalization family. */
+/**
+ * Deletes the first non-empty user-scoped finalization family.
+ */
 async function db_drain_user_finalization_batch(
 	ctx: MutationCtx,
 	args: { userId: Id<"users">; now: number; batchSize: number },
@@ -1643,7 +1651,9 @@ async function db_drain_user_finalization_batch(
 	return publicApiGrants.length;
 }
 
-/** Makes one bounded batch of this user's retained tenant requests ready for the worker. */
+/**
+ * Makes one bounded batch of this user's retained tenant requests ready for the worker.
+ */
 async function db_make_user_deletion_requests_eligible_batch(
 	ctx: MutationCtx,
 	args: { userId: Id<"users">; now: number; batchSize: number },

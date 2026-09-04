@@ -1271,7 +1271,9 @@ async function db_insert_node(
 		 * The new node gets the parent lock and stays read-only.
 		 */
 		inheritParentReadOnlyScope?: true;
-		/** Plugin doors only. Public create and copy flows must never forward this field. */
+		/**
+		 * Plugin doors only. Public create and copy flows must never forward this field.
+		 */
 		pluginOwnerName?: Doc<"files_nodes">["pluginOwnerName"];
 		now: number;
 	},
@@ -8656,7 +8658,9 @@ export async function yjs_reserve_and_increment_last_sequence(
 		workspaceId: Id<"organizations_workspaces">;
 		nodeId: Id<"files_nodes">;
 		userId: Id<"users">;
-		/** Refuse when this write was built for a Yjs document that the file no longer uses. */
+		/**
+		 * Refuse when this write was built for a Yjs document that the file no longer uses.
+		 */
 		expectedYjsLastSequenceId: Id<"files_yjs_docs_last_sequences">;
 		/** Byte size of the `files_yjs_updates.update` value the caller inserts at the new sequence. */
 		updateByteLength: number;

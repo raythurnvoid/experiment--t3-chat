@@ -1840,7 +1840,9 @@ function store_principal(
 	} as const;
 }
 
-/** One external producer. Ordered writes bind a key to this exact principal key for good. */
+/**
+ * One external producer. Ordered writes bind a key to this exact principal key for good.
+ */
 function service_principal(
 	fixture: Awaited<ReturnType<typeof seed_installation>>,
 	args: { principalKey?: string } = {},
@@ -1884,7 +1886,9 @@ async function read_documents(
 	);
 }
 
-/** The canonical JSON is `{"a":"..."}`, so a value of exactly N bytes needs N - 8 characters. */
+/**
+ * The canonical JSON is `{"a":"..."}`, so a value of exactly N bytes needs N - 8 characters.
+ */
 function value_of_bytes(byteSize: number) {
 	return { a: "x".repeat(byteSize - 8) };
 }
@@ -6488,7 +6492,9 @@ describe("watch_documents_page", () => {
 });
 
 describe("watch_recent", () => {
-	/** Appends `count` documents five seconds apart and answers their keys, oldest first. */
+	/**
+	 * Appends `count` documents five seconds apart and answers their keys, oldest first.
+	 */
 	async function append_over_time(
 		fixture: Awaited<ReturnType<typeof seed_user_write_door>>,
 		args: { count: number; baseNow: number; label: string },
@@ -6672,7 +6678,9 @@ describe("watch_recent", () => {
 });
 
 describe("watch_changes", () => {
-	/** Appends `count` documents five seconds apart and answers their keys, oldest first. */
+	/**
+	 * Appends `count` documents five seconds apart and answers their keys, oldest first.
+	 */
 	async function append_over_time(
 		fixture: Awaited<ReturnType<typeof seed_user_write_door>>,
 		args: { count: number; baseNow: number; label: string },
@@ -6979,7 +6987,9 @@ describe("resolve_member_display", () => {
 });
 
 describe("list_members", () => {
-	/** Put the roster capability on both halves the door checks: the version and the installation. */
+	/**
+	 * Put the roster capability on both halves the door checks: the version and the installation.
+	 */
 	async function grant_roster(
 		t: ReturnType<typeof test_convex>,
 		fixture: Awaited<ReturnType<typeof seed_user_write_door>>,
@@ -7201,7 +7211,9 @@ describe("storage-layer ownership", () => {
 	});
 });
 
-/** One member's share row. It is absent until that member's first charged write. */
+/**
+ * One member's share row. It is absent until that member's first charged write.
+ */
 async function read_member_usage(
 	t: ReturnType<typeof test_convex>,
 	fixture: Awaited<ReturnType<typeof seed_installation>>,
@@ -8058,7 +8070,9 @@ async function seed_full_store(
 	await mint_service_grant(t, fixture);
 }
 
-/** Read the core installation-owned tables at once, so a deletion test can assert each is empty. */
+/**
+ * Read the core installation-owned tables at once, so a deletion test can assert each is empty.
+ */
 async function read_all_store_tables(
 	t: ReturnType<typeof test_convex>,
 	fixture: Awaited<ReturnType<typeof seed_installation>>,
@@ -8117,7 +8131,9 @@ async function read_all_store_tables(
 	});
 }
 
-/** Call the drain until it reports `done`, the way the scheduler would. */
+/**
+ * Call the drain until it reports `done`, the way the scheduler would.
+ */
 async function drain_until_done(
 	t: ReturnType<typeof test_convex>,
 	fixture: Awaited<ReturnType<typeof seed_installation>>,

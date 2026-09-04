@@ -172,7 +172,9 @@ export const ensure_plugin_folder = internalMutation({
 	args: {
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
-		/** The member the run acts for; folder authorship and ACL answers are theirs. */
+		/**
+		 * The member the run acts for; folder authorship and ACL answers are theirs.
+		 */
 		userId: v.id("users"),
 		runId: v.id("plugins_event_runs"),
 		path: v.string(),
@@ -385,7 +387,9 @@ export const archive_plugin_path = internalMutation({
 	args: {
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
-		/** The member the principal acts for. */
+		/**
+		 * The member the principal acts for.
+		 */
 		userId: v.id("users"),
 		principalRef: archive_principal_ref_validator,
 		path: v.string(),
@@ -533,7 +537,9 @@ export const set_plugin_access = internalMutation({
 	args: {
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
-		/** The member the run acts for. */
+		/**
+		 * The member the run acts for.
+		 */
 		userId: v.id("users"),
 		runId: v.id("plugins_event_runs"),
 		callId: v.id("plugins_event_run_calls"),

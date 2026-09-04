@@ -19,7 +19,9 @@ const FINALIZE_PATH = "/api/v1/files/service-uploads/finalize";
 const DELETE_PATH = "/api/v1/files/service-uploads/delete";
 const ARCHIVE_PATH = "/api/v1/files/service-uploads/archive-destination";
 
-/** The value `setup-env.test.ts` puts in the environment for the whole convex project. */
+/**
+ * The value `setup-env.test.ts` puts in the environment for the whole convex project.
+ */
 const EXCHANGE_SECRET = "SERVICE_EXCHANGE_SECRET_TEST";
 
 const MIB = 1024 * 1024;
@@ -42,7 +44,10 @@ async function seed_installation(
 		acceptedCapabilities?: plugins_Capability[];
 		organizationName?: string;
 		workspaceName?: string;
-		/** Service uploads are closed to `Free`, so the fixture pays by default. `null` leaves the payer with no billing state at all. */
+		/**
+		 * Service uploads are closed to `Free`, so the fixture pays by default. `null` leaves the
+		 * payer with no billing state at all.
+		 */
 		plan?: keyof typeof billing_PRODUCTS | null;
 	} = {},
 ) {
@@ -143,7 +148,9 @@ function service_headers(bearer: string) {
 	};
 }
 
-/** Exchange a fresh page token for an interactive grant, failing loudly on refusal. */
+/**
+ * Exchange a fresh page token for an interactive grant, failing loudly on refusal.
+ */
 async function exchange_token(
 	t: ReturnType<typeof test_convex>,
 	fixture: Awaited<ReturnType<typeof seed_installation>>,
@@ -161,7 +168,9 @@ async function exchange_token(
 	return ((await response.json()) as { token: string }).token;
 }
 
-/** Seal a processing grant for the destination, failing loudly on refusal. */
+/**
+ * Seal a processing grant for the destination, failing loudly on refusal.
+ */
 async function seal_token(
 	t: ReturnType<typeof test_convex>,
 	fixture: Awaited<ReturnType<typeof seed_installation>>,
@@ -180,7 +189,9 @@ async function seal_token(
 	return ((await response.json()) as { token: string }).token;
 }
 
-/** The service upload routes are public API routes: bearer only, no service secret header. */
+/**
+ * The service upload routes are public API routes: bearer only, no service secret header.
+ */
 async function call(t: ReturnType<typeof test_convex>, path: string, bearer: string, body: unknown) {
 	return await t.fetch(path, {
 		method: "POST",

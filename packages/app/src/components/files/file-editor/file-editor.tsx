@@ -366,7 +366,9 @@ type FileEditorRender_Props = {
 	rootKind: files_YjsRootKind;
 	/** Monaco language for the node, derived from its name via `files_get_monaco_language_id`. */
 	monacoLanguageId: string;
-	/** Collaboration is off for this node: no Yjs document; the editors edit the stored string. */
+	/**
+	 * Collaboration is off for this node: no Yjs document; the editors edit the stored string.
+	 */
 	nonCollaborative: boolean;
 	yjsLastSequenceId?: app_convex_Id<"files_yjs_docs_last_sequences">;
 	editorMode: FileEditor_Mode;
@@ -527,7 +529,9 @@ type FileEditorInner_Props = {
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	rootKind: files_YjsRootKind;
 	monacoLanguageId: string;
-	/** Collaboration is off for this node: no Yjs document; the editors edit the stored string. */
+	/**
+	 * Collaboration is off for this node: no Yjs document; the editors edit the stored string.
+	 */
 	nonCollaborative: boolean;
 	yjsLastSequenceId?: app_convex_Id<"files_yjs_docs_last_sequences">;
 	serverSequence?: number;
@@ -691,7 +695,9 @@ export type FileEditor_Props = {
 	rootKind: files_YjsRootKind;
 	/** Monaco language for the node, derived from its name via `files_get_monaco_language_id`. */
 	monacoLanguageId: string;
-	/** Collaboration is off for this node: no Yjs document; the editors edit the stored string. */
+	/**
+	 * Collaboration is off for this node: no Yjs document; the editors edit the stored string.
+	 */
 	nonCollaborative: boolean;
 	yjsLastSequenceId?: app_convex_Id<"files_yjs_docs_last_sequences">;
 	serverSequence?: number;

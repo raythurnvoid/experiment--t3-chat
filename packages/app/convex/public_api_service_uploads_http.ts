@@ -314,7 +314,9 @@ export async function public_api_service_uploads_http_delete(
 
 // #region archive
 
-/** The destination comes from the grant's seal, so there is nothing for the caller to say. */
+/**
+ * The destination comes from the grant's seal, so there is nothing for the caller to say.
+ */
 const archive_destination_body_validator = z.object({}).strict();
 
 export type public_api_service_uploads_http_archive_destination_Body = z.infer<

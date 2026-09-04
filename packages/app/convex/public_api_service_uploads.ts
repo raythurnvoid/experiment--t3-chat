@@ -61,11 +61,17 @@ import { public_api_is_path_inside_prefix } from "./public_api_http_auth.ts";
 
 // #region shared
 
-/** Same window as `/api/v1/files/upload-urls` mints (FILES_UPLOAD_URL_TTL_MS in public_api.ts). */
+/**
+ * Same window as `/api/v1/files/upload-urls` mints (FILES_UPLOAD_URL_TTL_MS in public_api.ts).
+ */
 const UPLOAD_URL_TTL_MS = 15 * 60 * 1000;
-/** Bound placeholder and target growth for one service processing run. */
+/**
+ * Bound placeholder and target growth for one service processing run.
+ */
 const MAX_TARGETS_PER_UPLOAD_RUN = 16;
-/** Bound live cross-run cleanup for one target key inside one sealed destination. */
+/**
+ * Bound live cross-run cleanup for one target key inside one sealed destination.
+ */
 const MAX_LIVE_TARGETS_PER_DELETE_GROUP = 16;
 
 /**
@@ -95,7 +101,9 @@ const service_upload_principal_validator = v.object({
 	grantId: v.id("plugin_service_grants"),
 	actorUserId: v.id("users"),
 	principalKey: v.string(),
-	/** The destination the grant was sealed to. Every target path must live under it. */
+	/**
+	 * The destination the grant was sealed to. Every target path must live under it.
+	 */
 	pathPrefix: v.string(),
 });
 
@@ -109,7 +117,9 @@ type ServiceUploadPrincipal = {
 	pathPrefix: string;
 };
 
-/** Same shape rules as plugin-data idempotency keys: bounded, trimmed, no control characters. */
+/**
+ * Same shape rules as plugin-data idempotency keys: bounded, trimmed, no control characters.
+ */
 function validate_key(raw: string, label: "Idempotency keys" | "Target keys") {
 	if (raw.length === 0 || raw.length > 128) {
 		return Result({ _nay: { message: `${label} must be 1 to 128 characters` } });
@@ -442,7 +452,9 @@ export async function public_api_service_uploads_db_can_release_plugin_named_loc
 	ctx: MutationCtx,
 	args: {
 		installation: Doc<"plugins_workspace_installations">;
-		/** The caller's authority area: the grant's sealed destination, or a run's stamped root path. */
+		/**
+		 * The caller's authority area: the grant's sealed destination, or a run's stamped root path.
+		 */
 		pathPrefix: string;
 		node: Doc<"files_nodes">;
 	},
@@ -503,7 +515,9 @@ export async function public_api_service_uploads_db_release_service_created_lock
 	);
 }
 
-/** Recheck the live file before a grant reads or extends an existing target. */
+/**
+ * Recheck the live file before a grant reads or extends an existing target.
+ */
 async function db_authorize_live_target_node(
 	ctx: MutationCtx,
 	args: { target: Doc<"plugin_service_storage_targets">; principal: ServiceUploadPrincipal },
@@ -653,7 +667,9 @@ async function db_charge_observed_bytes(
 	return args.observedBytes;
 }
 
-/** Record the canonical object's confirmed size and charge it. */
+/**
+ * Record the canonical object's confirmed size and charge it.
+ */
 async function db_settle_canonicalized_target(
 	ctx: MutationCtx,
 	args: {
@@ -712,7 +728,9 @@ async function db_settle_canonicalized_target(
 	return args.actualBytes;
 }
 
-/** Settle a service target in the same transaction that records its canonical R2 object. */
+/**
+ * Settle a service target in the same transaction that records its canonical R2 object.
+ */
 export async function public_api_service_uploads_db_settle_canonicalized_asset(
 	ctx: MutationCtx,
 	args: { assetId: Id<"files_r2_assets">; actualBytes: number; nodePath: string | null; now: number },
@@ -737,7 +755,9 @@ export async function public_api_service_uploads_db_settle_canonicalized_asset(
 	await db_settle_canonicalized_target(ctx, { target, actualBytes: args.actualBytes, now: args.now });
 }
 
-/** Charge a late object event for a target whose upload nobody finished. */
+/**
+ * Charge a late object event for a target whose upload nobody finished.
+ */
 export async function public_api_service_uploads_db_record_untracked_asset_bytes(
 	ctx: MutationCtx,
 	args: {
@@ -1725,7 +1745,9 @@ export type public_api_service_uploads_delete_upload_target_Result =
  */
 export const public_api_service_uploads_MAX_ARCHIVE_NODES = 256;
 
-/** Load at most `maxNodes` descendants. One extra read proves that the subtree is too large. */
+/**
+ * Load at most `maxNodes` descendants. One extra read proves that the subtree is too large.
+ */
 export async function public_api_service_uploads_db_collect_bounded_descendants(
 	ctx: MutationCtx,
 	args: {

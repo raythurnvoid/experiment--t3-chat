@@ -1608,7 +1608,9 @@ const UNFINALIZED_UPLOAD_RECOVERY_RECHECK_DELAY_MS = 60 * 60 * 1000;
  */
 const UNFINALIZED_UPLOAD_RECOVERY_FAST_WINDOW_MS = 30 * 60 * 60 * 1000;
 
-/** Stop automatic recovery eight days after the latest signed upload URL was issued. */
+/**
+ * Stop automatic recovery eight days after the latest signed upload URL was issued.
+ */
 const UNFINALIZED_UPLOAD_RECOVERY_MAX_WINDOW_MS = 8 * 24 * 60 * 60 * 1000;
 
 /**

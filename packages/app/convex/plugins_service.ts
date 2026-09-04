@@ -248,7 +248,9 @@ type get_installation_capabilities_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-/** The refusals the grant mutations can return, and the status each one is. */
+/**
+ * The refusals the grant mutations can return, and the status each one is.
+ */
 function grant_failure(message: string) {
 	if (message === "Unauthorized") {
 		return { status: 401, body: { message } } as const;
@@ -365,7 +367,9 @@ export async function plugins_service_http_exchange(ctx: ActionCtx, request: Req
 
 // #region renew
 
-/** Renewal reads its whole answer from the presented grant, so it has nothing to say in a body. */
+/**
+ * Renewal reads its whole answer from the presented grant, so it has nothing to say in a body.
+ */
 const renew_body_validator = z.object({}).strict();
 
 export type plugins_service_http_renew_Body = z.infer<typeof renew_body_validator>;

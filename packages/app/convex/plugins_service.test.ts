@@ -11,10 +11,14 @@ const RENEW_PATH = "/api/internal/plugins/service-grants/renew";
 const VERIFY_LIVE_PATH = "/api/internal/plugins/service-grants/verify-live";
 const SEAL_PROCESSING_PATH = "/api/internal/plugins/service-grants/seal-processing";
 
-/** The secret the seeded registration's hash is made from. */
+/**
+ * The secret the seeded registration's hash is made from.
+ */
 const EXCHANGE_SECRET = "SERVICE_EXCHANGE_SECRET_TEST";
 
-/** What a finished Council installation consents to. */
+/**
+ * What a finished Council installation consents to.
+ */
 const SERVICE_CAPABILITIES: plugins_Capability[] = [
 	"plugin.service.connect",
 	"plugin.data.read",
@@ -196,7 +200,9 @@ async function exchange(t: ReturnType<typeof test_convex>, pageToken: string, ar
 	});
 }
 
-/** Exchange and return the raw grant token, failing loudly if the exchange itself was refused. */
+/**
+ * Exchange and return the raw grant token, failing loudly if the exchange itself was refused.
+ */
 async function exchange_token(
 	t: ReturnType<typeof test_convex>,
 	fixture: Awaited<ReturnType<typeof seed_installation>>,

@@ -309,7 +309,9 @@ export async function db_replace_file_chunks(
 		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
 		nodeId: Id<"files_nodes">;
-		/** Left out by the non-collaborative replace door: that file has no Yjs sequence. */
+		/**
+		 * Left out by the non-collaborative replace door: that file has no Yjs sequence.
+		 */
 		yjsSequence?: number;
 		textContent: string;
 		/** Forwarded to `db_insert_file_text_content`; see the comment on its declaration. */
@@ -1898,7 +1900,9 @@ export const get_file_last_available_text_content_by_path = internalAction({
 			nodeId: v.id("files_nodes"),
 			displayNodeId: v.id("files_nodes"),
 			pendingUpdateId: v.union(v.id("files_pending_updates"), v.null()),
-			/** See the same field on `get_file_text_content_db_state_by_path`. */
+			/**
+			 * See the same field on `get_file_text_content_db_state_by_path`.
+			 */
 			nonCollaborativeBaseAssetId: v.union(v.id("files_r2_assets"), v.null()),
 		}),
 		v.null(),
@@ -3791,7 +3795,9 @@ export const replace_file_content = action({
 		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 		text: v.string(),
-		/** The `node.assetId` the caller's editor loaded. A newer save makes this one stale. */
+		/**
+		 * The `node.assetId` the caller's editor loaded. A newer save makes this one stale.
+		 */
 		baseAssetId: v.id("files_r2_assets"),
 	},
 	returns: v_result({ _yay: v.object({ assetId: v.id("files_r2_assets") }) }),
@@ -3841,7 +3847,9 @@ export const replace_file_content_internal_action = internalAction({
 		userId: v.id("users"),
 		nodeId: v.id("files_nodes"),
 		text: v.string(),
-		/** The `node.assetId` the agent's read returned. A newer save makes this one stale. */
+		/**
+		 * The `node.assetId` the agent's read returned. A newer save makes this one stale.
+		 */
 		baseAssetId: v.id("files_r2_assets"),
 	},
 	returns: v_result({ _yay: v.object({ assetId: v.id("files_r2_assets") }) }),
@@ -5541,9 +5549,13 @@ export const get_set_file_collaborative_preflight = internalQuery({
 			organizationId: v.id("organizations"),
 			workspaceId: v.id("organizations_workspaces"),
 			rootKind: v.union(v.literal("rich_text"), v.literal("plain_text")),
-			/** The file already has a Yjs document, so the action answers success and stops. */
+			/**
+			 * The file already has a Yjs document, so the action answers success and stops.
+			 */
 			alreadyCollaborative: v.boolean(),
-			/** `null` when the file is writable. The action refuses a locked file before it uploads. */
+			/**
+			 * `null` when the file is writable. The action refuses a locked file before it uploads.
+			 */
 			readOnlyScopeNodeId: v.union(v.id("files_nodes"), v.null()),
 			cleanupInProgress: v.boolean(),
 			assetId: v.id("files_r2_assets"),

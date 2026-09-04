@@ -63,7 +63,9 @@ const MAX_VALUE_BYTES = 16 * 1024;
 const APPEND_KEY_MS_CEILING = 9_999_999_999_999;
 export const plugins_data_MAX_COLLECTIONS = 16;
 const MAX_COLLECTIONS = plugins_data_MAX_COLLECTIONS;
-/** Stored value bytes plus bytes promised to live reservations, per installation. */
+/**
+ * Stored value bytes plus bytes promised to live reservations, per installation.
+ */
 const MAX_INSTALLATION_BYTES = 16 * 1024 * 1024;
 /**
  * Values, live reservations, and revision tombstones share one ceiling. The byte ceiling alone does
@@ -108,14 +110,18 @@ const MEMBER_MAX_COLLECTIONS = MAX_COLLECTIONS / 2;
  */
 const USAGE_WARN_FRACTION = 0.8;
 const MAX_BATCH_DOCUMENTS = 50;
-/** How many member ids one display-name resolve may ask about. Same size as a write batch. */
+/**
+ * How many member ids one display-name resolve may ask about. Same size as a write batch.
+ */
 const MAX_MEMBER_RESOLVE_IDS = 50;
 /**
  * How many members one roster page may return. Each row costs two document reads, so this is the
  * page size and not the roster size: a bigger workspace is read one page at a time.
  */
 const MAX_MEMBER_LIST_PAGE_SIZE = 100;
-/** How many people one private scope may name. Same size as a file share list. */
+/**
+ * How many people one private scope may name. Same size as a file share list.
+ */
 const MAX_SCOPE_PRINCIPALS = 50;
 /**
  * How many file nodes one private scope may be bound to through the plugin access door. A scope
@@ -189,7 +195,9 @@ export type plugins_data_LastAppend = {
 	createdByUserId: Id<"users">;
 };
 
-/** Read only the exact timestamp suffix the append door creates. */
+/**
+ * Read only the exact timestamp suffix the append door creates.
+ */
 export function plugins_data_parse_append_key_at(key: string) {
 	const match = key.match(/([0-9]{13}):[0-9a-f]{4}$/u);
 	if (!match) {
@@ -200,7 +208,9 @@ export function plugins_data_parse_append_key_at(key: string) {
 	return Number.isSafeInteger(at) && at >= 0 ? at : null;
 }
 
-/** Pick one durable append marker. A lexical key maximum breaks equal-time ties. */
+/**
+ * Pick one durable append marker. A lexical key maximum breaks equal-time ties.
+ */
 export function plugins_data_max_last_append(
 	current: plugins_data_LastAppend | null | undefined,
 	candidate: plugins_data_LastAppend,
@@ -376,9 +386,13 @@ const store_principal_validator = v.object({
 	 * refusal, so `db_authorize` normalizes it and answers "Not found" like any other unknown id.
 	 */
 	installationId: v.string(),
-	/** The person the call acts for. Reads and writes are judged with their permissions. */
+	/**
+	 * The person the call acts for. Reads and writes are judged with their permissions.
+	 */
 	actorUserId: v.id("users"),
-	/** Stable producer identity. Versioned keys and reservations belong to it. */
+	/**
+	 * Stable producer identity. Versioned keys and reservations belong to it.
+	 */
 	principalKey: v.string(),
 });
 
@@ -764,7 +778,9 @@ async function db_patch_member_usage(
 	args: {
 		installation: Doc<"plugins_workspace_installations">;
 		userId: Id<"users">;
-		/** `current` charges this membership generation; an id credits only that exact generation. */
+		/**
+		 * `current` charges this membership generation; an id credits only that exact generation.
+		 */
 		targetUsageId: "current" | Id<"plugins_data_member_usage"> | null;
 		addedBytes: number;
 		addedSlots: number;
@@ -905,12 +921,16 @@ async function db_drop_member_collection(
  * theirs and only its size changed.
  */
 function member_usage_deltas(args: {
-	/** The member the write is charged to, or null for a plugin backend. */
+	/**
+	 * The member the write is charged to, or null for a plugin backend.
+	 */
 	writer: Id<"users"> | null;
 	currentMemberUsageId: Id<"plugins_data_member_usage"> | undefined;
 	existing: Doc<"plugins_data"> | null;
 	collection: string;
-	/** True when this write is what puts the collection on the installation's list. */
+	/**
+	 * True when this write is what puts the collection on the installation's list.
+	 */
 	addsCollection: boolean;
 	byteSize: number;
 }) {
@@ -978,7 +998,9 @@ function member_capacity_change(args: {
 	existing: Doc<"plugins_data"> | null;
 	writer: Id<"users">;
 	currentMemberUsageId: Id<"plugins_data_member_usage"> | undefined;
-	/** True when this write is what puts the collection on the installation's list. */
+	/**
+	 * True when this write is what puts the collection on the installation's list.
+	 */
 	addsCollection: boolean;
 	byteSize: number;
 }) {
@@ -1004,7 +1026,9 @@ async function db_credit_member_for_delete(
 	args: {
 		installation: Doc<"plugins_workspace_installations">;
 		document: Doc<"plugins_data">;
-		/** Keep the slot while a deleted append receipt can still answer a retry. */
+		/**
+		 * Keep the slot while a deleted append receipt can still answer a retry.
+		 */
 		keepSlot?: boolean;
 	},
 ) {
@@ -1329,7 +1353,9 @@ export const reserve_document = internalMutation({
 	},
 });
 
-/** The route calls this through the generated `internal` object, which erases the return type. */
+/**
+ * The route calls this through the generated `internal` object, which erases the return type.
+ */
 export type plugins_data_reserve_document_Result =
 	typeof reserve_document extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
@@ -1482,7 +1508,9 @@ export const release_reservation = internalMutation({
 	},
 });
 
-/** The route calls this through the generated `internal` object, which erases the return type. */
+/**
+ * The route calls this through the generated `internal` object, which erases the return type.
+ */
 export type plugins_data_release_reservation_Result =
 	typeof release_reservation extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
@@ -1582,7 +1610,9 @@ export const read_document = internalQuery({
 	},
 });
 
-/** The route calls this through the generated `internal` object, which erases the return type. */
+/**
+ * The route calls this through the generated `internal` object, which erases the return type.
+ */
 export type plugins_data_read_document_Result =
 	typeof read_document extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
@@ -1706,7 +1736,9 @@ export const list_documents = internalQuery({
 	},
 });
 
-/** The route calls this through the generated `internal` object, which erases the return type. */
+/**
+ * The route calls this through the generated `internal` object, which erases the return type.
+ */
 export type plugins_data_list_documents_Result =
 	typeof list_documents extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
@@ -1726,11 +1758,17 @@ async function db_write_document(
 		key: string;
 		value: Record<string, unknown>;
 		byteSize: number;
-		/** Only the user-write door sets this. Absent keeps the pre-door meaning: shared. */
+		/**
+		 * Only the user-write door sets this. Absent keeps the pre-door meaning: shared.
+		 */
 		ownership?: "shared" | "owned";
-		/** Only the user-write door's append sets this, for replay dedup. */
+		/**
+		 * Only the user-write door's append sets this, for replay dedup.
+		 */
 		userWrite?: { requestId: string; requestFingerprint: string };
-		/** Only putOwned uses this to replace a shared squat with a fresh owned lifetime. */
+		/**
+		 * Only putOwned uses this to replace a shared squat with a fresh owned lifetime.
+		 */
 		replaceExisting?: true;
 		/**
 		 * The member whose share holds this document after the write, or null when a plugin backend
@@ -1822,7 +1860,9 @@ export const write_document = internalMutation({
 	},
 });
 
-/** The route calls this through the generated `internal` object, which erases the return type. */
+/**
+ * The route calls this through the generated `internal` object, which erases the return type.
+ */
 export type plugins_data_write_document_Result =
 	typeof write_document extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
@@ -1843,7 +1883,9 @@ export const write_documents_batch = internalMutation({
 	handler: async (ctx, args) => await db_write_documents(ctx, args),
 });
 
-/** The route calls this through the generated `internal` object, which erases the return type. */
+/**
+ * The route calls this through the generated `internal` object, which erases the return type.
+ */
 export type plugins_data_write_documents_batch_Result =
 	typeof write_documents_batch extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
@@ -2205,7 +2247,9 @@ export const delete_document = internalMutation({
 	},
 });
 
-/** The route calls this through the generated `internal` object, which erases the return type. */
+/**
+ * The route calls this through the generated `internal` object, which erases the return type.
+ */
 export type plugins_data_delete_document_Result =
 	typeof delete_document extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
@@ -2591,7 +2635,9 @@ async function db_get_append_replay_receipt(
 		.first();
 }
 
-/** Keep a deleted append's first answer long enough for a lost-response retry. */
+/**
+ * Keep a deleted append's first answer long enough for a lost-response retry.
+ */
 async function db_preserve_append_replay_receipt(
 	ctx: MutationCtx,
 	args: { document: Doc<"plugins_data">; now: number },
@@ -3209,7 +3255,9 @@ async function db_resolve_scope(
 	return candidate && args.key.startsWith(candidate.keyPrefix) ? candidate : null;
 }
 
-/** The released scope range a key falls in, or null when the key was never private. */
+/**
+ * The released scope range a key falls in, or null when the key was never private.
+ */
 async function db_resolve_released_scope_range(
 	ctx: QueryCtx | MutationCtx,
 	args: { installationId: Id<"plugins_workspace_installations">; collection: string; key: string },
@@ -3225,7 +3273,9 @@ async function db_resolve_released_scope_range(
 	return candidate && args.key.startsWith(candidate.keyPrefix) ? candidate : null;
 }
 
-/** The durable identity marker for one live or released scope id. */
+/**
+ * The durable identity marker for one live or released scope id.
+ */
 async function db_get_scope_identity(
 	ctx: QueryCtx | MutationCtx,
 	args: { installationId: Id<"plugins_workspace_installations">; scopeId: string },
@@ -3239,7 +3289,9 @@ async function db_get_scope_identity(
 		.first();
 }
 
-/** Add the durable identity marker when a live or released scope predates marker writes. */
+/**
+ * Add the durable identity marker when a live or released scope predates marker writes.
+ */
 async function db_ensure_scope_identity(
 	ctx: MutationCtx,
 	args: {
@@ -3263,7 +3315,9 @@ async function db_ensure_scope_identity(
 	});
 }
 
-/** Any durable record that proves a scope id was already used, including older range-only rows. */
+/**
+ * Any durable record that proves a scope id was already used, including older range-only rows.
+ */
 async function db_get_scope_lifecycle_record(
 	ctx: QueryCtx | MutationCtx,
 	args: { installationId: Id<"plugins_workspace_installations">; scopeId: string },
@@ -3306,7 +3360,9 @@ async function db_find_overlapping_scope(
 		.first();
 }
 
-/** A released scope range that touches this one, or null when the range was never private. */
+/**
+ * A released scope range that touches this one, or null when the range was never private.
+ */
 async function db_find_overlapping_released_scope_range(
 	ctx: QueryCtx | MutationCtx,
 	args: { installationId: Id<"plugins_workspace_installations">; collection: string; keyPrefix: string },
@@ -3481,7 +3537,9 @@ type plugins_data_ScopeAccessState = {
 	hasActiveManager: boolean;
 };
 
-/** Keep only grant holders who can still use this exact workspace. */
+/**
+ * Keep only grant holders who can still use this exact workspace.
+ */
 async function db_active_scope_user_ids(
 	ctx: QueryCtx | MutationCtx,
 	args: {
@@ -3520,7 +3578,9 @@ async function db_active_scope_user_ids(
 	).filter((userId): userId is Id<"users"> => userId !== null);
 }
 
-/** Read only principals who can still use this exact workspace. */
+/**
+ * Read only principals who can still use this exact workspace.
+ */
 export async function plugins_data_db_get_scope_access_state(
 	ctx: QueryCtx | MutationCtx,
 	args: {
@@ -3960,7 +4020,9 @@ export async function plugins_data_db_apply_file_access_binding(
 	return Result({ _yay: null });
 }
 
-/** Delete an empty live scope, or make its lowest active member the manager. */
+/**
+ * Delete an empty live scope, or make its lowest active member the manager.
+ */
 export async function plugins_data_db_keep_scope_managed(
 	ctx: MutationCtx,
 	args: {
@@ -4026,7 +4088,9 @@ type plugins_data_ScopeCleanupPair = {
 	scopeId: string;
 };
 
-/** Find the unique private scopes named by a departing user's direct grants. */
+/**
+ * Find the unique private scopes named by a departing user's direct grants.
+ */
 export function plugins_data_db_get_scope_cleanup_pairs(
 	ctx: QueryCtx | MutationCtx,
 	grants: readonly Pick<Doc<"access_control_permission_grants">, "resourceKind" | "resourceId">[],
@@ -4052,7 +4116,9 @@ export function plugins_data_db_get_scope_cleanup_pairs(
 	return pairs;
 }
 
-/** Keep one cleanup transaction small while still draining every scope a departing user named. */
+/**
+ * Keep one cleanup transaction small while still draining every scope a departing user named.
+ */
 const SCOPE_CLEANUP_BATCH_SIZE = 10;
 
 export const cleanup_stranded_scopes = internalMutation({
@@ -6001,7 +6067,9 @@ export const write_versioned_document = internalMutation({
 	},
 });
 
-/** The route calls this through the generated `internal` object, which erases the return type. */
+/**
+ * The route calls this through the generated `internal` object, which erases the return type.
+ */
 export type plugins_data_write_versioned_document_Result =
 	typeof write_versioned_document extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
@@ -6210,7 +6278,9 @@ export const delete_versioned_document = internalMutation({
 	},
 });
 
-/** The route calls this through the generated `internal` object, which erases the return type. */
+/**
+ * The route calls this through the generated `internal` object, which erases the return type.
+ */
 export type plugins_data_delete_versioned_document_Result =
 	typeof delete_versioned_document extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
@@ -6220,7 +6290,9 @@ export type plugins_data_delete_versioned_document_Result =
 
 // #region deletion
 
-/** One drain pass deletes at most this many docs, so the mutation stays inside one transaction. */
+/**
+ * One drain pass deletes at most this many docs, so the mutation stays inside one transaction.
+ */
 const DELETION_BATCH_SIZE = 100;
 
 /**
@@ -6235,7 +6307,9 @@ export async function plugins_data_db_drain_batch(
 	args: {
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
-		/** Null drains every installation in the workspace. */
+		/**
+		 * Null drains every installation in the workspace.
+		 */
 		installationId: Id<"plugins_workspace_installations"> | null;
 		batchSize: number;
 	},
@@ -6448,10 +6522,14 @@ export const drain_uninstalled_installation = internalMutation({
 	},
 });
 
-/** How many docs without counters one installation preview reads before it answers "this many or more". */
+/**
+ * How many docs without counters one installation preview reads before it answers "this many or more".
+ */
 const PREVIEW_DOC_COUNT_LIMIT = 100;
 
-/** Shared read budget used by a larger preview that walks several installations. */
+/**
+ * Shared read budget used by a larger preview that walks several installations.
+ */
 export type plugins_data_PreviewReadBudget = {
 	remaining: number;
 	truncated: boolean;
@@ -6744,7 +6822,9 @@ async function run_expiry_pass(ctx: MutationCtx) {
 	return { done: true, releasedCount: 0, deletedCount: 0 };
 }
 
-/** Delete one append receipt and release the installation and exact member slots it owns. */
+/**
+ * Delete one append receipt and release the installation and exact member slots it owns.
+ */
 export async function plugins_data_db_delete_append_replay_receipt(
 	ctx: MutationCtx,
 	receipt: Doc<"plugins_data_append_replay_receipts">,

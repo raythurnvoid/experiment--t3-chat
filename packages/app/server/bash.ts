@@ -1612,7 +1612,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			brokenChunks?: boolean;
 			/** Upload-style node without editable yjs state (binary uploads, PDFs). */
 			withoutYjsState?: boolean;
-			/** Editable text file with collaboration turned off: committed chunks only, no Yjs docs. */
+			/**
+			 * Editable text file with collaboration turned off: committed chunks only, no Yjs docs.
+			 */
 			nonCollaborative?: boolean;
 			/** Store a real yjs snapshot in mock R2 so action-side base-state fetches work (pending upserts). */
 			withRealYjsSnapshot?: boolean;
