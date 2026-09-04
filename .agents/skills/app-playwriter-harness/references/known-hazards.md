@@ -1082,6 +1082,12 @@ resolve `state.page` at call time — the tab you opened yourself. Hit once more
 0.6.4, where an `auditAccessibility` of a file-view route answered about the user's own Chitchat tab
 on the Pages host. The install-order trap is gone; the two binding traps below are not.
 
+The helpers also take no `page` option. `auditAccessibility({ selector, minTargetSize, frame })` is
+the whole signature, so a call written as `auditAccessibility({ page: state.tab2, selector })` drops
+the `page` silently and audits `state.page` instead. With two tabs open this reads exactly like the
+binding trap above: the audit times out on a selector you can see in the other tab's screenshot. Hit
+2026-09-04 driving a two-tab collaboration check. Point `state.page` at the tab you mean, or bind it.
+
 Call `await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: "/files" })` first; it sets
 `state.page` too, so the hand assignment is not needed. The audit also tells you which tab it
 answered about: its report carries a `url` field for exactly this, so reading that field before
@@ -1190,6 +1196,23 @@ Before reporting one, walk the element's ancestors and compare its rect with the
 `overflow-y: auto` ancestor's rect. When the item extends past the scroll area's bottom, it is clipped,
 not covered, and the finding is noise. A real overlap has the blocker inside or above the same
 container.
+
+## A rect read while the layout is still moving reports a blocked hit target that does not exist
+
+`boundingBox()` and the audit's hit test both read the rect the page has right now. A sidebar that is
+still animating, or an HMR update that has just landed, gives you a rect the element will not keep.
+The audit then names a neighbour as the blocker and the finding looks real.
+
+Hit 2026-09-04 on the files route while another agent's HMR was updating `file-editor-rich-text.tsx`:
+the toolbar's `Open file snapshots` button read `x: 1515.9` and came back blocked at all five points
+by the `Comments` tab. Once the layout settled the same button read `x: 1413.9`, nowhere near the tab,
+and the audit was clean. A second run of the same audit named two different buttons instead, which is
+the tell — a real overlap does not move between runs.
+
+Run two cheap checks before reporting one. `click({ trial: true })` runs Playwright's own actionability
+against the live layout, and a clipped screenshot of that corner shows what is actually painted. If
+both say the control is reachable while the audit says blocked, the audit read a stale rect. Wait for
+the layout to settle and audit again instead of editing app CSS.
 
 ## Playwriter's own toolbar covers the top-right header controls
 

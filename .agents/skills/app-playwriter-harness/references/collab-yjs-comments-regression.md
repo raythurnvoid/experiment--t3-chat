@@ -162,7 +162,51 @@ console line mentions `FilesConvexYjsStream` or `files_yjs_Provider`.
 
 Notes: the recorder dies on reload, so install it again before step 5 if you reloaded in between.
 `yjs_get_incremental_updates` answers `updates: []` right after a compaction, so count pushes from the
-recorder, never from that query.
+recorder, never from that query. The dialog also stays open after step 4, so a second
+`getByRole("button", { name: /^Properties of / })` click is intercepted by the open modal and hangs
+until the CLI timeout. Reuse the open dialog instead of reopening it.
+
+### 8b. An edit that races the toggle
+
+Steps 1-6 only prove the calm path. Run this once more to see what happens to an edit that leaves the
+editor while the server is already replacing the document. Park the caret in tab 1 first, then click
+`Turn collaboration off` and type in tab 1 **in the same `Promise.all`** — the push debounce is 500ms,
+so the edit goes out against the document being deleted.
+
+Expected (verified 2026-09-04): the push carries the OLD id and the server answers `_nay "Not found"`.
+The typed text is gone from the editor, which is the documented behaviour — `files-editable-text`
+says either direction remounts the editor and only last-saved text survives. Turning collaboration on
+again gives a third id, and the next edit saves against it with no reload.
+
+Do **not** expect the `.FileEditorRichText-push-refused` warning here. Turning collaboration off
+unmounts the whole collaborative editor and its warning with it, and `FileEditorRichTextNonCollab`
+takes over. The one visible trace is a console warning,
+`[FilesConvexYjsStream] final yjs_push_update failed {message: Not found}`, from the old stream's
+dispose flush. That line is expected in this check and nowhere else.
+
+Fail here is a crash, a `.FileEditorRichText-load-error` banner, or an editor that never becomes
+editable again.
+
+### 8c. Break it on purpose
+
+A green run of 8 and 8b proves nothing until you have seen the check go red. Comment out
+`this.expectedLineageUpdatesReceived.resolve();` in the subscription handler of
+`files-yjs-provider.ts`, reload tab 1, and read `window.__qa.filesYjs()`: it must stay
+`status: "loading"` with `.FileEditorRichTextSkeleton` mounted and empty editor text, forever.
+Restore the line and reload: `synchronized`, and the saved text is back.
+
+Read the served module to prove the browser really has your edit, but do not grep for the comment
+you added — Vite's dev transform strips comments, so `QA_BREAK_ON_PURPOSE` is never in the response.
+Grep for the call instead:
+
+```js
+const src = await state.tab1.evaluate(async () => await fetch("/src/lib/files-yjs-provider.ts?cb=" + Date.now(), { cache: "no-store" }).then((r) => r.text()));
+console.log(src.match(/expectedLineageUpdatesReceived[^;\n]*/g));
+```
+
+Broken, that answers the declaration and the `.promise` await only. Working, it also answers
+`.resolve()`. Keep the window short — this repo is a shared worktree — and confirm with `git diff`
+afterwards that the file is byte-identical to before.
 
 ## Log expectations
 
@@ -254,3 +298,19 @@ original id, collaboration off → on produced a different id, push B carried th
 survived a reload, no load or push-refused banner, and the console carried only the benign logs
 above. Checks 2-7 were skipped: the diff does not touch comments, awareness, or the editor extensions.
 Check 8 was written during this run.
+
+## Run 2026-09-04b — same change, re-checked with the two proofs check 8 was missing
+
+Re-ran checks 1, 8, 8b and 8c against the committed change. Check 8 passed again on a fresh root
+`.md` file: lineage `w577…rcgb` for push A, `w571…r6d0` for push B after the toggle, the editor became
+editable on its own with no reload, and both markers survived.
+
+8b and 8c are new and were written from this run. 8b showed the racing edit refused with
+`_nay "Not found"` and lost, with no push-refused warning — the note above corrects an earlier
+expectation that the warning would appear. 8c is the red proof: with the `resolve()` line commented
+out the provider stayed `loading` behind the skeleton and never came back.
+
+The only provider console line in the whole run was the dispose-flush warning named in 8b. A
+`useAppAuth must be used within AppAuthProvider` page error also appeared, but it landed right after
+`[vite] hot updated: …/file-editor-rich-text.tsx` from another agent editing that file in the shared
+worktree, and it did not appear in any run before their HMR — not a finding about this change.
