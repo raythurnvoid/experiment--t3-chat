@@ -40,14 +40,19 @@ const starterKitSharedOptions = {
 	codeBlock: false,
 } as const;
 
+/**
+ * A file with collaboration turned on loads the Liveblocks extension, which brings its own undo
+ * and redo history. Turn StarterKit's history off so the two do not both handle it.
+ */
 const starterKit = StarterKit.configure({
-	// The Liveblocks extension comes with its own history handling
 	undoRedo: false,
 	...starterKitSharedOptions,
 });
 
-// A file with collaboration turned off has no Liveblocks extension, so StarterKit's own
-// undo/redo stays on.
+/**
+ * A file with collaboration turned off has no Liveblocks extension, so StarterKit's own
+ * undo/redo stays on.
+ */
 const nonCollabStarterKit = StarterKit.configure({
 	...starterKitSharedOptions,
 });
