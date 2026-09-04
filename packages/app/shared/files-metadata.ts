@@ -569,6 +569,7 @@ export function files_metadata_validate_entries(entries: files_metadata_Entry[])
 				},
 			});
 		}
+
 		if (typeof value === "number" && !Number.isFinite(value)) {
 			return Result({ _nay: { message: `Metadata key "${entry.key}" must have a finite number value` } });
 		}

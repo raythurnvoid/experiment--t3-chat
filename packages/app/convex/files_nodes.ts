@@ -2385,6 +2385,7 @@ export const create_upload_node = mutation({
 			console.error(errorMessage, errorData);
 			throw should_never_happen(errorMessage, errorData);
 		}
+
 		const paidPlan = await billing_db_check_paid_plan(ctx, {
 			userId: billing_pick_billed_user_id({ userId: userAuth.id, organization }),
 		});
@@ -2723,6 +2724,7 @@ export const create_upload_nodes = mutation({
 			console.error(errorMessage, errorData);
 			throw should_never_happen(errorMessage, errorData);
 		}
+
 		const paidPlan = await billing_db_check_paid_plan(ctx, {
 			userId: billing_pick_billed_user_id({ userId: userAuth.id, organization }),
 		});

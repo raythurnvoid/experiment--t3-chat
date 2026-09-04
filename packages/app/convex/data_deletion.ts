@@ -469,6 +469,7 @@ async function db_purge_organization_workspace_content_batch(
 				updatedAt: disabledAt,
 			});
 		}
+
 		return { done: false, deletedCount: enabledPluginInstallations.length };
 	}
 

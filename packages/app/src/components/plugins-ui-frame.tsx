@@ -459,6 +459,7 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 							onError(`The ${kindLabel} session was lost`);
 							return token_error(requestId, result._nay.message);
 						}
+
 						const minted = await mintSession();
 						if (cancelled || iframeRef.current !== iframeNode) {
 							// Same rule as the first mint: never hand a token to a stale frame.
@@ -467,12 +468,14 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 							}
 							return token_error(requestId, result._nay.message);
 						}
+
 						if (minted._nay) {
 							cancelled = true;
 							clearTimeout(startupDeadline);
 							onError(minted._nay.message);
 							return token_error(requestId, minted._nay.message);
 						}
+
 						if (minted._yay.pluginVersionId !== pluginVersionId) {
 							revoke_session(minted._yay.sessionId);
 							cancelled = true;

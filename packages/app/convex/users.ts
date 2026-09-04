@@ -1449,6 +1449,7 @@ export const hard_delete_user_now = internalAction({
 					purgeUserMod: "data",
 				});
 			}
+
 			return null;
 		}
 
@@ -1472,6 +1473,7 @@ export const hard_delete_user_now = internalAction({
 					purgeUserMod,
 				});
 			}
+
 			return null;
 		}
 
@@ -1540,6 +1542,7 @@ export const hard_delete_user_now = internalAction({
 				break;
 			}
 		}
+
 		if (!finalized) {
 			if (!args._test_disableReschedule) {
 				// Provider deletes are idempotent. Retry them before the next bounded local finalization pass.
@@ -1548,8 +1551,10 @@ export const hard_delete_user_now = internalAction({
 					purgeUserMod,
 				});
 			}
+
 			return null;
 		}
+
 		if (!purgeUserRecord) {
 			const hasDeletionRequests = await ctx.runQuery(internal.data_deletion.has_deletion_requests_for_user, {
 				userId: user._id,

@@ -478,6 +478,7 @@ export async function files_nodes_db_insert_file_content_docs(
 					cause: chunks._nay,
 				});
 			}
+
 			return chunks;
 		});
 
@@ -526,6 +527,7 @@ export async function files_nodes_db_insert_file_content_docs(
 					cause: chunks._nay,
 				});
 			}
+
 			return chunks;
 		});
 
@@ -585,6 +587,7 @@ export async function files_nodes_db_insert_file_content_docs(
 					cause: chunks._nay,
 				});
 			}
+
 			return chunks;
 		}),
 	] as const).catch((error) => {
@@ -3939,6 +3942,7 @@ export const finalize_file_content_replacement = internalMutation({
 			console.error(errorMessage, errorData);
 			throw should_never_happen(errorMessage, errorData);
 		}
+
 		const billedUserId = billing_pick_billed_user_id({ userId: user._id, organization });
 		const billedUser = await ctx.db.get("users", billedUserId);
 		if (!billedUser) {
@@ -4126,6 +4130,7 @@ export const restore_snapshot = internalMutation({
 				},
 			});
 		}
+
 		if (
 			fileNode.yjsSnapshotId !== args.expectedYjsSnapshotId ||
 			fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId
@@ -5893,6 +5898,7 @@ export const finalize_file_collaboration_enable = internalMutation({
 				error: frontmatter._nay,
 			});
 		}
+
 		const frontmatterOverCapCounts =
 			frontmatter?._yay != null && files_metadata_frontmatter_exceeds_index_caps(frontmatter._yay)
 				? frontmatter._yay

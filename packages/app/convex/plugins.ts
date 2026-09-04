@@ -1391,6 +1391,7 @@ function review_read_tool_result(text: string, file: ReviewOpenFile) {
 		console.error(errorMessage, errorData);
 		throw should_never_happen(errorMessage, errorData);
 	}
+
 	return text;
 }
 
@@ -1409,6 +1410,7 @@ function review_run_forced_read_batch(files: ReviewOpenFile[], pendingRead: Revi
 			break;
 		}
 	}
+
 	if (!separator) {
 		throw should_never_happen("Plugin review could not pick a forced-read separator");
 	}
@@ -2561,6 +2563,7 @@ export const run_version_review = internalAction({
 				}
 				pendingRead.ranges = [];
 			}
+
 			if (pendingQuoted.ranges.length > 0) {
 				for (const range of pendingQuoted.ranges) {
 					review_quote(range.file, range.start, range.end);
@@ -2609,6 +2612,7 @@ export const run_version_review = internalAction({
 				}
 				return Result({ _nay: { message: "Plugin review could not measure its input; try again" } });
 			}
+
 			if (stepInputTokens > REVIEW_INPUT_MAX_TOKENS) {
 				return Result({
 					_nay: { message: `Plugin review input exceeds the ${REVIEW_INPUT_MAX_TOKENS}-token limit` },
@@ -2729,6 +2733,7 @@ ${forced.text}`, recordSeparator: forced.recordSeparator };
 				_nay: { message: "Plugin review did not read the whole artifact within its limits; try again" },
 			});
 		}
+
 		if (!navigationComplete || review_wall_clock_expired(startedAt, deadlineSignal)) {
 			console.error("Plugin AI review ran out of navigation budget before it finished", {
 				artifactHash: args.artifactHash,
@@ -2817,6 +2822,7 @@ ${forced.text}`, recordSeparator: forced.recordSeparator };
 			}
 			return Result({ _nay: { message: "Plugin review verdict failed; try again" } });
 		}
+
 		if (review_wall_clock_expired(startedAt, deadlineSignal)) {
 			console.error("Plugin AI review ran out of wall-clock budget before storing the verdict", {
 				artifactHash: args.artifactHash,
@@ -3085,6 +3091,7 @@ export const run_publish_artifact_cleanup_attempt = internalMutation({
 				});
 				return { done: false, deletedCount: batch.length };
 			}
+
 			const reviewId = registeredVersion.reviewId;
 			await ctx.db.delete("plugins_versions", registeredVersion._id);
 			if (reviewId) {
@@ -3451,6 +3458,7 @@ async function publish_version_from_github(
 			_nay: { name: "review_rejected", message: `Plugin review rejected this version: ${reasons.join(" | ")}` },
 		});
 	}
+
 	if (review._yay.status === "flagged") {
 		return Result({
 			_nay: {
@@ -3745,6 +3753,7 @@ export const list_user_published_repositories = query({
 						reviewStatus: version.reviewStatus,
 					});
 				}
+
 				return {
 					repository,
 					readyVersions,
@@ -6126,6 +6135,7 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 				).docs;
 				runActivities += activities.length;
 			}
+
 			const sourceNodes = (
 				await plugins_db_take_registry_preview_docs(childDocBudget, (limit) =>
 					ctx.db
@@ -6323,6 +6333,7 @@ export const hard_delete_plugin_from_registry = internalMutation({
 				updatedAt: quiescedAt,
 			});
 		}
+
 		if (enabledInstallations.length > 0) {
 			const anotherEnabledInstallation = await ctx.db
 				.query("plugins_workspace_installations")

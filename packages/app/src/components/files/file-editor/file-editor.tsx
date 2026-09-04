@@ -432,9 +432,11 @@ function FileEditorRender(props: FileEditorRender_Props) {
 				/>
 			);
 		}
+
 		if (!yjsLastSequenceId) {
 			return <FileEditorRichTextSkeleton />;
 		}
+
 		return (
 			<FileEditorRichText
 				nodeId={nodeId}
@@ -468,6 +470,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 				/>
 			);
 		}
+
 		return (
 			<FileEditorDiff
 				key={nodeId}

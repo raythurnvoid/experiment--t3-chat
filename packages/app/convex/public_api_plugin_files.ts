@@ -290,6 +290,7 @@ export const ensure_plugin_folder = internalMutation({
 				});
 			}
 		}
+
 		if (!canWrite) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
@@ -618,6 +619,7 @@ function validate_canonical_folder_path(rawPath: string) {
 			return Result({ _nay: { message: "Path contains an invalid folder name." } });
 		}
 	}
+
 	return Result({ _yay: normalized });
 }
 
@@ -664,6 +666,7 @@ export async function public_api_plugin_files_http_ensure_folder(
 			body: await fail({ status: 400, message: body._nay.message, errorCode: "invalid_input" }),
 		} as const;
 	}
+
 	const validatedPath = validate_canonical_folder_path(body._yay.path);
 	if (validatedPath._nay) {
 		return {
@@ -688,6 +691,7 @@ export async function public_api_plugin_files_http_ensure_folder(
 				body: await fail({ status: 401, message: result._nay.message, errorCode: "unauthenticated" }),
 			} as const;
 		}
+
 		if (result._nay.message === "Permission denied") {
 			return {
 				status: 403,
@@ -701,6 +705,7 @@ export async function public_api_plugin_files_http_ensure_folder(
 				body: await fail({ status: 404, message: result._nay.message, errorCode: "not_found" }),
 			} as const;
 		}
+
 		return {
 			status: 409,
 			body: await fail({ status: 409, message: result._nay.message, errorCode: "conflict" }),
@@ -768,12 +773,14 @@ export async function public_api_plugin_files_http_archive(
 			body: await fail({ status: 400, message: body._nay.message, errorCode: "invalid_input" }),
 		} as const;
 	}
+
 	if (!body._yay.path.startsWith("/")) {
 		return {
 			status: 400,
 			body: await fail({ status: 400, message: "Path must be absolute.", errorCode: "invalid_input" }),
 		} as const;
 	}
+
 	const requestedPath = server_path_normalize(body._yay.path);
 	if (requestedPath === "/") {
 		return {
@@ -807,12 +814,14 @@ export async function public_api_plugin_files_http_archive(
 				body: await fail({ status: 401, message: result._nay.message, errorCode: "unauthenticated" }),
 			} as const;
 		}
+
 		if (result._nay.message === "Permission denied") {
 			return {
 				status: 403,
 				body: await fail({ status: 403, message: result._nay.message, errorCode: "permission_denied" }),
 			} as const;
 		}
+
 		return {
 			status: 409,
 			body: await fail({ status: 409, message: result._nay.message, errorCode: "conflict" }),
@@ -877,12 +886,14 @@ export async function public_api_plugin_files_http_set_access(
 			body: await fail({ status: 400, message: body._nay.message, errorCode: "invalid_input" }),
 		} as const;
 	}
+
 	if (!body._yay.path.startsWith("/")) {
 		return {
 			status: 400,
 			body: await fail({ status: 400, message: "Path must be absolute.", errorCode: "invalid_input" }),
 		} as const;
 	}
+
 	const requestedPath = server_path_normalize(body._yay.path);
 	if (requestedPath === "/") {
 		return {
@@ -901,6 +912,7 @@ export async function public_api_plugin_files_http_set_access(
 			}),
 		} as const;
 	}
+
 	if (!pluginCallId) {
 		// Unreachable: public API authorization creates the call for plugin_run principals.
 		throw should_never_happen("plugin_run access change without a consumed call", { runId: principal.runId });
@@ -923,18 +935,21 @@ export async function public_api_plugin_files_http_set_access(
 				body: await fail({ status: 401, message: result._nay.message, errorCode: "unauthenticated" }),
 			} as const;
 		}
+
 		if (result._nay.message === "Permission denied") {
 			return {
 				status: 403,
 				body: await fail({ status: 403, message: result._nay.message, errorCode: "permission_denied" }),
 			} as const;
 		}
+
 		if (result._nay.message === "Not found") {
 			return {
 				status: 404,
 				body: await fail({ status: 404, message: result._nay.message, errorCode: "not_found" }),
 			} as const;
 		}
+
 		return {
 			status: 409,
 			body: await fail({ status: 409, message: result._nay.message, errorCode: "conflict" }),

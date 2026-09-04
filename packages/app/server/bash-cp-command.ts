@@ -385,6 +385,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						exitCode: bash_COMMAND_EXIT_FAILURE,
 					};
 				}
+
 				if (written._nay) {
 					return {
 						stdout: "",

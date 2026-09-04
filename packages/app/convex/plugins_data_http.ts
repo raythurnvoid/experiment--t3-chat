@@ -60,6 +60,7 @@ function is_well_formed_string(value: string) {
 			index += 1;
 			continue;
 		}
+
 		if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
 			return false;
 		}

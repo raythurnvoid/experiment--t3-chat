@@ -1713,6 +1713,7 @@ export const cleanup_expired_unfinalized_assets = internalMutation({
 							});
 							continue;
 						}
+
 						const liveR2Key = r2_create_asset_key({
 							organizationId: asset.organizationId,
 							workspaceId: asset.workspaceId,

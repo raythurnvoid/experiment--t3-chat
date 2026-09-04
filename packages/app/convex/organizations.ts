@@ -1405,6 +1405,7 @@ export const remove_user_from_organization = mutation({
 			});
 			return Result({ _yay: null });
 		}
+
 		const apiCredentialsPromise = Promise.all(
 			memberships.map((membership) =>
 				ctx.db

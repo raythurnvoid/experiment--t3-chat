@@ -300,6 +300,7 @@ async function db_open_destination_epoch(
 		});
 		return 1;
 	}
+
 	if (existing.currentEpoch > existing.closedEpoch) {
 		return existing.currentEpoch;
 	}
@@ -543,6 +544,7 @@ async function db_authorize_live_target_node(
 		});
 		return Result({ _nay: { message: "Not found" } });
 	}
+
 	if (node.archiveOperationId !== undefined) {
 		return Result({ _nay: { message: "Not found" } });
 	}
@@ -602,6 +604,7 @@ async function db_get_live_delete_group_targets(
 			});
 			continue;
 		}
+
 		const node = await ctx.db.get("files_nodes", target.nodeId);
 		if (node && !public_api_is_path_inside_prefix(node.path, target.destinationPath)) {
 			await ctx.db.patch("plugin_service_storage_targets", target._id, {
@@ -702,6 +705,7 @@ async function db_settle_canonicalized_target(
 			organizationId: args.target.organizationId,
 		});
 	}
+
 	const billedUserId = billing_pick_billed_user_id({ userId: args.target.createdBy, organization });
 	const billedUser = await ctx.db.get("users", billedUserId);
 	if (!billedUser) {
@@ -749,6 +753,7 @@ export async function public_api_service_uploads_db_settle_canonicalized_asset(
 			updatedAt: args.now,
 		});
 	}
+
 	if (target.state !== "pending") {
 		return;
 	}
@@ -868,6 +873,7 @@ export const create_upload_target = internalMutation({
 				return Result({ _nay: { message: "Path contains an invalid folder name" } });
 			}
 		}
+
 		if (!Number.isInteger(args.size) || args.size < 1 || args.size > files_MAX_UPLOADS_BYTES) {
 			return Result({ _nay: { message: "File too large" } });
 		}
@@ -962,6 +968,7 @@ export const create_upload_target = internalMutation({
 					},
 				});
 			}
+
 			return await db_remint_pending_target(ctx, { target: liveTarget, asset, now });
 		}
 
@@ -1176,6 +1183,7 @@ export const create_upload_target = internalMutation({
 			console.error(errorMessage, errorData);
 			throw should_never_happen(errorMessage, errorData);
 		}
+
 		const destination = await files_db_get_visible_node_by_path(ctx, {
 			organizationId: args.principal.organizationId,
 			workspaceId: args.principal.workspaceId,
@@ -1440,6 +1448,7 @@ export const finalize_upload_target = internalMutation({
 				},
 			});
 		}
+
 		const liveNode = await db_authorize_live_target_node(ctx, { target, principal: args.principal });
 		if (liveNode._nay) {
 			return liveNode;
@@ -1454,6 +1463,7 @@ export const finalize_upload_target = internalMutation({
 				},
 			});
 		}
+
 		const now = Date.now();
 		const asset = await ctx.db.get("files_r2_assets", target.assetId);
 		// A missing asset cannot finish. Release the target so the service can retry under a new key.
@@ -1917,6 +1927,7 @@ export const archive_destination = internalMutation({
 				},
 			});
 		}
+
 		const activeDescendants = descendants.filter((descendant) => descendant.archiveOperationId === undefined);
 
 		// A member can nest a restricted folder in here, and the seal says nothing about that folder.
@@ -2056,6 +2067,7 @@ export async function public_api_service_uploads_db_drain_batch(
 			);
 			return { done: false, deletedCount: destinations.length };
 		}
+
 		const targets = await ctx.db
 			.query("plugin_service_storage_targets")
 			.withIndex("by_organization_workspace_installation_targetKey", (q) =>

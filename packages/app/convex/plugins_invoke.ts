@@ -149,6 +149,7 @@ export async function plugins_invoke_http_invoke(
 				body: { message: started._nay.message, retryAfterMs: started._nay.data?.retryAfterMs ?? 0 },
 			} as const;
 		}
+
 		const status =
 			started._nay.message === "Permission denied"
 				? (403 as const)

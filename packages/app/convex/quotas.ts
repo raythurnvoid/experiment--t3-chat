@@ -49,6 +49,7 @@ function quota_scope_fields(args: QuotaScope) {
 			workspaceId: args.workspaceId,
 		};
 	}
+
 	return { organizationId: args.organizationId, workspaceId: args.workspaceId };
 }
 

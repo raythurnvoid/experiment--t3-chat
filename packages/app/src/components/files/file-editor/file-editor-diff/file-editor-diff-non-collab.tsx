@@ -315,6 +315,7 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 			});
 			return;
 		}
+
 		const nextThreadIds = files_get_thread_ids_from_editor_state(headlessEditor._yay.state).toSorted();
 		headlessEditor._yay.destroy();
 

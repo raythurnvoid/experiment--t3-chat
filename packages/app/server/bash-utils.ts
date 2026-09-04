@@ -823,6 +823,7 @@ export class bash_DbFilesFs implements IFileSystem {
 				cause: error,
 			});
 		}
+
 		if (written._nay) {
 			throw new Error(`cannot write '${shellPath}': ${written._nay.message}${await eager_created_failure_note()}`);
 		}

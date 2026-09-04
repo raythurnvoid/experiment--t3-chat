@@ -694,6 +694,7 @@ function check_capacity(
 			},
 		});
 	}
+
 	if (usedSlots + change.addedSlots > maxDocumentSlots) {
 		return Result({
 			_nay: { name: REFUSAL_STORAGE_FULL, message: `This plugin has used its ${maxDocumentSlots} document slots` },
@@ -727,6 +728,7 @@ function check_capacity(
 			},
 		});
 	}
+
 	if (memberSlots + member.change.addedSlots > MEMBER_MAX_DOCUMENT_SLOTS) {
 		return Result({
 			_nay: {
@@ -735,6 +737,7 @@ function check_capacity(
 			},
 		});
 	}
+
 	if (memberCollections + member.change.addedCollections > MEMBER_MAX_COLLECTIONS) {
 		return Result({
 			_nay: {
@@ -1808,6 +1811,7 @@ async function db_write_document(
 			revision: args.existing.revision + 1,
 		};
 	}
+
 	if (args.existing) {
 		await ctx.db.delete("plugins_data", args.existing._id);
 	}
@@ -2110,10 +2114,12 @@ async function db_write_documents(
 				chargedToMemberUsageId = changedUsageId;
 			}
 		}
+
 		if (writer && chargedToMemberUsageId) {
 			await ctx.db.patch("plugins_data", stored.documentId, { chargedToMemberUsageId });
 		}
 	}
+
 	const storedUsage = usage ?? (await db_create_usage(ctx, { installation, now }));
 	await db_patch_usage(ctx, {
 		usage: storedUsage,
@@ -2215,6 +2221,7 @@ export const delete_document = internalMutation({
 			console.error(errorMessage, errorData);
 			throw should_never_happen(errorMessage, errorData);
 		}
+
 		const maxDocumentSlots = await db_resolve_document_slot_cap(ctx, { organization });
 
 		const appendReplayReceipt = await db_preserve_append_replay_receipt(ctx, { document: existing, now });
@@ -2563,6 +2570,7 @@ async function db_commit_user_write_document(
 			chargedToMemberUsageId = changedUsageId;
 		}
 	}
+
 	if (!chargedToMemberUsageId) {
 		const errorMessage = "Member write did not keep a member usage row";
 		const errorData = { installationId: args.installation._id, userId: args.userId };
@@ -2796,6 +2804,7 @@ export const user_append_document = mutation({
 				return Result({ _yay: deletedReplay.result });
 			}
 		}
+
 		const replay = await ctx.db
 			.query("plugins_data")
 			.withIndex("by_installation_collection_createdBy_requestId", (q) =>
@@ -2848,6 +2857,7 @@ export const user_append_document = mutation({
 				key = candidate;
 			}
 		}
+
 		if (key === null) {
 			return Result({ _nay: { name: REFUSAL_CONFLICT, message: "Could not assign a unique key, try again" } });
 		}
@@ -3985,6 +3995,7 @@ export async function plugins_data_db_apply_file_access_binding(
 		}
 		await ctx.db.delete("access_control_permission_grants", grant._id);
 	}
+
 	for (const userId of memberUserIds) {
 		if (kept.has(userId)) {
 			continue;
@@ -4017,6 +4028,7 @@ export async function plugins_data_db_apply_file_access_binding(
 			updatedAt: now,
 		});
 	}
+
 	return Result({ _yay: null });
 }
 
@@ -4113,6 +4125,7 @@ export function plugins_data_db_get_scope_cleanup_pairs(
 		}
 		pairs.push({ installationId, scopeId: grant.resourceId.slice(separator + 1) });
 	}
+
 	return pairs;
 }
 
@@ -4302,6 +4315,7 @@ export const user_manage_scope = mutation({
 					Result({ _nay: { message: "Name at least one collection for this scope" } })
 				);
 			}
+
 			if (requested.length > MAX_COLLECTIONS) {
 				return (
 					(await chargeCreatingAttempt()) ??
@@ -4317,6 +4331,7 @@ export const user_manage_scope = mutation({
 				}
 				collections.push(collection._yay);
 			}
+
 			const keyPrefix = validate_key_prefix(requestedPrefix);
 			if (keyPrefix._nay) {
 				return (await chargeCreatingAttempt()) ?? keyPrefix;
@@ -4339,6 +4354,7 @@ export const user_manage_scope = mutation({
 						Result({ _nay: { message: `One private space can name at most ${MAX_SCOPE_PRINCIPALS} people.` } })
 					);
 				}
+
 				const seenPrincipals = new Set<string>();
 				for (const principal of args.action.principals) {
 					if (principal.userId === userId) {
@@ -4347,6 +4363,7 @@ export const user_manage_scope = mutation({
 							Result({ _nay: { message: "The creator is already included with manage access" } })
 						);
 					}
+
 					if (seenPrincipals.has(principal.userId)) {
 						return (
 							(await chargeCreatingAttempt()) ?? Result({ _nay: { message: "Name each private-space member once" } })
@@ -4369,6 +4386,7 @@ export const user_manage_scope = mutation({
 						Result({ _nay: { message: "The first document must be inside the new scope" } })
 					);
 				}
+
 				const byteSize = validate_value(args.action.document.value);
 				if (byteSize._nay) {
 					return (await chargeCreatingAttempt()) ?? byteSize;
@@ -4403,6 +4421,7 @@ export const user_manage_scope = mutation({
 						Result({ _nay: { name: REFUSAL_CONFLICT, message: "This scope id is unavailable" } })
 					);
 				}
+
 				const covered = [...new Set(existing.map((scope) => scope.collection))].sort();
 				const sameRange =
 					existing.every((scope) => scope.keyPrefix === requestedPrefix) &&
@@ -4416,6 +4435,7 @@ export const user_manage_scope = mutation({
 						})
 					);
 				}
+
 				if (setup === null) {
 					return Result({ _yay: { scopeId: scopeId._yay, deleted: false, membershipRevision } });
 				}
@@ -4443,6 +4463,7 @@ export const user_manage_scope = mutation({
 						storedLevels.set(grant.userId, "member");
 					}
 				}
+
 				const requestedLevels = new Map<Id<"users">, plugins_data_ScopeLevel>([
 					[userId, "manage"],
 					...setup.principals.map((principal) => [principal.userId, principal.level] as const),
@@ -4462,6 +4483,7 @@ export const user_manage_scope = mutation({
 						})
 					);
 				}
+
 				return Result({ _yay: { scopeId: scopeId._yay, deleted: false, membershipRevision } });
 			}
 
@@ -4690,6 +4712,7 @@ export const user_manage_scope = mutation({
 					pricing: documentPricing!,
 				});
 			}
+
 			return Result({ _yay: { scopeId: scopeId._yay, deleted: false, membershipRevision: now } });
 		}
 
@@ -5148,6 +5171,7 @@ async function db_authorize_page_read(ctx: QueryCtx) {
 		}
 		return null;
 	}
+
 	const session = await ctx.db.get("plugins_ui_sessions", pluginSession.sessionId);
 	if (!session || session.expiresAt <= Date.now()) {
 		return null;
@@ -5958,6 +5982,7 @@ export const write_versioned_document = internalMutation({
 
 				return Result({ _yay: { revision: existing.revision, byteSize: existing.byteSize } });
 			}
+
 			if (args.revision !== existing.revision + 1) {
 				return Result({
 					_nay: { name: REFUSAL_CONFLICT, message: "This document does not have the revision before this one" },
@@ -6737,6 +6762,7 @@ async function run_expiry_pass(ctx: MutationCtx) {
 				console.error(errorMessage, errorData);
 				throw should_never_happen(errorMessage, errorData);
 			}
+
 			const organization = await ctx.db.get("organizations", usage.organizationId);
 			if (!organization) {
 				const errorMessage = "Plugin data reservation without an organization doc";

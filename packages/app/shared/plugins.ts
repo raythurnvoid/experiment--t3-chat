@@ -756,6 +756,7 @@ const event_schema = z
 					message: `${ACCOUNT_DELETED_EVENT_TYPE} carries no file, so it cannot declare content types`,
 				});
 			}
+
 			if (event.filters.length > 0) {
 				ctx.addIssue({
 					code: "custom",
@@ -763,6 +764,7 @@ const event_schema = z
 					message: `${ACCOUNT_DELETED_EVENT_TYPE} has one subject, so it cannot declare filters`,
 				});
 			}
+
 			return;
 		}
 
@@ -1066,6 +1068,7 @@ export function plugins_validate_manifest(input: unknown) {
 		}
 		outboundOrigins.add(origin);
 	}
+
 	const uiOutboundOrigins = new Set<string>();
 	for (const origin of parsed.data.uiOutboundOrigins) {
 		const validated = plugins_validate_origin(origin);
@@ -1080,6 +1083,7 @@ export function plugins_validate_manifest(input: unknown) {
 		}
 		uiOutboundOrigins.add(origin);
 	}
+
 	const filePaths = new Set<string>();
 	let declaredArtifactBytes = 0;
 	for (const file of parsed.data.files) {
@@ -1158,6 +1162,7 @@ export function plugins_validate_manifest(input: unknown) {
 			return Result({ _nay: { message: `Plugin file view "${fileView.id}" entry must be a text/html file` } });
 		}
 	}
+
 	const endpointIds = new Set<string>();
 	const endpointPaths = new Set<string>();
 	for (const endpoint of parsed.data.backend?.endpoints ?? []) {
@@ -1170,6 +1175,7 @@ export function plugins_validate_manifest(input: unknown) {
 		}
 		endpointPaths.add(endpoint.path);
 	}
+
 	const serviceScopes = new Set<string>();
 	for (const scope of parsed.data.service?.scopes ?? []) {
 		if (serviceScopes.has(scope)) {
@@ -1177,6 +1183,7 @@ export function plugins_validate_manifest(input: unknown) {
 		}
 		serviceScopes.add(scope);
 	}
+
 	const userWritableCollections = new Set<string>();
 	for (const collection of parsed.data.userWritableCollections ?? []) {
 		// The write doors judge membership in this list with the same rule they judge collection
@@ -1193,6 +1200,7 @@ export function plugins_validate_manifest(input: unknown) {
 		}
 		userWritableCollections.add(collection);
 	}
+
 	const capabilities = new Set<string>();
 	for (const capability of parsed.data.capabilities) {
 		if (capabilities.has(capability)) {
@@ -1344,6 +1352,7 @@ export function plugins_validate_manifest(input: unknown) {
 			});
 		}
 	}
+
 	if (
 		parsed.data.userWritableCollections !== undefined &&
 		!capabilities.has("plugin.data.user-write" satisfies plugins_Capability)

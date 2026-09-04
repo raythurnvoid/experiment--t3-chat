@@ -540,6 +540,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 				toast.error("Failed to refresh the editor after the restore. Reload the file.");
 				return;
 			}
+
 			if (remoteData.yjsLastSequenceId !== yjsLastSequenceIdRef.current) {
 				toast.error("This file changed while you were editing. Copy your local changes before reloading, then try again.");
 				return;
@@ -615,6 +616,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 				updateThreadIds(localMarkdown);
 				return;
 			}
+
 			if (initialData.kind !== "collaborative" || !yjsLastSequenceIdRef.current) {
 				throw should_never_happen("[FileEditorPlainText.handleClickSave] Missing collaborative content", {
 					nodeId,
@@ -782,6 +784,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 				toast.error("Failed to sync: the file content cannot be read safely");
 				return;
 			}
+
 			if (remoteData.yjsLastSequenceId !== yjsLastSequenceIdRef.current) {
 				toast.error("This file changed while you were editing. Copy your local changes before reloading, then try again.");
 				return;

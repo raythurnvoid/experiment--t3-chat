@@ -1086,6 +1086,7 @@ export const audit_orphan_plugin_scope_grants_page = internalQuery({
 				candidateCount += 1;
 			}
 		}
+
 		return { candidateCount, continueCursor: page.continueCursor, isDone: page.isDone };
 	},
 });
@@ -1113,6 +1114,7 @@ export const audit_stranded_plugin_data_scopes_page = internalQuery({
 				candidateCount += 1;
 			}
 		}
+
 		return { candidateCount, continueCursor: page.continueCursor, isDone: page.isDone };
 	},
 });
@@ -1149,6 +1151,7 @@ export const audit_plugin_scope_append_activity_page = internalQuery({
 				candidateCount += 1;
 			}
 		}
+
 		return { candidateCount, continueCursor: page.continueCursor, isDone: page.isDone };
 	},
 });

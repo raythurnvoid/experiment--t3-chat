@@ -528,6 +528,7 @@ export const create_plugin_service_grant = internalMutation({
 			}
 			scopes.push("files:write");
 		}
+
 		if (scopes.length === 0) {
 			return Result({ _nay: { message: "At least one scope is required" } });
 		}
@@ -2624,6 +2625,7 @@ export const publish_file_write = internalMutation({
 						userId: stage.userId,
 					});
 				}
+
 				if (!canManageDestination) {
 					return Result({ _nay: { message: "Permission denied" } });
 				}
@@ -2757,6 +2759,7 @@ export const publish_file_write = internalMutation({
 				organizationId: stage.organizationId,
 			});
 		}
+
 		const billedUserId = billing_pick_billed_user_id({ userId: stage.userId, organization });
 		const billedUser = await ctx.db.get("users", billedUserId);
 		if (!billedUser) {
@@ -2975,6 +2978,7 @@ export const publish_file_fill = internalMutation({
 				organizationId: stage.organizationId,
 			});
 		}
+
 		const billedUserId = billing_pick_billed_user_id({ userId: stage.userId, organization });
 		const billedUser = await ctx.db.get("users", billedUserId);
 		if (!billedUser) {
@@ -3323,6 +3327,7 @@ export const can_write_file_node = internalQuery({
 				return "permission_denied";
 			}
 		}
+
 		if (
 			!(await has_workspace_content_permission(ctx, {
 				organizationId: args.organizationId,
@@ -3519,6 +3524,7 @@ export const create_file_upload_targets = internalMutation({
 			console.error(errorMessage, errorData);
 			throw should_never_happen(errorMessage, errorData);
 		}
+
 		const paidPlan = await billing_db_check_paid_plan(ctx, {
 			userId: billing_pick_billed_user_id({ userId: args.userId, organization }),
 		});
@@ -4153,6 +4159,7 @@ async function write_one_markdown_file(
 					orphanedScope: { organizationId: args.organizationId, workspaceId: args.workspaceId },
 				});
 			}
+
 			return Result({ _nay: { name: "nay", message: published._nay.message, data: failure } });
 		}
 

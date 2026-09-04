@@ -1761,6 +1761,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				}
 				return;
 			}
+
 			let yjsSnapshotAssetFields: { r2Key?: string; size: number } = { size: 0 };
 			if (spec.withRealYjsSnapshot) {
 				const { files_yjs_doc_create_from_text } = await import("../shared/files-tiptap.ts");

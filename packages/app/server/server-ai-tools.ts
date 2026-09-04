@@ -899,6 +899,7 @@ export function ai_chat_tool_create_set_file_metadata(
 						{ cause: written._nay },
 					);
 				}
+
 				throw new Error(`Cannot set metadata on ${normalizedPath}: ${written._nay.message}`, {
 					cause: written._nay,
 				});

@@ -68,6 +68,7 @@ function parse_qualified_field(value: unknown) {
 				},
 			});
 		}
+
 		return Result({ _yay: value });
 	}
 
