@@ -84,6 +84,7 @@ export const cleanup_expired = internalMutation({
 	},
 });
 
+// #region tests
 if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest;
 
@@ -162,3 +163,4 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 	});
 }
+// #endregion tests

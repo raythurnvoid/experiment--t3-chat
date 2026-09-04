@@ -1342,6 +1342,7 @@ export type ai_chat_tool_create_image_generation_ToolOutput =
 	InferToolOutput<ai_chat_tool_create_image_generation_stored_Tool>;
 // #endregion image generation
 
+// #region tests
 // Vite replaces `process.env.NODE_ENV` statically, so this check must come first to let esbuild
 // erase `import.meta.vitest` before Convex analyzes the bundle.
 if (process.env.NODE_ENV === "test" && import.meta.vitest) {
@@ -1374,3 +1375,4 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 	});
 }
+// #endregion tests

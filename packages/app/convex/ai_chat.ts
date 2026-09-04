@@ -2556,6 +2556,7 @@ export async function ai_chat_http_run_stream(ctx: ActionCtx, request: Request) 
 	}
 }
 
+// #region tests
 // Vitest sets NODE_ENV to "test"; Convex's bundler defines it as "production",
 // so keep that check first to let esbuild erase `import.meta.vitest` before analysis.
 if (process.env.NODE_ENV === "test" && import.meta.vitest) {
@@ -3063,3 +3064,4 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 	});
 }
+// #endregion tests

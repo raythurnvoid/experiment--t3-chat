@@ -293,6 +293,7 @@ export const FileEditorMonacoTopViewZone = memo(function FileEditorMonacoTopView
 	return portalHost && hasChildren ? createPortal(children, portalHost) : null;
 });
 
+// #region tests
 if (import.meta.vitest) {
 	const { describe, expect, test } = import.meta.vitest;
 
@@ -356,3 +357,4 @@ if (import.meta.vitest) {
 		});
 	});
 }
+// #endregion tests

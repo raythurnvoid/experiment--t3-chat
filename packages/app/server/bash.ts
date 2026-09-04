@@ -1323,6 +1323,7 @@ export async function bash_run_command(
 
 // #endregion action
 
+// #region tests
 // Vitest sets NODE_ENV to "test"; Convex's bundler defines it as "production",
 // so keep that check first to let esbuild erase `import.meta.vitest` before analysis.
 if (process.env.NODE_ENV === "test" && import.meta.vitest) {
@@ -9288,3 +9289,4 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 	});
 }
+// #endregion tests

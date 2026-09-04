@@ -1415,6 +1415,8 @@ export const run_delete_orphan_plugin_scope_grants = app_migrations.runner(
 export const run_delete_stranded_plugin_data_scopes = app_migrations.runner(
 	internal.migrations.delete_stranded_plugin_data_scopes,
 );
+
+// #region tests
 if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	const { expect, test } = import.meta.vitest;
 
@@ -1425,3 +1427,4 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		]);
 	});
 }
+// #endregion tests

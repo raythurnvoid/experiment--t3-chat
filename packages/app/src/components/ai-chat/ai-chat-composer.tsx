@@ -950,6 +950,7 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 	);
 });
 
+// #region tests
 if (import.meta.vitest) {
 	const { describe, test, expect } = import.meta.vitest;
 
@@ -976,3 +977,4 @@ if (import.meta.vitest) {
 		});
 	});
 }
+// #endregion tests

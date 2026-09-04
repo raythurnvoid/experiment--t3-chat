@@ -9227,6 +9227,7 @@ export const cleanup_old_snapshots = internalMutation({
 
 // #endregion snapshots
 
+// #region tests
 if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	const { describe, expect, test } = import.meta.vitest;
 
@@ -9650,3 +9651,4 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 	});
 }
+// #endregion tests

@@ -1657,6 +1657,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 });
 // #endregion root
 
+// #region tests
 // The NODE_ENV check comes first so client builds erase this block; `import.meta.vitest` is
 // only defined when vitest runs this file.
 if (process.env.NODE_ENV === "test" && import.meta.vitest) {
@@ -2042,3 +2043,4 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 	});
 }
+// #endregion tests

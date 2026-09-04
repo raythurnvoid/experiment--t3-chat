@@ -417,6 +417,7 @@ const AiChatComposerFileMentionList = memo(function AiChatComposerFileMentionLis
 });
 // #endregion list
 
+// #region tests
 if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	const { describe, expect, test } = import.meta.vitest;
 
@@ -463,3 +464,4 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 	});
 }
+// #endregion tests

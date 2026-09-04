@@ -657,6 +657,7 @@ async function discard_upload_node(args: {
 	}
 }
 
+// #region tests
 if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	const { describe, expect, test } = import.meta.vitest;
 
@@ -693,3 +694,4 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 	});
 }
+// #endregion tests
