@@ -413,6 +413,25 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 		setDirtyCheckState("clean");
 	};
 
+	/**
+	 * Move the baseline to the text the save actually sent, then ask the editor what it holds now.
+	 * A save takes a snapshot of the text and then waits for the server. The member can keep typing
+	 * during that wait. If we forced "clean" here, those later keystrokes would leave Save disabled
+	 * and the member could not save them at all.
+	 */
+	const updateDirtyBaselineAfterSave = (savedMarkdown: string) => {
+		baselineMarkdownRef.current = savedMarkdown;
+
+		if (dirtyCheckTimeoutRef.current) {
+			clearTimeout(dirtyCheckTimeoutRef.current);
+			dirtyCheckTimeoutRef.current = undefined;
+		}
+
+		const currentMarkdown = modelRef.current?.getValue() ?? savedMarkdown;
+		setByteSize(files_get_utf8_byte_size(currentMarkdown));
+		setDirtyCheckState(currentMarkdown === savedMarkdown ? "clean" : "dirty");
+	};
+
 	const scheduleDirtyCheck = () => {
 		if (!editorRef.current) return;
 
@@ -612,7 +631,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 
 				// The save wrote a new version, and the next save has to be based on it.
 				setNonCollaborativeBaseAssetId(replaced._yay.assetId);
-				updateDirtyBaseline(localMarkdown);
+				updateDirtyBaselineAfterSave(localMarkdown);
 				updateThreadIds(localMarkdown);
 				return;
 			}
@@ -693,7 +712,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 				}
 			}
 
-			updateDirtyBaseline(localMarkdown);
+			updateDirtyBaselineAfterSave(localMarkdown);
 			updateThreadIds(localMarkdown);
 		})()
 			.catch((err) => {

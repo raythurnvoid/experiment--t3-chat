@@ -499,6 +499,70 @@ describe("FileEditorPlainText", () => {
 		}
 	});
 
+	test("typing while Save is in flight keeps Save enabled", async () => {
+		vi.useFakeTimers();
+		try {
+			resolveQueryWithNonCollaborativeContent("{}\n");
+
+			// Hold the save open so the test can type inside the in-flight window, the way a slow
+			// network lets a member keep typing after pressing Save.
+			let finishSave: (value: unknown) => void = () => {};
+			convexActionMock.mockReturnValue(
+				new Promise((resolve) => {
+					finishSave = resolve;
+				}),
+			);
+
+			renderPlainTextEditor({ nonCollaborative: true });
+			await act(async () => {});
+
+			const saveButton = screen.getByRole("button", { name: "Save" });
+			const model = monacoHarness.createdModels[0]?.model;
+			act(() => {
+				model?.setValue('{"answer": 42}\n');
+				for (const listener of monacoHarness.changeListeners) listener();
+			});
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(250);
+			});
+
+			fireEvent.click(saveButton);
+			await act(async () => {});
+
+			// Keystrokes that land after the save took its snapshot of the text.
+			act(() => {
+				model?.setValue('{"answer": 43}\n');
+				for (const listener of monacoHarness.changeListeners) listener();
+			});
+
+			await act(async () => {
+				finishSave({ _yay: { assetId: "asset_saved" } });
+			});
+
+			// The save persisted `42`, so `43` is still only local and Save must stay usable.
+			expect(convexActionMock).toHaveBeenCalledWith("replace_file_content", {
+				membershipId: MEMBERSHIP_ID,
+				nodeId: NODE_ID,
+				text: '{"answer": 42}\n',
+				baseAssetId: BASE_ASSET_ID,
+			});
+			expect(model?.getValue()).toBe('{"answer": 43}\n');
+			expect(saveButton.hasAttribute("disabled")).toBe(false);
+
+			// And that second Save names the asset the first one wrote.
+			fireEvent.click(saveButton);
+			await act(async () => {});
+			expect(convexActionMock).toHaveBeenLastCalledWith("replace_file_content", {
+				membershipId: MEMBERSHIP_ID,
+				nodeId: NODE_ID,
+				text: '{"answer": 43}\n',
+				baseAssetId: "asset_saved",
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	test("a refused non-collaborative Save shows the refusal and keeps the buffer dirty", async () => {
 		vi.useFakeTimers();
 		try {
