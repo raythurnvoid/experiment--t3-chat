@@ -31,6 +31,7 @@ import {
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_fetch_file_pending_update_yjs_state,
 	files_fetch_file_yjs_state_and_text,
+	files_get_comment_thread_ids_from_markdown,
 	files_get_utf8_byte_size,
 	files_monaco_create_editor_model,
 	files_monaco_execute_edits_with_read_only_fallback,
@@ -43,8 +44,7 @@ import {
 	type files_YjsRootKind,
 } from "@/lib/files.ts";
 import { files_yjs_doc_clone, files_yjs_doc_create_from_array_buffer_update } from "../../../../../shared/files-yjs.ts";
-import { files_headless_tiptap_editor_create, files_yjs_doc_get_text } from "../../../../../shared/files-tiptap.ts";
-import { files_get_thread_ids_from_editor_state } from "../../../../../shared/files-tiptap-comments.ts";
+import { files_yjs_doc_get_text } from "../../../../../shared/files-tiptap.ts";
 import { FileEditorCommentsSidebar } from "../file-editor-comments-sidebar.tsx";
 import { FileEditorSnapshotsModal } from "../file-editor-snapshots-modal.tsx";
 import { Result } from "common/errors-as-values-utils.ts";
@@ -210,6 +210,7 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 				nodeId={nodeId}
 				sessionId={sessionId}
 				editable={editable}
+				nonCollaborativeBaseAssetId={null}
 				getCurrentText={getCurrentText}
 				onApplySnapshotText={onApplySnapshotText}
 			/>
@@ -774,23 +775,10 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 	});
 
 	const updateThreadIds = (markdown: string) => {
-		// Comment threads live in Markdown comment marks, so only a rich-text document can have
-		// them. Skip the headless Tiptap scan for plain-text nodes; their sidebar stays empty.
-		if (rootKind !== "rich_text") {
+		const nextThreadIds = files_get_comment_thread_ids_from_markdown(markdown, rootKind);
+		if (!nextThreadIds) {
 			return;
 		}
-
-		const headlessEditor = files_headless_tiptap_editor_create({ initialContent: { markdown } });
-
-		if (headlessEditor._nay) {
-			console.error("[FileEditorDiff.updateThreadIds] Error while creating headless editor", {
-				nay: headlessEditor._nay,
-			});
-			return;
-		}
-
-		const nextThreadIds = files_get_thread_ids_from_editor_state(headlessEditor._yay.state).toSorted();
-		headlessEditor._yay.destroy();
 
 		const nextKey = nextThreadIds.join("\n");
 		if (nextKey === commentThreadIdsKeyRef.current) {

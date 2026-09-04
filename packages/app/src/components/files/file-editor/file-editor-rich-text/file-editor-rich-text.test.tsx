@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { toast } from "sonner";
 
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
+import type { AppElementId } from "@/lib/dom-utils.ts";
 
 const { tenantContextMock, convexQueryMock, convexActionMock, stableQueryMock, editorHarness } = vi.hoisted(() => ({
 	tenantContextMock: vi.fn(),
@@ -11,7 +12,15 @@ const { tenantContextMock, convexQueryMock, convexActionMock, stableQueryMock, e
 	stableQueryMock: vi.fn(),
 	// The drag handle is the one mounted child that already receives the Tiptap instance, so the
 	// stub below hands it to the tests. That is how a test types into the real document.
-	editorHarness: { editor: null as null | import("@tiptap/core").Editor },
+	// The comment tool stub adds `commentCommit` here, so a test can run the comment save without
+	// driving the popover and its own mutation stack.
+	editorHarness: {
+		editor: null as null | import("@tiptap/core").Editor,
+		commentCommit: null as null | {
+			disabledReason: string | null;
+			commit: (threadId: string) => Promise<boolean>;
+		},
+	},
 }));
 
 // Spy target: tests assert on the toasts the editor shows.
@@ -70,6 +79,17 @@ vi.mock("../file-editor-comments-sidebar.tsx", () => ({
 	},
 }));
 
+// The real comment tool opens a popover and creates the thread through its own Convex mutation.
+// None of that is under test here; the stub only exposes the `commentCommit` the editor built.
+vi.mock("./file-editor-rich-text-tools-comment.tsx", () => ({
+	FileEditorRichTextToolsComment: function FileEditorRichTextToolsComment(props: {
+		commentCommit: null | { disabledReason: string | null; commit: (threadId: string) => Promise<boolean> };
+	}) {
+		editorHarness.commentCommit = props.commentCommit;
+		return null;
+	},
+}));
+
 // The real drag handle measures DOM boxes the test environment does not lay out. The stub keeps
 // the editor instance it is given so tests can edit the document the way a member would.
 vi.mock("./file-editor-rich-text-drag-handle.tsx", () => ({
@@ -98,6 +118,10 @@ function resolveQueryWithNonCollaborativeContent(text: string, assetId = BASE_AS
 function renderNonCollabRichEditor(args?: { editable?: boolean }) {
 	const toolbarPortalHost = document.createElement("div");
 	document.body.append(toolbarPortalHost);
+	// The bubble renders nothing without this container, and the comment tool lives inside it.
+	const hoistingContainer = document.createElement("div");
+	hoistingContainer.id = "app_tiptap_hoisting_container" satisfies AppElementId;
+	document.body.append(hoistingContainer);
 	const rendered = render(
 		<FileEditorRichTextNonCollab
 			nodeId={NODE_ID}
@@ -173,6 +197,7 @@ beforeEach(() => {
 	convexQueryMock.mockReset();
 	convexActionMock.mockReset();
 	stableQueryMock.mockReset();
+	editorHarness.commentCommit = null;
 	vi.mocked(toast.error).mockClear();
 	vi.mocked(toast.info).mockClear();
 	vi.mocked(toast.warning).mockClear();
@@ -180,7 +205,35 @@ beforeEach(() => {
 
 afterEach(() => {
 	cleanup();
+	document.getElementById("app_tiptap_hoisting_container" satisfies AppElementId)?.remove();
 });
+
+/**
+ * Put a comment mark on the first word, the way the composer does after the thread is created.
+ */
+function addCommentMarkOnFirstWord(threadId: string) {
+	const editor = editorHarness.editor;
+	if (!editor) {
+		throw new Error("Expected the mounted editor to be captured");
+	}
+
+	act(() => {
+		editor.chain().setTextSelection({ from: 1, to: 6 }).addComment(threadId).run();
+	});
+}
+
+/**
+ * The commit and the editor share one event loop turn, so a test that wants to type while the
+ * save is waiting has to hold the action open by hand.
+ */
+function createDeferredAction<T>() {
+	let resolveAction: (value: T) => void = () => {};
+	const promise = new Promise<T>((resolve) => {
+		resolveAction = resolve;
+	});
+
+	return { promise, resolve: resolveAction };
+}
 
 describe("FileEditorRichTextNonCollab", () => {
 	test("mounts the loaded text and reports its word count", async () => {
@@ -318,9 +371,128 @@ describe("FileEditorRichTextNonCollab", () => {
 			// The action has to hand back exactly what was in the editor, or the offer is useless.
 			const clipboardWrite = vi.fn();
 			vi.stubGlobal("navigator", { clipboard: { writeText: clipboardWrite } });
-			vi.mocked(toast.warning).mock.calls[0]?.[1]?.action?.onClick?.(new MouseEvent("click"));
+			const warningAction = vi.mocked(toast.warning).mock.calls[0]?.[1]?.action;
+			if (typeof warningAction !== "object" || warningAction === null || !("onClick" in warningAction)) {
+				throw new Error("Expected the warning to carry a Copy text action");
+			}
+			// The handler ignores its event, so an empty stand-in is enough to run the action.
+			warningAction.onClick({} as Parameters<typeof warningAction.onClick>[0]);
 			expect(clipboardWrite).toHaveBeenCalledWith("alpha beta\n");
 			vi.unstubAllGlobals();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("the comment gate opens only while the editor is clean", async () => {
+		vi.useFakeTimers();
+		try {
+			resolveQueryWithNonCollaborativeContent("alpha\n");
+			renderNonCollabRichEditor();
+			await flushEditorMount();
+
+			expect(editorHarness.commentCommit?.disabledReason).toBeNull();
+
+			// A comment saves the whole file, so unsaved typing would be published with it.
+			await typeIntoEditor(" beta");
+			expect(editorHarness.commentCommit?.disabledReason).toBe("Save your changes before adding a comment.");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("committing a comment saves the file with the mark in it", async () => {
+		vi.useFakeTimers();
+		try {
+			resolveQueryWithNonCollaborativeContent("alpha\n");
+			convexActionMock.mockResolvedValue({ _yay: { assetId: "asset_commented" } });
+
+			renderNonCollabRichEditor();
+			await flushEditorMount();
+
+			addCommentMarkOnFirstWord("thread_new");
+
+			let committed: boolean | undefined = undefined;
+			await act(async () => {
+				committed = await editorHarness.commentCommit?.commit("thread_new");
+			});
+
+			expect(committed).toBe(true);
+			expect(convexActionMock).toHaveBeenCalledWith("replace_file_content", {
+				membershipId: MEMBERSHIP_ID,
+				nodeId: NODE_ID,
+				text: comment_markdown("thread_new", "alpha"),
+				baseAssetId: BASE_ASSET_ID,
+			});
+			expect(toast.error).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("a comment refused as stale is merged into the version somebody else saved", async () => {
+		vi.useFakeTimers();
+		try {
+			resolveQueryWithNonCollaborativeContent("alpha\n");
+			renderNonCollabRichEditor();
+			await flushEditorMount();
+
+			addCommentMarkOnFirstWord("thread_new");
+
+			// The other person added a paragraph on top of the same base text we loaded.
+			convexActionMock
+				.mockResolvedValueOnce({ _nay: { message: files_REPLACE_FILE_CONTENT_STALE_MESSAGE } })
+				.mockResolvedValueOnce({ _yay: { assetId: "asset_merged" } });
+			resolveQueryWithNonCollaborativeContent(
+				"alpha\n\nbeta\n",
+				"asset_fresh" as app_convex_Id<"files_r2_assets">,
+			);
+
+			let committed: boolean | undefined = undefined;
+			await act(async () => {
+				committed = await editorHarness.commentCommit?.commit("thread_new");
+			});
+
+			expect(committed).toBe(true);
+			// The retry must carry both edits: our mark and their new paragraph.
+			const retryArgs = convexActionMock.mock.calls.at(-1)?.[1] as { text: string; baseAssetId: string };
+			expect(retryArgs.text).toContain('data-lb-thread-id="thread_new"');
+			expect(retryArgs.text).toContain("beta");
+			expect(retryArgs.baseAssetId).toBe("asset_fresh");
+			expect(toast.info).toHaveBeenCalledWith("Someone else saved this file. Your comment was merged into their version.");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("a comment refused as stale is not merged when the member typed while it was waiting", async () => {
+		vi.useFakeTimers();
+		try {
+			resolveQueryWithNonCollaborativeContent("alpha\n");
+			renderNonCollabRichEditor();
+			await flushEditorMount();
+
+			addCommentMarkOnFirstWord("thread_new");
+
+			const staleAction = createDeferredAction<{ _nay: { message: string } }>();
+			convexActionMock.mockReturnValueOnce(staleAction.promise);
+
+			let committed: boolean | undefined = undefined;
+			const commitCall = editorHarness.commentCommit?.commit("thread_new").then((result) => {
+				committed = result;
+			});
+
+			// Typing lands while the save is still waiting, so merging would publish it.
+			await typeIntoEditor(" gamma");
+			staleAction.resolve({ _nay: { message: files_REPLACE_FILE_CONTENT_STALE_MESSAGE } });
+			await act(async () => {
+				await commitCall;
+			});
+
+			expect(committed).toBe(false);
+			expect(toast.error).toHaveBeenCalledWith("Save your changes before adding a comment.");
+			// No re-read and no retry: nothing may be published behind the member's back.
+			expect(convexActionMock).toHaveBeenCalledTimes(1);
 		} finally {
 			vi.useRealTimers();
 		}

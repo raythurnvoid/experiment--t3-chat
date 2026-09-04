@@ -71,20 +71,27 @@ export type FileEditorRichTextToolsComment_Props = {
 	editor: Editor;
 	fileNodeId: app_convex_Id<"files_nodes">;
 	/**
-	 * Why the member cannot comment right now, or `null` when they can.
-	 * A file with collaboration turned off has no live sync, so a comment has to be saved
-	 * into the file. Saving unsaved text edits at the same time would publish work the member
-	 * did not ask to publish, so the button waits until the editor is clean.
+	 * How the new comment mark reaches the stored file, or `null` for a collaborative file.
+	 *
+	 * A collaborative file passes `null`: the Yjs provider syncs the mark on its own. A file with
+	 * collaboration turned off passes both fields, because a mark that only lives in the open
+	 * editor would be gone after a reload.
 	 */
-	disabledReason: string | null;
-	/**
-	 * How the new comment mark reaches the stored file.
-	 * A collaborative file leaves this undefined: the Yjs provider syncs the mark on its own.
-	 * A file with collaboration turned off passes a handler that saves the file right away,
-	 * because a mark that only lives in the open editor would be gone after a reload.
-	 * Return `false` when the save failed, so the caller can take the mark back out.
-	 */
-	commitComment?: (threadId: string) => Promise<boolean>;
+	commentCommit: {
+		/**
+		 * Why the member cannot comment right now, or `null` when they can.
+		 *
+		 * The file has no live sync, so a comment has to be saved into the file. Saving unsaved
+		 * text edits at the same time would publish work the member did not ask to publish, so
+		 * the button waits until the editor is clean.
+		 */
+		disabledReason: string | null;
+		/**
+		 * Save the file right away with the new mark in it. Return `false` when the save failed,
+		 * so the caller can take the mark back out.
+		 */
+		commit: (threadId: string) => Promise<boolean>;
+	} | null;
 	buttonVariant?: MyButton_Props["variant"];
 };
 
@@ -116,8 +123,7 @@ const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextTool
 	const {
 		editor,
 		fileNodeId,
-		disabledReason,
-		commitComment,
+		commentCommit,
 		buttonVariant = "ghost-highlightable",
 		isSelectionEmpty,
 	} = props;
@@ -178,8 +184,8 @@ const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextTool
 		}
 
 		// The button is disabled, but the member can type in the document while the popover is open.
-		if (disabledReason) {
-			toast.error(disabledReason);
+		if (commentCommit?.disabledReason) {
+			toast.error(commentCommit.disabledReason);
 			return;
 		}
 
@@ -207,7 +213,7 @@ const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextTool
 				// On a file that saves the mark right away, a changed document or selection would
 				// anchor the mark to text the member never chose, so refuse and leave the composer
 				// open. The thread row stays unreferenced, which is invisible and accepted.
-				if (commitComment && (!editor.state.doc.eq(capturedDoc) || !editor.state.selection.eq(capturedSelection))) {
+				if (commentCommit && (!editor.state.doc.eq(capturedDoc) || !editor.state.selection.eq(capturedSelection))) {
 					toast.error("Save your changes before adding a comment.");
 					return;
 				}
@@ -219,10 +225,10 @@ const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextTool
 				// A collaborative file syncs the mark through Yjs on its own. A file with
 				// collaboration turned off must save it now, and the popover only closes once the
 				// save is known to have worked, so the member has something to retry in.
-				if (commitComment) {
+				if (commentCommit) {
 					// A rejected commit (a network drop, not a refusal) must also take the mark
 					// back out, or it would ride along unsaved and publish with the next Save.
-					const committed = await commitComment(threadId).catch((error: unknown) => {
+					const committed = await commentCommit.commit(threadId).catch((error: unknown) => {
 						console.error(error);
 						toast.error("Failed to save the comment");
 						return false;
@@ -275,9 +281,9 @@ const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextTool
 							"FileEditorRichTextToolsComment-trigger-button" satisfies FileEditorRichTextToolsComment_ClassNames,
 						)}
 						variant={buttonVariant}
-						disabled={disabledReason != null}
-						title={disabledReason ?? undefined}
-						aria-label={disabledReason ? "Add comment — save your changes first" : "Add comment"}
+						disabled={commentCommit?.disabledReason != null}
+						title={commentCommit?.disabledReason ?? undefined}
+						aria-label={commentCommit?.disabledReason ? "Add comment — save your changes first" : "Add comment"}
 					>
 						<MyButtonIcon>
 							<MessageSquarePlus />
@@ -313,7 +319,7 @@ export const FileEditorRichTextToolsComment = memo(function FileEditorRichTextTo
 	// Required to allow re-renders to access latest values via tiptap functions
 	"use no memo";
 
-	const { editor, fileNodeId, disabledReason, commitComment, buttonVariant = "ghost-highlightable" } = props;
+	const { editor, fileNodeId, commentCommit, buttonVariant = "ghost-highlightable" } = props;
 
 	const editorState = useEditorState({
 		editor,
@@ -328,8 +334,7 @@ export const FileEditorRichTextToolsComment = memo(function FileEditorRichTextTo
 		<FileEditorRichTextToolsCommentInner
 			editor={editor}
 			fileNodeId={fileNodeId}
-			disabledReason={disabledReason}
-			commitComment={commitComment}
+			commentCommit={commentCommit}
 			buttonVariant={buttonVariant}
 			isSelectionEmpty={editorState.isSelectionEmpty}
 		/>

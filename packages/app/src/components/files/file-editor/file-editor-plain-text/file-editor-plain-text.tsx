@@ -7,15 +7,12 @@ import {
 	files_fetch_file_yjs_state_and_text,
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_get_utf8_byte_size,
+	files_get_comment_thread_ids_from_markdown,
 	type files_YjsRootKind,
 } from "@/lib/files.ts";
 import { files_yjs_doc_clone, files_yjs_compute_diff_update_from_yjs_doc } from "../../../../../shared/files-yjs.ts";
 import { files_text_diff_TOO_LARGE_MESSAGE } from "../../../../../shared/files-text-diff.ts";
-import {
-	files_yjs_doc_get_text,
-	files_yjs_doc_update_from_text,
-	files_headless_tiptap_editor_create,
-} from "../../../../../shared/files-tiptap.ts";
+import { files_yjs_doc_get_text, files_yjs_doc_update_from_text } from "../../../../../shared/files-tiptap.ts";
 import {
 	file_editor_get_size_badge_text,
 	file_editor_get_size_error_message,
@@ -42,7 +39,6 @@ import { RefreshCcw, Save } from "lucide-react";
 import { Doc as YDoc, applyUpdate } from "yjs";
 import { toast } from "sonner";
 import { FileEditorSnapshotsModal } from "../file-editor-snapshots-modal.tsx";
-import { files_get_thread_ids_from_editor_state } from "../../../../../shared/files-tiptap-comments.ts";
 import { FileEditorCommentsSidebar } from "../file-editor-comments-sidebar.tsx";
 import { FileEditorPlainTextSkeleton } from "./file-editor-plain-text-skeleton.tsx";
 import { FileEditorMonacoTopViewZone } from "../file-editor-monaco-top-view-zone.tsx";
@@ -379,21 +375,10 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	});
 
 	const updateThreadIds = (markdown: string) => {
-		// Comment marks only exist in rich text documents, and the Comments tab is hidden for
-		// plain text files, so skip the Markdown comment-mark scan entirely there.
-		if (rootKind !== "rich_text") {
+		const nextThreadIds = files_get_comment_thread_ids_from_markdown(markdown, rootKind);
+		if (!nextThreadIds) {
 			return;
 		}
-
-		const headlessEditor = files_headless_tiptap_editor_create({ initialContent: { markdown } });
-		if (headlessEditor._nay) {
-			console.error("[FileEditorPlainText.updateThreadIds] Error while creating headless editor", {
-				nay: headlessEditor._nay,
-			});
-			return;
-		}
-		const nextThreadIds = files_get_thread_ids_from_editor_state(headlessEditor._yay.state).toSorted();
-		headlessEditor._yay.destroy();
 
 		const nextKey = nextThreadIds.join("\n");
 		if (nextKey === commentThreadIdsKeyRef.current) {

@@ -622,7 +622,12 @@ describe("FileEditorPlainText", () => {
 		// The action has to hand back exactly what was in the editor, or the offer is useless.
 		const clipboardWrite = vi.fn();
 		vi.stubGlobal("navigator", { clipboard: { writeText: clipboardWrite } });
-		vi.mocked(toast.warning).mock.calls[0]?.[1]?.action?.onClick?.(new MouseEvent("click"));
+		const warningAction = vi.mocked(toast.warning).mock.calls[0]?.[1]?.action;
+		if (typeof warningAction !== "object" || warningAction === null || !("onClick" in warningAction)) {
+			throw new Error("Expected the warning to carry a Copy text action");
+		}
+		// The handler ignores its event, so an empty stand-in is enough to run the action.
+		warningAction.onClick({} as Parameters<typeof warningAction.onClick>[0]);
 		expect(clipboardWrite).toHaveBeenCalledWith('{"answer": 42}\n');
 		vi.unstubAllGlobals();
 	});

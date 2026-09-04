@@ -13,7 +13,12 @@ import {
 	files_yjs_doc_clone,
 	files_yjs_doc_create_from_array_buffer_update,
 } from "../../shared/files-yjs.ts";
-import { files_yjs_doc_get_text, files_yjs_doc_update_from_text } from "../../shared/files-tiptap.ts";
+import {
+	files_headless_tiptap_editor_create,
+	files_yjs_doc_get_text,
+	files_yjs_doc_update_from_text,
+} from "../../shared/files-tiptap.ts";
+import { files_get_thread_ids_from_editor_state } from "../../shared/files-tiptap-comments.ts";
 import { composite_key } from "../../shared/shared-utils.ts";
 import { delay } from "../../shared/async-utils.ts";
 import type { Doc } from "../../convex/_generated/dataModel";
@@ -686,6 +691,33 @@ export async function files_fetch_file_yjs_state_and_text(args: {
 
 	// Three reads in a row disagreed. Give up and let the caller show its own error.
 	throw new Error("The file collaboration state kept changing while it loaded");
+}
+
+/**
+ * Read the comment thread ids out of a Markdown string, sorted.
+ *
+ * The three text editors call this after every load and save to keep their comments sidebar in
+ * step with the text. Returns `null` when there is nothing to read: comment marks only exist in a
+ * rich-text document, and a plain-text file's sidebar stays empty, so the headless Tiptap parse is
+ * skipped there. It also returns `null` when the Markdown cannot be parsed, and the caller keeps
+ * the ids it already had.
+ */
+export function files_get_comment_thread_ids_from_markdown(markdown: string, rootKind: files_YjsRootKind) {
+	if (rootKind !== "rich_text") {
+		return null;
+	}
+
+	const headlessEditor = files_headless_tiptap_editor_create({ initialContent: { markdown } });
+	if (headlessEditor._nay) {
+		console.error("[files_get_comment_thread_ids_from_markdown] Error while creating headless editor", {
+			nay: headlessEditor._nay,
+		});
+		return null;
+	}
+
+	const threadIds = files_get_thread_ids_from_editor_state(headlessEditor._yay.state).toSorted();
+	headlessEditor._yay.destroy();
+	return threadIds;
 }
 
 // #region presence store

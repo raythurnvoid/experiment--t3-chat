@@ -809,7 +809,7 @@ export type FileEditorSnapshotsModal_Props = {
 	 * Restoring a file with collaboration turned off replaces the whole text against this asset,
 	 * because there is no Yjs document for the Yjs restore door to write into.
 	 */
-	nonCollaborativeBaseAssetId?: app_convex_Id<"files_r2_assets"> | null;
+	nonCollaborativeBaseAssetId: app_convex_Id<"files_r2_assets"> | null;
 	getCurrentText: () => string;
 	onApplySnapshotText?: (text: string) => void;
 };

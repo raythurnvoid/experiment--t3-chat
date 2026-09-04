@@ -72,7 +72,10 @@ import { file_editor_rich_text_MediaExtension } from "./file-editor-rich-text-me
 import { MyButton, MyButtonIcon, type MyButton_Props } from "@/components/my-button.tsx";
 import { MyFloatingSurface } from "@/components/my-floating-surface.tsx";
 import { FileEditorRichTextToolsInlineAi } from "./file-editor-rich-text-tools-inline-ai.tsx";
-import { FileEditorRichTextToolsComment } from "./file-editor-rich-text-tools-comment.tsx";
+import {
+	FileEditorRichTextToolsComment,
+	type FileEditorRichTextToolsComment_Props,
+} from "./file-editor-rich-text-tools-comment.tsx";
 import { Save, Sparkles } from "lucide-react";
 import { FileEditorRichTextDragHandle } from "./file-editor-rich-text-drag-handle.tsx";
 import type { EditorBubbleProps } from "../../../../../vendor/novel/packages/headless/src/components/editor-bubble.tsx";
@@ -242,6 +245,7 @@ const FileEditorRichTextToolbarStatus = memo(function FileEditorRichTextToolbarS
 				nodeId={nodeId}
 				sessionId={sessionId}
 				editable={editable}
+				nonCollaborativeBaseAssetId={null}
 				getCurrentText={getCurrentText}
 			/>
 		</>
@@ -253,12 +257,7 @@ const FileEditorRichTextToolbarActions = memo(function FileEditorRichTextToolbar
 ) {
 	const { editor, nodeId, editable, sessionId, sizeRef, syncChanged, syncStatus, toolbarPortalHost } = props;
 
-	const getCurrentText = useFn(() => {
-		const markdown = editor.getMarkdown();
-		// Match files_yjs_doc_get_text: non-empty file content ends with one `\n`,
-		// so the snapshot preview does not show a fake final-newline diff.
-		return markdown === "" || markdown.endsWith("\n") ? markdown : markdown + "\n";
-	});
+	const getCurrentText = useFn(() => serialize_editor_markdown(editor));
 
 	return createPortal(
 		<div
@@ -317,10 +316,9 @@ type FileEditorRichTextBubbleContentActions_Props = {
 	editor: Editor;
 	nodeId: app_convex_Id<"files_nodes">;
 	/**
-	 * See `FileEditorRichTextToolsComment_Props`; the bubble threads both comment props through.
+	 * See `FileEditorRichTextToolsComment_Props`; the bubble threads this straight down.
 	 */
-	disabledReason: string | null;
-	commitComment?: (threadId: string) => Promise<boolean>;
+	commentCommit: FileEditorRichTextToolsComment_Props["commentCommit"];
 	/**
 	 * `null` hides the Ask AI action: the inline AI extension runs on Yjs.
 	 */
@@ -330,7 +328,7 @@ type FileEditorRichTextBubbleContentActions_Props = {
 const FileEditorRichTextBubbleContentActions = memo(function FileEditorRichTextBubbleContentActions(
 	props: FileEditorRichTextBubbleContentActions_Props,
 ) {
-	const { editor, nodeId, disabledReason, commitComment, onClickAi } = props;
+	const { editor, nodeId, commentCommit, onClickAi } = props;
 
 	const handleActionMouseDown = useFn<MyButton_Props["onMouseDown"]>((event) => {
 		// Keep the editor selection alive while the bubble action handles the click.
@@ -376,8 +374,7 @@ const FileEditorRichTextBubbleContentActions = memo(function FileEditorRichTextB
 			<FileEditorRichTextToolsComment
 				editor={editor}
 				fileNodeId={nodeId}
-				disabledReason={disabledReason}
-				commitComment={commitComment}
+				commentCommit={commentCommit}
 				buttonVariant="floating"
 			/>
 		</div>
@@ -392,10 +389,9 @@ type FileEditorRichTextBubbleContent_Props = {
 	editor: Editor;
 	nodeId: app_convex_Id<"files_nodes">;
 	/**
-	 * See `FileEditorRichTextToolsComment_Props`; the bubble threads both comment props through.
+	 * See `FileEditorRichTextToolsComment_Props`; the bubble threads this straight down.
 	 */
-	disabledReason: string | null;
-	commitComment?: (threadId: string) => Promise<boolean>;
+	commentCommit: FileEditorRichTextToolsComment_Props["commentCommit"];
 	openAi: boolean;
 	portalElement: HTMLElement | null;
 	onPortalRef: (inst: HTMLDivElement | null) => void;
@@ -406,7 +402,7 @@ type FileEditorRichTextBubbleContent_Props = {
 const FileEditorRichTextBubbleContent = memo(function FileEditorRichTextBubbleContent(
 	props: FileEditorRichTextBubbleContent_Props,
 ) {
-	const { editor, nodeId, disabledReason, commitComment, openAi, portalElement, onPortalRef, onClickAi, onDiscardAi } =
+	const { editor, nodeId, commentCommit, openAi, portalElement, onPortalRef, onClickAi, onDiscardAi } =
 		props;
 
 	return (
@@ -419,8 +415,7 @@ const FileEditorRichTextBubbleContent = memo(function FileEditorRichTextBubbleCo
 				<FileEditorRichTextBubbleContentActions
 					editor={editor}
 					nodeId={nodeId}
-					disabledReason={disabledReason}
-					commitComment={commitComment}
+					commentCommit={commentCommit}
 					onClickAi={onClickAi}
 				/>
 			) : null}
@@ -440,10 +435,9 @@ type FileEditorRichTextBubble_Props = {
 	editor: Editor;
 	nodeId: app_convex_Id<"files_nodes">;
 	/**
-	 * See `FileEditorRichTextToolsComment_Props`; the bubble threads both comment props through.
+	 * See `FileEditorRichTextToolsComment_Props`; the bubble threads this straight down.
 	 */
-	disabledReason: string | null;
-	commitComment?: (threadId: string) => Promise<boolean>;
+	commentCommit: FileEditorRichTextToolsComment_Props["commentCommit"];
 	/**
 	 * Ask AI runs on the Yjs-backed inline AI extension, so the non-collaborative editor hides it.
 	 */
@@ -466,7 +460,7 @@ type FileEditorRichTextBubble_Props = {
  * - The user presses Escape to close a popover in the bubble (popover closes, bubble stays visible)
  */
 const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(props: FileEditorRichTextBubble_Props) {
-	const { editor, nodeId, disabledReason, commitComment, showAiAction } = props;
+	const { editor, nodeId, commentCommit, showAiAction } = props;
 
 	const bubbleSurfaceRef = useRef<HTMLDivElement>(null);
 	const isShownRef = useRef(false);
@@ -740,8 +734,7 @@ const FileEditorRichTextBubble = memo(function FileEditorRichTextBubble(props: F
 			<FileEditorRichTextBubbleContent
 				editor={editor}
 				nodeId={nodeId}
-				disabledReason={disabledReason}
-				commitComment={commitComment}
+				commentCommit={commentCommit}
 				openAi={openAi}
 				portalElement={portalElement}
 				onPortalRef={handlePortalElementRef}
@@ -1112,7 +1105,7 @@ function FileEditorRichTextInner(props: FileEditorRichTextInner_Props) {
 								<ImageResizer />
 								<FileEditorRichTextToolsSlashCommand />
 								<FileEditorRichTextDragHandle editor={editor} />
-								<FileEditorRichTextBubble editor={editor} nodeId={nodeId} disabledReason={null} showAiAction={true} />
+								<FileEditorRichTextBubble editor={editor} nodeId={nodeId} commentCommit={null} showAiAction={true} />
 							</>
 						) : null
 					}
@@ -1522,8 +1515,6 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 
 	const isSaveDebouncing = dirtyCheckState === "checking";
 	const isSaveDisabled = !editable || isSaving || dirtyCheckState !== "dirty";
-	// "checking" blocks too: typing happened moments ago, so unsaved edits may exist.
-	const commentDisabledReason = dirtyCheckState === "clean" ? null : "Save your changes before adding a comment.";
 
 	const imageUploadInputRef = useRef<HTMLInputElement>(null);
 	const videoUploadInputRef = useRef<HTMLInputElement>(null);
@@ -1908,6 +1899,12 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 		});
 	});
 
+	// "checking" blocks too: typing happened moments ago, so unsaved edits may exist.
+	const commentCommit = {
+		disabledReason: dirtyCheckState === "clean" ? null : "Save your changes before adding a comment.",
+		commit: handleCommitComment,
+	};
+
 	/**
 	 * Warn before this editor goes away with text that was never saved.
 	 *
@@ -2110,8 +2107,7 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 								<FileEditorRichTextBubble
 									editor={editor}
 									nodeId={nodeId}
-									disabledReason={commentDisabledReason}
-									commitComment={handleCommitComment}
+									commentCommit={commentCommit}
 									showAiAction={false}
 								/>
 							</>

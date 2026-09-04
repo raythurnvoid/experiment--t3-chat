@@ -3,6 +3,7 @@ import { app_monaco_THEME_NAME_DARK } from "@/lib/app-monaco-config.ts";
 import {
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_get_utf8_byte_size,
+	files_get_comment_thread_ids_from_markdown,
 	files_monaco_create_editor_model,
 	files_monaco_execute_edits_with_read_only_fallback,
 	type files_YjsRootKind,
@@ -30,8 +31,6 @@ import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex
 import { Save, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { FileEditorSnapshotsModal } from "../file-editor-snapshots-modal.tsx";
-import { files_headless_tiptap_editor_create } from "../../../../../shared/files-tiptap.ts";
-import { files_get_thread_ids_from_editor_state } from "../../../../../shared/files-tiptap-comments.ts";
 import { FileEditorCommentsSidebar } from "../file-editor-comments-sidebar.tsx";
 import { FileEditorDiffSkeleton } from "./file-editor-diff-skeleton.tsx";
 import { FileEditorMonacoTopViewZone } from "../file-editor-monaco-top-view-zone.tsx";
@@ -303,22 +302,10 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 	});
 
 	const updateThreadIds = (markdown: string) => {
-		// Comment threads live in Markdown comment marks, so only a rich-text document can have
-		// them. Skip the headless Tiptap scan for plain-text nodes; their sidebar stays empty.
-		if (initialData.rootKind !== "rich_text") {
+		const nextThreadIds = files_get_comment_thread_ids_from_markdown(markdown, initialData.rootKind);
+		if (!nextThreadIds) {
 			return;
 		}
-
-		const headlessEditor = files_headless_tiptap_editor_create({ initialContent: { markdown } });
-		if (headlessEditor._nay) {
-			console.error("[FileEditorDiffNonCollab.updateThreadIds] Error while creating headless editor", {
-				nay: headlessEditor._nay,
-			});
-			return;
-		}
-
-		const nextThreadIds = files_get_thread_ids_from_editor_state(headlessEditor._yay.state).toSorted();
-		headlessEditor._yay.destroy();
 
 		const nextKey = nextThreadIds.join("\n");
 		if (nextKey === commentThreadIdsKeyRef.current) {

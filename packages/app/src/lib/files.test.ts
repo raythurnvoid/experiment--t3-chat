@@ -23,6 +23,7 @@ import {
 	files_clear_node_path_cached_validation_messages,
 	files_fetch_file_yjs_state_and_text,
 	files_get_node_path_cached_validation_message,
+	files_get_comment_thread_ids_from_markdown,
 	files_get_node_path_validation,
 	files_get_node_path_validation_cache_key,
 	files_get_node_path_validation_message,
@@ -850,5 +851,30 @@ describe("files_monaco_execute_edits_with_read_only_fallback", () => {
 			"model.pushStackElement",
 		]);
 		expect(appliedEdits).toEqual([[edit]]);
+	});
+});
+
+describe("files_get_comment_thread_ids_from_markdown", () => {
+	test("returns the thread ids of a rich text file, sorted", () => {
+		const markdown = [
+			"# Notes",
+			"",
+			'The <span data-type="comment" data-lb-thread-id="t2">launch</span> date is final.',
+			"",
+			'We <span data-type="comment" data-lb-thread-id="t1">shipped</span> it.',
+			"",
+		].join("\n");
+
+		expect(files_get_comment_thread_ids_from_markdown(markdown, "rich_text")).toEqual(["t1", "t2"]);
+	});
+
+	test("returns an empty list when a rich text file has no comments", () => {
+		expect(files_get_comment_thread_ids_from_markdown("# Notes\n\nPlain text.\n", "rich_text")).toEqual([]);
+	});
+
+	test("returns null for a plain text file, which cannot carry comment marks", () => {
+		const markdown = 'The <span data-type="comment" data-lb-thread-id="t1">launch</span> date is final.\n';
+
+		expect(files_get_comment_thread_ids_from_markdown(markdown, "plain_text")).toBeNull();
 	});
 });
