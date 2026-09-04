@@ -128,6 +128,42 @@ If the span or `data-lb-thread-id` is gone, comments will silently detach from t
    label sits inside the closed hovercard, so it is in the DOM but `visible: false` — read `textContent`,
    do not wait for visibility.
 
+## 8. Collaboration toggle rebuilds the document (lineage)
+
+Run this after changing how `FilesConvexYjsStream` picks its document (`expectedYjsLastSequenceId`)
+or how `useFilesYjs` replaces the provider. Turning collaboration off and on again builds a new Yjs
+document with a new `files_yjs_docs_last_sequences` id. The old stream must stop silently, the hook
+must build a new provider, and every push must name the document it was built for.
+
+1. Install the page-side Convex call recorder (`snippets.md`, "Watch Convex Mutations On The Wire",
+   page-side alternative). Read the file's current document id from page context:
+   `app_convex.query(app_convex_api.files_nodes.yjs_get_incremental_updates, { membershipId, nodeId })`
+   answers `{ yjsLastSequenceId, updates }`. Keep that id as **A**.
+2. Type a marker in the rich editor. Poll `window.__pwCalls` for `files_nodes:yjs_push_update`
+   (one debounced push per burst): its `expectedYjsLastSequenceId` must equal **A** and its `result`
+   must be `"ok"`.
+3. Open the breadcrumb Properties dialog (`files.md`, "File Properties Modal" — read its two click
+   hazards first). Click `.FilesPropertiesModalCollaboration-checkbox`, then
+   `getByRole("button", { name: "Turn collaboration off" })`. Wait until
+   `.FilesPropertiesModalCollaboration-description` no longer starts with `Everybody can type`.
+   Now `window.__qa.filesYjs()` answers `[]` and `.FileEditorRichTextNonCollabToolbarActions` is mounted.
+4. Click the same label again, then `Turn collaboration on` (both directions confirm inline). Wait for
+   the description to start with `Everybody can type` again and for `window.__qa.filesYjs()` to answer
+   one provider with `status: "synchronized"`. Read the document id again: **B** must differ from **A**.
+   This step legitimately waits for the `set_file_collaborative` action plus the new provider's first
+   sync (a few seconds), so give it `--timeout 30000` — the one exception to the 5 s cap above.
+5. Assert there is no `.FileEditorRichText-load-error` and no `.FileEditorRichText-push-refused`.
+   Press `Escape`, type a second marker, and poll the recorder again: the new push must carry **B**.
+6. Reload. Both markers must be in `.FileEditorRichText-editor-content` — the rebuild keeps the last
+   saved text.
+
+Pass: push A names **A**, push B names **B**, both markers survive the reload, no banner, and no
+console line mentions `FilesConvexYjsStream` or `files_yjs_Provider`.
+
+Notes: the recorder dies on reload, so install it again before step 5 if you reloaded in between.
+`yjs_get_incremental_updates` answers `updates: []` right after a compaction, so count pushes from the
+recorder, never from that query.
+
 ## Log expectations
 
 After every step call `getLatestLogs({ page: state.page, sinceLastCall: true })`.
@@ -205,3 +241,16 @@ immediately before a view toggle survives the editor remount (the fresh provider
 from Convex) and shows up in the materialized markdown once materialization catches up (~15-30s).
 Checks 2-7 were skipped: the diff only touches the outgoing-update queue in `dispose()`, not
 comments, awareness, or the sync path. Logs stayed clean.
+
+## Run 2026-09-04 — lineage-scoped stream in `files-yjs-provider.ts`
+
+Change: the stream waits until the live subscription shows the document it was built for
+(`expectedYjsLastSequenceId`) before it applies the snapshot, every push sends that id from its args
+(the `state.yjsLastSequenceId` field is gone), and a lineage change stops the old stream silently so
+the hook can build a new provider.
+
+Ran checks 1 and 8 on a fresh root `.md` file in the signed-in Edge profile: push A carried the
+original id, collaboration off → on produced a different id, push B carried the new id, both markers
+survived a reload, no load or push-refused banner, and the console carried only the benign logs
+above. Checks 2-7 were skipped: the diff does not touch comments, awareness, or the editor extensions.
+Check 8 was written during this run.

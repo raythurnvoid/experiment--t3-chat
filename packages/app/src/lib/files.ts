@@ -617,10 +617,20 @@ export async function files_persist_file_pending_update_rebased_state(args: {
 	});
 }
 
+/**
+ * Read a collaborative file once and return its text together with the Yjs document it came from.
+ *
+ * The plain text editor, the diff editor, and the pending sidebar use this instead of a live
+ * provider. The result names the exact document (`yjsLastSequenceId`), so a later save can be
+ * refused when the file was rebuilt as a different document in the meantime.
+ */
 export async function files_fetch_file_yjs_state_and_text(args: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	nodeId: app_convex_Id<"files_nodes">;
 }) {
+	// The snapshot, the updates, and the sequence doc come from three separate reads. If someone
+	// turns collaboration off and on between them, they describe two different documents. Read
+	// all three again until they agree. Three tries cover one toggle landing in the middle.
 	for (let attempt = 0; attempt < 3; attempt++) {
 		const [yjsSnapshotTarget, yjsUpdatesData, yjsLastSequenceDoc] = await Promise.all([
 			app_convex.action(app_convex_api.files_nodes.yjs_prepare_doc_last_snapshot, args),
@@ -629,6 +639,9 @@ export async function files_fetch_file_yjs_state_and_text(args: {
 		]);
 
 		if (yjsSnapshotTarget == null) return null;
+
+		// All three reads must name the same document. Otherwise updates from one document would
+		// be applied on top of a snapshot from another.
 		if (
 			yjsUpdatesData?.yjsLastSequenceId !== yjsSnapshotTarget.yjsLastSequenceId ||
 			yjsLastSequenceDoc?.yjsLastSequenceId !== yjsSnapshotTarget.yjsLastSequenceId
@@ -671,6 +684,7 @@ export async function files_fetch_file_yjs_state_and_text(args: {
 		};
 	}
 
+	// Three reads in a row disagreed. Give up and let the caller show its own error.
 	throw new Error("The file collaboration state kept changing while it loaded");
 }
 

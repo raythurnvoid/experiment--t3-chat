@@ -35,6 +35,10 @@ export type files_yjs_PushRefusalReason = files_yjs_EditBlockReason | "other";
 type FilesConvexYjsStream_Args = {
 	nodeId: app_convex_Id<"files_nodes">;
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	/**
+	 * The document the caller saw on the node. The stream refuses any other document and
+	 * stops, so the hook can build a new provider for the new id.
+	 */
 	expectedYjsLastSequenceId: app_convex_Id<"files_yjs_docs_last_sequences">;
 	presenceStore: files_PresenceStore;
 	onGoodUpdatePacket: (packet: FilesConvexIncrementalUpdates["updates"][number]) => void;
@@ -57,7 +61,6 @@ class FilesConvexYjsStream {
 		syncing: boolean;
 		ready: boolean;
 		appliedSeq: number;
-		yjsLastSequenceId: app_convex_Id<"files_yjs_docs_last_sequences"> | null;
 		incrementalUpdates: FilesConvexIncrementalUpdates | null;
 	};
 
@@ -78,7 +81,9 @@ class FilesConvexYjsStream {
 	private outgoingUpdatesDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 	private outgoingUpdateInFlight = false;
 
-	private incrementalUpdatesFirstValueReceived = Object.assign(Promise.withResolvers(), { initialized: false });
+	// Resolve only when the subscription shows the expected document. Sync waits on this, so
+	// it never joins the snapshot with updates from another document.
+	private expectedLineageUpdatesReceived = Promise.withResolvers<void>();
 
 	constructor(args: FilesConvexYjsStream_Args) {
 		this.args = args;
@@ -86,7 +91,6 @@ class FilesConvexYjsStream {
 			syncing: false,
 			ready: false,
 			appliedSeq: 0,
-			yjsLastSequenceId: null,
 			incrementalUpdates: null,
 		};
 
@@ -105,12 +109,11 @@ class FilesConvexYjsStream {
 		this.unsubscribe = this.watcher.onUpdate(() => {
 			if (this.disposed) return;
 			const updateData = this.watcher.localQueryResult();
-			if (!this.incrementalUpdatesFirstValueReceived.initialized) {
-				this.incrementalUpdatesFirstValueReceived.resolve(updateData);
-				this.incrementalUpdatesFirstValueReceived.initialized = true;
-			}
 			if (!updateData) return;
 			this.state.incrementalUpdates = updateData;
+			if (updateData.yjsLastSequenceId === this.args.expectedYjsLastSequenceId) {
+				this.expectedLineageUpdatesReceived.resolve();
+			}
 			this.handleIncrementalUpdates(updateData);
 		});
 	}
@@ -118,7 +121,10 @@ class FilesConvexYjsStream {
 	private handleIncrementalUpdates(incrementalUpdates: FilesConvexIncrementalUpdates) {
 		if (this.disposed) return;
 		if (!this.state.ready || this.state.syncing) return;
-		if (incrementalUpdates.yjsLastSequenceId !== this.state.yjsLastSequenceId) return;
+		// A different lineage means someone turned collaboration off and on again. That built a new
+		// document that starts at sequence zero. Its updates must not touch this Y.Doc. The hook
+		// replaces this provider as soon as the node shows the new id.
+		if (incrementalUpdates.yjsLastSequenceId !== this.args.expectedYjsLastSequenceId) return;
 
 		let appliedSeq = this.state.appliedSeq;
 
@@ -178,9 +184,10 @@ class FilesConvexYjsStream {
 
 			void Promise.try(async () => {
 				while (!this.disposed && this.pendingOutgoingBatches.length > 0) {
-					// Sync supplies the exact server lineage. Never send queued edits with only a
-					// node id, because OFF -> ON creates a different document at sequence zero.
-					if (!this.state.yjsLastSequenceId) {
+					// Wait until sync confirms this document on the server. Never send queued edits
+					// before that, because turning collaboration off and on creates a different
+					// document at sequence zero.
+					if (!this.state.ready) {
 						await new Promise((resolve) => setTimeout(resolve, 500));
 						continue;
 					}
@@ -209,7 +216,7 @@ class FilesConvexYjsStream {
 								nodeId: this.args.nodeId,
 								update: files_u8_to_array_buffer(outgoingBatch.update),
 								sessionId: this.args.presenceStore.localSessionId,
-								expectedYjsLastSequenceId: this.state.yjsLastSequenceId,
+								expectedYjsLastSequenceId: this.args.expectedYjsLastSequenceId,
 							});
 
 							// Access may change while this request runs. Ignore the result if that change
@@ -344,7 +351,7 @@ class FilesConvexYjsStream {
 							membershipId: this.args.membershipId,
 							nodeId: this.args.nodeId,
 						}),
-						this.incrementalUpdatesFirstValueReceived.promise,
+						this.expectedLineageUpdatesReceived.promise,
 					]);
 				} catch (err) {
 					console.warn("[FilesConvexYjsStream.sync] snapshot query failed, retrying", err);
@@ -361,6 +368,9 @@ class FilesConvexYjsStream {
 				}
 
 				if (this.disposed) break;
+				// The file changed lineage after the caller read the node. This is not a load failure,
+				// so do not show the banner. Stop here and let the hook create a new provider for the
+				// new id.
 				if (result.yjsLastSequenceId !== this.args.expectedYjsLastSequenceId) {
 					break;
 				}
@@ -386,10 +396,13 @@ class FilesConvexYjsStream {
 				}
 
 				if (this.disposed) break;
+				// The snapshot comes from an action and the updates from a query, so a newer lineage
+				// can show up here after the expected one was already seen. That means the file
+				// changed again. Stop and let the hook create a new provider, for the same reason as
+				// above.
 				const incrementalUpdates = this.state.incrementalUpdates;
 				if (incrementalUpdates?.yjsLastSequenceId !== result.yjsLastSequenceId) {
-					await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
-					continue;
+					break;
 				}
 
 				const snapshotUpdate = new Uint8Array(resultSnapshotUpdate);
@@ -438,7 +451,6 @@ class FilesConvexYjsStream {
 				this.onSync(currentStateUpdate);
 				this.state.ready = true;
 				this.state.appliedSeq = lastSequence;
-				this.state.yjsLastSequenceId = result.yjsLastSequenceId;
 				this.onLoadFailedChange(false);
 
 				break;
@@ -461,18 +473,16 @@ class FilesConvexYjsStream {
 		// apply the same update twice without changing the document twice.
 		for (const batch of this.pendingOutgoingBatches) {
 			batch.sealed = true;
-			if (
-				!batch.dropped &&
-				this.state.yjsLastSequenceId &&
-				!files_yjs_doc_is_diff_update_empty(batch.update)
-			) {
+			// If sync never finished, this stream never confirmed its document on the server. Do not
+			// guess. Edits queued before that point are dropped here.
+			if (!batch.dropped && this.state.ready && !files_yjs_doc_is_diff_update_empty(batch.update)) {
 				app_convex
 					.mutation(app_convex_api.files_nodes.yjs_push_update, {
 						membershipId: this.args.membershipId,
 						nodeId: this.args.nodeId,
 						update: files_u8_to_array_buffer(batch.update),
 						sessionId: this.args.presenceStore.localSessionId,
-						expectedYjsLastSequenceId: this.state.yjsLastSequenceId,
+						expectedYjsLastSequenceId: this.args.expectedYjsLastSequenceId,
 					})
 					.then((result) => {
 						if (result._nay) {
@@ -493,6 +503,10 @@ class FilesConvexYjsStream {
 
 export type files_yjs_Provider_Args = {
 	nodeId: app_convex_Id<"files_nodes">;
+	/**
+	 * The document the caller saw on the node. The stream refuses any other document and
+	 * stops, so the hook can build a new provider for the new id.
+	 */
 	expectedYjsLastSequenceId: app_convex_Id<"files_yjs_docs_last_sequences">;
 	enablePermanentUserData?: boolean;
 	presenceStore: files_PresenceStore;

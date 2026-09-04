@@ -480,6 +480,31 @@ Frames carry the real arguments, so they double as an identity probe (a `presenc
 
 Clean up with `await state.cdp.send("Network.disable")`. The session object has **no** `removeAllListeners` (it is a thin proxy, only `_playwrightSession` is enumerable); use `state.cdp.off(event, handler)` if you kept the handler reference.
 
+Page-side alternative, when you also need the **answer** of each call (`_nay` message, thrown error) or the args carry a binary body that makes wire frames huge (`files_nodes:yjs_push_update` sends the Yjs `update` as an `ArrayBuffer`): patch the app's own client. Vite dev serves the same module instance the app uses, so the patch sees every call the app makes (verified 2026-09-04).
+
+```js
+await state.page.evaluate(async () => {
+	const m = await import("/src/lib/app-convex-client.ts");
+	const { getFunctionName } = await import("/@id/convex/server");
+	window.__pwCalls = [];
+	for (const kind of ["mutation", "action"]) {
+		const orig = m.app_convex[kind].bind(m.app_convex);
+		m.app_convex[kind] = (fn, ...rest) => {
+			const args = rest[0];
+			// Keep the fields you assert on; `args.update` is an ArrayBuffer and does not JSON-stringify.
+			const entry = { kind, name: getFunctionName(fn), nodeId: args?.nodeId ?? null, expectedYjsLastSequenceId: args?.expectedYjsLastSequenceId ?? null, result: null };
+			window.__pwCalls.push(entry);
+			const p = orig(fn, ...rest);
+			p.then((r) => { entry.result = r && r._nay ? { _nay: r._nay.message } : "ok"; }, (e) => { entry.result = { threw: String(e) }; });
+			return p;
+		};
+	}
+});
+// later: window.__pwCalls.filter((c) => c.name === "files_nodes:yjs_push_update")
+```
+
+`getFunctionName` works across module instances because the name lives under `Symbol.for("functionName")`. The patch lives on the page, so a `reload()` removes it — install it again after every reload.
+
 ## Query Convex Directly From Outside The Page
 
 To read server state with no browser involved, run a query from the CLI. `pnpm exec convex` is not linked in this repo, so go through the binary:

@@ -449,9 +449,11 @@ One dialog holding the file's facts, its read-only lock, and the flat key-value 
   shows three sections and no empty strip.
 - The `Collaboration` checkbox is another `MyCheckboxButton`, so the same 1px-input rule applies:
   click `.FilesPropertiesModalCollaboration-checkbox`, or `focus()` the input and press `Space`.
-  Turning it ON writes immediately. Turning it OFF opens an inline confirm step inside the same
-  section — `getByRole("button", { name: "Turn collaboration off" })` and `Cancel` — and nothing is
-  written until that button is clicked. Read the state from
+  Both directions open an inline confirm step inside the same section —
+  `getByRole("button", { name: "Turn collaboration off" })` or `Turn collaboration on`, next to
+  `Cancel` — and nothing is written until that button is clicked (the ON confirm is newer than the
+  OFF one; verified 2026-09-04). Focus moves to the confirm button, and the tick keeps its old
+  state until the write lands, so do not read "still checked" as a missed click. Read the state from
   `.FilesPropertiesModalCollaboration-description`, not from the tick: the Metadata section repeats
   the same "read-only" and "no permission" sentences, so `getByText` finds several matches.
 - Read-only is one checkbox, but the dialog holds two (Protection and Collaboration), so a bare

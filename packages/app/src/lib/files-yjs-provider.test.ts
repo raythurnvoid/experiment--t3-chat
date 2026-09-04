@@ -314,6 +314,99 @@ describe("files_yjs_Provider snapshot sync", () => {
 
 		provider.destroy();
 	});
+
+	test("stops without the load-failed banner when the prepare action returns another lineage", async () => {
+		appConvexMock.app_convex.action.mockResolvedValue({
+			snapshot: { sequence: 0 },
+			snapshotUrl: "https://r2.test/snapshot",
+			yjsLastSequenceId: "lineage_b",
+		});
+		appConvexMock.app_convex.mutation.mockResolvedValue({ _yay: { newSequence: 1 } });
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response(createEmptySnapshotUpdate())),
+		);
+
+		const provider = new files_yjs_Provider({
+			membershipId: "membership_id" as files_yjs_Provider_Args["membershipId"],
+			nodeId: "file_id" as files_yjs_Provider_Args["nodeId"],
+			expectedYjsLastSequenceId: "lineage_a" as files_yjs_Provider_Args["expectedYjsLastSequenceId"],
+			presenceStore: createPresenceStore(),
+			editable: true,
+		});
+
+		// The subscription shows the expected lineage first, then the newer one the action returned.
+		appConvexMock.emitIncrementalUpdates({ yjsLastSequenceId: "lineage_a", updates: [] });
+		appConvexMock.emitIncrementalUpdates({ yjsLastSequenceId: "lineage_b", updates: [] });
+		await flushMicrotasks();
+		expect(provider.getStatus()).toBe("loading");
+		expect(provider.loadFailed).toBe(false);
+
+		insertText(getRootDoc(provider), "held");
+		await advanceTimersByTime(6000);
+		expect(provider.loadFailed).toBe(false);
+		expect(appConvexMock.app_convex.mutation).not.toHaveBeenCalled();
+
+		provider.destroy();
+	});
+
+	test("stops without the load-failed banner when a newer lineage arrives before the snapshot is applied", async () => {
+		appConvexMock.app_convex.action.mockResolvedValue({
+			snapshot: { sequence: 0 },
+			snapshotUrl: "https://r2.test/snapshot",
+			yjsLastSequenceId: "lineage_a",
+		});
+		const fetchResult = Promise.withResolvers<Response>();
+		const fetchMock = vi.fn(() => fetchResult.promise);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const provider = new files_yjs_Provider({
+			membershipId: "membership_id" as files_yjs_Provider_Args["membershipId"],
+			nodeId: "file_id" as files_yjs_Provider_Args["nodeId"],
+			expectedYjsLastSequenceId: "lineage_a" as files_yjs_Provider_Args["expectedYjsLastSequenceId"],
+			presenceStore: createPresenceStore(),
+			editable: true,
+		});
+
+		appConvexMock.emitIncrementalUpdates({ yjsLastSequenceId: "lineage_a", updates: [] });
+		await flushMicrotasks();
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+
+		// The lineage changes while the snapshot download is still running.
+		appConvexMock.emitIncrementalUpdates({ yjsLastSequenceId: "lineage_b", updates: [] });
+		fetchResult.resolve(new Response(createEmptySnapshotUpdate()));
+		await advanceTimersByTime(6000);
+
+		expect(provider.getStatus()).toBe("loading");
+		expect(provider.loadFailed).toBe(false);
+		expect(appConvexMock.app_convex.action).toHaveBeenCalledTimes(1);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+
+		provider.destroy();
+	});
+});
+
+describe("files_yjs_Provider incoming updates", () => {
+	test("ignores incremental updates from another lineage after sync", async () => {
+		const { provider, rootDoc } = await createReadyProvider();
+		const remoteDoc = new Y.Doc();
+		remoteDoc.getText("content").insert(0, "remote");
+		const remotePacket: MockIncrementalUpdate = {
+			sequence: 1,
+			update: appConvexMock.files_u8_to_array_buffer(Y.encodeStateAsUpdate(remoteDoc)),
+			origin: { type: "USER_EDIT", sessionId: "session_remote" },
+		};
+
+		appConvexMock.emitIncrementalUpdates({ yjsLastSequenceId: "other_lineage", updates: [remotePacket] });
+		expect(rootDoc.getText("content").toString()).toBe("");
+
+		// The same packet on the expected lineage is applied, so the lineage check is the only
+		// reason the first one was skipped.
+		appConvexMock.emitIncrementalUpdates({ yjsLastSequenceId: "last_sequence_id", updates: [remotePacket] });
+		expect(rootDoc.getText("content").toString()).toBe("remote");
+
+		provider.destroy();
+	});
 });
 
 describe("files_yjs_Provider outgoing update queue", () => {
@@ -332,6 +425,71 @@ describe("files_yjs_Provider outgoing update queue", () => {
 		expect(appConvexMock.app_convex.mutation).toHaveBeenCalledTimes(1);
 
 		provider.destroy();
+	});
+
+	test("holds a local edit made before sync finishes until the document is confirmed", async () => {
+		const prepareResult = Promise.withResolvers<{
+			snapshot: { sequence: number };
+			snapshotUrl: string;
+			yjsLastSequenceId: string;
+		}>();
+		appConvexMock.app_convex.action.mockReturnValue(prepareResult.promise);
+		appConvexMock.app_convex.mutation.mockResolvedValue({ _yay: { newSequence: 1 } });
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response(createEmptySnapshotUpdate())),
+		);
+
+		const provider = new files_yjs_Provider({
+			membershipId: "membership_id" as files_yjs_Provider_Args["membershipId"],
+			nodeId: "file_id" as files_yjs_Provider_Args["nodeId"],
+			expectedYjsLastSequenceId: "last_sequence_id" as files_yjs_Provider_Args["expectedYjsLastSequenceId"],
+			presenceStore: createPresenceStore(),
+			editable: true,
+		});
+		appConvexMock.emitIncrementalUpdates({ yjsLastSequenceId: "last_sequence_id", updates: [] });
+
+		insertText(getRootDoc(provider), "early");
+		await advanceTimersByTime(1500);
+		expect(provider.getStatus()).toBe("loading");
+		expect(appConvexMock.app_convex.mutation).not.toHaveBeenCalled();
+
+		prepareResult.resolve({
+			snapshot: { sequence: 0 },
+			snapshotUrl: "https://r2.test/snapshot",
+			yjsLastSequenceId: "last_sequence_id",
+		});
+		await advanceTimersByTime(500);
+		expect(appConvexMock.app_convex.mutation).toHaveBeenCalledTimes(1);
+		expect((appConvexMock.app_convex.mutation.mock.calls[0]![1] as MockPushUpdateArgs).expectedYjsLastSequenceId).toBe(
+			"last_sequence_id",
+		);
+
+		await advanceTimersByTime(1000);
+		expect(appConvexMock.app_convex.mutation).toHaveBeenCalledTimes(1);
+
+		provider.destroy();
+	});
+
+	test("drops a queued edit when the provider is destroyed before sync finishes", async () => {
+		// The prepare action never answers, so sync never confirms the document.
+		appConvexMock.app_convex.action.mockReturnValue(Promise.withResolvers().promise);
+		appConvexMock.app_convex.mutation.mockResolvedValue({ _yay: { newSequence: 1 } });
+
+		const provider = new files_yjs_Provider({
+			membershipId: "membership_id" as files_yjs_Provider_Args["membershipId"],
+			nodeId: "file_id" as files_yjs_Provider_Args["nodeId"],
+			expectedYjsLastSequenceId: "last_sequence_id" as files_yjs_Provider_Args["expectedYjsLastSequenceId"],
+			presenceStore: createPresenceStore(),
+			editable: true,
+		});
+		appConvexMock.emitIncrementalUpdates({ yjsLastSequenceId: "last_sequence_id", updates: [] });
+
+		insertText(getRootDoc(provider), "not confirmed");
+		provider.destroy();
+		await advanceTimersByTime(1000);
+
+		expect(appConvexMock.app_convex.mutation).not.toHaveBeenCalled();
 	});
 
 	test("does not count each rate-limit retry as a separate outgoing update", async () => {
