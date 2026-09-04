@@ -1437,6 +1437,13 @@ function serialize_editor_markdown(editor: Editor) {
  * block (a trailing video embed, for example). Same rule as `headless_editor_replace_doc` in
  * `shared/files-tiptap.ts`, which is module-private.
  */
+/**
+ * Swap the whole document for the one `markdown` describes.
+ *
+ * `EditorState.create` also clears the undo history. That is accepted here, because both callers
+ * restore text the member did not type: an old version, or the merged text somebody else saved.
+ * Undoing back into the text that was replaced would not be useful.
+ */
 function replace_editor_document(mut_editor: Editor, markdown: string) {
 	const json = files_tiptap_markdown_to_json({ markdown, extensions: nonCollaborativeExtensions });
 	if (json._nay) {
@@ -1446,6 +1453,13 @@ function replace_editor_document(mut_editor: Editor, markdown: string) {
 	mut_editor.view.updateState(
 		EditorState.create({ doc: mut_editor.schema.nodeFromJSON(json._yay), plugins: mut_editor.state.plugins }),
 	);
+	// `updateState` replaces the state without telling Tiptap, so nothing calls the editor's
+	// `transaction` listeners. `useEditorState` reads a snapshot that only that event moves
+	// forward, and the React Compiler keeps its selector identity stable across renders, so a
+	// plain re-render does not refresh it either. Without this, the word count and the anchored
+	// comments keep describing the replaced document until the member clicks or types. An empty
+	// transaction fires the event without changing the text.
+	mut_editor.view.dispatch(mut_editor.state.tr);
 	return json;
 }
 
