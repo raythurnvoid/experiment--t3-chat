@@ -11,6 +11,7 @@ const {
 	finishManagementActionMock,
 	mutationMock,
 	publishSessionMock,
+	setRouteFocusTargetMock,
 	useQueryMock,
 } = vi.hoisted(() => ({
 	authMock: vi.fn(),
@@ -18,6 +19,7 @@ const {
 	finishManagementActionMock: vi.fn(),
 	mutationMock: vi.fn(),
 	publishSessionMock: vi.fn(),
+	setRouteFocusTargetMock: vi.fn(),
 	useQueryMock: vi.fn(),
 }));
 
@@ -51,8 +53,10 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 	},
 }));
 
-vi.mock("@/hooks/utils-hooks.ts", () => ({
-	useFn: <T,>(fn: T) => fn,
+vi.mock("@/lib/app-tenant-context.tsx", () => ({
+	AppTenantProvider: {
+		useContext: () => ({ workspaceId: "workspace_1" }),
+	},
 }));
 
 vi.mock("@/components/my-button.tsx", () => ({
@@ -99,15 +103,8 @@ vi.mock("@/components/plugins-header-breadcrumb.tsx", () => ({
 }));
 
 vi.mock("@/components/plugins-publish-button.tsx", () => ({
-	PluginsPublishButton: function PluginsPublishButton(props: {
-		repositoryLabel: string;
-		onPublished?: () => void;
-	}) {
-		return (
-			<button aria-label={`Publish ${props.repositoryLabel}`} onClick={props.onPublished}>
-				Publish
-			</button>
-		);
+	PluginsPublishButton: function PluginsPublishButton(props: { repositoryLabel: string }) {
+		return <button aria-label={`Publish ${props.repositoryLabel}`}>Publish</button>;
 	},
 }));
 
@@ -215,6 +212,7 @@ describe("RoutePluginsPublisher", () => {
 			managementAction: null,
 			beginManagementAction: beginManagementActionMock,
 			finishManagementAction: finishManagementActionMock,
+			setRouteFocusTarget: setRouteFocusTargetMock,
 		});
 		setRepositories();
 	});
@@ -281,6 +279,7 @@ describe("RoutePluginsPublisher", () => {
 			managementAction: null,
 			beginManagementAction: beginManagementActionMock,
 			finishManagementAction: finishManagementActionMock,
+			setRouteFocusTarget: setRouteFocusTargetMock,
 		});
 		const firstView = render(<PageComponent />);
 		expect(
@@ -390,6 +389,36 @@ describe("RoutePluginsPublisher", () => {
 		await waitFor(() =>
 			expect(document.activeElement).toBe(screen.getByPlaceholderText("https://github.com/owner/plugin-repo")),
 		);
+	});
+
+	test("moves focus to the claim field after a repository claim is published", async () => {
+		const repositories = makeRepositories();
+		setRepositories(repositories);
+		const view = render(<PageComponent />);
+		screen.getByRole("button", { name: "Publish octo/new-plugin" }).focus();
+
+		setRepositories([
+			repositories[0],
+			{
+				...repositories[1],
+				readyVersions: repositories[0].readyVersions.slice(0, 1),
+			},
+		]);
+		view.rerender(<PageComponent />);
+
+		await waitFor(() =>
+			expect(document.activeElement).toBe(screen.getByPlaceholderText("https://github.com/owner/plugin-repo")),
+		);
+	});
+
+	test("registers the claim field as the route focus target and clears it on unmount", () => {
+		const view = render(<PageComponent />);
+		const repositoryInput = screen.getByPlaceholderText("https://github.com/owner/plugin-repo");
+		expect(setRouteFocusTargetMock).toHaveBeenCalledWith(repositoryInput, "workspace_1/plugins/publisher");
+
+		setRouteFocusTargetMock.mockClear();
+		view.unmount();
+		expect(setRouteFocusTargetMock).toHaveBeenCalledWith(null, "workspace_1/plugins/publisher");
 	});
 
 	test("does not steal focus when the person moves before a repository claim disappears", async () => {

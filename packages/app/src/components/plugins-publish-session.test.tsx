@@ -77,7 +77,6 @@ function WorkspaceOnlyPublishPage(props: { repositoryName: string }) {
 }
 
 let routerPermission: boolean | undefined;
-const routerPublishedMock = vi.fn();
 let finishRouterManagementAction: (() => void) | undefined;
 
 const routerManagementActions = [
@@ -133,7 +132,6 @@ function RouterPublishPage() {
 			<PluginsPublishButton
 				repositoryId={`repository_${pluginName}` as never}
 				repositoryLabel={`octo/${pluginName}`}
-				onPublished={routerPublishedMock}
 			/>
 		</main>
 	);
@@ -673,7 +671,6 @@ describe("PluginsPublishSessionProvider", () => {
 			["plugins.publish_version", { repositoryId: "repository_plugin-a", expectedSourceCommitSha: nextHeadSha }],
 			["plugins.publish_version", { repositoryId: "repository_plugin-a", expectedSourceCommitSha: nextHeadSha }],
 		]);
-		expect(routerPublishedMock).toHaveBeenCalledTimes(1);
 		expect(consoleError).toHaveBeenCalledTimes(1);
 	});
 
@@ -690,8 +687,6 @@ describe("PluginsPublishSessionProvider", () => {
 		const onNextBusyChange = vi.fn();
 		const onFirstSessionChange = vi.fn();
 		const onNextSessionChange = vi.fn();
-		const onFirstPublished = vi.fn();
-		const onNextPublished = vi.fn();
 		actionMock
 			.mockReset()
 			.mockResolvedValueOnce({ _yay: { sourceCommitSha: headSha } })
@@ -704,7 +699,6 @@ describe("PluginsPublishSessionProvider", () => {
 				repositoryLabel="octo/plugin"
 				onBusyChange={onFirstBusyChange}
 				onSessionChange={onFirstSessionChange}
-				onPublished={onFirstPublished}
 			/>,
 		);
 
@@ -722,7 +716,6 @@ describe("PluginsPublishSessionProvider", () => {
 				repositoryLabel="fork/plugin"
 				onBusyChange={onNextBusyChange}
 				onSessionChange={onNextSessionChange}
-				onPublished={onNextPublished}
 			/>,
 		);
 		expect(screen.getByRole("dialog", { name: "Publish octo/plugin" })).toBe(dialog);
@@ -764,8 +757,6 @@ describe("PluginsPublishSessionProvider", () => {
 		expect(onNextBusyChange).not.toHaveBeenCalled();
 		expect(onFirstSessionChange.mock.calls).toEqual([[true], [false]]);
 		expect(onNextSessionChange).not.toHaveBeenCalled();
-		expect(onFirstPublished).toHaveBeenCalledTimes(1);
-		expect(onNextPublished).not.toHaveBeenCalled();
 	});
 
 	test("shows a cancelable check and returns focus to the trigger when the HEAD preflight fails", async () => {

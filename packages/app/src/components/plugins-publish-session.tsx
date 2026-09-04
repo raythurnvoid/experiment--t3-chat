@@ -45,7 +45,6 @@ type PluginsPublishSessionRequest = {
 	triggerRef: RefObject<HTMLButtonElement | null>;
 	onBusyChange?: (busy: boolean) => void;
 	onSessionChange?: (active: boolean) => void;
-	onPublished?: () => void;
 };
 
 type PluginsPublishSession = PluginsPublishSessionRequest & {
@@ -369,7 +368,6 @@ const PluginsPublishSessionProvider = Object.assign(
 					toast.success(`Published commit ${result._yay.sourceCommitSha.slice(0, 8)}`);
 					updateSession(current.version, { phase: "review" });
 					close();
-					current.onPublished?.();
 				})
 				.catch((error) => {
 					if (activePublishRef.current !== current.version) {

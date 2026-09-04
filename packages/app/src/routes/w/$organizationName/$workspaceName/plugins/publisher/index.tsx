@@ -4,7 +4,7 @@ import { useClerk } from "@clerk/clerk-react";
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "convex/react";
 import { GitBranch, LogIn, Plus, Store, Trash2 } from "lucide-react";
-import { memo, useEffect, useRef, useState, type FormEvent } from "react";
+import { memo, useEffect, useRef, useState, type FormEvent, type Ref } from "react";
 import { toast } from "sonner";
 
 import { AppAuthProvider } from "@/components/app-auth.tsx";
@@ -24,6 +24,7 @@ import { PluginsPublishSessionProvider } from "@/components/plugins-publish-sess
 import { PluginsPublisherLastAttempt } from "@/components/plugins-publisher-last-attempt.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex, app_convex_api, type app_convex_FunctionReturnType } from "@/lib/app-convex-client.ts";
+import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { cn } from "@/lib/utils.ts";
 
@@ -84,15 +85,14 @@ type RoutePluginsPublisherPlugins_ClassNames =
 	| "RoutePluginsPublisherUnpublishedCard-footer";
 
 type RoutePluginsPublisherUnpublishedCard_Props = {
+	ref: Ref<HTMLDivElement>;
 	repository: Repositories[number]["repository"];
-	onPublished: () => void;
-	onRemoved: () => void;
 };
 
 const RoutePluginsPublisherUnpublishedCard = memo(function RoutePluginsPublisherUnpublishedCard(
 	props: RoutePluginsPublisherUnpublishedCard_Props,
 ) {
-	const { repository, onPublished, onRemoved } = props;
+	const { ref, repository } = props;
 	const publishSessionManager = PluginsPublishSessionProvider.useContext();
 	const publishBusy = publishSessionManager.session !== null;
 	const managementBusy = publishSessionManager.managementAction !== null;
@@ -117,7 +117,6 @@ const RoutePluginsPublisherUnpublishedCard = memo(function RoutePluginsPublisher
 				}
 
 				toast.success("Repository claim removed");
-				onRemoved();
 			})
 			.catch((error) => {
 				console.error("[RoutePluginsPublisher.handleRemove] Failed to remove repository claim:", {
@@ -133,7 +132,7 @@ const RoutePluginsPublisherUnpublishedCard = memo(function RoutePluginsPublisher
 	});
 
 	return (
-		<div className={"RoutePluginsPublisherUnpublishedCard" satisfies RoutePluginsPublisherPlugins_ClassNames}>
+		<div ref={ref} className={"RoutePluginsPublisherUnpublishedCard" satisfies RoutePluginsPublisherPlugins_ClassNames}>
 			<span className={"RoutePluginsPublisherUnpublishedCard-header" satisfies RoutePluginsPublisherPlugins_ClassNames}>
 				<GitBranch
 					className={"RoutePluginsPublisherUnpublishedCard-icon" satisfies RoutePluginsPublisherPlugins_ClassNames}
@@ -166,7 +165,6 @@ const RoutePluginsPublisherUnpublishedCard = memo(function RoutePluginsPublisher
 					repositoryId={repository._id}
 					repositoryLabel={`${repository.owner}/${repository.repo}`}
 					disabled={removing}
-					onPublished={onPublished}
 				/>
 				<MyButton
 					variant="ghost_destructive"
@@ -192,33 +190,11 @@ const RoutePluginsPublisherPlugins = memo(function RoutePluginsPublisherPlugins(
 ) {
 	const { repositories } = props;
 	const publishSessionManager = PluginsPublishSessionProvider.useContext();
+	const { workspaceId } = AppTenantProvider.useContext();
 	const repositoryInputRef = useRef<HTMLInputElement>(null);
 	const claimButtonRef = useRef<HTMLButtonElement>(null);
 	const [repositoryUrl, setRepositoryUrl] = useState("");
 	const [claiming, setClaiming] = useState(false);
-	const [focusAfterChange, setFocusAfterChange] = useState<{
-		repositoryId: Repositories[number]["repository"]["_id"];
-		change: "published" | "removed";
-	} | null>(null);
-
-	useEffect(() => {
-		if (!focusAfterChange || claiming) {
-			return;
-		}
-		const repository = repositories.find(({ repository }) => repository._id === focusAfterChange.repositoryId);
-		const changeArrived =
-			focusAfterChange.change === "removed" ? repository === undefined : Boolean(repository?.readyVersions.length);
-		if (!changeArrived) {
-			return;
-		}
-
-		// Repair focus only when the changed card left it on the document. Do not pull focus away if the
-		// person moved to another control while the publish, removal, or claim was still running.
-		if (document.activeElement === document.body) {
-			repositoryInputRef.current?.focus();
-		}
-		setFocusAfterChange(null);
-	}, [claiming, focusAfterChange, repositories]);
 
 	const handleClaim = useFn((event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
@@ -258,8 +234,34 @@ const RoutePluginsPublisherPlugins = memo(function RoutePluginsPublisherPlugins(
 				publishSessionManager.finishManagementAction(actionVersion);
 			});
 	});
+
+	// React runs this cleanup right before it removes the card from the DOM, so a focused Publish
+	// or Remove button inside the card is still the active element here. Move the focus to the
+	// claim field then, instead of letting the browser drop it on the body. Keep one stable
+	// function: React re-runs a ref cleanup whenever the callback identity changes.
+	const handleUnpublishedCardRef = useFn((card: HTMLDivElement | null) => {
+		if (!card) {
+			return;
+		}
+
+		return () => {
+			if (card.contains(document.activeElement)) {
+				repositoryInputRef.current?.focus();
+			}
+		};
+	});
+
 	const publishBusy = publishSessionManager.session !== null;
 	const managementBusy = publishSessionManager.managementAction !== null;
+
+	useEffect(() => {
+		// A publish can replace the card while the publish dialog is still open. The dialog then
+		// closes onto a Publish button that no longer exists. Register the claim field so the
+		// stable publish owner has a place on this route to put that fallen focus.
+		const routeKey = `${workspaceId}/plugins/publisher`;
+		publishSessionManager.setRouteFocusTarget(repositoryInputRef.current, routeKey);
+		return () => publishSessionManager.setRouteFocusTarget(null, routeKey);
+	});
 
 	return (
 		<section className={"RoutePluginsPublisherPlugins" satisfies RoutePluginsPublisherPlugins_ClassNames}>
@@ -308,11 +310,7 @@ const RoutePluginsPublisherPlugins = memo(function RoutePluginsPublisherPlugins(
 							className={"RoutePluginsPublisherRepositoryItem" satisfies RoutePluginsPublisherPlugins_ClassNames}
 						>
 							{readyVersions.length === 0 ? (
-								<RoutePluginsPublisherUnpublishedCard
-									repository={repository}
-									onPublished={() => setFocusAfterChange({ repositoryId: repository._id, change: "published" })}
-									onRemoved={() => setFocusAfterChange({ repositoryId: repository._id, change: "removed" })}
-								/>
+								<RoutePluginsPublisherUnpublishedCard ref={handleUnpublishedCardRef} repository={repository} />
 							) : (
 								readyVersions.map((readyVersion) => (
 									<PluginsGalleryCard

@@ -12,7 +12,6 @@ type PluginsPublishButton_Props = {
 	buttonVariant?: MyButton_Props["variant"];
 	onBusyChange?: (busy: boolean) => void;
 	onSessionChange?: (active: boolean) => void;
-	onPublished?: () => void;
 };
 
 const PluginsPublishButton = memo(function PluginsPublishButton(props: PluginsPublishButton_Props) {
@@ -23,7 +22,6 @@ const PluginsPublishButton = memo(function PluginsPublishButton(props: PluginsPu
 		buttonVariant,
 		onBusyChange,
 		onSessionChange,
-		onPublished,
 	} = props;
 	const triggerRef = useRef<HTMLButtonElement>(null);
 	const publishSession = PluginsPublishSessionProvider.useContext();
@@ -49,7 +47,6 @@ const PluginsPublishButton = memo(function PluginsPublishButton(props: PluginsPu
 					triggerRef,
 					onBusyChange,
 					onSessionChange,
-					onPublished,
 				});
 			}}
 		>
