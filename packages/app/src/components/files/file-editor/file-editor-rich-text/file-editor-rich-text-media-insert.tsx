@@ -100,7 +100,7 @@ type FileEditorRichTextMediaEmbedPicker_Props = {
  * subscribes to the same query with the same args, and Convex dedupes identical
  * subscriptions).
  */
-const FileEditorRichTextMediaEmbedPicker = memo(function FileEditorRichTextMediaEmbedPicker(
+export const FileEditorRichTextMediaEmbedPicker = memo(function FileEditorRichTextMediaEmbedPicker(
 	props: FileEditorRichTextMediaEmbedPicker_Props,
 ) {
 	const { editor, membershipId, anchorRect, onClose } = props;
@@ -203,5 +203,3 @@ const FileEditorRichTextMediaEmbedPicker = memo(function FileEditorRichTextMedia
 	);
 });
 // #endregion embed picker
-
-export { FileEditorRichTextMediaEmbedPicker };

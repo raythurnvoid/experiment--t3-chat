@@ -23,7 +23,7 @@ Every plugins route renders this into the main app header (like FileNodeViewHead
 for /files) so the breadcrumb is always present and navigating between plugins pages causes
 no in-page layout shift.
 */
-const PluginsHeaderBreadcrumb = memo(function PluginsHeaderBreadcrumb(props: PluginsHeaderBreadcrumb_Props) {
+export const PluginsHeaderBreadcrumb = memo(function PluginsHeaderBreadcrumb(props: PluginsHeaderBreadcrumb_Props) {
 	const { trail = [], current = null } = props;
 	const { organizationName, workspaceName } = AppTenantProvider.useContext();
 
@@ -85,5 +85,3 @@ const PluginsHeaderBreadcrumb = memo(function PluginsHeaderBreadcrumb(props: Plu
 		headerPortalElement,
 	);
 });
-
-export { PluginsHeaderBreadcrumb };

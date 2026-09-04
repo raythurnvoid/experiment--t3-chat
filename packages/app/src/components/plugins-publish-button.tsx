@@ -14,7 +14,7 @@ type PluginsPublishButton_Props = {
 	onSessionChange?: (active: boolean) => void;
 };
 
-const PluginsPublishButton = memo(function PluginsPublishButton(props: PluginsPublishButton_Props) {
+export const PluginsPublishButton = memo(function PluginsPublishButton(props: PluginsPublishButton_Props) {
 	const {
 		repositoryId,
 		repositoryLabel,
@@ -55,5 +55,3 @@ const PluginsPublishButton = memo(function PluginsPublishButton(props: PluginsPu
 		</MyButton>
 	);
 });
-
-export { PluginsPublishButton };

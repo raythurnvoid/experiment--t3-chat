@@ -31,7 +31,7 @@ type PluginsGalleryCard_Props = {
 };
 
 /** Plugin card linking to the plugin detail page; used by the main and publisher galleries. */
-const PluginsGalleryCard = memo(function PluginsGalleryCard(props: PluginsGalleryCard_Props) {
+export const PluginsGalleryCard = memo(function PluginsGalleryCard(props: PluginsGalleryCard_Props) {
 	const { pluginName, displayName, subtitle, description, version, reviewStatus, installed = false } = props;
 	const { organizationName, workspaceName } = AppTenantProvider.useContext();
 
@@ -67,5 +67,3 @@ const PluginsGalleryCard = memo(function PluginsGalleryCard(props: PluginsGaller
 		</MyLink>
 	);
 });
-
-export { PluginsGalleryCard };
