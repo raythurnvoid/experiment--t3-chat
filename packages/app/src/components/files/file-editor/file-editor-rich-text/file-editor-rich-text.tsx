@@ -46,6 +46,7 @@ import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import {
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_PresenceStore,
+	files_REPLACE_FILE_CONTENT_STALE_MESSAGE,
 	files_YJS_DOC_KEYS,
 	files_get_utf8_byte_size,
 	files_yjs_reconcile_branch_with_local_text,
@@ -1418,11 +1419,6 @@ type FileEditorRichTextNonCollab_ClassNames =
 	| "FileEditorRichTextNonCollab-editor-content-container"
 	| "FileEditorRichTextNonCollab-editor-content";
 
-// The replace door names this exact message when `baseAssetId` no longer matches the stored
-// asset. The comment save dispatches its merge retry on it.
-const REPLACE_FILE_STALENESS_MESSAGE =
-	"This file changed while you were saving. Copy your local changes before reloading, then try again.";
-
 /**
  * Serialize the mounted editor the way `files_yjs_doc_get_text` writes a file: non-empty content
  * ends with exactly one `\n`. The stored bytes of a non-collaborative file come from THIS
@@ -1750,7 +1746,7 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 				return true;
 			}
 
-			if (replaced._nay.message !== REPLACE_FILE_STALENESS_MESSAGE) {
+			if (replaced._nay.message !== files_REPLACE_FILE_CONTENT_STALE_MESSAGE) {
 				console.error("[FileEditorRichTextNonCollab.handleCommitComment] Error while saving the comment", {
 					nay: replaced._nay,
 				});

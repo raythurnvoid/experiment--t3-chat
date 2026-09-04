@@ -38,6 +38,7 @@ import {
 	files_node_has_editable_text_content,
 	files_node_has_editable_yjs_state,
 	files_pending_update_content_of,
+	files_REPLACE_FILE_CONTENT_STALE_MESSAGE,
 	files_db_consume_trusted_yjs_update_stage,
 	files_db_get_visible_node_by_path,
 	files_db_load_pending_update_yjs_state_bytes,
@@ -3614,7 +3615,7 @@ async function action_replace_file_content(
 	}
 	if (preflight.assetId !== args.baseAssetId) {
 		return Result({
-			_nay: { message: "This file changed while you were saving. Copy your local changes before reloading, then try again." },
+			_nay: { message: files_REPLACE_FILE_CONTENT_STALE_MESSAGE },
 		});
 	}
 	const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
@@ -3926,7 +3927,7 @@ export const finalize_file_content_replacement = internalMutation({
 		// caller never saw, and let them reload and try again.
 		if (fileNode.assetId !== args.baseAssetId) {
 			return Result({
-				_nay: { message: "This file changed while you were saving. Copy your local changes before reloading, then try again." },
+				_nay: { message: files_REPLACE_FILE_CONTENT_STALE_MESSAGE },
 			});
 		}
 
@@ -5882,7 +5883,7 @@ export const finalize_file_collaboration_enable = internalMutation({
 		// no longer current.
 		if (fileNode.assetId !== args.baseAssetId) {
 			return Result({
-				_nay: { message: "This file changed while you were saving. Copy your local changes before reloading, then try again." },
+				_nay: { message: files_REPLACE_FILE_CONTENT_STALE_MESSAGE },
 			});
 		}
 

@@ -516,6 +516,17 @@ export const files_IMPORT_MAX_ITEMS_PER_CALL = 50;
  */
 export const files_UPLOAD_PATH_TAKEN_MESSAGE = "This file already exists.";
 
+/**
+ * What `files_nodes_content.replace_file_content` answers when the `baseAssetId` the caller sent
+ * no longer matches the stored asset, so somebody else saved first.
+ *
+ * The rich editor compares the refusal against this exact text to decide it should re-read the
+ * file and merge a comment mark into the newer version instead of giving up. The door and the
+ * editor must therefore read the message from one place.
+ */
+export const files_REPLACE_FILE_CONTENT_STALE_MESSAGE =
+	"This file changed while you were saving. Copy your local changes before reloading, then try again.";
+
 export function files_create_tree_items_list_from_nodes(nodes: files_VisibleTreeNode[]) {
 	return [files_SYNTHETIC_ROOT_FOLDER, ...nodes];
 }
