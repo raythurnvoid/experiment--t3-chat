@@ -813,13 +813,9 @@ export type FileEditorRichText_ClassNames =
 	| "FileEditorRichText-visible"
 	| "FileEditorRichText-load-error"
 	| "FileEditorRichText-push-refused"
-	| "FileEditorRichText-refusal"
 	| "FileEditorRichText-editor-content-root"
 	| "FileEditorRichText-editor-content-container"
-	| "FileEditorRichText-editor-content"
-	| "FileEditorRichText-status-badge"
-	| "FileEditorRichText-word-count-badge"
-	| "FileEditorRichText-word-count-badge-hidden";
+	| "FileEditorRichText-editor-content";
 
 type FileEditorRichTextInner_Props = {
 	filesYjs: NonNullable<ReturnType<typeof useFilesYjs>>;
@@ -1935,8 +1931,8 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 		<>
 			<div
 				className={cn(
-					"FileEditorRichText" satisfies FileEditorRichText_ClassNames,
-					isEditorReady && ("FileEditorRichText-visible" satisfies FileEditorRichText_ClassNames),
+					"FileEditorRichTextNonCollab" satisfies FileEditorRichTextNonCollab_ClassNames,
+					isEditorReady && ("FileEditorRichTextNonCollab-visible" satisfies FileEditorRichTextNonCollab_ClassNames),
 				)}
 			>
 				<input
@@ -1986,17 +1982,21 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 				)}
 				<FileEditorRichTextTopStickyFloatingContainer topStickyFloatingSlot={topStickyFloatingSlot} />
 				<EditorContent
-					className={cn("FileEditorRichText-editor-content-root" satisfies FileEditorRichText_ClassNames)}
+					className={cn(
+						"FileEditorRichTextNonCollab-editor-content-root" satisfies FileEditorRichTextNonCollab_ClassNames,
+					)}
 					injectCSS={false}
 					initialContent={initialJson}
 					editorContainerProps={{
-						className: cn("FileEditorRichText-editor-content-container" satisfies FileEditorRichText_ClassNames),
+						className: cn(
+							"FileEditorRichTextNonCollab-editor-content-container" satisfies FileEditorRichTextNonCollab_ClassNames,
+						),
 					}}
 					editorProps={{
 						attributes: {
 							class: cn(
 								"app-doc" satisfies AppClassName,
-								"FileEditorRichText-editor-content" satisfies FileEditorRichText_ClassNames,
+								"FileEditorRichTextNonCollab-editor-content" satisfies FileEditorRichTextNonCollab_ClassNames,
 							),
 						},
 						handleDOMEvents: {
@@ -2072,6 +2072,19 @@ const FileEditorRichTextNonCollabInner = memo(function FileEditorRichTextNonColl
 // #endregion non-collaborative inner
 
 // #region non-collaborative root
+/**
+ * The non-collaborative editor owns its own class names instead of borrowing the collaborative
+ * ones. The look is still shared: the CSS file lists both selectors on the rules the two variants
+ * have in common, so there is still one place to change them.
+ */
+type FileEditorRichTextNonCollab_ClassNames =
+	| "FileEditorRichTextNonCollab"
+	| "FileEditorRichTextNonCollab-visible"
+	| "FileEditorRichTextNonCollab-refusal"
+	| "FileEditorRichTextNonCollab-editor-content-root"
+	| "FileEditorRichTextNonCollab-editor-content-container"
+	| "FileEditorRichTextNonCollab-editor-content";
+
 export type FileEditorRichTextNonCollab_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	editable: boolean;
@@ -2126,7 +2139,10 @@ export const FileEditorRichTextNonCollab = memo(function FileEditorRichTextNonCo
 	return fileContentData === undefined ? (
 		<FileEditorRichTextSkeleton />
 	) : fileContentData === null ? (
-		<div role="alert" className={"FileEditorRichText-refusal" satisfies FileEditorRichText_ClassNames}>
+		<div
+			role="alert"
+			className={"FileEditorRichTextNonCollab-refusal" satisfies FileEditorRichTextNonCollab_ClassNames}
+		>
 			This file's content could not be read safely, so the editor stays closed to protect it. Reload the file or contact
 			support if this keeps happening.
 		</div>

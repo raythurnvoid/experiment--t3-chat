@@ -277,6 +277,22 @@ do not depend on signing in or out.
 
 Use this when a check needs a file with collaboration turned off (a Council-note-shaped file). Build your own; never edit or delete the read-only Council meeting notes under `/meetings/`, they are shared QA fixtures.
 
+For a **read-only** check you do not need to build anything: list the ones the dev deployment already
+has. Use `--format jsonLines` and filter on the field. The default table format hides it: `nonCollaborative`
+is optional, so it becomes a column only when the fetched page happens to contain a row that sets it,
+and the column order then shifts under any awk field numbers you wrote earlier.
+
+```powershell
+vp env exec pnpm --dir packages/app exec convex data files_nodes --limit 1000 --format jsonLines
+```
+
+Keep the rows where `"nonCollaborative": true`, then open one straight from its id with
+`/w/<org>/<workspace>/files?nodeId=<_id>`. On 2026-09-04 that returned two rows, both Chitchat
+transcripts (`/chitchat/general.md` and `/chitchat/park.md`), `rootKind: "rich_text"` and read-only,
+which is enough to check how the non-collaborative rich editor renders but not to type in it.
+
+To build a writable one, follow the UI steps below.
+
 1. Create a `.md` file from the sidebar. A new file is collaborative.
 2. Open it, switch to the **Markdown** view, and give it a body that carries a real Markdown escape, for example a line holding `2026\-08\-30`. Save.
 3. Open the breadcrumb Properties dialog (see "File Properties Modal" below for its two click hazards) and uncheck `Collaboration` by clicking its label, `.FilesPropertiesModalCollaboration-checkbox`. Focusing the 1px input and pressing Space does NOT toggle it (tried 2026-08-31: the input stayed `checked`), so use the label. The confirmation is not a separate dialog — it appears INSIDE the properties modal as a `Turn collaboration off` / `Cancel` pair, so do not wait for a new `[role=dialog]` to show up.

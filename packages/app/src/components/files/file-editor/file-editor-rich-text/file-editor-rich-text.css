@@ -1,6 +1,7 @@
 @layer components {
 	/* #region root */
-	.FileEditorRichText {
+	.FileEditorRichText,
+	.FileEditorRichTextNonCollab {
 		--FileEditorRichText-safe-bottom-padding: max(300px, 50dvh);
 
 		height: max-content;
@@ -8,7 +9,7 @@
 		display: flex;
 		flex-direction: column;
 
-		&:not(.FileEditorRichText-visible) {
+		&:not(.FileEditorRichText-visible, .FileEditorRichTextNonCollab-visible) {
 			display: none;
 		}
 	}
@@ -43,7 +44,7 @@
 
 	/* Shown instead of the editor when the content read was refused: mounting an empty stand-in
 	   document would let Save overwrite the real content. */
-	.FileEditorRichText-refusal {
+	.FileEditorRichTextNonCollab-refusal {
 		margin: 32px auto;
 		max-width: 480px;
 		padding: 16px;
@@ -52,11 +53,13 @@
 		color: var(--color-fg-08);
 	}
 
-	.FileEditorRichText-editor-content-root {
+	.FileEditorRichText-editor-content-root,
+	.FileEditorRichTextNonCollab-editor-content-root {
 		width: 100%;
 	}
 
-	.FileEditorRichText-editor-content-container {
+	.FileEditorRichText-editor-content-container,
+	.FileEditorRichTextNonCollab-editor-content-container {
 		width: 100%;
 
 		/*
@@ -86,7 +89,8 @@
 	/* #endregion root */
 
 	/* #region editor content */
-	.FileEditorRichText-editor-content {
+	.FileEditorRichText-editor-content,
+	.FileEditorRichTextNonCollab-editor-content {
 		width: 100%;
 
 		/*
@@ -99,7 +103,8 @@
 
 		/* Editor content styles */
 
-		.FileEditorRichText-editor-content-container:focus-within & .ProseMirror-selectednode {
+		.FileEditorRichText-editor-content-container:focus-within & .ProseMirror-selectednode,
+		.FileEditorRichTextNonCollab-editor-content-container:focus-within & .ProseMirror-selectednode {
 			position: relative;
 
 			&::before {
@@ -191,7 +196,8 @@
 			   root, so a decoration adds this class while the caret is inside the block. The
 			   default selection already sits at the document start, so gate on real editor
 			   focus like the selected-node rule above. */
-			.FileEditorRichText-editor-content-container:focus-within &.FileEditorRichTextFrontmatter-focused {
+			.FileEditorRichText-editor-content-container:focus-within &.FileEditorRichTextFrontmatter-focused,
+			.FileEditorRichTextNonCollab-editor-content-container:focus-within &.FileEditorRichTextFrontmatter-focused {
 				border-color: var(--color-base-1-10);
 			}
 

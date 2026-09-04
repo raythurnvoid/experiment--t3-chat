@@ -191,11 +191,11 @@ Since 2026-08-31 a file with collaboration turned off supports every view its do
 
 Rich view (`FileEditorRichTextNonCollab`, only for `rich_text` shape):
 
-- Same content selectors as the collaborative rich editor: `.FileEditorRichText-editor-content` and `.FileEditorRichText-editor-content-root`, so the existing typing recipes work unchanged.
+- Since 2026-09-04 this editor owns its own class names, so the collaborative selectors do NOT match it: use `.FileEditorRichTextNonCollab-editor-content` and `.FileEditorRichTextNonCollab-editor-content-root` (root `.FileEditorRichTextNonCollab`, shown state `.FileEditorRichTextNonCollab-visible`). The element structure is the same, so the existing typing recipes work once the class prefix is swapped. The CSS still shares the rules by listing both selectors, so the two variants look identical.
 - Toolbar: `[role="group"][aria-label="Rich text editor actions"]` with class `.FileEditorRichTextNonCollabToolbarActions`, holding `Save` (with the `Checking` spinner while the dirty check debounces), the word/size badges, and `Open file snapshots`. No Sync.
 - Reformat hint: `.FileEditorRichTextNonCollabToolbarActions-reformat-hint` reads "Saving from the rich editor will reformat this file's Markdown." It shows only while the loaded Markdown differs from what the editor would serialize, and it goes away after the first save.
 - The bubble **Comment** button is disabled while unsaved edits exist. The disabled button carries `title` and `aria-label` `Add comment — save your changes first`. After a save it enables, and submitting a comment saves the file again at once (the mark must live in a committed version).
-- A refused content read renders `.FileEditorRichText-refusal` (`role="alert"`) instead of the editor.
+- A refused content read renders `.FileEditorRichTextNonCollab-refusal` (`role="alert"`) instead of the editor.
 - A save that lost the race toasts "This file changed while you were saving. Copy your local changes before reloading, then try again."
 
 Diff view (`FileEditorDiffNonCollab`, both shapes):
