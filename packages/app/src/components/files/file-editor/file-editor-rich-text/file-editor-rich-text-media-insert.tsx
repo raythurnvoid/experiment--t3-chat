@@ -41,7 +41,14 @@ declare module "@tiptap/core" {
 	}
 }
 
-// This extension and its React picker share one small command contract.
+/**
+ * The Tiptap side of media insertion. Its two commands only forward to callbacks the editor
+ * component sets through `configure`, because opening a file input or the picker needs React
+ * state and refs that a static extension cannot hold.
+ */
+// This module also exports a React component, the picker below. The Fast Refresh lint rule wants
+// component modules to export nothing else. Keep both here anyway: the commands and the picker
+// are one small contract, and splitting them would hide half of it in another file.
 // eslint-disable-next-line react-refresh/only-export-components
 export const file_editor_rich_text_MediaInsertExtension = Extension.create<{
 	pickUploadFile: ((kind: "image" | "video") => void) | null;
