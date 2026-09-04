@@ -26,10 +26,12 @@ const placeholder = Placeholder;
 
 const sharedExtensions = files_get_tiptap_shared_extensions();
 
-// Both StarterKit variants share these options. Gap cursor stays ON in the browser only. The
-// table node is isolating, so a table that is the first or last block would otherwise trap the
-// caret. It is a DOM plugin, not a schema node, so the shared server set keeps it off and both
-// sides keep the same schema.
+/**
+ * Both StarterKit variants share these options. Gap cursor stays ON in the browser only. The
+ * table node is isolating, so a table that is the first or last block would otherwise trap the
+ * caret. It is a DOM plugin, not a schema node, so the shared server set keeps it off and both
+ * sides keep the same schema.
+ */
 const starterKitSharedOptions = {
 	underline: false,
 	dropcursor: {
@@ -103,9 +105,11 @@ const characterCount = CharacterCount.configure();
 
 type FileEditorRichTextFrontmatter_ClassNames = "FileEditorRichTextFrontmatter-key" | "FileEditorRichTextFrontmatter-focused";
 
-// Browser-only polish for the shared frontmatter node: tint YAML keys and brighten the
-// block border while the caret is inside it. Decorations never change the document, so
-// the markdown round-trip in `shared/files-tiptap.ts` stays byte-exact.
+/**
+ * Browser-only polish for the shared frontmatter node: tint YAML keys and brighten the
+ * block border while the caret is inside it. Decorations never change the document, so
+ * the markdown round-trip in `shared/files-tiptap.ts` stays byte-exact.
+ */
 const frontmatter = sharedExtensions.frontmatter.extend({
 	addProseMirrorPlugins() {
 		const frontmatterTypeName = this.name;
@@ -154,8 +158,10 @@ const frontmatter = sharedExtensions.frontmatter.extend({
 	},
 });
 
-// Everything after StarterKit is identical in both lists. Neither list holds the
-// Liveblocks/Collaboration extension; the collaborative editor adds it where it is assembled.
+/**
+ * Everything after StarterKit is identical in both lists. Neither list holds the
+ * Liveblocks/Collaboration extension. The collaborative editor adds it where it is assembled.
+ */
 const extensionsAfterStarterKit = [
 	placeholder,
 	taskList,
@@ -192,9 +198,14 @@ const extensionsAfterStarterKit = [
 	frontmatter,
 ];
 
+/**
+ * The rich editor for files with collaboration turned on mounts this list.
+ */
 export const defaultExtensions = [starterKit, ...extensionsAfterStarterKit];
 
-// The rich editor for files with collaboration turned off mounts this list. It is the only
-// serializer that writes those files, so the idempotence suite in `./extensions.test.ts` runs
-// against exactly this list.
+/**
+ * The rich editor for files with collaboration turned off mounts this list. It is the only
+ * serializer that writes those files, so the idempotence suite in `./extensions.test.ts` runs
+ * against exactly this list.
+ */
 export const nonCollaborativeExtensions = [nonCollabStarterKit, ...extensionsAfterStarterKit];
