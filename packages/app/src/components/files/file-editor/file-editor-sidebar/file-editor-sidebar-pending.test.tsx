@@ -76,6 +76,7 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			apply_file_pending_move: "apply_file_pending_move",
 			apply_file_pending_archive: "apply_file_pending_archive",
 			discard_file_pending_structural: "discard_file_pending_structural",
+			accept_file_pending_replacement: "accept_file_pending_replacement",
 		},
 		files_nodes: {
 			list_tree: "list_tree",
@@ -165,7 +166,8 @@ function makePendingUpdate(args: {
 	staged?: string;
 	unstaged?: string;
 	pendingMove?: { destParentId: string; destName: string; fromPath: string; replacesNodeId?: string };
-	copiedFrom?: { nodeId: string; path: string; archivesSourceOnAccept?: boolean };
+	copiedFrom?: { nodeId: string; path: string };
+	pendingReplacement?: { assetId: string; size: number; contentType: string; baseAssetId: string };
 	eagerCreated?: { committedSequence: number };
 	pendingArchive?: { fromPath: string };
 	threadIds?: string[];
@@ -189,6 +191,7 @@ function makePendingUpdate(args: {
 			: {}),
 		...(args.pendingMove ? { pendingMove: args.pendingMove } : {}),
 		...(args.copiedFrom ? { copiedFrom: args.copiedFrom } : {}),
+		...(args.pendingReplacement ? { pendingReplacement: args.pendingReplacement } : {}),
 		...(args.eagerCreated ? { eagerCreated: args.eagerCreated } : {}),
 		...(args.pendingArchive ? { pendingArchive: args.pendingArchive } : {}),
 		...(args.threadIds ? { threadIds: args.threadIds } : {}),
@@ -1213,50 +1216,38 @@ describe("FileEditorSidebarPending", () => {
 		expect(container.querySelector(".FileEditorSidebarPending-item-path-text-added")).toBeNull();
 	});
 
-	test("replace-move row shows the from → to label with the Replaced caption and keeps the diff link", () => {
+	test("whole-file copy row shows the Replaced caption, links to the file, and accepts as a whole", async () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({
-				id: "pu_replace_move",
+				id: "pu_replacement",
 				fileNodeId: "node_a",
-				staged: "s",
-				unstaged: "u",
-				copiedFrom: { nodeId: "node_src", path: "/recorded.md", archivesSourceOnAccept: true },
+				copiedFrom: { nodeId: "node_src", path: "/photo.png" },
+				pendingReplacement: { assetId: "asset_staged", size: 3, contentType: "image/png", baseAssetId: "asset_base" },
 			}),
 		]);
 		useStableQueryMock.mockReturnValue([
 			makeNode({ id: "node_a", path: "/target.md" }),
-			makeNode({ id: "node_src", path: "/source.md" }),
+			makeNode({ id: "node_src", path: "/photo.png" }),
 		]);
 
 		const { container } = render(<FileEditorSidebarPending />);
 
-		// The live source path wins over the recorded one; source red → target green.
-		const link = screen.getByRole("link", { name: "/source.md → /target.md" });
-		expect(link.getAttribute("href")).toContain("nodeId=node_a");
-		expect(link.getAttribute("href")).toContain("view=diff_editor");
-		expect(container.querySelector(".FileEditorSidebarPending-item-move-label-from")?.textContent).toBe("/source.md");
-		expect(container.querySelector(".FileEditorSidebarPending-item-move-label-to")?.textContent).toBe("/target.md");
 		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Replaced");
-		expect(container.querySelector(".FileEditorSidebarPending-item-path-text-added")).toBeNull();
-		expect(container.querySelector("details")).toBeTruthy();
-	});
+		// No text branches to diff: the link opens the file itself.
+		const link = screen.getByRole("link", { name: "/target.md" });
+		expect(link.getAttribute("href")).toContain("nodeId=node_a");
+		expect(link.getAttribute("href")).not.toContain("view=diff_editor");
 
-	test("replace-move row falls back to the recorded source path when the node is gone", () => {
-		useQueryMock.mockReturnValue([
-			makePendingUpdate({
-				id: "pu_replace_move",
-				fileNodeId: "node_a",
-				staged: "s",
-				unstaged: "u",
-				copiedFrom: { nodeId: "node_gone", path: "/recorded.md", archivesSourceOnAccept: true },
-			}),
-		]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/target.md" })]);
+		fireEvent.click(screen.getByText("Accept"));
 
-		const { container } = render(<FileEditorSidebarPending />);
-
-		expect(container.querySelector(".FileEditorSidebarPending-item-move-label-from")?.textContent).toBe("/recorded.md");
-		expect(container.querySelector(".FileEditorSidebarPending-item-move-label-to")?.textContent).toBe("/target.md");
+		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(1));
+		expect(actionMock).toHaveBeenCalledWith("accept_file_pending_replacement", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_a",
+			pendingUpdateId: "pu_replacement",
+		});
+		expect(upsertPendingMock).not.toHaveBeenCalled();
+		expect(mutationMock).not.toHaveBeenCalled();
 	});
 
 	test("plain edit rows show the Modified caption without the green path", () => {
@@ -1573,32 +1564,6 @@ describe("FileEditorSidebarPending", () => {
 			}),
 		]);
 		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/copy.md" })]);
-
-		render(<FileEditorSidebarPending />);
-		fireEvent.click(screen.getByText("Discard"));
-
-		await waitFor(() => expect(mutationMock).toHaveBeenCalledTimes(1));
-		expect(mutationMock).toHaveBeenCalledWith("discard_file_pending_structural", {
-			membershipId: MEMBERSHIP_ID,
-			nodeId: "node_a",
-		});
-		expect(actionMock).not.toHaveBeenCalled();
-	});
-
-	test("replace-move Discard issues only the structural discard", async () => {
-		useQueryMock.mockReturnValue([
-			makePendingUpdate({
-				id: "pu_replace_move",
-				fileNodeId: "node_a",
-				staged: "STAGED_MD",
-				unstaged: "UNSTAGED_MD",
-				copiedFrom: { nodeId: "node_src", path: "/source.md", archivesSourceOnAccept: true },
-			}),
-		]);
-		useStableQueryMock.mockReturnValue([
-			makeNode({ id: "node_a", path: "/target.md" }),
-			makeNode({ id: "node_src", path: "/source.md" }),
-		]);
 
 		render(<FileEditorSidebarPending />);
 		fireEvent.click(screen.getByText("Discard"));

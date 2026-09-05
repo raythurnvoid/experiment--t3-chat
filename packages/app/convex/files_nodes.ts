@@ -44,14 +44,13 @@ import {
 	files_MAX_UNMATERIALIZED_YJS_UPDATE_COUNT,
 	files_MAX_YJS_WIRE_BYTES,
 	files_UPLOAD_PATH_TAKEN_MESSAGE,
-	files_get_editable_text_content_type,
-	files_get_editable_text_yjs_root_kind,
+	files_INVALID_CONTENT_TYPE_MESSAGE,
 	files_get_signed_download_serving,
-	files_validate_file_rename_class,
+	files_resolve_upload_content_type,
 	files_get_utf8_byte_size,
 	files_node_has_editable_text_content,
 	files_node_has_editable_yjs_state,
-	files_pending_update_content_of,
+	files_pending_update_has_pending_chunks,
 	files_db_cancel_pending_update_cleanup_tasks,
 	files_db_delete_pending_update_yjs_states,
 	files_db_build_pending_path_overlay,
@@ -2078,6 +2077,12 @@ export async function files_nodes_db_hard_delete_node(
 	for (const snapshot of snapshots) {
 		assetIds.add(snapshot.assetId);
 	}
+	// A staged whole-file replacement (`cp` onto this file) owns a published object of its own.
+	for (const pendingUpdate of pendingUpdates) {
+		if (pendingUpdate.pendingReplacement) {
+			assetIds.add(pendingUpdate.pendingReplacement.assetId);
+		}
+	}
 
 	await Promise.all(
 		pendingUpdates.map((pendingUpdate) =>
@@ -2401,6 +2406,17 @@ export const create_upload_node = mutation({
 			});
 		}
 
+		// The stored type decides how the upload is processed and opened, so settle it before any
+		// write. The caller's type wins when it is valid. The name is only a hint when no type was
+		// sent, and a file with neither is stored bytes. A broken type is refused, not guessed.
+		const storedContentType = files_resolve_upload_content_type({
+			contentType: args.contentType,
+			fileName: path_name_of(args.filename),
+		});
+		if (storedContentType === null) {
+			return Result({ _nay: { message: files_INVALID_CONTENT_TYPE_MESSAGE } });
+		}
+
 		let parentPath = "/";
 		if (args.parentId !== files_ROOT_ID) {
 			const parent = await ctx.db.get("files_nodes", args.parentId);
@@ -2549,13 +2565,6 @@ export const create_upload_node = mutation({
 			assetId,
 		});
 
-		// When the classifier recognizes the leaf name's extension, store its media type and
-		// ignore the client-declared one, which is unvalidated input. Unrecognized names (media,
-		// pdf, …) keep the client value: the classifier only knows text, and plugin routing and
-		// the details card need a type for media uploads too.
-		const storedContentType =
-			files_get_editable_text_content_type(nameSegments.at(-1) ?? args.filename) ?? args.contentType;
-
 		const nodeIdResult = await files_nodes_db_create_node_recursively_at_path(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -2584,7 +2593,7 @@ export const create_upload_node = mutation({
 			uploadStagingR2Key,
 		});
 		const signedUpload = await r2_generate_upload_url(uploadStagingR2Key);
-		const headers: Record<string, string> = storedContentType ? { "Content-Type": storedContentType } : {};
+		const headers: Record<string, string> = { "Content-Type": storedContentType };
 
 		return Result({
 			_yay: {
@@ -2783,11 +2792,11 @@ export const create_upload_nodes = mutation({
 				}
 			}
 
-			// Use the same leaf split as the single-file flow. Route by extension, never by the
-			// client-declared type: Markdown names go through the Markdown normalizer (only `.md`
-			// is storable), everything else keeps its real extension.
+			// Use the same leaf split as the single-file flow. A `.md` name keeps the Markdown name
+			// rule (README casing), every other name keeps its real extension. Both are name rules
+			// only: the stored type below never comes from the name when the caller sent one.
 			const leafName = segments[segments.length - 1];
-			if (files_get_editable_text_yjs_root_kind(leafName) === "rich_text") {
+			if (leafName.toLowerCase().endsWith(".md")) {
 				const normalizedLeaf = files_normalize_markdown_name(leafName);
 				if (normalizedLeaf._nay || normalizedLeaf._yay !== leafName) {
 					return Result({
@@ -2797,6 +2806,12 @@ export const create_upload_nodes = mutation({
 			} else if (files_normalize_upload_file_name(leafName) !== leafName) {
 				return Result({
 					_nay: { message: "Path ends in an invalid file name", data: { path: item.relativePath } },
+				});
+			}
+			const contentType = files_resolve_upload_content_type({ contentType: item.contentType, fileName: leafName });
+			if (contentType === null) {
+				return Result({
+					_nay: { message: files_INVALID_CONTENT_TYPE_MESSAGE, data: { path: item.relativePath } },
 				});
 			}
 
@@ -2819,9 +2834,7 @@ export const create_upload_nodes = mutation({
 				relativePath: item.relativePath,
 				segments,
 				targetPath,
-				// A recognized text extension stores the classifier's type; anything else
-				// keeps the client value (media uploads need it for plugin routing).
-				contentType: files_get_editable_text_content_type(leafName) ?? item.contentType,
+				contentType,
 				size: item.size,
 			});
 		}
@@ -3443,13 +3456,6 @@ export async function files_nodes_db_validate_pending_move_target_for_proposal(
 	}
 	const { node, destParentPath, destPath } = resolved._yay;
 
-	// A move may rename, and a rename may never change the file's content class. The same
-	// rule runs again at accept because the stored destName outlives this validation.
-	const renameClass = files_validate_file_rename_class({ node, destName: args.destName });
-	if (renameClass._nay) {
-		return renameClass;
-	}
-
 	const overlay = await files_db_build_pending_path_overlay(ctx, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
@@ -3542,13 +3548,6 @@ export async function files_nodes_db_validate_pending_move_target_for_accept(
 	}
 	const { node, destParentPath, destPath } = resolved._yay;
 
-	// Check again at accept time: the stored destName or the node's class can have gone stale
-	// between proposal and accept, and applying a stale crossing would relabel the file's class.
-	const renameClass = files_validate_file_rename_class({ node, destName: args.destName });
-	if (renameClass._nay) {
-		return renameClass;
-	}
-
 	// Check whether an active sibling already owns the destination name.
 	const activeSiblingConflict = await ctx.db
 		.query("files_nodes")
@@ -3607,13 +3606,8 @@ async function db_apply_node_move(
 		now: number;
 	},
 ) {
-	// An allowed plain-text subtype rename (data.json → data.yaml) must change the stored
-	// media type together with the name, in the same patch. The class rule already refused every
-	// crossing, so a null answer here only means an extensionless swap name (keep the stored
-	// type) or a non-editable file (its extension and stored type never change).
-	const renamedContentType = files_node_has_editable_text_content(args.node)
-		? files_get_editable_text_content_type(args.destName)
-		: null;
+	// A move or rename changes the name only. The stored content type stays: `data.json` renamed
+	// to `data.yaml` is still JSON, and the editor keeps opening it as JSON.
 	await ctx.db.patch("files_nodes", args.node._id, {
 		parentId: args.destParentId,
 		name: args.destName,
@@ -3621,7 +3615,6 @@ async function db_apply_node_move(
 		treePath: derive_tree_path_for_file_node(args.destPath, args.node.kind),
 		pathDepth: files_path_depth(args.destPath),
 		lowercaseExtension: files_lowercase_extension(args.destPath, args.node.kind),
-		...(renamedContentType !== null ? { contentType: renamedContentType } : {}),
 		updatedBy: args.updatedBy,
 		updatedAt: args.now,
 	});
@@ -4183,14 +4176,6 @@ export const rename_node = mutation({
 			return subtreeWritable;
 		}
 
-		// A rename never converts file content, so the new leaf may not claim a different
-		// content class. An allowed plain-text subtype rename (data.json → data.yaml) patches the
-		// classifier media type together with the name below.
-		const renameClass = files_validate_file_rename_class({ node: fileNode, destName: leafName });
-		if (renameClass._nay) {
-			return renameClass;
-		}
-
 		// Add the missing folders to the final path.
 		let plannedParentPath = targetParentPath;
 		for (const name of missingSegmentNames) {
@@ -4263,10 +4248,7 @@ export const rename_node = mutation({
 			treePath: derive_tree_path_for_file_node(renamedPath, fileNode.kind),
 			pathDepth: files_path_depth(renamedPath),
 			lowercaseExtension: files_lowercase_extension(renamedPath, fileNode.kind),
-			// An allowed plain-text subtype rename atomically moves the stored media type with the
-			// name; a null answer means "keep the stored type" (extensionless name or non-editable
-			// file).
-			...(renameClass._yay.contentType !== null ? { contentType: renameClass._yay.contentType } : {}),
+			// A rename changes the name only. The stored content type stays with the content.
 			updatedBy: userAuth.id,
 			updatedAt: now,
 		});
@@ -6654,9 +6636,9 @@ export const read_file_content_from_chunks = internalQuery({
 						.first();
 				}
 
-				// Move-only docs have no pending content; fall through to the committed chunks
-				// so reads do not return an empty file behind a move-only doc.
-				if (pendingUpdate != null && files_pending_update_content_of(pendingUpdate) != null) {
+				// Move-only docs and copies of stored files have no pending chunks; fall through to
+				// the committed chunks so reads do not return an empty file behind them.
+				if (pendingUpdate != null && files_pending_update_has_pending_chunks(pendingUpdate)) {
 					// Pending chunks are already the markdown text the user sees. Full reads
 					// still honor maxBytes; line reads stream only the overlapping chunks.
 					const chunks = ctx.db
@@ -7461,7 +7443,7 @@ export const match_text_file_lines = internalQuery({
 			}
 			// Move-only docs have no pending chunks; leave the id null so the scan falls
 			// through to the committed chunks instead of a silent no-match.
-			if (pendingUpdate != null && files_pending_update_content_of(pendingUpdate) != null) {
+			if (pendingUpdate != null && files_pending_update_has_pending_chunks(pendingUpdate)) {
 				pendingUpdateId = pendingUpdate._id;
 			}
 		} else if (args.pendingUpdateId != null) {
@@ -7688,7 +7670,7 @@ export const match_plain_text_file_lines = internalQuery({
 			}
 			// Move-only docs have no pending chunks; leave the id null so the scan falls
 			// through to the committed chunks instead of a silent no-match.
-			if (pendingUpdate != null && files_pending_update_content_of(pendingUpdate) != null) {
+			if (pendingUpdate != null && files_pending_update_has_pending_chunks(pendingUpdate)) {
 				pendingUpdateId = pendingUpdate._id;
 			}
 		} else if (args.pendingUpdateId != null) {
@@ -7964,10 +7946,10 @@ export const text_search_files = internalQuery({
 				)
 				.order("asc")
 				.collect();
-			// Only docs with a content proposal have pending chunks to search instead.
-			// Move-only docs must keep their committed chunks searchable.
+			// Only docs with pending chunks are searched instead of their file. Move-only docs
+			// must keep their committed chunks searchable.
 			pendingNodeIds = pendingUpdates
-				.filter((pendingUpdate) => files_pending_update_content_of(pendingUpdate) != null)
+				.filter((pendingUpdate) => files_pending_update_has_pending_chunks(pendingUpdate))
 				.map((pendingUpdate) => pendingUpdate.fileNodeId);
 		}
 
@@ -8294,6 +8276,9 @@ export async function db_get_file_snapshot_content(
 		asset,
 		snapshotId: snapshot._id,
 		_creationTime: snapshot._creationTime,
+		contentType: snapshot.contentType,
+		yjsRootKind: snapshot.yjsRootKind,
+		nonCollaborative: snapshot.nonCollaborative,
 	};
 }
 
@@ -8309,10 +8294,13 @@ export const get_data_for_create_file_snapshot_content_url = internalQuery({
 			asset: doc(app_convex_schema, "files_r2_assets"),
 			snapshotId: v.id("files_snapshots"),
 			_creationTime: v.number(),
+			/** The version's own content type. The signer pins the served type from it. */
+			contentType: v.optional(v.string()),
+			yjsRootKind: v.optional(v.union(v.literal("rich_text"), v.literal("plain_text"))),
+			nonCollaborative: v.optional(v.boolean()),
 			/**
-			 * The AUTHORIZED node's name, for the signing rule. The signer must derive the served
-			 * type and disposition from this server-resolved value, never from a caller-supplied
-			 * name.
+			 * The AUTHORIZED node's name, for the disposition file name. The signer must use this
+			 * server-resolved value, never a caller-supplied name.
 			 */
 			fileName: v.string(),
 		}),
@@ -8403,11 +8391,10 @@ export const create_file_snapshot_content_url = action({
 			throw should_never_happen(errorMessage, errorData);
 		}
 
-		// Version snapshots historically carry the client-declared upload type, and a presigned R2
-		// GET has no nosniff/CSP — the pinned type plus the disposition below is the whole
-		// defense. Derive both from the authorized node name the query returned, never from a
-		// caller-supplied name.
-		const serving = files_get_signed_download_serving(data.fileName);
+		// A presigned R2 GET has no nosniff/CSP, so the pinned type plus the disposition below is
+		// the whole defense. The type is the version's own stored type, and the name is the
+		// authorized node name the query returned, never a caller-supplied name.
+		const serving = files_get_signed_download_serving({ contentType: data.contentType, fileName: data.fileName });
 		return {
 			url: await r2_get_download_url({
 				key: data.asset.r2Key,

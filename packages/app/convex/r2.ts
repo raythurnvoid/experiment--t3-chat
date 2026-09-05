@@ -54,10 +54,10 @@ import {
 } from "./public_api_service_uploads.ts";
 import {
 	files_MAX_TEXT_CONTENT_BYTES,
-	files_get_editable_text_content_type,
-	files_get_editable_text_yjs_root_kind,
+	files_editable_text_content_type_of,
 	files_get_signed_download_serving,
 	files_get_utf8_byte_size,
+	files_yjs_root_kind_of_content_type,
 	files_node_has_editable_text_content,
 	files_node_has_editable_yjs_state,
 	files_normalize_text_document_input,
@@ -566,11 +566,11 @@ export const create_signed_download_url = action({
 			return Result({ _nay: { message: "Not found" } });
 		}
 
-		// Stored object types are client input at upload time, and a presigned R2 GET carries no
-		// nosniff/CSP — the pinned type plus the disposition is the whole defense. Both come from
-		// the node NAME: only the literal media map serves inline (the app's <img>/<video> sources
-		// go through here), everything else downloads as an attachment.
-		const serving = files_get_signed_download_serving(fileNode.name);
+		// A presigned R2 GET carries no nosniff/CSP, so the pinned type plus the disposition is
+		// the whole defense. Both come from the stored content type: only the literal media set
+		// serves inline (the app's <img>/<video> sources go through here), everything else
+		// downloads as an attachment.
+		const serving = files_get_signed_download_serving({ contentType: fileNode.contentType, fileName: fileNode.name });
 		const url = await r2_get_download_url({
 			key: asset.r2Key,
 			options: {
@@ -739,9 +739,12 @@ export const create_signed_chat_image_url = action({
 			});
 
 		// Pin the served type and the disposition for the same reason a file download does: a
-		// presigned R2 GET carries no nosniff and no CSP. The name is ours, because the chat route is
+		// presigned R2 GET carries no nosniff and no CSP. The type is ours, because the chat route is
 		// the only writer of this asset kind and it always asks OpenAI for the same format.
-		const serving = files_get_signed_download_serving(`generated-image-${asset._id}.${ai_chat_GENERATED_IMAGE_FORMAT}`);
+		const serving = files_get_signed_download_serving({
+			contentType: `image/${ai_chat_GENERATED_IMAGE_FORMAT}`,
+			fileName: `generated-image-${asset._id}.${ai_chat_GENERATED_IMAGE_FORMAT}`,
+		});
 		const url = await r2_get_download_url({
 			key: r2Key,
 			options: {
@@ -818,8 +821,8 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 		 */
 		rootKind: files_YjsRootKind;
 		/**
-		 * The media type the node stores from now on. The caller derives it from the node NAME
-		 * with the classifier, never from the client-declared upload type.
+		 * The canonical text type the node stores from now on, resolved from the type the upload
+		 * was minted with.
 		 */
 		contentType: string;
 		/**
@@ -981,6 +984,9 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 			assetId: args.versionSnapshotAssetId,
 			createdBy: args.userId,
 			archivedAt: -1,
+			contentType: args.contentType,
+			yjsRootKind: args.rootKind,
+			nonCollaborative: args.yjsSnapshot === null ? true : undefined,
 		}),
 	]);
 
@@ -1138,11 +1144,12 @@ export const finalize_uploaded_text_file = internalAction({
 			return null;
 		}
 
-		// Classify from the node NAME, like the enqueue gate. A rename between enqueue and this
-		// run can make the name unrecognized; the node then stays a stored blob, which must
-		// dispatch the plugin event like any other stored upload.
-		const rootKind = files_get_editable_text_yjs_root_kind(fileNode.name);
-		const classifierContentType = files_get_editable_text_content_type(fileNode.name);
+		// Decide from the stored content type, like the enqueue gate. The type was accepted when
+		// the upload was minted and a rename never changes it, so this answer cannot drift from
+		// the gate's. A non-text type stays a stored blob, which must dispatch the plugin event
+		// like any other stored upload.
+		const rootKind = files_yjs_root_kind_of_content_type(fileNode.contentType);
+		const classifierContentType = files_editable_text_content_type_of(fileNode.contentType);
 		if (rootKind === null || classifierContentType === null) {
 			await ctx.runMutation(internal.r2.settle_upload_conversion_fallback, {
 				assetId: asset._id,
@@ -1282,9 +1289,6 @@ export const finalize_uploaded_text_file = internalAction({
 			r2_put_object(ctx, {
 				key: versionSnapshotR2Key,
 				body: text,
-				// The classifier over the node NAME, never `fileNode.contentType`: the stored type
-				// is client input at upload time, and the snapshot signer serves whatever type
-				// this object carries.
 				contentType: classifierContentType,
 			}),
 		]);
@@ -1410,10 +1414,10 @@ export const process_uploaded_asset_event = internalMutation({
 			return Result({ _yay: null });
 		}
 
-		// Route by the classifier over the node NAME, never by the client-declared contentType:
-		// `.md` converts to a rich text document, the plain-text allow-list converts to `Y.Text`
-		// documents, everything else stays a stored blob.
-		const fileNodeIsEditableText = files_get_editable_text_yjs_root_kind(fileNode.name) !== null;
+		// Route by the stored content type, which the mint accepted: Markdown converts to a rich
+		// text document, the other editable text types convert to `Y.Text` documents, everything
+		// else stays a stored blob.
+		const fileNodeIsEditableText = files_yjs_root_kind_of_content_type(fileNode.contentType) !== null;
 
 		try {
 			if (fileNodeIsEditableText) {

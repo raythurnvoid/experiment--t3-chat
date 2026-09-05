@@ -226,9 +226,6 @@ export async function files_db_get_pending_path_overlay_data(
 				referencedNodeIds.add(pendingUpdate.pendingMove.replacesNodeId);
 			}
 		}
-		if (pendingUpdate.copiedFrom?.archivesSourceOnAccept) {
-			referencedNodeIds.add(pendingUpdate.copiedFrom.nodeId);
-		}
 		if (pendingUpdate.pendingArchive) {
 			referencedNodeIds.add(pendingUpdate.fileNodeId);
 		}
@@ -366,6 +363,27 @@ export function files_pending_update_content_of(
 		stagedStateId: pendingUpdate.stagedStateId,
 		unstagedStateId: pendingUpdate.unstagedStateId,
 	};
+}
+
+/**
+ * Whether the pending update doc owns pending chunk docs: a content proposal, or a whole-file
+ * copy of a text file (its staged text is chunked too). A move-only doc and a copy of a stored
+ * file have none, so their file's committed chunks stay the ones to read and search.
+ */
+export function files_pending_update_has_pending_chunks(
+	pendingUpdate: Pick<
+		Doc<"files_pending_updates">,
+		| "baseYjsSequence"
+		| "baseLineageGeneration"
+		| "baseStateId"
+		| "stagedStateId"
+		| "unstagedStateId"
+		| "pendingReplacement"
+	>,
+) {
+	return (
+		files_pending_update_content_of(pendingUpdate) != null || pendingUpdate.pendingReplacement?.yjsRootKind !== undefined
+	);
 }
 
 /**

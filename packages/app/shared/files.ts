@@ -241,16 +241,44 @@ export const files_MAX_YJS_RECONSTRUCTED_STATE_BYTES = 4 * 1024 * 1024;
  */
 export const files_MAX_YJS_REPAIR_RECONSTRUCTED_STATE_BYTES = 16 * 1024 * 1024;
 
-// #region editable text classification
-// Decide everything from the file name's extension and only the extension. The client-declared
-// media type is unvalidated input, so it must never pick a shape or a served type.
+// #region content type policy
+// `files_nodes.contentType` says what a file is. It picks the document shape of a text file,
+// the editor language, and how a download is served. The file NAME is only a hint for creating
+// a file when no type is known yet. A rename never changes the stored type.
 
 /**
- * Media type stored for each editable text extension. `md` is included: storage and signing
- * sites need its media type even though `.md` routes to the rich text editor, not to a
- * plain text document.
+ * Canonical media type for each supported editable text type, keyed by the lowercase
+ * `type/subtype` essence. Common aliases that browsers and tools send map to the same canonical
+ * value, so `text/x-yaml` and `application/yaml` become one stored type.
  */
-const FILES_EDITABLE_TEXT_CONTENT_TYPE_BY_EXTENSION = new Map<string, files_ContentType>([
+const FILES_EDITABLE_TEXT_CONTENT_TYPE_BY_ESSENCE = new Map<string, files_ContentType>([
+	["text/markdown", "text/markdown;charset=utf-8"],
+	["text/x-markdown", "text/markdown;charset=utf-8"],
+	["text/plain", "text/plain;charset=utf-8"],
+	["application/json", "application/json"],
+	["application/yaml", "application/yaml"],
+	["application/x-yaml", "application/yaml"],
+	["text/yaml", "application/yaml"],
+	["text/x-yaml", "application/yaml"],
+	["application/toml", "application/toml"],
+	["text/csv", "text/csv"],
+	["text/tab-separated-values", "text/tab-separated-values"],
+	["text/css", "text/css"],
+	["text/javascript", "text/javascript"],
+	["application/javascript", "text/javascript"],
+	["application/x-javascript", "text/javascript"],
+	["text/typescript", "text/typescript"],
+	["application/typescript", "text/typescript"],
+	["application/x-sh", "application/x-sh"],
+	["text/x-shellscript", "application/x-sh"],
+	["application/sql", "application/sql"],
+]);
+
+/**
+ * The media type a file name hints at. Only file creation reads this, and only when the caller
+ * supplied no type of its own.
+ */
+const FILES_CONTENT_TYPE_HINT_BY_EXTENSION = new Map<string, files_ContentType>([
 	["md", "text/markdown;charset=utf-8"],
 	["txt", "text/plain;charset=utf-8"],
 	["log", "text/plain;charset=utf-8"],
@@ -273,46 +301,41 @@ const FILES_EDITABLE_TEXT_CONTENT_TYPE_BY_EXTENSION = new Map<string, files_Cont
 	["sql", "application/sql"],
 ]);
 
-/** Monaco language id per editable extension. Anything unmapped renders as plain text. */
-const FILES_MONACO_LANGUAGE_ID_BY_EXTENSION = new Map<string, string>([
-	["md", "markdown"],
-	["json", "json"],
-	["jsonc", "json"],
-	["yaml", "yaml"],
-	["yml", "yaml"],
-	["ini", "ini"],
-	["css", "css"],
-	["js", "javascript"],
-	["mjs", "javascript"],
-	["cjs", "javascript"],
-	["jsx", "javascript"],
-	["ts", "typescript"],
-	["tsx", "typescript"],
-	["sh", "shell"],
-	["sql", "sql"],
+/** Monaco language id per canonical editable text type. Anything unmapped renders as plain text. */
+const FILES_MONACO_LANGUAGE_ID_BY_CONTENT_TYPE = new Map<files_ContentType, string>([
+	["text/markdown;charset=utf-8", "markdown"],
+	["application/json", "json"],
+	["application/yaml", "yaml"],
+	["text/css", "css"],
+	["text/javascript", "javascript"],
+	["text/typescript", "typescript"],
+	["application/x-sh", "shell"],
+	["application/sql", "sql"],
 ]);
 
 /**
- * Extensions whose signed downloads may serve inline with these exact media types. Everything
- * else, `svg` and `html` included, must download as an attachment so hostile bytes cannot run
- * on the R2 origin.
+ * Media types a signed download may serve inline. Everything else, `image/svg+xml` and
+ * `text/html` included, must download as an attachment so hostile bytes cannot run on the R2
+ * origin.
  */
-const FILES_SERVED_MEDIA_CONTENT_TYPE_BY_EXTENSION = new Map<string, string>([
-	["png", "image/png"],
-	["jpg", "image/jpeg"],
-	["jpeg", "image/jpeg"],
-	["webp", "image/webp"],
-	["gif", "image/gif"],
-	["mp4", "video/mp4"],
-	["webm", "video/webm"],
+const FILES_INLINE_SERVED_MEDIA_CONTENT_TYPES = new Set([
+	"image/png",
+	"image/jpeg",
+	"image/webp",
+	"image/gif",
+	"video/mp4",
+	"video/webm",
 ]);
+
+const FILES_CONTENT_TYPE_ESSENCE_REGEX = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/;
+const FILES_CONTENT_TYPE_MAX_LENGTH = 255;
 
 /**
  * Same extension rule as `files_lowercase_extension` in `convex/files_nodes.ts`, which fills the
  * indexed `lowercaseExtension` field: a leading-dot name like `.gitignore` and a trailing-dot
- * name have no extension. Any other rule would let the classifier and the index disagree.
+ * name have no extension. Any other rule would let the hint and the index disagree.
  */
-function files_classifier_extension_of(fileName: string) {
+function files_extension_of(fileName: string) {
 	const dotIndex = fileName.lastIndexOf(".");
 	if (dotIndex <= 0 || dotIndex === fileName.length - 1) {
 		return null;
@@ -321,89 +344,165 @@ function files_classifier_extension_of(fileName: string) {
 }
 
 /**
- * Return the media type an editable text file name stores, or `null` when the name is not
- * editable text. Unknown extensions get no second chance from the client media type.
+ * Parse a media type. Return the lowercase `type/subtype` essence and the charset parameter
+ * when one is present, or `null` when the value is not a media type. Every parameter must
+ * have the `name=value` form, so a broken value is refused instead of stored.
  */
-export function files_get_editable_text_content_type(fileName: string) {
-	const extension = files_classifier_extension_of(fileName);
-	if (extension === null) {
-		return null;
-	}
-	return FILES_EDITABLE_TEXT_CONTENT_TYPE_BY_EXTENSION.get(extension) ?? null;
-}
-
-/**
- * Return the Yjs document shape a file name classifies to, or `null` when the name is not
- * editable text at all.
- */
-export function files_get_editable_text_yjs_root_kind(fileName: string): files_YjsRootKind | null {
-	const contentType = files_get_editable_text_content_type(fileName);
-	if (contentType === null) {
+export function files_parse_content_type(value: string) {
+	if (value.length > FILES_CONTENT_TYPE_MAX_LENGTH) {
 		return null;
 	}
 
-	// `.md` keeps the rich text editor and its ProseMirror document. This is a routing decision:
-	// the map above still stores its media type.
-	return files_classifier_extension_of(fileName) === "md" ? "rich_text" : "plain_text";
+	const [rawEssence, ...rawParameters] = value.split(";");
+	const essence = rawEssence.trim().toLowerCase();
+	if (!FILES_CONTENT_TYPE_ESSENCE_REGEX.test(essence)) {
+		return null;
+	}
+
+	let charset: string | null = null;
+	for (const rawParameter of rawParameters) {
+		const separatorIndex = rawParameter.indexOf("=");
+		if (separatorIndex === -1) {
+			return null;
+		}
+		const name = rawParameter.slice(0, separatorIndex).trim().toLowerCase();
+		const parameterValue = rawParameter
+			.slice(separatorIndex + 1)
+			.trim()
+			.replace(/^"(.*)"$/, "$1")
+			.toLowerCase();
+		if (!name || !parameterValue) {
+			return null;
+		}
+		if (name === "charset") {
+			charset = parameterValue;
+		}
+	}
+
+	return { essence, charset };
 }
 
 /**
- * Every extension the editable-text map accepts, `md` included, for user-facing lists and
- * refusal messages. The map itself stays module-private.
+ * Normalize a media type before storing it: a supported editable text type becomes its
+ * canonical value, any other type keeps its lowercase essence plus the charset parameter when
+ * one was given. Return `null` for invalid syntax.
  */
-export const files_EDITABLE_TEXT_EXTENSIONS: readonly string[] = [
-	...FILES_EDITABLE_TEXT_CONTENT_TYPE_BY_EXTENSION.keys(),
-];
+export function files_normalize_content_type(value: string) {
+	const parsed = files_parse_content_type(value);
+	if (parsed === null) {
+		return null;
+	}
 
-/**
- * The one refusal text for a file name whose extension is not editable text. Every write
- * surface (bash writes, cp/mv, edit_file, the agent create route) shows this same rule, so the
- * model always learns which extensions it can write instead of retrying blindly.
- */
-export function files_editable_text_refusal_message(fileName: string) {
-	const extension = files_classifier_extension_of(fileName);
-	const extensionLabel = extension === null ? "a name without an extension" : `'.${extension}'`;
-	return `'${fileName}' is not an editable text file: ${extensionLabel} is not supported. Writable extensions: ${files_EDITABLE_TEXT_EXTENSIONS.map((supported) => `.${supported}`).join(", ")}.`;
+	const editableTextContentType = FILES_EDITABLE_TEXT_CONTENT_TYPE_BY_ESSENCE.get(parsed.essence);
+	if (editableTextContentType !== undefined) {
+		return editableTextContentType;
+	}
+
+	return parsed.charset === null ? parsed.essence : `${parsed.essence};charset=${parsed.charset}`;
 }
 
 /**
- * The refusal for a copy whose source and destination are different text classes.
- *
- * A copy never converts the text, so Markdown must land in a `.md` path and plain text in a plain
- * text path. Both agent copy doors answer with this exact sentence: the pending proposal on a
- * collaborative destination, and the direct save on a non-collaborative one.
+ * Return the canonical editable text type for a stored or declared content type, or `null`
+ * when that type is not editable text. Only the mapped types are text; other `application/*`
+ * types stay stored bytes.
  */
-export function files_copy_class_mismatch_message(args: {
-	sourceRootKind: files_YjsRootKind;
-	destRootKind: files_YjsRootKind;
-}) {
-	const describe_class = (rootKind: files_YjsRootKind) =>
-		rootKind === "rich_text" ? "a Markdown (.md) file" : "a plain text file";
+export function files_editable_text_content_type_of(contentType: string | undefined) {
+	if (contentType === undefined) {
+		return null;
+	}
 
-	return `File classes do not match: the source is ${describe_class(args.sourceRootKind)} and the destination is ${describe_class(args.destRootKind)}. Copy Markdown into a .md path and plain text into a plain text path.`;
+	const parsed = files_parse_content_type(contentType);
+	if (parsed === null) {
+		return null;
+	}
+	return FILES_EDITABLE_TEXT_CONTENT_TYPE_BY_ESSENCE.get(parsed.essence) ?? null;
 }
 
 /**
- * Return the Monaco language id for a file name. Unmapped names render as plain text.
+ * Return the Yjs document shape a content type gets, or `null` when the type is not editable
+ * text. Markdown keeps the rich text editor and its ProseMirror document. Every other editable
+ * text type is a plain text document.
  */
-export function files_get_monaco_language_id(fileName: string) {
-	const extension = files_classifier_extension_of(fileName);
-	if (extension === null) {
+export function files_yjs_root_kind_of_content_type(contentType: string | undefined): files_YjsRootKind | null {
+	return files_editable_text_shape_of(contentType)?.rootKind ?? null;
+}
+
+/**
+ * The canonical type and the document shape a text file gets for a content type. `null` when
+ * the type is not editable text, so a stored-bytes type can never become a text document.
+ */
+export function files_editable_text_shape_of(
+	contentType: string | undefined,
+): { contentType: files_ContentType; rootKind: files_YjsRootKind } | null {
+	const editableTextContentType = files_editable_text_content_type_of(contentType);
+	if (editableTextContentType === null) {
+		return null;
+	}
+	return {
+		contentType: editableTextContentType,
+		rootKind: editableTextContentType === "text/markdown;charset=utf-8" ? "rich_text" : "plain_text",
+	};
+}
+
+/**
+ * The type and shape a new text file gets when the caller named no type: the name's hint, else
+ * plain text. Always a text shape, so there is no file name a text write refuses.
+ */
+export function files_default_text_shape_for_name(fileName: string): {
+	contentType: files_ContentType;
+	rootKind: files_YjsRootKind;
+} {
+	const hint = files_guess_content_type_from_name(fileName);
+	return {
+		contentType: hint ?? "text/plain;charset=utf-8",
+		rootKind: hint === "text/markdown;charset=utf-8" ? "rich_text" : "plain_text",
+	};
+}
+
+/**
+ * Return the Monaco language id for a content type. Unmapped types render as plain text.
+ */
+export function files_monaco_language_id_of_content_type(contentType: string | undefined) {
+	const editableTextContentType = files_editable_text_content_type_of(contentType);
+	if (editableTextContentType === null) {
 		return "plaintext";
 	}
-	return FILES_MONACO_LANGUAGE_ID_BY_EXTENSION.get(extension) ?? "plaintext";
+	return FILES_MONACO_LANGUAGE_ID_BY_CONTENT_TYPE.get(editableTextContentType) ?? "plaintext";
 }
 
 /**
- * Return the media type a signed download may serve inline for this file name, or `null` when
- * the file must be served as `application/octet-stream` with an attachment disposition.
+ * Guess a media type from a file name. Use it only when a file is created and the caller
+ * supplied no type. Return `null` for an unknown or missing extension.
  */
-export function files_get_served_media_content_type(fileName: string) {
-	const extension = files_classifier_extension_of(fileName);
+export function files_guess_content_type_from_name(fileName: string) {
+	const extension = files_extension_of(fileName);
 	if (extension === null) {
 		return null;
 	}
-	return FILES_SERVED_MEDIA_CONTENT_TYPE_BY_EXTENSION.get(extension) ?? null;
+	return FILES_CONTENT_TYPE_HINT_BY_EXTENSION.get(extension) ?? null;
+}
+
+/**
+ * The type a new text file gets when nothing better is known: the name hint when the name has
+ * a supported extension, otherwise plain text. A new text file always has a text type, so it
+ * can never be born as stored bytes.
+ */
+export function files_default_text_content_type_for_name(fileName: string): files_ContentType {
+	return files_default_text_shape_for_name(fileName).contentType;
+}
+
+export const files_INVALID_CONTENT_TYPE_MESSAGE = "Invalid content type";
+
+/**
+ * The type an upload stores. The caller's type wins when it is valid, `application/octet-stream`
+ * included. The name is only a hint when the caller sent no type, and a file with neither is
+ * stored bytes. Return `null` for a broken type, so the caller refuses instead of guessing.
+ */
+export function files_resolve_upload_content_type(args: { contentType: string | undefined; fileName: string }) {
+	if (args.contentType !== undefined) {
+		return files_normalize_content_type(args.contentType);
+	}
+	return files_guess_content_type_from_name(args.fileName) ?? ("application/octet-stream" satisfies files_ContentType);
 }
 
 /**
@@ -419,33 +518,35 @@ function files_content_disposition(kind: "inline" | "attachment", fileName: stri
 }
 
 /**
- * The response headers every signed R2 download URL must pin, derived from the file NAME's
- * extension and never from the stored `contentType` (that value is client input at upload time).
+ * The response headers every signed R2 download URL must pin, derived from the stored content
+ * type. The name only fills the disposition file name.
  *
- * A presigned R2 GET carries no `nosniff` and no CSP — the signer can set only
- * `responseContentType` and `responseContentDisposition` — so this pinned type plus the
- * disposition is the whole defense against hostile bytes running on the shared R2 origin.
- * Only the literal media map above may serve `inline`; everything else — editable text,
- * `svg`, `html`, unknown extensions — downloads as an attachment.
+ * A presigned R2 GET carries no `nosniff` and no CSP. The signer can set only
+ * `responseContentType` and `responseContentDisposition`, so this pinned type plus the
+ * disposition is the whole defense against hostile bytes running on the shared R2 origin. Only
+ * the literal media set above may serve `inline`. Everything else, editable text, `svg`,
+ * `html`, and unknown types, downloads as an attachment. The stored type is client input at
+ * upload time, and that is fine here: the inline set holds only types a browser never runs as
+ * a page, whatever bytes sit behind them.
  */
-export function files_get_signed_download_serving(fileName: string) {
-	const mediaContentType = files_get_served_media_content_type(fileName);
-	if (mediaContentType !== null) {
+export function files_get_signed_download_serving(args: { contentType: string | undefined; fileName: string }) {
+	const essence = args.contentType === undefined ? null : (files_parse_content_type(args.contentType)?.essence ?? null);
+	if (essence !== null && FILES_INLINE_SERVED_MEDIA_CONTENT_TYPES.has(essence)) {
 		return {
-			responseContentType: mediaContentType,
-			responseContentDisposition: files_content_disposition("inline", fileName),
+			responseContentType: essence,
+			responseContentDisposition: files_content_disposition("inline", args.fileName),
 		};
 	}
 
-	// Editable text keeps its classifier type so a saved download opens in the right app, but it
+	// Editable text keeps its canonical type so a saved download opens in the right app, but it
 	// never serves inline: `text/html`-adjacent sniffing is exactly what the attachment blocks.
-	const textContentType = files_get_editable_text_content_type(fileName);
+	const textContentType = files_editable_text_content_type_of(args.contentType);
 	return {
 		responseContentType: textContentType ?? ("application/octet-stream" satisfies files_ContentType),
-		responseContentDisposition: files_content_disposition("attachment", fileName),
+		responseContentDisposition: files_content_disposition("attachment", args.fileName),
 	};
 }
-// #endregion editable text classification
+// #endregion content type policy
 
 export function files_get_utf8_byte_size(content: string) {
 	return stringByteLength(content);
@@ -648,76 +749,6 @@ export function files_node_has_editable_yjs_state<Node extends FileNodeFieldsFor
 	);
 }
 
-/**
- * The one rename/move class rule, shared by pending-move proposal validation and
- * accept-time revalidation. A rename never converts file content, so the new name may not
- * claim a different content class:
- * - A Markdown file must not take a plain-text or unknown extension.
- * - A plain text file may switch between plain text extensions. `_yay.contentType` then carries
- *   the destination's media type, and the accept patches it onto the node with the name.
- * - An extensionless destination claims no class, so editable files keep their class and their
- *   stored type unchanged. Swap cycles rely on this: a file legitimately takes a folder's
- *   extensionless name while they trade paths.
- * - A stored non-editable file may change its basename but never its extension, because the
- *   extension is the only record of what its bytes are and renaming does not relabel them.
- * Folders have no class; they pass with no patch.
- */
-export function files_validate_file_rename_class(args: {
-	node: Pick<
-		app_convex_Doc<"files_nodes">,
-		"kind" | "lowercaseExtension" | "assetId" | "yjsSnapshotId" | "yjsLastSequenceId" | "yjsRootKind"
-	>;
-	destName: string;
-}) {
-	if (args.node.kind !== "file") {
-		return Result({ _yay: { contentType: null } });
-	}
-
-	if (files_node_has_editable_text_content(args.node)) {
-		// No extension, no claim: keep the class and the stored type.
-		if (files_classifier_extension_of(args.destName) === null) {
-			return Result({ _yay: { contentType: null } });
-		}
-
-		const nodeRootKind = args.node.yjsRootKind;
-		const destRootKind = files_get_editable_text_yjs_root_kind(args.destName);
-		if (nodeRootKind === "rich_text") {
-			if (destRootKind !== "rich_text") {
-				return Result({
-					_nay: { name: "nay", message: "A Markdown file must keep the .md extension" },
-				});
-			}
-			return Result({ _yay: { contentType: files_get_editable_text_content_type(args.destName) } });
-		}
-		if (destRootKind !== "plain_text") {
-			const plainExtensions = files_EDITABLE_TEXT_EXTENSIONS.filter((extension) => extension !== "md");
-			return Result({
-				_nay: {
-					name: "nay",
-					message: `A plain text file must keep a plain text extension (${plainExtensions.map((extension) => `.${extension}`).join(", ")})`,
-				},
-			});
-		}
-		return Result({ _yay: { contentType: files_get_editable_text_content_type(args.destName) } });
-	}
-
-	// Non-editable stored files: compare against the indexed extension, which the same
-	// leading/trailing-dot rule as the classifier keeps in sync with the name.
-	const nodeExtension = args.node.lowercaseExtension ?? null;
-	const destExtension = files_classifier_extension_of(args.destName);
-	if (destExtension !== nodeExtension) {
-		return Result({
-			_nay: {
-				name: "nay",
-				message: nodeExtension
-					? `This file's extension cannot be changed: renaming does not convert the file, so keep '.${nodeExtension}'`
-					: "This file has no extension, and renaming cannot add one",
-			},
-		});
-	}
-	return Result({ _yay: { contentType: null } });
-}
-
 type FilePendingUpdateFieldsForYjsContent = Pick<
 	app_convex_Doc<"files_pending_updates">,
 	"baseYjsSequence" | "baseLineageGeneration" | "baseStateId" | "stagedStateId" | "unstagedStateId"
@@ -801,12 +832,11 @@ export type files_PendingPathOverlay = {
  * Build the overlay from the user's pending update docs.
  *
  * `nodesById` must contain the nodes the docs reference: each move doc's `fileNodeId` and
- * `destParentId` node, each `pendingMove.replacesNodeId` node, each
- * `copiedFrom.nodeId` node of a replace-move (`archivesSourceOnAccept`), and each
+ * `destParentId` node, each `pendingMove.replacesNodeId` node, and each
  * `pendingArchive` doc's `fileNodeId` node. A doc with a
- * missing moved node, destination parent, replace-copy source, or deleted node is inert;
+ * missing moved node, destination parent, or deleted node is inert;
  * a missing `replacesNodeId` node only degrades the replace to a plain move (accept does
- * the same). Content-only docs and plain copies never affect paths.
+ * the same). Content-only docs and copies never affect paths.
  */
 export function files_pending_path_overlay_build(args: {
 	pendingUpdates: readonly files_PendingPathOverlayRow[];
@@ -956,18 +986,6 @@ export function files_pending_path_overlay_build(args: {
 		}
 		hiddenNodeIds.add(target._id);
 		hiddenCommittedPaths.add(target.path);
-	}
-	// Replace-move copies (`mv -f` between editable files) hide their source.
-	for (const row of pendingUpdates) {
-		if (!row.copiedFrom?.archivesSourceOnAccept) {
-			continue;
-		}
-		const source = nodesById.get(row.copiedFrom.nodeId);
-		if (!source) {
-			continue;
-		}
-		hiddenNodeIds.add(source._id);
-		hiddenCommittedPaths.add(source.path);
 	}
 	// Pending deletes (`rm`) hide their node; a deleted folder hides its whole subtree.
 	const hiddenCommittedFolderPaths = new Set<string>();
@@ -1340,48 +1358,9 @@ export function files_normalize_markdown_name(name: string) {
 }
 
 /**
- * Agent-write sibling of `files_normalize_markdown_name`: keep every editable text extension
- * instead of only `.md`. An extensionless name still becomes `<name>.md` — with no extension
- * the caller declared no type, and Markdown is the default document type. Any other extension
- * refuses with the classifier's rule so the caller corrects the name instead of silently
- * writing a different file type.
- */
-export function files_normalize_editable_file_name(name: string) {
-	if (name.includes("..")) {
-		// Reject double dots because their basename/extension intent is ambiguous.
-		return files_invalid_name_result("file");
-	}
-
-	const trimmedName = name.trim();
-	if (trimmedName === ".") {
-		return files_invalid_name_result("file");
-	}
-
-	// A trailing dot means a missing extension; the Markdown normalizer already handles it.
-	if (trimmedName.endsWith(".")) {
-		return files_normalize_markdown_name(name);
-	}
-
-	const fileNameParts = files_normalize_file_name_parts({
-		fileName: name,
-		pathSeparators: "dash",
-		fallbackBaseName: "untitled",
-	});
-	if (!fileNameParts.extension || fileNameParts.extension === "md") {
-		return Result({ _yay: files_apply_special_file_name_case(`${fileNameParts.baseName}.md`) });
-	}
-
-	const normalizedName = `${fileNameParts.baseName}.${fileNameParts.extension}`;
-	if (files_get_editable_text_content_type(normalizedName) === null) {
-		return Result({ _nay: { name: "nay", message: files_editable_text_refusal_message(normalizedName) } });
-	}
-	return Result({ _yay: normalizedName });
-}
-
-/**
- * Rename normalizer for existing files: clean the characters but keep whatever extension the
- * caller typed. The class rule (`files_validate_file_rename_class`) judges the extension
- * against the node separately, so this normalizer must not refuse or rewrite it.
+ * File name normalizer for renames and for files the agent creates: clean the characters but
+ * keep whatever extension the caller typed. The extension is only part of the name. It never
+ * decides or changes the stored content type, so this normalizer must not refuse or rewrite it.
  */
 export function files_normalize_file_rename_name(name: string) {
 	if (name.includes("..")) {
@@ -1463,12 +1442,12 @@ export function files_get_normalized_node_path_segments(args: {
 	kind: app_convex_Doc<"files_nodes">["kind"] | null;
 	nameOrPath: string;
 	/**
-	 * How a file leaf's extension is handled. The default keeps the Markdown-only UI rule.
-	 * "editable_text" is the agent write/create rule: supported extensions pass, unknown ones refuse.
-	 * "keep_extension" cleans characters only, for renames whose class rule judges the
-	 * extension against the node. Folder segments ignore this.
+	 * How a file leaf's extension is handled. The default keeps the Markdown-only UI rule for
+	 * the sidebar's "New Markdown file" flow. "keep_extension" cleans characters only: renames
+	 * and agent-created files keep the extension the caller typed, because the extension never
+	 * decides the stored content type. Folder segments ignore this.
 	 */
-	fileNamePolicy?: "markdown" | "editable_text" | "keep_extension";
+	fileNamePolicy?: "markdown" | "keep_extension";
 }) {
 	if (!args.kind) {
 		return null;
@@ -1489,11 +1468,9 @@ export function files_get_normalized_node_path_segments(args: {
 		const isLeaf = index === pathSegments.length - 1;
 		const pathSegmentKind = isLeaf ? args.kind : "folder";
 		const normalizedName =
-			pathSegmentKind === "file" && args.fileNamePolicy === "editable_text"
-				? files_normalize_editable_file_name(pathSegment)
-				: pathSegmentKind === "file" && args.fileNamePolicy === "keep_extension"
-					? files_normalize_file_rename_name(pathSegment)
-					: files_normalize_name(pathSegmentKind, pathSegment);
+			pathSegmentKind === "file" && args.fileNamePolicy === "keep_extension"
+				? files_normalize_file_rename_name(pathSegment)
+				: files_normalize_name(pathSegmentKind, pathSegment);
 		if (normalizedName._nay) {
 			return { validationMessage: normalizedName._nay.message };
 		}

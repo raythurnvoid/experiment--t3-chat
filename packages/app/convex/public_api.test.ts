@@ -166,6 +166,8 @@ async function seed_public_file_write_stage(args: {
 			userId: args.db.userId,
 			path: args.path,
 			overwrite: "replace",
+			contentType: "text/markdown",
+			yjsRootKind: "rich_text",
 			yjsSnapshotAssetId,
 			contentSnapshotAssetId,
 			expiresAt: args.expiresAt,
@@ -574,7 +576,7 @@ describe("public files API", () => {
 		for (const body of [
 			{ path: "notes/report.md", content: "# Report" },
 			{ path: "/", content: "# Report" },
-			{ path: "/notes/report.txt", content: "# Report" },
+			{ path: "/notes/Bad Report.txt", content: "# Report" },
 			{ path: "/notes/report.md", content: "" },
 		]) {
 			const response = await t.fetch("/api/v1/files/write", {
@@ -1314,6 +1316,8 @@ describe("public files API", () => {
 				credentialId,
 				path: "/outer/inner/report.md",
 				overwrite: "replace",
+				contentType: "text/markdown",
+				yjsRootKind: "rich_text",
 				yjsSnapshotAssetId: await asset("yjs_snapshot"),
 				contentSnapshotAssetId: await asset("content_snapshot"),
 				expiresAt: now + 60_000,
@@ -1578,7 +1582,7 @@ describe("public files API", () => {
 		for (const body of [
 			{ paths: [] },
 			{ paths: ["meetings/video.mp4.transcript.md"] },
-			{ paths: ["/meetings/video.mp4.transcript.txt"] },
+			{ paths: ["/meetings/Video Transcript.txt"] },
 			{ paths: ["/meetings/video.mp4.transcript.md", "/meetings/video.mp4.transcript.md"] },
 		]) {
 			const response = await t.fetch("/api/v1/files/touch", {
@@ -3430,14 +3434,14 @@ describe("files write-many", () => {
 			body: JSON.stringify({
 				files: [
 					{ path: "/ok/good.md", content: "# Good\n" },
-					{ path: "/bad/report.txt", content: "# Bad\n" },
+					{ path: "/bad/Bad Report.txt", content: "# Bad\n" },
 				],
 			}),
 		});
 		expect(invalid.status).toBe(400);
 		expect(await invalid.json()).toEqual({
-			message: "Path must end in a valid Markdown (.md) file name.",
-			path: "/bad/report.txt",
+			message: "Path must end in a valid file name.",
+			path: "/bad/Bad Report.txt",
 		});
 
 		const duplicate = await t.fetch("/api/v1/files/write-many", {
@@ -4193,6 +4197,8 @@ describe("files read-only locks", () => {
 			principalRef: { kind: "user_api_key", credentialId: writer.credentialId },
 			path: "/locks/doc.md",
 			overwrite: "replace",
+			contentType: "text/markdown",
+			yjsRootKind: "rich_text",
 			contentSize: 9,
 			yjsSnapshotSize: 0,
 		});
@@ -4461,6 +4467,8 @@ describe("files read-only locks", () => {
 			principalRef: { kind: "user_api_key", credentialId: writer.credentialId },
 			path: "/race.md",
 			overwrite: "replace",
+			contentType: "text/markdown",
+			yjsRootKind: "rich_text",
 			contentSize: 7,
 			yjsSnapshotSize: 7,
 		});
@@ -4512,6 +4520,8 @@ describe("files read-only locks", () => {
 			principalRef: { kind: "user_api_key", credentialId: writer.credentialId },
 			path: "/race.md",
 			overwrite: "replace",
+			contentType: "text/markdown",
+			yjsRootKind: "rich_text",
 			contentSize: 7,
 			yjsSnapshotSize: 7,
 		});
@@ -4550,6 +4560,8 @@ describe("files read-only locks", () => {
 			principalRef: { kind: "user_api_key", credentialId: writer.credentialId },
 			path: "/aba.md",
 			overwrite: "replace",
+			contentType: "text/markdown",
+			yjsRootKind: "rich_text",
 			contentSize: 7,
 			yjsSnapshotSize: 7,
 		});
@@ -4592,6 +4604,8 @@ describe("files read-only locks", () => {
 			principalRef: { kind: "user_api_key", credentialId: writer.credentialId },
 			path: "/fill-race/doc.md",
 			overwrite: "replace",
+			contentType: "text/markdown",
+			yjsRootKind: "rich_text",
 			contentSize: 9,
 			yjsSnapshotSize: 0,
 		});
@@ -4636,6 +4650,8 @@ describe("files read-only locks", () => {
 			principalRef: { kind: "user_api_key", credentialId: writer.credentialId },
 			path: "/fill-race/doc.md",
 			overwrite: "replace",
+			contentType: "text/markdown",
+			yjsRootKind: "rich_text",
 			contentSize: 9,
 			yjsSnapshotSize: 0,
 		});
@@ -4694,6 +4710,8 @@ describe("files read-only locks", () => {
 			principalRef: { kind: "user_api_key", credentialId: writer.credentialId },
 			path: "/anchor/sub/new.md",
 			overwrite: "replace",
+			contentType: "text/markdown",
+			yjsRootKind: "rich_text",
 			contentSize: 9,
 			yjsSnapshotSize: 9,
 		});
@@ -4744,6 +4762,8 @@ describe("files read-only locks", () => {
 				principalRef: { kind: "user_api_key", credentialId: writer.credentialId },
 				path: "/aba-dir/mid/new.md",
 				overwrite: "replace",
+				contentType: "text/markdown",
+				yjsRootKind: "rich_text",
 				contentSize: 7,
 				yjsSnapshotSize: 7,
 			});
@@ -5023,6 +5043,8 @@ describe("files read-only locks", () => {
 			principalRef: { kind: "user_api_key", credentialId: writer.credentialId },
 			path: "/tlock/new.md",
 			overwrite: "fail",
+			contentType: "text/markdown",
+			yjsRootKind: "rich_text",
 			contentSize: 0,
 			yjsSnapshotSize: 7,
 		});
@@ -5045,6 +5067,8 @@ describe("files read-only locks", () => {
 			principalRef: { kind: "user_api_key", credentialId: writer.credentialId },
 			path: "/tlock/appeared.md",
 			overwrite: "fail",
+			contentType: "text/markdown",
+			yjsRootKind: "rich_text",
 			contentSize: 0,
 			yjsSnapshotSize: 7,
 		});
@@ -5073,6 +5097,8 @@ describe("files read-only locks", () => {
 			principalRef: { kind: "user_api_key", credentialId: writer.credentialId },
 			path: "/tlock/new.md",
 			overwrite: "fail",
+			contentType: "text/markdown",
+			yjsRootKind: "rich_text",
 			contentSize: 0,
 			yjsSnapshotSize: 7,
 		});
@@ -5529,6 +5555,8 @@ describe("service file writes", () => {
 			principalRef: { kind: "plugin_service", grantId: service.grantId },
 			path: "/meetings/report.md",
 			overwrite: "replace",
+			contentType: "text/markdown",
+			yjsRootKind: "rich_text",
 			contentSize: 16,
 			yjsSnapshotSize: 16,
 		});

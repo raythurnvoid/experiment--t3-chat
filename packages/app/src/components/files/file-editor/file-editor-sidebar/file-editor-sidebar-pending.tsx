@@ -64,7 +64,7 @@ const PENDING_BENIGN_NAY_MESSAGES = new Set(["Stale save"]);
 type FileEditorSidebarPendingRow = {
 	pendingUpdate: app_convex_Doc<"files_pending_updates">;
 	path: string;
-	kind: "content" | "move" | "copy" | "content_and_move" | "delete";
+	kind: "content" | "move" | "copy" | "replacement" | "content_and_move" | "delete";
 	moveDestinationPath: string | undefined;
 	/**
 	 * Id of the active node that accepting this move will replace (soft-archive, like `mv -f`):
@@ -72,7 +72,6 @@ type FileEditorSidebarPendingRow = {
 	 * File moves replace a file occupant; folder moves replace an EMPTY folder occupant (rename()
 	 * semantics). Unset when nothing occupies the destination (accept is then a plain move), when
 	 * the occupant has this user's own pending move (it vacates first), and for other kind mixes.
-	 * Editable-file replaces use `replaceSourcePath` instead.
 	 */
 	replacedNodeId: app_convex_Id<"files_nodes"> | undefined;
 	/**
@@ -87,11 +86,6 @@ type FileEditorSidebarPendingRow = {
 	isFolder: boolean;
 	/** True when the proposal created the file (write_file/cp onto a new path): shown as Added. */
 	isAddedFile: boolean;
-	/**
-	 * Source path of an `mv -f` content replace: accepting puts that file's content on this row's
-	 * file (as a new version) and archives the source. Shown as a "source → target" label.
-	 */
-	replaceSourcePath: string | undefined;
 	/**
 	 * The file node's document shape from `list_tree` (the node owns the shape, never the
 	 * proposal). `null` when the node is missing from the tree; content decode then refuses.
@@ -139,19 +133,23 @@ function build_pending_rows(
 	return pendingUpdates
 		.map((pendingUpdate) => {
 			const node = nodesById.get(pendingUpdate.fileNodeId);
-			const { pendingMove, copiedFrom, pendingArchive } = pendingUpdate;
+			const { pendingMove, copiedFrom, pendingArchive, pendingReplacement } = pendingUpdate;
 
 			// A pending delete supersedes every other aspect of the doc (the upsert already
-			// clears pendingMove; content branches survive but accept ignores them).
+			// clears pendingMove; content branches survive but accept ignores them). A whole-file
+			// copy (`cp` onto an app file) is reviewed as a whole: it has no text branches, and a
+			// move on the same doc is applied first when it is accepted.
 			const kind = pendingArchive
 				? ("delete" as const)
-				: pendingMove
-					? files_pending_update_has_yjs_content(pendingUpdate)
-						? ("content_and_move" as const)
-						: ("move" as const)
-					: copiedFrom
-						? ("copy" as const)
-						: ("content" as const);
+				: pendingReplacement
+					? ("replacement" as const)
+					: pendingMove
+						? files_pending_update_has_yjs_content(pendingUpdate)
+							? ("content_and_move" as const)
+							: ("move" as const)
+						: copiedFrom
+							? ("copy" as const)
+							: ("content" as const);
 
 			let moveDestinationPath: string | undefined;
 			let replacedNodeId: app_convex_Id<"files_nodes"> | undefined;
@@ -205,9 +203,6 @@ function build_pending_rows(
 				canPreviewDeleteDiff: kind === "delete" && files_node_has_editable_yjs_state(node),
 				isFolder: node?.kind === "folder",
 				isAddedFile: pendingUpdate.eagerCreated != null,
-				replaceSourcePath: copiedFrom?.archivesSourceOnAccept
-					? (nodesById.get(copiedFrom.nodeId)?.path ?? copiedFrom.path)
-					: undefined,
 				rootKind: files_node_has_editable_yjs_state(node) ? node.yjsRootKind : null,
 			};
 		})
@@ -411,7 +406,18 @@ async function files_pending_row_accept(
 		// A move `_nay` is a real conflict (missing or settled pending update docs resolve as
 		// no-op `_yay`), so a content-plus-move accept stops here instead of saving content
 		// onto a failed move.
-		if (moved._nay || !files_pending_update_has_yjs_content(pendingUpdate)) return moved;
+		if (moved._nay || (!files_pending_update_has_yjs_content(pendingUpdate) && !pendingUpdate.pendingReplacement)) {
+			return moved;
+		}
+	}
+
+	// A whole-file copy is accepted as a whole. There are no hunks to stage.
+	if (pendingUpdate.pendingReplacement) {
+		return await convex.action(app_convex_api.files_pending_updates.accept_file_pending_replacement, {
+			membershipId,
+			nodeId: pendingUpdate.fileNodeId,
+			pendingUpdateId: pendingUpdate._id,
+		});
 	}
 
 	return await files_pending_accept_and_save(convex, membershipId, pendingUpdate, rootKind);
@@ -536,15 +542,11 @@ function files_pending_rows_get_accept_requires_all_changes_ids(
 	}
 
 	for (const row of visibleRows) {
-		const archivesHiddenSource =
-			row.pendingUpdate.copiedFrom?.archivesSourceOnAccept === true &&
-			hiddenNodeIds.has(row.pendingUpdate.copiedFrom.nodeId);
 		const deletesHiddenDescendant =
 			row.pendingUpdate.pendingArchive != null &&
 			row.isFolder &&
 			hiddenRows.some((hiddenRow) => hiddenRow.path.startsWith(`${row.path}/`));
 		if (
-			archivesHiddenSource ||
 			deletesHiddenDescendant ||
 			(row.replacedNodeId != null && hiddenNodeIds.has(row.replacedNodeId))
 		) {
@@ -898,7 +900,6 @@ type FileEditorSidebarPendingItem_Props = {
 	sizeOnlyReplacedNodeId: app_convex_Id<"files_nodes"> | undefined;
 	canPreviewDeleteDiff: boolean;
 	isAddedFile: boolean;
-	replaceSourcePath: string | undefined;
 	rootKind: files_YjsRootKind | null;
 	acceptRequiresAllChanges: boolean;
 	canAccept: boolean;
@@ -918,7 +919,6 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 		sizeOnlyReplacedNodeId,
 		canPreviewDeleteDiff,
 		isAddedFile,
-		replaceSourcePath,
 		rootKind,
 		acceptRequiresAllChanges,
 		canAccept,
@@ -1176,20 +1176,16 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 					? "Added"
 					: kind === "content_and_move"
 						? "Moved"
-						: kind === "copy"
+						: kind === "copy" || kind === "replacement"
 							? "Replaced"
 							: "Modified";
 
 	// Content-plus-move rows show the same red → green move label as move-only rows; the link
-	// still opens the diff. Replace-move rows (`mv -f`) show "source → target": the source
-	// disappears (red) and its content lands on the target (green). Delete rows always show
-	// only their own path.
+	// still opens the diff. Delete rows always show only their own path.
 	const rowLabel =
 		(kind === "move" || kind === "content_and_move") && moveDestinationPath != null
 			? `${path} → ${moveDestinationPath}`
-			: kind !== "delete" && replaceSourcePath != null
-				? `${replaceSourcePath} → ${path}`
-				: path;
+			: path;
 
 	return (
 		<li>
@@ -1213,9 +1209,10 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 						to="/w/$organizationName/$workspaceName/files"
 						params={{ organizationName, workspaceName }}
 						search={
-							// The diff editor cannot represent a deleted file or size-only replacement.
-							// The inline preview below handles those, and the link opens the file itself.
-							kind === "delete" || sizeOnlyReplacedNodeId
+							// The diff editor cannot represent a deleted file, a size-only replacement, or a
+							// whole-file copy (no text branches). The inline preview below handles those,
+							// and the link opens the file itself.
+							kind === "delete" || kind === "replacement" || sizeOnlyReplacedNodeId
 								? { nodeId: pendingUpdate.fileNodeId }
 								: { nodeId: pendingUpdate.fileNodeId, view: "diff_editor" }
 						}
@@ -1224,8 +1221,6 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 					>
 						{(kind === "move" || kind === "content_and_move") && moveDestinationPath != null ? (
 							<PendingMoveLabel path={path} moveDestinationPath={moveDestinationPath} />
-						) : kind !== "delete" && replaceSourcePath != null ? (
-							<PendingMoveLabel path={replaceSourcePath} moveDestinationPath={path} />
 						) : (
 							<PendingPathText
 								path={path}
@@ -1271,6 +1266,14 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 						replacedNodeId={sizeOnlyReplacedNodeId}
 						path={path}
 					/>
+				) : isOpen && kind === "replacement" && pendingUpdate.pendingReplacement && pendingUpdate.copiedFrom ? (
+					<div
+						role="status"
+						className={cn("FileEditorSidebarPending-item-diff" satisfies FileEditorSidebarPending_ClassNames)}
+					>
+						Replaces the file's content and type with a copy of {pendingUpdate.copiedFrom.path} (
+						{pendingUpdate.pendingReplacement.contentType}).
+					</div>
 				) : isOpen && diffText != null ? (
 					<DiffMonospaceBlock
 						className={cn("FileEditorSidebarPending-item-diff" satisfies FileEditorSidebarPending_ClassNames)}
@@ -1423,12 +1426,6 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 
 		for (const affectedNodeId of [row.replacedNodeId, row.sizeOnlyReplacedNodeId]) {
 			if (affectedNodeId && !getNodeCapabilities(nodesById.get(affectedNodeId))?.canArchiveOrRestore) {
-				return false;
-			}
-		}
-
-		if (row.pendingUpdate.copiedFrom?.archivesSourceOnAccept) {
-			if (!getNodeCapabilities(nodesById.get(row.pendingUpdate.copiedFrom.nodeId))?.canArchiveOrRestore) {
 				return false;
 			}
 		}
@@ -1642,7 +1639,6 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 							sizeOnlyReplacedNodeId={row.sizeOnlyReplacedNodeId}
 							canPreviewDeleteDiff={row.canPreviewDeleteDiff}
 							isAddedFile={row.isAddedFile}
-							replaceSourcePath={row.replaceSourcePath}
 							rootKind={row.rootKind}
 							acceptRequiresAllChanges={acceptRequiresAllChangesIds.has(row.pendingUpdate._id)}
 							canAccept={canAcceptRow(row)}
@@ -1669,7 +1665,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		staged?: string;
 		unstaged?: string;
 		pendingMove?: { destParentId: string; destName: string; fromPath: string; replacesNodeId?: string };
-		copiedFrom?: { nodeId: string; path: string; archivesSourceOnAccept?: boolean };
+		copiedFrom?: { nodeId: string; path: string };
 		eagerCreated?: { committedSequence: number };
 		pendingArchive?: { fromPath: string };
 	}) =>

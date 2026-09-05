@@ -1844,7 +1844,7 @@ describe("r2 asset content", () => {
 		expect([...snapshotYjsDoc.share.keys()]).toEqual([files_YJS_DOC_KEYS.richText]);
 	});
 
-	test("finalizes an uploaded plain text file into a Y.Text document with the classifier content type", async () => {
+	test("finalizes an uploaded plain text file into a Y.Text document with the caller's content type", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({
@@ -1853,8 +1853,9 @@ describe("r2 asset content", () => {
 			name: "Test User",
 		});
 
-		// The client media type is deliberately wrong for a .yaml name: the classifier over the
-		// The node name must pick both the document shape and the stored content type.
+		// The caller's type differs from the .yaml name's hint: the stored type is the caller's, and
+		// it decides both the document shape and what the node opens as. The name is only a hint
+		// for an upload with no type.
 		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
@@ -1919,7 +1920,7 @@ describe("r2 asset content", () => {
 		});
 
 		expect(docs.fileNode?.yjsRootKind).toBe("plain_text");
-		expect(docs.fileNode?.contentType).toBe("application/yaml");
+		expect(docs.fileNode?.contentType).toBe("text/plain;charset=utf-8");
 		expect(docs.fileNode?.yjsSnapshotId).toEqual(expect.any(String));
 		expect(docs.fileNode?.yjsLastSequenceId).toEqual(expect.any(String));
 		expect(docs.contentAsset?.kind).toBe("content_snapshot");

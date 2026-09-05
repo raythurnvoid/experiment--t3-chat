@@ -176,9 +176,9 @@ Buckets live in `packages/app/convex/rate_limiter.ts`:
 
 # Markdown write pipeline
 
-`/files/write` and `/files/write-many` stay Markdown-only by contract (a deliberate non-goal of the editable-text feature): they refuse non-`.md` paths. Reads serve every editable text class; plain-text files enter through `/upload-urls` or the app's agent tools.
+`/files/write` and `/files/write-many` accept every editable text type. The optional `contentType` (on the single route and on each `write-many` item) names the type: Markdown, plain text, JSON, YAML, and the other text types the app edits; anything else is refused with `contentType must be an editable text type.`. Without it a created file takes the hint from its name (`.md` is Markdown, a known text extension is that type), else plain text; a filled file keeps its own type, and naming a type that differs from an existing file's type is a conflict. The path must end in a valid file name (`Path must end in a valid file name.`): a `.md` name follows the Markdown name rule (README casing), any other name must already be a normalized file name (`files_normalize_file_rename_name`). Reads serve every editable text type; stored files enter through `/upload-urls`.
 
-`write_one_markdown_file` (module-private helper in `public_api.ts`) is the shared engine for `write` and `write-many`: decide create-vs-fill, stage (`prepare_file_write`), PUT the staged objects to R2, publish (`publish_file_write` / `publish_file_fill`), and sweep the stage on failure.
+`write_one_text_file` (module-private helper in `public_api.ts`) is the shared engine for `write` and `write-many`: decide create-vs-fill, stage (`prepare_file_write`), PUT the staged objects to R2, publish (`publish_file_write` / `publish_file_fill`), and sweep the stage on failure.
 
 - Both routes normalize the incoming content at the request boundary, ABOVE the byte count: one leading BOM is dropped and CRLF/lone CR become LF (`files_normalize_text_document_input`). The document, the R2 content snapshot, the committed chunks, and the stored size all see the same normalized string.
 

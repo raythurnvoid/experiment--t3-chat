@@ -61,6 +61,10 @@ saved markdown, but it does persist in the Yjs doc until the flow clears it.
   told. The remove affordance is deliberately out of scope.
 - `missing` — no node, no asset, no read access, or an unsupported scheme.
 - `broken` — the element fired an error while loading.
+- `incompatible` — the file's stored `contentType` no longer starts with `image/` (or `video/`
+  for a video node). A whole-file copy or a restored version can replace the content of a file
+  that keeps its id, so the node view watches the node (`files_nodes.get_file_node_for_membership`)
+  next to the asset and re-signs the url per asset id.
 
 Scheme safety lives entirely here: the shared nodes' `parseHTML` accepts any `img[src]` /
 `video[src]`, and `files_media_parse_src` classifies everything that is not `bonobo-file://`

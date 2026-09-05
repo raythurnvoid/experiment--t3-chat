@@ -244,6 +244,12 @@ const app_convex_schema = defineSchema({
 		/** Normalized absolute target path; parents are resolved again at publication. */
 		path: v.string(),
 		overwrite: v.union(v.literal("replace"), v.literal("fail")),
+		/**
+		 * The type and document shape a created file gets. Settled at staging, so the publish
+		 * mutation writes the same values the route built its content objects with.
+		 */
+		contentType: v.string(),
+		yjsRootKind: v.union(v.literal("rich_text"), v.literal("plain_text")),
 		yjsSnapshotAssetId: v.id("files_r2_assets"),
 		/** Staged content. On publish it becomes the file's first version snapshot and the `node.assetId` target. */
 		contentSnapshotAssetId: v.id("files_r2_assets"),
@@ -307,17 +313,39 @@ const app_convex_schema = defineSchema({
 				fromPath: v.string(),
 			}),
 		),
-		/** Copy provenance for the destination node of a pending copy (including `mv -f` replace-moves, which are stored as copies). */
+		/** Copy provenance for the destination node of a pending copy (`cp`). Display metadata only. */
 		copiedFrom: v.optional(
 			v.object({
 				nodeId: v.id("files_nodes"),
 				path: v.string(),
+			}),
+		),
+		/**
+		 * Whole-file replacement proposal (`cp` onto an app path). Accepting replaces the whole
+		 * content state of the destination node with the staged asset: its bytes, its content
+		 * type, its document shape, and its collaboration mode. The destination keeps its node id,
+		 * name, permissions, and history. A doc with this field carries no Yjs content group.
+		 */
+		pendingReplacement: v.optional(
+			v.object({
 				/**
-				 * A replace-move (`mv -f` between editable files) is stored as a copy — the source's
-				 * content lands on the destination, which keeps its identity and history — plus this
-				 * flag: accepting also archives the source, turning the copy into a move (mv = cp + rm).
+				 * The staged copy of the source content. The asset is already published under its
+				 * final R2 key, so the unfinalized-asset sweeper leaves it alone while the proposal
+				 * waits. Discard and expiry hand the key to the deletion ledger.
 				 */
-				archivesSourceOnAccept: v.optional(v.boolean()),
+				assetId: v.id("files_r2_assets"),
+				size: v.number(),
+				contentType: v.string(),
+				/** Absent for stored bytes: accepting turns the destination into a stored file. */
+				yjsRootKind: v.optional(v.union(v.literal("rich_text"), v.literal("plain_text"))),
+				/** Text only. Absent means the destination becomes collaborative when accepted. */
+				nonCollaborative: v.optional(v.boolean()),
+				/**
+				 * The destination's content asset when the proposal was made. Accept refuses when
+				 * another save changed the destination since, so a copy never overwrites text the
+				 * reviewer never saw.
+				 */
+				baseAssetId: v.id("files_r2_assets"),
 			}),
 		),
 		/**
@@ -1059,6 +1087,16 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.id("organizations_workspaces"),
 		fileNodeId: v.id("files_nodes"),
 		assetId: v.id("files_r2_assets"),
+		/**
+		 * The content type of this version. A version records what the file was when it was
+		 * saved, so restoring it brings the type back together with the bytes. Optional only
+		 * while the backfill migration fills old rows from their node.
+		 */
+		contentType: v.optional(v.string()),
+		/** The document shape of this version. Absent for stored bytes. */
+		yjsRootKind: v.optional(v.union(v.literal("rich_text"), v.literal("plain_text"))),
+		/** True when this text version was saved with collaboration off. Absent for stored bytes. */
+		nonCollaborative: v.optional(v.boolean()),
 		createdBy: v.id("users"),
 		/**
 		 * Use -1 for snapshots that were never archived, 0 for snapshots that were
@@ -1144,6 +1182,7 @@ const app_convex_schema = defineSchema({
 			v.literal("read_only_snapshot_restore"),
 			v.literal("read_only_yjs_repair"),
 			v.literal("untracked_asset_event"),
+			v.literal("discarded_replacement"),
 		),
 		assetId: v.optional(v.id("files_r2_assets")),
 		generation: v.number(),
@@ -1704,6 +1743,12 @@ const app_convex_schema = defineSchema({
 		userId: v.id("users"),
 		/** Set only for file-view sessions: the file node the view was opened for. Page sessions leave it unset. */
 		fileNodeId: v.optional(v.id("files_nodes")),
+		/**
+		 * Set only for file-view sessions: the view the session was minted for. A refresh checks
+		 * the view against the node's current content type, so a file whose type changed stops
+		 * refreshing a view that no longer matches it.
+		 */
+		fileViewId: v.optional(v.string()),
 		tokenHash: v.string(),
 		createdAt: v.number(),
 		expiresAt: v.number(),

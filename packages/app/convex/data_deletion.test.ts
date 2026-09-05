@@ -3237,6 +3237,8 @@ describe("process_workspace_deletion_request", () => {
 				runId,
 				path: "/plugin-source.png.description.md",
 				overwrite: "replace",
+				contentType: "text/markdown",
+				yjsRootKind: "rich_text",
 				yjsSnapshotAssetId: stagedYjsSnapshotAssetId,
 				contentSnapshotAssetId: stagedContentSnapshotAssetId,
 				expiresAt: now + 15 * 60 * 1000,

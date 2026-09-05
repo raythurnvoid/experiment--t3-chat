@@ -126,9 +126,9 @@ vi.mock("../file-editor-comments-sidebar.tsx", () => ({
 
 import { FileEditorPlainText } from "./file-editor-plain-text.tsx";
 import {
-	files_get_editable_text_yjs_root_kind,
-	files_get_monaco_language_id,
+	files_monaco_language_id_of_content_type,
 	files_resolve_effective_editor_view,
+	files_yjs_root_kind_of_content_type,
 	type files_PresenceStore,
 } from "@/lib/files.ts";
 import { files_yjs_doc_create_from_text } from "../../../../../shared/files-tiptap.ts";
@@ -224,9 +224,9 @@ afterEach(() => {
 });
 
 describe("view gating", () => {
-	test("a `.json` node renders the plain-text editor", async () => {
-		// The upload producer stamps the document shape from the file NAME, never the client MIME.
-		const rootKind = files_get_editable_text_yjs_root_kind("config.json");
+	test("a JSON node renders the plain-text editor", async () => {
+		// The node's stored content type decides the document shape, never the file name.
+		const rootKind = files_yjs_root_kind_of_content_type("application/json");
 		expect(rootKind).toBe("plain_text");
 
 		// The route clamp redirects the rich default to the plain editor for that shape.
@@ -236,8 +236,8 @@ describe("view gating", () => {
 		});
 		expect(effectiveView).toBe("plain_text_editor");
 
-		// And the mounted editor speaks the node's Monaco language.
-		const monacoLanguageId = files_get_monaco_language_id("config.json");
+		// And the mounted editor speaks the Monaco language of that content type.
+		const monacoLanguageId = files_monaco_language_id_of_content_type("application/json");
 		expect(monacoLanguageId).toBe("json");
 
 		resolveFetchWithPlainTextDoc('{"answer": 42}\n');

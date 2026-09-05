@@ -30,18 +30,21 @@ import {
 	files_MAX_YJS_REPAIR_RECONSTRUCTED_STATE_BYTES,
 	files_MAX_UNMATERIALIZED_YJS_UPDATE_BYTES,
 	files_MAX_UNMATERIALIZED_YJS_UPDATE_COUNT,
-	files_editable_text_refusal_message,
-	files_get_editable_text_content_type,
-	files_get_editable_text_yjs_root_kind,
+	files_default_text_shape_for_name,
+	files_editable_text_content_type_of,
+	files_editable_text_shape_of,
 	files_get_utf8_byte_size,
 	files_normalize_text_document_input,
 	files_node_has_editable_text_content,
 	files_node_has_editable_yjs_state,
 	files_pending_update_content_of,
 	files_REPLACE_FILE_CONTENT_STALE_MESSAGE,
+	files_db_cancel_pending_update_cleanup_tasks,
 	files_db_consume_trusted_yjs_update_stage,
+	files_db_get_pending_update,
 	files_db_get_visible_node_by_path,
 	files_db_load_pending_update_yjs_state_bytes,
+	files_db_schedule_pending_update_cleanup,
 	type files_ContentType,
 	type files_SpecialFileName,
 	type files_YjsRootKind,
@@ -95,11 +98,15 @@ import {
 	type files_metadata_Entry,
 } from "../shared/files-metadata.ts";
 import {
+	files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE,
+	files_pending_update_db_delete_chunks,
+	files_pending_update_db_release_replacement_asset,
 	files_pending_updates_db_drop_content_for_node,
 	type files_pending_updates_stage_trusted_yjs_update_Result,
 } from "./files_pending_updates.ts";
 import {
 	r2_PUT_MAY_ARRIVE_MARGIN_MS,
+	r2_copy_object_to_immutable_key,
 	r2_create_asset_key,
 	r2_delete_object,
 	r2_enqueue_object_deletion_job,
@@ -1148,6 +1155,12 @@ export async function files_nodes_db_finalize_editable_text_node_creation(
 ) {
 	const now = Date.now();
 	const yjsSnapshot = args.yjsSnapshot;
+	// The node and its content docs were inserted earlier in this same mutation, so the read
+	// sees them. The version row copies the type, shape, and mode the node was created with.
+	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+	if (!fileNode) {
+		throw should_never_happen("Editable text node creation finalized for a missing node", { nodeId: args.nodeId });
+	}
 
 	await Promise.all([
 		yjsSnapshot
@@ -1179,6 +1192,9 @@ export async function files_nodes_db_finalize_editable_text_node_creation(
 			assetId: args.versionSnapshotAssetId,
 			createdBy: args.userId,
 			archivedAt: -1,
+			contentType: fileNode.contentType,
+			yjsRootKind: fileNode.yjsRootKind,
+			nonCollaborative: fileNode.nonCollaborative,
 		}),
 	]);
 
@@ -1638,6 +1654,11 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 		v.object({
 			content: v.optional(v.string()),
 			asset: v.union(doc(app_convex_schema, "files_r2_assets"), v.null()),
+			/**
+			 * Set when the caller's own pending whole-file replacement holds text: the action reads
+			 * that object instead of the committed content.
+			 */
+			pendingReplacementText: v.optional(v.object({ r2Key: v.string(), size: v.number() })),
 			nodeId: v.id("files_nodes"),
 			displayNodeId: v.id("files_nodes"),
 			pendingUpdateId: v.union(v.id("files_pending_updates"), v.null()),
@@ -1701,10 +1722,6 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 			};
 		}
 
-		// A non-collaborative file passes here too. It has no materialization state, so the
-		// committed-chunks merge at the end of this handler is what serves its text.
-		if (!files_node_has_editable_text_content(fileNode)) return null;
-
 		// Tenant scope (the guards above narrowed both ids to real ids): bind them so the narrowing
 		// also reaches the `withIndex` callbacks — TS drops property narrowing at closure boundaries.
 		const organizationId = args.organizationId;
@@ -1735,6 +1752,30 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 									.eq("fileNodeId", fileNode._id),
 							)
 							.first();
+
+		// The acting user's whole-file replacement (`cp` onto this path) shows here before it is
+		// accepted: the agent reads back what it copied. Only a text replacement reads as text. A
+		// stored one, and a destination that is not text, fall through to the committed read.
+		const pendingReplacement = pendingUpdate?.pendingReplacement;
+		if (pendingUpdate && pendingReplacement && pendingReplacement.yjsRootKind !== undefined) {
+			const stagedAsset = await ctx.db.get("files_r2_assets", pendingReplacement.assetId);
+			if (stagedAsset?.r2Key && stagedAsset.organizationId === organizationId && stagedAsset.workspaceId === workspaceId) {
+				return {
+					asset: null,
+					pendingReplacementText: { r2Key: stagedAsset.r2Key, size: pendingReplacement.size },
+					nodeId: fileNode._id,
+					displayNodeId: fileNode._id,
+					pendingUpdateId: pendingUpdate._id,
+					materializationState: null,
+					nonCollaborativeBaseAssetId: null,
+				};
+			}
+		}
+
+		// A non-collaborative file passes here too. It has no materialization state, so the
+		// committed-chunks merge at the end of this handler is what serves its text.
+		if (!files_node_has_editable_text_content(fileNode)) return null;
+
 		// Move-only docs carry no content; keep returning their `pendingUpdateId` below so
 		// write_file/edit_file mix onto them, while content resolves from the committed tree.
 		let pendingUpdateContent = pendingUpdate ? files_pending_update_content_of(pendingUpdate) : null;
@@ -1931,7 +1972,15 @@ export const get_file_last_available_text_content_by_path = internalAction({
 			maxBytes !== undefined && files_get_utf8_byte_size(content) > maxBytes;
 		const materializationState = contentState.materializationState;
 		let content: string;
-		if (contentState.content !== undefined) {
+		if (contentState.pendingReplacementText) {
+			if (maxBytes !== undefined && contentState.pendingReplacementText.size > maxBytes) {
+				return null;
+			}
+
+			content = await r2_fetch_object_from_bucket({ key: contentState.pendingReplacementText.r2Key }).then(
+				(response) => response.text(),
+			);
+		} else if (contentState.content !== undefined) {
 			content = contentState.content;
 		} else if (
 			materializationState &&
@@ -2322,9 +2371,10 @@ export type files_nodes_read_file_content_stats_Result =
 
 /**
  * Create an editable text file at a trusted path, for the agent write flows (bash redirects,
- * cp, touch). The classifier decides the stored media type and document shape from the path's
- * file name; unknown extensions refuse with the classifier's rule. The public create action and
- * the sidebar New-file flow stay Markdown-only on purpose.
+ * cp, touch). The caller may name the stored content type (a copy passes the source's type).
+ * Without one, the file name is only a hint, and an unknown name becomes plain text. The
+ * stored type decides the document shape. The public create action and the sidebar New-file
+ * flow stay Markdown-only on purpose.
  *
  * Trust callers to validate and normalize `path` before calling this action.
  */
@@ -2335,6 +2385,8 @@ export const create_file_by_path = internalAction({
 		userId: v.id("users"),
 		path: v.string(),
 		textContent: v.optional(v.string()),
+		/** Must be an editable text type. Omit to take the hint from the file name. */
+		contentType: v.optional(v.string()),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -2365,13 +2417,15 @@ export const create_file_by_path = internalAction({
 			return Result({ _yay: { nodeId: activeFileNode._id, created: false, createdAncestorIds: [] } });
 		}
 
-		// Extension decides everything: the media type and the document shape come from the same
-		// name, so they can never disagree, and an unwritable extension refuses before any write.
-		const fileName = path_name_of(args.path);
-		const contentType = files_get_editable_text_content_type(fileName);
-		const rootKind = files_get_editable_text_yjs_root_kind(fileName);
-		if (contentType === null || rootKind === null) {
-			return Result({ _nay: { message: files_editable_text_refusal_message(fileName) } });
+		// The stored type and the document shape come from the same value, so they can never
+		// disagree. An explicit type must be editable text; a stored-bytes type cannot become a
+		// text document here.
+		const shape =
+			args.contentType !== undefined
+				? files_editable_text_shape_of(args.contentType)
+				: files_default_text_shape_for_name(path_name_of(args.path));
+		if (shape === null) {
+			return Result({ _nay: { message: `Cannot create a text file with content type '${args.contentType}'` } });
 		}
 
 		const created = await action_create_file_node(ctx, {
@@ -2381,8 +2435,8 @@ export const create_file_by_path = internalAction({
 			parentId: files_ROOT_ID,
 			path: args.path,
 			textContent: args.textContent ?? "",
-			contentType,
-			rootKind,
+			contentType: shape.contentType,
+			rootKind: shape.rootKind,
 		});
 		if (created._nay) {
 			return created;
@@ -2454,6 +2508,14 @@ const store_version_snapshot_args_schema = v.object({
 	nodeId: v.id("files_nodes"),
 	assetId: v.id("files_r2_assets"),
 	userId: v.id("users"),
+	/**
+	 * The file's type, shape, and collaboration mode at the moment this version was saved. A
+	 * restore brings all three back, so the row must carry them instead of reading the node's
+	 * current values later.
+	 */
+	contentType: v.optional(v.string()),
+	yjsRootKind: v.optional(v.union(v.literal("rich_text"), v.literal("plain_text"))),
+	nonCollaborative: v.optional(v.boolean()),
 });
 
 function yjs_merge_updates_to_array_buffer(updates: Uint8Array[]) {
@@ -2521,6 +2583,9 @@ async function store_version_snapshot(ctx: MutationCtx, args: Infer<typeof store
 		assetId: args.assetId,
 		createdBy: args.userId,
 		archivedAt: -1,
+		contentType: args.contentType,
+		yjsRootKind: args.yjsRootKind,
+		nonCollaborative: args.nonCollaborative,
 	});
 
 	return snapshotId;
@@ -2619,6 +2684,9 @@ export async function files_nodes_db_fill_text_node_content(
 			nodeId: args.fileNode._id,
 			assetId: args.contentSnapshotAssetId,
 			userId: args.userId,
+			contentType: args.fileNode.contentType,
+			yjsRootKind: args.fileNode.yjsRootKind,
+			nonCollaborative: args.fileNode.nonCollaborative,
 		}),
 		ctx.db.patch("files_nodes", args.fileNode._id, {
 			assetId: args.contentSnapshotAssetId,
@@ -2870,6 +2938,9 @@ export const finalize_file_content_materialization = internalMutation({
 					nodeId: args.nodeId,
 					assetId: args.versionSnapshotAssetId,
 					userId: args.userId,
+					contentType: header.fileNode.contentType,
+					yjsRootKind: header.fileNode.yjsRootKind,
+					nonCollaborative: header.fileNode.nonCollaborative,
 				}),
 			]),
 		);
@@ -3441,9 +3512,8 @@ export const materialize_file_content = internalAction({
 		});
 
 		// The current text lives in the committed chunk tables, not in R2. So we only upload
-		// the Yjs snapshot and the new version snapshot here. The version snapshot's stored type
-		// comes from the classifier over the node NAME — never from the client-declared
-		// `contentType` — because the snapshot signer serves whatever type the object carries.
+		// the Yjs snapshot and the new version snapshot here. The version snapshot carries the
+		// node's stored text type, which the snapshot signer pins again when it serves it.
 		await Promise.all([
 			r2_put_object(ctx, {
 				key: header.yjsSnapshotAsset.r2Key,
@@ -3454,7 +3524,7 @@ export const materialize_file_content = internalAction({
 				key: versionSnapshotR2Key,
 				body: extractedText._yay,
 				contentType:
-					files_get_editable_text_content_type(header.fileNode.name) ??
+					files_editable_text_content_type_of(header.fileNode.contentType) ??
 					("application/octet-stream" satisfies files_ContentType),
 			}),
 		]);
@@ -3499,7 +3569,7 @@ export const get_replace_file_content_preflight = internalQuery({
 	returns: v.union(
 		v.object({
 			rootKind: v.union(v.literal("rich_text"), v.literal("plain_text")),
-			name: v.string(),
+			contentType: v.optional(v.string()),
 			assetId: v.id("files_r2_assets"),
 			readOnlyScopeNodeId: v.union(v.id("files_nodes"), v.null()),
 		}),
@@ -3534,7 +3604,7 @@ export const get_replace_file_content_preflight = internalQuery({
 
 		return {
 			rootKind: fileNode.yjsRootKind,
-			name: fileNode.name,
+			contentType: fileNode.contentType,
 			assetId: fileNode.assetId,
 			readOnlyScopeNodeId: fileNode.readOnlyScopeNodeId ?? null,
 		};
@@ -3670,13 +3740,13 @@ async function action_replace_file_content(
 		assetId: versionSnapshotAssetId,
 	});
 
-	// The stored type comes from the classifier over the node NAME, never from a client-declared
-	// type, because the snapshot signer serves whatever type the object carries.
+	// The version object carries the node's stored text type. The snapshot signer pins it again
+	// when it serves the object.
 	await r2_put_object(ctx, {
 		key: versionSnapshotR2Key,
 		body: text,
 		contentType:
-			files_get_editable_text_content_type(preflight.name) ??
+			files_editable_text_content_type_of(preflight.contentType) ??
 			("application/octet-stream" satisfies files_ContentType),
 	});
 
@@ -3994,6 +4064,9 @@ export const finalize_file_content_replacement = internalMutation({
 					nodeId: args.nodeId,
 					assetId: args.versionSnapshotAssetId,
 					userId: user._id,
+					contentType: fileNode.contentType,
+					yjsRootKind: fileNode.yjsRootKind,
+					nonCollaborative: fileNode.nonCollaborative,
 				}),
 			]),
 		);
@@ -4050,6 +4123,602 @@ type finalize_file_content_replacement_Result =
 	>
 		? Awaited<ReturnValue>
 		: never;
+
+/**
+ * Delete a file's committed text docs: chunks, the frontmatter index, and stats. Used when a
+ * whole-file replacement turns a text file into a stored file.
+ */
+async function db_delete_committed_text_docs(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		nodeId: Id<"files_nodes">;
+	},
+) {
+	const [plainTextChunkDocs, textChunkDocs, statsDocs] = await Promise.all([
+		ctx.db
+			.query("files_plain_text_chunks")
+			.withIndex("by_organization_workspace_source_fileNode_yjsSequence_chunkIndex", (q) =>
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("sourceKind", "committed")
+					.eq("fileNodeId", args.nodeId),
+			)
+			.collect(),
+		ctx.db
+			.query("files_text_chunks")
+			.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("sourceKind", "committed")
+					.eq("fileNodeId", args.nodeId),
+			)
+			.collect(),
+		ctx.db
+			.query("file_stats")
+			.withIndex("by_organization_workspace_fileNode", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.nodeId),
+			)
+			.collect(),
+		files_metadata_db_delete_committed_frontmatter(ctx, args),
+	]);
+	await Promise.all([
+		...plainTextChunkDocs.map((doc) => ctx.db.delete("files_plain_text_chunks", doc._id)),
+		...textChunkDocs.map((doc) => ctx.db.delete("files_text_chunks", doc._id)),
+		...statsDocs.map((doc) => ctx.db.delete("file_stats", doc._id)),
+	]);
+}
+
+/**
+ * Install new content on a file as a whole. Everything that describes the content changes
+ * together: the content asset, the content type, the document shape, the collaboration mode,
+ * and the Yjs document. The node keeps its id, name, permissions, custom metadata, and history.
+ * Accepting a whole-file copy and restoring a version of another shape both end here.
+ *
+ * The content being replaced stays in history. An editable file's current asset already is its
+ * newest version row, and a stored file gets one now. A caller that made a fresh copy of the
+ * current text (a collaborative file, whose newest edits may live only in its document) passes
+ * it as `backup`, and that copy becomes the backup row instead. Then the new content gets its
+ * own row, so restore can bring either side back with its own type.
+ */
+async function db_install_file_content_replacement(
+	ctx: MutationCtx,
+	args: {
+		membership: Doc<"organizations_workspaces_users">;
+		user: Doc<"users">;
+		billedUser: Doc<"users">;
+		fileNode: Doc<"files_nodes">;
+		previousAssetId: Id<"files_r2_assets">;
+		backup?: { assetId: Id<"files_r2_assets">; size: number };
+		contentAssetId: Id<"files_r2_assets">;
+		contentSize: number;
+		/** False when the content asset is already published (a staged copy's own object). */
+		publishContentAsset: boolean;
+		contentType: string;
+		/** Absent for stored bytes. Then `text` and `yjsSnapshot` are absent too. */
+		yjsRootKind?: "rich_text" | "plain_text";
+		nonCollaborative?: boolean;
+		/** The new document. Present only for a collaborative text result. */
+		yjsSnapshot?: { assetId: Id<"files_r2_assets">; size: number };
+		/** The committed text of a text result. */
+		text?: string;
+	},
+) {
+	const { membership, user, billedUser, fileNode } = args;
+	const nodeId = fileNode._id;
+
+	const collaborativeResult = args.yjsRootKind !== undefined && args.nonCollaborative !== true;
+	if (
+		(args.yjsRootKind !== undefined) !== (args.text !== undefined) ||
+		collaborativeResult !== (args.yjsSnapshot !== undefined)
+	) {
+		const errorMessage = "db_install_file_content_replacement received a text result with missing parts";
+		const errorData = {
+			nodeId,
+			hasRootKind: args.yjsRootKind !== undefined,
+			hasText: args.text !== undefined,
+			hasYjsSnapshot: args.yjsSnapshot !== undefined,
+		};
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+
+	// The assets must be this caller's own objects in this tenant.
+	const owned = (asset: Doc<"files_r2_assets"> | null): asset is Doc<"files_r2_assets"> =>
+		asset !== null &&
+		asset.organizationId === membership.organizationId &&
+		asset.workspaceId === membership.workspaceId &&
+		asset.createdBy === user._id;
+	const [contentAsset, yjsSnapshotAsset, backupAsset] = await Promise.all([
+		ctx.db.get("files_r2_assets", args.contentAssetId),
+		args.yjsSnapshot ? ctx.db.get("files_r2_assets", args.yjsSnapshot.assetId) : Promise.resolve(null),
+		args.backup ? ctx.db.get("files_r2_assets", args.backup.assetId) : Promise.resolve(null),
+	]);
+	if (
+		!owned(contentAsset) ||
+		(args.yjsSnapshot &&
+			(!owned(yjsSnapshotAsset) ||
+				yjsSnapshotAsset.kind !== "yjs_snapshot" ||
+				yjsSnapshotAsset.size !== args.yjsSnapshot.size)) ||
+		(args.backup && !owned(backupAsset))
+	) {
+		return Result({ _nay: { message: "Replacement assets do not match" } });
+	}
+
+	// A file with no document that gets one now: refuse while an earlier cleanup is still
+	// deleting the old rows. That cleanup deletes by node id and would eat the new rows too.
+	// Check it before the first write, so a refusal leaves nothing behind.
+	if (
+		args.yjsSnapshot &&
+		!files_node_has_editable_yjs_state(fileNode) &&
+		fileNode.collaborationCleanupYjsLastSequenceId !== undefined &&
+		(await db_file_has_remaining_yjs_history(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			nodeId,
+		}))
+	) {
+		return Result({
+			_nay: { message: "The old collaboration history is still being removed. Try again in a moment." },
+		});
+	}
+
+	const now = Date.now();
+	const publish_asset = (assetId: Id<"files_r2_assets">, size: number) =>
+		ctx.db.patch("files_r2_assets", assetId, {
+			r2Key: r2_create_asset_key({
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				assetId,
+			}),
+			size,
+			unfinalizedExpiresAt: undefined,
+			updatedAt: now,
+		});
+
+	// Keep the content being replaced in history.
+	if (args.backup) {
+		await publish_asset(args.backup.assetId, args.backup.size);
+		await store_version_snapshot(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			nodeId,
+			assetId: args.backup.assetId,
+			userId: user._id,
+			contentType: fileNode.contentType,
+			yjsRootKind: fileNode.yjsRootKind,
+			nonCollaborative: fileNode.nonCollaborative,
+		});
+	} else {
+		const versionRows = await ctx.db
+			.query("files_snapshots")
+			.withIndex("by_organization_workspace_fileNode_archivedAt", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("fileNodeId", nodeId),
+			)
+			.collect();
+		if (!versionRows.some((row) => row.assetId === args.previousAssetId)) {
+			await store_version_snapshot(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				nodeId,
+				assetId: args.previousAssetId,
+				userId: user._id,
+				contentType: fileNode.contentType,
+				yjsRootKind: fileNode.yjsRootKind,
+				nonCollaborative: fileNode.nonCollaborative,
+			});
+		}
+	}
+
+	// The old document, when the file has one, and the new one, when the result needs one.
+	let nextYjsSnapshotId: Id<"files_yjs_snapshots"> | undefined;
+	let nextYjsLastSequenceId: Id<"files_yjs_docs_last_sequences"> | undefined;
+	let collaborationCleanupYjsLastSequenceId = fileNode.collaborationCleanupYjsLastSequenceId;
+	let yjsSequenceForChunks: number | undefined;
+	let yjsCleanup: {
+		throughSequence: number;
+		supersededYjsAssetId: Id<"files_r2_assets">;
+		expectedActiveYjsLastSequenceId?: Id<"files_yjs_docs_last_sequences">;
+		nonCollaborativeCleanupYjsLastSequenceId?: Id<"files_yjs_docs_last_sequences">;
+	} | null = null;
+	if (files_node_has_editable_yjs_state(fileNode)) {
+		await cancel_file_content_materialization(ctx, { nodeId });
+		const [yjsSnapshotDoc, yjsLastSequenceDoc] = await Promise.all([
+			ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId),
+			ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId),
+		]);
+		if (!yjsSnapshotDoc || !yjsLastSequenceDoc) {
+			const errorMessage = "A Yjs pointer on the file node points to a missing doc";
+			const errorData = {
+				nodeId,
+				yjsSnapshotId: fileNode.yjsSnapshotId,
+				yjsLastSequenceId: fileNode.yjsLastSequenceId,
+			};
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+		// Other members' text proposals were built against the document that goes away now.
+		await files_pending_updates_db_drop_content_for_node(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			nodeId,
+		});
+
+		if (args.yjsSnapshot) {
+			// Replace the lineage in place, like the Yjs repair does. The snapshot doc keeps its
+			// id and points at the new document at the current sequence number, the exact
+			// last-sequence token rotates, and the generation goes up. So every writer and
+			// worker that started before this write fails its exact-id or generation check.
+			// Unmaterialized updates of the old document are dropped on purpose: the new content
+			// replaces the whole file.
+			nextYjsLastSequenceId = await ctx.db.insert("files_yjs_docs_last_sequences", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				fileNodeId: nodeId,
+				lastSequence: yjsLastSequenceDoc.lastSequence,
+				unmaterializedUpdateCount: 0,
+				unmaterializedUpdateBytes: 0,
+				lineageGeneration: yjsLastSequenceDoc.lineageGeneration + 1,
+			});
+			await Promise.all([
+				ctx.db.patch("files_yjs_snapshots", yjsSnapshotDoc._id, {
+					sequence: yjsLastSequenceDoc.lastSequence,
+					assetId: args.yjsSnapshot.assetId,
+					updatedBy: user._id,
+					updatedAt: now,
+				}),
+				ctx.db.delete("files_yjs_docs_last_sequences", yjsLastSequenceDoc._id),
+			]);
+			nextYjsSnapshotId = yjsSnapshotDoc._id;
+			yjsSequenceForChunks = yjsLastSequenceDoc.lastSequence;
+			yjsCleanup = {
+				throughSequence: yjsLastSequenceDoc.lastSequence,
+				supersededYjsAssetId: yjsSnapshotDoc.assetId,
+				expectedActiveYjsLastSequenceId: nextYjsLastSequenceId,
+			};
+		} else {
+			// The file has no document after this write: the same steps as turning
+			// collaboration off. The marker keeps the bounded cleanup on the old rows.
+			await Promise.all([
+				ctx.db.delete("files_yjs_snapshots", yjsSnapshotDoc._id),
+				ctx.db.delete("files_yjs_docs_last_sequences", yjsLastSequenceDoc._id),
+			]);
+			collaborationCleanupYjsLastSequenceId = yjsLastSequenceDoc._id;
+			yjsCleanup = {
+				throughSequence: yjsLastSequenceDoc.lastSequence,
+				supersededYjsAssetId: yjsSnapshotDoc.assetId,
+				nonCollaborativeCleanupYjsLastSequenceId: yjsLastSequenceDoc._id,
+			};
+		}
+	} else if (args.yjsSnapshot) {
+		// A file with no document gets a fresh one (the cleanup check above already passed).
+		[nextYjsSnapshotId, nextYjsLastSequenceId] = await Promise.all([
+			ctx.db.insert("files_yjs_snapshots", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				fileNodeId: nodeId,
+				sequence: 0,
+				assetId: args.yjsSnapshot.assetId,
+				createdBy: user._id,
+				updatedBy: user._id,
+				updatedAt: now,
+			}),
+			ctx.db.insert("files_yjs_docs_last_sequences", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				fileNodeId: nodeId,
+				lastSequence: 0,
+				unmaterializedUpdateCount: 0,
+				unmaterializedUpdateBytes: 0,
+				lineageGeneration: 0,
+			}),
+		]);
+		collaborationCleanupYjsLastSequenceId = undefined;
+		yjsSequenceForChunks = 0;
+	}
+
+	// Mirror the materializer's frontmatter preflight: over-cap frontmatter commits the chunks
+	// without the index and keeps the marker pair set, so the write never rolls back on it.
+	const frontmatter =
+		args.yjsRootKind === "rich_text" && args.text !== undefined ? files_metadata_preflight_frontmatter(args.text) : null;
+	if (frontmatter?._nay) {
+		console.warn("Installing content without frontmatter metadata: the frontmatter could not be parsed", {
+			nodeId,
+			error: frontmatter._nay,
+		});
+	}
+	const frontmatterOverCapCounts =
+		frontmatter?._yay != null && files_metadata_frontmatter_exceeds_index_caps(frontmatter._yay)
+			? frontmatter._yay
+			: null;
+	const skipFrontmatterIndex = frontmatterOverCapCounts !== null || frontmatter?._nay != null;
+
+	// Everything that describes the content changes in one patch. The text markers go: the
+	// caller proved the text fits, and the frontmatter counts come from this same text.
+	await ctx.db.patch("files_nodes", nodeId, {
+		assetId: args.contentAssetId,
+		contentType: args.contentType,
+		yjsRootKind: args.yjsRootKind,
+		nonCollaborative: args.nonCollaborative === true ? true : undefined,
+		yjsSnapshotId: nextYjsSnapshotId,
+		yjsLastSequenceId: nextYjsLastSequenceId,
+		collaborationCleanupYjsLastSequenceId,
+		contentTooLargeByteSize: undefined,
+		contentShapeMismatchAt: undefined,
+		contentYjsStateTooLargeByteSize: undefined,
+		contentFrontmatterTooLargeFieldCount: frontmatterOverCapCounts?.fieldCount,
+		contentFrontmatterTooLargeIndexDocumentCount: frontmatterOverCapCounts?.indexDocumentCount,
+		updatedBy: user._id,
+		updatedAt: now,
+	});
+
+	// The committed text docs follow the node's new shape (the chunk helper reads it back).
+	if (args.text !== undefined) {
+		const chunks = await db_replace_file_chunks(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			nodeId,
+			yjsSequence: yjsSequenceForChunks,
+			textContent: args.text,
+			skipFrontmatterIndex,
+		});
+		if (chunks._nay) {
+			// Throw so Convex rolls back every write above.
+			throw convex_error({ message: "Failed to replace file content", cause: chunks._nay });
+		}
+	} else {
+		await db_delete_committed_text_docs(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			nodeId,
+		});
+	}
+
+	// Publish the objects the caller uploaded, and record the new content as a version.
+	if (args.publishContentAsset) {
+		await publish_asset(args.contentAssetId, args.contentSize);
+	}
+	if (args.yjsSnapshot) {
+		await publish_asset(args.yjsSnapshot.assetId, args.yjsSnapshot.size);
+	}
+	await store_version_snapshot(ctx, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		nodeId,
+		assetId: args.contentAssetId,
+		userId: user._id,
+		contentType: args.contentType,
+		yjsRootKind: args.yjsRootKind,
+		nonCollaborative: args.nonCollaborative === true ? true : undefined,
+	});
+
+	// The old update log can be long, so a bounded continuation deletes it and then removes
+	// the superseded Yjs snapshot asset.
+	if (yjsCleanup) {
+		await ctx.scheduler.runAfter(0, internal.files_nodes_content.cleanup_file_yjs_covered_rows, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			nodeId,
+			...yjsCleanup,
+			putMayArriveUntil: now + FILE_MATERIALIZATION_LATE_PUT_WINDOW_MS,
+		});
+	}
+
+	await billing_ingest_events(ctx, {
+		billedUserEvents: [
+			{
+				billedUser,
+				event: billing_event({
+					name: "file_save",
+					externalCustomerId: billedUser._id,
+					externalMemberId: user._id,
+					externalId: composite_id(
+						"billing",
+						"file_save",
+						billedUser._id,
+						user._id,
+						membership.organizationId,
+						membership.workspaceId,
+						nodeId,
+						args.contentAssetId,
+					),
+					metadata: {
+						amount: 1,
+						actorUserId: user._id,
+						billedUserId: billedUser._id,
+						organizationId: fileNode.organizationId,
+						workspaceId: fileNode.workspaceId,
+						nodeId,
+						version: args.contentAssetId,
+					},
+				}),
+			},
+		],
+	});
+
+	return Result({ _yay: null });
+}
+
+/**
+ * Accept a whole-file replacement (`cp` onto an app file): install the staged content as the
+ * file's new content state, then consume the proposal.
+ */
+export const finalize_file_pending_replacement = internalMutation({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		nodeId: v.id("files_nodes"),
+		pendingUpdateId: v.id("files_pending_updates"),
+		expectedUpdatedAt: v.number(),
+		stagedAssetId: v.id("files_r2_assets"),
+		contentAssetId: v.id("files_r2_assets"),
+		contentSize: v.number(),
+		contentType: v.string(),
+		/** Absent for stored bytes. Then `text` and `yjsSnapshot` are absent too. */
+		yjsRootKind: v.optional(v.union(v.literal("rich_text"), v.literal("plain_text"))),
+		nonCollaborative: v.optional(v.boolean()),
+		/** The new document. Present only for a collaborative text result. */
+		yjsSnapshot: v.optional(v.object({ assetId: v.id("files_r2_assets"), size: v.number() })),
+		/** The committed text of a text result. */
+		text: v.optional(v.string()),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const user = await ctx.db.get("users", args.userId);
+		if (!user) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		// Ask again in the transaction that writes. The action checked the same things, but a
+		// membership can end or a grant can be taken away while the text was uploading.
+		const membership = await db_get_active_membership_in_workspace(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: user._id,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+		const authorized = await access_control_db_authorize_node(ctx, {
+			userAuth: { id: user._id },
+			membership,
+			nodeId: args.nodeId,
+			permission: "content.write",
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+
+		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+		if (
+			!fileNode ||
+			fileNode.organizationId !== args.organizationId ||
+			fileNode.workspaceId !== args.workspaceId ||
+			fileNode.kind !== "file"
+		) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		// Check the lock after access and before the first write, like every other write door.
+		const writable = files_node_require_writable(fileNode);
+		if (writable._nay) {
+			return writable;
+		}
+
+		// Only the exact proposal the action read. A doc that changed under it (a newer copy, a
+		// discard) must not be published.
+		const pendingUpdate = await files_db_get_pending_update(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: user._id,
+			nodeId: args.nodeId,
+			pendingUpdateId: args.pendingUpdateId,
+		});
+		const replacement = pendingUpdate?.pendingReplacement;
+		if (
+			!pendingUpdate ||
+			pendingUpdate._id !== args.pendingUpdateId ||
+			pendingUpdate.updatedAt !== args.expectedUpdatedAt ||
+			!replacement ||
+			replacement.assetId !== args.stagedAssetId
+		) {
+			return Result({ _nay: { message: "Stale save" } });
+		}
+		// Another save landed after the copy was proposed. Refuse instead of overwriting content
+		// the reviewer never saw.
+		if (fileNode.assetId !== replacement.baseAssetId) {
+			return Result({ _nay: { message: files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE } });
+		}
+		const previousAssetId = replacement.baseAssetId;
+
+		const organization = await ctx.db.get("organizations", membership.organizationId);
+		if (!organization) {
+			const errorMessage = "membership.organizationId points to a missing organizations doc";
+			const errorData = {
+				membershipId: membership._id,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				nodeId: args.nodeId,
+			};
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+		const billedUserId = billing_pick_billed_user_id({ userId: user._id, organization });
+		const billedUser = await ctx.db.get("users", billedUserId);
+		if (!billedUser) {
+			const errorMessage = "billedUserId points to a missing users doc";
+			const errorData = { userId: user._id, organizationId: organization._id, billedUserId };
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+		// Accepting a copy saves a version, and a save costs the same here as through the other doors.
+		const check = await billing_db_check_credits(ctx, { userId: billedUser._id, minimumRequiredCents: 1 });
+		if (!check.hasCredits) {
+			return Result({ _nay: { message: "Insufficient funds" } });
+		}
+
+		const installed = await db_install_file_content_replacement(ctx, {
+			membership,
+			user,
+			billedUser,
+			fileNode,
+			previousAssetId,
+			contentAssetId: args.contentAssetId,
+			contentSize: args.contentSize,
+			// The staged object is already published. A normalized text got its own object.
+			publishContentAsset: args.contentAssetId !== args.stagedAssetId,
+			contentType: args.contentType,
+			yjsRootKind: args.yjsRootKind,
+			nonCollaborative: args.nonCollaborative,
+			yjsSnapshot: args.yjsSnapshot,
+			text: args.text,
+		});
+		if (installed._nay) {
+			return installed;
+		}
+
+		// The staged object is superseded when the normalized text got its own object.
+		if (args.contentAssetId !== args.stagedAssetId) {
+			await files_pending_update_db_release_replacement_asset(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				assetId: args.stagedAssetId,
+			});
+		}
+
+		// The proposal is consumed. A move proposal on the same doc survives as a move-only doc.
+		const now = Date.now();
+		if (pendingUpdate.pendingMove) {
+			await Promise.all([
+				ctx.db.patch("files_pending_updates", pendingUpdate._id, {
+					pendingReplacement: undefined,
+					copiedFrom: undefined,
+					eagerCreated: undefined,
+					size: 0,
+					updatedAt: now,
+				}),
+				files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id }),
+				files_db_schedule_pending_update_cleanup(ctx, {
+					pendingUpdateId: pendingUpdate._id,
+					expectedUpdatedAt: now,
+				}),
+			]);
+		} else {
+			await Promise.all([
+				files_db_cancel_pending_update_cleanup_tasks(ctx, { pendingUpdateId: pendingUpdate._id }),
+				files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id }),
+				ctx.db.delete("files_pending_updates", pendingUpdate._id),
+			]);
+		}
+
+		return Result({ _yay: null });
+	},
+});
 
 export const restore_snapshot = internalMutation({
 	args: {
@@ -4226,6 +4895,9 @@ export const restore_snapshot = internalMutation({
 
 		const now = Date.now();
 		const userId = userAuth.id;
+		// The version brings its own type back. A row from before versions recorded their type
+		// keeps the node's current type (the backfill migration fills those rows).
+		const restoredContentType = snapshotContent.contentType ?? fileNode.contentType;
 
 		// Restoring snapshots can be destructive and we defensively store
 		// the current state as a backup snapshot
@@ -4258,21 +4930,30 @@ export const restore_snapshot = internalMutation({
 				nodeId: args.nodeId,
 				assetId: args.currentSnapshotAssetId,
 				userId,
+				contentType: fileNode.contentType,
+				yjsRootKind: fileNode.yjsRootKind,
+				nonCollaborative: fileNode.nonCollaborative,
 			}),
 
-			// Store the restored content as a new snapshot
+			// Store the restored content as a new snapshot. It brings the version's type back;
+			// the shape and the collaboration mode are the node's, because this door only
+			// restores same-shape versions into the live Yjs document.
 			store_version_snapshot(ctx, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				nodeId: args.nodeId,
 				assetId: args.restoredSnapshotAssetId,
 				userId,
+				contentType: restoredContentType,
+				yjsRootKind: fileNode.yjsRootKind,
+				nonCollaborative: fileNode.nonCollaborative,
 			}),
 
 			ctx.db.patch("files_nodes", fileNode._id, {
 				// Point the node at the restored snapshot: it now holds the file's current bytes.
 				// The queued materialization will later point it at its own fresh snapshot.
 				assetId: args.restoredSnapshotAssetId,
+				contentType: restoredContentType,
 				updatedBy: userId,
 				updatedAt: now,
 			}),
@@ -4396,6 +5077,132 @@ type restore_snapshot_Result =
 		? Awaited<ReturnValue>
 		: never;
 
+/**
+ * The wide result shape of the restore action. Its two paths return different `_nay` messages,
+ * so the handler-inferred types cannot be joined.
+ */
+type restore_snapshot_r2_Result =
+	| { _yay: null; _nay?: undefined }
+	| { _yay?: undefined; _nay: { name?: string; message: string } };
+
+/**
+ * Restore a version as a whole-file replacement: a stored version, a version of another shape,
+ * or any version of a file that has no Yjs document. A version with the live document's shape
+ * goes through `restore_snapshot` instead, which writes into that document.
+ */
+export const finalize_snapshot_restore_replacement = internalMutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		nodeId: v.id("files_nodes"),
+		snapshotId: v.id("files_snapshots"),
+		/** The content asset the action read as the file's current one. The restore refuses when it moved on. */
+		expectedAssetId: v.id("files_r2_assets"),
+		/** A fresh copy of the current text, made for a collaborative file. See `db_install_file_content_replacement`. */
+		backup: v.optional(v.object({ assetId: v.id("files_r2_assets"), size: v.number() })),
+		contentAssetId: v.id("files_r2_assets"),
+		contentSize: v.number(),
+		contentType: v.string(),
+		yjsRootKind: v.optional(v.union(v.literal("rich_text"), v.literal("plain_text"))),
+		nonCollaborative: v.optional(v.boolean()),
+		yjsSnapshot: v.optional(v.object({ assetId: v.id("files_r2_assets"), size: v.number() })),
+		text: v.optional(v.string()),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		const membership = await organizations_db_get_membership(ctx, {
+			userId: userAuth.id,
+			membershipId: args.membershipId,
+		});
+		if (!membership) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+		const authorized = await access_control_db_authorize_node(ctx, {
+			userAuth,
+			membership,
+			nodeId: args.nodeId,
+			permission: "content.write",
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+
+		const [fileNode, snapshot] = await Promise.all([
+			ctx.db.get("files_nodes", args.nodeId),
+			ctx.db.get("files_snapshots", args.snapshotId),
+		]);
+		if (
+			!fileNode ||
+			fileNode.organizationId !== membership.organizationId ||
+			fileNode.workspaceId !== membership.workspaceId ||
+			fileNode.kind !== "file" ||
+			!snapshot ||
+			snapshot.fileNodeId !== fileNode._id
+		) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		// Check the lock after access and before the first write, like every other write door.
+		const writable = files_node_require_writable(fileNode);
+		if (writable._nay) {
+			return writable;
+		}
+		// Another save landed after the action read the file. The action cleans its uploads up.
+		if (fileNode.assetId !== args.expectedAssetId) {
+			return Result({ _nay: { message: "This file changed while the snapshot was being restored. Try again." } });
+		}
+
+		const user = await ctx.db.get("users", userAuth.id);
+		if (!user) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		const organization = await ctx.db.get("organizations", membership.organizationId);
+		if (!organization) {
+			const errorMessage = "membership.organizationId points to a missing organizations doc";
+			const errorData = {
+				membershipId: membership._id,
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				nodeId: args.nodeId,
+				snapshotId: args.snapshotId,
+			};
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+		const billedUserId = billing_pick_billed_user_id({ userId: userAuth.id, organization });
+		const billedUser = await ctx.db.get("users", billedUserId);
+		if (!billedUser) {
+			const errorMessage = "billedUserId points to a missing users doc";
+			const errorData = { userId: userAuth.id, organizationId: organization._id, billedUserId };
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+		const check = await billing_db_check_credits(ctx, { userId: billedUser._id, minimumRequiredCents: 1 });
+		if (!check.hasCredits) {
+			return Result({ _nay: { message: "Insufficient funds" } });
+		}
+
+		return await db_install_file_content_replacement(ctx, {
+			membership,
+			user,
+			billedUser,
+			fileNode,
+			previousAssetId: args.expectedAssetId,
+			backup: args.backup,
+			contentAssetId: args.contentAssetId,
+			contentSize: args.contentSize,
+			publishContentAsset: true,
+			contentType: args.contentType,
+			yjsRootKind: args.yjsRootKind,
+			nonCollaborative: args.nonCollaborative,
+			yjsSnapshot: args.yjsSnapshot,
+			text: args.text,
+		});
+	},
+});
+
 export const get_data_for_restore_snapshot = internalQuery({
 	args: {
 		userId: v.id("users"),
@@ -4411,10 +5218,14 @@ export const get_data_for_restore_snapshot = internalQuery({
 					asset: doc(app_convex_schema, "files_r2_assets"),
 					snapshotId: v.id("files_snapshots"),
 					_creationTime: v.number(),
+					contentType: v.optional(v.string()),
+					yjsRootKind: v.optional(v.union(v.literal("rich_text"), v.literal("plain_text"))),
+					nonCollaborative: v.optional(v.boolean()),
 				}),
 				v.null(),
 			),
 			materializationState: v.union(file_content_materialization_state_validator, v.null()),
+			fileNode: doc(app_convex_schema, "files_nodes"),
 		}),
 		v.null(),
 	),
@@ -4455,6 +5266,7 @@ export const get_data_for_restore_snapshot = internalQuery({
 			membership,
 			snapshotContent,
 			materializationState,
+			fileNode: authorized._yay.fileNode,
 		};
 	},
 });
@@ -4464,22 +5276,214 @@ type get_data_for_restore_snapshot_Result =
 		? Awaited<ReturnValue>
 		: never;
 
+/**
+ * Restore a version as a whole-file replacement (see `finalize_snapshot_restore_replacement`).
+ * The version's bytes are copied to a new content asset, so the version row keeps its own
+ * object. A collaborative file gets a backup of its latest text first, because edits not
+ * materialized yet live only in its document.
+ */
+async function action_restore_snapshot_as_replacement(
+	ctx: ActionCtx,
+	args: {
+		userId: Id<"users">;
+		membershipId: Id<"organizations_workspaces_users">;
+		nodeId: Id<"files_nodes">;
+		snapshotId: Id<"files_snapshots">;
+		membership: Doc<"organizations_workspaces_users">;
+		fileNode: Doc<"files_nodes">;
+		expectedAssetId: Id<"files_r2_assets">;
+		versionAsset: Doc<"files_r2_assets">;
+		version: { contentType: string; rootKind?: "rich_text" | "plain_text"; nonCollaborative: boolean };
+		materializationState: NonNullable<get_file_content_materialization_state_Result> | null;
+	},
+): Promise<restore_snapshot_r2_Result> {
+	if (!args.versionAsset.r2Key) {
+		const errorMessage = "snapshot.assetId points to an asset without r2Key";
+		const errorData = { nodeId: args.nodeId, snapshotId: args.snapshotId, assetId: args.versionAsset._id };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+	const { membership } = args;
+
+	// Assets made here stay unfinalized until the final mutation publishes them. A refusal below
+	// hands them to the deletion ledger right away.
+	const uploadedAssets: Array<{ assetId: Id<"files_r2_assets">; r2Key: string }> = [];
+	const insert_asset = async (upload: { kind: "content" | "yjs_snapshot" | "content_snapshot"; size: number }) => {
+		const assetId = (await ctx.runMutation(internal.r2.insert_asset, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			kind: upload.kind,
+			size: upload.size,
+			createdBy: args.userId,
+		})) as Id<"files_r2_assets">;
+		const r2Key = r2_create_asset_key({
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			assetId,
+		});
+		uploadedAssets.push({ assetId, r2Key });
+		return { assetId, r2Key };
+	};
+	const upload_asset = async (upload: {
+		kind: "yjs_snapshot" | "content_snapshot";
+		body: string | ArrayBuffer;
+		size: number;
+		contentType: files_ContentType;
+	}) => {
+		const { assetId, r2Key } = await insert_asset(upload);
+		await r2_put_object(ctx, { key: r2Key, body: upload.body, contentType: upload.contentType });
+		return assetId;
+	};
+	const cleanup_uploads = async () => {
+		if (uploadedAssets.length === 0) {
+			return;
+		}
+		await ctx.runMutation(internal.files_nodes_content.cleanup_file_node_creation_assets, {
+			assetIds: uploadedAssets.map((asset) => asset.assetId),
+			r2Keys: uploadedAssets.map((asset) => asset.r2Key),
+			durableTenantScope: { organizationId: membership.organizationId, workspaceId: membership.workspaceId },
+		});
+	};
+
+	// The latest text of a collaborative file may not be in its content asset yet.
+	let backup: { assetId: Id<"files_r2_assets">; size: number } | undefined;
+	if (args.materializationState) {
+		const currentContent = await files_nodes_reconstruct_latest_file_content_from_materialization_state({
+			state: args.materializationState,
+		});
+		// Same reason as in `restore_snapshot_r2`: the file's own content will not rebuild, and
+		// retrying does the same thing again.
+		if (currentContent._nay) {
+			const errorMessage = "Failed to reconstruct current file content before restoring a snapshot";
+			const errorData = { nodeId: args.nodeId, snapshotId: args.snapshotId, nay: currentContent._nay };
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+		const markdown = currentContent._yay.markdown;
+		const size = files_get_utf8_byte_size(markdown);
+		backup = {
+			assetId: await upload_asset({
+				kind: "content_snapshot",
+				body: markdown,
+				size,
+				contentType:
+					files_editable_text_content_type_of(args.fileNode.contentType) ??
+					("application/octet-stream" satisfies files_ContentType),
+			}),
+			size,
+		};
+	}
+
+	let content: {
+		contentAssetId: Id<"files_r2_assets">;
+		contentSize: number;
+		yjsRootKind?: "rich_text" | "plain_text";
+		nonCollaborative?: boolean;
+		yjsSnapshot?: { assetId: Id<"files_r2_assets">; size: number };
+		text?: string;
+	};
+	if (args.version.rootKind === undefined) {
+		// Stored bytes: copy the version's object to a new content asset on the R2 server side.
+		const { assetId, r2Key } = await insert_asset({ kind: "content", size: args.versionAsset.size });
+		const copied = await r2_copy_object_to_immutable_key(ctx, {
+			sourceKey: args.versionAsset.r2Key,
+			destinationKey: r2Key,
+		});
+		if (copied.outcome !== "ready") {
+			await cleanup_uploads();
+			return Result({ _nay: { message: "The version's content is not available" } });
+		}
+		content = { contentAssetId: assetId, contentSize: copied.size };
+	} else {
+		// Text gets its final form here, like an accepted copy: a collaborative result gets a
+		// fresh document built from the text, and the text that document produces is what gets
+		// committed, because building a rich document normalizes Markdown.
+		const rootKind = args.version.rootKind;
+		let text = await r2_fetch_object_from_bucket({ key: args.versionAsset.r2Key }).then((response) => response.text());
+		let yjsSnapshot: { assetId: Id<"files_r2_assets">; size: number } | undefined;
+		if (!args.version.nonCollaborative) {
+			const yjsDoc = files_yjs_doc_create_from_text({ text, rootKind });
+			if ("_nay" in yjsDoc) {
+				await cleanup_uploads();
+				return Result({ _nay: { message: yjsDoc._nay.message } });
+			}
+			const snapshotUpdate = encodeStateAsUpdate(yjsDoc);
+			if (snapshotUpdate.byteLength > files_MAX_YJS_RECONSTRUCTED_STATE_BYTES) {
+				await cleanup_uploads();
+				return Result({
+					_nay: { message: `Compact document exceeds ${files_MAX_YJS_RECONSTRUCTED_STATE_BYTES}-byte limit` },
+				});
+			}
+			const normalizedText = files_yjs_doc_get_text({ yjsDoc, rootKind });
+			if (normalizedText._nay) {
+				await cleanup_uploads();
+				return Result({ _nay: { message: normalizedText._nay.message } });
+			}
+			text = normalizedText._yay;
+			yjsSnapshot = {
+				assetId: await upload_asset({
+					kind: "yjs_snapshot",
+					body: files_u8_to_array_buffer(snapshotUpdate),
+					size: snapshotUpdate.byteLength,
+					contentType: "application/octet-stream",
+				}),
+				size: snapshotUpdate.byteLength,
+			};
+		}
+		const textSize = files_get_utf8_byte_size(text);
+		if (textSize > files_MAX_TEXT_CONTENT_BYTES) {
+			await cleanup_uploads();
+			return Result({ _nay: { message: `Text content exceeds ${files_MAX_TEXT_CONTENT_BYTES}-byte limit` } });
+		}
+		content = {
+			contentAssetId: await upload_asset({
+				kind: "content_snapshot",
+				body: text,
+				size: textSize,
+				contentType:
+					files_editable_text_content_type_of(args.version.contentType) ??
+					("application/octet-stream" satisfies files_ContentType),
+			}),
+			contentSize: textSize,
+			yjsRootKind: rootKind,
+			...(args.version.nonCollaborative ? { nonCollaborative: true } : {}),
+			...(yjsSnapshot ? { yjsSnapshot } : {}),
+			text,
+		};
+	}
+
+	const finalized = (await ctx.runMutation(internal.files_nodes_content.finalize_snapshot_restore_replacement, {
+		membershipId: args.membershipId,
+		nodeId: args.nodeId,
+		snapshotId: args.snapshotId,
+		expectedAssetId: args.expectedAssetId,
+		...(backup ? { backup } : {}),
+		contentType: args.version.contentType,
+		...content,
+	})) as restore_snapshot_r2_Result;
+	if (finalized._nay) {
+		await cleanup_uploads();
+		return finalized;
+	}
+
+	return Result({ _yay: null });
+}
+
 export const restore_snapshot_r2 = action({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 		snapshotId: v.id("files_snapshots"),
 		sessionId: v.string(),
+		/**
+		 * The content asset the editor shows for a file without a Yjs document. The restore refuses
+		 * when a save landed after that, so it never replaces text the user has not seen.
+		 */
+		baseAssetId: v.optional(v.id("files_r2_assets")),
 	},
 	returns: v_result({ _yay: v.null() }),
-	// The annotation breaks same-file generated-API circularity. It also carries the staging
-	// mutation's refusal branch because the action forwards that `_nay` unchanged.
-	handler: async (
-		ctx,
-		args,
-	): Promise<
-		restore_snapshot_Result | Extract<files_pending_updates_stage_trusted_yjs_update_Result, { _nay: object }>
-	> => {
+	// The annotation breaks same-file generated-API circularity.
+	handler: async (ctx, args): Promise<restore_snapshot_r2_Result> => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
@@ -4500,17 +5504,14 @@ export const restore_snapshot_r2 = action({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		const { membership, snapshotContent, materializationState } = data;
-		if (!snapshotContent) {
-			return Result({ _nay: { name: "nay", message: "Not found" } });
-		}
-		if (!materializationState) {
+		const { membership, snapshotContent, materializationState, fileNode } = data;
+		if (!snapshotContent || fileNode.kind !== "file" || fileNode.assetId === undefined) {
 			return Result({ _nay: { name: "nay", message: "Not found" } });
 		}
 
 		// Check the current lock before staging or writing assets and R2 files.
 		// The final mutation checks it again.
-		const nodeWritable = files_node_require_writable(materializationState.fileNode);
+		const nodeWritable = files_node_require_writable(fileNode);
 		if (nodeWritable._nay) {
 			return nodeWritable;
 		}
@@ -4524,6 +5525,45 @@ export const restore_snapshot_r2 = action({
 				_nay: {
 					message: "Insufficient funds",
 				},
+			});
+		}
+
+		// The version brings its own type, shape, and collaboration mode back. A row from before
+		// versions recorded them keeps the file's own (the backfill migration fills those rows).
+		const versionRecorded = snapshotContent.contentType !== undefined;
+		const versionContentType = snapshotContent.contentType ?? fileNode.contentType;
+		if (versionContentType === undefined) {
+			const errorMessage = "A file with content has no content type";
+			const errorData = { nodeId: args.nodeId, snapshotId: args.snapshotId };
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+		const version = {
+			contentType: versionContentType,
+			rootKind: versionRecorded ? snapshotContent.yjsRootKind : fileNode.yjsRootKind,
+			nonCollaborative: (versionRecorded ? snapshotContent.nonCollaborative : fileNode.nonCollaborative) === true,
+		};
+
+		// A version with the live document's shape is written into that document, so the file's
+		// history stays one lineage. Every other version is installed as a whole-file replacement:
+		// a stored version, a version of another shape, or any version of a file without a document.
+		if (
+			materializationState === null ||
+			!files_node_has_editable_yjs_state(fileNode) ||
+			version.rootKind !== fileNode.yjsRootKind ||
+			version.nonCollaborative
+		) {
+			return await action_restore_snapshot_as_replacement(ctx, {
+				userId: userAuth.id,
+				membershipId: args.membershipId,
+				nodeId: args.nodeId,
+				snapshotId: args.snapshotId,
+				membership,
+				fileNode,
+				expectedAssetId: args.baseAssetId ?? fileNode.assetId,
+				versionAsset: snapshotContent.asset,
+				version,
+				materializationState,
 			});
 		}
 
@@ -4634,16 +5674,21 @@ export const restore_snapshot_r2 = action({
 		// Editable files have no current-content object in R2. The restore mutation replaces the
 		// committed chunks, and the queued materialization refreshes the Yjs snapshot. Only two
 		// version snapshots go to R2: a backup of the current state, and the restored content.
+		// Each object carries the type of the version it holds.
 		await Promise.all([
 			r2_put_object(ctx, {
 				key: currentSnapshotR2Key,
 				body: currentContent._yay.markdown,
-				contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+				contentType:
+					files_editable_text_content_type_of(materializationState.fileNode.contentType) ??
+					("application/octet-stream" satisfies files_ContentType),
 			}),
 			r2_put_object(ctx, {
 				key: restoredSnapshotR2Key,
 				body: snapshotMarkdownContent,
-				contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+				contentType:
+					files_editable_text_content_type_of(snapshotContent.contentType ?? materializationState.fileNode.contentType) ??
+					("application/octet-stream" satisfies files_ContentType),
 			}),
 		]);
 
@@ -4917,7 +5962,9 @@ export const repair_file_yjs_state_from_visible_text = internalAction({
 			r2_put_object(ctx, {
 				key: contentSnapshotR2Key,
 				body: visibleText,
-				contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+				contentType:
+					files_editable_text_content_type_of(fileNode.contentType) ??
+					("application/octet-stream" satisfies files_ContentType),
 			}),
 		]);
 
@@ -5153,6 +6200,9 @@ export const finalize_file_yjs_repair = internalMutation({
 					nodeId: args.nodeId,
 					assetId: args.contentSnapshotAssetId,
 					userId: args.authorUserId,
+					contentType: state.fileNode.contentType,
+					yjsRootKind: state.fileNode.yjsRootKind,
+					nonCollaborative: state.fileNode.nonCollaborative,
 				}),
 				db_replace_file_chunks(ctx, {
 					organizationId: args.organizationId,
@@ -5223,9 +6273,11 @@ export const cleanup_file_yjs_covered_rows = internalMutation({
 			fileNode?.organizationId === args.organizationId && fileNode.workspaceId === args.workspaceId;
 		// Row cleanup must belong either to the current collaborative lineage or to the exact OFF
 		// barrier. Asset cleanup stays independent because its own reference check is safe.
+		// The OFF barrier covers a file with no document at all: turning collaboration off and an
+		// accepted copy of stored bytes both leave the node without a last-sequence pointer.
 		const canDeleteCoveredRows = args.nonCollaborativeCleanupYjsLastSequenceId
 			? sameTenant &&
-				fileNode.nonCollaborative === true &&
+				fileNode.yjsLastSequenceId === undefined &&
 				fileNode.collaborationCleanupYjsLastSequenceId === args.nonCollaborativeCleanupYjsLastSequenceId
 			: sameTenant &&
 				args.expectedActiveYjsLastSequenceId !== undefined &&
@@ -5558,6 +6610,7 @@ export const get_set_file_collaborative_preflight = internalQuery({
 			organizationId: v.id("organizations"),
 			workspaceId: v.id("organizations_workspaces"),
 			rootKind: v.union(v.literal("rich_text"), v.literal("plain_text")),
+			contentType: v.optional(v.string()),
 			/**
 			 * The file already has a Yjs document, so the action answers success and stops.
 			 */
@@ -5626,6 +6679,7 @@ export const get_set_file_collaborative_preflight = internalQuery({
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			rootKind: fileNode.yjsRootKind,
+			contentType: fileNode.contentType,
 			alreadyCollaborative: fileNode.nonCollaborative !== true,
 			readOnlyScopeNodeId: fileNode.readOnlyScopeNodeId ?? null,
 			cleanupInProgress,
@@ -5773,7 +6827,9 @@ export const set_file_collaborative = action({
 			r2_put_object(ctx, {
 				key: contentSnapshotR2Key,
 				body: normalizedText._yay,
-				contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+				contentType:
+					files_editable_text_content_type_of(preflight.contentType) ??
+					("application/octet-stream" satisfies files_ContentType),
 			}),
 		]);
 
@@ -5987,6 +7043,10 @@ export const finalize_file_collaboration_enable = internalMutation({
 					nodeId: args.nodeId,
 					assetId: args.contentSnapshotAssetId,
 					userId: user._id,
+					contentType: fileNode.contentType,
+					yjsRootKind: fileNode.yjsRootKind,
+					// The node is collaborative from this version on.
+					nonCollaborative: undefined,
 				}),
 			]),
 		);

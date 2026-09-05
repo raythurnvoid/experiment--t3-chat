@@ -79,10 +79,10 @@ import {
 	files_get_read_only_capabilities,
 	files_get_read_only_row_labels,
 	files_get_default_node_name,
-	files_get_monaco_language_id,
 	files_get_node_path_validation,
 	files_get_normalized_node_path_segments,
 	files_get_upload_pipeline_state,
+	files_monaco_language_id_of_content_type,
 	files_node_has_editable_text_content,
 	files_pending_update_has_yjs_content,
 	files_resolve_effective_editor_view,
@@ -800,7 +800,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 				readOnlyState={node.readOnlyState}
 				pendingUpdateId={pendingUpdateId}
 				rootKind={node.yjsRootKind}
-				monacoLanguageId={files_get_monaco_language_id(node.name)}
+				monacoLanguageId={files_monaco_language_id_of_content_type(node.contentType)}
 				nonCollaborative={node.nonCollaborative === true}
 				serverSequence={serverSequence}
 				yjsLastSequenceId={yjsLastSequenceId}
@@ -1678,6 +1678,10 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 			readmeNodeId={readmeNodeId}
 			readOnlyState={readmeNode?.readOnlyState ?? "writable"}
 			pendingUpdateId={pendingUpdateId}
+			// The README node owns its shape: a README.md created by copying a plain text file is
+			// plain text, and the embed must open it the same way the file view does.
+			rootKind={readmeNode?.yjsRootKind ?? "rich_text"}
+			monacoLanguageId={files_monaco_language_id_of_content_type(readmeNode?.contentType)}
 			nonCollaborative={readmeNode?.nonCollaborative === true}
 			serverSequence={serverSequence}
 			yjsLastSequenceId={yjsLastSequenceId}
@@ -2778,6 +2782,8 @@ type FileNodeViewFolderReadmeEditor_Props = {
 	readmeNodeId: app_convex_Id<"files_nodes">;
 	readOnlyState: files_VisibleTreeNode["readOnlyState"];
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
+	rootKind: files_YjsRootKind;
+	monacoLanguageId: string;
 	nonCollaborative: FileEditor_Props["nonCollaborative"];
 	serverSequence?: number;
 	yjsLastSequenceId?: app_convex_Id<"files_yjs_docs_last_sequences">;
@@ -2796,6 +2802,8 @@ const FileNodeViewFolderReadmeEditor = memo(function FileNodeViewFolderReadmeEdi
 		readmeNodeId,
 		readOnlyState,
 		pendingUpdateId,
+		rootKind,
+		monacoLanguageId,
 		nonCollaborative,
 		serverSequence,
 		yjsLastSequenceId,
@@ -2814,10 +2822,8 @@ const FileNodeViewFolderReadmeEditor = memo(function FileNodeViewFolderReadmeEdi
 				nodeId={readmeNodeId}
 				readOnlyState={readOnlyState}
 				pendingUpdateId={pendingUpdateId}
-				// This embedded editor only ever targets a folder's README.md, which is a rich
-				// text document by definition.
-				rootKind="rich_text"
-				monacoLanguageId="markdown"
+				rootKind={rootKind}
+				monacoLanguageId={monacoLanguageId}
 				nonCollaborative={nonCollaborative}
 				serverSequence={serverSequence}
 				yjsLastSequenceId={yjsLastSequenceId}

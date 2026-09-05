@@ -96,9 +96,16 @@ function remember_signed_url(cacheKey: string, url: string, now: number) {
 export async function files_media_get_signed_url(args: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	fileNodeId: app_convex_Id<"files_nodes">;
+	/**
+	 * The file's current content asset. A file keeps its id when its content is replaced (a
+	 * whole-file copy, a restored version), so the asset id is part of the key: a cached url of
+	 * the old bytes must not be reused for the new ones.
+	 */
+	assetId: app_convex_Id<"files_r2_assets">;
 }) {
 	const now = Date.now();
-	const cached = read_cached_signed_url(args.fileNodeId, now);
+	const cacheKey = `${args.fileNodeId}:${args.assetId}`;
+	const cached = read_cached_signed_url(cacheKey, now);
 	if (cached !== null) {
 		return Result({ _yay: cached });
 	}
@@ -111,7 +118,7 @@ export async function files_media_get_signed_url(args: {
 		return signed;
 	}
 
-	remember_signed_url(args.fileNodeId, signed._yay.url, now);
+	remember_signed_url(cacheKey, signed._yay.url, now);
 
 	return Result({ _yay: signed._yay.url });
 }

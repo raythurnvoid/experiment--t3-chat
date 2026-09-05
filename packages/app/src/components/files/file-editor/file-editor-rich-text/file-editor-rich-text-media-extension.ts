@@ -49,7 +49,8 @@ export type FileEditorRichTextMedia_ClassNames =
 	| "FileEditorRichTextMedia-state-processing"
 	| "FileEditorRichTextMedia-state-failed"
 	| "FileEditorRichTextMedia-state-missing"
-	| "FileEditorRichTextMedia-state-broken";
+	| "FileEditorRichTextMedia-state-broken"
+	| "FileEditorRichTextMedia-state-incompatible";
 
 /**
  * What the reader should see for one embed.
@@ -58,8 +59,10 @@ export type FileEditorRichTextMedia_ClassNames =
  * anybody else: the node exists and the bytes are on their way to R2. `failed` is an upload that
  * never arrived. The cron sweeper deliberately leaves an unfinalized asset alone while a node
  * still points at it, so nothing else will ever clean it up and the reader has to be told.
+ * `incompatible` is a file that is not an image or video anymore: a whole-file copy or a
+ * restored version replaced its content, and the file kept its id.
  */
-type MediaState = "ready" | "uploading" | "processing" | "failed" | "missing" | "broken";
+type MediaState = "ready" | "uploading" | "processing" | "failed" | "missing" | "broken" | "incompatible";
 
 /** Every state that shows a text placeholder instead of the media itself. */
 type MediaPlaceholderState = Exclude<MediaState, "ready">;
@@ -70,6 +73,7 @@ const MEDIA_STATE_CLASS_NAMES = {
 	failed: "FileEditorRichTextMedia-state-failed",
 	missing: "FileEditorRichTextMedia-state-missing",
 	broken: "FileEditorRichTextMedia-state-broken",
+	incompatible: "FileEditorRichTextMedia-state-incompatible",
 } satisfies Record<MediaPlaceholderState, FileEditorRichTextMedia_ClassNames>;
 
 const MEDIA_STATE_LABELS = {
@@ -78,6 +82,7 @@ const MEDIA_STATE_LABELS = {
 	failed: "Upload failed",
 	missing: "File not available",
 	broken: "Could not load media",
+	incompatible: "File is not an image or video anymore",
 } satisfies Record<MediaPlaceholderState, string>;
 
 const MEDIA_MIN_WIDTH_PX = 80;
@@ -737,7 +742,14 @@ class MediaNodeView implements NodeView {
 	}
 
 	private watchAsset(fileNodeId: app_convex_Id<"files_nodes">) {
-		const watch = app_convex.watchQuery(app_convex_api.r2.get_asset_by_file_node_id, {
+		const assetWatch = app_convex.watchQuery(app_convex_api.r2.get_asset_by_file_node_id, {
+			membershipId: this.membershipId,
+			fileNodeId,
+		});
+		// The file keeps its id when its content is replaced (a whole-file copy, a restored
+		// version), and the new content may not be an image or video. Watch the node too, so the
+		// embed says so instead of handing the bytes of a PDF to an <img>.
+		const nodeWatch = app_convex.watchQuery(app_convex_api.files_nodes.get_file_node_for_membership, {
 			membershipId: this.membershipId,
 			fileNodeId,
 		});
@@ -753,15 +765,24 @@ class MediaNodeView implements NodeView {
 			// available" flash during an upload, once per subscribe: the embed re-resolves when the
 			// uploader swaps the node's src, and each new watch starts one round trip away from its
 			// first result. Keep the current placeholder until a real result lands.
-			const asset = watch.localQueryResult();
-			if (asset === undefined) {
+			const asset = assetWatch.localQueryResult();
+			const fileNode = nodeWatch.localQueryResult();
+			if (asset === undefined || fileNode === undefined) {
 				return;
 			}
 
 			this.clearExpiryTimer();
 
+			// A gone node reads as missing below, through its gone asset.
+			const requiredTypePrefix = this.media instanceof HTMLVideoElement ? "video/" : "image/";
+			if (fileNode !== null && !fileNode.contentType?.startsWith(requiredTypePrefix)) {
+				this.renderState("incompatible");
+				return;
+			}
+
 			const state = media_state_from_asset(asset);
-			if (state !== "ready") {
+			// A missing asset is never "ready"; the null check only tells TypeScript so.
+			if (state !== "ready" || asset === null) {
 				// Nothing in the database changes when the upload deadline passes, so the watch
 				// never fires again on its own and "Processing…" would stay on screen forever.
 				// Re-run this check right after the deadline to flip the placeholder to "failed".
@@ -779,8 +800,9 @@ class MediaNodeView implements NodeView {
 			}
 
 			// The upload pipeline may still be converting the file into a Markdown sibling, but the
-			// bytes are already in R2, so the embed can show them now.
-			files_media_get_signed_url({ membershipId: this.membershipId, fileNodeId })
+			// bytes are already in R2, so the embed can show them now. The watch fires again when
+			// the file's content is replaced, and the new asset id gets a new url.
+			files_media_get_signed_url({ membershipId: this.membershipId, fileNodeId, assetId: asset._id })
 				.then((signed) => {
 					if (signed._nay) {
 						this.renderState("missing");
@@ -797,7 +819,12 @@ class MediaNodeView implements NodeView {
 				});
 		};
 
-		this.assetWatchUnsubscribe = watch.onUpdate(apply);
+		const assetUnsubscribe = assetWatch.onUpdate(apply);
+		const nodeUnsubscribe = nodeWatch.onUpdate(apply);
+		this.assetWatchUnsubscribe = () => {
+			assetUnsubscribe();
+			nodeUnsubscribe();
+		};
 		apply();
 	}
 }

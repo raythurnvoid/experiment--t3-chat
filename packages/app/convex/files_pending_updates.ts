@@ -51,7 +51,6 @@ import {
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
 	files_ROOT_ID,
-	files_copy_class_mismatch_message,
 	files_db_cancel_pending_update_cleanup_tasks,
 	files_db_expire_pending_update_operation_batch,
 	files_db_get_pending_path_overlay_data,
@@ -61,7 +60,6 @@ import {
 	files_db_load_pending_update_yjs_state_bytes,
 	files_db_retire_pending_update_yjs_states,
 	files_db_schedule_pending_update_cleanup,
-	files_node_has_editable_text_content,
 	files_node_has_editable_yjs_state,
 	files_pending_update_content_of,
 	files_pending_update_yjs_state_digest,
@@ -77,22 +75,36 @@ import {
 	files_yjs_doc_check_text_addressable,
 	files_yjs_doc_plain_text_root_map_size,
 } from "../shared/files-yjs.ts";
-import { files_yjs_doc_get_text, files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
+import {
+	files_yjs_doc_create_from_text,
+	files_yjs_doc_get_text,
+	files_yjs_doc_update_from_text,
+} from "../shared/files-tiptap.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import { files_chunk_plain_text } from "../server/files-plain-text-chunking.ts";
 import {
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_MAX_YJS_RECONSTRUCTED_STATE_BYTES,
 	files_MAX_YJS_WIRE_BYTES,
+	files_editable_text_content_type_of,
+	files_editable_text_shape_of,
 	files_get_utf8_byte_size,
+	files_node_has_editable_text_content,
 	files_normalize_text_document_input,
+	type files_ContentType,
 	type files_YjsRootKind,
 } from "../shared/files.ts";
 import {
 	files_metadata_frontmatter_exceeds_index_caps,
 	files_metadata_preflight_frontmatter,
 } from "../shared/files-metadata.ts";
-import { r2_fetch_object_from_bucket } from "./r2_client.ts";
+import {
+	r2_copy_object_to_immutable_key,
+	r2_create_asset_key,
+	r2_enqueue_object_deletion_job,
+	r2_fetch_object_from_bucket,
+	r2_put_object,
+} from "./r2_client.ts";
 import { files_metadata_db_delete_pending, files_metadata_db_replace_pending } from "./files_metadata.ts";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
@@ -410,7 +422,7 @@ export type files_pending_updates_get_by_file_node_Result =
 		? Awaited<ReturnValue>
 		: never;
 
-async function files_pending_update_db_delete_chunks(
+export async function files_pending_update_db_delete_chunks(
 	ctx: MutationCtx,
 	args: { pendingUpdateId: Id<"files_pending_updates"> },
 ) {
@@ -572,17 +584,24 @@ async function files_pending_update_db_replace_chunks(
 		nodeId: Id<"files_nodes">;
 		pendingUpdateId: Id<"files_pending_updates">;
 		unstagedText: string;
+		/**
+		 * The shape to chunk with. A whole-file replacement brings the shape of the file it
+		 * copies. Without it, the node's own document shape is used, so the node must have one.
+		 */
+		rootKind?: "rich_text" | "plain_text";
 	},
 ) {
 	await files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: args.pendingUpdateId });
 
 	const fileNode = await ctx.db.get("files_nodes", args.nodeId);
-	if (
-		!fileNode ||
-		fileNode.organizationId !== args.organizationId ||
-		fileNode.workspaceId !== args.workspaceId ||
-		!files_node_has_editable_yjs_state(fileNode)
-	) {
+	// The node owns the shape (a pending update is a proposal FOR a node), and the chunker
+	// dispatches on it: a pending proposal on a `.json` must chunk as plain text. A whole-file
+	// replacement is the exception: it is chunked with the shape of the copied file.
+	const rootKind =
+		fileNode && fileNode.organizationId === args.organizationId && fileNode.workspaceId === args.workspaceId
+			? (args.rootKind ?? (files_node_has_editable_yjs_state(fileNode) ? fileNode.yjsRootKind : undefined))
+			: undefined;
+	if (!fileNode || rootKind === undefined) {
 		console.error("Failed to replace pending update chunks: fileNode is missing or mismatched", {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -592,10 +611,6 @@ async function files_pending_update_db_replace_chunks(
 		});
 		return Result({ _yay: null });
 	}
-
-	// The node owns the shape (a pending update is a proposal FOR a node), and the chunker
-	// dispatches on it: a pending proposal on a `.json` must chunk as plain text.
-	const rootKind = fileNode.yjsRootKind;
 	const chunks =
 		rootKind === "rich_text"
 			? await files_chunk_markdown(args.unstagedText)
@@ -2026,6 +2041,15 @@ export const remove_file_pending_update_if_expired = internalMutation({
 			return null;
 		}
 
+		// An expired whole-file copy releases its staged object before the doc goes.
+		if (pendingUpdate.pendingReplacement) {
+			await files_pending_update_db_release_replacement_asset(ctx, {
+				organizationId: pendingUpdate.organizationId,
+				workspaceId: pendingUpdate.workspaceId,
+				assetId: pendingUpdate.pendingReplacement.assetId,
+			});
+		}
+
 		if (pendingUpdate.eagerCreated) {
 			if (await files_pending_update_db_remove_eager_created_node_if_safe(ctx, { pendingUpdate })) {
 				// Expired eager-create proposal: remove the eager-created destination node entirely. The
@@ -2495,8 +2519,6 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 		baseYjsSequence: v.number(),
 		baseLineageGeneration: v.number(),
 		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
-		/** Source file ids found before the action builds this replace proposal. */
-		expectedSourceNodeIds: v.array(v.id("files_nodes")),
 		baseStateId: v.id("files_pending_update_yjs_states"),
 		stagedStateId: v.id("files_pending_update_yjs_states"),
 		unstagedStateId: v.id("files_pending_update_yjs_states"),
@@ -2505,9 +2527,7 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 		unstagedStateDigest: v.string(),
 		unstagedText: v.string(),
 		unstagedBranchChanged: v.boolean(),
-		copiedFrom: v.optional(
-			v.object({ nodeId: v.id("files_nodes"), path: v.string(), archivesSourceOnAccept: v.optional(v.boolean()) }),
-		),
+		copiedFrom: v.optional(v.object({ nodeId: v.id("files_nodes"), path: v.string() })),
 		/**
 		 * The committed last sequence captured by the mutation that eagerly created the node for
 		 * this proposal (write_file/cp on a new path). Internal-only: never expose it to clients,
@@ -2551,39 +2571,6 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 			return nodeWritable;
 		}
 
-		if (args.copiedFrom?.archivesSourceOnAccept) {
-			const membership = await ctx.db
-				.query("organizations_workspaces_users")
-				.withIndex("by_active_user_organization_workspace", (q) =>
-					q
-						.eq("active", true)
-						.eq("userId", args.userId)
-						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId),
-				)
-				.first();
-			if (!membership) {
-				return Result({ _nay: { message: "Permission denied" } });
-			}
-			const currentSourceChain = await files_pending_update_db_collect_replace_source_chain(ctx, {
-				membership,
-				copiedFrom: args.copiedFrom,
-				userId: args.userId,
-			});
-			if (currentSourceChain._nay) {
-				return currentSourceChain;
-			}
-			const currentSourceNodeIds = currentSourceChain._yay.chain.map((sourceNode) => sourceNode._id);
-			if (
-				currentSourceNodeIds.length !== args.expectedSourceNodeIds.length ||
-				currentSourceNodeIds.some((sourceNodeId, index) => sourceNodeId !== args.expectedSourceNodeIds[index])
-			) {
-				return Result({ _nay: { message: "Pending update changed, retry the write" } });
-			}
-		} else if (args.expectedSourceNodeIds.length > 0) {
-			return Result({ _nay: { message: "Pending update changed, retry the write" } });
-		}
-
 		// The one bounded text this commit carries; the branch states were capped at seal.
 		if (files_get_utf8_byte_size(args.unstagedText) > files_MAX_TEXT_CONTENT_BYTES) {
 			return Result({ _nay: { message: `Text content exceeds ${files_MAX_TEXT_CONTENT_BYTES}-byte limit` } });
@@ -2597,32 +2584,6 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 		});
 		if (frontmatterRefusal) {
 			return frontmatterRefusal;
-		}
-
-		// Refuse cross-class copies: cp and mv -f name their source node here, and a
-		// Markdown source must not land in a plain text file or the reverse — the copied text
-		// would be re-parsed under the wrong document shape. A bare string carries no class, so
-		// this comparison only exists when `copiedFrom` is present; a source that disappeared
-		// mid-action skips it (the content is already plain text either way).
-		if (args.copiedFrom) {
-			const copySourceNode = await ctx.db.get("files_nodes", args.copiedFrom.nodeId);
-			if (
-				copySourceNode &&
-				copySourceNode.organizationId === args.organizationId &&
-				copySourceNode.workspaceId === args.workspaceId &&
-				files_node_has_editable_text_content(copySourceNode) &&
-				files_node_has_editable_yjs_state(file) &&
-				copySourceNode.yjsRootKind !== file.yjsRootKind
-			) {
-				return Result({
-					_nay: {
-						message: files_copy_class_mismatch_message({
-							sourceRootKind: copySourceNode.yjsRootKind,
-							destRootKind: file.yjsRootKind,
-						}),
-					},
-				});
-			}
 		}
 
 		const batch = await db_get_owned_operation_batch(ctx, {
@@ -2700,20 +2661,6 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 					}
 				: undefined;
 
-		// The newest structural intent wins: a replace-move archives its source on accept, so the
-		// source's own stale pending move (mv a→b before mv -f b→c) must not survive it.
-		if (args.copiedFrom?.archivesSourceOnAccept) {
-			const sourcePendingUpdate = await files_db_get_pending_update(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				userId: args.userId,
-				nodeId: args.copiedFrom.nodeId,
-			});
-			if (sourcePendingUpdate?.pendingMove) {
-				await files_pending_update_db_settle_move_row(ctx, { pendingUpdate: sourcePendingUpdate });
-			}
-		}
-
 		const now = Date.now();
 		const unstagedSize = files_get_utf8_byte_size(args.unstagedText);
 		// Contributor set: an agent write records its thread once per doc; client writes pass no
@@ -2743,14 +2690,23 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 			});
 		} else {
 			pendingUpdateId = existingPendingUpdate._id;
+			// The newest intent wins: a text write after a whole-file copy replaces the copy, and
+			// the copy's staged object is released.
+			if (existingPendingUpdate.pendingReplacement) {
+				await files_pending_update_db_release_replacement_asset(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					assetId: existingPendingUpdate.pendingReplacement.assetId,
+				});
+			}
 			await ctx.db.patch("files_pending_updates", pendingUpdateId, {
 				baseYjsSequence: args.baseYjsSequence,
 				baseLineageGeneration: args.baseLineageGeneration,
 				baseStateId: args.baseStateId,
 				stagedStateId: args.stagedStateId,
 				unstagedStateId: args.unstagedStateId,
-				// The newest structural intent wins: a later cp/mv -f re-records where the content
-				// comes from (and whether accepting archives that source).
+				pendingReplacement: undefined,
+				// The newest structural intent wins: a later cp re-records where the content comes from.
 				...(args.copiedFrom ? { copiedFrom: args.copiedFrom } : {}),
 				// Never overwrite an existing eagerCreated: its committedSequence stamp must stay immutable.
 				...(eagerCreated && !existingPendingUpdate.eagerCreated ? { eagerCreated } : {}),
@@ -2852,24 +2808,6 @@ async function action_upsert_file_pending_update(
 	if (fileWritable._nay) {
 		await retireBatch();
 		return fileWritable;
-	}
-
-	let expectedSourceNodeIds: Array<Id<"files_nodes">> = [];
-	if (args.copiedFrom?.archivesSourceOnAccept) {
-		const sourcePreflight = (await ctx.runQuery(
-			internal.files_pending_updates.preflight_replace_source_chain_writable,
-			{
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				userId: args.userId,
-				copiedFrom: args.copiedFrom,
-			},
-		)) as preflight_replace_source_chain_writable_Result;
-		if (sourcePreflight._nay) {
-			await retireBatch();
-			return sourcePreflight;
-		}
-		expectedSourceNodeIds = sourcePreflight._yay.sourceNodeIds;
 	}
 
 	// Only the exact doc the caller targeted: a provided id that resolves to a doc with a
@@ -3029,18 +2967,11 @@ async function action_upsert_file_pending_update(
 		return Result({ _nay: { message: "Failed to compare pending update branches with base" } });
 	}
 
-	// No-change docs normally delete/degrade, but two kinds must persist: eager-created docs
-	// (empty write_file / empty-source copy) store base == staged == unstaged so the family
-	// survives and the eager-created node stays discardable; `mv -f` replace-moves must exist to
-	// accept, because accepting an identical-content replace still archives the source.
+	// No-change docs normally delete/degrade, but eager-created docs (empty write_file /
+	// empty-source copy) must persist: they store base == staged == unstaged so the family
+	// survives and the eager-created node stays discardable.
 	const hasChanges = stagedText._yay !== baseText._yay || unstagedText._yay !== baseText._yay;
-	if (
-		!hasChanges &&
-		!existingPendingUpdate?.eagerCreated &&
-		args.eagerCreatedCommittedSequence === undefined &&
-		!args.copiedFrom?.archivesSourceOnAccept &&
-		!existingPendingUpdate?.copiedFrom?.archivesSourceOnAccept
-	) {
+	if (!hasChanges && !existingPendingUpdate?.eagerCreated && args.eagerCreatedCommittedSequence === undefined) {
 		const settled = (await ctx.runMutation(internal.files_pending_updates.settle_file_pending_update_no_change_in_db, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -3082,8 +3013,7 @@ async function action_upsert_file_pending_update(
 		args.copiedFrom === undefined ||
 		(existingCopiedFrom != null &&
 			existingCopiedFrom.nodeId === args.copiedFrom.nodeId &&
-			existingCopiedFrom.path === args.copiedFrom.path &&
-			(existingCopiedFrom.archivesSourceOnAccept ?? false) === (args.copiedFrom.archivesSourceOnAccept ?? false));
+			existingCopiedFrom.path === args.copiedFrom.path);
 	const eagerCreatedAlreadyRecorded =
 		args.eagerCreatedCommittedSequence === undefined || existingPendingUpdate?.eagerCreated !== undefined;
 	const outputDigests = new Map(
@@ -3192,7 +3122,6 @@ async function action_upsert_file_pending_update(
 			baseYjsSequence,
 			baseLineageGeneration: data.lineageGeneration,
 			expectedYjsLastSequenceId: data.yjsLastSequenceId,
-			expectedSourceNodeIds,
 			baseStateId: base.stateId,
 			stagedStateId: staged.stateId,
 			unstagedStateId: unstaged.stateId,
@@ -3288,9 +3217,7 @@ export const upsert_file_pending_update_internal_action = internalAction({
 		 */
 		operationBatchId: v.id("files_pending_update_operation_batches"),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
-		copiedFrom: v.optional(
-			v.object({ nodeId: v.id("files_nodes"), path: v.string(), archivesSourceOnAccept: v.optional(v.boolean()) }),
-		),
+		copiedFrom: v.optional(v.object({ nodeId: v.id("files_nodes"), path: v.string() })),
 		/**
 		 * The committed last sequence captured by the mutation that eagerly created the node for
 		 * this proposal (write_file/cp on a new path). Internal-only: never expose it to clients,
@@ -4073,6 +4000,14 @@ export const discard_file_pending_structural = mutation({
 		}
 
 		if (pendingUpdate.copiedFrom || pendingUpdate.eagerCreated) {
+			// A whole-file copy owns a staged object. Release it before the doc goes.
+			if (pendingUpdate.pendingReplacement) {
+				await files_pending_update_db_release_replacement_asset(ctx, {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					assetId: pendingUpdate.pendingReplacement.assetId,
+				});
+			}
 			if (await files_pending_update_db_remove_eager_created_node_if_safe(ctx, { pendingUpdate })) {
 				// Discarding an eager-create proposal removes the eager-created destination node
 				// entirely; the hard delete subsumes this doc and its chunks.
@@ -4188,6 +4123,44 @@ export const discard_file_pending_content = mutation({
 			return Result({ _nay: { message: "Not found" } });
 		}
 
+		// A whole-file copy is discarded as a whole: release the staged object, and remove an
+		// eager-created destination like a discarded copy. A move on the same doc survives.
+		if (pendingUpdate.pendingReplacement) {
+			await files_pending_update_db_release_replacement_asset(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				assetId: pendingUpdate.pendingReplacement.assetId,
+			});
+			if (await files_pending_update_db_remove_eager_created_node_if_safe(ctx, { pendingUpdate })) {
+				return Result({ _yay: null });
+			}
+			if (pendingUpdate.pendingMove) {
+				const now = Date.now();
+				await Promise.all([
+					ctx.db.patch("files_pending_updates", pendingUpdate._id, {
+						pendingReplacement: undefined,
+						copiedFrom: undefined,
+						size: 0,
+						updatedAt: now,
+					}),
+					files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id }),
+					files_db_schedule_pending_update_cleanup(ctx, {
+						pendingUpdateId: pendingUpdate._id,
+						expectedUpdatedAt: now,
+					}),
+				]);
+				return Result({ _yay: null });
+			}
+			await Promise.all([
+				files_db_cancel_pending_update_cleanup_tasks(ctx, {
+					pendingUpdateId: pendingUpdate._id,
+				}),
+				files_pending_update_db_delete_chunks(ctx, { pendingUpdateId: pendingUpdate._id }),
+				ctx.db.delete("files_pending_updates", pendingUpdate._id),
+			]);
+			return Result({ _yay: null });
+		}
+
 		const content = files_pending_update_content_of(pendingUpdate);
 		if (!content) {
 			return Result({ _yay: null });
@@ -4248,12 +4221,8 @@ export const discard_file_pending_content = mutation({
 		}
 
 		// Reverting unstaged to staged can collapse the whole proposal back to base. The same
-		// no-change rules as the upsert flow apply: eager-created docs and replace-moves persist.
-		if (
-			stagedText._yay === baseText._yay &&
-			!pendingUpdate.eagerCreated &&
-			!pendingUpdate.copiedFrom?.archivesSourceOnAccept
-		) {
+		// no-change rule as the upsert flow applies: eager-created docs persist.
+		if (stagedText._yay === baseText._yay && !pendingUpdate.eagerCreated) {
 			if (pendingUpdate.pendingMove) {
 				const now = Date.now();
 				await Promise.all([
@@ -4754,12 +4723,11 @@ export const persist_file_pending_update_rebased_state = action({
 			return Result({ _nay: { message: "Failed to compare rebased pending update branches with base" } });
 		}
 
-		// No-change docs normally delete/degrade, but two kinds must persist: eager-created docs
-		// store base == staged == unstaged so the family survives and the eager-created node stays
-		// discardable; `mv -f` replace-moves must exist to accept, because accepting an
-		// identical-content replace still archives the source.
+		// No-change docs normally delete/degrade, but eager-created docs must persist: they store
+		// base == staged == unstaged so the family survives and the eager-created node stays
+		// discardable.
 		const hasChanges = stagedText._yay !== baseText._yay || unstagedText._yay !== baseText._yay;
-		if (!hasChanges && !existingPendingUpdate.eagerCreated && !existingPendingUpdate.copiedFrom?.archivesSourceOnAccept) {
+		if (!hasChanges && !existingPendingUpdate.eagerCreated) {
 			const settled = (await ctx.runMutation(internal.files_pending_updates.settle_file_pending_update_no_change_in_db, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
@@ -5029,251 +4997,6 @@ export const get_file_pending_update_last_sequence_saved = query({
 	},
 });
 
-/**
- * A replace-move is a copy that must also archive its source when accepted. A full save
- * always runs this — even an identical-content save that publishes nothing, because
- * accepting the replace must still consume the source. A partial save runs this only when
- * it published staged content; one that publishes nothing only clears the provenance (the
- * proposal degrades to a plain edit). When the archived source's own doc is again a
- * replace-move, the deeper sources are archived too (chained mv -f). Each hop no-ops when
- * its source is gone, archived, or out of scope.
- */
-async function files_pending_update_db_archive_replace_source_chain(
-	ctx: MutationCtx,
-	args: {
-		membership: app_convex_Doc<"organizations_workspaces_users">;
-		copiedFrom: app_convex_Doc<"files_pending_updates">["copiedFrom"];
-		updatedBy: Id<"users">;
-		now: number;
-	},
-) {
-	// Walk the whole replace chain (mv -f a b, then mv -f b c): the accepted content was copied
-	// from the visible chain result, so accepting the head consumes every hop. The visited set
-	// bounds the walk if provenance ever loops.
-	const visitedNodeIds = new Set<Id<"files_nodes">>();
-	let copiedFrom = args.copiedFrom;
-	while (copiedFrom?.archivesSourceOnAccept && !visitedNodeIds.has(copiedFrom.nodeId)) {
-		visitedNodeIds.add(copiedFrom.nodeId);
-		const sourceNode = await ctx.db.get("files_nodes", copiedFrom.nodeId);
-		if (
-			!sourceNode ||
-			sourceNode.organizationId !== args.membership.organizationId ||
-			sourceNode.workspaceId !== args.membership.workspaceId ||
-			sourceNode.kind !== "file" ||
-			sourceNode.archiveOperationId !== undefined
-		) {
-			return;
-		}
-
-		// The caller was authorized for the file being saved. This is the other end of a replace-move,
-		// found through the proposal's provenance, and a proposal can outlive the access that created
-		// it — so it is asked about now, at the moment it would be archived. Asked through the
-		// membership: the file being saved can be a restricted one this caller holds a grant on, which
-		// says nothing about an open source, and the raw helper waves every open node through.
-		const authorizedSource = await access_control_db_authorize_membership(ctx, {
-			userAuth: { id: args.updatedBy },
-			membership: args.membership,
-			permission: "content.write",
-			fileNode: sourceNode,
-		});
-		if (authorizedSource._nay) {
-			return;
-		}
-
-		await files_nodes_db_archive_nodes(ctx, { nodeIds: [sourceNode._id], updatedBy: args.updatedBy, now: args.now });
-
-		// The acting user's leftover doc on the source must not stay acceptable on the archived
-		// file: it is either a pre-mv content edit whose content the replace proposal already
-		// carries, or itself a replace-move doc (chained mv -f) whose own source the next hop
-		// archives. Other users' docs stay untouched.
-		const sourcePendingUpdate = await files_db_get_pending_update(ctx, {
-			organizationId: args.membership.organizationId,
-			workspaceId: args.membership.workspaceId,
-			userId: args.updatedBy,
-			nodeId: sourceNode._id,
-		});
-		if (!sourcePendingUpdate) {
-			return;
-		}
-		await Promise.all([
-			files_db_cancel_pending_update_cleanup_tasks(ctx, {
-				pendingUpdateId: sourcePendingUpdate._id,
-			}),
-			files_db_retire_pending_update_yjs_states(ctx, {
-				organizationId: args.membership.organizationId,
-				workspaceId: args.membership.workspaceId,
-				pendingUpdateId: sourcePendingUpdate._id,
-			}),
-			files_pending_update_db_delete_chunks(ctx, {
-				pendingUpdateId: sourcePendingUpdate._id,
-			}),
-			ctx.db.delete("files_pending_updates", sourcePendingUpdate._id),
-		]);
-		copiedFrom = sourcePendingUpdate.copiedFrom;
-	}
-}
-
-/**
- * Find each source file that this replace save will archive.
- * Check access and the current lock, but do not write yet.
- * Stop at the same place as the archive step.
- */
-async function files_pending_update_db_collect_replace_source_chain(
-	ctx: QueryCtx,
-	args: {
-		membership: app_convex_Doc<"organizations_workspaces_users">;
-		copiedFrom: app_convex_Doc<"files_pending_updates">["copiedFrom"];
-		userId: Id<"users">;
-	},
-) {
-	const chain: app_convex_Doc<"files_nodes">[] = [];
-	const visitedNodeIds = new Set<Id<"files_nodes">>();
-	let copiedFrom = args.copiedFrom;
-	while (copiedFrom?.archivesSourceOnAccept && !visitedNodeIds.has(copiedFrom.nodeId)) {
-		visitedNodeIds.add(copiedFrom.nodeId);
-		const sourceNode = await ctx.db.get("files_nodes", copiedFrom.nodeId);
-		if (
-			!sourceNode ||
-			sourceNode.organizationId !== args.membership.organizationId ||
-			sourceNode.workspaceId !== args.membership.workspaceId ||
-			sourceNode.kind !== "file" ||
-			sourceNode.archiveOperationId !== undefined
-		) {
-			break;
-		}
-
-		const authorizedSource = await access_control_db_authorize_membership(ctx, {
-			userAuth: { id: args.userId },
-			membership: args.membership,
-			permission: "content.write",
-			fileNode: sourceNode,
-		});
-		if (authorizedSource._nay) {
-			return authorizedSource;
-		}
-
-		const sourceWritable = files_node_require_writable(sourceNode);
-		if (sourceWritable._nay) {
-			return sourceWritable;
-		}
-
-		chain.push(sourceNode);
-
-		const sourcePendingUpdate = await files_db_get_pending_update(ctx, {
-			organizationId: args.membership.organizationId,
-			workspaceId: args.membership.workspaceId,
-			userId: args.userId,
-			nodeId: sourceNode._id,
-		});
-		if (!sourcePendingUpdate) {
-			break;
-		}
-		copiedFrom = sourcePendingUpdate.copiedFrom;
-	}
-	return Result({ _yay: { chain } });
-}
-
-/**
- * Refuse when any source file this replace proposal will archive is read-only now.
- */
-export const preflight_replace_source_chain_writable = internalQuery({
-	args: {
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		userId: v.id("users"),
-		copiedFrom: v.object({
-			nodeId: v.id("files_nodes"),
-			path: v.string(),
-			archivesSourceOnAccept: v.optional(v.boolean()),
-		}),
-	},
-	returns: v_result({ _yay: v.object({ sourceNodeIds: v.array(v.id("files_nodes")) }) }),
-	handler: async (ctx, args) => {
-		const membership = await ctx.db
-			.query("organizations_workspaces_users")
-			.withIndex("by_active_user_organization_workspace", (q) =>
-				q
-					.eq("active", true)
-					.eq("userId", args.userId)
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId),
-			)
-			.first();
-		if (!membership) {
-			return Result({ _nay: { message: "Permission denied" } });
-		}
-
-		const sourceChain = await files_pending_update_db_collect_replace_source_chain(ctx, {
-			membership,
-			copiedFrom: args.copiedFrom,
-			userId: args.userId,
-		});
-		if (sourceChain._nay) {
-			return sourceChain;
-		}
-
-		return Result({ _yay: { sourceNodeIds: sourceChain._yay.chain.map((sourceNode) => sourceNode._id) } });
-	},
-});
-
-export type preflight_replace_source_chain_writable_Result =
-	typeof preflight_replace_source_chain_writable extends RegisteredQuery<
-		infer _Visibility,
-		infer _Args,
-		infer ReturnValue
-	>
-		? Awaited<ReturnValue>
-		: never;
-
-/**
- * Refuse when any source file this save will archive is read-only now.
- */
-export const preflight_save_file_pending_update_writable = internalQuery({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		userId: v.id("users"),
-		nodeId: v.id("files_nodes"),
-		pendingUpdateId: v.id("files_pending_updates"),
-	},
-	returns: v_result({ _yay: v.object({ sourceNodeIds: v.array(v.id("files_nodes")) }) }),
-	handler: async (ctx, args) => {
-		const membership = await ctx.db.get("organizations_workspaces_users", args.membershipId);
-		if (!membership || membership.userId !== args.userId) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-
-		const pendingUpdate = await files_db_get_pending_update(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			userId: args.userId,
-			nodeId: args.nodeId,
-			pendingUpdateId: args.pendingUpdateId,
-		});
-		if (!pendingUpdate || pendingUpdate._id !== args.pendingUpdateId) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-
-		const sourceChain = await files_pending_update_db_collect_replace_source_chain(ctx, {
-			membership,
-			copiedFrom: pendingUpdate.copiedFrom,
-			userId: args.userId,
-		});
-		if (sourceChain._nay) {
-			return sourceChain;
-		}
-
-		return Result({ _yay: { sourceNodeIds: sourceChain._yay.chain.map((sourceNode) => sourceNode._id) } });
-	},
-});
-
-export type preflight_save_file_pending_update_writable_Result =
-	typeof preflight_save_file_pending_update_writable extends RegisteredQuery<
-		infer _Visibility,
-		infer _Args,
-		infer ReturnValue
-	>
-		? Awaited<ReturnValue>
-		: never;
 
 export const save_file_pending_update_in_db = internalMutation({
 	args: {
@@ -5284,8 +5007,6 @@ export const save_file_pending_update_in_db = internalMutation({
 		baseYjsSequence: v.number(),
 		baseLineageGeneration: v.number(),
 		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
-		/** Source file ids found before this save starts. */
-		expectedSourceNodeIds: v.array(v.id("files_nodes")),
 		/** The staged accept diff to publish through door 1; absent when nothing staged changed. */
 		trustedStageId: v.optional(v.id("files_yjs_trusted_update_stages")),
 		/**
@@ -5409,24 +5130,6 @@ export const save_file_pending_update_in_db = internalMutation({
 					message: "No content to save",
 				},
 			});
-		}
-
-		// Load the replace sources again in this final write.
-		// Check access and the current lock for every source before changing anything.
-		const currentSourceChain = await files_pending_update_db_collect_replace_source_chain(ctx, {
-			membership,
-			copiedFrom: pendingUpdate.copiedFrom,
-			userId: user._id,
-		});
-		if (currentSourceChain._nay) {
-			return currentSourceChain;
-		}
-		const currentSourceNodeIds = currentSourceChain._yay.chain.map((sourceNode) => sourceNode._id);
-		if (
-			currentSourceNodeIds.length !== args.expectedSourceNodeIds.length ||
-			currentSourceNodeIds.some((sourceNodeId, index) => sourceNodeId !== args.expectedSourceNodeIds[index])
-		) {
-			return Result({ _nay: { message: "Stale save" } });
 		}
 
 		// The file must still have the Yjs sequence used to build this diff.
@@ -5616,22 +5319,12 @@ export const save_file_pending_update_in_db = internalMutation({
 		const nextBaseYjsSequence = newSequence ?? args.baseYjsSequence;
 
 		// Full consume: the unstaged branch matches the saved result, so the proposal is done.
-		// Archiving walks the replace chain: each hop's source node and the acting user's own
-		// doc on it — never this doc — so it runs in parallel with the doc writes below.
 		if (!args.partial) {
-			const archiveSourcePromise = files_pending_update_db_archive_replace_source_chain(ctx, {
-				membership,
-				copiedFrom: pendingUpdate.copiedFrom,
-				updatedBy: user._id,
-				now,
-			});
-
 			if (pendingUpdate.pendingMove) {
 				// Save publishes the content only; the move proposal survives as a move-only doc.
 				// The content is committed now, so expiry must never hard-delete the node: clear the
 				// eager-create stamp (and the now-stale copy provenance).
 				await Promise.all([
-					archiveSourcePromise,
 					files_pending_update_upsert_last_sequence_saved(ctx, {
 						organizationId: membership.organizationId,
 						workspaceId: membership.workspaceId,
@@ -5673,7 +5366,6 @@ export const save_file_pending_update_in_db = internalMutation({
 			}
 
 			await Promise.all([
-				archiveSourcePromise,
 				files_pending_update_upsert_last_sequence_saved(ctx, {
 					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
@@ -5712,16 +5404,6 @@ export const save_file_pending_update_in_db = internalMutation({
 			return Result({ _nay: { message: "Not found" } });
 		}
 		await Promise.all([
-			// A partial save that published nothing (nothing staged) must not complete the move;
-			// the patch below still clears the provenance, so the proposal degrades to a plain edit.
-			args.trustedStageId
-				? files_pending_update_db_archive_replace_source_chain(ctx, {
-						membership,
-						copiedFrom: pendingUpdate.copiedFrom,
-						updatedBy: user._id,
-						now,
-					})
-				: null,
 			ctx.db.patch("files_pending_updates", pendingUpdate._id, {
 				baseYjsSequence: nextBaseYjsSequence,
 				baseLineageGeneration: args.baseLineageGeneration,
@@ -5850,23 +5532,10 @@ export const save_file_pending_update = action({
 			return Result({ _nay: { message: PENDING_BASE_STALE_MESSAGE } });
 		}
 
-		// Check current locks before loading Yjs state.
-		// The final write checks the target and every replace source again.
+		// Check the current lock before loading Yjs state. The final write checks it again.
 		const fileWritable = files_node_require_writable(data.fileNode);
 		if (fileWritable._nay) {
 			return fileWritable;
-		}
-		const sourcePreflight = (await ctx.runQuery(
-			internal.files_pending_updates.preflight_save_file_pending_update_writable,
-			{
-				membershipId: args.membershipId,
-				userId: userAuth.id,
-				nodeId: args.nodeId,
-				pendingUpdateId: pendingUpdate._id,
-			},
-		)) as preflight_save_file_pending_update_writable_Result;
-		if (sourcePreflight._nay) {
-			return sourcePreflight;
 		}
 
 		const rootKind = data.fileNode.yjsRootKind;
@@ -5997,7 +5666,6 @@ export const save_file_pending_update = action({
 				baseYjsSequence: data.lastSequence,
 				baseLineageGeneration: data.lineageGeneration,
 				expectedYjsLastSequenceId: data.yjsLastSequenceId,
-				expectedSourceNodeIds: sourcePreflight._yay.sourceNodeIds,
 				trustedStageId,
 			})) as save_file_pending_update_in_db_Result;
 			if (saved._nay) {
@@ -6131,7 +5799,6 @@ export const save_file_pending_update = action({
 				baseYjsSequence: data.lastSequence,
 				baseLineageGeneration: data.lineageGeneration,
 				expectedYjsLastSequenceId: data.yjsLastSequenceId,
-				expectedSourceNodeIds: sourcePreflight._yay.sourceNodeIds,
 				trustedStageId,
 				partial: {
 					operationBatchId,
@@ -6159,3 +5826,809 @@ export const save_file_pending_update = action({
 		return Result({ _yay: saved._yay });
 	},
 });
+
+// #region whole-file replacement
+
+/**
+ * Accept refuses a whole-file replacement when the destination changed after the copy was
+ * proposed, so a copy never overwrites content the reviewer never saw.
+ */
+export const files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE =
+	"The file changed after this copy was proposed. Discard the copy and copy again.";
+
+const PENDING_REPLACEMENT_SOURCE_CHANGED_MESSAGE = "The source file changed while it was being copied. Copy again.";
+
+/**
+ * Hand a staged replacement asset to the deletion ledger and delete its doc.
+ *
+ * The staged object sits under its final key, so the unfinalized-asset sweeper never touches it.
+ * Only this release removes it. Discard, expiry, a write that supersedes the copy, a refused
+ * commit, and account deletion all call it.
+ */
+export async function files_pending_update_db_release_replacement_asset(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		assetId: Id<"files_r2_assets">;
+	},
+) {
+	const asset = await ctx.db.get("files_r2_assets", args.assetId);
+	if (!asset || asset.organizationId !== args.organizationId || asset.workspaceId !== args.workspaceId) {
+		return;
+	}
+
+	// Add the job before deleting the doc. Both save together, so a crash cannot lose the cleanup.
+	await r2_enqueue_object_deletion_job(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		r2Key: r2_create_asset_key({
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			assetId: asset._id,
+		}),
+		reason: "discarded_replacement",
+	});
+	await ctx.db.delete("files_r2_assets", asset._id);
+}
+
+/**
+ * Everything the stage action needs, read in one query, so the source's type, shape, mode, and
+ * content asset come from the same version of the source node.
+ */
+export const get_data_for_pending_replacement_stage = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		nodeId: v.id("files_nodes"),
+		sourceNodeId: v.id("files_nodes"),
+	},
+	returns: v.union(
+		v.object({
+			destNode: doc(app_convex_schema, "files_nodes"),
+			sourceNode: doc(app_convex_schema, "files_nodes"),
+			sourceAsset: v.union(doc(app_convex_schema, "files_r2_assets"), v.null()),
+			existingPendingUpdate: v.union(doc(app_convex_schema, "files_pending_updates"), v.null()),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const [destNode, sourceNode] = await Promise.all([
+			ctx.db.get("files_nodes", args.nodeId),
+			ctx.db.get("files_nodes", args.sourceNodeId),
+		]);
+		if (
+			!destNode ||
+			destNode.organizationId !== args.organizationId ||
+			destNode.workspaceId !== args.workspaceId ||
+			destNode.kind !== "file" ||
+			destNode.archiveOperationId !== undefined ||
+			!sourceNode ||
+			sourceNode.organizationId !== args.organizationId ||
+			sourceNode.workspaceId !== args.workspaceId ||
+			sourceNode.kind !== "file"
+		) {
+			return null;
+		}
+
+		// The destination takes a write. The source only has to be readable.
+		if (
+			!(await access_control_db_can_act_on_file_node(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				fileNode: destNode,
+				permission: "content.write",
+			}))
+		) {
+			return null;
+		}
+		const [readableSource] = await access_control_db_filter_readable_file_nodes(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			nodes: [sourceNode],
+		});
+		if (!readableSource) {
+			return null;
+		}
+
+		const [sourceAsset, existingPendingUpdate] = await Promise.all([
+			sourceNode.assetId ? ctx.db.get("files_r2_assets", sourceNode.assetId) : Promise.resolve(null),
+			files_db_get_pending_update(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				nodeId: args.nodeId,
+			}),
+		]);
+
+		return { destNode, sourceNode, sourceAsset, existingPendingUpdate };
+	},
+});
+
+type get_data_for_pending_replacement_stage_Result =
+	typeof get_data_for_pending_replacement_stage extends RegisteredQuery<
+		infer _Visibility,
+		infer _Args,
+		infer ReturnValue
+	>
+		? Awaited<ReturnValue>
+		: never;
+
+/**
+ * The visible Result shapes of the replacement doors. Hand-written on purpose: the bash `cp`
+ * command sits inside the generated-API type graph, and inferring these from the registered
+ * functions there would make the generated API collapse to `any`.
+ */
+export type files_pending_updates_stage_file_pending_replacement_Result =
+	| { _yay: { pendingUpdateId: Id<"files_pending_updates"> }; _nay?: undefined }
+	| { _yay?: undefined; _nay: { name?: string; message: string } };
+
+export type files_pending_updates_accept_file_pending_replacement_Result =
+	| { _yay: null; _nay?: undefined }
+	| { _yay?: undefined; _nay: { name?: string; message: string } };
+
+/**
+ * Stage a whole-file replacement of `nodeId` with a copy of the source file (`cp` onto an app
+ * path). The copy carries the source's content, content type, document shape, and collaboration
+ * mode. The user reviews it as a whole and accepts it with `accept_file_pending_replacement`.
+ *
+ * The source is frozen now. A text source is stored as the text the caller read (through the
+ * caller's own pending overlay) under a new content object. A stored source is copied on the R2
+ * server side to a new object. Later source changes never reach the proposal.
+ */
+export const stage_file_pending_replacement_internal_action = internalAction({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		nodeId: v.id("files_nodes"),
+		source: v.object({ nodeId: v.id("files_nodes"), path: v.string() }),
+		/** The source's content asset the caller read. The stage refuses when the source moved on. */
+		expectedSourceAssetId: v.id("files_r2_assets"),
+		/** The source text the caller read, for an editable text source. Absent for stored bytes. */
+		sourceText: v.optional(v.string()),
+		eagerCreatedCommittedSequence: v.optional(v.number()),
+		eagerCreatedAncestorIds: v.optional(v.array(v.id("files_nodes"))),
+		threadId: v.optional(v.id("ai_chat_threads")),
+	},
+	returns: v_result({ _yay: v.object({ pendingUpdateId: v.id("files_pending_updates") }) }),
+	handler: async (ctx, args): Promise<files_pending_updates_stage_file_pending_replacement_Result> => {
+		const data = (await ctx.runQuery(internal.files_pending_updates.get_data_for_pending_replacement_stage, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			nodeId: args.nodeId,
+			sourceNodeId: args.source.nodeId,
+		})) as get_data_for_pending_replacement_stage_Result;
+		if (!data) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		const writable = files_node_require_writable(data.destNode);
+		if (writable._nay) {
+			return writable;
+		}
+		// The caller read the source's type and its content in two steps. Refuse when the source's
+		// content asset moved between them, so the type of one version never labels the bytes of
+		// another.
+		if (data.sourceNode.assetId !== args.expectedSourceAssetId) {
+			return Result({ _nay: { message: PENDING_REPLACEMENT_SOURCE_CHANGED_MESSAGE } });
+		}
+		if (data.destNode.assetId === undefined) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		const baseAssetId = data.destNode.assetId;
+
+		const sourceShape = files_editable_text_shape_of(data.sourceNode.contentType);
+		let replacement: NonNullable<app_convex_Doc<"files_pending_updates">["pendingReplacement"]>;
+		let text: string | undefined;
+		if (sourceShape !== null && files_node_has_editable_text_content(data.sourceNode)) {
+			if (args.sourceText === undefined) {
+				return Result({ _nay: { message: "The source text is missing" } });
+			}
+			text = files_normalize_text_document_input(args.sourceText);
+			const size = files_get_utf8_byte_size(text);
+			if (size > files_MAX_TEXT_CONTENT_BYTES) {
+				return Result({ _nay: { message: `Text content exceeds ${files_MAX_TEXT_CONTENT_BYTES}-byte limit` } });
+			}
+
+			const assetId = (await ctx.runMutation(internal.r2.insert_asset, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				kind: "content_snapshot",
+				size,
+				createdBy: args.userId,
+			})) as Id<"files_r2_assets">;
+			await r2_put_object(ctx, {
+				key: r2_create_asset_key({
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					assetId,
+				}),
+				body: text,
+				contentType: sourceShape.contentType,
+			});
+			replacement = {
+				assetId,
+				size,
+				contentType: sourceShape.contentType,
+				yjsRootKind: sourceShape.rootKind,
+				...(data.sourceNode.nonCollaborative === true ? { nonCollaborative: true } : {}),
+				baseAssetId,
+			};
+		} else {
+			const sourceAsset = data.sourceAsset;
+			if (
+				!sourceAsset ||
+				sourceAsset.organizationId !== args.organizationId ||
+				sourceAsset.workspaceId !== args.workspaceId ||
+				sourceAsset.r2Key === undefined ||
+				data.sourceNode.contentType === undefined
+			) {
+				return Result({ _nay: { message: "The source file's content is not available yet" } });
+			}
+
+			const assetId = (await ctx.runMutation(internal.r2.insert_asset, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				kind: "content",
+				size: sourceAsset.size,
+				createdBy: args.userId,
+			})) as Id<"files_r2_assets">;
+			const r2Key = r2_create_asset_key({
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				assetId,
+			});
+			// Copy on the R2 server side. The etag check refuses a source object that changed under
+			// the copy. An asset with no recorded etag is copied as it is right now.
+			const copied = await r2_copy_object_to_immutable_key(ctx, {
+				sourceKey: sourceAsset.r2Key,
+				destinationKey: r2Key,
+				...(sourceAsset.etag !== undefined
+					? { expectedSource: { size: sourceAsset.size, etag: sourceAsset.etag } }
+					: {}),
+			});
+			if (copied.outcome !== "ready") {
+				await ctx.runMutation(internal.files_nodes_content.cleanup_file_node_creation_assets, {
+					assetIds: [assetId],
+					r2Keys: [r2Key],
+					durableTenantScope: { organizationId: args.organizationId, workspaceId: args.workspaceId },
+				});
+				return Result({ _nay: { message: PENDING_REPLACEMENT_SOURCE_CHANGED_MESSAGE } });
+			}
+			replacement = {
+				assetId,
+				size: copied.size,
+				contentType: data.sourceNode.contentType,
+				baseAssetId,
+			};
+		}
+
+		return (await ctx.runMutation(internal.files_pending_updates.commit_file_pending_replacement_in_db, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			nodeId: args.nodeId,
+			expectedUpdatedAt: data.existingPendingUpdate?.updatedAt ?? null,
+			replacement,
+			...(text !== undefined ? { text } : {}),
+			copiedFrom: args.source,
+			...(args.eagerCreatedCommittedSequence !== undefined
+				? { eagerCreatedCommittedSequence: args.eagerCreatedCommittedSequence }
+				: {}),
+			...(args.eagerCreatedAncestorIds !== undefined ? { eagerCreatedAncestorIds: args.eagerCreatedAncestorIds } : {}),
+			...(args.threadId ? { threadId: args.threadId } : {}),
+		})) as files_pending_updates_stage_file_pending_replacement_Result;
+	},
+});
+
+/**
+ * Record a staged whole-file replacement on the caller's pending update doc for the file.
+ *
+ * The commit publishes the staged object: its doc gets the final key. On any refusal it hands
+ * that object to the deletion ledger instead, so a refused stage leaves nothing behind.
+ */
+export const commit_file_pending_replacement_in_db = internalMutation({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		nodeId: v.id("files_nodes"),
+		/** `null` means the action saw no doc. A number is the read doc's `updatedAt` race guard. */
+		expectedUpdatedAt: v.union(v.number(), v.null()),
+		replacement: v.object({
+			assetId: v.id("files_r2_assets"),
+			size: v.number(),
+			contentType: v.string(),
+			yjsRootKind: v.optional(v.union(v.literal("rich_text"), v.literal("plain_text"))),
+			nonCollaborative: v.optional(v.boolean()),
+			baseAssetId: v.id("files_r2_assets"),
+		}),
+		/** The staged text of a text copy, for the pending chunks the agent's readers overlay. */
+		text: v.optional(v.string()),
+		copiedFrom: v.object({ nodeId: v.id("files_nodes"), path: v.string() }),
+		eagerCreatedCommittedSequence: v.optional(v.number()),
+		eagerCreatedAncestorIds: v.optional(v.array(v.id("files_nodes"))),
+		threadId: v.optional(v.id("ai_chat_threads")),
+	},
+	returns: v_result({ _yay: v.object({ pendingUpdateId: v.id("files_pending_updates") }) }),
+	handler: async (ctx, args) => {
+		// The staged asset must be this caller's own unpublished object in this tenant. Nothing is
+		// released for any other id: a caller-supplied asset id is not a claim on that object.
+		const stagedAsset = await ctx.db.get("files_r2_assets", args.replacement.assetId);
+		if (
+			!stagedAsset ||
+			stagedAsset.organizationId !== args.organizationId ||
+			stagedAsset.workspaceId !== args.workspaceId ||
+			stagedAsset.createdBy !== args.userId ||
+			stagedAsset.r2Key !== undefined
+		) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		const refuse = async (message: string) => {
+			await files_pending_update_db_release_replacement_asset(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				assetId: stagedAsset._id,
+			});
+			return Result({ _nay: { message } });
+		};
+
+		const file = await ctx.db.get("files_nodes", args.nodeId);
+		if (
+			!file ||
+			file.organizationId !== args.organizationId ||
+			file.workspaceId !== args.workspaceId ||
+			file.kind !== "file"
+		) {
+			return await refuse("Not found");
+		}
+		if (
+			!(await access_control_db_can_act_on_file_node(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				fileNode: file,
+				permission: "content.write",
+			}))
+		) {
+			return await refuse("Permission denied");
+		}
+		const nodeWritable = files_node_require_writable(file);
+		if (nodeWritable._nay) {
+			return await refuse(nodeWritable._nay.message);
+		}
+		if (file.assetId !== args.replacement.baseAssetId) {
+			return await refuse(files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE);
+		}
+
+		const existingPendingUpdate = await files_db_get_pending_update(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			nodeId: args.nodeId,
+		});
+		// Only the exact doc state the action worked from.
+		if (
+			args.expectedUpdatedAt === null
+				? existingPendingUpdate !== null
+				: !existingPendingUpdate || existingPendingUpdate.updatedAt !== args.expectedUpdatedAt
+		) {
+			return await refuse("Pending update changed, retry the write");
+		}
+		if (!existingPendingUpdate && file.archiveOperationId !== undefined) {
+			return await refuse("Not found");
+		}
+		// A pending delete wins over every other aspect of the doc, and accepting it would leave
+		// the staged object behind. Ask for a decision on the delete first.
+		if (existingPendingUpdate?.pendingArchive) {
+			return await refuse("Discard the pending delete of this file first");
+		}
+
+		const now = Date.now();
+		// Publish the staged object under its final key. The sweeper leaves published assets alone.
+		// Discard and expiry release it through the deletion ledger.
+		await ctx.db.patch("files_r2_assets", stagedAsset._id, {
+			r2Key: r2_create_asset_key({
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				assetId: stagedAsset._id,
+			}),
+			size: args.replacement.size,
+			unfinalizedExpiresAt: undefined,
+			updatedAt: now,
+		});
+
+		// Stamp the eager create with the sequence the creator captured in the mutation that
+		// created the node. See the eager-create field docs.
+		const eagerCreated: app_convex_Doc<"files_pending_updates">["eagerCreated"] =
+			args.eagerCreatedCommittedSequence !== undefined
+				? {
+						committedSequence: args.eagerCreatedCommittedSequence,
+						...(args.eagerCreatedAncestorIds !== undefined
+							? { createdAncestorIds: args.eagerCreatedAncestorIds }
+							: {}),
+					}
+				: undefined;
+		const nextThreadIds =
+			args.threadId && !existingPendingUpdate?.threadIds?.includes(args.threadId)
+				? [...(existingPendingUpdate?.threadIds ?? []), args.threadId]
+				: undefined;
+
+		let pendingUpdateId: Id<"files_pending_updates">;
+		if (!existingPendingUpdate) {
+			pendingUpdateId = await ctx.db.insert("files_pending_updates", {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				fileNodeId: args.nodeId,
+				pendingReplacement: args.replacement,
+				copiedFrom: args.copiedFrom,
+				...(eagerCreated ? { eagerCreated } : {}),
+				...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
+				size: args.replacement.size,
+				updatedAt: now,
+			});
+		} else {
+			pendingUpdateId = existingPendingUpdate._id;
+			// The newest intent wins. A whole-file copy replaces the text branches this user had on
+			// the file, because the copy is reviewed as a whole. An older copy's staged object is
+			// released.
+			if (existingPendingUpdate.pendingReplacement) {
+				await files_pending_update_db_release_replacement_asset(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					assetId: existingPendingUpdate.pendingReplacement.assetId,
+				});
+			}
+			await Promise.all([
+				files_pending_update_content_of(existingPendingUpdate)
+					? files_db_retire_pending_update_yjs_states(ctx, {
+							organizationId: args.organizationId,
+							workspaceId: args.workspaceId,
+							pendingUpdateId,
+						})
+					: null,
+				files_pending_update_db_delete_chunks(ctx, { pendingUpdateId }),
+				ctx.db.patch("files_pending_updates", pendingUpdateId, {
+					baseYjsSequence: undefined,
+					baseLineageGeneration: undefined,
+					baseStateId: undefined,
+					stagedStateId: undefined,
+					unstagedStateId: undefined,
+					pendingReplacement: args.replacement,
+					copiedFrom: args.copiedFrom,
+					// Never overwrite an existing eagerCreated: its committedSequence stamp must stay immutable.
+					...(eagerCreated && !existingPendingUpdate.eagerCreated ? { eagerCreated } : {}),
+					...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
+					size: args.replacement.size,
+					updatedAt: now,
+				}),
+			]);
+		}
+		// A text copy also gets pending chunks, so Bash reads and search overlay the copy like
+		// any other proposal. A stored copy has no text to chunk.
+		if (args.text !== undefined && args.replacement.yjsRootKind !== undefined) {
+			const chunksReplaced = await files_pending_update_db_replace_chunks(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				nodeId: args.nodeId,
+				pendingUpdateId,
+				unstagedText: args.text,
+				rootKind: args.replacement.yjsRootKind,
+			});
+			files_pending_update_log_replace_chunks_nay(chunksReplaced, { pendingUpdateId, nodeId: args.nodeId });
+		}
+		await files_db_schedule_pending_update_cleanup(ctx, {
+			pendingUpdateId,
+			expectedUpdatedAt: now,
+		});
+
+		return Result({ _yay: { pendingUpdateId } });
+	},
+});
+
+export const get_data_for_pending_replacement_accept = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		nodeId: v.id("files_nodes"),
+		pendingUpdateId: v.id("files_pending_updates"),
+	},
+	returns: v.union(
+		v.object({
+			fileNode: doc(app_convex_schema, "files_nodes"),
+			pendingUpdate: doc(app_convex_schema, "files_pending_updates"),
+			stagedAssetR2Key: v.string(),
+		}),
+		v.null(),
+	),
+	handler: async (ctx, args) => {
+		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
+		if (
+			!fileNode ||
+			fileNode.organizationId !== args.organizationId ||
+			fileNode.workspaceId !== args.workspaceId ||
+			fileNode.kind !== "file"
+		) {
+			return null;
+		}
+		if (
+			!(await access_control_db_can_act_on_file_node(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				userId: args.userId,
+				fileNode,
+				permission: "content.write",
+			}))
+		) {
+			return null;
+		}
+
+		const pendingUpdate = await files_db_get_pending_update(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.userId,
+			nodeId: args.nodeId,
+			pendingUpdateId: args.pendingUpdateId,
+		});
+		if (!pendingUpdate || pendingUpdate._id !== args.pendingUpdateId || !pendingUpdate.pendingReplacement) {
+			return null;
+		}
+		const stagedAsset = await ctx.db.get("files_r2_assets", pendingUpdate.pendingReplacement.assetId);
+		if (
+			!stagedAsset ||
+			stagedAsset.organizationId !== args.organizationId ||
+			stagedAsset.workspaceId !== args.workspaceId ||
+			stagedAsset.r2Key === undefined
+		) {
+			return null;
+		}
+
+		return { fileNode, pendingUpdate, stagedAssetR2Key: stagedAsset.r2Key };
+	},
+});
+
+type get_data_for_pending_replacement_accept_Result =
+	typeof get_data_for_pending_replacement_accept extends RegisteredQuery<
+		infer _Visibility,
+		infer _Args,
+		infer ReturnValue
+	>
+		? Awaited<ReturnValue>
+		: never;
+
+type finalize_file_pending_replacement_Result =
+	| { _yay: null; _nay?: undefined }
+	| { _yay?: undefined; _nay: { name?: string; message: string } };
+
+/**
+ * Accept a whole-file replacement. Stored bytes need no more work: the staged object becomes the
+ * file's content as it is. Text gets its final form here. A collaborative result gets a fresh
+ * document built from the text, and the text that document produces is what gets committed,
+ * because building a rich document normalizes Markdown. The final mutation lives in
+ * files_nodes_content.ts, next to the other content-state writers.
+ */
+async function action_accept_file_pending_replacement(
+	ctx: ActionCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: Id<"users">;
+		nodeId: Id<"files_nodes">;
+		pendingUpdateId: Id<"files_pending_updates">;
+	},
+): Promise<files_pending_updates_accept_file_pending_replacement_Result> {
+	const data = (await ctx.runQuery(
+		internal.files_pending_updates.get_data_for_pending_replacement_accept,
+		args,
+	)) as get_data_for_pending_replacement_accept_Result;
+	if (!data) {
+		return Result({ _nay: { message: "Not found" } });
+	}
+	const replacement = data.pendingUpdate.pendingReplacement;
+	if (!replacement) {
+		return Result({ _nay: { message: "Not found" } });
+	}
+	const writable = files_node_require_writable(data.fileNode);
+	if (writable._nay) {
+		return writable;
+	}
+	if (data.fileNode.assetId !== replacement.baseAssetId) {
+		return Result({ _nay: { message: files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE } });
+	}
+	const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
+		userId: args.userId,
+		organizationId: args.organizationId,
+		minimumRequiredCents: 1,
+	});
+	if (!creditCheck.hasCredits) {
+		return Result({ _nay: { message: "Insufficient funds" } });
+	}
+
+	// Uploads made here stay unfinalized until the final mutation publishes them. A refusal below
+	// hands them to the deletion ledger right away.
+	const uploadedAssets: Array<{ assetId: Id<"files_r2_assets">; r2Key: string }> = [];
+	const upload_asset = async (upload: {
+		kind: "yjs_snapshot" | "content_snapshot";
+		body: string | ArrayBuffer;
+		size: number;
+		contentType: files_ContentType;
+	}) => {
+		const assetId = (await ctx.runMutation(internal.r2.insert_asset, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			kind: upload.kind,
+			size: upload.size,
+			createdBy: args.userId,
+		})) as Id<"files_r2_assets">;
+		const r2Key = r2_create_asset_key({
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			assetId,
+		});
+		await r2_put_object(ctx, { key: r2Key, body: upload.body, contentType: upload.contentType });
+		uploadedAssets.push({ assetId, r2Key });
+		return assetId;
+	};
+	const cleanup_uploads = async () => {
+		if (uploadedAssets.length === 0) {
+			return;
+		}
+		await ctx.runMutation(internal.files_nodes_content.cleanup_file_node_creation_assets, {
+			assetIds: uploadedAssets.map((asset) => asset.assetId),
+			r2Keys: uploadedAssets.map((asset) => asset.r2Key),
+			durableTenantScope: { organizationId: args.organizationId, workspaceId: args.workspaceId },
+		});
+	};
+
+	let content: {
+		contentAssetId: Id<"files_r2_assets">;
+		contentSize: number;
+		yjsRootKind?: app_convex_Doc<"files_nodes">["yjsRootKind"];
+		nonCollaborative?: boolean;
+		yjsSnapshot?: { assetId: Id<"files_r2_assets">; size: number };
+		text?: string;
+	};
+	if (replacement.yjsRootKind === undefined) {
+		content = { contentAssetId: replacement.assetId, contentSize: replacement.size };
+	} else {
+		const rootKind = replacement.yjsRootKind;
+		const stagedText = await r2_fetch_object_from_bucket({ key: data.stagedAssetR2Key }).then((response) =>
+			response.text(),
+		);
+		let text = stagedText;
+		let yjsSnapshot: { assetId: Id<"files_r2_assets">; size: number } | undefined;
+		if (replacement.nonCollaborative !== true) {
+			const yjsDoc = files_yjs_doc_create_from_text({ text: stagedText, rootKind });
+			if ("_nay" in yjsDoc) {
+				return Result({ _nay: { message: yjsDoc._nay.message } });
+			}
+			const snapshotUpdate = encodeStateAsUpdate(yjsDoc);
+			if (snapshotUpdate.byteLength > files_MAX_YJS_RECONSTRUCTED_STATE_BYTES) {
+				return Result({
+					_nay: { message: `Compact document exceeds ${files_MAX_YJS_RECONSTRUCTED_STATE_BYTES}-byte limit` },
+				});
+			}
+			const normalizedText = files_yjs_doc_get_text({ yjsDoc, rootKind });
+			if (normalizedText._nay) {
+				return Result({ _nay: { message: normalizedText._nay.message } });
+			}
+			text = normalizedText._yay;
+			yjsSnapshot = {
+				assetId: await upload_asset({
+					kind: "yjs_snapshot",
+					body: files_u8_to_array_buffer(snapshotUpdate),
+					size: snapshotUpdate.byteLength,
+					contentType: "application/octet-stream",
+				}),
+				size: snapshotUpdate.byteLength,
+			};
+		}
+		const textSize = files_get_utf8_byte_size(text);
+		if (textSize > files_MAX_TEXT_CONTENT_BYTES) {
+			await cleanup_uploads();
+			return Result({ _nay: { message: `Text content exceeds ${files_MAX_TEXT_CONTENT_BYTES}-byte limit` } });
+		}
+		// The staged object already holds the text when nothing normalized it. Otherwise the
+		// committed text needs its own object, and the final mutation releases the staged one.
+		const contentAssetId =
+			text === stagedText
+				? replacement.assetId
+				: await upload_asset({
+						kind: "content_snapshot",
+						body: text,
+						size: textSize,
+						contentType: files_editable_text_content_type_of(replacement.contentType) ?? "application/octet-stream",
+					});
+		content = {
+			contentAssetId,
+			contentSize: textSize,
+			yjsRootKind: rootKind,
+			...(replacement.nonCollaborative === true ? { nonCollaborative: true } : {}),
+			...(yjsSnapshot ? { yjsSnapshot } : {}),
+			text,
+		};
+	}
+
+	const finalized = (await ctx.runMutation(internal.files_nodes_content.finalize_file_pending_replacement, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		userId: args.userId,
+		nodeId: args.nodeId,
+		pendingUpdateId: args.pendingUpdateId,
+		expectedUpdatedAt: data.pendingUpdate.updatedAt,
+		stagedAssetId: replacement.assetId,
+		contentType: replacement.contentType,
+		...content,
+	})) as finalize_file_pending_replacement_Result;
+	if (finalized._nay) {
+		await cleanup_uploads();
+		return finalized;
+	}
+
+	return Result({ _yay: null });
+}
+
+/**
+ * The pending panel's Accept for a whole-file copy.
+ */
+export const accept_file_pending_replacement = action({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		nodeId: v.id("files_nodes"),
+		pendingUpdateId: v.id("files_pending_updates"),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args): Promise<files_pending_updates_accept_file_pending_replacement_Result> => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		const rateLimit = await rate_limiter_limit_by_key(ctx, {
+			name: "files_pending_update_write",
+			key: userAuth.id,
+		});
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+		const membership = await ctx.runQuery(api.organizations.get_membership, {
+			membershipId: args.membershipId,
+		});
+		if (!membership || membership.userId !== userAuth.id) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+
+		return await action_accept_file_pending_replacement(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+			nodeId: args.nodeId,
+			pendingUpdateId: args.pendingUpdateId,
+		});
+	},
+});
+
+/**
+ * The agent's door: `cp` onto a text file with collaboration turned off saves the copy right
+ * away, the same way its text writes do.
+ */
+export const accept_file_pending_replacement_internal_action = internalAction({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		nodeId: v.id("files_nodes"),
+		pendingUpdateId: v.id("files_pending_updates"),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args): Promise<files_pending_updates_accept_file_pending_replacement_Result> => {
+		return await action_accept_file_pending_replacement(ctx, args);
+	},
+});
+// #endregion whole-file replacement

@@ -33,19 +33,28 @@ import {
 import { Result } from "common/errors-as-values-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
-import { files_normalize_name, files_normalize_upload_file_name } from "../shared/files.ts";
 import {
+	files_normalize_file_rename_name,
+	files_normalize_name,
+	files_normalize_upload_file_name,
+} from "../shared/files.ts";
+import {
+	files_INVALID_CONTENT_TYPE_MESSAGE,
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_MAX_UPLOADS_BYTES,
 	files_ROOT_ID,
-	files_get_editable_text_content_type,
+	files_default_text_shape_for_name,
+	files_editable_text_content_type_of,
+	files_editable_text_shape_of,
 	files_get_signed_download_serving,
 	files_get_utf8_byte_size,
 	files_node_has_editable_text_content,
 	files_node_has_editable_yjs_state,
 	files_normalize_text_document_input,
+	files_resolve_upload_content_type,
 	files_u8_to_array_buffer,
 	type files_ContentType,
+	type files_YjsRootKind,
 } from "../server/files.ts";
 import { files_yjs_compute_diff_update_from_state_vector } from "../shared/files-yjs.ts";
 import { files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
@@ -2269,6 +2278,12 @@ export const prepare_file_write = internalMutation({
 		overwrite: v.union(v.literal("replace"), v.literal("fail")),
 		contentSize: v.number(),
 		yjsSnapshotSize: v.number(),
+		/**
+		 * The type and shape the file gets when this write creates it. A fill passes the
+		 * target's own values, because a fill never changes the type of an existing file.
+		 */
+		contentType: v.string(),
+		yjsRootKind: v.union(v.literal("rich_text"), v.literal("plain_text")),
 	},
 	returns: v_result({
 		_yay: v.object({
@@ -2334,6 +2349,8 @@ export const prepare_file_write = internalMutation({
 					: { credentialId: args.principalRef.credentialId }),
 			path: args.path,
 			overwrite: args.overwrite,
+			contentType: args.contentType,
+			yjsRootKind: args.yjsRootKind,
 			yjsSnapshotAssetId,
 			contentSnapshotAssetId,
 			expiresAt: now + FILE_WRITE_STAGE_TTL_MS,
@@ -2650,7 +2667,7 @@ export const publish_file_write = internalMutation({
 			parentId: files_ROOT_ID,
 			path: stage.path,
 			kind: "file",
-			contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+			contentType: stage.contentType,
 			// The staged content snapshot holds the file's current bytes. Below it also becomes
 			// the file's first version snapshot.
 			assetId: stage.contentSnapshotAssetId,
@@ -2690,9 +2707,8 @@ export const publish_file_write = internalMutation({
 			workspaceId: stage.workspaceId,
 			nodeId: created._yay,
 			path: stage.path,
-			contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
-			// The public write route is Markdown-only.
-			rootKind: "rich_text",
+			contentType: stage.contentType,
+			rootKind: stage.yjsRootKind,
 			textContent: args.content,
 			readOnly: false,
 			nonCollaborative: args.nonCollaborative === true,
@@ -3229,7 +3245,7 @@ export const publish_file_touch = internalMutation({
 			parentId: files_ROOT_ID,
 			path: stage.path,
 			kind: "file",
-			contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+			contentType: stage.contentType,
 			// The staged empty content snapshot holds the file's current (empty) bytes. Below it
 			// also becomes the file's first version snapshot.
 			assetId: stage.contentSnapshotAssetId,
@@ -3253,9 +3269,8 @@ export const publish_file_touch = internalMutation({
 			workspaceId: stage.workspaceId,
 			nodeId: created._yay,
 			path: stage.path,
-			contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
-			// The public touch route creates Markdown placeholders only.
-			rootKind: "rich_text",
+			contentType: stage.contentType,
+			rootKind: stage.yjsRootKind,
 			textContent: "",
 			readOnly: false,
 			yjsSnapshotAssetId: stage.yjsSnapshotAssetId,
@@ -3612,12 +3627,16 @@ export const create_file_upload_targets = internalMutation({
 				}
 			}
 
+			// The caller's type is stored when it is valid, so a text type here makes the upload an
+			// editable text file. A broken type is refused, not guessed from the name.
+			const contentType = files_resolve_upload_content_type({ contentType: item.contentType, fileName: name });
+			if (contentType === null) {
+				return Result({ _nay: { message: files_INVALID_CONTENT_TYPE_MESSAGE, data: { path: item.path } } });
+			}
+
 			validated.push({
 				path: item.path,
-				// A recognized text extension stores the classifier's type and ignores the
-				// caller's declared one; anything else keeps the client value (media uploads need
-				// it for plugin routing).
-				contentType: files_get_editable_text_content_type(name) ?? item.contentType,
+				contentType,
 				size: item.size,
 				collidingNodeId: existingNode?._id ?? null,
 			});
@@ -3969,7 +3988,7 @@ export const check_file_node_write_permission = internalQuery({
  * (which settles the plugin call), and success-path plugin settlement lives inside the publish
  * mutations.
  */
-async function write_one_markdown_file(
+async function write_one_text_file(
 	ctx: ActionCtx,
 	args: {
 		organizationId: Id<"organizations">;
@@ -3986,6 +4005,12 @@ async function write_one_markdown_file(
 		overwrite: "replace" | "fail";
 		skipIfUnchanged: boolean;
 		/**
+		 * The type the caller named, already checked to be editable text. `null` when the caller
+		 * named none: a created file then takes the hint from its name, and a filled file keeps
+		 * its own type. A named type that differs from an existing file's type is a conflict.
+		 */
+		shape: { contentType: files_ContentType; rootKind: files_YjsRootKind } | null;
+		/**
 		 * Create the file without a collaborative document. Only used when this write creates the
 		 * file: writing over a file that already exists keeps whatever mode that file has.
 		 */
@@ -3997,10 +4022,10 @@ async function write_one_markdown_file(
 		requestReadOnly: boolean;
 	},
 ) {
-	// Decide create-vs-fill before staging. Writing over an existing editable Markdown
-	// file replaces its content in place so the nodeId stays stable for open editors and
-	// links; only non-editable targets (e.g. stored uploads) keep the archive-and-recreate
-	// path in publish_file_write. The publish mutations re-check the node transactionally.
+	// Decide create-vs-fill before staging. Writing over an existing editable text file
+	// replaces its content in place so the nodeId stays stable for open editors and links;
+	// only non-editable targets (e.g. stored uploads) keep the archive-and-recreate path in
+	// publish_file_write. The publish mutations re-check the node transactionally.
 	const activeNode = (await ctx.runQuery(internal.files_nodes.get_by_path, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
@@ -4025,11 +4050,32 @@ async function write_one_markdown_file(
 			},
 		});
 	}
+	// A fill keeps the file's own type. A caller that names a different type asked for a file
+	// this path does not hold, so refuse instead of silently writing under the old type.
+	const activeNodeContentType = files_editable_text_content_type_of(activeNode?.contentType);
+	if (
+		activeNode &&
+		files_node_has_editable_text_content(activeNode) &&
+		args.shape !== null &&
+		args.shape.contentType !== activeNodeContentType
+	) {
+		return Result({
+			_nay: {
+				name: "nay",
+				message: `The file at this path has content type '${activeNodeContentType}'`,
+				data: { status: 409, errorCode: "conflict" },
+			},
+		});
+	}
 	// Fill-in-place branch for a non-collaborative file. There is no document to project the new
 	// text into, so this is a plain content swap. Without this branch the write would fall to the
 	// create path below and archive the file to recreate it, which changes the nodeId on every
 	// re-import.
-	if (activeNode?.nonCollaborative === true && files_node_has_editable_text_content(activeNode)) {
+	if (
+		activeNode?.nonCollaborative === true &&
+		files_node_has_editable_text_content(activeNode) &&
+		activeNodeContentType !== null
+	) {
 		// Re-running an import must not mint a new version for a file whose text did not change.
 		// A service never takes this shortcut: its proof that it created the file lives in the
 		// publish mutation, and a 200 here would let a service confirm the exact content of a
@@ -4053,7 +4099,14 @@ async function write_one_markdown_file(
 					nodeId: activeNode._id,
 				})) as boolean;
 				if (canWriteNode) {
-					return Result({ _yay: { nodeId: activeNode._id, wroteInPlace: true, unchanged: true } });
+					return Result({
+						_yay: {
+							nodeId: activeNode._id,
+							contentType: activeNodeContentType,
+							wroteInPlace: true,
+							unchanged: true,
+						},
+					});
 				}
 			}
 		}
@@ -4069,6 +4122,8 @@ async function write_one_markdown_file(
 			// This path never uploads a Yjs snapshot object; publish_file_fill drops the staged
 			// asset doc.
 			yjsSnapshotSize: 0,
+			contentType: activeNodeContentType,
+			yjsRootKind: activeNode.yjsRootKind,
 		});
 		if (prepared._nay) {
 			if (prepared._nay.message === "Permission denied") {
@@ -4115,7 +4170,7 @@ async function write_one_markdown_file(
 			await r2_put_object(ctx, {
 				key: contentSnapshotKey,
 				body: args.content,
-				contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+				contentType: activeNodeContentType,
 			});
 		} catch (error) {
 			console.error("Failed to write staged file object", {
@@ -4163,12 +4218,19 @@ async function write_one_markdown_file(
 			return Result({ _nay: { name: "nay", message: published._nay.message, data: failure } });
 		}
 
-		return Result({ _yay: { nodeId: published._yay.nodeId, wroteInPlace: true, unchanged: false } });
+		return Result({
+			_yay: {
+				nodeId: published._yay.nodeId,
+				contentType: activeNodeContentType,
+				wroteInPlace: true,
+				unchanged: false,
+			},
+		});
 	}
 
 	// Fill-in-place branch. A null materialization state means the node was archived or
 	// replaced between the two queries; the create path below then handles the write.
-	if (activeNode && files_node_has_editable_yjs_state(activeNode)) {
+	if (activeNode && files_node_has_editable_yjs_state(activeNode) && activeNodeContentType !== null) {
 		const materializationState = (await ctx.runQuery(internal.files_nodes.get_file_content_materialization_state, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -4195,8 +4257,7 @@ async function write_one_markdown_file(
 			const projectedYjsDoc = files_yjs_doc_update_from_text({
 				mut_yjsDoc: currentContent._yay.yjsDoc,
 				text: args.content,
-				// The node in hand owns the shape (the route's `.md` gate makes it rich text today,
-				// but the shape must come from the node, never from the route).
+				// The node in hand owns the shape; it never comes from the request.
 				rootKind: activeNode.yjsRootKind,
 			});
 			if (projectedYjsDoc._nay) {
@@ -4232,7 +4293,14 @@ async function write_one_markdown_file(
 					nodeId: activeNode._id,
 				})) as boolean;
 				if (canWriteNode) {
-					return Result({ _yay: { nodeId: activeNode._id, wroteInPlace: true, unchanged: true } });
+					return Result({
+						_yay: {
+							nodeId: activeNode._id,
+							contentType: activeNodeContentType,
+							wroteInPlace: true,
+							unchanged: true,
+						},
+					});
 				}
 			}
 
@@ -4247,6 +4315,8 @@ async function write_one_markdown_file(
 				// The fill path never uploads a Yjs snapshot object; publish_file_fill drops
 				// the staged asset doc.
 				yjsSnapshotSize: 0,
+				contentType: activeNodeContentType,
+				yjsRootKind: activeNode.yjsRootKind,
 			});
 			if (prepared._nay) {
 				if (prepared._nay.message === "Permission denied") {
@@ -4294,7 +4364,7 @@ async function write_one_markdown_file(
 				await r2_put_object(ctx, {
 					key: contentSnapshotKey,
 					body: args.content,
-					contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+					contentType: activeNodeContentType,
 				});
 			} catch (error) {
 				console.error("Failed to write staged file object", {
@@ -4374,9 +4444,19 @@ async function write_one_markdown_file(
 				});
 			}
 
-			return Result({ _yay: { nodeId: published._yay.nodeId, wroteInPlace: true, unchanged: false } });
+			return Result({
+				_yay: {
+					nodeId: published._yay.nodeId,
+					contentType: activeNodeContentType,
+					wroteInPlace: true,
+					unchanged: false,
+				},
+			});
 		}
 	}
+
+	// The created file's type: the caller's, else the name's hint, else plain text.
+	const createShape = args.shape ?? files_default_text_shape_for_name(path_name_of(args.path));
 
 	// A non-collaborative file is created with committed content only, so there is no document to
 	// build and nothing to upload to the Yjs snapshot key.
@@ -4384,9 +4464,7 @@ async function write_one_markdown_file(
 	if (!args.nonCollaborative) {
 		const built = files_nodes_create_yjs_snapshot_update_from_text({
 			text: args.content,
-			// The public write route is `.md`-gated (non-goal 4), so the created document is rich
-			// text by definition.
-			rootKind: "rich_text",
+			rootKind: createShape.rootKind,
 		});
 		if (built._nay) {
 			console.error("Failed to build Yjs snapshot for public file write", {
@@ -4409,6 +4487,8 @@ async function write_one_markdown_file(
 		overwrite: args.overwrite,
 		contentSize: args.contentBytes,
 		yjsSnapshotSize: snapshotUpdate?.byteLength ?? 0,
+		contentType: createShape.contentType,
+		yjsRootKind: createShape.rootKind,
 	});
 	if (prepared._nay) {
 		if (prepared._nay.message === "Permission denied") {
@@ -4451,7 +4531,7 @@ async function write_one_markdown_file(
 		r2_put_object(ctx, {
 			key: contentSnapshotKey,
 			body: args.content,
-			contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+			contentType: createShape.contentType,
 		}),
 	]);
 	const putFailure = putResults.find((result) => result.status === "rejected");
@@ -4503,7 +4583,14 @@ async function write_one_markdown_file(
 		});
 	}
 
-	return Result({ _yay: { nodeId: published._yay.nodeId, wroteInPlace: false, unchanged: false } });
+	return Result({
+		_yay: {
+			nodeId: published._yay.nodeId,
+			contentType: createShape.contentType,
+			wroteInPlace: false,
+			unchanged: false,
+		},
+	});
 }
 
 // HTTP routes
@@ -4722,6 +4809,13 @@ const write_file_body_validator = z.object({
 	 */
 	nonCollaborative: z.boolean().optional(),
 	/**
+	 * The file's content type. Must be an editable text type (Markdown, plain text, JSON, YAML,
+	 * and the other text types the app edits). Absent: a created file takes the hint from its
+	 * name, else plain text, and a filled file keeps its own type. Naming a type that differs
+	 * from an existing file's type is a conflict.
+	 */
+	contentType: z.string().optional(),
+	/**
 	 * Plugin principals only. `readOnly: true` creates the file with a direct plugin-named lock;
 	 * it does nothing when the write fills an existing file. The consent behind it is checked
 	 * transactionally at publish time.
@@ -4730,6 +4824,21 @@ const write_file_body_validator = z.object({
 });
 
 export type public_api_http_write_file_Body = z.infer<typeof write_file_body_validator>;
+
+/**
+ * The file name rule of the public write routes. A `.md` name follows the Markdown name rule
+ * (README casing), any other name must already be a valid normalized file name. The name never
+ * decides the stored content type.
+ */
+function public_api_is_valid_write_file_name(name: string) {
+	const normalized = name.toLowerCase().endsWith(".md")
+		? files_normalize_name("file", name)
+		: files_normalize_file_rename_name(name);
+	return !normalized._nay && normalized._yay === name;
+}
+
+const PUBLIC_API_INVALID_WRITE_FILE_NAME_MESSAGE = "Path must end in a valid file name.";
+const PUBLIC_API_INVALID_WRITE_CONTENT_TYPE_MESSAGE = "contentType must be an editable text type.";
 
 export async function public_api_http_write_file(ctx: ActionCtx, request: Request, path: "/api/v1/files/write") {
 	const auth = await public_api_authorize_request(ctx, request, {
@@ -4780,13 +4889,23 @@ export async function public_api_http_write_file(ctx: ActionCtx, request: Reques
 	// Segment-aware: a raw lastIndexOf("/") would split inside an escaped-slash segment and
 	// validate a different name than the segment the node is created with.
 	const name = path_name_of(requestedPath);
-	const normalizedName = files_normalize_name("file", name);
-	if (!name.toLowerCase().endsWith(".md") || normalizedName._nay || normalizedName._yay !== name) {
+	if (!public_api_is_valid_write_file_name(name)) {
 		return {
 			status: 400,
 			body: await fail({
 				status: 400,
-				message: "Path must end in a valid Markdown (.md) file name.",
+				message: PUBLIC_API_INVALID_WRITE_FILE_NAME_MESSAGE,
+				errorCode: "invalid_input",
+			}),
+		} as const;
+	}
+	const shape = body._yay.contentType === undefined ? null : files_editable_text_shape_of(body._yay.contentType);
+	if (body._yay.contentType !== undefined && shape === null) {
+		return {
+			status: 400,
+			body: await fail({
+				status: 400,
+				message: PUBLIC_API_INVALID_WRITE_CONTENT_TYPE_MESSAGE,
 				errorCode: "invalid_input",
 			}),
 		} as const;
@@ -4898,7 +5017,7 @@ export async function public_api_http_write_file(ctx: ActionCtx, request: Reques
 		principalRef = { kind: "user_api_key", credentialId: principal.credentialId };
 	}
 
-	const written = await write_one_markdown_file(ctx, {
+	const written = await write_one_text_file(ctx, {
 		organizationId: principal.organizationId,
 		workspaceId: principal.workspaceId,
 		userId: public_api_visibility_user_id(principal),
@@ -4909,6 +5028,7 @@ export async function public_api_http_write_file(ctx: ActionCtx, request: Reques
 		contentBytes,
 		overwrite,
 		skipIfUnchanged: body._yay.skipIfUnchanged ?? false,
+		shape,
 		nonCollaborative: body._yay.nonCollaborative ?? false,
 		requestReadOnly: body._yay.access?.readOnly === true,
 	});
@@ -4949,7 +5069,7 @@ export async function public_api_http_write_file(ctx: ActionCtx, request: Reques
 			body: {
 				path: requestedPath,
 				nodeId: written._yay.nodeId,
-				contentType: "text/markdown;charset=utf-8" as const,
+				contentType: written._yay.contentType,
 				unchanged: true as const,
 			},
 			headers: { "Cache-Control": "no-store" },
@@ -4975,7 +5095,7 @@ export async function public_api_http_write_file(ctx: ActionCtx, request: Reques
 		body: {
 			path: requestedPath,
 			nodeId: written._yay.nodeId,
-			contentType: "text/markdown;charset=utf-8" as const,
+			contentType: written._yay.contentType,
 		},
 		headers: { "Cache-Control": "no-store" },
 	} as const;
@@ -4992,6 +5112,10 @@ const write_many_body_validator = z.object({
 				 * Same meaning as on the single write route.
 				 */
 				nonCollaborative: z.boolean().optional(),
+				/**
+				 * Same meaning as on the single write route.
+				 */
+				contentType: z.string().optional(),
 			}),
 		)
 		.min(1)
@@ -5042,6 +5166,7 @@ export async function public_api_http_write_many(ctx: ActionCtx, request: Reques
 		content: string;
 		contentBytes: number;
 		overwrite: "replace" | "fail";
+		shape: { contentType: files_ContentType; rootKind: files_YjsRootKind } | null;
 		nonCollaborative: boolean;
 	}> = [];
 	const seenPaths = new Set<string>();
@@ -5054,11 +5179,17 @@ export async function public_api_http_write_many(ctx: ActionCtx, request: Reques
 			return { status: 400, body: { message: "Path must point to a file.", path: file.path } } as const;
 		}
 		const name = path_name_of(requestedPath);
-		const normalizedName = files_normalize_name("file", name);
-		if (!name.toLowerCase().endsWith(".md") || normalizedName._nay || normalizedName._yay !== name) {
+		if (!public_api_is_valid_write_file_name(name)) {
 			return {
 				status: 400,
-				body: { message: "Path must end in a valid Markdown (.md) file name.", path: file.path },
+				body: { message: PUBLIC_API_INVALID_WRITE_FILE_NAME_MESSAGE, path: file.path },
+			} as const;
+		}
+		const shape = file.contentType === undefined ? null : files_editable_text_shape_of(file.contentType);
+		if (file.contentType !== undefined && shape === null) {
+			return {
+				status: 400,
+				body: { message: PUBLIC_API_INVALID_WRITE_CONTENT_TYPE_MESSAGE, path: file.path },
 			} as const;
 		}
 		// Intermediate folders are created verbatim on publish; require already-canonical
@@ -5099,6 +5230,7 @@ export async function public_api_http_write_many(ctx: ActionCtx, request: Reques
 			content,
 			contentBytes,
 			overwrite: file.overwrite ?? "replace",
+			shape,
 			nonCollaborative: file.nonCollaborative ?? false,
 		});
 	}
@@ -5139,7 +5271,7 @@ export async function public_api_http_write_many(ctx: ActionCtx, request: Reques
 	const written: Array<{
 		path: string;
 		nodeId: Id<"files_nodes">;
-		contentType: "text/markdown;charset=utf-8";
+		contentType: files_ContentType;
 		unchanged?: true;
 	}> = [];
 	const errors: Array<{
@@ -5148,7 +5280,7 @@ export async function public_api_http_write_many(ctx: ActionCtx, request: Reques
 		errorCode: "permission_denied" | "conflict" | "storage_failure";
 	}> = [];
 	for (const file of validatedFiles) {
-		const result = await write_one_markdown_file(ctx, {
+		const result = await write_one_text_file(ctx, {
 			organizationId: principal.organizationId,
 			workspaceId: principal.workspaceId,
 			userId: principal.userId,
@@ -5159,6 +5291,7 @@ export async function public_api_http_write_many(ctx: ActionCtx, request: Reques
 			contentBytes: file.contentBytes,
 			overwrite: file.overwrite,
 			skipIfUnchanged: body.data.skipIfUnchanged ?? false,
+			shape: file.shape,
 			nonCollaborative: file.nonCollaborative ?? false,
 			// Write-many stays a user-key route, and the lock option is a plugin feature.
 			requestReadOnly: false,
@@ -5179,7 +5312,7 @@ export async function public_api_http_write_many(ctx: ActionCtx, request: Reques
 		written.push({
 			path: file.path,
 			nodeId: result._yay.nodeId,
-			contentType: "text/markdown;charset=utf-8" as const,
+			contentType: result._yay.contentType,
 			...(result._yay.unchanged ? { unchanged: true as const } : {}),
 		});
 	}
@@ -5238,8 +5371,12 @@ export async function public_api_http_touch_files(ctx: ActionCtx, request: Reque
 	}
 
 	// Validate every path with the same rules as /api/v1/files/write before touching
-	// anything, so a bad batch creates no files at all.
-	const requestedPaths: string[] = [];
+	// anything, so a bad batch creates no files at all. A touched file takes its type from the
+	// name's hint, else plain text.
+	const requestedPaths: Array<{
+		path: string;
+		shape: { contentType: files_ContentType; rootKind: files_YjsRootKind };
+	}> = [];
 	for (const rawPath of body._yay.paths) {
 		if (!rawPath.startsWith("/")) {
 			return {
@@ -5261,13 +5398,12 @@ export async function public_api_http_touch_files(ctx: ActionCtx, request: Reque
 		// Segment-aware: a raw lastIndexOf("/") would split inside an escaped-slash segment and
 		// validate a different name than the segment the node is created with.
 		const name = path_name_of(requestedPath);
-		const normalizedName = files_normalize_name("file", name);
-		if (!name.toLowerCase().endsWith(".md") || normalizedName._nay || normalizedName._yay !== name) {
+		if (!public_api_is_valid_write_file_name(name)) {
 			return {
 				status: 400,
 				body: await fail({
 					status: 400,
-					message: "Path must end in a valid Markdown (.md) file name.",
+					message: PUBLIC_API_INVALID_WRITE_FILE_NAME_MESSAGE,
 					errorCode: "invalid_input",
 				}),
 			} as const;
@@ -5303,29 +5439,13 @@ export async function public_api_http_touch_files(ctx: ActionCtx, request: Reque
 				body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
 			} as const;
 		}
-		requestedPaths.push(requestedPath);
+		requestedPaths.push({ path: requestedPath, shape: files_default_text_shape_for_name(name) });
 	}
 	// Compare after normalization: distinct raw paths can collapse to the same file.
-	if (new Set(requestedPaths).size !== requestedPaths.length) {
+	if (new Set(requestedPaths.map((item) => item.path)).size !== requestedPaths.length) {
 		return {
 			status: 400,
 			body: await fail({ status: 400, message: "Paths must be unique.", errorCode: "invalid_input" }),
-		} as const;
-	}
-
-	// Every touched file starts as the same empty doc; build its Yjs snapshot once.
-	// The touch route is `.md`-gated (non-goal 4), so rich text by definition.
-	const emptySnapshotUpdate = files_nodes_create_yjs_snapshot_update_from_text({
-		text: "",
-		rootKind: "rich_text",
-	});
-	if (emptySnapshotUpdate._nay) {
-		console.error("Failed to build the empty Yjs snapshot for public file touch", {
-			nay: emptySnapshotUpdate._nay,
-		});
-		return {
-			status: 500,
-			body: await fail({ status: 500, message: "Failed to touch files", errorCode: "storage_failure" }),
 		} as const;
 	}
 
@@ -5345,7 +5465,7 @@ export async function public_api_http_touch_files(ctx: ActionCtx, request: Reque
 	const files: Array<{ path: string; nodeId: Id<"files_nodes">; created: boolean }> = [];
 	// Run touches in order because sibling paths may create the same missing folders. One read-only
 	// path ends the request with 409. Earlier touches stay saved, and retrying them is safe.
-	for (const requestedPath of requestedPaths) {
+	for (const { path: requestedPath, shape } of requestedPaths) {
 		// An active file already satisfies the touch; skip staging entirely. The publish
 		// mutation re-checks the path transactionally, so this pre-check is only an
 		// optimization for the common already-exists case.
@@ -5399,6 +5519,21 @@ export async function public_api_http_touch_files(ctx: ActionCtx, request: Reque
 			continue;
 		}
 
+		// A touched file starts as an empty document of the shape its type decides.
+		const emptySnapshotUpdate = files_nodes_create_yjs_snapshot_update_from_text({
+			text: "",
+			rootKind: shape.rootKind,
+		});
+		if (emptySnapshotUpdate._nay) {
+			console.error("Failed to build the empty Yjs snapshot for public file touch", {
+				nay: emptySnapshotUpdate._nay,
+			});
+			return {
+				status: 500,
+				body: await fail({ status: 500, message: "Failed to touch files", errorCode: "storage_failure" }),
+			} as const;
+		}
+
 		const prepared: prepare_file_write_Result = await ctx.runMutation(internal.public_api.prepare_file_write, {
 			organizationId: principal.organizationId,
 			workspaceId: principal.workspaceId,
@@ -5408,6 +5543,8 @@ export async function public_api_http_touch_files(ctx: ActionCtx, request: Reque
 			overwrite: "fail",
 			contentSize: 0,
 			yjsSnapshotSize: emptySnapshotUpdate._yay.byteLength,
+			contentType: shape.contentType,
+			yjsRootKind: shape.rootKind,
 		});
 		if (prepared._nay) {
 			if (prepared._nay.message === "Permission denied") {
@@ -5453,7 +5590,7 @@ export async function public_api_http_touch_files(ctx: ActionCtx, request: Reque
 			r2_put_object(ctx, {
 				key: contentSnapshotKey,
 				body: "",
-				contentType: "text/markdown;charset=utf-8" satisfies files_ContentType,
+				contentType: shape.contentType,
 			}),
 		]);
 		const putFailure = putResults.find((result) => result.status === "rejected");
@@ -5770,12 +5907,15 @@ export async function public_api_http_download_urls(
 			if (!data || !signKey) {
 				return { fileNodeId, url: null };
 			}
-			// Upload content types are client-supplied, and a presigned R2 GET carries no
-			// nosniff/CSP — the pinned type plus the disposition below is the whole defense.
-			// Both derive from the node NAME: only the literal media map serves inline, and
-			// everything else (text included) downloads as an attachment, so spoofed bytes
-			// can never run as text/html or image/svg+xml on the shared R2 origin.
-			const serving = files_get_signed_download_serving(data.fileNode.name);
+			// A presigned R2 GET carries no nosniff/CSP, so the pinned type plus the disposition
+			// below is the whole defense. Both come from the stored content type: only the
+			// literal media set serves inline, and everything else (text included) downloads as
+			// an attachment, so spoofed bytes can never run as text/html or image/svg+xml on the
+			// shared R2 origin.
+			const serving = files_get_signed_download_serving({
+				contentType: data.fileNode.contentType,
+				fileName: data.fileNode.name,
+			});
 			return {
 				fileNodeId,
 				url: await r2_get_download_url({

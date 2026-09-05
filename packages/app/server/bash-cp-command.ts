@@ -10,19 +10,22 @@ import type {
 	files_nodes_create_file_by_path_Result,
 	files_nodes_get_file_last_available_text_content_by_path_Result,
 } from "../convex/files_nodes_content.ts";
+import type {
+	files_pending_updates_accept_file_pending_replacement_Result,
+	files_pending_updates_stage_file_pending_replacement_Result,
+} from "../convex/files_pending_updates.ts";
 import {
 	files_SYNTHETIC_ROOT_FOLDER,
-	files_copy_class_mismatch_message,
+	files_editable_text_content_type_of,
 	files_get_normalized_node_path_segments,
 	files_node_has_editable_text_content,
 	files_pending_path_overlay_translate_path,
-	type files_YjsRootKind,
 } from "../shared/files.ts";
 import { organizations_is_global_organization_id, organizations_is_reserved_workspace_id } from "../shared/organizations.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { path_name_of } from "../shared/paths.ts";
 import { path_join } from "./server-utils.ts";
-import { files_agent_write_file_text, type files_agent_write_file_text_Result, bash_DbFilesContentUnavailableError, bash_build_unreadable_file_advisory, bash_create_glob_syntax_unsupported_message, bash_current_workspace_path_to_db_files_path, bash_GLOB_METACHARACTER_REGEX, bash_is_path_under_current_workspace_path, bash_is_path_under_read_only_mounts, bash_normalize_path, bash_parse_cp_mv_operands, bash_resolve_path, bash_shell_arg_quote, bash_TMP_MOUNT, bash_read_only_mount_error, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, type bash_DbFilesRoots } from "./bash-utils.ts";
+import { bash_DbFilesContentUnavailableError, bash_build_unreadable_file_advisory, bash_create_glob_syntax_unsupported_message, bash_current_workspace_path_to_db_files_path, bash_GLOB_METACHARACTER_REGEX, bash_is_path_under_current_workspace_path, bash_is_path_under_read_only_mounts, bash_normalize_path, bash_parse_cp_mv_operands, bash_resolve_path, bash_shell_arg_quote, bash_TMP_MOUNT, bash_read_only_mount_error, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, type bash_DbFilesRoots } from "./bash-utils.ts";
 import { bash_delegate_builtin_command } from "./bash-delegate.ts";
 
 /**
@@ -128,6 +131,16 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						exitCode: bash_COMMAND_EXIT_FAILURE,
 					};
 				}
+				// The copy freezes the source's content asset. A file whose upload has not finished has
+				// nothing to copy yet.
+				const sourceAssetId = sourceNode.assetId;
+				if (sourceAssetId === undefined) {
+					return {
+						stdout: "",
+						stderr: `cp: cannot copy '${operands[0]}': the file's content is not available yet\n`,
+						exitCode: bash_COMMAND_EXIT_FAILURE,
+					};
+				}
 				const rawDestDbFilesPath = bash_current_workspace_path_to_db_files_path(currentWorkspacePath, destShellPath);
 				if (rawDestDbFilesPath == null) {
 					throw should_never_happen("cp: app destination path missing inside the app destination branch", {
@@ -168,9 +181,9 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					const normalizedDestSegments = files_get_normalized_node_path_segments({
 						kind: "file",
 						nameOrPath: rawDestDbFilesPath,
-						// cp creates editable text destinations: supported extensions pass through and
-						// unknown extensions refuse with the classifier's rule.
-						fileNamePolicy: "editable_text",
+						// cp keeps the name the agent typed. The destination's type comes from the
+						// source, never from the name.
+						fileNamePolicy: "keep_extension",
 					});
 					if (!normalizedDestSegments || "validationMessage" in normalizedDestSegments) {
 						return {
@@ -228,50 +241,45 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				if (occupant && noClobber) {
 					return { stdout: "", stderr: "", exitCode: 0 };
 				}
-				// Copy what the agent sees: the last available markdown, including the calling
-				// user's own pending overlay on the source file.
-				const sourceContent = (await ctx.runAction(
-					internal.files_nodes_content.get_file_last_available_text_content_by_path,
-					{
-						organizationId,
-						workspaceId,
-						userId,
-						path: sourceDbFilesPath,
-						overlayUserId: userId,
-					},
-				)) as files_nodes_get_file_last_available_text_content_by_path_Result;
-				if (!sourceContent) {
-					return {
-						stdout: "",
-						stderr: bash_build_unreadable_file_advisory(currentWorkspacePath, sourceDbFilesPath, sourceNode.contentType),
-						exitCode: bash_COMMAND_EXIT_FAILURE,
-					};
-				}
-
-				// Copying onto a file with collaboration turned off saves the text right away, so the
-				// class rule the pending door owns has to be asked here instead.
-				//
-				// Every local below is annotated on purpose. This command sits inside the generated-API
-				// type graph (convex/bash.ts -> server/bash.ts -> here), so a `return` whose value
-				// TypeScript can only type by looking at a node read from that API makes this function's
-				// inferred return type depend on itself. TypeScript then gives up and types the whole
-				// generated API as `any`.
-				let destNonCollaborativeBaseAssetId: Id<"files_r2_assets"> | undefined;
-				if (occupant?.nonCollaborative === true && files_node_has_editable_text_content(occupant)) {
-					const destRootKind: files_YjsRootKind = occupant.yjsRootKind;
-					const sourceRootKind: files_YjsRootKind | null = files_node_has_editable_text_content(sourceNode)
-						? sourceNode.yjsRootKind
-						: null;
-					if (sourceRootKind != null && sourceRootKind !== destRootKind) {
-						const classMismatchMessage: string = files_copy_class_mismatch_message({ sourceRootKind, destRootKind });
+				// Copy what the agent sees. A text source is read as text, including the calling
+				// user's own pending overlay on it. A stored source (an image, a PDF) is copied as
+				// bytes by the stage action below, so nothing is read here.
+				const sourceIsText =
+					files_editable_text_content_type_of(sourceNode.contentType) !== null &&
+					files_node_has_editable_text_content(sourceNode);
+				let sourceText: string | undefined;
+				if (sourceIsText) {
+					const sourceContent = (await ctx.runAction(
+						internal.files_nodes_content.get_file_last_available_text_content_by_path,
+						{
+							organizationId,
+							workspaceId,
+							userId,
+							path: sourceDbFilesPath,
+							overlayUserId: userId,
+						},
+					)) as files_nodes_get_file_last_available_text_content_by_path_Result;
+					if (!sourceContent) {
 						return {
 							stdout: "",
-							stderr: `cp: cannot copy '${operands[0]}' to '${destPath}': ${classMismatchMessage}\n`,
+							stderr: bash_build_unreadable_file_advisory(currentWorkspacePath, sourceDbFilesPath, sourceNode.contentType),
 							exitCode: bash_COMMAND_EXIT_FAILURE,
 						};
 					}
-					destNonCollaborativeBaseAssetId = occupant.assetId;
+					sourceText = sourceContent.content;
 				}
+
+				// Copying onto a text file with collaboration turned off saves right away: that file
+				// has no review step for text writes, and the copy keeps that. Every other destination
+				// gets a pending replacement the user reviews as a whole.
+				//
+				// The local below is annotated on purpose. This command sits inside the generated-API
+				// type graph (convex/bash.ts -> server/bash.ts -> here), so a value TypeScript can only
+				// type by looking at a node read from that API makes this function's inferred return
+				// type depend on itself. TypeScript then gives up and types the whole generated API as
+				// `any`.
+				const destSavesImmediately: boolean =
+					occupant?.nonCollaborative === true && files_node_has_editable_text_content(occupant);
 
 				let destNodeId: Id<"files_nodes">;
 				let replacesExisting: boolean;
@@ -310,6 +318,10 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						workspaceId,
 						userId,
 						path: creationDestPath,
+						// A text copy creates the destination with the source's type, so the new file
+						// opens the right way from the start. A stored copy creates a text placeholder
+						// that accepting turns into the stored file.
+						contentType: sourceIsText ? sourceNode.contentType : undefined,
 					})) as files_nodes_create_file_by_path_Result;
 					if (created._nay) {
 						return {
@@ -358,22 +370,25 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					}
 					return ` — an empty file was left behind at '${destPath}'; remove it in Files if it is not wanted`;
 				};
-				let written: files_agent_write_file_text_Result;
+				let staged: files_pending_updates_stage_file_pending_replacement_Result;
 				try {
-					written = await files_agent_write_file_text(ctx, {
-						organizationId,
-						workspaceId,
-						userId,
-						nodeId: destNodeId,
-						unstagedText: sourceContent.content,
-						copiedFrom: { nodeId: sourceNode._id, path: sourceDbFilesPath },
-						eagerCreatedCommittedSequence,
-						// Recorded on the pending update doc so Discard/TTL expiry can also remove the
-						// parent folders this cp eagerly created.
-						eagerCreatedAncestorIds: createdAncestorIds,
-						threadId: threadId ?? undefined,
-						nonCollaborativeBaseAssetId: destNonCollaborativeBaseAssetId,
-					});
+					staged = (await ctx.runAction(
+						internal.files_pending_updates.stage_file_pending_replacement_internal_action,
+						{
+							organizationId,
+							workspaceId,
+							userId,
+							nodeId: destNodeId,
+							source: { nodeId: sourceNode._id, path: sourceDbFilesPath },
+							expectedSourceAssetId: sourceAssetId,
+							...(sourceText !== undefined ? { sourceText } : {}),
+							eagerCreatedCommittedSequence,
+							// Recorded on the pending update doc so Discard/TTL expiry can also remove the
+							// parent folders this cp eagerly created.
+							eagerCreatedAncestorIds: createdAncestorIds,
+							threadId: threadId ?? undefined,
+						},
+					)) as files_pending_updates_stage_file_pending_replacement_Result;
 				} catch (error) {
 					if (eagerCreatedCommittedSequence === undefined) {
 						throw error;
@@ -386,22 +401,47 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					};
 				}
 
-				if (written._nay) {
+				if (staged._nay) {
 					return {
 						stdout: "",
-						stderr: `cp: cannot copy '${operands[0]}': ${written._nay.message}${await eager_created_failure_note()}\n`,
+						stderr: `cp: cannot copy '${operands[0]}': ${staged._nay.message}${await eager_created_failure_note()}\n`,
 						exitCode: bash_COMMAND_EXIT_FAILURE,
 					};
 				}
 				// Later commands chained in this same bash call must see the new proposal.
 				dbFilesRoots.app.fs.resetProposalCaches();
-				// A destination with collaboration turned off was saved above, so telling the agent to
-				// review a proposal in Files would send it looking for something that does not exist.
-				const copiedStdout: string = destNonCollaborativeBaseAssetId
-					? `copied: ${sourceDbFilesPath} -> ${destPath} — collaboration is off for the destination, so the new content is already saved\n`
-					: replacesExisting
-						? `pending copy created: ${sourceDbFilesPath} -> ${destPath} — replaces the existing file's content when accepted; review in Files\n`
-						: `pending copy created: ${sourceDbFilesPath} -> ${destPath} — review in Files\n`;
+
+				// A collaboration-off text destination is saved now, so telling the agent to review a
+				// proposal in Files would send it looking for something that does not exist.
+				if (destSavesImmediately) {
+					const accepted = (await ctx.runAction(
+						internal.files_pending_updates.accept_file_pending_replacement_internal_action,
+						{
+							organizationId,
+							workspaceId,
+							userId,
+							nodeId: destNodeId,
+							pendingUpdateId: staged._yay.pendingUpdateId,
+						},
+					)) as files_pending_updates_accept_file_pending_replacement_Result;
+					if (accepted._nay) {
+						return {
+							stdout: "",
+							stderr: `cp: cannot save '${destPath}': ${accepted._nay.message} — the copy stays pending; review it in Files\n`,
+							exitCode: bash_COMMAND_EXIT_FAILURE,
+						};
+					}
+					dbFilesRoots.app.fs.resetProposalCaches();
+					return {
+						stdout: `copied: ${sourceDbFilesPath} -> ${destPath} — collaboration was off for the destination, so the copy is already saved\n`,
+						stderr: "",
+						exitCode: 0,
+					};
+				}
+
+				const copiedStdout: string = replacesExisting
+					? `pending copy created: ${sourceDbFilesPath} -> ${destPath} — replaces the existing file's content and type when accepted; review in Files\n`
+					: `pending copy created: ${sourceDbFilesPath} -> ${destPath} — review in Files\n`;
 				return {
 					stdout: copiedStdout,
 					stderr: "",

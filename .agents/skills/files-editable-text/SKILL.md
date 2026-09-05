@@ -1,6 +1,6 @@
 ---
 name: files-editable-text
-description: Spec for editable text files and their Yjs shape system — the extension classifier, the stored `yjsRootKind`, the read-side shape guards, the write doors, the collaborative/non-collaborative flag and its two toggles, the size limits, the four durable refusal markers, and the operator repair path. Use when changing the classifier or editor maps in `packages/app/shared/files.ts`, the shape guards or update scans in `packages/app/shared/files-yjs.ts` / `files-tiptap.ts`, the Yjs write doors or materialization markers in `packages/app/convex/files_nodes.ts` / `files_nodes_content.ts`, the plain-text chunker, or upload text conversion in `packages/app/convex/r2.ts`.
+description: Spec for editable text files and their Yjs shape system — the content type policy, the stored `yjsRootKind`, the read-side shape guards, the write doors, the collaborative/non-collaborative flag and its two toggles, the size limits, the four durable refusal markers, and the operator repair path. Use when changing the content type helpers or editor maps in `packages/app/shared/files.ts`, the shape guards or update scans in `packages/app/shared/files-yjs.ts` / `files-tiptap.ts`, the Yjs write doors or materialization markers in `packages/app/convex/files_nodes.ts` / `files_nodes_content.ts`, the plain-text chunker, or upload text conversion in `packages/app/convex/r2.ts`.
 ---
 
 # The Two Document Shapes
@@ -14,16 +14,18 @@ The root names live in `files_YJS_DOC_KEYS` (`packages/app/shared/files.ts`). Ma
 
 Rich text documents support GFM tables. The shared extension set in `packages/app/shared/files-tiptap.ts` (`#region tables`) registers the four table nodes for both the browser and the server, so the two schemas stay identical. The serializer writes GFM pipe tables: no column padding, alignment colons read from the first row, `\|` escaping with the backslash run in front of a pipe doubled, `<br>` for newlines inside a cell, and an empty header row when the document's first row holds body cells. Merged cells, column widths, and multiple blocks inside a cell are not representable in GFM: they are flattened once on the first save and are stable afterwards. One special spelling: a code span in a cell that holds a backslash right before a pipe is written as an HTML `<code>` element with numeric character references (`&#92;`, `&#124;`), because the backtick form would grow its backslash run on every save. Cells accept `paragraph+` only, so members cannot create lists, headings, or code blocks inside a cell.
 
-# The Extension Classifier
+# The Content Type Policy
 
-Everything derives from the file NAME's extension and only the extension. The client-declared media type is unvalidated input and must never pick a shape or a served type. All in `packages/app/shared/files.ts`:
+`files_nodes.contentType` decides how a file opens, how it is edited, and how it is served. The name is only a hint, used once, when a file is created without an explicit type. All in `packages/app/shared/files.ts`:
 
-- `files_get_editable_text_content_type(fileName)`: the stored media type, or `null` when the name is not editable text. The 20 editable extensions: `md`, `txt`, `log`, `json`, `jsonc`, `yaml`, `yml`, `toml`, `ini`, `csv`, `tsv`, `css`, `js`, `mjs`, `cjs`, `jsx`, `ts`, `tsx`, `sh`, `sql`.
-- `files_get_editable_text_yjs_root_kind(fileName)`: `rich_text` for `.md`, `plain_text` for the other 19, `null` otherwise.
-- `files_editable_text_refusal_message(fileName)`: the one refusal text every write surface shows for a non-editable name, so the agent learns the supported list instead of retrying blindly.
-- `files_get_monaco_language_id(fileName)`: the Monaco language per extension; unmapped names render as plain text.
-- `files_get_signed_download_serving(fileName)`: the response headers every signed R2 download must pin. Only the literal media map serves inline; everything else — editable text, `svg`, `html`, unknown — downloads as an attachment. A presigned R2 GET carries no nosniff and no CSP, so this pinned type plus the disposition is the whole defense against hostile bytes running on the shared R2 origin.
-- The extension rule matches `files_lowercase_extension` in `packages/app/convex/files_nodes.ts`: a leading-dot name like `.gitignore` and a trailing-dot name have no extension.
+- `files_parse_content_type` / `files_normalize_content_type`: parse and normalize a media type string; a bad one is refused with `files_INVALID_CONTENT_TYPE_MESSAGE`.
+- `files_editable_text_content_type_of(contentType)`: the stored editable text type, or `null` when the type is not editable text. Editable text is Markdown, plain text, JSON, YAML, TOML, CSV, TSV, CSS, JavaScript, TypeScript, shell, SQL, and the other text types the app edits.
+- `files_yjs_root_kind_of_content_type(contentType)`: `rich_text` for Markdown, `plain_text` for every other editable text type, `null` otherwise. `files_editable_text_shape_of` returns the shape and the normalized type together.
+- `files_default_text_shape_for_name(name)`: the shape a create path uses when the caller gives no type: the name's hint (`.md` is Markdown, a known text extension is that type), else plain text. An unknown extension and an extensionless name make a plain text file. Nothing appends `.md`, and no name is refused for its extension.
+- `files_guess_content_type_from_name(name)` and `files_resolve_upload_content_type`: an upload keeps the caller's valid type; without one, the name's hint, else `application/octet-stream`.
+- `files_monaco_language_id_of_content_type(contentType)`: the Monaco language per stored type; unmapped types render as plain text.
+- `files_get_signed_download_serving({ contentType, fileName })`: the response headers every signed R2 download must pin, from the stored type. The name only fills the disposition file name. Only the literal media set serves inline; everything else — editable text, `svg`, `html`, unknown — downloads as an attachment. A presigned R2 GET carries no nosniff and no CSP, so this pinned type plus the disposition is the whole defense against hostile bytes running on the shared R2 origin. The stored type is client input at upload time, and that is fine here: the inline set holds only types a browser never runs as a page.
+- `files_lowercase_extension` in `packages/app/convex/files_nodes.ts` still stores the name's extension for search filters only: a leading-dot name like `.gitignore` and a trailing-dot name have no extension.
 
 # The Stored `yjsRootKind`
 
@@ -31,7 +33,7 @@ Everything derives from the file NAME's extension and only the extension. The cl
 
 Reads never re-derive the shape from the name. Every read, write, chunker dispatch, and guard passes `node.yjsRootKind` through directly, narrowed by the `files_node_has_editable_text_content` type guard. There is no accessor helper wrapping the field, so do not look for one.
 
-The name classifier `files_get_editable_text_yjs_root_kind(fileName)` answers a different question, and it answers it about a NAME the caller is proposing, never about a stored node. It runs where a name is being chosen: the create paths, upload conversion in `r2.ts`, the sidebar's own create and upload prepare, and the rename class rule (`files_validate_file_rename_class`), which asks what the new name would mean and compares that against the stored field. The name decides the shape once, at creation; after that the stored field is the answer.
+The stored type and shape are set once, when the node is created. The create paths, upload conversion in `r2.ts`, the sidebar's own create and upload prepare, the agent's shell writes, and the public write routes all resolve them there, from the caller's explicit type or the name's hint (`files_default_text_shape_for_name`). After that the stored fields are the answer. A rename keeps the content and the type: `notes.md` renamed to `notes.txt` is still a Markdown file that opens in the rich text editor, and `data.json` renamed to `data.yaml` still opens as JSON. There is no rename class rule and no name classifier for a stored node.
 
 # Read-Side Shape Guards
 
@@ -57,11 +59,15 @@ Every editable text file is collaborative by default. `files_nodes.nonCollaborat
 - Collaborative: the file has a Yjs document. Several people type at once, the edits merge, and comments stay anchored inside the document. The two Yjs doors above are its only content-write doors.
 - Non-collaborative: the file has NO Yjs document. No snapshot doc, no sequence doc, no update log, no materialization. Only the committed chunks, the content asset, and the version history exist. The file is still editable: a save replaces the whole text. Every save names the content asset it loaded. If another save changed that asset, the stale save is refused and the editor tells the user to copy local changes before reloading.
 
-`yjsRootKind` stays set on a non-collaborative file. It still decides Markdown versus plain text for the chunker, the editor choice, the rename class rule, and the copy class rule, and turning collaboration back on needs it to rebuild the right document shape.
+`yjsRootKind` stays set on a non-collaborative file. It still decides Markdown versus plain text for the chunker and the editor choice, and turning collaboration back on needs it to rebuild the right document shape.
+
+A copy carries the source as a whole. `cp` copies the source's content, content type, document shape, and collaboration mode onto the destination, whatever the destination's name says, and the destination keeps its id, permissions, custom metadata, and history. The copy is staged as a whole-file replacement (`files_pending_updates.pendingReplacement`, see `../files-agent-pending-updates/SKILL.md`) and reviewed as a whole; the replaced content stays in history with its own type. Review timing follows the destination before the copy: an existing destination with collaboration off keeps the immediate-save policy, every other destination gets a pending copy. Text is normalized once (one leading BOM removed, line endings to LF). A plain text source stays byte-exact after that, and a Markdown source is re-serialized by the rich text document it builds. `mv -f` is not a copy: it is a structural replace-move that keeps the source's identity and archives the occupant when accepted.
+
+A version restore brings the version's type, shape, and mode back the same way. `restore_snapshot_r2` writes a version with the live document's shape into that document; every other version (a stored version, a version of another shape, any version of a file without a document) is installed as a whole-file replacement by `finalize_snapshot_restore_replacement`, after a fresh copy of the current text is kept as a version. Both accept paths share `db_install_file_content_replacement` in `files_nodes_content.ts`. Version rows record `contentType`, `yjsRootKind`, and `nonCollaborative`; rows from before that are filled from the file by the `backfill_files_snapshots_content_state` migration.
 
 Two predicates in `packages/app/shared/files.ts` ask the two different questions, and picking the wrong one is the main bug risk in this area:
 
-- `files_node_has_editable_text_content(node)` — kind `file`, has `assetId`, has `yjsRootKind`. True for BOTH modes. This is the "is this editable text" question: reads, the editor choice, the class rules, and every not-a-stored-blob fork.
+- `files_node_has_editable_text_content(node)` — kind `file`, has `assetId`, has `yjsRootKind`. True for BOTH modes. This is the "is this editable text" question: reads, the editor choice, and every not-a-stored-blob fork.
 - `files_node_has_editable_yjs_state(node)` — the same three plus `yjsSnapshotId` and `yjsLastSequenceId`. True only for a collaborative file. This is the "does this have a Yjs document" question: the Yjs doors, materialization, pending proposals, and snapshot restore.
 
 ## The third write door
@@ -208,4 +214,4 @@ Exact content uses `files_text_chunks.textChunk` for both document classes. Sear
 - `../convex-admin-ops/SKILL.md` — the operator runbook for the markers and the repair action.
 - `../ai-chat-agent/SKILL.md` — the agent tools that read and write both classes.
 - `../file-metadata/SKILL.md` — the flat key-value map stored next to a file. It is not part of the document, so neither write door sees it, but it shares the read-only lock and the `content.write` permission.
-- `../public-api/SKILL.md` — the public routes; `/files/write` stays Markdown-only by contract.
+- `../public-api/SKILL.md` — the public routes; `/files/write` accepts every editable text type.

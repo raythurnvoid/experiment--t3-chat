@@ -1115,24 +1115,30 @@ test("edit_file describes and preserves a terminal read-only refusal", async () 
 	);
 });
 
-test("edit_file's cross-class refusal names the class, not the path", async () => {
-	const { ctx, runAction } = makeCtx(async () => null);
+test("edit_file's refusal names the stored content type, not the path", async () => {
+	// The text read finds nothing because the file is a stored image. The node lookup that
+	// follows returns the file, so the refusal can name its type.
+	const { ctx, runAction, runQuery } = makeCtx(async () => ({ kind: "file", contentType: "image/png" }), {
+		runActionImpl: async () => null,
+	});
 	const tool = ai_chat_tool_create_edit_file(
 		ctx,
 		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_edit_file>[1],
 	);
 
-	// A non-text extension must refuse with the classifier's rule, not with "File not found":
-	// the file exists, and a not-found answer sends the model into a wrong retry loop.
+	// A stored file must refuse with its stored type, not with "File not found": the file
+	// exists, and a not-found answer sends the model into a wrong retry loop. The name never
+	// decides this: a Markdown file called `photo.png` would edit fine.
 	await expect(
 		tool.execute?.(
 			{ path: "/assets/photo.png", oldString: "a", newString: "b", replaceAll: false },
 			{ toolCallId: "test", messages: [] },
 		),
-	).rejects.toThrow(/is not an editable text file: '\.png' is not supported/);
+	).rejects.toThrow(/Cannot edit \/assets\/photo\.png: this file's content type \('image\/png'\) is not editable as text/);
 
-	// The refusal happens before any read, so the model's wrong path costs no backend call.
-	expect(runAction).not.toHaveBeenCalled();
+	// The read ran once (the type is only known from the store), then one node lookup.
+	expect(runAction).toHaveBeenCalledTimes(1);
+	expect(runQuery).toHaveBeenCalledTimes(1);
 });
 
 describe("ai_chat_tool_create_set_file_metadata", () => {

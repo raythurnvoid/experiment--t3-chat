@@ -3,21 +3,13 @@ import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type { Id } from "../convex/_generated/dataModel";
 import type { files_nodes_get_by_path_Result } from "../convex/files_nodes.ts";
-import type { files_nodes_get_file_last_available_text_content_by_path_Result } from "../convex/files_nodes_content.ts";
 import type { upsert_file_pending_move_in_db_Result } from "../convex/files_pending_updates.ts";
-import {
-	files_ROOT_ID,
-	files_SYNTHETIC_ROOT_FOLDER,
-	files_get_normalized_node_path_segments,
-	files_node_has_editable_text_content,
-	files_node_has_editable_yjs_state,
-	files_normalize_markdown_name,
-} from "../shared/files.ts";
+import { files_ROOT_ID, files_SYNTHETIC_ROOT_FOLDER, files_get_normalized_node_path_segments } from "../shared/files.ts";
 import { organizations_is_global_organization_id, organizations_is_reserved_workspace_id } from "../shared/organizations.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { path_name_of } from "../shared/paths.ts";
 import { path_join } from "./server-utils.ts";
-import { files_agent_write_file_text, bash_create_glob_syntax_unsupported_message, bash_current_workspace_path_to_db_files_path, bash_db_files_path_to_current_workspace_path, bash_GLOB_METACHARACTER_REGEX, bash_is_path_under_current_workspace_path, bash_is_path_under_read_only_mounts, bash_parse_cp_mv_operands, bash_resolve_path, bash_shell_arg_quote, bash_read_only_mount_error, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, type bash_DbFilesRoots } from "./bash-utils.ts";
+import { bash_create_glob_syntax_unsupported_message, bash_current_workspace_path_to_db_files_path, bash_db_files_path_to_current_workspace_path, bash_GLOB_METACHARACTER_REGEX, bash_is_path_under_current_workspace_path, bash_is_path_under_read_only_mounts, bash_parse_cp_mv_operands, bash_resolve_path, bash_shell_arg_quote, bash_read_only_mount_error, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, type bash_DbFilesRoots } from "./bash-utils.ts";
 import { bash_delegate_builtin_command } from "./bash-delegate.ts";
 
 /**
@@ -372,8 +364,8 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			const normalizedDestName = files_get_normalized_node_path_segments({
 				kind: sourceNode.kind,
 				nameOrPath: rawDestName,
-				// A rename keeps the extension the caller typed; the proposal mutation's class
-				// class rule judges it, so a crossing refuses there with the rule's message.
+				// A rename keeps the name the caller typed. The stored content type never changes
+				// with the name, so there is no extension rule to apply here.
 				fileNamePolicy: "keep_extension",
 			});
 			if (!normalizedDestName || "validationMessage" in normalizedDestName) {
@@ -387,103 +379,12 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			}
 			// The raw name has no path separators, so normalization yields exactly one segment.
 			destName = normalizedDestName.normalizedPathSegments.join("/");
-			// Keep the extensionless→.md convenience for Markdown sources (mv notes.md intro →
-			// intro.md); the Markdown normalizer also restores special casing (readme → README.md).
-			// Plain text and stored files keep the bare name and let the class rule answer.
-			if (
-				!destName.includes(".") &&
-				files_node_has_editable_text_content(sourceNode) &&
-				sourceNode.yjsRootKind === "rich_text"
-			) {
-				const markdownDestName = files_normalize_markdown_name(destName);
-				if (markdownDestName._nay) {
-					return {
-						stdout: "",
-						stderr: `mv: invalid destination name '${rawDestName}': ${markdownDestName._nay.message}\n`,
-						exitCode: bash_COMMAND_EXIT_FAILURE,
-					};
-				}
-				destName = markdownDestName._yay;
-			}
 			intendedDestPath = path_join(destParentPath, destName);
 			intendedDestOperand = destOperand;
 		}
 
-		// `mv -f` onto a collaborative text file proposes a copy on the TARGET plus
-		// `archivesSourceOnAccept`: the target keeps its identity and history, and accepting saves
-		// the replacement as a new version and archives the source. The proposal lives on the
-		// target, so only the target needs a Yjs document; the source only has to be readable text,
-		// and a non-collaborative file is.
-		//
-		// Refuse a non-collaborative target because falling through to a structural move would
-		// archive the target instead and reverse which file survives.
-		if (
-			replaceTargetNode?.nonCollaborative === true &&
-			files_node_has_editable_text_content(sourceNode) &&
-			files_node_has_editable_text_content(replaceTargetNode)
-		) {
-			return {
-				stdout: "",
-				stderr: `mv: cannot replace '${intendedDestOperand}': collaboration is off for the destination\n`,
-				exitCode: bash_COMMAND_EXIT_FAILURE,
-			};
-		}
-
-		if (
-			replaceTargetNode &&
-			files_node_has_editable_text_content(sourceNode) &&
-			files_node_has_editable_yjs_state(replaceTargetNode)
-		) {
-			// Copy what the agent sees: the last available markdown, including the calling user's
-			// own pending overlay on the source file.
-			const sourceContent = (await ctx.runAction(
-				internal.files_nodes_content.get_file_last_available_text_content_by_path,
-				{
-					organizationId,
-					workspaceId,
-					userId,
-					path: sourceDbFilesPath,
-					overlayUserId: userId,
-				},
-			)) as files_nodes_get_file_last_available_text_content_by_path_Result;
-			// Bind the copy to the node resolved at the start: the source path can be re-occupied
-			// by a DIFFERENT file mid-action, and proposing its content would archive the wrong file.
-			if (sourceContent && sourceContent.nodeId !== sourceNode._id) {
-				return {
-					stdout: "",
-					stderr: `mv: '${sourceOperand}' changed while the command was running. Re-run the command.\n`,
-					exitCode: bash_COMMAND_EXIT_FAILURE,
-				};
-			}
-			if (sourceContent) {
-				const written = await files_agent_write_file_text(ctx, {
-					organizationId,
-					workspaceId,
-					userId,
-					nodeId: replaceTargetNode._id,
-					unstagedText: sourceContent.content,
-					copiedFrom: { nodeId: sourceNode._id, path: sourceDbFilesPath, archivesSourceOnAccept: true },
-					threadId: threadId ?? undefined,
-				});
-				if (written._nay) {
-					return {
-						stdout: "",
-						stderr: `mv: cannot replace '${destOperand}': ${written._nay.message}\n`,
-						exitCode: bash_COMMAND_EXIT_FAILURE,
-					};
-				}
-				// Later commands chained in this same bash call must see the new proposal.
-				dbFilesRoots.app.fs.resetProposalCaches();
-				return {
-					stdout: `pending replace created: ${sourceDbFilesPath} -> ${intendedDestPath} — replaces the file's content and archives the source when accepted; review in Files\n`,
-					stderr: "",
-					exitCode: 0,
-				};
-			}
-			// Unreadable source content: fall through to the structural replacement, which still moves the file.
-		}
-
-		// A folder source always sends `replace`: folder replacement never needs -f (rename()
+		// `mv -f` onto a file is always a structural move: the source keeps its identity, type, and
+		// history, and accepting archives the occupant. A folder source always sends `replace`: folder replacement never needs -f (rename()
 		// replaces an empty folder silently) and the mutation still rejects every unsafe case,
 		// so an occupant created between the reads above and the mutation cannot fail a move
 		// that real mv would allow.

@@ -4,17 +4,23 @@ import {
 	files_find_file_stem_end_index,
 	files_get_read_only_capabilities,
 	files_get_read_only_row_labels,
-	files_get_editable_text_content_type,
-	files_get_editable_text_yjs_root_kind,
-	files_get_monaco_language_id,
-	files_get_served_media_content_type,
+	files_default_text_content_type_for_name,
+	files_default_text_shape_for_name,
+	files_editable_text_content_type_of,
+	files_editable_text_shape_of,
+	files_get_signed_download_serving,
+	files_guess_content_type_from_name,
+	files_monaco_language_id_of_content_type,
+	files_normalize_content_type,
+	files_parse_content_type,
+	files_resolve_upload_content_type,
+	files_yjs_root_kind_of_content_type,
 	files_get_upload_pipeline_state,
 	files_get_normalized_node_path_segments,
 	files_get_utf8_byte_size,
 	files_node_has_editable_yjs_state,
-	files_normalize_editable_file_name,
 	files_normalize_markdown_name,
-	files_validate_file_rename_class,
+	files_normalize_upload_file_name,
 	files_normalize_text_document_input,
 	files_u8_equals,
 	files_normalize_name_input,
@@ -418,144 +424,211 @@ describe("files_get_read_only_capabilities", () => {
 	});
 });
 
-describe("files_get_editable_text_content_type", () => {
+describe("files_parse_content_type", () => {
+	test("returns the lowercase essence and the charset", () => {
+		expect(files_parse_content_type("Text/Markdown; Charset=UTF-8")).toEqual({
+			essence: "text/markdown",
+			charset: "utf-8",
+		});
+		expect(files_parse_content_type("image/png")).toEqual({ essence: "image/png", charset: null });
+		expect(files_parse_content_type('text/plain; charset="utf-8"')).toEqual({
+			essence: "text/plain",
+			charset: "utf-8",
+		});
+	});
+
+	test("refuses values that are not a media type", () => {
+		expect(files_parse_content_type("")).toBeNull();
+		expect(files_parse_content_type("markdown")).toBeNull();
+		expect(files_parse_content_type("text/markdown; broken")).toBeNull();
+		expect(files_parse_content_type("text/plain; =utf-8")).toBeNull();
+		expect(files_parse_content_type(`text/${"x".repeat(300)}`)).toBeNull();
+	});
+});
+
+describe("files_normalize_content_type", () => {
+	test.each([
+		["text/markdown", "text/markdown;charset=utf-8"],
+		["TEXT/X-MARKDOWN; charset=UTF-8", "text/markdown;charset=utf-8"],
+		["text/plain", "text/plain;charset=utf-8"],
+		["application/json; charset=utf-8", "application/json"],
+		["text/x-yaml", "application/yaml"],
+		["application/javascript", "text/javascript"],
+		["Image/PNG", "image/png"],
+		["text/html; charset=ISO-8859-1", "text/html;charset=iso-8859-1"],
+		["application/octet-stream", "application/octet-stream"],
+	] satisfies Array<[string, string]>)("normalizes %s to %s", (input, expected) => {
+		expect(files_normalize_content_type(input)).toBe(expected);
+	});
+
+	test("returns null for a broken value", () => {
+		expect(files_normalize_content_type("not a type")).toBeNull();
+	});
+});
+
+describe("files_editable_text_shape_of", () => {
+	test.each([
+		// Markdown keeps the rich text document. Every other editable text type is plain text.
+		["text/markdown;charset=utf-8", { contentType: "text/markdown;charset=utf-8", rootKind: "rich_text" }],
+		["text/markdown", { contentType: "text/markdown;charset=utf-8", rootKind: "rich_text" }],
+		["text/plain", { contentType: "text/plain;charset=utf-8", rootKind: "plain_text" }],
+		["application/json", { contentType: "application/json", rootKind: "plain_text" }],
+		["application/x-yaml", { contentType: "application/yaml", rootKind: "plain_text" }],
+		["text/css", { contentType: "text/css", rootKind: "plain_text" }],
+		["text/typescript", { contentType: "text/typescript", rootKind: "plain_text" }],
+		["application/sql", { contentType: "application/sql", rootKind: "plain_text" }],
+		// Active content and stored bytes never become a text document.
+		["text/html", null],
+		["image/svg+xml", null],
+		["image/png", null],
+		["application/pdf", null],
+		["application/octet-stream", null],
+		["broken", null],
+		[undefined, null],
+	] satisfies Array<[string | undefined, ReturnType<typeof files_editable_text_shape_of>]>)(
+		"shapes %s as %o",
+		(contentType, expected) => {
+			expect(files_editable_text_shape_of(contentType)).toEqual(expected);
+			expect(files_yjs_root_kind_of_content_type(contentType)).toBe(expected?.rootKind ?? null);
+			expect(files_editable_text_content_type_of(contentType)).toBe(expected?.contentType ?? null);
+		},
+	);
+});
+
+describe("files_monaco_language_id_of_content_type", () => {
+	test.each([
+		["text/markdown;charset=utf-8", "markdown"],
+		["text/markdown", "markdown"],
+		["text/plain;charset=utf-8", "plaintext"],
+		["application/json", "json"],
+		["application/yaml", "yaml"],
+		["text/yaml", "yaml"],
+		["application/toml", "plaintext"],
+		["text/csv", "plaintext"],
+		["text/css", "css"],
+		["text/javascript", "javascript"],
+		["text/typescript", "typescript"],
+		["application/x-sh", "shell"],
+		["application/sql", "sql"],
+		["image/png", "plaintext"],
+		[undefined, "plaintext"],
+	] satisfies Array<[string | undefined, string]>)("maps %s to %s", (contentType, expected) => {
+		expect(files_monaco_language_id_of_content_type(contentType)).toBe(expected);
+	});
+});
+
+describe("files_guess_content_type_from_name", () => {
 	test.each([
 		["notes.md", "text/markdown;charset=utf-8"],
 		["NOTES.MD", "text/markdown;charset=utf-8"],
 		["notes.txt", "text/plain;charset=utf-8"],
 		["build.log", "text/plain;charset=utf-8"],
+		["settings.ini", "text/plain;charset=utf-8"],
 		["data.json", "application/json"],
-		["DATA.JSON", "application/json"],
 		["config.jsonc", "application/json"],
-		["config.yaml", "application/yaml"],
 		["config.yml", "application/yaml"],
 		["config.toml", "application/toml"],
-		["settings.ini", "text/plain;charset=utf-8"],
 		["table.csv", "text/csv"],
 		["table.tsv", "text/tab-separated-values"],
 		["style.css", "text/css"],
-		["script.js", "text/javascript"],
 		["script.mjs", "text/javascript"],
-		["script.cjs", "text/javascript"],
-		["view.jsx", "text/javascript"],
-		["module.ts", "text/typescript"],
 		["view.tsx", "text/typescript"],
 		["run.sh", "application/x-sh"],
 		["query.sql", "application/sql"],
-		// Active content and unknown extensions are not editable text.
-		["page.html", null],
-		["feed.xml", null],
-		["image.svg", null],
+		// The name is only a hint. Unknown extensions and names without one hint at nothing.
 		["photo.png", null],
-		["movie.mp4", null],
-		["secrets.env", null],
-		["archive.tar.gz", null],
+		["page.html", null],
 		["script.py", null],
-		// A leading-dot name has no extension, same rule as `files_lowercase_extension`.
-		[".json", null],
-		[".env", null],
-		[".gitignore", null],
-		// A trailing dot means no extension either, and so does no dot at all.
-		["data.", null],
-		["notes", null],
-	] satisfies Array<[string, ReturnType<typeof files_get_editable_text_content_type>]>)(
-		"classifies %s as %s",
-		(fileName, expected) => {
-			expect(files_get_editable_text_content_type(fileName)).toBe(expected);
-		},
-	);
-});
-
-describe("files_get_editable_text_yjs_root_kind", () => {
-	test.each([
-		// `.md` keeps the rich text document; that routing rule is this table's reason to exist.
-		["notes.md", "rich_text"],
-		["README.MD", "rich_text"],
-		["notes.txt", "plain_text"],
-		["build.log", "plain_text"],
-		["data.json", "plain_text"],
-		["config.jsonc", "plain_text"],
-		["config.yaml", "plain_text"],
-		["config.yml", "plain_text"],
-		["config.toml", "plain_text"],
-		["settings.ini", "plain_text"],
-		["table.csv", "plain_text"],
-		["table.tsv", "plain_text"],
-		["style.css", "plain_text"],
-		["script.js", "plain_text"],
-		["script.mjs", "plain_text"],
-		["script.cjs", "plain_text"],
-		["view.jsx", "plain_text"],
-		["module.ts", "plain_text"],
-		["view.tsx", "plain_text"],
-		["run.sh", "plain_text"],
-		["query.sql", "plain_text"],
-		["photo.png", null],
-		["page.html", null],
-		["image.svg", null],
 		[".json", null],
 		[".gitignore", null],
 		["data.", null],
 		["notes", null],
-	] satisfies Array<[string, ReturnType<typeof files_get_editable_text_yjs_root_kind>]>)(
-		"classifies %s as %s",
+	] satisfies Array<[string, ReturnType<typeof files_guess_content_type_from_name>]>)(
+		"hints %s as %s",
 		(fileName, expected) => {
-			expect(files_get_editable_text_yjs_root_kind(fileName)).toBe(expected);
+			expect(files_guess_content_type_from_name(fileName)).toBe(expected);
 		},
 	);
 });
 
-describe("files_get_monaco_language_id", () => {
-	test.each([
-		["notes.md", "markdown"],
-		["notes.txt", "plaintext"],
-		["build.log", "plaintext"],
-		["data.json", "json"],
-		["config.jsonc", "json"],
-		["config.yaml", "yaml"],
-		["config.yml", "yaml"],
-		["config.toml", "plaintext"],
-		["settings.ini", "ini"],
-		["table.csv", "plaintext"],
-		["table.tsv", "plaintext"],
-		["style.css", "css"],
-		["script.js", "javascript"],
-		["script.mjs", "javascript"],
-		["script.cjs", "javascript"],
-		["view.jsx", "javascript"],
-		["module.ts", "typescript"],
-		["view.tsx", "typescript"],
-		["run.sh", "shell"],
-		["query.sql", "sql"],
-		["MODULE.TS", "typescript"],
-		["unknown.bin", "plaintext"],
-		[".gitignore", "plaintext"],
-		["notes", "plaintext"],
-	] satisfies Array<[string, string]>)("maps %s to %s", (fileName, expected) => {
-		expect(files_get_monaco_language_id(fileName)).toBe(expected);
+describe("files_default_text_shape_for_name", () => {
+	test("uses the name hint and falls back to plain text, so no name is refused", () => {
+		expect(files_default_text_shape_for_name("README.md")).toEqual({
+			contentType: "text/markdown;charset=utf-8",
+			rootKind: "rich_text",
+		});
+		expect(files_default_text_shape_for_name("data.json")).toEqual({
+			contentType: "application/json",
+			rootKind: "plain_text",
+		});
+		expect(files_default_text_shape_for_name("notes")).toEqual({
+			contentType: "text/plain;charset=utf-8",
+			rootKind: "plain_text",
+		});
+		expect(files_default_text_shape_for_name("script.py")).toEqual({
+			contentType: "text/plain;charset=utf-8",
+			rootKind: "plain_text",
+		});
+		// A stored-bytes hint never makes a text file: the name only helps pick a text type.
+		expect(files_default_text_shape_for_name("photo.png")).toEqual({
+			contentType: "text/plain;charset=utf-8",
+			rootKind: "plain_text",
+		});
+		expect(files_default_text_content_type_for_name("notes.txt")).toBe("text/plain;charset=utf-8");
 	});
 });
 
-describe("files_get_served_media_content_type", () => {
+describe("files_resolve_upload_content_type", () => {
+	test("the caller's valid type wins over the name", () => {
+		expect(files_resolve_upload_content_type({ contentType: "text/markdown", fileName: "data.json" })).toBe(
+			"text/markdown;charset=utf-8",
+		);
+		expect(files_resolve_upload_content_type({ contentType: "application/octet-stream", fileName: "notes.md" })).toBe(
+			"application/octet-stream",
+		);
+	});
+
+	test("the name is a hint only when the caller sent no type", () => {
+		expect(files_resolve_upload_content_type({ contentType: undefined, fileName: "notes.md" })).toBe(
+			"text/markdown;charset=utf-8",
+		);
+		expect(files_resolve_upload_content_type({ contentType: undefined, fileName: "photo.png" })).toBe(
+			"application/octet-stream",
+		);
+	});
+
+	test("a broken type is refused instead of guessed", () => {
+		expect(files_resolve_upload_content_type({ contentType: "not a type", fileName: "notes.md" })).toBeNull();
+	});
+});
+
+describe("files_get_signed_download_serving", () => {
 	test.each([
-		["photo.png", "image/png"],
-		["PHOTO.PNG", "image/png"],
-		["photo.jpg", "image/jpeg"],
-		["photo.jpeg", "image/jpeg"],
-		["photo.webp", "image/webp"],
-		["clip.gif", "image/gif"],
-		["movie.mp4", "video/mp4"],
-		["movie.webm", "video/webm"],
-		// SVG and HTML can run script when served inline, so they never get an inline media type.
-		["image.svg", null],
-		["page.html", null],
-		["notes.md", null],
-		["data.json", null],
-		["unknown.bin", null],
-		[".png", null],
-		["photo", null],
-	] satisfies Array<[string, string | null]>)("serves %s as %s", (fileName, expected) => {
-		expect(files_get_served_media_content_type(fileName)).toBe(expected);
+		["image/png", "photo.png", "image/png", "inline"],
+		["IMAGE/JPEG; charset=binary", "photo.jpg", "image/jpeg", "inline"],
+		["video/mp4", "movie.mp4", "video/mp4", "inline"],
+		// SVG and HTML can run script when served inline, so they always download.
+		["image/svg+xml", "image.svg", "application/octet-stream", "attachment"],
+		["text/html", "page.html", "application/octet-stream", "attachment"],
+		// Editable text keeps its canonical type but never serves inline.
+		["text/markdown", "notes.md", "text/markdown;charset=utf-8", "attachment"],
+		["application/json", "data.json", "application/json", "attachment"],
+		["application/pdf", "paper.pdf", "application/octet-stream", "attachment"],
+		[undefined, "unknown.bin", "application/octet-stream", "attachment"],
+	] satisfies Array<[string | undefined, string, string, "inline" | "attachment"]>)(
+		"serves %s (%s) as %s %s",
+		(contentType, fileName, responseContentType, disposition) => {
+			const serving = files_get_signed_download_serving({ contentType, fileName });
+			expect(serving.responseContentType).toBe(responseContentType);
+			expect(serving.responseContentDisposition.startsWith(`${disposition}; filename*=UTF-8''`)).toBe(true);
+		},
+	);
+
+	test("the file name is encoded for the disposition header", () => {
+		// The name never decides the type: a `.png` name with a text type still downloads as text.
+		const serving = files_get_signed_download_serving({ contentType: "text/plain", fileName: "my notes (1).png" });
+		expect(serving.responseContentType).toBe("text/plain;charset=utf-8");
+		expect(serving.responseContentDisposition).toBe("attachment; filename*=UTF-8''my%20notes%20%281%29.png");
 	});
 });
 
@@ -778,95 +851,21 @@ describe("files_normalize_markdown_name", () => {
 	});
 });
 
-describe("files_normalize_editable_file_name", () => {
+describe("files_normalize_upload_file_name", () => {
 	test.each([
 		["data.json", "data.json"],
 		["DATA.JSON", "data.json"],
 		["My Notes.yaml", "my-notes.yaml"],
-		// Extensionless names still default to Markdown, like the UI create flow.
-		["Feature Plan", "feature-plan.md"],
-		["notes.", "notes.md"],
-		["readme.md", "README.md"],
+		["photo.PNG", "photo.png"],
+		// Any extension is kept as it is. The name never decides what the file is.
+		["tool.exe", "tool.exe"],
+		["script.py", "script.py"],
+		// Names without an extension stay without one. No `.md` is added.
+		["Feature Plan", "feature-plan"],
+		["notes.", "notes"],
+		["a\\b/c.txt", "c.txt"],
 	])("normalizes %s to %s", (input, expected) => {
-		expect(files_normalize_editable_file_name(input)).toEqual({ _yay: expected });
-	});
-
-	test("refuses an unwritable extension with the classifier's rule", () => {
-		const result = files_normalize_editable_file_name("tool.exe");
-		if (!result._nay) {
-			throw new Error("Expected the unwritable extension to refuse");
-		}
-		expect(result._nay.message).toContain("'.exe' is not supported");
-		expect(result._nay.message).toContain("Writable extensions: .md, .txt");
-	});
-});
-
-describe("files_validate_file_rename_class", () => {
-	const richNode = {
-		kind: "file",
-		lowercaseExtension: "md",
-		assetId: "asset" as never,
-		yjsSnapshotId: "snapshot" as never,
-		yjsLastSequenceId: "sequence" as never,
-		yjsRootKind: "rich_text",
-	} as const;
-	const plainNode = { ...richNode, lowercaseExtension: "json", yjsRootKind: "plain_text" } as const;
-	const uploadNode = {
-		kind: "file",
-		lowercaseExtension: "png",
-		assetId: undefined,
-		yjsSnapshotId: undefined,
-		yjsLastSequenceId: undefined,
-		yjsRootKind: undefined,
-	} as const;
-
-	test("refuses class crossings and extension changes on stored files", () => {
-		expect(files_validate_file_rename_class({ node: richNode, destName: "notes.json" })._nay?.message).toBe(
-			"A Markdown file must keep the .md extension",
-		);
-		expect(files_validate_file_rename_class({ node: plainNode, destName: "notes.md" })._nay?.message).toContain(
-			"A plain text file must keep a plain text extension",
-		);
-		expect(files_validate_file_rename_class({ node: uploadNode, destName: "movie.mp4" })._nay?.message).toContain(
-			"keep '.png'",
-		);
-	});
-
-	test("allows plain subtype changes with the destination media type and same-class renames", () => {
-		expect(files_validate_file_rename_class({ node: plainNode, destName: "notes.yaml" })).toEqual({
-			_yay: { contentType: "application/yaml" },
-		});
-		expect(files_validate_file_rename_class({ node: richNode, destName: "notes.md" })).toEqual({
-			_yay: { contentType: "text/markdown;charset=utf-8" },
-		});
-		expect(files_validate_file_rename_class({ node: uploadNode, destName: "picture.png" })).toEqual({
-			_yay: { contentType: null },
-		});
-	});
-
-	test("a non-collaborative file follows the same class rule as a collaborative one", () => {
-		// Collaboration off drops the Yjs pointers but keeps the text and its class, so the rule
-		// still reads the class from yjsRootKind.
-		const nonCollaborativeRichNode = { ...richNode, yjsSnapshotId: undefined, yjsLastSequenceId: undefined } as const;
-		const nonCollaborativePlainNode = { ...plainNode, yjsSnapshotId: undefined, yjsLastSequenceId: undefined } as const;
-
-		expect(
-			files_validate_file_rename_class({ node: nonCollaborativeRichNode, destName: "notes.json" })._nay?.message,
-		).toBe("A Markdown file must keep the .md extension");
-		expect(files_validate_file_rename_class({ node: nonCollaborativePlainNode, destName: "notes.yaml" })).toEqual({
-			_yay: { contentType: "application/yaml" },
-		});
-	});
-
-	test("an extensionless destination claims no class, so a swap can park a file on a folder name", () => {
-		expect(files_validate_file_rename_class({ node: richNode, destName: "swap-temp" })).toEqual({
-			_yay: { contentType: null },
-		});
-		expect(files_validate_file_rename_class({ node: plainNode, destName: "swap-temp" })).toEqual({
-			_yay: { contentType: null },
-		});
-		// A stored upload's extension is the only record of its bytes: it may not be dropped.
-		expect(files_validate_file_rename_class({ node: uploadNode, destName: "photo" })._nay).toBeDefined();
+		expect(files_normalize_upload_file_name(input)).toBe(expected);
 	});
 });
 
@@ -2152,14 +2151,12 @@ describe("files_pending_path_overlay", () => {
 		destNodeId: string;
 		sourceNodeId: string;
 		sourcePath: string;
-		archivesSourceOnAccept?: boolean;
 	}): files_PendingPathOverlayRow {
 		return {
 			fileNodeId: make_overlay_node_id(args.destNodeId),
 			copiedFrom: {
 				nodeId: make_overlay_node_id(args.sourceNodeId),
 				path: args.sourcePath,
-				archivesSourceOnAccept: args.archivesSourceOnAccept,
 			},
 		};
 	}
@@ -2198,8 +2195,9 @@ describe("files_pending_path_overlay", () => {
 			expect(files_pending_path_overlay_project_committed_path(overlay, "/a.md")).toBe("/a.md");
 		});
 
-		test("a plain copy row (no archivesSourceOnAccept) leaves the source visible", () => {
-			// The copy destination is a real committed node already, so the overlay has nothing to add.
+		test("a copy row leaves the source visible", () => {
+			// A copy never touches the source, and the copy destination is a real committed node
+			// already, so the overlay has nothing to add.
 			const overlay = build_overlay(
 				[make_copy_row({ destNodeId: "dest", sourceNodeId: "src", sourcePath: "/a.md" })],
 				[make_overlay_node("src", "/a.md", "file"), make_overlay_node("dest", "/copy.md", "file")],
@@ -2665,34 +2663,6 @@ describe("files_pending_path_overlay", () => {
 			expect(files_pending_path_overlay_project_committed_path(overlay, "/c.md")).toBe("/a.md");
 		});
 
-		test("an editable replace hides the source and keeps the destination committed", () => {
-			// mv -f between editable files is stored as a copy on the destination node plus
-			// archivesSourceOnAccept: only the source disappears from the visible tree.
-			const overlay = build_overlay(
-				[
-					make_copy_row({
-						destNodeId: "dest",
-						sourceNodeId: "src",
-						sourcePath: "/a.md",
-						archivesSourceOnAccept: true,
-					}),
-				],
-				[make_overlay_node("src", "/a.md", "file"), make_overlay_node("dest", "/b.md", "file")],
-			);
-
-			expect(files_pending_path_overlay_translate_path(overlay, "/a.md")).toEqual({ kind: "hidden" });
-			expect(files_pending_path_overlay_project_committed_path(overlay, "/a.md")).toBe(null);
-			expect(files_pending_path_overlay_translate_path(overlay, "/b.md")).toEqual({ kind: "unchanged" });
-			// The destination keeps its identity; listings show it at its own path.
-			expect(files_pending_path_overlay_project_committed_path(overlay, "/b.md")).toBe("/b.md");
-			expect(
-				files_pending_path_overlay_pick_visible_entry(overlay, { requestedPath: "/b.md", occupantNodeId: "dest" }),
-			).toBe("occupant");
-			// The copy-archived source at its own path reads as missing.
-			expect(
-				files_pending_path_overlay_pick_visible_entry(overlay, { requestedPath: "/a.md", occupantNodeId: "src" }),
-			).toBe("none");
-		});
 	});
 
 	describe("pending delete", () => {
@@ -2855,22 +2825,6 @@ describe("files_pending_path_overlay", () => {
 
 			expect(files_pending_path_overlay_translate_path(overlay, "/a.md")).toEqual({ kind: "unchanged" });
 			expect(files_pending_path_overlay_project_committed_path(overlay, "/a.md")).toBe("/a.md");
-		});
-
-		test("an editable replace row whose source node is not in nodesById hides nothing", () => {
-			const overlay = build_overlay(
-				[
-					make_copy_row({
-						destNodeId: "dest",
-						sourceNodeId: "ghost",
-						sourcePath: "/a.md",
-						archivesSourceOnAccept: true,
-					}),
-				],
-				[make_overlay_node("dest", "/b.md", "file")],
-			);
-
-			expect(files_pending_path_overlay_translate_path(overlay, "/a.md")).toEqual({ kind: "unchanged" });
 		});
 
 		test("a delete row whose node is not in nodesById hides nothing", () => {

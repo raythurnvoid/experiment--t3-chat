@@ -446,6 +446,7 @@ export const insert_file_view_session = internalMutation({
 			pluginVersionId: installation.pluginVersionId,
 			userId: userAuth.id,
 			fileNodeId: fileNode._id,
+			fileViewId: fileView.id,
 			tokenHash: await crypto_sha256_hex(token),
 			createdAt: now,
 			expiresAt,
@@ -580,6 +581,16 @@ export const rotate_ui_session = internalMutation({
 		});
 		if (authorized._nay) {
 			return authorized;
+		}
+		// A file-view session also re-checks the view against the node's CURRENT content type,
+		// like the mint did. A copy or a restore can change the type while the view is open, and
+		// the view must not keep a token for a type it never passed review with.
+		if (fileNode && session.fileViewId !== undefined) {
+			const version = await ctx.db.get("plugins_versions", session.pluginVersionId);
+			const fileView = version?.fileViews.find((fileView) => fileView.id === session.fileViewId);
+			if (!fileView || !fileNode.contentType || !fileView.contentTypes.includes(fileNode.contentType)) {
+				return Result({ _nay: { message: "Not found" } });
+			}
 		}
 
 		const now = Date.now();

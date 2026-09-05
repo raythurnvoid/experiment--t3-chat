@@ -49,8 +49,10 @@ import { v_result } from "../server/convex-utils.ts";
 import {
 	files_MAX_UPLOADS_BYTES,
 	files_ROOT_ID,
+	files_INVALID_CONTENT_TYPE_MESSAGE,
 	files_db_get_visible_node_by_path,
-	files_get_editable_text_content_type,
+	files_editable_text_content_type_of,
+	files_normalize_content_type,
 } from "../server/files.ts";
 import { server_path_normalize } from "../server/server-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
@@ -877,8 +879,13 @@ export const create_upload_target = internalMutation({
 		if (!Number.isInteger(args.size) || args.size < 1 || args.size > files_MAX_UPLOADS_BYTES) {
 			return Result({ _nay: { message: "File too large" } });
 		}
-		const editableTextContentType = files_get_editable_text_content_type(name);
-		if (args.nonCollaborative && editableTextContentType === null) {
+		// The service always names the type. It decides how the upload is processed, so a broken
+		// value is refused instead of guessed from the name.
+		const contentType = files_normalize_content_type(args.contentType);
+		if (contentType === null) {
+			return Result({ _nay: { message: files_INVALID_CONTENT_TYPE_MESSAGE } });
+		}
+		if (args.nonCollaborative && files_editable_text_content_type_of(contentType) === null) {
 			return Result({ _nay: { message: "Only editable text files can be non-collaborative" } });
 		}
 
@@ -894,9 +901,11 @@ export const create_upload_target = internalMutation({
 		}
 
 		const now = Date.now();
+		// Fingerprint the normalized type, so a replay that spells the same type differently
+		// (`Text/Plain`) still matches its first request.
 		const requestFingerprint = JSON.stringify({
 			path: args.path,
-			contentType: args.contentType,
+			contentType,
 			size: args.size,
 			readOnly: args.readOnly,
 			nonCollaborative: args.nonCollaborative,
@@ -1148,15 +1157,12 @@ export const create_upload_target = internalMutation({
 			kind: "upload",
 			r2Bucket: r2_get_bucket(),
 			size: args.size,
-			...(editableTextContentType === null ? { processingWorkId: null } : {}),
+			...(files_editable_text_content_type_of(contentType) === null ? { processingWorkId: null } : {}),
 			createdBy: args.principal.actorUserId,
 			unfinalizedExpiresAt: now + r2_UNFINALIZED_ASSET_TTL_MS,
 			updatedAt: now,
 		});
 
-		// A recognized text extension stores the classifier's type; anything else keeps the client
-		// value, same as the public upload path.
-		const storedContentType = editableTextContentType ?? args.contentType;
 		const nodeIdResult = await files_nodes_db_create_node_recursively_at_path(ctx, {
 			organizationId: args.principal.organizationId,
 			workspaceId: args.principal.workspaceId,
@@ -1164,7 +1170,7 @@ export const create_upload_target = internalMutation({
 			parentId: files_ROOT_ID,
 			path: args.path,
 			kind: "file",
-			contentType: storedContentType,
+			contentType,
 			assetId,
 			// Name the plugin that uploaded the file, so a member reading the file later can see
 			// which installation put it there.
@@ -1228,7 +1234,7 @@ export const create_upload_target = internalMutation({
 			destinationNodeId: destination._id,
 			destinationEpoch,
 			path: args.path,
-			contentType: storedContentType,
+			contentType,
 			declaredBytes: args.size,
 			actualBytes: null,
 			nodeId: nodeIdResult._yay,
@@ -1251,7 +1257,7 @@ export const create_upload_target = internalMutation({
 				path: args.path,
 				nodeId: String(nodeIdResult._yay),
 				uploadUrl: signedUpload.url,
-				headers: { "Content-Type": storedContentType },
+				headers: { "Content-Type": contentType },
 				uploadUrlExpiresAt,
 			},
 		});

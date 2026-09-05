@@ -11,7 +11,12 @@ import { Result } from "common/errors-as-values-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
-import { files_normalize_name, files_normalize_upload_file_name } from "../shared/files.ts";
+import {
+	files_INVALID_CONTENT_TYPE_MESSAGE,
+	files_normalize_content_type,
+	files_normalize_name,
+	files_normalize_upload_file_name,
+} from "../shared/files.ts";
 import { files_metadata_FRONTMATTER_FIELD_PREFIX } from "../shared/files-metadata.ts";
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
 import { server_path_normalize } from "../server/server-utils.ts";
@@ -114,6 +119,13 @@ export const create_upload_targets = internalMutation({
 				return Result({ _nay: { message: "File too large", data: { path: item.path } } });
 			}
 
+			// The import names the type of every file. It is stored as given, so a broken value is
+			// refused up front instead of stored.
+			const contentType = files_normalize_content_type(item.contentType);
+			if (contentType === null) {
+				return Result({ _nay: { message: files_INVALID_CONTENT_TYPE_MESSAGE, data: { path: item.path } } });
+			}
+
 			if (leafPaths.has(item.path)) {
 				return Result({ _nay: { message: "Duplicate path in batch", data: { path: item.path } } });
 			}
@@ -143,7 +155,7 @@ export const create_upload_targets = internalMutation({
 
 			validated.push({
 				path: item.path,
-				contentType: item.contentType,
+				contentType,
 				size: item.size,
 				collidingNodeId: existingNode?._id ?? null,
 			});

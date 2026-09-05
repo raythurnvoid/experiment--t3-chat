@@ -121,8 +121,8 @@ import {
 	files_collect_read_only_ancestor_ids,
 	files_create_tree_items_list_from_nodes,
 	files_get_default_node_name,
-	files_get_editable_text_yjs_root_kind,
 	files_get_read_only_capabilities,
+	files_guess_content_type_from_name,
 	files_get_read_only_row_labels,
 	files_get_node_path_validation,
 	files_IMPORT_MAX_ITEMS_PER_CALL,
@@ -134,7 +134,7 @@ import {
 	files_normalize_file_rename_name,
 	files_normalize_markdown_name,
 	files_normalize_upload_file_name,
-	files_validate_file_rename_class,
+	files_yjs_root_kind_of_content_type,
 	type files_EditorView,
 	type files_TreeItem,
 	type files_VisibleTreeNode,
@@ -279,14 +279,6 @@ function upload_filename_has_real_extension(filename: string) {
 	return extensionSeparatorIndex > 0 && extensionSeparatorIndex < filename.length - 1;
 }
 
-// Safe on already-normalized upload filenames only; raw browser names go through a normalizer first.
-function upload_filename_extension_of(filename: string) {
-	const extensionSeparatorIndex = filename.lastIndexOf(".");
-	return extensionSeparatorIndex > 0 && extensionSeparatorIndex < filename.length - 1
-		? filename.slice(extensionSeparatorIndex + 1)
-		: null;
-}
-
 // #region folder import
 const FILES_IMPORT_MAX_FILES = 1000;
 const FILES_IMPORT_MAX_CHUNK_BYTES = 1024 * 1024 * 1024;
@@ -400,7 +392,8 @@ function build_import_plan(entries: FilesImportEntry[]) {
 
 	for (const entry of entries) {
 		const segments = entry.relativePath.split("/");
-		const contentType = entry.file.type || undefined;
+		// The name's hint wins over the browser MIME (browsers report `.md` as octet-stream).
+		const contentType = files_guess_content_type_from_name(entry.file.name) ?? (entry.file.type || undefined);
 
 		const normalizedSegments: string[] = [];
 		let skipReason: FilesImportSkipReason | null = null;
@@ -415,19 +408,18 @@ function build_import_plan(entries: FilesImportEntry[]) {
 				continue;
 			}
 
-			// Markdown tooling also saves `.markdown`, but only `.md` is storable as an editable file.
-			// Alias it first, then let the extension classifier, never the browser MIME,
-			// pick the name rule.
-			const leafInput = segment.replace(/\.markdown$/i, ".md");
-			if (files_get_editable_text_yjs_root_kind(leafInput) === "rich_text") {
-				const normalizedLeaf = files_normalize_markdown_name(leafInput);
+			// A `.md` name follows the Markdown name rule (README casing). Every other name keeps
+			// its extension. The name never decides the stored type by itself; the import sends
+			// the type separately.
+			if (segment.toLowerCase().endsWith(".md")) {
+				const normalizedLeaf = files_normalize_markdown_name(segment);
 				if (normalizedLeaf._nay) {
 					skipReason = "invalid_name";
 					break;
 				}
 				normalizedSegments.push(normalizedLeaf._yay);
 			} else {
-				const normalizedLeaf = files_normalize_upload_file_name(leafInput);
+				const normalizedLeaf = files_normalize_upload_file_name(segment);
 				if (!upload_filename_has_real_extension(normalizedLeaf)) {
 					skipReason = "missing_extension";
 					break;
@@ -3123,36 +3115,13 @@ function get_upload_conflict_modal_state(args: { draft: FilesSidebarUploadDraft 
 			: { _yay: files_normalize_upload_file_name(args.filename) };
 	const normalizedFilename = normalizedFilenameResult?._yay ?? "";
 
-	// Renaming the upload never converts its bytes, so the new name
-	// may not claim a different content class than the draft was classified with. The Markdown
-	// normalizer above already refuses every non-`.md` extension for a rich draft.
-	const classCrossingMessage = ((/* iife */) => {
-		if (!args.draft || normalizedFilenameResult?._nay || !normalizedFilename) {
-			return undefined;
-		}
-		if (draftTextClass === "plain_text") {
-			return files_get_editable_text_yjs_root_kind(normalizedFilename) === "plain_text"
-				? undefined
-				: "This upload becomes a plain text document, so keep a plain text extension.";
-		}
-		if (draftTextClass === null) {
-			// A stored upload's extension is the only record of what its bytes are, so only the
-			// basename may change.
-			const draftExtension = upload_filename_extension_of(args.draft.filename);
-			const typedExtension = upload_filename_extension_of(normalizedFilename);
-			if (draftExtension !== null && typedExtension !== draftExtension) {
-				return `This file's extension cannot be changed: renaming does not convert the file, so keep '.${draftExtension}'`;
-			}
-		}
-		return undefined;
-	})();
-
+	// The draft's stored type was decided when the file was picked, so renaming it here never
+	// changes what the upload becomes. Any valid name is fine.
 	const invalidFilenameMessage =
 		normalizedFilenameResult?._nay?.message ??
 		(draftTextClass === null && !upload_filename_has_real_extension(normalizedFilename)
 			? "Uploaded files must include a file extension."
-			: undefined) ??
-		classCrossingMessage;
+			: undefined);
 	const pathConflictMessage =
 		args.draft?.reason === "path_conflict" && normalizedFilename === args.draft.filename
 			? args.draft.conflict?.kind === "file"
@@ -4333,9 +4302,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				toast.info("Image compressed before upload.");
 			}
 
-			const contentType = file.type || undefined;
-			// The extension classifier, never the browser MIME, picks the name rule.
-			const textClass = files_get_editable_text_yjs_root_kind(file.name);
+			// The name's hint wins over the browser MIME for the stored type: browsers report
+			// `.md` as octet-stream or `.ts` as video/mp2t, and that would store a text file as
+			// bytes. A name with no hint keeps the browser type, or none.
+			const contentType = files_guess_content_type_from_name(file.name) ?? (file.type || undefined);
+			const textClass = files_yjs_root_kind_of_content_type(contentType);
 			const filenameResult =
 				textClass === "rich_text"
 					? files_normalize_markdown_name(file.name)
@@ -4605,8 +4576,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		const renameData = ((/* iife */) => {
 			// Route on the node's editable text, not its MIME and not its document: a converted
 			// `.json` upload has an asset AND editable text, and a non-collaborative file has
-			// editable text with no document. Both follow the editable-file class rule, and both
-			// would take the stored-file branch under a document check.
+			// editable text with no document. Both rename like text files (any valid name, the
+			// stored type stays), and both would take the stored-file branch under a document check.
 			if (itemData.assetId && !files_node_has_editable_text_content(itemData)) {
 				const renameValidation = get_uploaded_file_rename_validation({
 					treeItemsList: treeItems?.list,
@@ -4690,18 +4661,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 		if (normalizedName === itemData.name) {
 			return;
-		}
-
-		// Refuse a class-crossing rename with the server's own message before
-		// the mutation round-trip. `rename_node` enforces the same rule as the backstop.
-		if (itemData.kind === "file") {
-			const destLeafName = normalizedName.split("/").at(-1) ?? normalizedName;
-			const renameClass = files_validate_file_rename_class({ node: itemData, destName: destLeafName });
-			if (renameClass._nay) {
-				setRenameError(itemId, renameClass._nay.message);
-				item.setFocused();
-				return;
-			}
 		}
 
 		clearRenameError(itemId);
@@ -4829,22 +4788,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				setRenameError(itemId, renameError);
 				item.setFocused();
 				return;
-			}
-
-			// Check the content class on Enter so a class-crossing rename refuses before submission.
-			if (itemData.kind === "file") {
-				const leafResult = files_normalize_file_rename_name(
-					path_extract_segments_from(trimmedValue).at(-1) ?? trimmedValue,
-				);
-				const renameClass = leafResult._nay
-					? null
-					: files_validate_file_rename_class({ node: itemData, destName: leafResult._yay });
-				if (renameClass?._nay) {
-					event.preventDefault();
-					setRenameError(itemId, renameClass._nay.message);
-					item.setFocused();
-					return;
-				}
 			}
 		}
 
@@ -5876,7 +5819,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			parentId: files_ROOT_ID,
 			filename,
 			contentType: "application/pdf",
-			textClass: files_get_editable_text_yjs_root_kind(filename),
+			textClass: files_yjs_root_kind_of_content_type(files_guess_content_type_from_name(filename) ?? undefined),
 			reason,
 			...(reason === "path_conflict"
 				? {
@@ -6375,7 +6318,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				get_import_file_entries([first, duplicate, markdown, missingExtension, invalidFolder]),
 			);
 
-			expect(plan.items.map((item) => item.normalizedPath)).toEqual(["docs/a.pdf", "docs/notes.md"]);
+			// A non-`.md` name keeps its extension; the type travels separately.
+			expect(plan.items.map((item) => item.normalizedPath)).toEqual(["docs/a.pdf", "docs/notes.markdown"]);
 			expect(plan.items[0]!.file).toBe(first);
 			expect(plan.skipped).toEqual([
 				{ relativePath: "docs/a.pdf", reason: "duplicate_after_normalization" },
@@ -6892,9 +6836,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			});
 		});
 
-		test("refuses a stored upload rename that changes the extension", () => {
-			const message = "This file's extension cannot be changed: renaming does not convert the file, so keep '.pdf'";
-
+		test("allows a stored upload rename that changes the extension", () => {
+			// The stored type was decided when the file was picked; the name never converts it.
 			expect(
 				get_upload_conflict_modal_state({
 					draft: test_upload_draft({ filename: "report.pdf" }),
@@ -6902,8 +6845,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				}),
 			).toMatchObject({
 				normalizedFilename: "report.txt",
-				invalidFilenameMessage: message,
-				uploadBlockingMessage: message,
+				invalidFilenameMessage: undefined,
+				uploadBlockingMessage: undefined,
 			});
 		});
 
@@ -6920,9 +6863,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			});
 		});
 
-		test("refuses a plain text draft rename that leaves the plain text class", () => {
-			const message = "This upload becomes a plain text document, so keep a plain text extension.";
-
+		test("allows a plain text draft rename to any valid name", () => {
 			expect(
 				get_upload_conflict_modal_state({
 					draft: test_upload_draft({ filename: "data.json" }),
@@ -6930,8 +6871,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				}),
 			).toMatchObject({
 				normalizedFilename: "data.pdf",
-				invalidFilenameMessage: message,
-				uploadBlockingMessage: message,
+				invalidFilenameMessage: undefined,
+				uploadBlockingMessage: undefined,
 			});
 		});
 	});

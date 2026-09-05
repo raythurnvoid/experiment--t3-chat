@@ -53,8 +53,9 @@ import type {
 } from "../convex/ai_chat_files.ts";
 import {
 	files_ROOT_ID,
-	files_get_editable_text_yjs_root_kind,
+	files_guess_content_type_from_name,
 	files_pending_path_overlay_project_committed_path,
+	files_yjs_root_kind_of_content_type,
 } from "../shared/files.ts";
 import type { plugins_list_bash_source_mounts_Result } from "../convex/plugins.ts";
 import {
@@ -1551,6 +1552,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				return { key, url: `https://r2.test/upload?key=${encodeURIComponent(key)}` };
 			});
 			vi.spyOn(R2.prototype, "syncMetadata").mockResolvedValue(undefined);
+			// Turning collaboration off schedules a delete of the old Yjs snapshot object. Keep that
+			// job off the network.
+			vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
 			vi.spyOn(R2.prototype, "getUrl").mockImplementation(
 				async (key: string) => `https://r2.test/object/${encodeURIComponent(key)}`,
 			);
@@ -1624,9 +1628,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		};
 
 		// Mirrors the old mock organization tree; contents are canonical for every test that reads them.
+		const readme_seed_content = "# Readme\nunique-token here\nmore unique-token below\n";
 		const default_organization_files: BashSeedSpec[] = [
 			{ path: "/docs", kind: "folder" },
-			{ path: "/docs/readme.md", content: "# Readme\nunique-token here\nmore unique-token below\n" },
+			{ path: "/docs/readme.md", content: readme_seed_content },
 			{ path: "/docs/tutorial.md", content: "zeta\nalpha\nALPHA\n" },
 			{ path: "/docs/nested", kind: "folder" },
 			{ path: "/docs/nested/deep.md", content: "one:two\nthree:four\n" },
@@ -1708,8 +1713,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const dotIndex = name.lastIndexOf(".");
 			const content = spec.content ?? "";
 			const bytes = new TextEncoder().encode(content);
-			// Editable seeds classify by name, exactly like the production create path.
-			const seedRootKind = files_get_editable_text_yjs_root_kind(name) ?? "rich_text";
+			// The stored type decides the shape, exactly like the production create path. A seed
+			// without a type takes the hint from its name and falls back to Markdown.
+			const seedContentType = spec.contentType ?? files_guess_content_type_from_name(name) ?? "text/markdown;charset=utf-8";
+			const seedRootKind = files_yjs_root_kind_of_content_type(seedContentType) ?? "rich_text";
 			const fileId = await ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: scope.organizationId,
@@ -1724,7 +1731,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				pathDepth: segments.length,
 				lowercaseExtension:
 					dotIndex <= 0 || dotIndex === name.length - 1 ? null : name.slice(dotIndex + 1).toLowerCase(),
-				contentType: spec.contentType ?? "text/markdown;charset=utf-8",
+				contentType: seedContentType,
 				...(spec.withoutYjsState ? {} : { yjsRootKind: seedRootKind }),
 				updatedAt,
 			});
@@ -2029,11 +2036,17 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		 * Seed one pending content proposal through the real agent flow: stage the text under a
 		 * server-side batch, then run the finishing internal action that carries only ids. The
 		 * target file must be seeded `withRealYjsSnapshot: true`, because the action reconstructs
-		 * the live base state from the stored snapshot.
+		 * the live base state from the stored snapshot. `stagedText` and `copiedFrom` build the doc
+		 * shape a partial save or a replace-move needs.
 		 */
 		async function upsert_pending_update_for_test(
 			runner: Awaited<ReturnType<typeof create_bash_runner>>,
-			args: { nodeId: Id<"files_nodes">; unstagedText: string },
+			args: {
+				nodeId: Id<"files_nodes">;
+				stagedText?: string;
+				unstagedText: string;
+				copiedFrom?: { nodeId: Id<"files_nodes">; path: string };
+			},
 		) {
 			const batch = await runner.t.mutation(
 				internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
@@ -2048,6 +2061,22 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				throw new Error(batch._nay.message);
 			}
 			const operationBatchId = batch._yay.operationBatchId;
+			if (args.stagedText !== undefined) {
+				const stagedRole = await runner.t.mutation(
+					internal.files_pending_updates.stage_file_pending_update_text_input_internal,
+					{
+						organizationId: runner.seeded.organizationId,
+						workspaceId: runner.seeded.workspaceId,
+						userId: runner.seeded.userId,
+						operationBatchId,
+						role: "staged",
+						text: args.stagedText,
+					},
+				);
+				if (stagedRole._nay) {
+					throw new Error(stagedRole._nay.message);
+				}
+			}
 			const staged = await runner.t.mutation(
 				internal.files_pending_updates.stage_file_pending_update_text_input_internal,
 				{
@@ -2070,12 +2099,209 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					userId: runner.seeded.userId,
 					nodeId: args.nodeId,
 					operationBatchId,
+					...(args.copiedFrom ? { copiedFrom: args.copiedFrom } : {}),
 				},
 			);
 			if (upserted._nay) {
 				throw new Error(upserted._nay.message);
 			}
 		}
+
+		/**
+		 * The seeded user signed in like the Files UI, for the public accept, discard, and
+		 * collaboration doors.
+		 */
+		function runner_as_user(runner: Awaited<ReturnType<typeof create_bash_runner>>) {
+			return runner.t.withIdentity({
+				issuer: "https://clerk.test",
+				subject: `clerk-${runner.seeded.userId}`,
+				external_id: runner.seeded.userId,
+				email: "bash-runner-user@test.local",
+			});
+		}
+
+		async function list_pending_updates_for_node(
+			runner: Awaited<ReturnType<typeof create_bash_runner>>,
+			nodeId: Id<"files_nodes">,
+		) {
+			return await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
+					.collect(),
+			);
+		}
+
+		/**
+		 * Save the seeded user's proposal on `nodeId` like the Files UI does, then run the
+		 * materialization the save enqueued. The Workpool enqueue is mocked in this suite, so the
+		 * committed chunks and the version snapshot only update when the test runs the worker.
+		 * The save publishes the `staged` branch only; see `accept_pending_update_for_test`.
+		 */
+		async function save_pending_update_for_test(
+			runner: Awaited<ReturnType<typeof create_bash_runner>>,
+			nodeId: Id<"files_nodes">,
+		) {
+			const { api } = await import("../convex/_generated/api.js");
+			const saved = await runner_as_user(runner).action(api.files_pending_updates.save_file_pending_update, {
+				membershipId: runner.seeded.membershipId,
+				nodeId,
+			});
+			if (saved._nay) {
+				throw new Error(saved._nay.message);
+			}
+			if (saved._yay.newSequence !== null) {
+				const materialized = await runner.t.action(internal.files_nodes_content.materialize_file_content, {
+					organizationId: runner.seeded.organizationId,
+					workspaceId: runner.seeded.workspaceId,
+					nodeId,
+					userId: runner.seeded.userId,
+					targetSequence: saved._yay.newSequence,
+				});
+				if (materialized._nay) {
+					throw new Error(materialized._nay.message);
+				}
+			}
+			return saved._yay;
+		}
+
+		/**
+		 * Accept an agent proposal the way the Pending changes panel does: read the proposed text,
+		 * stage it as both `staged` and `unstaged`, then save. An agent write stages no `staged`
+		 * text, so a bare save would publish nothing and keep the doc as a partial save.
+		 */
+		async function accept_pending_update_for_test(
+			runner: Awaited<ReturnType<typeof create_bash_runner>>,
+			args: { nodeId: Id<"files_nodes">; path: string },
+		) {
+			const proposed = await runner.t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+				organizationId: runner.seeded.organizationId,
+				workspaceId: runner.seeded.workspaceId,
+				userId: runner.seeded.userId,
+				path: args.path,
+				overlayUserId: runner.seeded.userId,
+			});
+			if (!proposed) {
+				throw new Error(`No proposed text at ${args.path}`);
+			}
+			await upsert_pending_update_for_test(runner, {
+				nodeId: args.nodeId,
+				stagedText: proposed.content,
+				unstagedText: proposed.content,
+			});
+			return await save_pending_update_for_test(runner, args.nodeId);
+		}
+
+		/**
+		 * Accept the seeded user's whole-file copy the way the Pending changes panel does.
+		 */
+		async function accept_pending_replacement_for_test(
+			runner: Awaited<ReturnType<typeof create_bash_runner>>,
+			nodeId: Id<"files_nodes">,
+		) {
+			const row = (await list_pending_updates_for_node(runner, nodeId)).find(
+				(row) => row.userId === runner.seeded.userId,
+			);
+			if (!row) {
+				throw new Error("No pending copy to accept");
+			}
+			const { api } = await import("../convex/_generated/api.js");
+			const accepted = await runner_as_user(runner).action(api.files_pending_updates.accept_file_pending_replacement, {
+				membershipId: runner.seeded.membershipId,
+				nodeId,
+				pendingUpdateId: row._id,
+			});
+			if (accepted._nay) {
+				throw new Error(accepted._nay.message);
+			}
+		}
+
+		/**
+		 * Read the committed chunk text of one file, without the seeded user's pending overlay.
+		 */
+		async function read_committed_text(
+			runner: Awaited<ReturnType<typeof create_bash_runner>>,
+			nodeId: Id<"files_nodes">,
+		) {
+			return await runner.t.run(async (ctx) => {
+				const chunks = await ctx.db
+					.query("files_text_chunks")
+					.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
+						q
+							.eq("organizationId", runner.seeded.organizationId)
+							.eq("workspaceId", runner.seeded.workspaceId)
+							.eq("sourceKind", "committed")
+							.eq("fileNodeId", nodeId),
+					)
+					.collect();
+				return chunks
+					.sort((left, right) => left.chunkIndex - right.chunkIndex)
+					.map((chunk) => chunk.textChunk)
+					.join("");
+			});
+		}
+
+		/**
+		 * Count the version snapshots of one file. A direct save on a file with collaboration
+		 * off stores one per save.
+		 */
+		async function count_version_snapshots(
+			runner: Awaited<ReturnType<typeof create_bash_runner>>,
+			nodeId: Id<"files_nodes">,
+		) {
+			return await runner.t.run(async (ctx) => {
+				const snapshots = await ctx.db
+					.query("files_snapshots")
+					.withIndex("by_organization_workspace_fileNode_archivedAt", (q) =>
+						q
+							.eq("organizationId", runner.seeded.organizationId)
+							.eq("workspaceId", runner.seeded.workspaceId)
+							.eq("fileNodeId", nodeId),
+					)
+					.collect();
+				return snapshots.length;
+			});
+		}
+
+		/**
+		 * The content assets one file's version history points at, oldest first.
+		 */
+		async function version_snapshot_asset_ids(
+			runner: Awaited<ReturnType<typeof create_bash_runner>>,
+			nodeId: Id<"files_nodes">,
+		) {
+			return await runner.t.run(async (ctx) => {
+				const snapshots = await ctx.db
+					.query("files_snapshots")
+					.withIndex("by_organization_workspace_fileNode_archivedAt", (q) =>
+						q
+							.eq("organizationId", runner.seeded.organizationId)
+							.eq("workspaceId", runner.seeded.workspaceId)
+							.eq("fileNodeId", nodeId),
+					)
+					.collect();
+				return snapshots.map((snapshot) => snapshot.assetId);
+			});
+		}
+
+		/**
+		 * Run the paged cleanup that turning collaboration off schedules. `runAfter(0, ...)` sets
+		 * a real timer, so yield first, and repeat because one page can schedule the next.
+		 */
+		async function drain_scheduled_continuations(runner: Awaited<ReturnType<typeof create_bash_runner>>) {
+			const { delay } = await import("../shared/async-utils.ts");
+			for (let round = 0; round < 5; round += 1) {
+				await delay(0);
+				await runner.t.finishInProgressScheduledFunctions();
+			}
+		}
+
+		// Plain text copy fixtures. A copy keeps the source's type, so nothing is ever parsed as
+		// Markdown. The lossy text carries an HTML comment that a Markdown parse would drop; the
+		// copy tests check it survives.
+		const cross_class_plain_canonical =
+			'{\n  "name": "demo",\n  "items": [1, 2, 3],\n  "nested": {\n    "deep": true\n  }\n}\n';
+		const cross_class_plain_lossy = "alpha line\n\n<!-- only in the plain file -->\n\nbeta line\n";
 
 		test("runs pwd and persists cd across invocations", async () => {
 			const { run, getCwd } = await create_bash_runner();
@@ -5578,13 +5804,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(rows).toHaveLength(0);
 		});
 
-		test("proposes a content replace on the target with mv -f between editable files", async () => {
+		test("proposes a structural replace on the source with mv -f between editable files", async () => {
 			const runner = await create_bash_runner({
-				// The pending upsert fetches the target's committed yjs snapshot from R2.
 				extraFiles: [
-					{ path: "/docs/replace-me.md", content: "old target\n", withRealYjsSnapshot: true },
-					{ path: "/docs/nested/readme.md", content: "second source\n", withRealYjsSnapshot: true },
-					{ path: "/reports/readme.md", content: "occupied\n", withRealYjsSnapshot: true },
+					{ path: "/docs/replace-me.md", content: "old target\n" },
+					{ path: "/docs/nested/readme.md", content: "second source\n" },
+					{ path: "/reports/readme.md", content: "occupied\n" },
 				],
 			});
 			const sourceId = await get_seeded_node_id(runner, "/docs/readme.md");
@@ -5596,39 +5821,30 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(fileOntoFile.stderr).toBe("");
 			expect(fileOntoFile.metadata.exitCode).toBe(0);
 			expect(fileOntoFile.stdout).toBe(
-				"pending replace created: /docs/readme.md -> /docs/replace-me.md — replaces the file's content and archives the source when accepted; review in Files\n",
+				"pending move created: /docs/readme.md -> /docs/replace-me.md — replaces the existing file when accepted; review in Files\n",
 			);
-			// The proposal lands on the target node as a content replacement; the source has no pending update doc.
-			const targetRows = await runner.t.run((ctx) =>
-				ctx.db
-					.query("files_pending_updates")
-					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", targetId))
-					.collect(),
-			);
-			expect(targetRows).toHaveLength(1);
-			expect(targetRows[0].copiedFrom).toEqual({
-				nodeId: sourceId,
-				path: "/docs/readme.md",
-				archivesSourceOnAccept: true,
-			});
-			expect(targetRows[0].eagerCreated).toBeUndefined();
-			expect(targetRows[0].pendingMove).toBeUndefined();
-			expect(targetRows[0].unstagedStateId).toBeDefined();
+			// The proposal is a move on the SOURCE node that replaces the target. The source keeps
+			// its identity, type, and history. The target gets no pending update doc.
 			const sourceRows = await runner.t.run((ctx) =>
 				ctx.db
 					.query("files_pending_updates")
 					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", sourceId))
 					.collect(),
 			);
-			expect(sourceRows).toHaveLength(0);
+			expect(sourceRows).toHaveLength(1);
+			expect(sourceRows[0].pendingMove).toMatchObject({ destName: "replace-me.md", replacesNodeId: targetId });
+			expect(sourceRows[0].copiedFrom).toBeUndefined();
+			expect(sourceRows[0].unstagedStateId).toBeUndefined();
+			const targetRows = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", targetId))
+					.collect(),
+			);
+			expect(targetRows).toHaveLength(0);
 
-			// Readers overlay the pending replacement on the target.
-			const overlayRead = await runner.run(`cat ${test_db_files_mount}/docs/replace-me.md`);
-			expect(overlayRead.metadata.exitCode).toBe(0);
-			expect(overlayRead.stdout).toContain("# Readme");
-
-			// The replace proposal hides its source from the proposer's overlay, so a later mv of
-			// the same source path reads as missing (the file is already spoken for).
+			// The pending move hides its source from the proposer's overlay, so a later mv of the
+			// same source path reads as missing (the file is already spoken for).
 			const hiddenSource = await runner.run(
 				`mv -f ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/reports`,
 			);
@@ -5644,141 +5860,26 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 			expect(folderDest.metadata.exitCode).toBe(0);
 			expect(folderDest.stdout).toBe(
-				"pending replace created: /docs/nested/readme.md -> /reports/readme.md — replaces the file's content and archives the source when accepted; review in Files\n",
+				"pending move created: /docs/nested/readme.md -> /reports/readme.md — replaces the existing file when accepted; review in Files\n",
 			);
-			const occupantRows = await runner.t.run((ctx) =>
+			const secondSourceRows = await runner.t.run((ctx) =>
 				ctx.db
 					.query("files_pending_updates")
-					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", occupantId))
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", secondSourceId))
 					.collect(),
 			);
-			expect(occupantRows).toHaveLength(1);
-			expect(occupantRows[0].copiedFrom).toMatchObject({ nodeId: secondSourceId, archivesSourceOnAccept: true });
+			expect(secondSourceRows).toHaveLength(1);
+			expect(secondSourceRows[0].pendingMove).toMatchObject({ destName: "readme.md", replacesNodeId: occupantId });
 
 			// Folders can never replace a file, even with -f; real mv reports the kind mismatch.
+			// (replace-me.md is claimed by the first move above, so a free file stands in here.)
 			const folderOntoFile = await runner.run(
-				`mv -f ${test_db_files_mount}/docs/nested ${test_db_files_mount}/docs/replace-me.md`,
+				`mv -f ${test_db_files_mount}/docs/nested ${test_db_files_mount}/reports/summary.md`,
 			);
 			expect(folderOntoFile.metadata.exitCode).not.toBe(0);
 			expect(folderOntoFile.stderr).toBe(
-				`mv: cannot overwrite non-directory '${test_db_files_mount}/docs/replace-me.md' with directory '${test_db_files_mount}/docs/nested'\n`,
+				`mv: cannot overwrite non-directory '${test_db_files_mount}/reports/summary.md' with directory '${test_db_files_mount}/docs/nested'\n`,
 			);
-		});
-
-		test("mv -f from a non-collaborative source still proposes on the collaborative target", async () => {
-			const runner = await create_bash_runner({
-				extraFiles: [
-					{ path: "/docs/saved-source.md", content: "saved source\n", nonCollaborative: true },
-					{ path: "/docs/replace-me.md", content: "old target\n", withRealYjsSnapshot: true },
-				],
-			});
-			const sourceId = await get_seeded_node_id(runner, "/docs/saved-source.md");
-			const targetId = await get_seeded_node_id(runner, "/docs/replace-me.md");
-
-			const result = await runner.run(
-				`mv -f ${test_db_files_mount}/docs/saved-source.md ${test_db_files_mount}/docs/replace-me.md`,
-			);
-			expect(result.stderr).toBe("");
-			expect(result.metadata.exitCode).toBe(0);
-			expect(result.stdout).toBe(
-				"pending replace created: /docs/saved-source.md -> /docs/replace-me.md — replaces the file's content and archives the source when accepted; review in Files\n",
-			);
-
-			// The proposal lives on the target, so only the target needs a document. Without this
-			// the command falls through to a structural move proposal, and accepting that one
-			// archives the target instead of the source, losing the target's history and comments.
-			const targetRows = await runner.t.run((ctx) =>
-				ctx.db
-					.query("files_pending_updates")
-					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", targetId))
-					.collect(),
-			);
-			expect(targetRows).toHaveLength(1);
-			expect(targetRows[0].copiedFrom).toMatchObject({ nodeId: sourceId, archivesSourceOnAccept: true });
-
-			// Nothing was archived yet: both files are still active and hold their own text.
-			const sourceNode = await get_seeded_node(runner, "/docs/saved-source.md");
-			expect(sourceNode._id).toBe(sourceId);
-			expect(sourceNode.archiveOperationId).toBeUndefined();
-			expect(sourceNode.nonCollaborative).toBe(true);
-			const targetNode = await get_seeded_node(runner, "/docs/replace-me.md");
-			expect(targetNode.archiveOperationId).toBeUndefined();
-			expect(targetNode.yjsSnapshotId).toBeDefined();
-		});
-
-		test("mv -f refuses a non-collaborative target instead of reversing which file survives", async () => {
-			const runner = await create_bash_runner({
-				extraFiles: [{ path: "/docs/saved-target.md", content: "saved target\n", nonCollaborative: true }],
-			});
-			const sourceId = await get_seeded_node_id(runner, "/docs/readme.md");
-			const targetId = await get_seeded_node_id(runner, "/docs/saved-target.md");
-
-			const result = await runner.run(
-				`mv -f ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/saved-target.md`,
-			);
-			expect(result.metadata.exitCode).not.toBe(0);
-			expect(result.stderr).toBe(
-				`mv: cannot replace '${test_db_files_mount}/docs/saved-target.md': collaboration is off for the destination\n`,
-			);
-			const pendingRows = await runner.t.run((ctx) => ctx.db.query("files_pending_updates").collect());
-			expect(pendingRows.filter((row) => row.fileNodeId === sourceId || row.fileNodeId === targetId)).toEqual([]);
-		});
-
-		test("mv -f rejects a source path re-occupied by a different file mid-action", async () => {
-			const runner = await create_bash_runner({
-				// The pending upsert fetches the target's committed yjs snapshot from R2.
-				extraFiles: [{ path: "/docs/replace-me.md", content: "old target\n", withRealYjsSnapshot: true }],
-			});
-			const sourceId = await get_seeded_node_id(runner, "/docs/readme.md");
-			const targetId = await get_seeded_node_id(runner, "/docs/replace-me.md");
-			const otherId = await get_seeded_node_id(runner, "/docs/tutorial.md");
-
-			// Simulate another user racing the action window: after mv resolved the source node,
-			// the source moves away and a DIFFERENT file lands on its path, right before the
-			// content read re-resolves the same path.
-			const baseImpl = runner.runAction.getMockImplementation();
-			if (baseImpl == null) {
-				throw new Error("expected the runner runAction spy to have an implementation");
-			}
-			let swapped = false;
-			runner.runAction.mockImplementation(async (ref, actionArgs) => {
-				if (!swapped && function_name_of(ref) === "files_nodes_content:get_file_last_available_text_content_by_path") {
-					swapped = true;
-					await runner.t.run(async (ctx) => {
-						await ctx.db.patch("files_nodes", sourceId, {
-							name: "readme-moved.md",
-							path: "/docs/readme-moved.md",
-							treePath: "/docs/readme-moved.md",
-						});
-						await ctx.db.patch("files_nodes", otherId, {
-							name: "readme.md",
-							path: "/docs/readme.md",
-							treePath: "/docs/readme.md",
-						});
-					});
-				}
-				return await baseImpl(ref, actionArgs);
-			});
-
-			const result = await runner.run(
-				`mv -f ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/replace-me.md`,
-			);
-			expect(result.metadata.exitCode).not.toBe(0);
-			expect(result.stderr).toBe(
-				`mv: '${test_db_files_mount}/docs/readme.md' changed while the command was running. Re-run the command.\n`,
-			);
-
-			// Nothing was proposed: the copy must not carry the re-occupier's content while
-			// archiving the original source. No pending update doc lands on any of the three nodes.
-			for (const nodeId of [sourceId, targetId, otherId]) {
-				const rows = await runner.t.run((ctx) =>
-					ctx.db
-						.query("files_pending_updates")
-						.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
-						.collect(),
-				);
-				expect(rows).toHaveLength(0);
-			}
 		});
 
 		test("keeps the structural replace for mv -f onto a non-editable file", async () => {
@@ -6482,8 +6583,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("grep reads the pending chunks when the pending row has content", async () => {
 			const runner = await create_bash_runner();
 
-			// cp proposes content on the fresh destination node, so its pending update doc has
-			// chunks and the pending view must win over the (empty) committed one.
+			// cp stages the copied text on the fresh destination node as a whole-file replacement.
+			// grep must read that staged text, not the (empty) committed one.
 			const copied = await runner.run(
 				`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/readme-copy.md`,
 			);
@@ -6939,71 +7040,69 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(csvNode.yjsRootKind).toBe("plain_text");
 		});
 
-		test("an unwritable extension refuses with the classifier rule and an extensionless name keeps the .md hint", async () => {
+		test("an unknown extension and an extensionless name write plain text files", async () => {
 			const runner = await create_bash_runner();
 
+			// The name is only a hint for the stored type. An extension the app does not know
+			// gives plain text, and the file keeps the name the agent typed.
 			const exe = await runner.run(`printf x > ${test_db_files_mount}/tool.exe`);
-			expect(exe.metadata.exitCode).not.toBe(0);
-			expect(exe.stderr).toContain("is not an editable text file");
-			expect(exe.stderr).toContain("'.exe' is not supported");
-			expect(exe.stderr).toContain("Writable extensions: .md, .txt");
+			expect(exe.stderr).toBe("");
+			expect(exe.metadata.exitCode).toBe(0);
+			const exeNode = await get_seeded_node(runner, "/tool.exe");
+			expect(exeNode.contentType).toBe("text/plain;charset=utf-8");
+			expect(exeNode.yjsRootKind).toBe("plain_text");
 
-			// Extensionless targets keep today's behavior: normalized to .md, refused with the hint.
+			// No `.md` is added to an extensionless name.
 			const extensionless = await runner.run(`printf x > ${test_db_files_mount}/data`);
-			expect(extensionless.metadata.exitCode).not.toBe(0);
-			expect(extensionless.stderr).toContain("app file names are normalized");
-			expect(extensionless.stderr).toContain(`${test_db_files_mount}/data.md`);
-
-			// Neither refusal reached the create action or left a pending row.
-			expect(
-				runner.runAction.mock.calls.some(
-					([ref]) => function_name_of(ref) === "files_nodes_content:create_file_by_path",
-				),
-			).toBe(false);
-			expect(await list_pending_updates(runner)).toHaveLength(0);
+			expect(extensionless.stderr).toBe("");
+			expect(extensionless.metadata.exitCode).toBe(0);
+			const dataNode = await get_seeded_node(runner, "/data");
+			expect(dataNode.contentType).toBe("text/plain;charset=utf-8");
+			expect(dataNode.yjsRootKind).toBe("plain_text");
 		});
 
-		test("cp between plain text subtypes proposes the copy and a cross-class cp refuses with the class message", async () => {
+		test("cp keeps the source's type at any destination name", async () => {
 			const runner = await create_bash_runner({
 				extraFiles: [{ path: "/data/config.json", content: '{"a": 1}\n' }],
 			});
 
-			// Same class, different subtype: allowed; the destination derives its own media type.
+			// The destination name never decides the type: a JSON file copied to a .yaml name is
+			// still JSON, and the agent reads the staged copy back right away.
 			const subtypeCopy = await runner.run(
 				`cp ${test_db_files_mount}/data/config.json ${test_db_files_mount}/data/config.yaml && cat ${test_db_files_mount}/data/config.yaml`,
 			);
 			expect(subtypeCopy.metadata.exitCode).toBe(0);
 			expect(subtypeCopy.stderr).toBe("");
-			expect(subtypeCopy.stdout).toContain("pending copy created: /data/config.json -> /data/config.yaml");
-			expect(subtypeCopy.stdout).toContain('{"a": 1}');
+			expect(subtypeCopy.stdout).toBe(
+				'pending copy created: /data/config.json -> /data/config.yaml — review in Files\n{"a": 1}\n',
+			);
 			const yamlNode = await get_seeded_node(runner, "/data/config.yaml");
-			expect(yamlNode.contentType).toBe("application/yaml");
+			expect(yamlNode.contentType).toBe("application/json");
 			expect(yamlNode.yjsRootKind).toBe("plain_text");
 
-			// Cross class: the commit gate refuses, cp surfaces the class message, and the eager
-			// destination node is removed again.
+			// Markdown copied to a .json name stays Markdown, text unchanged.
 			const crossClass = await runner.run(
-				`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/data/copy.json`,
+				`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/data/copy.json && cat ${test_db_files_mount}/data/copy.json`,
 			);
-			expect(crossClass.metadata.exitCode).not.toBe(0);
-			expect(crossClass.stderr).toContain("File classes do not match");
-			expect(crossClass.stderr).toContain("nothing was created at '/data/copy.json'");
-			const orphan = await runner.t.run((ctx) =>
-				ctx.db
-					.query("files_nodes")
-					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-						q
-							.eq("organizationId", runner.seeded.organizationId)
-							.eq("workspaceId", runner.seeded.workspaceId)
-							.eq("path", "/data/copy.json")
-							.eq("archiveOperationId", undefined),
-					)
-					.first(),
+			expect(crossClass.stderr).toBe("");
+			expect(crossClass.metadata.exitCode).toBe(0);
+			expect(crossClass.stdout).toBe(
+				`pending copy created: /docs/readme.md -> /data/copy.json — review in Files\n${readme_seed_content}`,
 			);
-			expect(orphan).toBeNull();
+			const jsonNode = await get_seeded_node(runner, "/data/copy.json");
+			expect(jsonNode.yjsRootKind).toBe("rich_text");
+			expect(jsonNode.contentType).toBe("text/markdown;charset=utf-8");
+			const jsonRows = await list_pending_updates_for_node(runner, jsonNode._id);
+			expect(jsonRows).toHaveLength(1);
+			expect(jsonRows[0].copiedFrom).toMatchObject({ path: "/docs/readme.md" });
+			expect(jsonRows[0].eagerCreated).toBeDefined();
+			expect(jsonRows[0].pendingReplacement).toMatchObject({
+				contentType: "text/markdown;charset=utf-8",
+				yjsRootKind: "rich_text",
+			});
 		});
 
-		test("mv renames a plain text file across subtypes and accepting patches the media type", async () => {
+		test("mv renames a plain text file across extensions and accepting keeps the stored type", async () => {
 			const runner = await create_bash_runner({
 				extraFiles: [{ path: "/data/notes.json", content: '{"note": true}\n' }],
 			});
@@ -7028,51 +7127,61 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			});
 			expect(accepted._nay).toBeUndefined();
 
-			// The accept patches name, extension index, and classifier media type together.
+			// The accept patches the name and the extension index. The stored type stays: a rename
+			// never changes what the file is.
 			const renamed = await runner.t.run((ctx) => ctx.db.get("files_nodes", nodeId));
 			expect(renamed?.name).toBe("notes.yaml");
 			expect(renamed?.path).toBe("/data/notes.yaml");
 			expect(renamed?.lowercaseExtension).toBe("yaml");
-			expect(renamed?.contentType).toBe("application/yaml");
+			expect(renamed?.contentType).toBe("application/json");
 			expect(renamed?.yjsRootKind).toBe("plain_text");
 		});
 
-		test("cross-class renames, cross-class mv -f, and upload extension changes refuse", async () => {
+		test("renames keep the stored type for any extension, and mv -f across types proposes a structural replace", async () => {
 			const runner = await create_bash_runner({
 				extraFiles: [
 					{ path: "/data/notes.json", content: '{"note": true}\n' },
-					{ path: "/docs/target.md", content: "target body\n", withRealYjsSnapshot: true },
+					{ path: "/data/other.json", content: '{"other": true}\n' },
+					{ path: "/docs/target.md", content: "target body\n" },
 				],
 			});
+			const sourceId = await get_seeded_node_id(runner, "/data/notes.json");
+			const targetId = await get_seeded_node_id(runner, "/docs/target.md");
 
-			// The proposal mutation checks a structural rename across content classes.
+			// The name never decides the type, so a rename across extensions is a plain move.
 			const plainToMd = await runner.run(
-				`mv ${test_db_files_mount}/data/notes.json ${test_db_files_mount}/data/notes.md`,
+				`mv ${test_db_files_mount}/data/other.json ${test_db_files_mount}/data/other.md`,
 			);
-			expect(plainToMd.metadata.exitCode).not.toBe(0);
-			expect(plainToMd.stderr).toContain("plain text extension");
+			expect(plainToMd.stderr).toBe("");
+			expect(plainToMd.metadata.exitCode).toBe(0);
+			expect(plainToMd.stdout).toBe("pending move created: /data/other.json -> /data/other.md — review in Files\n");
 
 			const mdToJson = await runner.run(
 				`mv ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/docs/readme.json`,
 			);
-			expect(mdToJson.metadata.exitCode).not.toBe(0);
-			expect(mdToJson.stderr).toContain("must keep the .md extension");
+			expect(mdToJson.stderr).toBe("");
+			expect(mdToJson.metadata.exitCode).toBe(0);
 
-			// mv -f between editable files of different classes: the commit gate answers.
+			// mv -f between files of different types is the same structural replace as any other
+			// mv -f: the source moves onto the path with its own type, and the target is archived.
 			const crossReplace = await runner.run(
 				`mv -f ${test_db_files_mount}/data/notes.json ${test_db_files_mount}/docs/target.md`,
 			);
-			expect(crossReplace.metadata.exitCode).not.toBe(0);
-			expect(crossReplace.stderr).toContain("File classes do not match");
+			expect(crossReplace.stderr).toBe("");
+			expect(crossReplace.metadata.exitCode).toBe(0);
+			expect(crossReplace.stdout).toBe(
+				"pending move created: /data/notes.json -> /docs/target.md — replaces the existing file when accepted; review in Files\n",
+			);
+			const sourceRows = await list_pending_updates_for_node(runner, sourceId);
+			expect(sourceRows).toHaveLength(1);
+			expect(sourceRows[0].pendingMove).toMatchObject({ destName: "target.md", replacesNodeId: targetId });
+			expect(await list_pending_updates_for_node(runner, targetId)).toHaveLength(0);
 
-			// A stored upload may change its basename, never its extension.
+			// A stored upload may change its extension too. The type stays with the bytes.
 			const extensionChange = await runner.run(`mv ${test_db_files_mount}/source.pdf ${test_db_files_mount}/video.mp4`);
-			expect(extensionChange.metadata.exitCode).not.toBe(0);
-			expect(extensionChange.stderr).toContain("keep '.pdf'");
-
-			const basenameChange = await runner.run(`mv ${test_db_files_mount}/source.pdf ${test_db_files_mount}/paper.pdf`);
-			expect(basenameChange.metadata.exitCode).toBe(0);
-			expect(basenameChange.stdout).toContain("pending move created: /source.pdf -> /paper.pdf");
+			expect(extensionChange.stderr).toBe("");
+			expect(extensionChange.metadata.exitCode).toBe(0);
+			expect(extensionChange.stdout).toContain("pending move created: /source.pdf -> /video.mp4");
 		});
 
 		test("an oversized redirect to a new path removes the eager-created node", async () => {
@@ -7115,7 +7224,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.stderr).toBe("");
 			expect(result.stdout).toBe("pending copy created: /docs/readme.md -> /docs/readme-copy.md — review in Files\n");
 
-			// The destination node exists eagerly; the content lives in a pending update doc with provenance.
+			// The destination node exists eagerly; the copied text is staged as a whole-file
+			// replacement on a pending update doc with provenance.
 			const sourceId = await get_seeded_node_id(runner, "/docs/readme.md");
 			const destNode = await get_seeded_node(runner, "/docs/readme-copy.md");
 			expect(destNode.kind).toBe("file");
@@ -7128,7 +7238,10 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(rows).toHaveLength(1);
 			expect(rows[0].copiedFrom).toMatchObject({ nodeId: sourceId, path: "/docs/readme.md" });
 			expect(rows[0].eagerCreated).toBeDefined();
-			expect(rows[0].unstagedStateId).toBeDefined();
+			expect(rows[0].pendingReplacement).toMatchObject({
+				contentType: "text/markdown;charset=utf-8",
+				yjsRootKind: "rich_text",
+			});
 
 			// Readers overlay the agent's own pending content on the fresh destination node.
 			const overlayRead = await runner.run(`cat ${test_db_files_mount}/docs/readme-copy.md`);
@@ -7239,9 +7352,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			});
 		});
 
-		test("cp onto an existing file proposes replacing its content", async () => {
+		test("cp onto an existing file proposes replacing it as a whole", async () => {
 			const runner = await create_bash_runner({
-				// The pending upsert fetches the destination's committed yjs snapshot from R2.
+				// The copy replaces the whole file; the destination's own document is never read.
 				extraFiles: [{ path: "/docs/replace-target.md", content: "replace me\n", withRealYjsSnapshot: true }],
 			});
 			const sourceId = await get_seeded_node_id(runner, "/docs/readme.md");
@@ -7253,7 +7366,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.stderr).toBe("");
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout).toBe(
-				"pending copy created: /docs/readme.md -> /docs/replace-target.md — replaces the existing file's content when accepted; review in Files\n",
+				"pending copy created: /docs/readme.md -> /docs/replace-target.md — replaces the existing file's content and type when accepted; review in Files\n",
 			);
 
 			// The proposal lands on the existing node; no eager stamp, so discard/expiry can never
@@ -7274,7 +7387,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(overlayRead.stdout).toContain("unique-token");
 		});
 
-		test("cp onto a non-collaborative file saves the content instead of proposing it", async () => {
+		test("cp onto a non-collaborative file saves the copy instead of proposing it", async () => {
 			const runner = await create_bash_runner({
 				extraFiles: [{ path: "/docs/saved-target.md", content: "replace me\n", nonCollaborative: true }],
 			});
@@ -7286,23 +7399,19 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(result.stderr).toBe("");
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout).toBe(
-				"copied: /docs/readme.md -> /docs/saved-target.md — collaboration is off for the destination, so the new content is already saved\n",
+				"copied: /docs/readme.md -> /docs/saved-target.md — collaboration was off for the destination, so the copy is already saved\n",
 			);
 
-			// Nothing to review: the destination has no document to branch from, so the copy is a save.
-			const rows = await runner.t.run((ctx) =>
-				ctx.db
-					.query("files_pending_updates")
-					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", targetId))
-					.collect(),
-			);
-			expect(rows).toHaveLength(0);
+			// Nothing to review: the destination had no document to branch from, so the copy is a save.
+			expect(await list_pending_updates_for_node(runner, targetId)).toHaveLength(0);
 
-			// The saved file keeps collaboration off and gains no Yjs document.
+			// The copy carries the source's collaboration mode. The source is collaborative, so the
+			// saved file now has a Yjs document of its own.
 			const savedNode = await get_seeded_node(runner, "/docs/saved-target.md");
-			expect(savedNode.nonCollaborative).toBe(true);
-			expect(savedNode.yjsSnapshotId).toBeUndefined();
-			expect(savedNode.yjsLastSequenceId).toBeUndefined();
+			expect(savedNode._id).toBe(targetId);
+			expect(savedNode.nonCollaborative).toBeUndefined();
+			expect(savedNode.yjsSnapshotId).toBeDefined();
+			expect(savedNode.yjsLastSequenceId).toBeDefined();
 
 			const savedRead = await runner.run(`cat ${test_db_files_mount}/docs/saved-target.md`);
 			expect(savedRead.metadata.exitCode).toBe(0);
@@ -7310,20 +7419,364 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(savedRead.stdout).not.toContain("replace me");
 		});
 
-		test("cp of a markdown file onto a non-collaborative plain text file refuses with the class message", async () => {
+		test("cp of a Markdown file onto a non-collaborative plain text file saves it as Markdown", async () => {
 			const runner = await create_bash_runner({
-				extraFiles: [{ path: "/data/settings.yaml", content: "a: 1\n", nonCollaborative: true }],
+				extraFiles: [
+					{ path: "/data/settings.yaml", content: "a: 1\n", contentType: "application/yaml", nonCollaborative: true },
+				],
 			});
+			const targetBefore = await get_seeded_node(runner, "/data/settings.yaml");
 
-			const crossClass = await runner.run(
+			const copied = await runner.run(
 				`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/data/settings.yaml`,
 			);
-			expect(crossClass.metadata.exitCode).not.toBe(0);
-			expect(crossClass.stderr).toContain("File classes do not match");
+			expect(copied.stderr).toBe("");
+			expect(copied.metadata.exitCode).toBe(0);
+			expect(copied.stdout).toBe(
+				"copied: /docs/readme.md -> /data/settings.yaml — collaboration was off for the destination, so the copy is already saved\n",
+			);
 
-			// The refusal is a preflight, so the destination still holds its own text.
-			const unchanged = await runner.run(`cat ${test_db_files_mount}/data/settings.yaml`);
-			expect(unchanged.stdout).toBe("a: 1\n");
+			// The save keeps the file's identity and stores the source's text, type, shape, and
+			// collaboration mode as a new version. The name stays .yaml: it never decides the type.
+			const targetAfter = await get_seeded_node(runner, "/data/settings.yaml");
+			expect(targetAfter._id).toBe(targetBefore._id);
+			expect(targetAfter.nonCollaborative).toBeUndefined();
+			expect(targetAfter.yjsRootKind).toBe("rich_text");
+			expect(targetAfter.contentType).toBe("text/markdown;charset=utf-8");
+			expect(targetAfter.assetId).not.toBe(targetBefore.assetId);
+			// The old content stays in history next to the new one.
+			const versionAssetIds = await version_snapshot_asset_ids(runner, targetAfter._id);
+			expect(versionAssetIds).toContain(targetBefore.assetId);
+			expect(versionAssetIds).toContain(targetAfter.assetId);
+			expect(await list_pending_updates_for_node(runner, targetAfter._id)).toHaveLength(0);
+			const saved = await runner.run(`cat ${test_db_files_mount}/data/settings.yaml`);
+			expect(saved.stdout).toContain("unique-token");
+			expect(saved.stdout).not.toContain("a: 1");
+		});
+
+		test("cp onto an existing collaborative file proposes the source's whole file in both directions", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [
+					{ path: "/data/canonical.json", content: cross_class_plain_canonical, contentType: "application/json" },
+					{
+						path: "/data/plain-target.txt",
+						content: "old plain\n",
+						contentType: "text/plain;charset=utf-8",
+						withRealYjsSnapshot: true,
+					},
+					{ path: "/docs/rich-target.md", content: "old rich\n", withRealYjsSnapshot: true },
+				],
+			});
+			const canonicalId = await get_seeded_node_id(runner, "/data/canonical.json");
+			const readmeId = await get_seeded_node_id(runner, "/docs/readme.md");
+			const richTarget = await get_seeded_node(runner, "/docs/rich-target.md");
+			const plainTarget = await get_seeded_node(runner, "/data/plain-target.txt");
+
+			// JSON onto Markdown: the proposal is the JSON file as a whole, text unchanged.
+			const plainToRich = await runner.run(
+				`cp ${test_db_files_mount}/data/canonical.json ${test_db_files_mount}/docs/rich-target.md`,
+			);
+			expect(plainToRich.stderr).toBe("");
+			expect(plainToRich.metadata.exitCode).toBe(0);
+			expect(plainToRich.stdout).toBe(
+				"pending copy created: /data/canonical.json -> /docs/rich-target.md — replaces the existing file's content and type when accepted; review in Files\n",
+			);
+			const richRows = await list_pending_updates_for_node(runner, richTarget._id);
+			expect(richRows).toHaveLength(1);
+			expect(richRows[0].copiedFrom).toMatchObject({ nodeId: canonicalId, path: "/data/canonical.json" });
+			expect(richRows[0].eagerCreated).toBeUndefined();
+			expect(richRows[0].pendingReplacement).toMatchObject({
+				contentType: "application/json",
+				yjsRootKind: "plain_text",
+				baseAssetId: richTarget.assetId,
+			});
+			const richProposed = await runner.run(`cat ${test_db_files_mount}/docs/rich-target.md`);
+			expect(richProposed.stdout).toBe(cross_class_plain_canonical);
+
+			// Markdown onto plain text: the same, the other way round.
+			const richToPlain = await runner.run(
+				`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/data/plain-target.txt`,
+			);
+			expect(richToPlain.stderr).toBe("");
+			expect(richToPlain.metadata.exitCode).toBe(0);
+			expect(richToPlain.stdout).toBe(
+				"pending copy created: /docs/readme.md -> /data/plain-target.txt — replaces the existing file's content and type when accepted; review in Files\n",
+			);
+			const plainRows = await list_pending_updates_for_node(runner, plainTarget._id);
+			expect(plainRows).toHaveLength(1);
+			expect(plainRows[0].copiedFrom).toMatchObject({ nodeId: readmeId, path: "/docs/readme.md" });
+			expect(plainRows[0].pendingReplacement).toMatchObject({
+				contentType: "text/markdown;charset=utf-8",
+				yjsRootKind: "rich_text",
+			});
+			const plainProposed = await runner.run(`cat ${test_db_files_mount}/data/plain-target.txt`);
+			expect(plainProposed.stdout).toBe(readme_seed_content);
+
+			// Accepting replaces the file as a whole on the same node: content, type, and shape.
+			// Discarding keeps the old file untouched.
+			await accept_pending_replacement_for_test(runner, richTarget._id);
+			expect(await list_pending_updates_for_node(runner, richTarget._id)).toHaveLength(0);
+			const richCommitted = await runner.run(`cat ${test_db_files_mount}/docs/rich-target.md`);
+			expect(richCommitted.stdout).toBe(cross_class_plain_canonical);
+			const { api } = await import("../convex/_generated/api.js");
+			const discarded = await runner_as_user(runner).mutation(api.files_pending_updates.discard_file_pending_structural, {
+				membershipId: runner.seeded.membershipId,
+				nodeId: plainTarget._id,
+			});
+			expect(discarded._nay).toBeUndefined();
+			expect(await list_pending_updates_for_node(runner, plainTarget._id)).toHaveLength(0);
+			const plainKept = await runner.run(`cat ${test_db_files_mount}/data/plain-target.txt`);
+			expect(plainKept.stdout).toBe("old plain\n");
+
+			const richAfter = await get_seeded_node(runner, "/docs/rich-target.md");
+			expect(richAfter._id).toBe(richTarget._id);
+			expect(richAfter.yjsRootKind).toBe("plain_text");
+			expect(richAfter.contentType).toBe("application/json");
+			const plainAfter = await get_seeded_node(runner, "/data/plain-target.txt");
+			expect(plainAfter._id).toBe(plainTarget._id);
+			expect(plainAfter.yjsRootKind).toBe("plain_text");
+			expect(plainAfter.contentType).toBe("text/plain;charset=utf-8");
+		});
+
+		test("cp onto a new path gives the copy the source's type in both directions", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [
+					{ path: "/data/canonical.json", content: cross_class_plain_canonical, contentType: "application/json" },
+				],
+			});
+
+			// Markdown copied to a .txt name is still Markdown.
+			const richToPlain = await runner.run(
+				`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/data/readme-copy.txt`,
+			);
+			expect(richToPlain.stderr).toBe("");
+			expect(richToPlain.metadata.exitCode).toBe(0);
+			expect(richToPlain.stdout).toBe("pending copy created: /docs/readme.md -> /data/readme-copy.txt — review in Files\n");
+			const markdownCopy = await get_seeded_node(runner, "/data/readme-copy.txt");
+			expect(markdownCopy.yjsRootKind).toBe("rich_text");
+			expect(markdownCopy.contentType).toBe("text/markdown;charset=utf-8");
+			const markdownRows = await list_pending_updates_for_node(runner, markdownCopy._id);
+			expect(markdownRows).toHaveLength(1);
+			expect(markdownRows[0].eagerCreated).toBeDefined();
+			const markdownProposed = await runner.run(`cat ${test_db_files_mount}/data/readme-copy.txt`);
+			expect(markdownProposed.stdout).toBe(readme_seed_content);
+
+			// JSON copied to a .md name is still JSON.
+			const plainToRich = await runner.run(
+				`cp ${test_db_files_mount}/data/canonical.json ${test_db_files_mount}/docs/canonical-copy.md`,
+			);
+			expect(plainToRich.stderr).toBe("");
+			expect(plainToRich.metadata.exitCode).toBe(0);
+			expect(plainToRich.stdout).toBe(
+				"pending copy created: /data/canonical.json -> /docs/canonical-copy.md — review in Files\n",
+			);
+			const jsonCopy = await get_seeded_node(runner, "/docs/canonical-copy.md");
+			expect(jsonCopy.yjsRootKind).toBe("plain_text");
+			expect(jsonCopy.contentType).toBe("application/json");
+			const jsonProposed = await runner.run(`cat ${test_db_files_mount}/docs/canonical-copy.md`);
+			expect(jsonProposed.stdout).toBe(cross_class_plain_canonical);
+
+			// Accepting the JSON copy commits it on the node cp created. Discarding the Markdown
+			// copy removes the file cp created.
+			await accept_pending_replacement_for_test(runner, jsonCopy._id);
+			expect(await list_pending_updates_for_node(runner, jsonCopy._id)).toHaveLength(0);
+			const jsonCommitted = await runner.run(`cat ${test_db_files_mount}/docs/canonical-copy.md`);
+			expect(jsonCommitted.stdout).toBe(cross_class_plain_canonical);
+			expect((await get_seeded_node(runner, "/docs/canonical-copy.md")).yjsRootKind).toBe("plain_text");
+			const { api } = await import("../convex/_generated/api.js");
+			const discarded = await runner_as_user(runner).mutation(api.files_pending_updates.discard_file_pending_structural, {
+				membershipId: runner.seeded.membershipId,
+				nodeId: markdownCopy._id,
+			});
+			expect(discarded._nay).toBeUndefined();
+			expect(await runner.t.run((ctx) => ctx.db.get("files_nodes", markdownCopy._id))).toBeNull();
+		});
+
+		test("cp of a plain text file onto a Markdown file keeps the text exactly, before review and after accept", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [
+					{ path: "/data/notes.txt", content: cross_class_plain_lossy, contentType: "text/plain;charset=utf-8" },
+					{ path: "/docs/rich-target.md", content: "old rich\n", withRealYjsSnapshot: true },
+				],
+			});
+			const targetId = await get_seeded_node_id(runner, "/docs/rich-target.md");
+
+			const copied = await runner.run(
+				`cp ${test_db_files_mount}/data/notes.txt ${test_db_files_mount}/docs/rich-target.md`,
+			);
+			expect(copied.stderr).toBe("");
+			expect(copied.metadata.exitCode).toBe(0);
+
+			// Nothing is converted: the copy is the plain text file as a whole, so the HTML comment
+			// that Markdown would drop stays, in the proposal and in the accepted file.
+			const proposed = await runner.run(`cat ${test_db_files_mount}/docs/rich-target.md`);
+			expect(proposed.stdout).toBe(cross_class_plain_lossy);
+
+			await accept_pending_replacement_for_test(runner, targetId);
+			const committed = await runner.run(`cat ${test_db_files_mount}/docs/rich-target.md`);
+			expect(committed.stdout).toBe(cross_class_plain_lossy);
+			const target = await get_seeded_node(runner, "/docs/rich-target.md");
+			expect(target.contentType).toBe("text/plain;charset=utf-8");
+			expect(target.yjsRootKind).toBe("plain_text");
+		});
+
+		test("cp of a CRLF plain text file onto a non-collaborative Markdown file saves it as plain text with LF", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [
+					{
+						path: "/data/notes.txt",
+						content: cross_class_plain_lossy.replaceAll("\n", "\r\n"),
+						contentType: "text/plain;charset=utf-8",
+					},
+					{ path: "/docs/saved-notes.md", content: "old saved\n", nonCollaborative: true },
+				],
+			});
+			const targetBefore = await get_seeded_node(runner, "/docs/saved-notes.md");
+
+			const copied = await runner.run(
+				`cp ${test_db_files_mount}/data/notes.txt ${test_db_files_mount}/docs/saved-notes.md`,
+			);
+			expect(copied.stderr).toBe("");
+			expect(copied.metadata.exitCode).toBe(0);
+			expect(copied.stdout).toBe(
+				"copied: /data/notes.txt -> /docs/saved-notes.md — collaboration was off for the destination, so the copy is already saved\n",
+			);
+
+			// No proposal. The old content stays in history next to the new one. Line endings are
+			// normalized and nothing else is parsed, so the HTML comment survives. The file is
+			// plain text now, like its source.
+			expect(await list_pending_updates_for_node(runner, targetBefore._id)).toHaveLength(0);
+			const targetAfter = await get_seeded_node(runner, "/docs/saved-notes.md");
+			expect(targetAfter._id).toBe(targetBefore._id);
+			const versionAssetIds = await version_snapshot_asset_ids(runner, targetAfter._id);
+			expect(versionAssetIds).toContain(targetBefore.assetId);
+			expect(versionAssetIds).toContain(targetAfter.assetId);
+			expect(targetAfter.contentType).toBe("text/plain;charset=utf-8");
+			expect(targetAfter.yjsRootKind).toBe("plain_text");
+			const saved = await runner.run(`cat ${test_db_files_mount}/docs/saved-notes.md`);
+			expect(saved.stdout).toBe(cross_class_plain_lossy);
+		});
+
+		test("cp onto a non-collaborative file still refuses a locked destination and keeps a stale copy pending", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [
+					{ path: "/data/settings.yaml", content: "a: 1\n", contentType: "application/yaml", nonCollaborative: true },
+					{ path: "/data/locked.yaml", content: "b: 2\n", contentType: "application/yaml", nonCollaborative: true },
+				],
+			});
+			const lockedId = await get_seeded_node_id(runner, "/data/locked.yaml");
+			const staleId = await get_seeded_node_id(runner, "/data/settings.yaml");
+
+			// Lock: the copy is refused before anything is staged.
+			await runner.t.run((ctx) => ctx.db.patch("files_nodes", lockedId, { readOnlyScopeNodeId: lockedId }));
+			const locked = await runner.run(`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/data/locked.yaml`);
+			expect(locked.metadata.exitCode).not.toBe(0);
+			expect(locked.stderr).toContain("read-only");
+			const lockedRead = await runner.run(`cat ${test_db_files_mount}/data/locked.yaml`);
+			expect(lockedRead.stdout).toBe("b: 2\n");
+			expect(await count_version_snapshots(runner, lockedId)).toBe(0);
+			expect(await list_pending_updates_for_node(runner, lockedId)).toHaveLength(0);
+
+			// Stale: another save lands between staging the copy and saving it. The save refuses,
+			// and the copy stays pending for the user to review.
+			const baseImpl = runner.runAction.getMockImplementation();
+			if (baseImpl == null) {
+				throw new Error("expected the runner runAction spy to have an implementation");
+			}
+			let raced = false;
+			runner.runAction.mockImplementation(async (ref, actionArgs) => {
+				if (
+					!raced &&
+					function_name_of(ref) === "files_pending_updates:accept_file_pending_replacement_internal_action"
+				) {
+					raced = true;
+					const current = await runner.t.run((ctx) => ctx.db.get("files_nodes", staleId));
+					if (!current?.assetId) {
+						throw new Error("expected the stale target to have a content asset");
+					}
+					const otherSave = await runner.t.action(internal.files_nodes_content.replace_file_content_internal_action, {
+						organizationId: runner.seeded.organizationId,
+						workspaceId: runner.seeded.workspaceId,
+						userId: runner.seeded.userId,
+						nodeId: staleId,
+						text: "someone else: 1\n",
+						baseAssetId: current.assetId,
+					});
+					if (otherSave._nay) {
+						throw new Error(otherSave._nay.message);
+					}
+				}
+				return await baseImpl(ref, actionArgs);
+			});
+			const stale = await runner.run(
+				`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/data/settings.yaml`,
+			);
+			expect(raced).toBe(true);
+			expect(stale.metadata.exitCode).not.toBe(0);
+			expect(stale.stderr).toBe(
+				"cp: cannot save '/data/settings.yaml': The file changed after this copy was proposed. Discard the copy and copy again. — the copy stays pending; review it in Files\n",
+			);
+			const staleRows = await list_pending_updates_for_node(runner, staleId);
+			expect(staleRows).toHaveLength(1);
+			expect(staleRows[0].pendingReplacement).toBeDefined();
+			const staleRead = await runner.run(`cat ${test_db_files_mount}/data/settings.yaml`);
+			expect(staleRead.stdout).toBe("someone else: 1\n");
+		});
+
+		test("a file that received a cross-class copy can turn collaboration off and on again and keep taking edits", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [
+					{ path: "/data/canonical.json", content: cross_class_plain_canonical, contentType: "application/json" },
+					{ path: "/docs/rich-target.md", content: "old rich\n", withRealYjsSnapshot: true },
+				],
+			});
+			const targetBefore = await get_seeded_node(runner, "/docs/rich-target.md");
+			const copied = await runner.run(
+				`cp ${test_db_files_mount}/data/canonical.json ${test_db_files_mount}/docs/rich-target.md`,
+			);
+			expect(copied.stderr).toBe("");
+			expect(copied.metadata.exitCode).toBe(0);
+			await accept_pending_update_for_test(runner, { nodeId: targetBefore._id, path: "/docs/rich-target.md" });
+
+			const { api } = await import("../convex/_generated/api.js");
+			const asUser = runner_as_user(runner);
+			const off = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+				membershipId: runner.seeded.membershipId,
+				nodeId: targetBefore._id,
+				acknowledgeDropCollaborativeHistory: true,
+			});
+			expect(off._nay).toBeUndefined();
+			await drain_scheduled_continuations(runner);
+			const offNode = await get_seeded_node(runner, "/docs/rich-target.md");
+			expect(offNode.nonCollaborative).toBe(true);
+			expect(offNode.yjsSnapshotId).toBeUndefined();
+			expect(offNode.yjsLastSequenceId).toBeUndefined();
+			const offRead = await runner.run(`cat ${test_db_files_mount}/docs/rich-target.md`);
+			expect(offRead.stdout).toBe(cross_class_plain_canonical);
+
+			// Back on: a fresh document, not the old one restored, with the same text.
+			const on = await asUser.action(api.files_nodes_content.set_file_collaborative, {
+				membershipId: runner.seeded.membershipId,
+				nodeId: targetBefore._id,
+			});
+			expect(on._nay).toBeUndefined();
+			const onNode = await get_seeded_node(runner, "/docs/rich-target.md");
+			expect(onNode.nonCollaborative).toBeUndefined();
+			expect(onNode.yjsRootKind).toBe("rich_text");
+			expect(onNode.yjsSnapshotId).toBeDefined();
+			expect(onNode.yjsSnapshotId).not.toBe(targetBefore.yjsSnapshotId);
+			expect(onNode.yjsLastSequenceId).toBeDefined();
+			expect(onNode.yjsLastSequenceId).not.toBe(targetBefore.yjsLastSequenceId);
+			const onRead = await runner.run(`cat ${test_db_files_mount}/docs/rich-target.md`);
+			expect(onRead.stdout).toBe(cross_class_plain_canonical);
+
+			// The rebuilt document takes a normal edit, accept, and materialization.
+			const appended = await runner.run(`printf '\\ntail line\\n' >> ${test_db_files_mount}/docs/rich-target.md`);
+			expect(appended.metadata.exitCode).toBe(0);
+			await accept_pending_update_for_test(runner, { nodeId: targetBefore._id, path: "/docs/rich-target.md" });
+			const committed = await read_committed_text(runner, targetBefore._id);
+			expect(committed).toContain('"deep": true');
+			expect(committed).toContain("tail line");
 		});
 
 		test("cp no-clobber leaves an existing app destination unchanged", async () => {
@@ -7544,28 +7997,37 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				"mv: destination '/new/claim.md' is already claimed by a pending move. Choose a different destination path.\n",
 			);
 
-			// -f takes the normal content replacement flow on the committed child.
+			// -f proposes the structural replace on the committed child, under the folder's
+			// committed identity, so the replacement travels with the folder when its move is accepted.
 			const forced = await runner.run(`mv -f ${test_db_files_mount}/other/report.md ${test_db_files_mount}/new`);
 			expect(forced.stderr).toBe("");
 			expect(forced.metadata.exitCode).toBe(0);
 			expect(forced.stdout).toBe(
-				"pending replace created: /other/report.md -> /new/report.md — replaces the file's content and archives the source when accepted; review in Files\n",
+				"pending move created: /other/report.md -> /new/report.md — replaces the existing file when accepted; review in Files\n",
 			);
+			const oldId = await get_seeded_node_id(runner, "/old");
 			const targetId = await get_seeded_node_id(runner, "/old/report.md");
 			const sourceId = await get_seeded_node_id(runner, "/other/report.md");
+			const sourceRows = await runner.t.run((ctx) =>
+				ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", sourceId))
+					.collect(),
+			);
+			expect(sourceRows).toHaveLength(1);
+			expect(sourceRows[0].pendingMove).toMatchObject({
+				destParentId: oldId,
+				destName: "report.md",
+				replacesNodeId: targetId,
+			});
+			expect(sourceRows[0].copiedFrom).toBeUndefined();
 			const targetRows = await runner.t.run((ctx) =>
 				ctx.db
 					.query("files_pending_updates")
 					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", targetId))
 					.collect(),
 			);
-			expect(targetRows).toHaveLength(1);
-			expect(targetRows[0].copiedFrom).toEqual({
-				nodeId: sourceId,
-				path: "/other/report.md",
-				archivesSourceOnAccept: true,
-			});
-			expect(targetRows[0].pendingMove).toBeUndefined();
+			expect(targetRows).toHaveLength(0);
 		});
 
 		test("mv -f onto a committed child of a moved destination folder proposes the replace", async () => {
@@ -7592,32 +8054,32 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				"mv: destination '/archive/existing.md' already exists. To propose replacing the existing file, add -f: the replacement only applies after the user accepts it in Files.\n",
 			);
 
-			// -f takes the normal content replacement flow on the committed child.
+			// -f proposes the structural replace on the committed child.
 			const forced = await runner.run(
 				`mv -f ${test_db_files_mount}/docs/incoming.md ${test_db_files_mount}/archive/existing.md`,
 			);
 			expect(forced.stderr).toBe("");
 			expect(forced.metadata.exitCode).toBe(0);
 			expect(forced.stdout).toBe(
-				"pending replace created: /docs/incoming.md -> /archive/existing.md — replaces the file's content and archives the source when accepted; review in Files\n",
+				"pending move created: /docs/incoming.md -> /archive/existing.md — replaces the existing file when accepted; review in Files\n",
 			);
 			const targetId = await get_seeded_node_id(runner, "/reports/existing.md");
 			const sourceId = await get_seeded_node_id(runner, "/docs/incoming.md");
-			const targetRows = await runner.t.run((ctx) =>
+			const sourceRows = await runner.t.run((ctx) =>
 				ctx.db
 					.query("files_pending_updates")
-					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", targetId))
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", sourceId))
 					.collect(),
 			);
-			expect(targetRows).toHaveLength(1);
-			expect(targetRows[0].copiedFrom).toEqual({
-				nodeId: sourceId,
-				path: "/docs/incoming.md",
-				archivesSourceOnAccept: true,
+			expect(sourceRows).toHaveLength(1);
+			expect(sourceRows[0].pendingMove).toMatchObject({
+				destParentId: reportsId,
+				destName: "existing.md",
+				replacesNodeId: targetId,
 			});
-			expect(targetRows[0].pendingMove).toBeUndefined();
+			expect(await list_pending_updates_for_node(runner, targetId)).toHaveLength(0);
 
-			// A non-editable source keeps the structural replacement on the committed identity,
+			// A stored upload keeps the same structural replacement on the committed identity,
 			// so the replacement travels with the folder when the move is accepted.
 			const uploadedId = await get_seeded_node_id(runner, "/uploaded.md");
 			const plainId = await get_seeded_node_id(runner, "/reports/plain.md");
@@ -7957,14 +8419,50 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				`cp: cannot stat '${test_db_files_mount}/nope.md': No such file or directory\n`,
 			);
 
-			const unreadableSource = await runner.run(
-				`cp ${test_db_files_mount}/source.pdf ${test_db_files_mount}/source-copy.md`,
-			);
-			expect(unreadableSource.metadata.exitCode).not.toBe(0);
-			expect(unreadableSource.stderr).toContain("Bash can read editable text files only");
-
 			const rows = await runner.t.run((ctx) => ctx.db.query("files_pending_updates").collect());
 			expect(rows).toHaveLength(0);
+		});
+
+		test("cp of a stored file stages a byte copy that accepting turns into the same kind of file", async () => {
+			const runner = await create_bash_runner();
+			const { r2_server_side_copy } = await import("../convex/r2_client.ts");
+			// The copy happens on the R2 server side. Stand in for it with the in-memory objects.
+			const copySpy = vi.spyOn(r2_server_side_copy, "copy_object").mockImplementation(async (_ctx, copyArgs) => {
+				const bytes = test_r2_objects.get(copyArgs.sourceKey);
+				if (!bytes) {
+					return { outcome: "source_missing" as const };
+				}
+				test_r2_objects.set(copyArgs.destinationKey, bytes);
+				return { outcome: "copied" as const, size: bytes.byteLength, etag: "copied-etag" };
+			});
+			const sourceId = await get_seeded_node_id(runner, "/source.pdf");
+
+			const result = await runner.run(`cp ${test_db_files_mount}/source.pdf ${test_db_files_mount}/source-copy.pdf`);
+			expect(result.stderr).toBe("");
+			expect(result.metadata.exitCode).toBe(0);
+			expect(result.stdout).toBe("pending copy created: /source.pdf -> /source-copy.pdf — review in Files\n");
+			expect(copySpy).toHaveBeenCalledTimes(1);
+
+			// The staged copy is the stored file's bytes and type. Until it is accepted, the eager
+			// node is an empty text placeholder.
+			const destNode = await get_seeded_node(runner, "/source-copy.pdf");
+			const rows = await list_pending_updates_for_node(runner, destNode._id);
+			expect(rows).toHaveLength(1);
+			expect(rows[0].copiedFrom).toMatchObject({ nodeId: sourceId, path: "/source.pdf" });
+			expect(rows[0].eagerCreated).toBeDefined();
+			expect(rows[0].pendingReplacement).toMatchObject({ contentType: "application/pdf" });
+			expect(rows[0].pendingReplacement?.yjsRootKind).toBeUndefined();
+
+			// Accepting makes the copy a stored PDF like its source: no text and no document.
+			await accept_pending_replacement_for_test(runner, destNode._id);
+			const accepted = await get_seeded_node(runner, "/source-copy.pdf");
+			expect(accepted.contentType).toBe("application/pdf");
+			expect(accepted.yjsRootKind).toBeUndefined();
+			expect(accepted.yjsSnapshotId).toBeUndefined();
+			expect(accepted.assetId).toBe(rows[0].pendingReplacement?.assetId);
+			const unreadable = await runner.run(`cat ${test_db_files_mount}/source-copy.pdf`);
+			expect(unreadable.metadata.exitCode).not.toBe(0);
+			expect(unreadable.stderr).toContain("Bash can read editable text files only");
 		});
 
 		test("degrades to a replace when the destination is created concurrently", async () => {
@@ -7999,7 +8497,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(result.metadata.exitCode).toBe(0);
 			expect(result.stdout).toBe(
-				`pending copy created: /docs/readme.md -> ${racedPath} — replaces the existing file's content when accepted; review in Files\n`,
+				`pending copy created: /docs/readme.md -> ${racedPath} — replaces the existing file's content and type when accepted; review in Files\n`,
 			);
 
 			// The raced node becomes a replace target: no eager stamp, so discarding this
@@ -8016,20 +8514,20 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(pendingRows[0].eagerCreated).toBeUndefined();
 		});
 
-		test("cp removes the eager node when the pending upsert fails after the eager create", async () => {
+		test("cp removes the eager node when staging the copy fails after the eager create", async () => {
 			const runner = await create_bash_runner();
 			const { R2 } = await import("@convex-dev/r2");
 			vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
 
-			// Force the pending upsert action (R2 reads, can fail transiently) to fail AFTER
-			// the eager create committed a real empty node.
+			// Force the stage action (R2 writes, can fail transiently) to fail AFTER the eager
+			// create committed a real empty node.
 			const baseImpl = runner.runAction.getMockImplementation();
 			if (baseImpl == null) {
 				throw new Error("expected the runner runAction spy to have an implementation");
 			}
 			let upsertMode: "throw" | "nay" = "throw";
 			runner.runAction.mockImplementation(async (ref, actionArgs) => {
-				if (function_name_of(ref) === "files_pending_updates:upsert_file_pending_update_internal_action") {
+				if (function_name_of(ref) === "files_pending_updates:stage_file_pending_replacement_internal_action") {
 					if (upsertMode === "throw") {
 						throw new Error("simulated transient upsert failure");
 					}
@@ -8082,8 +8580,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				throw new Error("expected the runner runAction spy to have an implementation");
 			}
 			runner.runAction.mockImplementation(async (ref, actionArgs) => {
-				if (function_name_of(ref) === "files_pending_updates:upsert_file_pending_update_internal_action") {
-					// Another user drafts on the eager node before the upsert fails: the cleanup
+				if (function_name_of(ref) === "files_pending_updates:stage_file_pending_replacement_internal_action") {
+					// Another user drafts on the eager node before the stage fails: the cleanup
 					// gate must refuse the hard delete and keep their draft.
 					await runner.t.run(async (ctx) => {
 						await ctx.db.insert("files_pending_updates", {

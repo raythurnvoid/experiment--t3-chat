@@ -623,10 +623,9 @@ export class bash_DbFilesFs implements IFileSystem {
 			const normalizedSegments = files_get_normalized_node_path_segments({
 				kind: "file",
 				nameOrPath: requestedDbFilesPath,
-				// Agent writes create Markdown and plain text files: supported extensions pass through,
-				// an extensionless name still becomes `<name>.md`, and unknown extensions refuse
-				// with the classifier's rule.
-				fileNamePolicy: "editable_text",
+				// Agent writes keep the name the agent typed. The stored content type comes from the
+				// name only as a hint, and an unknown or missing extension becomes plain text.
+				fileNamePolicy: "keep_extension",
 			});
 			if (!normalizedSegments || "validationMessage" in normalizedSegments) {
 				throw new Error(
@@ -2103,7 +2102,7 @@ export async function files_agent_write_file_text(
 		nodeId: Id<"files_nodes">;
 		pendingUpdateId?: Id<"files_pending_updates">;
 		unstagedText: string;
-		copiedFrom?: { nodeId: Id<"files_nodes">; path: string; archivesSourceOnAccept?: boolean };
+		copiedFrom?: { nodeId: Id<"files_nodes">; path: string };
 		eagerCreatedCommittedSequence?: number;
 		eagerCreatedAncestorIds?: Id<"files_nodes">[];
 		threadId?: Id<"ai_chat_threads">;

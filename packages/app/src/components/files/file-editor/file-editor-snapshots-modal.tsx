@@ -806,8 +806,8 @@ export type FileEditorSnapshotsModal_Props = {
 	editable: boolean;
 	/**
 	 * The asset the open editor read its text from, or `null` when the file is collaborative.
-	 * Restoring a file with collaboration turned off replaces the whole text against this asset,
-	 * because there is no Yjs document for the Yjs restore door to write into.
+	 * A file with collaboration turned off has no Yjs document, so a restore replaces the whole
+	 * file against this asset and refuses when somebody saved after this editor read it.
 	 */
 	nonCollaborativeBaseAssetId: app_convex_Id<"files_r2_assets"> | null;
 	getCurrentText: () => string;
@@ -894,21 +894,15 @@ export const FileEditorSnapshotsModal = memo(function FileEditorSnapshotsModal(p
 
 		setIsRestoring(true);
 		Promise.try(async () => {
-			// Collaboration off: there is no document to write the old text into, so restoring is one
-			// content replacement. The door refuses if somebody saved after this editor read the file.
-			const restoreResult = nonCollaborativeBaseAssetId
-				? await convex.action(app_convex_api.files_nodes_content.replace_file_content, {
-						membershipId,
-						nodeId,
-						text: selectedSnapshotText,
-						baseAssetId: nonCollaborativeBaseAssetId,
-					})
-				: await convex.action(app_convex_api.files_nodes_content.restore_snapshot_r2, {
-						membershipId,
-						snapshotId: selectedSnapshotId,
-						nodeId: nodeId,
-						sessionId: sessionId,
-					});
+			// The version brings its own type, shape, and collaboration mode back. The door writes a
+			// same-shape version into the live document and installs any other version as a whole.
+			const restoreResult = await convex.action(app_convex_api.files_nodes_content.restore_snapshot_r2, {
+				membershipId,
+				snapshotId: selectedSnapshotId,
+				nodeId: nodeId,
+				sessionId: sessionId,
+				baseAssetId: nonCollaborativeBaseAssetId ?? undefined,
+			});
 			if (restoreResult._nay) {
 				console.error("Failed to restore snapshot:", restoreResult._nay);
 				toast.error(restoreResult._nay.message ?? "Failed to restore snapshot");

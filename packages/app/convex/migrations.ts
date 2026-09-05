@@ -489,6 +489,36 @@ export const backfill_files_plain_text_chunk_scope = app_migrations.define({
 	},
 });
 
+/**
+ * Version rows from before versions recorded their content state. Restore reads the type, shape,
+ * and collaboration mode from the row, so fill them from the file, which is what those versions
+ * had at the time: before this field existed a file could not change its type or shape.
+ */
+export const backfill_files_snapshots_content_state = app_migrations.define({
+	table: "files_snapshots",
+	migrateOne: async (ctx, snapshot) => {
+		if (snapshot.contentType !== undefined) {
+			return;
+		}
+		const fileNode = await ctx.db.get("files_nodes", snapshot.fileNodeId);
+		if (
+			!fileNode ||
+			fileNode.organizationId !== snapshot.organizationId ||
+			fileNode.workspaceId !== snapshot.workspaceId ||
+			fileNode.kind !== "file" ||
+			fileNode.contentType === undefined
+		) {
+			return;
+		}
+
+		await ctx.db.patch("files_snapshots", snapshot._id, {
+			contentType: fileNode.contentType,
+			yjsRootKind: fileNode.yjsRootKind,
+			nonCollaborative: fileNode.nonCollaborative,
+		});
+	},
+});
+
 export const remove_plugins_publisher_repositories_created_at = app_migrations.define({
 	table: "plugins_publisher_repositories",
 	migrateOne: async (ctx, repository) => {
@@ -1345,6 +1375,9 @@ export const run_backfill_files_nodes_lowercase_extension = app_migrations.runne
 );
 export const run_backfill_files_plain_text_chunk_scope = app_migrations.runner(
 	internal.migrations.backfill_files_plain_text_chunk_scope,
+);
+export const run_backfill_files_snapshots_content_state = app_migrations.runner(
+	internal.migrations.backfill_files_snapshots_content_state,
 );
 export const run_remove_plugins_publisher_repositories_created_at = app_migrations.runner(
 	internal.migrations.remove_plugins_publisher_repositories_created_at,

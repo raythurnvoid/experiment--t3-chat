@@ -36,7 +36,7 @@ import {
 	organizations_is_reserved_workspace_id,
 	organizations_is_global_organization_id,
 } from "../shared/organizations.ts";
-import { files_db_get_visible_node_by_path, files_pending_update_content_of } from "../server/files.ts";
+import { files_db_get_visible_node_by_path, files_pending_update_has_pending_chunks } from "../server/files.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -357,7 +357,7 @@ async function db_list_pending_file_node_ids(
 	// Move-only docs have no pending metadata docs: only content-bearing
 	// docs hide their file's committed docs.
 	return pendingUpdates
-		.filter((pendingUpdate) => files_pending_update_content_of(pendingUpdate) != null)
+		.filter((pendingUpdate) => files_pending_update_has_pending_chunks(pendingUpdate))
 		.map((pendingUpdate) => pendingUpdate.fileNodeId);
 }
 
@@ -1265,7 +1265,7 @@ export const get_by_path = internalQuery({
 				.first();
 			// A move-only doc carries no pending metadata docs: committed
 			// metadata stays authoritative for it.
-			if (row && files_pending_update_content_of(row) != null) {
+			if (row && files_pending_update_has_pending_chunks(row)) {
 				pendingUpdate = row;
 			}
 		}

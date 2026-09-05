@@ -257,7 +257,8 @@
 		.FileEditorRichTextMedia-state-processing,
 		.FileEditorRichTextMedia-state-failed,
 		.FileEditorRichTextMedia-state-missing,
-		.FileEditorRichTextMedia-state-broken {
+		.FileEditorRichTextMedia-state-broken,
+		.FileEditorRichTextMedia-state-incompatible {
 			.FileEditorRichTextMedia-image,
 			.FileEditorRichTextMedia-video,
 			.FileEditorRichTextMedia-caption {

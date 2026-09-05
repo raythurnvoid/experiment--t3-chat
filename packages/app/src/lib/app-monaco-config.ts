@@ -37,7 +37,7 @@ self.MonacoEnvironment = {
 // worker, so every such call errors with "Missing requestHandler or method: doValidation" (and
 // doComplete, getFoldingRanges, ...). Turning single options off is not enough — the providers
 // stay registered — so disable the whole feature set through each mode's `setModeConfiguration`.
-// The languages the app can actually open (see `files_get_monaco_language_id`) that have a
+// The languages the app can actually open (see `files_monaco_language_id_of_content_type`) that have a
 // worker mode are json, css, javascript and typescript; the rest are monarch-only already.
 monaco.json.jsonDefaults.setModeConfiguration({
 	// JSON's tokens provider is synchronous mode code, not worker-backed: it is the one feature

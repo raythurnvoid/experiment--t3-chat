@@ -363,7 +363,7 @@ type FileEditorRender_Props = {
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	/** The node's document shape, from the route-resolved node; the diff editor dispatches on it. */
 	rootKind: files_YjsRootKind;
-	/** Monaco language for the node, derived from its name via `files_get_monaco_language_id`. */
+	/** Monaco language for the node, derived from its content type via `files_monaco_language_id_of_content_type`. */
 	monacoLanguageId: string;
 	/**
 	 * Collaboration is off for this node: no Yjs document; the editors edit the stored string.
@@ -695,7 +695,7 @@ export type FileEditor_Props = {
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	/** The node's document shape, from the route-resolved node the caller already holds. */
 	rootKind: files_YjsRootKind;
-	/** Monaco language for the node, derived from its name via `files_get_monaco_language_id`. */
+	/** Monaco language for the node, derived from its content type via `files_monaco_language_id_of_content_type`. */
 	monacoLanguageId: string;
 	/**
 	 * Collaboration is off for this node: no Yjs document; the editors edit the stored string.

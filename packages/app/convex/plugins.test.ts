@@ -1672,9 +1672,9 @@ describe("plugins Phase 0", () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin(t, membership.userId, {
-			name: "plain-text",
-			displayName: "Plain Text",
-			contentTypes: ["text/plain"],
+			name: "notes-blob",
+			displayName: "Notes Blob",
+			contentTypes: ["application/x-notes"],
 		});
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
@@ -1685,15 +1685,14 @@ describe("plugins Phase 0", () => {
 		if (installed._nay) {
 			throw new Error(installed._nay.message);
 		}
-		// A `.txt` upload used to dispatch here; since the plain-text conversion it becomes an
-		// editable document instead. Use an extension the
-		// classifier does not recognize, so the upload stays a stored blob and the client-declared
-		// type keeps driving dispatch.
+		// The stored type decides what an upload becomes. A text type would turn into an editable
+		// document and never dispatch. A type the app does not edit stays a stored blob, and the
+		// type the client declared drives dispatch, whatever the name says.
 		const upload = await asOwner.mutation(api.files_nodes.create_upload_node, {
 			membershipId: membership.membershipId,
 			parentId: "root",
 			filename: "notes.dat",
-			contentType: "text/plain",
+			contentType: "application/x-notes",
 			size: 1024,
 		});
 		if (upload._nay) {
@@ -2211,7 +2210,7 @@ describe("plugins Phase 0", () => {
 			}),
 		});
 		expect(rejected.status).toBe(400);
-		expect(await rejected.json()).toEqual({ message: "Path must end in a valid Markdown (.md) file name." });
+		expect(await rejected.json()).toEqual({ message: "Path must end in a valid file name." });
 
 		const response = await t.fetch("/api/v1/files/write", {
 			method: "POST",
@@ -2734,6 +2733,8 @@ describe("plugins Phase 0", () => {
 			principalRef: { kind: "plugin_run", runId, callId: consumed._yay.callId },
 			path: "/expired.png.md",
 			overwrite: "replace",
+			contentType: "text/markdown",
+			yjsRootKind: "rich_text",
 			contentSize: 5,
 			yjsSnapshotSize: 5,
 		});
@@ -2806,6 +2807,8 @@ describe("plugins Phase 0", () => {
 			principalRef: { kind: "plugin_run", runId: fixture.runId, callId: consumed._yay.callId },
 			path: "/occupied.md",
 			overwrite: "replace",
+			contentType: "text/markdown",
+			yjsRootKind: "rich_text",
 			contentSize: 6,
 			yjsSnapshotSize: 6,
 		});
@@ -2913,6 +2916,8 @@ describe("plugins Phase 0", () => {
 				principalRef: { kind: "plugin_run", runId, callId: consumed._yay.callId },
 				path: "/expired.png.md",
 				overwrite: "replace",
+				contentType: "text/markdown",
+				yjsRootKind: "rich_text",
 				contentSize: 5,
 				yjsSnapshotSize: 5,
 			});
@@ -2979,6 +2984,8 @@ describe("plugins Phase 0", () => {
 			principalRef: { kind: "plugin_run", runId, callId: consumed._yay.callId },
 			path: "/expired.png.md",
 			overwrite: "replace",
+			contentType: "text/markdown",
+			yjsRootKind: "rich_text",
 			contentSize: 5,
 			yjsSnapshotSize: 5,
 		});

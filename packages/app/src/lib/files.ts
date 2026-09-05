@@ -129,7 +129,7 @@ export function files_get_node_path_validation_cache_key(args: {
 	parentId: Doc<"files_nodes">["parentId"];
 	kind: Doc<"files_nodes">["kind"] | null;
 	nameOrPath: string;
-	fileNamePolicy?: "markdown" | "editable_text" | "keep_extension";
+	fileNamePolicy?: "markdown" | "keep_extension";
 }) {
 	const normalizedPath = files_get_normalized_node_path_segments({
 		kind: args.kind,
@@ -169,7 +169,7 @@ export function files_get_node_path_validation(args: {
 	parentId: Doc<"files_nodes">["parentId"];
 	kind: Doc<"files_nodes">["kind"] | null;
 	nameOrPath: string;
-	fileNamePolicy?: "markdown" | "editable_text" | "keep_extension";
+	fileNamePolicy?: "markdown" | "keep_extension";
 }) {
 	const validationMessage = files_get_node_path_validation_message({
 		fileNodesList: args.fileNodesList,
@@ -221,7 +221,7 @@ export function files_get_node_path_validation_message(args: {
 	parentId: Doc<"files_nodes">["parentId"];
 	kind: Doc<"files_nodes">["kind"] | null;
 	nameOrPathValidate: string;
-	fileNamePolicy?: "markdown" | "editable_text" | "keep_extension";
+	fileNamePolicy?: "markdown" | "keep_extension";
 }) {
 	// First validate and canonicalize the user input without consulting the tree.
 	const normalizedPath = files_get_normalized_node_path_segments({

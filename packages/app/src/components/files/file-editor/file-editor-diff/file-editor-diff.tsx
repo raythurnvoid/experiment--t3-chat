@@ -632,7 +632,7 @@ export type FileEditorDiff_Props = {
 	 * the nullable content fetch, which has no value in exactly the refused case.
 	 */
 	rootKind: files_YjsRootKind;
-	/** Monaco language for the node, derived from its name via `files_get_monaco_language_id`. */
+	/** Monaco language for the node, derived from its content type via `files_monaco_language_id_of_content_type`. */
 	monacoLanguageId: string;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	presenceStore: files_PresenceStore;
@@ -2396,7 +2396,7 @@ type FileEditorDiffNonCollabInner_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	editable: boolean;
 	/**
-	 * The Monaco language id derived from the node name (`files_get_monaco_language_id`).
+	 * The Monaco language id derived from the node's content type (`files_monaco_language_id_of_content_type`).
 	 */
 	monacoLanguageId: string;
 	initialData: FileEditorDiffNonCollab_LoadedContent;
@@ -2859,7 +2859,7 @@ export type FileEditorDiffNonCollab_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	editable: boolean;
 	/**
-	 * The Monaco language id derived from the node name (`files_get_monaco_language_id`).
+	 * The Monaco language id derived from the node's content type (`files_monaco_language_id_of_content_type`).
 	 */
 	monacoLanguageId: string;
 	presenceStore: files_PresenceStore;

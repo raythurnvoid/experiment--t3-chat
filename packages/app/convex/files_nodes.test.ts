@@ -42,8 +42,7 @@ import {
 	files_INITIAL_CONTENT,
 	files_UPLOAD_PATH_TAKEN_MESSAGE,
 	files_YJS_DOC_KEYS,
-	files_get_editable_text_content_type,
-	files_get_editable_text_yjs_root_kind,
+	files_default_text_shape_for_name,
 	files_get_utf8_byte_size,
 	files_u8_to_array_buffer,
 } from "../server/files.ts";
@@ -3037,7 +3036,8 @@ describe("files_nodes.create_upload_nodes", () => {
 			url: "https://r2.test/upload",
 			headers: { "Content-Type": "application/pdf" },
 		});
-		expect(imported._yay.created[2]!.headers).toEqual({});
+		// No declared type: the file is stored as plain bytes, and the signed PUT pins that type.
+		expect(imported._yay.created[2]!.headers).toEqual({ "Content-Type": "application/octet-stream" });
 
 		const docs = await t.run(async (ctx) => {
 			const report = await ctx.db.get("files_nodes", imported._yay.created[0]!.nodeId);
@@ -4191,7 +4191,7 @@ test("rename_node preserves caller-provided nested file names", async () => {
 	});
 });
 
-test("rename_node refuses a class-crossing extension and allows a basename rename", async () => {
+test("rename_node keeps the stored type when the extension changes", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
@@ -4211,26 +4211,31 @@ test("rename_node refuses a class-crossing extension and allows a basename renam
 		});
 	}
 
-	// A rename never converts content, so a Markdown file may not take a plain text
-	// extension. This replaces the old trust-the-frontend behavior that preserved any extension.
+	// A rename never converts content and never changes the stored type. A Markdown file may
+	// take any extension and stays Markdown.
 	const crossingResult = await asUser.mutation(api.files_nodes.rename_node, {
 		membershipId: db.membershipId,
 		nodeId: createdFile._yay.nodeId,
 		path: "renamed-source.txt",
 	});
-	expect(crossingResult._nay?.message).toBe("A Markdown file must keep the .md extension");
+	if (crossingResult._nay) {
+		throw new Error("Expected the extension change to succeed", {
+			cause: crossingResult._nay,
+		});
+	}
 
-	const afterRefusal = await t.run(async (ctx) => ctx.db.get("files_nodes", createdFile._yay.nodeId));
-	expect(afterRefusal?.name).toBe("unsupported-source.md");
+	const afterCrossing = await t.run(async (ctx) => ctx.db.get("files_nodes", createdFile._yay.nodeId));
+	expect(afterCrossing?.name).toBe("renamed-source.txt");
+	expect(afterCrossing?.contentType).toBe("text/markdown;charset=utf-8");
+	expect(afterCrossing?.yjsRootKind).toBe("rich_text");
 
-	// A basename-only rename inside the class still works.
 	const renameResult = await asUser.mutation(api.files_nodes.rename_node, {
 		membershipId: db.membershipId,
 		nodeId: createdFile._yay.nodeId,
 		path: "renamed-source.md",
 	});
 	if (renameResult._nay) {
-		throw new Error("Expected the same-class rename to succeed", {
+		throw new Error("Expected the basename rename to succeed", {
 			cause: renameResult._nay,
 		});
 	}
@@ -4238,6 +4243,7 @@ test("rename_node refuses a class-crossing extension and allows a basename renam
 	const after = await t.run(async (ctx) => ctx.db.get("files_nodes", createdFile._yay.nodeId));
 	expect(after?.name).toBe("renamed-source.md");
 	expect(after?.path).toBe("/renamed-source.md");
+	expect(after?.contentType).toBe("text/markdown;charset=utf-8");
 });
 
 test("rename_node creates missing folders for nested folder paths", async () => {
@@ -6525,9 +6531,7 @@ describe("non-collaborative files", () => {
 			const now = Date.now();
 			const name = path.split("/").filter(Boolean).at(-1);
 			if (!name) throw new Error("Expected a root-level file path");
-			const rootKind = files_get_editable_text_yjs_root_kind(name);
-			const contentType = files_get_editable_text_content_type(name);
-			if (!rootKind || !contentType) throw new Error("Expected an editable text file name");
+			const { rootKind, contentType } = files_default_text_shape_for_name(name);
 
 			const assetId = await ctx.db.insert("files_r2_assets", {
 				organizationId: db.organizationId,
@@ -8070,7 +8074,7 @@ describe("non-collaborative files", () => {
 		expect(pendingAfter.lastSequenceSaved).toBe(0);
 	});
 
-	test("renaming a non-collaborative file follows the editable-text class rule", async () => {
+	test("renaming a non-collaborative file keeps the stored type", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({
@@ -8082,15 +8086,21 @@ describe("non-collaborative files", () => {
 		const { nodeId: markdownNodeId } = await seed_non_collaborative_file(t, db, "/notes.md", "# Notes\n\nbody\n");
 		const { nodeId: plainNodeId } = await seed_non_collaborative_file(t, db, "/data.json", "{}\n");
 
-		const crossedClass = await asUser.mutation(api.files_nodes.rename_node, {
+		// The extension may change freely. The stored type does not follow the name, the same
+		// as for a collaborative file.
+		const crossed = await asUser.mutation(api.files_nodes.rename_node, {
 			membershipId: db.membershipId,
 			nodeId: markdownNodeId,
 			path: "notes.json",
 		});
-		expect(crossedClass._nay?.message).toBe("A Markdown file must keep the .md extension");
+		if (crossed._nay) {
+			throw new Error(crossed._nay.message);
+		}
+		const crossedNode = await t.run(async (ctx) => ctx.db.get("files_nodes", markdownNodeId));
+		expect(crossedNode?.path).toBe("/notes.json");
+		expect(crossedNode?.contentType).toBe("text/markdown;charset=utf-8");
+		expect(crossedNode?.yjsRootKind).toBe("rich_text");
 
-		// A plain text subtype rename must relabel the stored media type in the same patch, the
-		// same as it does for a collaborative file.
 		const subtypeRename = await asUser.mutation(api.files_nodes.rename_node, {
 			membershipId: db.membershipId,
 			nodeId: plainNodeId,
@@ -8101,10 +8111,10 @@ describe("non-collaborative files", () => {
 		}
 		const renamed = await t.run(async (ctx) => ctx.db.get("files_nodes", plainNodeId));
 		expect(renamed?.path).toBe("/data.yaml");
-		expect(renamed?.contentType).toBe("application/yaml");
+		expect(renamed?.contentType).toBe("application/json");
 		expect(renamed?.lowercaseExtension).toBe("yaml");
 
-		// Accepting a proposed move can rename too, and it patches the media type in its own place.
+		// Accepting a proposed move can rename too, and it keeps the type in its own place.
 		const movedBack = await t.run(async (ctx) =>
 			files_nodes_db_apply_pending_move(ctx, {
 				organizationId: db.organizationId,
@@ -8123,6 +8133,140 @@ describe("non-collaborative files", () => {
 		const movedNode = await t.run(async (ctx) => ctx.db.get("files_nodes", plainNodeId));
 		expect(movedNode?.path).toBe("/data.json");
 		expect(movedNode?.contentType).toBe("application/json");
+	});
+
+	test("restore_snapshot_r2 restores a version against the asset the editor read, and refuses a stale one", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Restore Non-Collaborative User",
+			email: "restore-non-collaborative@example.com",
+		});
+		const r2Objects = new Map<string, BodyInit>();
+		generateUploadUrlSpy.mockImplementation(async (customKey?: string) => {
+			const key = customKey ?? "test-upload-key";
+			return { key, url: `https://r2.test/upload?key=${encodeURIComponent(key)}` };
+		});
+		vi.spyOn(R2.prototype, "getUrl").mockImplementation(
+			async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
+		);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+				const urlString = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+				if (urlString.startsWith("https://r2.test/upload?key=") && init?.method === "PUT") {
+					const key = decodeURIComponent(urlString.slice("https://r2.test/upload?key=".length));
+					r2Objects.set(key, init.body ?? "");
+					return new Response(null, { status: 200 });
+				}
+				if (urlString.startsWith("https://r2.test/object?key=")) {
+					const key = decodeURIComponent(urlString.slice("https://r2.test/object?key=".length));
+					const body = r2Objects.get(key);
+					return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { status: 200 });
+				}
+				return new Response(null, { status: 404 });
+			}),
+		);
+
+		const currentText = "- [x] done\n";
+		const { nodeId, assetId } = await seed_non_collaborative_file(t, db, "/todo.txt", currentText);
+		const versionText = "- [ ] not yet\n";
+		const version = await t.run(async (ctx) => {
+			const versionAssetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				kind: "content_snapshot",
+				r2Bucket: "test-bucket",
+				size: files_get_utf8_byte_size(versionText),
+				createdBy: db.userId,
+				updatedAt: Date.now(),
+			});
+			const r2Key = r2_create_asset_key({
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				assetId: versionAssetId,
+			});
+			r2Objects.set(r2Key, versionText);
+			await ctx.db.patch("files_r2_assets", versionAssetId, { r2Key });
+			const snapshotId = await ctx.db.insert("files_snapshots", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				fileNodeId: nodeId,
+				assetId: versionAssetId,
+				createdBy: db.userId,
+				archivedAt: 0,
+				contentType: "text/plain;charset=utf-8",
+				yjsRootKind: "plain_text",
+				nonCollaborative: true,
+			});
+			return { assetId: versionAssetId, snapshotId };
+		});
+		const assetCountBefore = await t.run(async (ctx) => (await ctx.db.query("files_r2_assets").collect()).length);
+
+		// The editor read an older asset: somebody saved since, so the restore must not replace
+		// text the user has not seen. The refusal leaves no uploaded asset behind.
+		const stale = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
+			membershipId: db.membershipId,
+			nodeId,
+			snapshotId: version.snapshotId,
+			sessionId: "restore-non-collaborative-stale",
+			baseAssetId: version.assetId,
+		});
+		expect(stale._nay?.message).toBe("This file changed while the snapshot was being restored. Try again.");
+		const afterStale = await t.run(async (ctx) => ({
+			assetId: (await ctx.db.get("files_nodes", nodeId))?.assetId,
+			assetCount: (await ctx.db.query("files_r2_assets").collect()).length,
+		}));
+		expect(afterStale).toEqual({ assetId, assetCount: assetCountBefore });
+
+		const restored = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
+			membershipId: db.membershipId,
+			nodeId,
+			snapshotId: version.snapshotId,
+			sessionId: "restore-non-collaborative",
+			baseAssetId: assetId,
+		});
+		expect(restored._nay).toBeUndefined();
+
+		// Collaboration stays off: a new content asset, and still no Yjs docs.
+		const after = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			const versionRows = await ctx.db
+				.query("files_snapshots")
+				.filter((q) => q.eq(q.field("fileNodeId"), nodeId))
+				.collect();
+			return {
+				assetId: node?.assetId,
+				contentType: node?.contentType,
+				yjsRootKind: node?.yjsRootKind,
+				nonCollaborative: node?.nonCollaborative,
+				yjsSnapshotId: node?.yjsSnapshotId,
+				yjsLastSequenceId: node?.yjsLastSequenceId,
+				versionAssetIds: versionRows.map((row) => row.assetId),
+			};
+		});
+		expect(after).toMatchObject({
+			contentType: "text/plain;charset=utf-8",
+			yjsRootKind: "plain_text",
+			nonCollaborative: true,
+		});
+		expect(after.yjsSnapshotId).toBeUndefined();
+		expect(after.yjsLastSequenceId).toBeUndefined();
+		expect(after.assetId).not.toBe(assetId);
+		expect(after.assetId).not.toBe(version.assetId);
+		const readResult = await asUser.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/todo.txt",
+		});
+		expect(readResult?.content).toBe(versionText);
+		// The replaced text had no version row, so it got one, and the restored content got its own.
+		expect(after.versionAssetIds).toContain(assetId);
+		expect(after.versionAssetIds).toContain(after.assetId);
 	});
 });
 
@@ -10824,6 +10968,8 @@ test("create_file_snapshot_content_url returns a signed R2 URL without fetching 
 			workspaceId: db.workspaceId,
 			fileNodeId: nodeId,
 			assetId,
+			contentType: "text/markdown;charset=utf-8",
+			yjsRootKind: "rich_text",
 			createdBy: db.userId,
 			archivedAt: 0,
 		});
@@ -10847,9 +10993,9 @@ test("create_file_snapshot_content_url returns a signed R2 URL without fetching 
 		)}`,
 		snapshotId,
 	});
-	// The signer pins the served type and disposition from the authorized node name. A
-	// presigned R2 GET carries no nosniff/CSP, so the pin is the whole defense. A `.md` name is
-	// editable text, which never serves inline.
+	// The signer pins the served type from the version's stored type and the disposition from
+	// the authorized node name. A presigned R2 GET carries no nosniff/CSP, so the pin is the
+	// whole defense. Editable text never serves inline.
 	expect(getUrlSpy).toHaveBeenCalledWith(
 		`content/organizations/${db.organizationId}/workspaces/${db.workspaceId}/nodes/${nodeId}/versions/42/markdown`,
 		{
@@ -11045,6 +11191,313 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 	expect(r2Objects.get(saved.asset?.r2Key ?? "")).toBe(restoredMarkdown);
 	expect(Array.from(r2Objects.values())).toContain(currentMarkdown);
 	expect(Array.from(r2Objects.values())).toContain(restoredMarkdown);
+});
+
+describe("restore_snapshot_r2 whole-file restore", () => {
+	// An in-memory bucket: signed PUTs store the body, signed GETs read it back.
+	function stub_r2_bucket() {
+		const r2Objects = new Map<string, BodyInit>();
+		generateUploadUrlSpy.mockImplementation(async (customKey?: string) => {
+			const key = customKey ?? "test-upload-key";
+			return { key, url: `https://r2.test/upload?key=${encodeURIComponent(key)}` };
+		});
+		vi.spyOn(R2.prototype, "getUrl").mockImplementation(
+			async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
+		);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+				const urlString = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+				if (urlString.startsWith("https://r2.test/upload?key=") && init?.method === "PUT") {
+					const key = decodeURIComponent(urlString.slice("https://r2.test/upload?key=".length));
+					r2Objects.set(key, init.body ?? "");
+					return new Response(null, { status: 200 });
+				}
+				if (urlString.startsWith("https://r2.test/object?key=")) {
+					const key = decodeURIComponent(urlString.slice("https://r2.test/object?key=".length));
+					const body = r2Objects.get(key);
+					return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { status: 200 });
+				}
+				return new Response(null, { status: 404 });
+			}),
+		);
+		return r2Objects;
+	}
+
+	// A version row that recorded the type, shape, and collaboration mode of its content.
+	async function seed_version(
+		t: ReturnType<typeof test_convex>,
+		r2Objects: Map<string, BodyInit>,
+		db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>,
+		version: {
+			nodeId: Id<"files_nodes">;
+			body: string;
+			kind: "content" | "content_snapshot";
+			contentType: string;
+			yjsRootKind?: "rich_text" | "plain_text";
+			nonCollaborative?: true;
+		},
+	) {
+		return await t.run(async (ctx) => {
+			const assetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				kind: version.kind,
+				r2Bucket: "test-bucket",
+				size: files_get_utf8_byte_size(version.body),
+				createdBy: db.userId,
+				updatedAt: Date.now(),
+			});
+			const r2Key = r2_create_asset_key({ organizationId: db.organizationId, workspaceId: db.workspaceId, assetId });
+			r2Objects.set(r2Key, version.body);
+			await ctx.db.patch("files_r2_assets", assetId, { r2Key });
+			const snapshotId = await ctx.db.insert("files_snapshots", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				fileNodeId: version.nodeId,
+				assetId,
+				createdBy: db.userId,
+				archivedAt: 0,
+				contentType: version.contentType,
+				yjsRootKind: version.yjsRootKind,
+				nonCollaborative: version.nonCollaborative,
+			});
+			return { assetId, r2Key, snapshotId };
+		});
+	}
+
+	async function read_versions(t: ReturnType<typeof test_convex>, nodeId: Id<"files_nodes">) {
+		return await t.run(async (ctx) => {
+			const rows = await ctx.db
+				.query("files_snapshots")
+				.filter((q) => q.eq(q.field("fileNodeId"), nodeId))
+				.collect();
+			return await Promise.all(
+				rows.map(async (row) => {
+					const asset = await ctx.db.get("files_r2_assets", row.assetId);
+					return {
+						assetId: row.assetId,
+						r2Key: asset?.r2Key,
+						contentType: row.contentType,
+						yjsRootKind: row.yjsRootKind,
+						nonCollaborative: row.nonCollaborative,
+					};
+				}),
+			);
+		});
+	}
+
+	test("a plain text version of a Markdown file comes back as plain text, and the current text stays a version", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Restore Shape User",
+			email: "restore-shape-user@example.com",
+		});
+		const r2Objects = stub_r2_bucket();
+
+		const createdFile = await asUser.action(internal.files_nodes_content.create_file_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/notes.md",
+		});
+		if (createdFile._nay) {
+			throw new Error(createdFile._nay.message);
+		}
+		const nodeId = createdFile._yay.nodeId;
+		const currentMarkdown = "# Current\n\nStill Markdown.\n";
+		const currentYjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text: currentMarkdown });
+		if ("_nay" in currentYjsDoc) {
+			throw new Error(currentYjsDoc._nay.message);
+		}
+		const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
+			membershipId: db.membershipId,
+			nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
+			update: files_u8_to_array_buffer(encodeStateAsUpdate(currentYjsDoc)),
+			sessionId: "restore-shape-current",
+		});
+		currentYjsDoc.destroy();
+		if (pushResult._nay) {
+			throw new Error(pushResult._nay.message);
+		}
+		const materialized = await t.action(internal.files_nodes_content.materialize_file_content, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			nodeId,
+			userId: db.userId,
+			targetSequence: 1,
+		});
+		if (materialized._nay) {
+			throw new Error(materialized._nay.message);
+		}
+		const before = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			const lastSequence = node?.yjsLastSequenceId
+				? await ctx.db.get("files_yjs_docs_last_sequences", node.yjsLastSequenceId)
+				: null;
+			return { assetId: node?.assetId, yjsSnapshotId: node?.yjsSnapshotId, generation: lastSequence?.lineageGeneration };
+		});
+
+		const versionText = "plain version\nline two\n";
+		const version = await seed_version(t, r2Objects, db, {
+			nodeId,
+			body: versionText,
+			kind: "content_snapshot",
+			contentType: "text/plain;charset=utf-8",
+			yjsRootKind: "plain_text",
+		});
+
+		const restored = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
+			membershipId: db.membershipId,
+			nodeId,
+			snapshotId: version.snapshotId,
+			sessionId: "restore-shape-session",
+		});
+		expect(restored._nay).toBeUndefined();
+
+		// The file is a plain text document now, on a rotated lineage of the same snapshot doc.
+		const after = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			const lastSequence = node?.yjsLastSequenceId
+				? await ctx.db.get("files_yjs_docs_last_sequences", node.yjsLastSequenceId)
+				: null;
+			return {
+				assetId: node?.assetId,
+				contentType: node?.contentType,
+				yjsRootKind: node?.yjsRootKind,
+				nonCollaborative: node?.nonCollaborative,
+				yjsSnapshotId: node?.yjsSnapshotId,
+				generation: lastSequence?.lineageGeneration,
+			};
+		});
+		expect(after).toMatchObject({
+			contentType: "text/plain;charset=utf-8",
+			yjsRootKind: "plain_text",
+			yjsSnapshotId: before.yjsSnapshotId,
+			generation: (before.generation ?? 0) + 1,
+		});
+		expect(after.nonCollaborative).toBeUndefined();
+		expect(after.assetId).not.toBe(before.assetId);
+		const readResult = await asUser.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/notes.md",
+		});
+		expect(readResult?.content).toBe(versionText);
+
+		// History keeps both sides with their own type: a fresh copy of the Markdown that was
+		// current, and the restored content as the newest row.
+		const versions = await read_versions(t, nodeId);
+		const backup = versions.find(
+			(row) => row.assetId !== before.assetId && row.r2Key !== undefined && r2Objects.get(row.r2Key) === currentMarkdown,
+		);
+		expect(backup).toMatchObject({ contentType: "text/markdown;charset=utf-8", yjsRootKind: "rich_text" });
+		expect(versions.find((row) => row.assetId === after.assetId)).toMatchObject({
+			contentType: "text/plain;charset=utf-8",
+			yjsRootKind: "plain_text",
+		});
+	});
+
+	test("a stored version of a stored file comes back as a byte copy with its own type", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Restore Stored User",
+			email: "restore-stored-user@example.com",
+		});
+		const r2Objects = stub_r2_bucket();
+		const copyCalls: Array<{ sourceKey: string; destinationKey: string }> = [];
+		vi.spyOn(r2_server_side_copy, "copy_object").mockImplementation(async (_ctx, copyArgs) => {
+			copyCalls.push({ sourceKey: copyArgs.sourceKey, destinationKey: copyArgs.destinationKey });
+			const body = r2Objects.get(copyArgs.sourceKey);
+			if (body === undefined) {
+				return { outcome: "source_missing" as const };
+			}
+			r2Objects.set(copyArgs.destinationKey, body);
+			return { outcome: "copied" as const, size: files_get_utf8_byte_size(String(body)), etag: "etag_copy" };
+		});
+
+		// A stored PDF whose earlier content was a PNG.
+		const pdfBytes = "%PDF-current";
+		const { nodeId, assetId: pdfAssetId } = await t.run(async (ctx) => {
+			const now = Date.now();
+			const assetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				kind: "content",
+				r2Bucket: "test-bucket",
+				size: files_get_utf8_byte_size(pdfBytes),
+				createdBy: db.userId,
+				updatedAt: now,
+			});
+			const r2Key = r2_create_asset_key({ organizationId: db.organizationId, workspaceId: db.workspaceId, assetId });
+			r2Objects.set(r2Key, pdfBytes);
+			await ctx.db.patch("files_r2_assets", assetId, { r2Key });
+			const nodeId = await ctx.db.insert("files_nodes", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				parentId: files_ROOT_ID,
+				path: "/scan.pdf",
+				treePath: "/scan.pdf",
+				pathDepth: 1,
+				lowercaseExtension: "pdf",
+				name: "scan.pdf",
+				kind: "file",
+				contentType: "application/pdf",
+				assetId,
+				createdBy: db.userId,
+				updatedBy: db.userId,
+				updatedAt: now,
+			});
+			return { nodeId, assetId };
+		});
+		const pngBytes = "PNG-old-bytes";
+		const version = await seed_version(t, r2Objects, db, {
+			nodeId,
+			body: pngBytes,
+			kind: "content",
+			contentType: "image/png",
+		});
+
+		const restored = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
+			membershipId: db.membershipId,
+			nodeId,
+			snapshotId: version.snapshotId,
+			sessionId: "restore-stored-session",
+		});
+		expect(restored._nay).toBeUndefined();
+
+		// The bytes were copied on the R2 side into a new asset, and the file is a PNG again.
+		const after = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			const asset = node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
+			return { assetId: node?.assetId, contentType: node?.contentType, yjsRootKind: node?.yjsRootKind, asset };
+		});
+		expect(after.contentType).toBe("image/png");
+		expect(after.yjsRootKind).toBeUndefined();
+		expect(after.assetId).not.toBe(pdfAssetId);
+		expect(after.assetId).not.toBe(version.assetId);
+		expect(copyCalls).toEqual([{ sourceKey: version.r2Key, destinationKey: after.asset?.r2Key }]);
+		expect(after.asset).toMatchObject({ kind: "content", size: files_get_utf8_byte_size(pngBytes) });
+		expect(after.asset?.unfinalizedExpiresAt).toBeUndefined();
+		expect(r2Objects.get(after.asset?.r2Key ?? "")).toBe(pngBytes);
+
+		// The PDF had no version row yet, so it got one with its own type.
+		const versions = await read_versions(t, nodeId);
+		const pdfVersion = versions.find((row) => row.assetId === pdfAssetId);
+		expect(pdfVersion?.contentType).toBe("application/pdf");
+		expect(pdfVersion?.yjsRootKind).toBeUndefined();
+		expect(versions.find((row) => row.assetId === after.assetId)).toMatchObject({ contentType: "image/png" });
+	});
 });
 
 test("yjs_push_update enforces per-user rate limit and leaves DB untouched on rejection", async () => {

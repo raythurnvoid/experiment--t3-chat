@@ -26,6 +26,7 @@ import {
 } from "./plugins_data.ts";
 import { plugins_db_delete_anonymized_review_if_unlinked } from "./plugins.ts";
 import { files_nodes_db_hard_delete_node, files_nodes_db_is_eager_node_safe_to_hard_delete } from "./files_nodes.ts";
+import { files_pending_update_db_release_replacement_asset } from "./files_pending_updates.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_create_asset_key, r2_enqueue_object_deletion_job } from "./r2_client.ts";
 
@@ -338,6 +339,14 @@ async function db_purge_organization_workspace_content_batch(
 			return { done: false, deletedCount: metadataDocs.length };
 		}
 
+		// A whole-file copy owns a staged object. Release it before the doc goes.
+		if (pendingUpdate.pendingReplacement) {
+			await files_pending_update_db_release_replacement_asset(ctx, {
+				organizationId,
+				workspaceId,
+				assetId: pendingUpdate.pendingReplacement.assetId,
+			});
+		}
 		await ctx.db.delete("files_pending_updates", pendingUpdate._id);
 		return { done: false, deletedCount: 1 };
 	}
@@ -1499,6 +1508,14 @@ async function db_drain_user_pending_updates_batch(ctx: MutationCtx, args: { use
 		return 1;
 	}
 
+	// A whole-file copy owns a staged object. Release it before the doc goes.
+	if (pendingUpdate.pendingReplacement) {
+		await files_pending_update_db_release_replacement_asset(ctx, {
+			organizationId: pendingUpdate.organizationId,
+			workspaceId: pendingUpdate.workspaceId,
+			assetId: pendingUpdate.pendingReplacement.assetId,
+		});
+	}
 	await ctx.db.delete("files_pending_updates", pendingUpdate._id);
 	return 1;
 }
