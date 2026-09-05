@@ -1530,7 +1530,13 @@ const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: R
 					const contentTypes = event.contentTypes.filter((contentType) =>
 						handlers.some((handler) => handler.event === event.type && handler.contentType === contentType),
 					);
-					if (contentTypes.length === 0) {
+					if (
+						contentTypes.length === 0 &&
+						!(
+							event.type === "users.account.deleted" &&
+							handlers.some((handler) => handler.event === event.type && handler.contentType === undefined)
+						)
+					) {
 						return [];
 					}
 					return [
@@ -1717,11 +1723,13 @@ const RoutePluginsPluginAccess = memo(function RoutePluginsPluginAccess(props: R
 									>
 										{format_access_label(event.type)}
 									</span>
-									<span
-										className={"RoutePluginsPluginAccess-trigger-types" satisfies RoutePluginsPluginAccess_ClassNames}
-									>
-										{event.contentTypes.join(", ")}
-									</span>
+									{event.contentTypes.length > 0 && (
+										<span
+											className={"RoutePluginsPluginAccess-trigger-types" satisfies RoutePluginsPluginAccess_ClassNames}
+										>
+											{event.contentTypes.join(", ")}
+										</span>
+									)}
 									{event.filters.map((filter, filterIndex) => (
 										<span
 											key={`${filter.filter.configurationPath.join(".")}:${filterIndex}`}

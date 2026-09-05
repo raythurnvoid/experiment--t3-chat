@@ -34,7 +34,7 @@ const EVENT_TYPES = ["files.upload.completed", "users.account.deleted"] as const
  */
 const ACCOUNT_DELETED_EVENT_TYPE = "users.account.deleted";
 
-const CAPABILITIES = [
+export const plugins_CAPABILITIES = [
 	"plugin.secrets.read",
 	"outbound.fetch",
 	"workspace.files.read",
@@ -82,7 +82,7 @@ const CAPABILITIES = [
 	// member who signed in anonymously.
 	"workspace.members.read",
 ] as const;
-export type plugins_Capability = (typeof CAPABILITIES)[number];
+export type plugins_Capability = (typeof plugins_CAPABILITIES)[number];
 
 // Shared by env text parsing and the dist review scan.
 const NEWLINE_REGEX = /\r?\n/u;
@@ -796,15 +796,16 @@ const manifest_file_schema = z
 	})
 	.strict();
 
-// Same shape as PAGE_ID_REGEX, kept separate because endpoint ids are their own namespace.
+/**
+ * Same shape as PAGE_ID_REGEX, kept separate because endpoint ids are their own namespace.
+ */
 const BACKEND_ENDPOINT_ID_REGEX = /^[a-z0-9][a-z0-9-]{0,63}$/u;
-// Printable ASCII only, starting with `/`. The path becomes the synthetic request URL the runner
-// builds, so anything outside this range would have to be escaped somewhere and compared somewhere
-// else — refuse it at publish instead.
-const BACKEND_ENDPOINT_PATH_REGEX = /^\/[\x21-\x7E]*$/u;
-// The runner delivers host events on paths under this prefix. A manifest endpoint on it could make
-// a member's page invoke look like a host event delivery to the plugin's own code.
-const RESERVED_BACKEND_PATH_PREFIX = "/__bonobo_senate";
+
+/**
+ * Simple segments exclude URL rewrites and the reserved /__bonobo_senate host-event prefix.
+ * Keep the endpoint grammar in sync with packages/plugin-runner/src/index.ts.
+ */
+const BACKEND_ENDPOINT_PATH_REGEX = /^\/(?:[a-z0-9-]+(?:\/[a-z0-9-]+)*)?$/u;
 
 const backend_endpoint_schema = z
 	.object({
@@ -817,29 +818,13 @@ const backend_endpoint_schema = z
 				MAX_BACKEND_ENDPOINT_PATH_LENGTH,
 				`Backend endpoint paths must be at most ${MAX_BACKEND_ENDPOINT_PATH_LENGTH} characters`,
 			)
-			.regex(BACKEND_ENDPOINT_PATH_REGEX, "Backend endpoint paths must start with / and use printable ASCII")
-			.refine(
-				(path) => !path.startsWith(RESERVED_BACKEND_PATH_PREFIX),
-				`Backend endpoint paths must not start with ${RESERVED_BACKEND_PATH_PREFIX}`,
-			)
-			// Keep this rule in sync with packages/plugin-runner/src/index.ts: URL parsing or
-			// router decoding must not turn an endpoint into a host event path.
-			.refine(
-				(path) => {
-					try {
-						if (new URL(path, "http://plugin.invalid").pathname !== path) return false;
-						return !decodeURIComponent(path).startsWith(RESERVED_BACKEND_PATH_PREFIX);
-					} catch {
-						return false;
-					}
-				},
-				"Backend endpoint paths must already be normalized, with no . or .. segments, encoded dot segments, \\, ? or #, and must not decode to the reserved prefix",
+			.regex(
+				BACKEND_ENDPOINT_PATH_REGEX,
+				"Backend endpoint paths must be / or slash-separated lowercase letters, digits, and dashes",
 			),
 		serialization: z.enum(["installation", "caller-key"]).optional(),
 	})
 	.strict();
-
-const service_scope_schema = z.enum(["plugin_data:read", "plugin_data:write", "files:write"]);
 
 const PAGE_ID_REGEX = /^[a-z0-9][a-z0-9-]{0,63}$/u;
 // Lucide icon names are kebab-case; the app maps them through an allowlist with a fallback.
@@ -959,17 +944,6 @@ const manifest_schema = z
 			})
 			.strict()
 			.optional(),
-		/**
-		 * Consent copy for the plugin's outside service. The service-registration row in the host is
-		 * the exchange authority; this block only tells the consent screens what the service will ask
-		 * for, so the two are deliberately not cross-checked at publish.
-		 */
-		service: z
-			.object({
-				scopes: z.array(service_scope_schema).min(1, "Plugin service declarations must name at least one scope"),
-			})
-			.strict()
-			.optional(),
 		configuration: plugin_configuration_schema.nullable().default(null),
 		events: z.array(event_schema).max(MAX_EVENTS, `Plugin manifests can declare at most ${MAX_EVENTS} events`),
 		pages: z.array(page_schema).max(MAX_PAGES).optional(),
@@ -977,7 +951,7 @@ const manifest_schema = z
 			.array(file_view_schema)
 			.max(MAX_FILE_VIEWS, `Plugin manifests can declare at most ${MAX_FILE_VIEWS} file views`)
 			.optional(),
-		capabilities: z.array(z.enum(CAPABILITIES)),
+		capabilities: z.array(z.enum(plugins_CAPABILITIES)),
 		/**
 		 * The collections a member-identity writer may write. Absent means every collection stays
 		 * user-writable; an empty array means none is. Machine writers are never restricted by this
@@ -1042,6 +1016,12 @@ export function plugins_validate_manifest(input: unknown) {
 	const eventSubscriptions = new Set<string>();
 	let expandedEventSubscriptionCount = 0;
 	for (const event of parsed.data.events) {
+		if (event.type === ACCOUNT_DELETED_EVENT_TYPE) {
+			if (eventSubscriptions.has(event.type)) {
+				return Result({ _nay: { message: `Plugin manifest has duplicate ${event.type} subscriptions` } });
+			}
+			eventSubscriptions.add(event.type);
+		}
 		for (const contentType of event.contentTypes) {
 			const subscription = `${event.type}\u0000${contentType}`;
 			if (eventSubscriptions.has(subscription)) {
@@ -1180,14 +1160,6 @@ export function plugins_validate_manifest(input: unknown) {
 			return Result({ _nay: { message: `Plugin manifest has duplicate backend endpoint path "${endpoint.path}"` } });
 		}
 		endpointPaths.add(endpoint.path);
-	}
-
-	const serviceScopes = new Set<string>();
-	for (const scope of parsed.data.service?.scopes ?? []) {
-		if (serviceScopes.has(scope)) {
-			return Result({ _nay: { message: `Plugin manifest has duplicate service scope "${scope}"` } });
-		}
-		serviceScopes.add(scope);
 	}
 
 	const userWritableCollections = new Set<string>();
@@ -1340,25 +1312,6 @@ export function plugins_validate_manifest(input: unknown) {
 			_nay: { message: "The workspace.files.own-write capability requires the workspace.files.write capability" },
 		});
 	}
-	if (parsed.data.service && !capabilities.has("plugin.service.connect" satisfies plugins_Capability)) {
-		return Result({ _nay: { message: "Plugin service declarations require the plugin.service.connect capability" } });
-	}
-	// Each declared service scope needs the capability that gates it at exchange time, so the
-	// consent screens never promise a scope the exchange would refuse.
-	for (const scope of parsed.data.service?.scopes ?? []) {
-		const requiredCapability: plugins_Capability =
-			scope === "plugin_data:read"
-				? "plugin.data.read"
-				: scope === "plugin_data:write"
-					? "plugin.data.write"
-					: "workspace.files.write";
-		if (!capabilities.has(requiredCapability)) {
-			return Result({
-				_nay: { message: `The ${scope} service scope requires the ${requiredCapability} capability` },
-			});
-		}
-	}
-
 	if (
 		parsed.data.userWritableCollections !== undefined &&
 		!capabilities.has("plugin.data.user-write" satisfies plugins_Capability)

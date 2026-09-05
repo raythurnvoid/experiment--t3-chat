@@ -6870,10 +6870,9 @@ describe("plugins publish_version", () => {
 			reviewStatus: "passed",
 			artifactHash: await sha256_text(github.manifestText),
 		});
-		// A manifest that declares no backend endpoints, no service block, and no user-writable
-		// collections is stored in normalized form, not as missing fields.
+		// Omitted endpoints and user-writable collections get their stored defaults.
 		expect(version.endpoints).toEqual([]);
-		expect(version.serviceScopes).toBeNull();
+		expect(version).not.toHaveProperty("serviceScopes");
 		expect(version.userWritableCollections).toBeNull();
 		expect(aiReview).toHaveBeenCalledTimes(1);
 		const reviews = await t.run((ctx) => ctx.db.query("plugins_version_reviews").collect());

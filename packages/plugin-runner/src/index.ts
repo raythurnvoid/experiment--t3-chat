@@ -393,8 +393,8 @@ const RUN_REQUEST_SCHEMA = z.strictObject({
 	pluginVersion: z
 		.string({ error: "pluginVersion is required" })
 		.min(1, "pluginVersion is required")
-		.max(64, "pluginVersion is required")
-		.regex(/^[A-Za-z0-9._@/-]+$/u, "pluginVersion is invalid"),
+		.max(100, "pluginVersion must be at most 100 characters")
+		.regex(/^[A-Za-z0-9._@/+\-]+$/u, "pluginVersion is invalid"),
 	artifactKey: z.string({ error: "artifactKey is required" }).min(1, "artifactKey is required"),
 	artifactHash: z
 		.string({ error: "artifactHash is required" })
@@ -404,27 +404,15 @@ const RUN_REQUEST_SCHEMA = z.strictObject({
 		.string({ error: "pluginRunId is required" })
 		.min(1, "pluginRunId is required")
 		.max(128, "pluginRunId is required"),
-	// The path the plugin's fetch handler sees. Absent for host event runs, which keep the
-	// reserved default below. The reserved prefix is refused so a page invoke can never look
-	// like a host event delivery to the plugin's own routing.
+	/**
+	 * The path the plugin's fetch handler sees. Absent for host event runs, which keep the
+	 * reserved default below. Simple segments exclude that prefix and URL rewrites.
+	 * Keep the endpoint grammar in sync with packages/app/shared/plugins.ts.
+	 */
 	requestPath: z
 		.string({ error: "requestPath is invalid" })
 		.max(256, "requestPath is invalid")
-		.regex(/^\/[\x21-\x7E]*$/u, "requestPath is invalid")
-		.refine((value) => !value.startsWith("/__bonobo_senate"), "requestPath must not use the reserved prefix")
-		// Keep this rule in sync with packages/app/shared/plugins.ts: URL parsing or
-		// router decoding must not turn an endpoint into a host event path.
-		.refine(
-			(path) => {
-				try {
-					if (new URL(path, "http://plugin.invalid").pathname !== path) return false;
-					return !decodeURIComponent(path).startsWith("/__bonobo_senate");
-				} catch {
-					return false;
-				}
-			},
-			"requestPath is invalid",
-		)
+		.regex(/^\/(?:[a-z0-9-]+(?:\/[a-z0-9-]+)*)?$/u, "requestPath is invalid")
 		.optional(),
 	input: z.unknown(),
 	host: HOST_RUNTIME_SCHEMA,

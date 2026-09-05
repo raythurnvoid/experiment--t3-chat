@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import { plugins_validate_manifest } from "../../app/shared/plugins.ts";
 import worker, { BonoboHost, BonoboOutbound, DYNAMIC_WORKER_LIMITS, LIMITS, type Env } from "./index";
 
 const URL_BASE = "https://plugin-runner.internal";
@@ -167,6 +168,108 @@ describe("routing", () => {
 	});
 });
 
+describe("manifest contract", () => {
+	const manifest = {
+		schemaVersion: 1,
+		name: "media",
+		displayName: "Media",
+		version: "0.1.0",
+		description: "Runner contract fixture",
+		compatibility: { bonoboPluginRuntime: "1" },
+		events: [],
+		capabilities: ["plugin.backend.invoke"],
+		secrets: [],
+		outboundOrigins: [],
+		backend: {
+			entry: "dist/worker.js",
+			moduleName: "dist/worker.js",
+			compatibilityDate: "2026-08-14",
+			compatibilityFlags: [],
+			endpoints: [{ id: "echo", path: "/echo" }],
+		},
+		files: [{ path: "dist/worker.js", sha256: `sha256:${"a".repeat(64)}`, bytes: 1, contentType: "text/javascript" }],
+	};
+
+	it.each([64, 65, 100, 101])("agrees on a %i-character version label", async (length) => {
+		const version = `0.1.0-${"a".repeat(length - 6)}`;
+		const accepted = length <= 100;
+		const validated = plugins_validate_manifest({ ...manifest, version });
+		expect(Boolean(validated._yay), validated._nay?.message).toBe(accepted);
+		const response = await worker.fetch(
+			run_request(await make_run_body({ body: { pluginVersion: version } })),
+			make_env(),
+			make_ctx(),
+		);
+		expect(response.status).toBe(accepted ? 200 : 400);
+		if (!accepted) {
+			expect((await response.json())._nay.message).toBe("pluginVersion must be at most 100 characters");
+		}
+	});
+
+	it("runs a manifest version with build metadata", async () => {
+		const version = "0.1.0+build.42";
+		expect(plugins_validate_manifest({ ...manifest, version })._nay).toBeUndefined();
+		const response = await worker.fetch(
+			run_request(await make_run_body({ body: { pluginVersion: version } })),
+			make_env(),
+			make_ctx(),
+		);
+		expect(response.status).toBe(200);
+	});
+
+	it.each([
+		["/", true],
+		["/echo", true],
+		["/messages/send", true],
+		["/v1/send-message", true],
+		[`/${"a".repeat(255)}`, true],
+		[`/${"a".repeat(256)}`, false],
+		["echo", false],
+		["/Echo", false],
+		["/echo/", false],
+		["/echo//value", false],
+		["/echo.json", false],
+		["/echo%20value", false],
+		["/echo%2Fvalue", false],
+		["/%E2%98%83", false],
+		["/caffè", false],
+		["/echo\n", false],
+		["/echo?query", false],
+		["/echo#fragment", false],
+		["//other/echo", false],
+		["/a/../b", false],
+		["/./run", false],
+		["/__bonobo_senate/run", false],
+		["/x/%2e%2e/__bonobo_senate/run", false],
+		["/x/%2E%2E/__bonobo_senate/run", false],
+		["/x/.%2e/__bonobo_senate/run", false],
+		["/x\\..\\__bonobo_senate/run", false],
+		["/%5F%5Fbonobo_senate/run", false],
+		["/echo%", false],
+		["/echo%GG", false],
+		["/echo%C0%AF", false],
+	] as const)("agrees on endpoint path %s: %s", async (path, accepted) => {
+		const validated = plugins_validate_manifest({
+			...manifest,
+			backend: { ...manifest.backend, endpoints: [{ id: "echo", path }] },
+		});
+		expect(Boolean(validated._yay), validated._nay?.message).toBe(accepted);
+		const seenUrls: string[] = [];
+		const response = await worker.fetch(
+			run_request(await make_run_body({ body: { requestPath: path } })),
+			make_env({
+				onPluginRequest: (request) => {
+					seenUrls.push(request.url);
+					return new Response("ok");
+				},
+			}),
+			make_ctx(),
+		);
+		expect(response.status).toBe(accepted ? 200 : 400);
+		expect(seenUrls).toEqual(accepted ? [`https://plugin.local${path}`] : []);
+	});
+});
+
 describe("auth + kill switch", () => {
 	it("rejects requests without a valid bearer token", async () => {
 		const res = await worker.fetch(run_request(await make_run_body(), {}), make_env());
@@ -230,10 +333,9 @@ describe("validation", () => {
 			{ requestPath: "echo", message: "requestPath is invalid" },
 			{ requestPath: "/caffè", message: "requestPath is invalid" },
 			{ requestPath: `/${"a".repeat(256)}`, message: "requestPath is invalid" },
-			{ requestPath: "/__bonobo_senate/run", message: "requestPath must not use the reserved prefix" },
-			{ requestPath: "/__bonobo_senate-extra", message: "requestPath must not use the reserved prefix" },
-			// The URL built for the plugin fetch collapses dot segments, so this path would reach
-			// the reserved prefix past the startsWith check.
+			{ requestPath: "/__bonobo_senate/run", message: "requestPath is invalid" },
+			{ requestPath: "/__bonobo_senate-extra", message: "requestPath is invalid" },
+			// These spellings must not reach the host-event path when the runner builds its URL.
 			{ requestPath: "/x/../__bonobo_senate/run", message: "requestPath is invalid" },
 			{ requestPath: "/x/%2e%2e/__bonobo_senate/run", message: "requestPath is invalid" },
 			{ requestPath: "/x/%2E%2E/__bonobo_senate/run", message: "requestPath is invalid" },
@@ -429,7 +531,7 @@ describe("dynamic worker loading", () => {
 			},
 		});
 
-		const paths = ["/echo", "/", "/nested/echo.json", "/echo%20value", "/echo%2Fvalue", "/%E2%98%83"];
+		const paths = ["/echo", "/", "/nested/echo", "/v1/send-message"];
 		for (const requestPath of paths) {
 			const withPath = await worker.fetch(
 				run_request(await make_run_body({ body: { requestPath } })),

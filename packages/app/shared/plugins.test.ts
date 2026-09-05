@@ -5,6 +5,7 @@ import { describe, expect, test } from "vitest";
 import app_convex_schema from "../convex/schema.ts";
 import type { plugins_Capability } from "./plugins.ts";
 import {
+	plugins_CAPABILITIES,
 	plugins_consent_diff,
 	plugins_dist_review_mechanical_findings,
 	plugins_event_matches_configuration,
@@ -480,6 +481,14 @@ describe("plugins_validate_manifest", () => {
 		expect(plugins_validate_manifest(manifest_json({ events: [{ type: "users.account.deleted" }] }))).toMatchObject({
 			_yay: { events: [{ type: "users.account.deleted", contentTypes: [], filters: [] }] },
 		});
+	});
+
+	test("refuses a second account-deletion subscription", () => {
+		expect(
+			plugins_validate_manifest(
+				manifest_json({ events: [{ type: "users.account.deleted" }, { type: "users.account.deleted" }] }),
+			),
+		).toEqual({ _nay: { message: "Plugin manifest has duplicate users.account.deleted subscriptions" } });
 	});
 
 	test("bounds the whole stored manifest payload", () => {
@@ -1030,13 +1039,17 @@ describe("plugins_validate_manifest", () => {
 				...manifest_json({ capabilities: ["plugin.backend.invoke"] }),
 				backend: { ...backend_json, endpoints: [{ id: "echo", path: "echo" }] },
 			}),
-		).toEqual({ _nay: { message: "Backend endpoint paths must start with / and use printable ASCII" } });
+		).toEqual({
+			_nay: { message: "Backend endpoint paths must be / or slash-separated lowercase letters, digits, and dashes" },
+		});
 		expect(
 			plugins_validate_manifest({
 				...manifest_json({ capabilities: ["plugin.backend.invoke"] }),
 				backend: { ...backend_json, endpoints: [{ id: "echo", path: "/caffè" }] },
 			}),
-		).toEqual({ _nay: { message: "Backend endpoint paths must start with / and use printable ASCII" } });
+		).toEqual({
+			_nay: { message: "Backend endpoint paths must be / or slash-separated lowercase letters, digits, and dashes" },
+		});
 		expect(
 			plugins_validate_manifest({
 				...manifest_json({ capabilities: ["plugin.backend.invoke"] }),
@@ -1054,13 +1067,14 @@ describe("plugins_validate_manifest", () => {
 					...manifest_json({ capabilities: ["plugin.backend.invoke"] }),
 					backend: { ...backend_json, endpoints: [{ id: "echo", path }] },
 				}),
-			).toEqual({ _nay: { message: "Backend endpoint paths must not start with /__bonobo_senate" } });
+			).toEqual({
+				_nay: { message: "Backend endpoint paths must be / or slash-separated lowercase letters, digits, and dashes" },
+			});
 		}
 	});
 
-	test("refuses dot segments that would normalize into the reserved prefix", () => {
-		// The runner's URL constructor collapses `.` and `..` segments, so `/x/../__bonobo_senate/run`
-		// would pass the startsWith check and still reach the reserved prefix.
+	test("refuses dot segments in endpoint paths", () => {
+		// A plain prefix check misses /x/../__bonobo_senate/run. Keep dot segments outside the grammar.
 		for (const path of ["/x/../__bonobo_senate/run", "/./run", "/a/../b", "/.."]) {
 			expect(
 				plugins_validate_manifest({
@@ -1069,8 +1083,7 @@ describe("plugins_validate_manifest", () => {
 				}),
 			).toEqual({
 				_nay: {
-					message:
-						"Backend endpoint paths must already be normalized, with no . or .. segments, encoded dot segments, \\, ? or #, and must not decode to the reserved prefix",
+					message: "Backend endpoint paths must be / or slash-separated lowercase letters, digits, and dashes",
 				},
 			});
 		}
@@ -1088,8 +1101,7 @@ describe("plugins_validate_manifest", () => {
 			}),
 		).toEqual({
 			_nay: {
-				message:
-					"Backend endpoint paths must already be normalized, with no . or .. segments, encoded dot segments, \\, ? or #, and must not decode to the reserved prefix",
+				message: "Backend endpoint paths must be / or slash-separated lowercase letters, digits, and dashes",
 			},
 		});
 	});
@@ -1114,15 +1126,14 @@ describe("plugins_validate_manifest", () => {
 				path,
 			).toEqual({
 				_nay: {
-					message:
-						"Backend endpoint paths must already be normalized, with no . or .. segments, encoded dot segments, \\, ? or #, and must not decode to the reserved prefix",
+					message: "Backend endpoint paths must be / or slash-separated lowercase letters, digits, and dashes",
 				},
 			});
 		}
 	});
 
-	test("keeps canonical endpoint paths unchanged, including valid percent escapes", () => {
-		for (const path of ["/", "/nested/echo.json", "/echo%20value", "/echo%2Fvalue", "/%E2%98%83"]) {
+	test("keeps simple endpoint paths unchanged", () => {
+		for (const path of ["/", "/nested/echo", "/v1/send-message"]) {
 			expect(
 				plugins_validate_manifest({
 					...manifest_json({ capabilities: ["plugin.backend.invoke"] }),
@@ -1215,67 +1226,21 @@ describe("plugins_validate_manifest", () => {
 		]);
 	});
 
-	test("holds each declared service scope to its gating capability", () => {
-		expect(
-			plugins_validate_manifest({
-				...manifest_json(),
-				service: { scopes: ["plugin_data:read"] },
-			}),
-		).toEqual({
-			_nay: { message: "Plugin service declarations require the plugin.service.connect capability" },
+	test("accepts service capabilities without a manifest service block", () => {
+		const manifest = manifest_json({
+			capabilities: ["plugin.service.connect", "plugin.data.read", "plugin.data.write", "workspace.files.write"],
 		});
-		expect(
-			plugins_validate_manifest({
-				...manifest_json({ capabilities: ["plugin.service.connect", "workspace.files.write"] }),
-				service: { scopes: ["plugin_data:read"] },
-			}),
-		).toEqual({
-			_nay: { message: "The plugin_data:read service scope requires the plugin.data.read capability" },
+		expect(plugins_validate_manifest(manifest)).toMatchObject({
+			_yay: { capabilities: manifest.capabilities },
 		});
-		expect(
-			plugins_validate_manifest({
-				...manifest_json({ capabilities: ["plugin.service.connect", "plugin.data.read"] }),
-				service: { scopes: ["plugin_data:read", "plugin_data:write"] },
-			}),
-		).toEqual({
-			_nay: { message: "The plugin_data:write service scope requires the plugin.data.write capability" },
-		});
-		expect(
-			plugins_validate_manifest({
-				...manifest_json({ capabilities: ["plugin.service.connect", "plugin.data.read"] }),
-				service: { scopes: ["files:write"] },
-			}),
-		).toEqual({
-			_nay: { message: "The files:write service scope requires the workspace.files.write capability" },
-		});
-		expect(
-			plugins_validate_manifest({
-				...manifest_json({ capabilities: ["plugin.service.connect", "plugin.data.read"] }),
-				service: { scopes: [] },
-			}),
-		).toEqual({ _nay: { message: "Plugin service declarations must name at least one scope" } });
-		expect(
-			plugins_validate_manifest({
-				...manifest_json({ capabilities: ["plugin.service.connect", "plugin.data.read"] }),
-				service: { scopes: ["plugin_data:read", "plugin_data:read"] },
-			}),
-		).toEqual({ _nay: { message: 'Plugin manifest has duplicate service scope "plugin_data:read"' } });
+	});
 
-		const accepted = plugins_validate_manifest({
-			...manifest_json({
-				capabilities: [
-					"plugin.service.connect",
-					"plugin.data.read",
-					"plugin.data.write",
-					"workspace.files.write",
-				],
-			}),
-			service: { scopes: ["plugin_data:read", "plugin_data:write", "files:write"] },
+	test("rejects the removed manifest service block", () => {
+		const rejected = plugins_validate_manifest({
+			...manifest_json({ capabilities: ["plugin.service.connect", "plugin.data.read"] }),
+			service: { scopes: ["plugin_data:read"] },
 		});
-		if (accepted._nay) {
-			throw new Error(accepted._nay.message);
-		}
-		expect(accepted._yay.service).toEqual({ scopes: ["plugin_data:read", "plugin_data:write", "files:write"] });
+		expect(rejected._nay?.message).toBe('Unrecognized key: "service"');
 	});
 
 	test("bounds user-writable collections and holds them to the shared name rule", () => {
@@ -1414,25 +1379,7 @@ describe("plugins_validate_manifest", () => {
 });
 
 describe("plugins_Capability", () => {
-	// `satisfies Record<plugins_Capability, true>` forces this literal to name every member of the
-	// shared union and nothing else, so a capability added to one list but not the other fails these
-	// tests or their compile.
-	const capabilities = Object.keys({
-		"plugin.secrets.read": true,
-		"outbound.fetch": true,
-		"workspace.files.read": true,
-		"workspace.files.write": true,
-		"workspace.files.create-read-only": true,
-		"plugin.data.read": true,
-		"plugin.data.write": true,
-		"plugin.data.user-write": true,
-		"plugin.service.connect": true,
-		"ui.outbound.fetch": true,
-		"workspace.members.read": true,
-		"workspace.files.own-write": true,
-		"workspace.files.own-access": true,
-		"plugin.backend.invoke": true,
-	} satisfies Record<plugins_Capability, true>);
+	const capabilities = plugins_CAPABILITIES;
 
 	test("the Convex schema capability validator matches the shared capability list exactly", () => {
 		const schemaCapabilities =

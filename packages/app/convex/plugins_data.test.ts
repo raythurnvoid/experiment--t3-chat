@@ -9060,6 +9060,45 @@ describe("plugins_data_db_count_installation_docs", () => {
 });
 
 describe("user_manage_scope", () => {
+	test.each([
+		{ list: undefined, allowed: true },
+		{ list: null, allowed: true },
+		{ list: ["channels"], allowed: true },
+		{ list: [], allowed: false },
+		{ list: ["messages"], allowed: false },
+	])("gates the atomic first document with the user-writable list: $list", async ({ list, allowed }) => {
+		const t = test_convex();
+		const fixture = await seed_user_write_door(t);
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_versions", fixture.pluginVersionId, { userWritableCollections: list });
+		});
+
+		const result = await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: {
+				kind: "create_with_document",
+				scopeId: "p/allowlist",
+				collections: ["channels", "messages", "replies", "reactions"],
+				keyPrefix: "p/allowlist",
+				principals: [],
+				document: { collection: "channels", key: "p/allowlist", value: { name: "Private room" } },
+			},
+		});
+
+		if (allowed) {
+			expect(result._nay).toBeUndefined();
+			expect(await read_documents(t, fixture)).toHaveLength(1);
+		} else {
+			expect(result._nay?.message).toBe("This collection is not user-writable");
+			expect(await read_documents(t, fixture)).toEqual([]);
+			const state = await t.run(async (ctx) => ({
+				scopes: await ctx.db.query("plugins_data_scopes").collect(),
+				grants: await ctx.db.query("access_control_permission_grants").collect(),
+			}));
+			expect(state).toEqual({ scopes: [], grants: [] });
+			expect(await read_usage(t, fixture)).toBeNull();
+		}
+	});
+
 	test("creates a private scope, every grant, and its first shared document in one call", async () => {
 		const t = test_convex();
 		const fixture = await seed_user_write_door(t, { clerkUserId: "atomic-scope-owner" });
@@ -9703,6 +9742,9 @@ describe("user_manage_scope", () => {
 	test("scope membership grows and shrinks, and deleting the scope leaves no grants", async () => {
 		const t = test_convex();
 		const fixture = await seed_user_write_door(t, { clerkUserId: "scope-door-owner" });
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_versions", fixture.pluginVersionId, { userWritableCollections: [] });
+		});
 		// Neither caller is the organization owner. The owner passes every permission check before any
 		// grant is read, so an owner-only run would report a working scope over no grants at all.
 		const alice = await join_member_with_role(t, fixture, { clerkUserId: "scope-alice", role: "member" });

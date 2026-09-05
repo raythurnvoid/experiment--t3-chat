@@ -1628,7 +1628,6 @@ describe("backfill_plugins_versions_endpoints_and_collections", () => {
 				...base,
 				name: "declared-probe",
 				endpoints: [{ id: "echo", path: "/echo", serialization: "installation" }],
-				serviceScopes: ["plugin_data:read"],
 				userWritableCollections: ["messages"],
 			});
 			return { legacyId, declaredId };
@@ -1648,13 +1647,13 @@ describe("backfill_plugins_versions_endpoints_and_collections", () => {
 
 		expect(result.legacy).toMatchObject({
 			endpoints: [],
-			serviceScopes: null,
 			userWritableCollections: null,
 		});
 		expect(result.declared).toMatchObject({
 			endpoints: [{ id: "echo", path: "/echo", serialization: "installation" }],
-			serviceScopes: ["plugin_data:read"],
 			userWritableCollections: ["messages"],
 		});
+		expect(result.legacy).not.toHaveProperty("serviceScopes");
+		expect(result.declared).not.toHaveProperty("serviceScopes");
 	});
 });

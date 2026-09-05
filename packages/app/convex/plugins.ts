@@ -363,7 +363,6 @@ export const register_plugin_version = internalAction({
 		pages: doc(app_convex_schema, "plugins_versions").fields.pages,
 		fileViews: doc(app_convex_schema, "plugins_versions").fields.fileViews,
 		endpoints: doc(app_convex_schema, "plugins_versions").fields.endpoints,
-		serviceScopes: doc(app_convex_schema, "plugins_versions").fields.serviceScopes,
 		userWritableCollections: doc(app_convex_schema, "plugins_versions").fields.userWritableCollections,
 		capabilities: doc(app_convex_schema, "plugins_versions").fields.capabilities,
 		outboundOrigins: doc(app_convex_schema, "plugins_versions").fields.outboundOrigins,
@@ -447,7 +446,6 @@ export const upsert_plugin = internalMutation({
 		pages: doc(app_convex_schema, "plugins_versions").fields.pages,
 		fileViews: doc(app_convex_schema, "plugins_versions").fields.fileViews,
 		endpoints: doc(app_convex_schema, "plugins_versions").fields.endpoints,
-		serviceScopes: doc(app_convex_schema, "plugins_versions").fields.serviceScopes,
 		userWritableCollections: doc(app_convex_schema, "plugins_versions").fields.userWritableCollections,
 		capabilities: doc(app_convex_schema, "plugins_versions").fields.capabilities,
 		outboundOrigins: doc(app_convex_schema, "plugins_versions").fields.outboundOrigins,
@@ -3542,7 +3540,6 @@ async function publish_version_from_github(
 			path: endpoint.path,
 			serialization: endpoint.serialization ?? "installation",
 		})),
-		serviceScopes: manifest._yay.service?.scopes ?? null,
 		userWritableCollections: manifest._yay.userWritableCollections ?? null,
 		capabilities: manifest._yay.capabilities,
 		outboundOrigins: manifest._yay.outboundOrigins,
@@ -6627,3 +6624,34 @@ export const clear_plugin_registry_deletion_fence = internalMutation({
 });
 
 // #endregion admin
+
+if (process.env.NODE_ENV === "test" && import.meta.vitest) {
+	const { describe, expect, test } = import.meta.vitest;
+
+	describe("review_policy", () => {
+		test("pins the review prompts and model to their policy version", async () => {
+			const fixture = {
+				sentinel: "REVIEW_TEST_BOUNDARY",
+				facts: "manifest facts",
+				inventory: "dist/worker.js",
+				coverage: "all bytes read",
+				notebook: "no findings",
+			};
+			const digest = await crypto_sha256_hex(
+				JSON.stringify({
+					model: REVIEW_MODEL_ID,
+					step: review_step_prompt({ ...fixture, stepsLeft: 1, toolResult: null, refusals: [] }).system,
+					verdict: review_verdict_prompt({ ...fixture, unaccountedSubjects: [] }).system,
+				}),
+			);
+			/**
+			 * Assess a policy bump before changing this hash. Tool behavior and mechanical rules
+			 * still need manual review; this check only notices prompt and model changes.
+			 */
+			const reviewedHashes: Record<string, string> = {
+				"10": "e460e2e4ff7293420f0844edefc106b5112dd61f5a528581f0064e62fa63300d",
+			};
+			expect(digest).toBe(reviewedHashes[plugins_REVIEW_POLICY_VERSION]);
+		});
+	});
+}

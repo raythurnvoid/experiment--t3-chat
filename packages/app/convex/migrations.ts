@@ -671,14 +671,10 @@ export const backfill_plugins_versions_backend_entrypoint_file = app_migrations.
 export const backfill_plugins_versions_endpoints_and_collections = app_migrations.define({
 	table: "plugins_versions",
 	migrateOne: async (ctx, version) => {
-		// Rows published before the invoke/service fields existed get the manifest-omitted
-		// defaults, so the fields can become required in a later push. Nothing is erased.
+		// Fill omitted endpoints and collection lists with their stored defaults.
 		const patch: Partial<Doc<"plugins_versions">> = {};
 		if (version.endpoints === undefined) {
 			patch.endpoints = [];
-		}
-		if (version.serviceScopes === undefined) {
-			patch.serviceScopes = null;
 		}
 		if (version.userWritableCollections === undefined) {
 			patch.userWritableCollections = null;

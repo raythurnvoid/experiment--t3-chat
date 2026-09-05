@@ -478,6 +478,26 @@ describe("RoutePluginsPluginAccess", () => {
 		return section;
 	}
 
+	test.each([true, false])("shows the account-deletion trigger only with an active handler: %s", (active) => {
+		const plugin = published_plugin({ name: "account-listener", canProcessFiles: false });
+		const installed = installed_item(plugin);
+		setQueries(plugin, [
+			{
+				...installed,
+				version: {
+					...installed.version,
+					events: [{ type: "users.account.deleted", contentTypes: [], filters: [] }],
+				},
+				handlers: active ? [{ event: "users.account.deleted" }] : [],
+			},
+		]);
+
+		render(<PageComponent />);
+
+		expect(access_section().textContent?.includes("Users Account Deleted")).toBe(active);
+		expect(access_section().textContent?.includes("No active triggers.")).toBe(!active);
+	});
+
 	test("warns that file views are trusted for a plugin that ships no pages", () => {
 		// Video Player's shape: no pages, one file view. Its session is minted from the same table as a
 		// page session and gets the same workspace-wide file scopes, so an admin reviewing this screen

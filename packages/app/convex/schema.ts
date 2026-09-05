@@ -8,23 +8,9 @@ import {
 	organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
 } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
+import { plugins_CAPABILITIES } from "../shared/plugins.ts";
 
-const plugins_capability_validator = v.union(
-	v.literal("plugin.secrets.read"),
-	v.literal("outbound.fetch"),
-	v.literal("workspace.files.read"),
-	v.literal("workspace.files.write"),
-	v.literal("workspace.files.create-read-only"),
-	v.literal("workspace.files.own-write"),
-	v.literal("workspace.files.own-access"),
-	v.literal("plugin.data.read"),
-	v.literal("plugin.data.write"),
-	v.literal("plugin.data.user-write"),
-	v.literal("plugin.backend.invoke"),
-	v.literal("plugin.service.connect"),
-	v.literal("ui.outbound.fetch"),
-	v.literal("workspace.members.read"),
-);
+const plugins_capability_validator = v.union(...plugins_CAPABILITIES.map((capability) => v.literal(capability)));
 
 /**
  * The full list of permissions. Users build roles out of these, but can never add a new one.
@@ -1276,8 +1262,8 @@ const app_convex_schema = defineSchema({
 	/**
 	 * One doc per plugin name that registered an outside service for the service-grant exchange.
 	 * The host generates the `pse_` secret and stores only its hash; rotating writes a new hash and
-	 * the old secret stops working immediately. The registered scopes are the exchange authority —
-	 * the manifest's `service` block is only consent copy.
+	 * the old secret stops working immediately. The exchange requires the accepted capability for
+	 * each registered scope, plus `plugin.service.connect`.
 	 */
 	plugins_service_registrations: defineTable({
 		pluginName: v.string(),
@@ -1398,19 +1384,6 @@ const app_convex_schema = defineSchema({
 					path: v.string(),
 					serialization: v.union(v.literal("installation"), v.literal("caller-key")),
 				}),
-			),
-		),
-		/**
-		 * The manifest's service consent copy, or null when the manifest declares no service block.
-		 * The service-registration row is the exchange authority; this list is display-only.
-		 *
-		 * Every stored version has been backfilled. The field stays optional on purpose: it grants
-		 * nothing, so an absent value is only a missing display string.
-		 */
-		serviceScopes: v.optional(
-			v.union(
-				v.array(v.union(v.literal("plugin_data:read"), v.literal("plugin_data:write"), v.literal("files:write"))),
-				v.null(),
 			),
 		),
 		/**

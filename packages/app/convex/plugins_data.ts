@@ -2300,8 +2300,8 @@ async function db_authorize_page_write(
 		skipRateLimit?: true;
 		/**
 		 * The collection this member write is about to touch, checked against the installed
-		 * version's user-writable list. Scope management passes nothing — scopes are not
-		 * collections.
+		 * version's user-writable list. Scope-only actions pass nothing; atomic scope creation
+		 * passes its first document's collection, not every collection the scope covers.
 		 */
 		collection?: string;
 	} = {},
@@ -4252,7 +4252,10 @@ export const user_manage_scope = mutation({
 	}),
 	handler: async (ctx, args) => {
 		const creating = args.action.kind === "create" || args.action.kind === "create_with_document";
-		const authorized = await db_authorize_page_write(ctx, creating ? { skipRateLimit: true } : {});
+		const authorized = await db_authorize_page_write(ctx, {
+			...(creating ? { skipRateLimit: true } : {}),
+			...(args.action.kind === "create_with_document" ? { collection: args.action.document.collection } : {}),
+		});
 		if (authorized._nay) {
 			return authorized;
 		}
