@@ -355,10 +355,11 @@ Reads:
 
 Writes:
 
-- Agent-mode bash shell writes (`bash_DbFilesFs.writeFile`/`appendFile`) and `edit_file` call action-aware pending-update helpers so the latest R2-backed base Yjs state is resolved before internal mutations write docs.
-- They update the current user's pending `unstaged` branch.
+- For collaborative files, Agent-mode bash shell writes (`bash_DbFilesFs.writeFile`/`appendFile`) and `edit_file` call action-aware pending-update helpers so the latest R2-backed base Yjs state is resolved before internal mutations write docs.
+- For an existing file with collaboration off, their read result carries `nonCollaborative: true`. `files_agent_write_file_text` then saves the whole text immediately with no base-asset token. Last write wins, and previous saves stay in version history.
+- For collaborative files, they update the current user's pending `unstaged` branch.
 - Agent-mode app-to-app `mv` stores `pendingMove`. App-to-app `cp` stores `copiedFrom` and may mark a newly created destination as `eagerCreated` so discard or expiry can remove it safely. A replacement proposal records the replaced destination instead of committing over it immediately. `cp -n` and `cp --no-clobber` leave an existing final destination unchanged and create no replacement proposal, including when the destination appears during eager creation. Bash shell writes to a missing path also eagerly create the node and stamp `eagerCreated`.
-- The client is expected to open the diff/review UI before live file content changes.
+- For pending changes, the client is expected to open the diff/review UI before live file content changes.
 - Workspace read-only locks are enforced inside the same pending and final write doors used by the
   Files UI. Agent-mode redirects, `tee`, `touch`, `edit_file`, `mkdir`, `mv`, `cp` destinations, and
   `rm` cannot change a locked target, destination, replacement occupant, or affected subtree. `cp`

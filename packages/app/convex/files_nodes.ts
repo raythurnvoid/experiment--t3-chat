@@ -6550,11 +6550,9 @@ export const read_file_content_from_chunks = internalQuery({
 			moreLines: v.boolean(),
 			pendingUpdateId: v.union(v.id("files_pending_updates"), v.null()),
 			/**
-			 * The node's current content asset, set only when collaboration is off for this file.
-			 * The agent's write doors save that file by replacing the whole text, and they pass
-			 * this back as the asset the save must still be sitting on. Null for every other file.
+			 * True for a tenant file with collaboration off. Its agent writes save immediately.
 			 */
-			nonCollaborativeBaseAssetId: v.union(v.id("files_r2_assets"), v.null()),
+			nonCollaborative: v.boolean(),
 		}),
 		v.null(),
 	),
@@ -6656,7 +6654,7 @@ export const read_file_content_from_chunks = internalQuery({
 										content: "",
 										moreLines: false,
 										pendingUpdateId: pendingUpdate._id,
-										nonCollaborativeBaseAssetId: null,
+										nonCollaborative: false,
 									};
 						}
 
@@ -6667,7 +6665,7 @@ export const read_file_content_from_chunks = internalQuery({
 							content,
 							moreLines: false,
 							pendingUpdateId: pendingUpdate._id,
-							nonCollaborativeBaseAssetId: null,
+							nonCollaborative: false,
 						};
 					}
 
@@ -6689,7 +6687,7 @@ export const read_file_content_from_chunks = internalQuery({
 						content: range.content,
 						moreLines: range.moreLines,
 						pendingUpdateId: pendingUpdate._id,
-						nonCollaborativeBaseAssetId: null,
+						nonCollaborative: false,
 					};
 				}
 			} else if (args.pendingUpdateId != null) {
@@ -6733,7 +6731,7 @@ export const read_file_content_from_chunks = internalQuery({
 					: 0;
 		}
 
-		const nonCollaborativeBaseAssetId = isNonCollaborativeTextFile ? (fileNode.assetId ?? null) : null;
+		const nonCollaborative = realTenantScope !== null && isNonCollaborativeTextFile;
 
 		if (args.mode.kind === "full") {
 			// Full reads use the byte size as the cheap cap check, then merge the materialized chunks
@@ -6758,13 +6756,13 @@ export const read_file_content_from_chunks = internalQuery({
 							content: "",
 							moreLines: false,
 							pendingUpdateId: null,
-							nonCollaborativeBaseAssetId,
+							nonCollaborative,
 						};
 			}
 
 			const content = files_merge_contiguous_chunks(chunks);
 			if (content == null) return null;
-			return { nodeId: fileNode._id, content, moreLines: false, pendingUpdateId: null, nonCollaborativeBaseAssetId };
+			return { nodeId: fileNode._id, content, moreLines: false, pendingUpdateId: null, nonCollaborative };
 		}
 
 		// Line reads use the lineEnd index to seek near the requested start line
@@ -6804,7 +6802,7 @@ export const read_file_content_from_chunks = internalQuery({
 			content: range.content,
 			moreLines: range.moreLines,
 			pendingUpdateId: null,
-			nonCollaborativeBaseAssetId,
+			nonCollaborative,
 		};
 	},
 });

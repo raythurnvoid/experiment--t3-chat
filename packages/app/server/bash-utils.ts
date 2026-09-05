@@ -670,7 +670,7 @@ export class bash_DbFilesFs implements IFileSystem {
 			nodeId: Id<"files_nodes">;
 			content: string;
 			pendingUpdateId: Id<"files_pending_updates"> | null;
-			nonCollaborativeBaseAssetId: Id<"files_r2_assets"> | null;
+			nonCollaborative: boolean;
 		} | null = (await this.ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
 			organizationId,
 			workspaceId,
@@ -812,7 +812,7 @@ export class bash_DbFilesFs implements IFileSystem {
 				threadId: threadId ?? undefined,
 				// A file created by this same write is collaborative, so the read is the only
 				// source of this and an eager create leaves it unset.
-				nonCollaborativeBaseAssetId: currentContent?.nonCollaborativeBaseAssetId ?? undefined,
+				nonCollaborative: currentContent?.nonCollaborative,
 			});
 		} catch (error) {
 			if (eagerCreatedCommittedSequence === undefined) {
@@ -826,7 +826,7 @@ export class bash_DbFilesFs implements IFileSystem {
 		if (written._nay) {
 			throw new Error(`cannot write '${shellPath}': ${written._nay.message}${await eager_created_failure_note()}`);
 		}
-		if (currentContent?.nonCollaborativeBaseAssetId) {
+		if (currentContent?.nonCollaborative) {
 			// The shell itself has no stdout for redirection. Keep a per-run path set so the tool can
 			// tell the agent that this write is already saved and must not be reviewed as pending.
 			this.directSavedPaths.add(shellPath);
@@ -2107,25 +2107,20 @@ export async function files_agent_write_file_text(
 		eagerCreatedAncestorIds?: Id<"files_nodes">[];
 		threadId?: Id<"ai_chat_threads">;
 		/**
-		 * Set only when the target file has collaboration turned off. It is the content asset the
-		 * caller's read returned, and the save refuses if another save landed on the file since.
+		 * True when the caller's read found a file with collaboration turned off.
 		 */
-		nonCollaborativeBaseAssetId?: Id<"files_r2_assets">;
+		nonCollaborative?: boolean;
 	},
 ): Promise<files_agent_write_file_text_Result> {
 	// Collaboration off: no branch to build, no review step. Save the whole text now.
-	if (args.nonCollaborativeBaseAssetId) {
-		const saved = (await ctx.runAction(internal.files_nodes_content.replace_file_content_internal_action, {
+	if (args.nonCollaborative) {
+		return (await ctx.runAction(internal.files_nodes_content.replace_file_content_internal_action, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
 			nodeId: args.nodeId,
 			text: args.unstagedText,
-			baseAssetId: args.nonCollaborativeBaseAssetId,
-		})) as { _yay?: unknown; _nay?: { name?: string; message: string } };
-		// The save answers with the new content asset. Agent callers write once and read again
-		// before the next write, so drop it and keep one shape for every caller.
-		return saved._nay ? { _nay: saved._nay } : { _yay: null };
+		})) as files_agent_write_file_text_Result;
 	}
 
 	const batch = (await ctx.runMutation(

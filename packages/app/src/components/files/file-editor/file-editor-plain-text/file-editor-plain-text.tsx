@@ -58,11 +58,7 @@ type FileEditorPlainTextToolbarActions_Props = {
 	isSyncDisabled: boolean;
 	isSaveDebouncing: boolean;
 	nodeId: app_convex_Id<"files_nodes">;
-	/**
-	 * The asset the open text was read from, or `null` when the file is collaborative. It turns
-	 * Sync off and sends a version restore through the replace door instead of the Yjs door.
-	 */
-	nonCollaborativeBaseAssetId: app_convex_Id<"files_r2_assets"> | null;
+	nonCollaborative: boolean;
 	sessionId: string;
 	toolbarPortalHost: HTMLElement;
 	getCurrentText: () => string;
@@ -81,7 +77,7 @@ const FileEditorPlainTextToolbarActions = memo(function FileEditorPlainTextToolb
 		isSyncDisabled,
 		isSaveDebouncing,
 		nodeId,
-		nonCollaborativeBaseAssetId,
+		nonCollaborative,
 		sessionId,
 		toolbarPortalHost,
 		getCurrentText,
@@ -118,7 +114,7 @@ const FileEditorPlainTextToolbarActions = memo(function FileEditorPlainTextToolb
 			</MyButton>
 			{/* Sync merges this editor's document with the shared one. A file with collaboration
 			    turned off has no shared document: saving replaces the whole text. */}
-			{!nonCollaborativeBaseAssetId && (
+			{!nonCollaborative && (
 				<MyButton
 					variant="ghost-highlightable"
 					className={cn(
@@ -158,7 +154,6 @@ const FileEditorPlainTextToolbarActions = memo(function FileEditorPlainTextToolb
 				nodeId={nodeId}
 				sessionId={sessionId}
 				editable={editable}
-				nonCollaborativeBaseAssetId={nonCollaborativeBaseAssetId}
 				getCurrentText={getCurrentText}
 				onApplySnapshotText={onApplySnapshotText}
 			/>
@@ -255,8 +250,8 @@ type FileEditorPlainText_ClassNames =
  * What the editor loaded before it mounted.
  *
  * A collaborative file arrives as a Yjs document, and Save pushes the difference between two
- * documents. A file with collaboration turned off arrives as plain text plus the asset it was read
- * from, and Save replaces the whole text against that asset.
+ * documents. A file with collaboration turned off arrives as plain text, and Save replaces the
+ * whole text.
  */
 type FileEditorPlainText_LoadedContent =
 	| {
@@ -271,7 +266,6 @@ type FileEditorPlainText_LoadedContent =
 			kind: "non_collaborative";
 			text: string;
 			rootKind: files_YjsRootKind;
-			baseAssetId: app_convex_Id<"files_r2_assets">;
 	  };
 
 type FileEditorPlainTextInner_Props = {
@@ -316,16 +310,10 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	const editorRef = useRef<monaco_editor.IStandaloneCodeEditor | null>(null);
 	const [mountedEditor, setMountedEditor] = useState<monaco_editor.IStandaloneCodeEditor | null>(null);
 	const modelRef = useRef<monaco_editor.ITextModel | null>(initialEditorModel);
-	// Exactly one of the two is set: a collaborative file has a document and no base asset, and a
-	// file with collaboration turned off has a base asset and no document. The asset is state and
-	// not a ref because the toolbar reads it while rendering, to hide Sync and to send a version
-	// restore through the replace door.
+	// A file with collaboration off has no shared document to sync.
 	const baselineYjsDocRef = useRef<YDoc | null>(initialData.kind === "collaborative" ? initialData.mut_yjsDoc : null);
 	const yjsLastSequenceIdRef = useRef<app_convex_Id<"files_yjs_docs_last_sequences"> | null>(
 		initialData.kind === "collaborative" ? initialData.yjsLastSequenceId : null,
-	);
-	const [nonCollaborativeBaseAssetId, setNonCollaborativeBaseAssetId] = useState(
-		initialData.kind === "non_collaborative" ? initialData.baseAssetId : null,
 	);
 	const baselineMarkdownRef = useRef<string>(initialData.text);
 
@@ -500,8 +488,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	const handleApplySnapshotText = useFn(() => {
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
-			// Collaboration off: the restore replaced the whole text, so re-read it together with the
-			// asset it now lives in. That asset is the base of the user's next save.
+			// Collaboration off: re-read the committed text after the restore.
 			if (initialData.kind === "non_collaborative") {
 				const restored = await app_convex.query(app_convex_api.files_nodes_content.get_non_collaborative_file_content, {
 					membershipId,
@@ -518,7 +505,6 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 				pushChangeToEditor(restored._yay.text);
 				updateDirtyBaseline(restored._yay.text);
 				updateThreadIds(restored._yay.text);
-				setNonCollaborativeBaseAssetId(restored._yay.assetId);
 				return;
 			}
 
@@ -597,15 +583,12 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 				return;
 			}
 
-			// Collaboration off: no document to diff, no branch to merge. Send the whole text and
-			// name the asset it was built on, so a save that landed meanwhile is refused instead of
-			// silently overwritten.
-			if (nonCollaborativeBaseAssetId) {
+			// Collaboration off: no document to diff, so Save replaces the whole text.
+			if (initialData.kind === "non_collaborative") {
 				const replaced = await app_convex.action(app_convex_api.files_nodes_content.replace_file_content, {
 					membershipId,
 					nodeId,
 					text: localMarkdown,
-					baseAssetId: nonCollaborativeBaseAssetId,
 				});
 				if (replaced._nay) {
 					console.error("[FileEditorPlainText.handleClickSave] Error while replacing the file content", {
@@ -615,8 +598,6 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 					return;
 				}
 
-				// The save wrote a new version, and the next save has to be based on it.
-				setNonCollaborativeBaseAssetId(replaced._yay.assetId);
 				updateDirtyBaselineAfterSave(localMarkdown);
 				updateThreadIds(localMarkdown);
 				return;
@@ -873,7 +854,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	 * because that state is up to 250 ms behind and would miss the last words typed.
 	 */
 	const warnIfUnsavedTextIsDropped = useFn(() => {
-		if (!nonCollaborativeBaseAssetId) {
+		if (initialData.kind !== "non_collaborative") {
 			return;
 		}
 
@@ -910,7 +891,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 					isSyncDisabled={isSyncDisabled}
 					isSaveDebouncing={isSaveDebouncing}
 					nodeId={nodeId}
-					nonCollaborativeBaseAssetId={nonCollaborativeBaseAssetId}
+					nonCollaborative={initialData.kind === "non_collaborative"}
 					sessionId={presenceStore.localSessionId}
 					toolbarPortalHost={toolbarPortalHost}
 					getCurrentText={getCurrentText}
@@ -992,8 +973,7 @@ export const FileEditorPlainText = memo(function FileEditorPlainText(props: File
 			return Promise.resolve(undefined);
 		}
 
-		// Collaboration off: there is no Yjs document to rebuild the text from, so the server sends
-		// the committed text and the asset the next save has to name.
+		// Collaboration off: there is no Yjs document, so read the committed text.
 		if (nonCollaborative) {
 			return app_convex
 				.query(app_convex_api.files_nodes_content.get_non_collaborative_file_content, { membershipId, nodeId })
@@ -1007,7 +987,6 @@ export const FileEditorPlainText = memo(function FileEditorPlainText(props: File
 						kind: "non_collaborative",
 						text: result._yay.text,
 						rootKind: result._yay.yjsRootKind,
-						baseAssetId: result._yay.assetId,
 					};
 				});
 		}
@@ -1059,7 +1038,7 @@ export const FileEditorPlainText = memo(function FileEditorPlainText(props: File
 			key={
 				fileContentData.kind === "collaborative"
 					? `collaborative:${fileContentData.yjsLastSequenceId}`
-					: `non_collaborative:${fileContentData.baseAssetId}`
+					: `non_collaborative:${nodeId}`
 			}
 			nodeId={nodeId}
 			editable={editable}

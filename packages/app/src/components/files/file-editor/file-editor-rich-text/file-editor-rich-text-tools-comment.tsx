@@ -90,7 +90,7 @@ export type FileEditorRichTextToolsComment_Props = {
 		 * Save the file right away with the new mark in it. Return `false` when the save failed,
 		 * so the caller can take the mark back out.
 		 */
-		commit: (threadId: string) => Promise<boolean>;
+		commit: () => Promise<boolean>;
 	} | null;
 	buttonVariant?: MyButton_Props["variant"];
 };
@@ -228,7 +228,7 @@ const FileEditorRichTextToolsCommentInner = memo(function FileEditorRichTextTool
 				if (commentCommit) {
 					// A rejected commit (a network drop, not a refusal) must also take the mark
 					// back out, or it would ride along unsaved and publish with the next Save.
-					const committed = await commentCommit.commit(threadId).catch((error: unknown) => {
+					const committed = await commentCommit.commit().catch((error: unknown) => {
 						console.error(error);
 						toast.error("Failed to save the comment");
 						return false;

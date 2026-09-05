@@ -315,6 +315,10 @@ To build a writable one, follow the UI steps below.
 
 The rich view must then render the content un-escaped (`2026-08-30`) while the Markdown view shows the raw bytes. Selectors and behaviors of the non-collaborative rich and diff editors are in `file-node-view.md` under "Non-Collaborative Editors (No Yjs)".
 
+For a plain-text fixture, upload a small `.txt` file with `text/plain` content type, then turn
+collaboration off. Confirm the stored `yjsRootKind` is `plain_text`. The sidebar's `create_text_node`
+door creates Markdown, even with a `.txt` name; a rename does not change the stored type or shape.
+
 ### Folder Import
 
 Use this after changing the bulk import flow (`run_folder_import` in `files-sidebar.tsx`, `files_nodes.create_upload_nodes`).
@@ -558,16 +562,17 @@ One dialog holding the file's facts, its read-only lock, and the flat key-value 
 
 ### Non-collaborative editors
 
-Verified 2026-09-04 on `qa-noncollab-*.md` (a `.md` node with collaboration turned off). All three
+All three
 views — Rich (`FileEditorRichTextNonCollab`), Markdown (`FileEditorPlainText`) and Diff
 (`FileEditorDiffNonCollab`, now folded into `file-editor-diff.tsx`) — save the whole text through
-`replace_file_content` and name the asset they read. There is no Yjs document, so nothing syncs
-between tabs: each tab has its own base asset, and the server refuses a save built on an old one.
+`replace_file_content`. There is no Yjs document, so nothing syncs between tabs. Each tab keeps
+its own text, and the last save to commit wins. Saves carry no base-asset token.
 
 Drive the editors through the dev QA hook instead of typing into Monaco. `window.__qa.monaco()`
 returns `{ plainText }` in the Markdown view and `{ diffOriginal, diffModified }` in the Diff view.
 `model.setValue(...)` fires the same change event as typing, so the dirty debounce runs normally.
-The Rich view has no Monaco: click `.ProseMirror`, press `Control+End`, then `keyboard.type(...)`.
+The Rich view has no Monaco: click `.FileEditorRichTextNonCollab-editor-content`, press `Control+End`, then
+`keyboard.type(...)`.
 
 Watch the button you assert on. `[aria-label="Rich text editor actions"] button` picks Undo, not
 Save. Scope it: `locator('[aria-label="Rich text editor actions"] button', { hasText: "Save" })`,
@@ -589,20 +594,21 @@ the caret in this session, not the whole document, so word-count fixtures came o
 words instead of 12/3/5. That is fine for a "clearly different counts" check; to control the whole
 text, set it in the Markdown view (`window.__qa.monaco().plainText.getModel().setValue(...)`) and Save.
 
-**Two-tab refused save.** Open the same file in two tabs. Reload the tab that saves first, so its
-base asset is current, then have it save. The other tab is now stale. Type in it and click Save:
-the toast reads `This file changed while you were saving. Copy your local changes before reloading,
-then try again.` (`files_REPLACE_FILE_CONTENT_STALE_MESSAGE`), the text stays exactly as it was, and
-Save stays enabled. Reload the losing tab before the next round, or its base asset stays stale and
-every later save is refused for the old reason.
+**Two-tab last write wins.** Open the same file in two tabs before either saves. Type different
+text in each. Save A and await its action result, then save B. Both succeed with `_yay: null` and
+no stale-save toast. Reload and read the committed text: B wins. Use `Open file snapshots` and inspect both
+saved texts. Repeat with plain text and Markdown, including the Markdown and Diff views.
 
-**Comment merge.** Only the Rich view can add a comment, and only while it is clean — the button
-carries `title="Save your changes before adding a comment."` while it is not. Make the tab stale
-first (see above), then select text, `getByRole("button", { name: "Add comment" })`, fill
-`form[name="New document comment"]`, submit. The stale save is merged into the other person's
-version and the toast reads `Someone else saved this file. Your comment was merged into their
-version.` The other person's text appears in the editor and `span.lb-tiptap-thread-mark` carries
-the new thread id.
+**Comment from older text.** Only the Rich view can add a comment, and only while it is clean —
+the button carries `title="Save your changes before adding a comment."` while it is not. Load B,
+then save different text in A. In B, select text, use `getByRole("button", { name: "Add comment" })`,
+fill `getByRole("form", { name: "New document comment" })`, and submit. B saves its older text plus the comment mark
+in one call. It does not re-read or merge A's text. Reload and reopen the comment to verify it
+persisted; A's text remains in File Snapshots.
+
+**Restore from an older tab.** Load B, save different text in A, then restore an older version
+from B's File Snapshots dialog. The restore succeeds and its text is committed. The replaced text stays
+in File Snapshots. Collaboration must remain off until the restore commits.
 
 **Typed while the comment save was waiting.** The real save is too fast to type into, so slow it
 down from page context. Vite serves the app modules, so the live Convex client is reachable:
@@ -618,21 +624,19 @@ await state.tab1.evaluate(async () => {
 });
 ```
 
-Submit the comment, then type into `.ProseMirror` during the wait. The commit refuses with
-`Save your changes before adding a comment.`, the new mark is taken back out of the document, and
-the other person's text is NOT merged in. The same patch is how you prove the plain editor keeps
+Submit the comment, then type into `.FileEditorRichTextNonCollab-editor-content` during the wait.
+The save commits the text it captured, and the later typing stays dirty for the next Save. The same patch proves the plain editor keeps
 Save armed for text typed while a save was in flight. Match the delay on the args (`typeof
-args.text === "string" && args.baseAssetId`), not on the function reference — the generated `api`
+args.text === "string" && args.nodeId && args.membershipId`), not on the function reference — the generated `api`
 builds a new proxy on every access, so `ref === api.files_nodes_content.replace_file_content` is
-never true. Expected readings (verified 2026-09-04, 4 s delay): Save `disabled: true` while the save
+never true. Expected readings: Save `disabled: true` while the save
 waits; typing during the wait flips `aria-busy` to `"true"` for the dirty debounce; once the delayed
 call resolves, Save is `disabled: false` and `aria-busy="false"`; the second Save sends the longer
-text with `baseAssetId` equal to the `assetId` the first save answered; a reload shows both edits.
+text without a base-asset token; a reload shows both edits.
 
-Recorder tip for these flows: also record `query` calls that carry `nodeId`. The comment merge then
-reads as refused `replace_file_content` (`_nay` = the stale message) → `get_non_collaborative_file_content`
-→ second `replace_file_content` against the asset that query answered, result `_yay`. The refused
-save toast is `type="error"`; the merge toast is `type="info"`.
+Recorder tip: also record `query` calls that carry `nodeId`. A comment commit makes one
+`replace_file_content` call with `_yay: null`, with no content re-read or retry. Restore still
+re-reads the committed text to refresh the editor.
 
 **Unsaved-text warning.** Every non-collaborative editor warns when it goes away with text it never
 saved: switch view, reload, or close the file. The toast is `Your unsaved changes to this file were
@@ -656,9 +660,12 @@ await state.tab1.evaluate(() => {
 **Snapshot restore.** The list button is the timestamp (`55m ago`); clicking it opens a second
 dialog, `.FileEditorSnapshotsModalPreviewModal`, whose `Confirm` performs the restore. Scope every
 follow-up click to that preview modal — the list dialog stays mounted underneath and intercepts
-clicks. Versions saved seconds apart all read `Just now`, newest first, so pick by index
-(`.FileEditorSnapshotsModalListItem:visible`, `nth(i)`) and prove which one you opened from the
-preview's diff block: it is `diffWordsWithSpace(current, snapshot)`, so the snapshot text is every
+clicks. On reopening, `useStableQuery` can briefly show the previous list. After opening, query
+`files_nodes.get_file_snapshots_list({ membershipId, nodeId, showArchived: false })` through the
+app client, then wait until `.FileEditorSnapshotsModalListItem:visible` has that result's
+`snapshots.length` items. Do this while no new saves are running. Versions saved seconds apart all
+read `Just now`, newest first, so pick by index (`nth(i)`) only after that wait. Always prove which
+version you opened from the preview's diff block: it is `diffWordsWithSpace(current, snapshot)`, so the snapshot text is every
 `.FileEditorSnapshotsModalPreviewModalDiffBlock-word` that is NOT `-removed`, joined. After `Confirm`
 the Rich view must refresh with no further interaction: the word badge
 (`.FileEditorRichTextNonCollabToolbarActions-word-count-badge`), the `span.lb-tiptap-thread-mark`
@@ -670,6 +677,10 @@ re-read), never later. Read the subscription without a click:
 ```js
 window.__qa.convexSubscriptions().filter((s) => JSON.stringify(s.args).includes("threadIds"));
 ```
+
+For a non-empty snapshot, wait for `.FileEditorSnapshotsModalPreviewModalDiffBlock-word` before
+reading the preview text. The diff container can mount while its content is still loading; reading
+the container alone can report an empty snapshot too early.
 
 ## Script Pattern
 

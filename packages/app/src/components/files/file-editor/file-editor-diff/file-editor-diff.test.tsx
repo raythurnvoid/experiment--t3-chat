@@ -126,15 +126,14 @@ import type { files_PresenceStore } from "@/lib/files.ts";
 
 const MEMBERSHIP_ID = "membership_1" as app_convex_Id<"organizations_workspaces_users">;
 const NODE_ID = "node_markdown" as app_convex_Id<"files_nodes">;
-const BASE_ASSET_ID = "asset_committed" as app_convex_Id<"files_r2_assets">;
 
 const presenceStore = { localSessionId: "session_1" } as unknown as files_PresenceStore;
 
 /**
  * Answer the committed-content query the way the server does for a file with collaboration off.
  */
-function resolveQueryWithNonCollaborativeContent(text: string, assetId = BASE_ASSET_ID) {
-	convexQueryMock.mockResolvedValue({ _yay: { text, yjsRootKind: "rich_text", assetId } });
+function resolveQueryWithNonCollaborativeContent(text: string) {
+	convexQueryMock.mockResolvedValue({ _yay: { text, yjsRootKind: "rich_text" } });
 }
 
 function renderNonCollabDiffEditor(args?: { editable?: boolean }) {
@@ -234,11 +233,11 @@ describe("FileEditorDiffNonCollab", () => {
 		expect(monacoHarness.createdModels).toHaveLength(0);
 	});
 
-	test("Save sends the whole modified pane and the next Save names the asset it wrote", async () => {
+	test("each Save sends the whole modified pane and updates the committed pane", async () => {
 		vi.useFakeTimers();
 		try {
 			resolveQueryWithNonCollaborativeContent("alpha\n");
-			convexActionMock.mockResolvedValue({ _yay: { assetId: "asset_saved" } });
+			convexActionMock.mockResolvedValue({ _yay: null });
 
 			renderNonCollabDiffEditor();
 			await flushEditorMount();
@@ -254,9 +253,9 @@ describe("FileEditorDiffNonCollab", () => {
 				membershipId: MEMBERSHIP_ID,
 				nodeId: NODE_ID,
 				text: "alpha beta\n",
-				baseAssetId: BASE_ASSET_ID,
 			});
 			// The saved text is the new committed version, so the diff is empty again.
+			expect(convexActionMock.mock.calls.at(-1)?.[1]).not.toHaveProperty("baseAssetId");
 			expect(getPanes().original.getValue()).toBe("alpha beta\n");
 			expect(saveButton.hasAttribute("disabled")).toBe(true);
 
@@ -267,8 +266,9 @@ describe("FileEditorDiffNonCollab", () => {
 				membershipId: MEMBERSHIP_ID,
 				nodeId: NODE_ID,
 				text: "alpha beta gamma\n",
-				baseAssetId: "asset_saved",
 			});
+			expect(getPanes().original.getValue()).toBe("alpha beta gamma\n");
+			expect(toast.error).not.toHaveBeenCalled();
 		} finally {
 			vi.useRealTimers();
 		}
@@ -278,7 +278,7 @@ describe("FileEditorDiffNonCollab", () => {
 		vi.useFakeTimers();
 		try {
 			resolveQueryWithNonCollaborativeContent("alpha\n");
-			convexActionMock.mockResolvedValue({ _nay: { message: "This file changed while you were saving." } });
+			convexActionMock.mockResolvedValue({ _nay: { message: "This file is read-only." } });
 
 			renderNonCollabDiffEditor();
 			await flushEditorMount();
@@ -287,7 +287,7 @@ describe("FileEditorDiffNonCollab", () => {
 			fireEvent.click(screen.getByRole("button", { name: "Save" }));
 			await act(async () => {});
 
-			expect(toast.error).toHaveBeenCalledWith("This file changed while you were saving.");
+			expect(toast.error).toHaveBeenCalledWith("This file is read-only.");
 			// Nothing was written, so the committed pane must not move and the text must survive.
 			expect(getPanes().original.getValue()).toBe("alpha\n");
 			expect(getPanes().modified.getValue()).toBe("alpha beta\n");
@@ -351,7 +351,7 @@ describe("FileEditorDiffNonCollab", () => {
 		vi.useFakeTimers();
 		try {
 			resolveQueryWithNonCollaborativeContent("alpha\n");
-			convexActionMock.mockResolvedValue({ _yay: { assetId: "asset_saved" } });
+			convexActionMock.mockResolvedValue({ _yay: null });
 
 			const { unmount } = renderNonCollabDiffEditor();
 			await flushEditorMount();

@@ -609,9 +609,7 @@ describe("files_yjs_reconcile_branch_with_local_text", () => {
 	});
 
 	test("merges a new comment mark onto a newer saved version", () => {
-		// The non-collaborative comment save uses this helper when somebody else saved between the
-		// member's load and their comment: the comment mark is the only local edit, and it must
-		// land on the other person's version without losing their sentence.
+		// A local comment mark must survive when the Yjs branch receives newer text.
 		const baseMarkdown = "# Notes\n\nThe launch date is final.\n";
 		const previousRemoteYjsDoc = createYjsDocFromMarkdown(baseMarkdown);
 		const nextRemoteYjsDoc = files_yjs_doc_clone({ yjsDoc: previousRemoteYjsDoc });

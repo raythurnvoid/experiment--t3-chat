@@ -599,13 +599,13 @@ describe("FilesPropertiesModalCollaboration", () => {
 		expect(document.querySelector(".FilesPropertiesModalCollaboration")).toBeNull();
 	});
 
-	test("explains whole-file conflict handling when collaboration is already off", () => {
+	test("explains last write wins when collaboration is already off", () => {
 		mockQueries({ node: { ...TEXT_NODE, nonCollaborative: true }, entries: [], canWrite: true });
 
 		renderModal();
 
 		expect(collaborationCheckbox().checked).toBe(false);
-		expect(screen.getByText("If it changed elsewhere, reload it before saving.", { exact: false })).toBeTruthy();
+		expect(screen.getByText("The last save wins. Earlier saves stay in File Snapshots.", { exact: false })).toBeTruthy();
 	});
 
 	// Turning it off cannot be undone, so one click must not write. The warning has to name every

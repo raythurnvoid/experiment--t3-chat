@@ -135,7 +135,6 @@ import { files_yjs_doc_create_from_text } from "../../../../../shared/files-tipt
 
 const MEMBERSHIP_ID = "membership_1" as app_convex_Id<"organizations_workspaces_users">;
 const NODE_ID = "node_json" as app_convex_Id<"files_nodes">;
-const BASE_ASSET_ID = "asset_committed" as app_convex_Id<"files_r2_assets">;
 const LAST_SEQUENCE_ID = "last_sequence_a" as app_convex_Id<"files_yjs_docs_last_sequences">;
 
 const presenceStore = { localSessionId: "session_1" } as unknown as files_PresenceStore;
@@ -163,7 +162,7 @@ function resolveFetchWithPlainTextDoc(text: string, yjsLastSequenceId = LAST_SEQ
  */
 function resolveQueryWithNonCollaborativeContent(text: string) {
 	convexQueryMock.mockResolvedValue({
-		_yay: { text, yjsRootKind: "plain_text", assetId: BASE_ASSET_ID },
+		_yay: { text, yjsRootKind: "plain_text" },
 	});
 }
 
@@ -438,11 +437,11 @@ describe("FileEditorPlainText", () => {
 		}
 	});
 
-	test("a non-collaborative Save replaces the whole text and names the asset it was built on", async () => {
+	test("each non-collaborative Save replaces the whole text", async () => {
 		vi.useFakeTimers();
 		try {
 			resolveQueryWithNonCollaborativeContent("{}\n");
-			convexActionMock.mockResolvedValue({ _yay: { assetId: "asset_saved" } });
+			convexActionMock.mockResolvedValue({ _yay: null });
 
 			renderPlainTextEditor({ nonCollaborative: true });
 			await act(async () => {});
@@ -454,6 +453,7 @@ describe("FileEditorPlainText", () => {
 				nodeId: NODE_ID,
 			});
 			expect(fetchFileYjsStateAndTextMock).not.toHaveBeenCalled();
+			expect(screen.queryByRole("button", { name: "Sync" })).toBeNull();
 
 			const saveButton = screen.getByRole("button", { name: "Save" });
 			const model = monacoHarness.createdModels[0]?.model;
@@ -468,18 +468,17 @@ describe("FileEditorPlainText", () => {
 			fireEvent.click(saveButton);
 			await act(async () => {});
 
-			// The whole buffer goes, with the asset this text was built on. No Yjs update is pushed.
+			// The whole buffer goes. No Yjs update is pushed.
 			expect(convexActionMock).toHaveBeenCalledWith("replace_file_content", {
 				membershipId: MEMBERSHIP_ID,
 				nodeId: NODE_ID,
 				text: '{"answer": 42}\n',
-				baseAssetId: BASE_ASSET_ID,
 			});
 			expect(pushMutationMock).not.toHaveBeenCalled();
+			expect(convexActionMock.mock.calls.at(-1)?.[1]).not.toHaveProperty("baseAssetId");
 			expect(toast.error).not.toHaveBeenCalled();
 			expect(saveButton.hasAttribute("disabled")).toBe(true);
 
-			// The next Save must name the asset this one wrote, or the server would call it stale.
 			act(() => {
 				model?.setValue('{"answer": 43}\n');
 				for (const listener of monacoHarness.changeListeners) listener();
@@ -493,7 +492,6 @@ describe("FileEditorPlainText", () => {
 				membershipId: MEMBERSHIP_ID,
 				nodeId: NODE_ID,
 				text: '{"answer": 43}\n',
-				baseAssetId: "asset_saved",
 			});
 		} finally {
 			vi.useRealTimers();
@@ -537,7 +535,7 @@ describe("FileEditorPlainText", () => {
 			});
 
 			await act(async () => {
-				finishSave({ _yay: { assetId: "asset_saved" } });
+				finishSave({ _yay: null });
 			});
 
 			// The save persisted `42`, so `43` is still only local and Save must stay usable.
@@ -545,19 +543,17 @@ describe("FileEditorPlainText", () => {
 				membershipId: MEMBERSHIP_ID,
 				nodeId: NODE_ID,
 				text: '{"answer": 42}\n',
-				baseAssetId: BASE_ASSET_ID,
 			});
 			expect(model?.getValue()).toBe('{"answer": 43}\n');
 			expect(saveButton.hasAttribute("disabled")).toBe(false);
 
-			// And that second Save names the asset the first one wrote.
+			// The second Save captures the later typing.
 			fireEvent.click(saveButton);
 			await act(async () => {});
 			expect(convexActionMock).toHaveBeenLastCalledWith("replace_file_content", {
 				membershipId: MEMBERSHIP_ID,
 				nodeId: NODE_ID,
 				text: '{"answer": 43}\n',
-				baseAssetId: "asset_saved",
 			});
 		} finally {
 			vi.useRealTimers();
@@ -570,8 +566,7 @@ describe("FileEditorPlainText", () => {
 			resolveQueryWithNonCollaborativeContent("{}\n");
 			convexActionMock.mockResolvedValue({
 				_nay: {
-					message:
-						"This file changed while you were saving. Copy your local changes before reloading, then try again.",
+					message: "This file is read-only.",
 				},
 			});
 
@@ -592,9 +587,7 @@ describe("FileEditorPlainText", () => {
 			await act(async () => {});
 
 			// The refusal must be visible, and Save must stay armed: the text is still only local.
-			expect(toast.error).toHaveBeenCalledWith(
-				"This file changed while you were saving. Copy your local changes before reloading, then try again.",
-			);
+			expect(toast.error).toHaveBeenCalledWith("This file is read-only.");
 			expect(saveButton.hasAttribute("disabled")).toBe(false);
 			expect(model?.getValue()).toBe('{"answer": 42}\n');
 		} finally {
@@ -652,7 +645,7 @@ describe("FileEditorPlainText", () => {
 		vi.useFakeTimers();
 		try {
 			resolveQueryWithNonCollaborativeContent("{}\n");
-			convexActionMock.mockResolvedValue({ _yay: { assetId: "asset_saved" } });
+			convexActionMock.mockResolvedValue({ _yay: null });
 
 			const { unmount } = renderPlainTextEditor({ nonCollaborative: true });
 			await act(async () => {});

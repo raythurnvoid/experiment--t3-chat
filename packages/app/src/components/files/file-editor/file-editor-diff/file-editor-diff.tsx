@@ -212,7 +212,6 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 				nodeId={nodeId}
 				sessionId={sessionId}
 				editable={editable}
-				nonCollaborativeBaseAssetId={null}
 				getCurrentText={getCurrentText}
 				onApplySnapshotText={onApplySnapshotText}
 			/>
@@ -2269,10 +2268,6 @@ type FileEditorDiffNonCollabToolbarActions_Props = {
 	isSaveDebouncing: boolean;
 	isDiscardAllDisabled: boolean;
 	nodeId: app_convex_Id<"files_nodes">;
-	/**
-	 * The asset the open text was read from; a version restore goes through the replace door.
-	 */
-	nonCollaborativeBaseAssetId: app_convex_Id<"files_r2_assets">;
 	sessionId: string;
 	toolbarPortalHost: HTMLElement;
 	getCurrentText: () => string;
@@ -2291,7 +2286,6 @@ const FileEditorDiffNonCollabToolbarActions = memo(function FileEditorDiffNonCol
 		isSaveDebouncing,
 		isDiscardAllDisabled,
 		nodeId,
-		nonCollaborativeBaseAssetId,
 		sessionId,
 		toolbarPortalHost,
 		getCurrentText,
@@ -2366,7 +2360,6 @@ const FileEditorDiffNonCollabToolbarActions = memo(function FileEditorDiffNonCol
 				nodeId={nodeId}
 				sessionId={sessionId}
 				editable={editable}
-				nonCollaborativeBaseAssetId={nonCollaborativeBaseAssetId}
 				getCurrentText={getCurrentText}
 				onApplySnapshotText={onApplySnapshotText}
 			/>
@@ -2383,13 +2376,11 @@ type FileEditorDiffNonCollab_ClassNames =
 	| "FileEditorDiffNonCollab-refusal";
 
 /**
- * What the loader read before the editor mounted: the committed text, the document shape, and the
- * asset the text was read from. Save replaces the whole text against that asset.
+ * What the loader read before the editor mounted: the committed text and the document shape.
  */
 type FileEditorDiffNonCollab_LoadedContent = {
 	text: string;
 	rootKind: files_YjsRootKind;
-	baseAssetId: app_convex_Id<"files_r2_assets">;
 };
 
 type FileEditorDiffNonCollabInner_Props = {
@@ -2432,10 +2423,6 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 		original: monaco_editor.ITextModel;
 		modified: monaco_editor.ITextModel;
 	} | null>(null);
-
-	// The original pane holds the committed text and a successful save rewrites it, so the next
-	// save has to be based on the asset that save produced.
-	const [nonCollaborativeBaseAssetId, setNonCollaborativeBaseAssetId] = useState(initialData.baseAssetId);
 
 	const [commentThreadIds, setCommentThreadIds] = useState<string[]>([]);
 	const commentThreadIdsKeyRef = useRef<string>("");
@@ -2592,8 +2579,7 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 	const handleApplySnapshotText = useFn(() => {
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
-			// The restore replaced the whole text, so re-read it together with the asset it now
-			// lives in. That asset is the base of the user's next save.
+			// Re-read the committed text after the restore.
 			const restored = await app_convex.query(app_convex_api.files_nodes_content.get_non_collaborative_file_content, {
 				membershipId,
 				nodeId,
@@ -2611,7 +2597,6 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 			pushChangeToOriginalEditor(restored._yay.text);
 			pushChangeToModifiedEditor(restored._yay.text);
 			updateThreadIds(restored._yay.text);
-			setNonCollaborativeBaseAssetId(restored._yay.assetId);
 			setByteSize(files_get_utf8_byte_size(restored._yay.text));
 
 			if (dirtyCheckTimeoutRef.current) {
@@ -2654,14 +2639,11 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 				return;
 			}
 
-			// No document to diff, no branch to merge. Send the whole text and name the asset it
-			// was built on, so a save that landed meanwhile is refused instead of silently
-			// overwritten.
+			// No document to diff, so Save replaces the whole text.
 			const replaced = await app_convex.action(app_convex_api.files_nodes_content.replace_file_content, {
 				membershipId,
 				nodeId,
 				text: localMarkdown,
-				baseAssetId: nonCollaborativeBaseAssetId,
 			});
 			if (replaced._nay) {
 				console.error("[FileEditorDiffNonCollab.handleClickSave] Error while replacing the file content", {
@@ -2671,9 +2653,7 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 				return;
 			}
 
-			// The save wrote a new version, and the next save has to be based on it. The saved text
-			// becomes the committed pane.
-			setNonCollaborativeBaseAssetId(replaced._yay.assetId);
+			// The saved text becomes the committed pane.
 			pushChangeToOriginalEditor(localMarkdown);
 			updateThreadIds(localMarkdown);
 
@@ -2817,7 +2797,6 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 					isSaveDebouncing={isSaveDebouncing}
 					isDiscardAllDisabled={isDiscardAllDisabled}
 					nodeId={nodeId}
-					nonCollaborativeBaseAssetId={nonCollaborativeBaseAssetId}
 					sessionId={presenceStore.localSessionId}
 					toolbarPortalHost={toolbarPortalHost}
 					getCurrentText={getCurrentText}
@@ -2873,7 +2852,7 @@ export type FileEditorDiffNonCollab_Props = {
 /**
  * The diff view for a file with collaboration turned off. There is no pending update and no shared
  * document here: the original pane shows the committed text, the modified pane is where the member
- * edits, and Save replaces the whole text against the asset the committed pane was read from.
+ * edits, and Save replaces the whole text.
  */
 export const FileEditorDiffNonCollab = memo(function FileEditorDiffNonCollab(props: FileEditorDiffNonCollab_Props) {
 	const {
@@ -2891,8 +2870,7 @@ export const FileEditorDiffNonCollab = memo(function FileEditorDiffNonCollab(pro
 	const { membershipId } = AppTenantProvider.useContext();
 
 	const fileContentDataPromise = useMemo(() => {
-		// Collaboration off: the server sends the committed text and the asset the next save has
-		// to name.
+		// Collaboration off: the server sends the committed text.
 		return app_convex
 			.query(app_convex_api.files_nodes_content.get_non_collaborative_file_content, { membershipId, nodeId })
 			.then((result): FileEditorDiffNonCollab_LoadedContent | null => {
@@ -2904,7 +2882,6 @@ export const FileEditorDiffNonCollab = memo(function FileEditorDiffNonCollab(pro
 				return {
 					text: result._yay.text,
 					rootKind: result._yay.yjsRootKind,
-					baseAssetId: result._yay.assetId,
 				};
 			});
 	}, [membershipId, nodeId]);
@@ -2914,7 +2891,7 @@ export const FileEditorDiffNonCollab = memo(function FileEditorDiffNonCollab(pro
 	// empty committed pane is legal in shape, so every later Save would replace the real content
 	// with whatever the member typed over emptiness. The refusal state is the only place this
 	// corruption can be stopped. A legitimate `_yay: ""` is NOT a refusal — an empty file mounts
-	// with its real committed text and base asset.
+	// with its real committed text.
 	return fileContentData === undefined ? (
 		<FileEditorDiffSkeleton />
 	) : fileContentData === null ? (
@@ -2926,7 +2903,7 @@ export const FileEditorDiffNonCollab = memo(function FileEditorDiffNonCollab(pro
 		</div>
 	) : (
 		<FileEditorDiffNonCollabInner
-			key={`non_collaborative:${fileContentData.baseAssetId}`}
+			key={`non_collaborative:${nodeId}`}
 			nodeId={nodeId}
 			editable={editable}
 			monacoLanguageId={monacoLanguageId}

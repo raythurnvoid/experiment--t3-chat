@@ -1664,12 +1664,10 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 			pendingUpdateId: v.union(v.id("files_pending_updates"), v.null()),
 			materializationState: v.union(file_content_materialization_state_validator, v.null()),
 			/**
-			 * The node's current content asset, set only when collaboration is off for this file.
-			 * That file is saved by replacing the whole text, and its save uses this asset as the
-			 * base it must still be sitting on. Null for every other file, including a read-only
-			 * mount, so a caller cannot mistake one for a file it may replace.
+			 * True for a tenant file with collaboration off. Its agent writes save immediately.
+			 * False for other files, including read-only mounts and pending content.
 			 */
-			nonCollaborativeBaseAssetId: v.union(v.id("files_r2_assets"), v.null()),
+			nonCollaborative: v.boolean(),
 		}),
 		v.null(),
 	),
@@ -1718,7 +1716,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 				displayNodeId: fileNode._id,
 				pendingUpdateId: null,
 				materializationState: null,
-				nonCollaborativeBaseAssetId: null,
+				nonCollaborative: false,
 			};
 		}
 
@@ -1767,7 +1765,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 					displayNodeId: fileNode._id,
 					pendingUpdateId: pendingUpdate._id,
 					materializationState: null,
-					nonCollaborativeBaseAssetId: null,
+					nonCollaborative: false,
 				};
 			}
 		}
@@ -1843,7 +1841,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 				displayNodeId: fileNode._id,
 				pendingUpdateId: pendingUpdate._id,
 				materializationState: null,
-				nonCollaborativeBaseAssetId: null,
+				nonCollaborative: false,
 			};
 		}
 
@@ -1855,7 +1853,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 					)
 			: null;
 
-		const nonCollaborativeBaseAssetId = fileNode.nonCollaborative === true ? fileNode.assetId : null;
+		const nonCollaborative = fileNode.nonCollaborative === true;
 
 		const materializationState = pendingUpdateContent
 			? null
@@ -1894,7 +1892,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 					displayNodeId: fileNode._id,
 					pendingUpdateId: pendingUpdate?._id ?? null,
 					materializationState: null,
-					nonCollaborativeBaseAssetId,
+					nonCollaborative,
 				};
 			}
 		}
@@ -1905,7 +1903,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 			displayNodeId: fileNode._id,
 			pendingUpdateId: pendingUpdate?._id ?? null,
 			materializationState,
-			nonCollaborativeBaseAssetId,
+			nonCollaborative,
 		};
 	},
 });
@@ -1924,7 +1922,7 @@ type get_file_last_available_text_content_by_path_Result = {
 	nodeId: Id<"files_nodes">;
 	displayNodeId: Id<"files_nodes">;
 	pendingUpdateId: Id<"files_pending_updates"> | null;
-	nonCollaborativeBaseAssetId: Id<"files_r2_assets"> | null;
+	nonCollaborative: boolean;
 } | null;
 
 export const get_file_last_available_text_content_by_path = internalAction({
@@ -1948,7 +1946,7 @@ export const get_file_last_available_text_content_by_path = internalAction({
 			/**
 			 * See the same field on `get_file_text_content_db_state_by_path`.
 			 */
-			nonCollaborativeBaseAssetId: v.union(v.id("files_r2_assets"), v.null()),
+			nonCollaborative: v.boolean(),
 		}),
 		v.null(),
 	),
@@ -2022,7 +2020,7 @@ export const get_file_last_available_text_content_by_path = internalAction({
 			nodeId: contentState.nodeId,
 			displayNodeId: contentState.displayNodeId,
 			pendingUpdateId: contentState.pendingUpdateId,
-			nonCollaborativeBaseAssetId: contentState.nonCollaborativeBaseAssetId,
+			nonCollaborative: contentState.nonCollaborative,
 		};
 	},
 });
@@ -3570,7 +3568,6 @@ export const get_replace_file_content_preflight = internalQuery({
 		v.object({
 			rootKind: v.union(v.literal("rich_text"), v.literal("plain_text")),
 			contentType: v.optional(v.string()),
-			assetId: v.id("files_r2_assets"),
 			readOnlyScopeNodeId: v.union(v.id("files_nodes"), v.null()),
 		}),
 		v.null(),
@@ -3605,7 +3602,6 @@ export const get_replace_file_content_preflight = internalQuery({
 		return {
 			rootKind: fileNode.yjsRootKind,
 			contentType: fileNode.contentType,
-			assetId: fileNode.assetId,
 			readOnlyScopeNodeId: fileNode.readOnlyScopeNodeId ?? null,
 		};
 	},
@@ -3630,20 +3626,6 @@ type files_content_public_action_Result =
 	  };
 
 /**
- * The replace door answers with the file's new content asset instead of `null`.
- *
- * An editor that stays open saves again from the same buffer, and the next save must name the
- * asset this one wrote. Waiting for the reactive node doc to arrive would refuse a quick second
- * save as stale.
- */
-type files_replace_file_content_Result =
-	| { _yay: { assetId: Id<"files_r2_assets"> }; _nay?: undefined }
-	| {
-			_nay: { name?: string; message: string };
-			_yay?: undefined;
-	  };
-
-/**
  * Save the whole text of a non-collaborative file.
  *
  * This is an action and not a mutation because the save writes a version-history entry, and a
@@ -3651,7 +3633,7 @@ type files_replace_file_content_Result =
  * uploads and the mutation below publishes, the same split the materializer uses.
  *
  * A non-collaborative file has no Yjs document to merge with, so each save replaces the whole
- * text. The exact base-asset check refuses a save that would overwrite a newer one it never saw.
+ * text. The last save to commit wins, and each saved text stays in version history.
  *
  * The two doors below both run this body. They differ only in how they learn the tenant and the
  * user: the person's door resolves the membership it was handed, the agent's door is already
@@ -3665,9 +3647,8 @@ async function action_replace_file_content(
 		userId: Id<"users">;
 		nodeId: Id<"files_nodes">;
 		text: string;
-		baseAssetId: Id<"files_r2_assets">;
 	},
-): Promise<files_replace_file_content_Result> {
+): Promise<files_content_public_action_Result> {
 	const preflight = (await ctx.runQuery(internal.files_nodes_content.get_replace_file_content_preflight, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
@@ -3682,11 +3663,6 @@ async function action_replace_file_content(
 	});
 	if (writable._nay) {
 		return writable;
-	}
-	if (preflight.assetId !== args.baseAssetId) {
-		return Result({
-			_nay: { message: files_REPLACE_FILE_CONTENT_STALE_MESSAGE },
-		});
 	}
 	const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
 		userId: args.userId,
@@ -3757,7 +3733,6 @@ async function action_replace_file_content(
 		nodeId: args.nodeId,
 		text,
 		textSize: textByteSize,
-		baseAssetId: args.baseAssetId,
 		versionSnapshotAssetId,
 	})) as finalize_file_content_replacement_Result;
 	if (finalized._nay) {
@@ -3774,18 +3749,13 @@ async function action_replace_file_content(
 		return finalized;
 	}
 
-	// The version snapshot the node now points at is the base of this caller's next save.
-	return Result({ _yay: { assetId: versionSnapshotAssetId } });
+	return Result({ _yay: null });
 }
 
 /**
- * Read the whole committed text of a file with collaboration turned off, plus the asset that text
- * came from.
+ * Read the whole committed text of a file with collaboration turned off.
  *
- * A collaborative file is loaded from its Yjs document instead, so this door refuses one. The
- * editor saves with `replace_file_content`, and that door refuses a base asset that is no longer
- * the file's current one. Reading the text and the asset in the same query is what keeps the pair
- * consistent: two separate reads could straddle somebody else's save.
+ * A collaborative file is loaded from its Yjs document instead, so this door refuses one.
  */
 export const get_non_collaborative_file_content = query({
 	args: {
@@ -3795,7 +3765,6 @@ export const get_non_collaborative_file_content = query({
 	returns: v_result({
 		_yay: v.object({
 			text: v.string(),
-			assetId: v.id("files_r2_assets"),
 			yjsRootKind: v.union(v.literal("rich_text"), v.literal("plain_text")),
 		}),
 	}),
@@ -3860,7 +3829,7 @@ export const get_non_collaborative_file_content = query({
 			return Result({ _nay: { message: "Not found" } });
 		}
 
-		return Result({ _yay: { text, assetId: fileNode.assetId, yjsRootKind: fileNode.yjsRootKind } });
+		return Result({ _yay: { text, yjsRootKind: fileNode.yjsRootKind } });
 	},
 });
 
@@ -3869,14 +3838,10 @@ export const replace_file_content = action({
 		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 		text: v.string(),
-		/**
-		 * The `node.assetId` the caller's editor loaded. A newer save makes this one stale.
-		 */
-		baseAssetId: v.id("files_r2_assets"),
 	},
-	returns: v_result({ _yay: v.object({ assetId: v.id("files_r2_assets") }) }),
+	returns: v_result({ _yay: v.null() }),
 	// The annotation breaks same-file generated-API circularity.
-	handler: async (ctx, args): Promise<files_replace_file_content_Result> => {
+	handler: async (ctx, args): Promise<files_content_public_action_Result> => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
@@ -3902,7 +3867,6 @@ export const replace_file_content = action({
 			userId: userAuth.id,
 			nodeId: args.nodeId,
 			text: args.text,
-			baseAssetId: args.baseAssetId,
 		});
 	},
 });
@@ -3921,14 +3885,10 @@ export const replace_file_content_internal_action = internalAction({
 		userId: v.id("users"),
 		nodeId: v.id("files_nodes"),
 		text: v.string(),
-		/**
-		 * The `node.assetId` the agent's read returned. A newer save makes this one stale.
-		 */
-		baseAssetId: v.id("files_r2_assets"),
 	},
-	returns: v_result({ _yay: v.object({ assetId: v.id("files_r2_assets") }) }),
+	returns: v_result({ _yay: v.null() }),
 	// The annotation breaks same-file generated-API circularity.
-	handler: async (ctx, args): Promise<files_replace_file_content_Result> => {
+	handler: async (ctx, args): Promise<files_content_public_action_Result> => {
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: args.userId });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
@@ -3946,7 +3906,6 @@ export const finalize_file_content_replacement = internalMutation({
 		nodeId: v.id("files_nodes"),
 		text: v.string(),
 		textSize: v.number(),
-		baseAssetId: v.id("files_r2_assets"),
 		versionSnapshotAssetId: v.id("files_r2_assets"),
 	},
 	returns: v_result({ _yay: v.null() }),
@@ -3991,14 +3950,6 @@ export const finalize_file_content_replacement = internalMutation({
 		const writable = files_node_require_writable(fileNode);
 		if (writable._nay) {
 			return writable;
-		}
-
-		// Another save landed while this one was uploading. Refuse instead of overwriting text the
-		// caller never saw, and let them reload and try again.
-		if (fileNode.assetId !== args.baseAssetId) {
-			return Result({
-				_nay: { message: files_REPLACE_FILE_CONTENT_STALE_MESSAGE },
-			});
 		}
 
 		const organization = await ctx.db.get("organizations", membership.organizationId);
@@ -5095,8 +5046,8 @@ export const finalize_snapshot_restore_replacement = internalMutation({
 		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 		snapshotId: v.id("files_snapshots"),
-		/** The content asset the action read as the file's current one. The restore refuses when it moved on. */
-		expectedAssetId: v.id("files_r2_assets"),
+		/** Omitted when the source has collaboration off. Other sources keep their asset check. */
+		expectedAssetId: v.optional(v.id("files_r2_assets")),
 		/** A fresh copy of the current text, made for a collaborative file. See `db_install_file_content_replacement`. */
 		backup: v.optional(v.object({ assetId: v.id("files_r2_assets"), size: v.number() })),
 		contentAssetId: v.id("files_r2_assets"),
@@ -5139,6 +5090,7 @@ export const finalize_snapshot_restore_replacement = internalMutation({
 			fileNode.organizationId !== membership.organizationId ||
 			fileNode.workspaceId !== membership.workspaceId ||
 			fileNode.kind !== "file" ||
+			fileNode.assetId === undefined ||
 			!snapshot ||
 			snapshot.fileNodeId !== fileNode._id
 		) {
@@ -5149,8 +5101,13 @@ export const finalize_snapshot_restore_replacement = internalMutation({
 		if (writable._nay) {
 			return writable;
 		}
-		// Another save landed after the action read the file. The action cleans its uploads up.
-		if (fileNode.assetId !== args.expectedAssetId) {
+		// Saves may land while the source stays non-collaborative. A mode change invalidates that path.
+		// Other sources keep the asset check; the action cleans its uploads up on refusal.
+		if (
+			args.expectedAssetId === undefined
+				? fileNode.nonCollaborative !== true
+				: fileNode.assetId !== args.expectedAssetId
+		) {
 			return Result({ _nay: { message: "This file changed while the snapshot was being restored. Try again." } });
 		}
 
@@ -5189,7 +5146,7 @@ export const finalize_snapshot_restore_replacement = internalMutation({
 			user,
 			billedUser,
 			fileNode,
-			previousAssetId: args.expectedAssetId,
+			previousAssetId: fileNode.assetId,
 			backup: args.backup,
 			contentAssetId: args.contentAssetId,
 			contentSize: args.contentSize,
@@ -5291,7 +5248,7 @@ async function action_restore_snapshot_as_replacement(
 		snapshotId: Id<"files_snapshots">;
 		membership: Doc<"organizations_workspaces_users">;
 		fileNode: Doc<"files_nodes">;
-		expectedAssetId: Id<"files_r2_assets">;
+		expectedAssetId?: Id<"files_r2_assets">;
 		versionAsset: Doc<"files_r2_assets">;
 		version: { contentType: string; rootKind?: "rich_text" | "plain_text"; nonCollaborative: boolean };
 		materializationState: NonNullable<get_file_content_materialization_state_Result> | null;
@@ -5475,11 +5432,6 @@ export const restore_snapshot_r2 = action({
 		nodeId: v.id("files_nodes"),
 		snapshotId: v.id("files_snapshots"),
 		sessionId: v.string(),
-		/**
-		 * The content asset the editor shows for a file without a Yjs document. The restore refuses
-		 * when a save landed after that, so it never replaces text the user has not seen.
-		 */
-		baseAssetId: v.optional(v.id("files_r2_assets")),
 	},
 	returns: v_result({ _yay: v.null() }),
 	// The annotation breaks same-file generated-API circularity.
@@ -5560,7 +5512,7 @@ export const restore_snapshot_r2 = action({
 				snapshotId: args.snapshotId,
 				membership,
 				fileNode,
-				expectedAssetId: args.baseAssetId ?? fileNode.assetId,
+				expectedAssetId: fileNode.nonCollaborative === true ? undefined : fileNode.assetId,
 				versionAsset: snapshotContent.asset,
 				version,
 				materializationState,

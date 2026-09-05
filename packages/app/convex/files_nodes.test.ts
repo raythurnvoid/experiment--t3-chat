@@ -6396,6 +6396,7 @@ test("external (reserved) scope reads committed chunks and R2 without Yjs, pendi
 	expect(full.content).toBe(markdown);
 	expect(full.moreLines).toBe(false);
 	expect(full.pendingUpdateId).toBeNull();
+	expect(full.nonCollaborative).toBe(false);
 
 	// Line read slices the same range as slicing the full committed text.
 	const lineRead = await t.query(internal.files_nodes.read_file_content_from_chunks, {
@@ -6501,6 +6502,7 @@ test("external (reserved) scope reads committed chunks and R2 without Yjs, pendi
 	if (!available) throw new Error("expected external available content");
 	expect(available.content).toBe(markdown);
 	expect(available.pendingUpdateId).toBeNull();
+	expect(available.nonCollaborative).toBe(false);
 });
 
 describe("non-collaborative files", () => {
@@ -6649,6 +6651,7 @@ describe("non-collaborative files", () => {
 		if (!full) throw new Error("expected a full read");
 		expect(full.content).toBe(markdown);
 		expect(full.pendingUpdateId).toBeNull();
+		expect(full.nonCollaborative).toBe(true);
 
 		// The same door refuses text over the caller's cap. Before the byte-size fallback learned
 		// about content-snapshot assets this read `0` and returned the whole file instead.
@@ -6670,6 +6673,7 @@ describe("non-collaborative files", () => {
 		expect(lineRead).not.toBeNull();
 		if (!lineRead) throw new Error("expected a line read");
 		expect(lineRead.content).toBe(files_line_range_from_text(markdown, 1, 3).content);
+		expect(lineRead.nonCollaborative).toBe(true);
 
 		// read_committed_file_chunk_stats: the door behind `wc`.
 		const stats = await t.query(internal.files_nodes.read_committed_file_chunk_stats, {
@@ -6705,8 +6709,15 @@ describe("non-collaborative files", () => {
 		expect(state).not.toBeNull();
 		if (!state) throw new Error("expected a content state");
 		expect(state.content).toBe(markdown);
+		expect(state.nonCollaborative).toBe(true);
 		// No Yjs document, so nothing to materialize and nothing for the caller to rebuild.
 		expect(state.materializationState).toBeNull();
+		const available = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+			...readScope,
+			userId: db.userId,
+			path,
+		});
+		expect(available).toMatchObject({ content: markdown, nonCollaborative: true });
 
 		// Workspace search already read committed chunks with no Yjs term. Objective 20.
 		const search = await t.query(internal.files_nodes.text_search_files, {
@@ -6731,15 +6742,13 @@ describe("non-collaborative files", () => {
 		});
 
 		const markdown = "# Read\n\nbody\n";
-		const { nodeId, assetId } = await seed_non_collaborative_file(t, db, "/read.md", markdown);
+		const { nodeId } = await seed_non_collaborative_file(t, db, "/read.md", markdown);
 
 		const read = await asUser.query(api.files_nodes_content.get_non_collaborative_file_content, {
 			membershipId: db.membershipId,
 			nodeId,
 		});
-		// The asset comes back with the text so the editor's next save names the version this text
-		// was read from.
-		expect(read._yay).toEqual({ text: markdown, assetId, yjsRootKind: "rich_text" });
+		expect(read._yay).toEqual({ text: markdown, yjsRootKind: "rich_text" });
 
 		// A collaborative file is loaded from its Yjs document, so this door must not answer for it.
 		const collaborative = await asUser.action(api.files_nodes_content.create_text_node, {
@@ -6778,7 +6787,6 @@ describe("non-collaborative files", () => {
 			membershipId: db.membershipId,
 			nodeId,
 			text: rawNextText,
-			baseAssetId: assetId,
 		});
 		expect(saved._nay).toBeUndefined();
 
@@ -6807,9 +6815,7 @@ describe("non-collaborative files", () => {
 		// Objective 3: the replace landed and the file is still non-collaborative.
 		expect(after.nonCollaborative).toBe(true);
 		expect(after.assetId).not.toBe(assetId);
-		// The door hands back the asset it wrote, so an editor that stays open can save again
-		// without waiting for the node doc to reach it.
-		expect(saved._yay?.assetId).toBe(after.assetId);
+		expect(saved._yay).toBeNull();
 		expect(after.newAssetKind).toBe("content_snapshot");
 		expect(after.newAssetSize).toBe(files_get_utf8_byte_size(nextText));
 		expect(after.yjsSnapshots).toBe(0);
@@ -6833,7 +6839,93 @@ describe("non-collaborative files", () => {
 		expect(readBack?.content).toBe(nextText);
 	});
 
-	test("the replace door refuses a locked file, a stale base, and over-cap content", async () => {
+	test.each([false, true])("last write wins for two saves (overlapping uploads: %s)", async (overlap) => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Last Write Wins User",
+		});
+		const r2Writes = test_setup_r2_capture();
+		const { nodeId } = await seed_non_collaborative_file(t, db, "/two-saves.txt", "original\n");
+		const [firstRead, secondRead] = await Promise.all([
+			asUser.query(api.files_nodes_content.get_non_collaborative_file_content, {
+				membershipId: db.membershipId,
+				nodeId,
+			}),
+			asUser.query(api.files_nodes_content.get_non_collaborative_file_content, {
+				membershipId: db.membershipId,
+				nodeId,
+			}),
+		]);
+		if (firstRead._nay || secondRead._nay) throw new Error("Expected both file reads to succeed");
+		const firstText = `${firstRead._yay.text}first tab\n`;
+		const secondText = `${secondRead._yay.text}second tab\n`;
+
+		let releaseFirstPut: (() => void) | undefined;
+		const firstPutBlocked = new Promise<void>((resolve) => {
+			releaseFirstPut = resolve;
+		});
+		let announceFirstPut: (() => void) | undefined;
+		const firstPutStarted = new Promise<void>((resolve) => {
+			announceFirstPut = resolve;
+		});
+		const capturedFetch = fetch;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+				if (overlap && init?.method === "PUT" && init.body === firstText) {
+					announceFirstPut?.();
+					await firstPutBlocked;
+				}
+				return await capturedFetch(url, init);
+			}),
+		);
+
+		const firstSaving = asUser.action(api.files_nodes_content.replace_file_content, {
+			membershipId: db.membershipId,
+			nodeId,
+			text: firstText,
+		});
+		if (overlap) {
+			await firstPutStarted;
+		} else {
+			expect((await firstSaving)._nay).toBeUndefined();
+		}
+		const secondSaved = await asUser.action(api.files_nodes_content.replace_file_content, {
+			membershipId: db.membershipId,
+			nodeId,
+			text: secondText,
+		});
+		releaseFirstPut?.();
+		const firstSaved = await firstSaving;
+		expect(firstSaved._nay).toBeUndefined();
+		expect(secondSaved._nay).toBeUndefined();
+
+		// Upload start order does not decide the winner. The last commit replaces the whole text.
+		const winnerText = overlap ? firstText : secondText;
+		const readBack = await asUser.query(api.files_nodes_content.get_non_collaborative_file_content, {
+			membershipId: db.membershipId,
+			nodeId,
+		});
+		expect(readBack._yay?.text).toBe(winnerText);
+		const history = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", nodeId);
+			const versions = (await ctx.db.query("files_snapshots").collect()).filter((snapshot) => snapshot.fileNodeId === nodeId);
+			const assets = await Promise.all(versions.map((snapshot) => ctx.db.get("files_r2_assets", snapshot.assetId)));
+			return { assetId: node?.assetId, versions, assets };
+		});
+		expect(history.versions).toHaveLength(2);
+		expect(history.assets.map((asset) => (asset?.r2Key ? r2Writes.get(asset.r2Key) : undefined))).toEqual(
+			expect.arrayContaining([firstText, secondText]),
+		);
+		const currentAsset = history.assets.find((asset) => asset?._id === history.assetId);
+		expect(currentAsset?.r2Key ? r2Writes.get(currentAsset.r2Key) : undefined).toBe(winnerText);
+	});
+
+	test("the replace door refuses a locked file and over-cap content", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
@@ -6863,7 +6955,6 @@ describe("non-collaborative files", () => {
 			membershipId: db.membershipId,
 			nodeId,
 			text: "x".repeat(files_MAX_TEXT_CONTENT_BYTES + 1),
-			baseAssetId: assetId,
 		});
 		expect(tooBig._nay?.message).toContain("exceeds");
 
@@ -6876,30 +6967,10 @@ describe("non-collaborative files", () => {
 			membershipId: db.membershipId,
 			nodeId,
 			text: `---\n${tooManyFields}\n---\n\nbody\n`,
-			baseAssetId: assetId,
 		});
 		// Same words as the pending-update preflight: both doors take a whole text from a person who
 		// can shorten it after reading the message.
 		expect(fatFrontmatter._nay?.message).toBe("Too many frontmatter fields");
-
-		// A save built on an older version refuses instead of overwriting text it never saw.
-		const staleBase = await asUser.action(api.files_nodes_content.replace_file_content, {
-			membershipId: db.membershipId,
-			nodeId,
-			text: "# Guarded\n\nfrom a stale editor\n",
-			baseAssetId: (await t.run(async (ctx) =>
-				ctx.db.insert("files_r2_assets", {
-					organizationId: db.organizationId,
-					workspaceId: db.workspaceId,
-					kind: "content_snapshot",
-					r2Bucket: "test-bucket",
-					size: 1,
-					createdBy: db.userId,
-					updatedAt: Date.now(),
-				}),
-			)) as Id<"files_r2_assets">,
-		});
-		expect(staleBase._nay?.message).toContain("changed while you were saving");
 
 		// Objective 5: the read-only lock blocks this write door like every other one.
 		const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
@@ -6911,7 +6982,6 @@ describe("non-collaborative files", () => {
 			membershipId: db.membershipId,
 			nodeId,
 			text: "# Guarded\n\nwritten through the lock\n",
-			baseAssetId: assetId,
 		});
 		expect(whileLocked._nay?.name).toBe("read_only");
 		expect(whileLocked._nay?.message).toBe("This item is read-only.");
@@ -6925,7 +6995,7 @@ describe("non-collaborative files", () => {
 			versions: (await ctx.db.query("files_snapshots").collect()).filter((snapshot) => snapshot.fileNodeId === nodeId)
 				.length,
 		}));
-		expect(afterRefusals).toEqual({ assetId, assets: 2, versions: 0 });
+		expect(afterRefusals).toEqual({ assetId, assets: 1, versions: 0 });
 	});
 
 	test("the replacement finalizer rechecks a lock added after preflight", async () => {
@@ -6975,7 +7045,6 @@ describe("non-collaborative files", () => {
 			nodeId,
 			text: nextText,
 			textSize: files_get_utf8_byte_size(nextText),
-			baseAssetId: assetId,
 			versionSnapshotAssetId,
 		});
 		expect(refused._nay?.name).toBe("read_only");
@@ -7007,7 +7076,7 @@ describe("non-collaborative files", () => {
 		const r2Writes = test_setup_r2_capture();
 
 		const original = "# Restricted\n\noriginal body\n";
-		const { nodeId, assetId } = await seed_non_collaborative_file(t, db, "/restricted.md", original);
+		const { nodeId } = await seed_non_collaborative_file(t, db, "/restricted.md", original);
 
 		// A plain workspace member with no grant on this file. The owner passes every permission
 		// check, so a refusal can only be proven with a second identity.
@@ -7044,7 +7113,6 @@ describe("non-collaborative files", () => {
 			membershipId: member.membershipId,
 			nodeId,
 			text: "# Restricted\n\nwritten without permission\n",
-			baseAssetId: assetId,
 		});
 		// An action cannot read the database, so it only learns that its preflight query said no,
 		// not which check said it. It answers one message for all of them, the same way
@@ -7097,7 +7165,6 @@ describe("non-collaborative files", () => {
 			membershipId: member.membershipId,
 			nodeId,
 			text: "# Restricted\n\nwritten with permission\n",
-			baseAssetId: assetId,
 		});
 		expect(unfunded._nay?.message).toBe("Insufficient funds");
 		expect(r2Writes.size).toBe(0);
@@ -7107,7 +7174,6 @@ describe("non-collaborative files", () => {
 			membershipId: member.membershipId,
 			nodeId,
 			text: "# Restricted\n\nwritten with permission\n",
-			baseAssetId: assetId,
 		});
 		expect(allowed._nay).toBeUndefined();
 	});
@@ -8135,7 +8201,72 @@ describe("non-collaborative files", () => {
 		expect(movedNode?.contentType).toBe("application/json");
 	});
 
-	test("restore_snapshot_r2 restores a version against the asset the editor read, and refuses a stale one", async () => {
+	test.each([false, true])("snapshot replacement keeps mode-change guards (source collaboration off: %s)", async (sourceOff) => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Restore Mode Guard User",
+		});
+		test_setup_r2_capture();
+		const text = "# Restore guard\n";
+		const nodeId = await test_materialize_markdown_file(t, asUser, db, "/restore-mode.md", text);
+		const before = await t.run(async (ctx) => ({
+			node: await ctx.db.get("files_nodes", nodeId),
+			snapshot: await ctx.db.query("files_snapshots").filter((q) => q.eq(q.field("fileNodeId"), nodeId)).first(),
+		}));
+		if (!before.node?.assetId || !before.snapshot) throw new Error("Expected a file and version");
+		const off = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+			membershipId: db.membershipId,
+			nodeId,
+			acknowledgeDropCollaborativeHistory: true,
+		});
+		expect(off._nay).toBeUndefined();
+		await drain_scheduled_continuations(t);
+
+		if (sourceOff) {
+			// A restore that started with collaboration off must not replace a new live document.
+			const enabled = await asUser.action(api.files_nodes_content.set_file_collaborative, {
+				membershipId: db.membershipId,
+				nodeId,
+			});
+			expect(enabled._nay).toBeUndefined();
+		} else {
+			// A restore that started collaborative keeps its asset check even after the mode changes.
+			const saved = await asUser.action(api.files_nodes_content.replace_file_content, {
+				membershipId: db.membershipId,
+				nodeId,
+				text: "# Saved after disabling collaboration\n",
+			});
+			expect(saved._nay).toBeUndefined();
+		}
+		const currentAssetId = await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))?.assetId);
+		const contentAssetId = await t.mutation(internal.r2.insert_asset, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			kind: "content_snapshot",
+			size: files_get_utf8_byte_size(text),
+			createdBy: db.userId,
+		});
+		const refused = await asUser.mutation(internal.files_nodes_content.finalize_snapshot_restore_replacement, {
+			membershipId: db.membershipId,
+			nodeId,
+			snapshotId: before.snapshot._id,
+			expectedAssetId: sourceOff ? undefined : before.node.assetId,
+			contentAssetId,
+			contentSize: files_get_utf8_byte_size(text),
+			contentType: "text/markdown;charset=utf-8",
+			yjsRootKind: "rich_text",
+			nonCollaborative: true,
+			text,
+		});
+		expect(refused._nay?.message).toBe("This file changed while the snapshot was being restored. Try again.");
+		expect(await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))?.assetId)).toBe(currentAssetId);
+	});
+
+	test("last write wins when a snapshot restore finishes after another save", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
@@ -8204,31 +8335,42 @@ describe("non-collaborative files", () => {
 			});
 			return { assetId: versionAssetId, snapshotId };
 		});
-		const assetCountBefore = await t.run(async (ctx) => (await ctx.db.query("files_r2_assets").collect()).length);
-
-		// The editor read an older asset: somebody saved since, so the restore must not replace
-		// text the user has not seen. The refusal leaves no uploaded asset behind.
-		const stale = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
-			membershipId: db.membershipId,
-			nodeId,
-			snapshotId: version.snapshotId,
-			sessionId: "restore-non-collaborative-stale",
-			baseAssetId: version.assetId,
+		let releaseRestorePut: (() => void) | undefined;
+		const restorePutBlocked = new Promise<void>((resolve) => {
+			releaseRestorePut = resolve;
 		});
-		expect(stale._nay?.message).toBe("This file changed while the snapshot was being restored. Try again.");
-		const afterStale = await t.run(async (ctx) => ({
-			assetId: (await ctx.db.get("files_nodes", nodeId))?.assetId,
-			assetCount: (await ctx.db.query("files_r2_assets").collect()).length,
-		}));
-		expect(afterStale).toEqual({ assetId, assetCount: assetCountBefore });
-
-		const restored = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
+		let announceRestorePut: (() => void) | undefined;
+		const restorePutStarted = new Promise<void>((resolve) => {
+			announceRestorePut = resolve;
+		});
+		const capturedFetch = fetch;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+				if (init?.method === "PUT" && init.body === versionText) {
+					announceRestorePut?.();
+					await restorePutBlocked;
+				}
+				return await capturedFetch(url, init);
+			}),
+		);
+		const restoring = asUser.action(api.files_nodes_content.restore_snapshot_r2, {
 			membershipId: db.membershipId,
 			nodeId,
 			snapshotId: version.snapshotId,
 			sessionId: "restore-non-collaborative",
-			baseAssetId: assetId,
 		});
+		await restorePutStarted;
+		const interveningText = "- [x] another tab saved\n";
+		const saved = await asUser.action(api.files_nodes_content.replace_file_content, {
+			membershipId: db.membershipId,
+			nodeId,
+			text: interveningText,
+		});
+		const interveningAssetId = await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))?.assetId);
+		releaseRestorePut?.();
+		const restored = await restoring;
+		expect(saved._nay).toBeUndefined();
 		expect(restored._nay).toBeUndefined();
 
 		// Collaboration stays off: a new content asset, and still no Yjs docs.
@@ -8264,9 +8406,13 @@ describe("non-collaborative files", () => {
 			path: "/todo.txt",
 		});
 		expect(readResult?.content).toBe(versionText);
-		// The replaced text had no version row, so it got one, and the restored content got its own.
-		expect(after.versionAssetIds).toContain(assetId);
+		// The save that landed during restore remains in history with its exact text.
+		expect(after.versionAssetIds).toContain(interveningAssetId);
 		expect(after.versionAssetIds).toContain(after.assetId);
+		const interveningAsset = interveningAssetId
+			? await t.run(async (ctx) => ctx.db.get("files_r2_assets", interveningAssetId))
+			: null;
+		expect(interveningAsset?.r2Key ? r2Objects.get(interveningAsset.r2Key) : undefined).toBe(interveningText);
 	});
 });
 

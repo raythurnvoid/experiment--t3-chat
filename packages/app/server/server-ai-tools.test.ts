@@ -826,7 +826,7 @@ test("edit_file tool saves a non-collaborative file instead of proposing an upda
 		displayNodeId: nodeId,
 		content: "Hello world",
 		pendingUpdateId: null,
-		nonCollaborativeBaseAssetId: "asset789",
+		nonCollaborative: true,
 	};
 
 	let runActionCallCount = 0;
@@ -875,7 +875,6 @@ test("edit_file tool saves a non-collaborative file instead of proposing an upda
 		userId: server_ai_tools_test_user_id,
 		nodeId,
 		text: "Hello team",
-		baseAssetId: "asset789",
 	});
 
 	expect(result.metadata.pendingUpdateId).toBe(null);

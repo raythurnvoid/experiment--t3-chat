@@ -804,18 +804,12 @@ export type FileEditorSnapshotsModal_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	sessionId: string;
 	editable: boolean;
-	/**
-	 * The asset the open editor read its text from, or `null` when the file is collaborative.
-	 * A file with collaboration turned off has no Yjs document, so a restore replaces the whole
-	 * file against this asset and refuses when somebody saved after this editor read it.
-	 */
-	nonCollaborativeBaseAssetId: app_convex_Id<"files_r2_assets"> | null;
 	getCurrentText: () => string;
 	onApplySnapshotText?: (text: string) => void;
 };
 
 export const FileEditorSnapshotsModal = memo(function FileEditorSnapshotsModal(props: FileEditorSnapshotsModal_Props) {
-	const { nodeId, sessionId, editable, nonCollaborativeBaseAssetId, getCurrentText, onApplySnapshotText } = props;
+	const { nodeId, sessionId, editable, getCurrentText, onApplySnapshotText } = props;
 
 	const convex = useConvex();
 
@@ -901,7 +895,6 @@ export const FileEditorSnapshotsModal = memo(function FileEditorSnapshotsModal(p
 				snapshotId: selectedSnapshotId,
 				nodeId: nodeId,
 				sessionId: sessionId,
-				baseAssetId: nonCollaborativeBaseAssetId ?? undefined,
 			});
 			if (restoreResult._nay) {
 				console.error("Failed to restore snapshot:", restoreResult._nay);

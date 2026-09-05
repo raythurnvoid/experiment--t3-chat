@@ -18,7 +18,7 @@ const { tenantContextMock, convexQueryMock, convexActionMock, stableQueryMock, e
 		editor: null as null | import("@tiptap/core").Editor,
 		commentCommit: null as null | {
 			disabledReason: string | null;
-			commit: (threadId: string) => Promise<boolean>;
+			commit: () => Promise<boolean>;
 		},
 	},
 }));
@@ -83,7 +83,7 @@ vi.mock("../file-editor-comments-sidebar.tsx", () => ({
 // None of that is under test here; the stub only exposes the `commentCommit` the editor built.
 vi.mock("./file-editor-rich-text-tools-comment.tsx", () => ({
 	FileEditorRichTextToolsComment: function FileEditorRichTextToolsComment(props: {
-		commentCommit: null | { disabledReason: string | null; commit: (threadId: string) => Promise<boolean> };
+		commentCommit: null | { disabledReason: string | null; commit: () => Promise<boolean> };
 	}) {
 		editorHarness.commentCommit = props.commentCommit;
 		return null;
@@ -100,19 +100,18 @@ vi.mock("./file-editor-rich-text-drag-handle.tsx", () => ({
 }));
 
 import { FileEditorRichTextNonCollab } from "./file-editor-rich-text.tsx";
-import { files_REPLACE_FILE_CONTENT_STALE_MESSAGE, type files_PresenceStore } from "@/lib/files.ts";
+import type { files_PresenceStore } from "@/lib/files.ts";
 
 const MEMBERSHIP_ID = "membership_1" as app_convex_Id<"organizations_workspaces_users">;
 const NODE_ID = "node_markdown" as app_convex_Id<"files_nodes">;
-const BASE_ASSET_ID = "asset_committed" as app_convex_Id<"files_r2_assets">;
 
 const presenceStore = { localSessionId: "session_1" } as unknown as files_PresenceStore;
 
 /**
  * Answer the committed-content query the way the server does for a file with collaboration off.
  */
-function resolveQueryWithNonCollaborativeContent(text: string, assetId = BASE_ASSET_ID) {
-	convexQueryMock.mockResolvedValue({ _yay: { text, assetId } });
+function resolveQueryWithNonCollaborativeContent(text: string) {
+	convexQueryMock.mockResolvedValue({ _yay: { text, yjsRootKind: "rich_text" } });
 }
 
 function renderNonCollabRichEditor(args?: { editable?: boolean }) {
@@ -256,10 +255,7 @@ describe("FileEditorRichTextNonCollab", () => {
 		expect(last_requested_thread_ids()).toEqual(["thread_a"]);
 
 		// The restore already landed on the server, so the editor re-reads the committed text.
-		resolveQueryWithNonCollaborativeContent(
-			comment_markdown("thread_b", "beta"),
-			"asset_restored" as app_convex_Id<"files_r2_assets">,
-		);
+		resolveQueryWithNonCollaborativeContent(comment_markdown("thread_b", "beta"));
 		fireEvent.click(screen.getByRole("button", { name: "Apply snapshot" }));
 		await flushEditorMount();
 
@@ -270,11 +266,11 @@ describe("FileEditorRichTextNonCollab", () => {
 		expect(last_requested_thread_ids()).toEqual(["thread_b"]);
 	});
 
-	test("Save replaces the whole text and the next Save names the asset it wrote", async () => {
+	test("each Save replaces the whole text", async () => {
 		vi.useFakeTimers();
 		try {
 			resolveQueryWithNonCollaborativeContent("alpha\n");
-			convexActionMock.mockResolvedValue({ _yay: { assetId: "asset_saved" } });
+			convexActionMock.mockResolvedValue({ _yay: null });
 
 			renderNonCollabRichEditor();
 			await flushEditorMount();
@@ -292,12 +288,11 @@ describe("FileEditorRichTextNonCollab", () => {
 				membershipId: MEMBERSHIP_ID,
 				nodeId: NODE_ID,
 				text: "alpha beta\n",
-				baseAssetId: BASE_ASSET_ID,
 			});
+			expect(convexActionMock.mock.calls.at(-1)?.[1]).not.toHaveProperty("baseAssetId");
 			expect(toast.error).not.toHaveBeenCalled();
 			expect(saveButton.hasAttribute("disabled")).toBe(true);
 
-			// The next Save must name the asset this one wrote, or the server would call it stale.
 			await typeIntoEditor(" gamma");
 			fireEvent.click(saveButton);
 			await act(async () => {});
@@ -305,8 +300,9 @@ describe("FileEditorRichTextNonCollab", () => {
 				membershipId: MEMBERSHIP_ID,
 				nodeId: NODE_ID,
 				text: "alpha beta gamma\n",
-				baseAssetId: "asset_saved",
 			});
+			expect(toast.error).not.toHaveBeenCalled();
+			expect(saveButton.hasAttribute("disabled")).toBe(true);
 		} finally {
 			vi.useRealTimers();
 		}
@@ -316,7 +312,7 @@ describe("FileEditorRichTextNonCollab", () => {
 		vi.useFakeTimers();
 		try {
 			resolveQueryWithNonCollaborativeContent("alpha\n");
-			convexActionMock.mockResolvedValue({ _nay: { message: files_REPLACE_FILE_CONTENT_STALE_MESSAGE } });
+			convexActionMock.mockResolvedValue({ _nay: { message: "This file is read-only." } });
 
 			renderNonCollabRichEditor();
 			await flushEditorMount();
@@ -327,7 +323,7 @@ describe("FileEditorRichTextNonCollab", () => {
 			await act(async () => {});
 
 			// The refusal must be visible, and Save must stay armed: the text is still only local.
-			expect(toast.error).toHaveBeenCalledWith(files_REPLACE_FILE_CONTENT_STALE_MESSAGE);
+			expect(toast.error).toHaveBeenCalledWith("This file is read-only.");
 			expect(saveButton.hasAttribute("disabled")).toBe(false);
 			expect(screen.getByText("2 Words")).toBeTruthy();
 		} finally {
@@ -405,7 +401,7 @@ describe("FileEditorRichTextNonCollab", () => {
 		vi.useFakeTimers();
 		try {
 			resolveQueryWithNonCollaborativeContent("alpha\n");
-			convexActionMock.mockResolvedValue({ _yay: { assetId: "asset_commented" } });
+			convexActionMock.mockResolvedValue({ _yay: null });
 
 			renderNonCollabRichEditor();
 			await flushEditorMount();
@@ -414,7 +410,7 @@ describe("FileEditorRichTextNonCollab", () => {
 
 			let committed: boolean | undefined = undefined;
 			await act(async () => {
-				committed = await editorHarness.commentCommit?.commit("thread_new");
+				committed = await editorHarness.commentCommit?.commit();
 			});
 
 			expect(committed).toBe(true);
@@ -422,15 +418,15 @@ describe("FileEditorRichTextNonCollab", () => {
 				membershipId: MEMBERSHIP_ID,
 				nodeId: NODE_ID,
 				text: comment_markdown("thread_new", "alpha"),
-				baseAssetId: BASE_ASSET_ID,
 			});
+			expect(convexActionMock.mock.calls.at(-1)?.[1]).not.toHaveProperty("baseAssetId");
 			expect(toast.error).not.toHaveBeenCalled();
 		} finally {
 			vi.useRealTimers();
 		}
 	});
 
-	test("a comment refused as stale is merged into the version somebody else saved", async () => {
+	test("a comment saves the open text without re-reading another member's save", async () => {
 		vi.useFakeTimers();
 		try {
 			resolveQueryWithNonCollaborativeContent("alpha\n");
@@ -439,33 +435,30 @@ describe("FileEditorRichTextNonCollab", () => {
 
 			addCommentMarkOnFirstWord("thread_new");
 
-			// The other person added a paragraph on top of the same base text we loaded.
-			convexActionMock
-				.mockResolvedValueOnce({ _nay: { message: files_REPLACE_FILE_CONTENT_STALE_MESSAGE } })
-				.mockResolvedValueOnce({ _yay: { assetId: "asset_merged" } });
-			resolveQueryWithNonCollaborativeContent(
-				"alpha\n\nbeta\n",
-				"asset_fresh" as app_convex_Id<"files_r2_assets">,
-			);
+			// A later read would return the other member's text, but this comment saves the open text.
+			convexActionMock.mockResolvedValue({ _yay: null });
+			resolveQueryWithNonCollaborativeContent("alpha\n\nbeta\n");
 
 			let committed: boolean | undefined = undefined;
 			await act(async () => {
-				committed = await editorHarness.commentCommit?.commit("thread_new");
+				committed = await editorHarness.commentCommit?.commit();
 			});
 
 			expect(committed).toBe(true);
-			// The retry must carry both edits: our mark and their new paragraph.
-			const retryArgs = convexActionMock.mock.calls.at(-1)?.[1] as { text: string; baseAssetId: string };
-			expect(retryArgs.text).toContain('data-lb-thread-id="thread_new"');
-			expect(retryArgs.text).toContain("beta");
-			expect(retryArgs.baseAssetId).toBe("asset_fresh");
-			expect(toast.info).toHaveBeenCalledWith("Someone else saved this file. Your comment was merged into their version.");
+			expect(convexActionMock).toHaveBeenCalledExactlyOnceWith("replace_file_content", {
+				membershipId: MEMBERSHIP_ID,
+				nodeId: NODE_ID,
+				text: comment_markdown("thread_new", "alpha"),
+			});
+			expect(convexQueryMock).toHaveBeenCalledTimes(1);
+			expect(toast.info).not.toHaveBeenCalled();
+			expect(toast.error).not.toHaveBeenCalled();
 		} finally {
 			vi.useRealTimers();
 		}
 	});
 
-	test("a comment refused as stale is not merged when the member typed while it was waiting", async () => {
+	test("typing while a comment saves stays unsaved after the comment succeeds", async () => {
 		vi.useFakeTimers();
 		try {
 			resolveQueryWithNonCollaborativeContent("alpha\n");
@@ -474,25 +467,55 @@ describe("FileEditorRichTextNonCollab", () => {
 
 			addCommentMarkOnFirstWord("thread_new");
 
-			const staleAction = createDeferredAction<{ _nay: { message: string } }>();
-			convexActionMock.mockReturnValueOnce(staleAction.promise);
+			const saveAction = createDeferredAction<{ _yay: null }>();
+			convexActionMock.mockReturnValueOnce(saveAction.promise);
 
 			let committed: boolean | undefined = undefined;
-			const commitCall = editorHarness.commentCommit?.commit("thread_new").then((result) => {
+			const commitCall = editorHarness.commentCommit?.commit().then((result) => {
 				committed = result;
 			});
 
-			// Typing lands while the save is still waiting, so merging would publish it.
+			// Typing lands after the comment save captured the text.
 			await typeIntoEditor(" gamma");
-			staleAction.resolve({ _nay: { message: files_REPLACE_FILE_CONTENT_STALE_MESSAGE } });
+			saveAction.resolve({ _yay: null });
 			await act(async () => {
 				await commitCall;
 			});
 
+			expect(committed).toBe(true);
+			expect(convexActionMock).toHaveBeenCalledExactlyOnceWith("replace_file_content", {
+				membershipId: MEMBERSHIP_ID,
+				nodeId: NODE_ID,
+				text: comment_markdown("thread_new", "alpha"),
+			});
+			expect(screen.getByRole("button", { name: "Save" }).hasAttribute("disabled")).toBe(false);
+			expect(screen.getByText("2 Words")).toBeTruthy();
+			expect(toast.error).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("a refused comment save reports failure without re-reading or retrying", async () => {
+		vi.useFakeTimers();
+		try {
+			resolveQueryWithNonCollaborativeContent("alpha\n");
+			convexActionMock.mockResolvedValue({ _nay: { message: "This file is read-only." } });
+			renderNonCollabRichEditor();
+			await flushEditorMount();
+			addCommentMarkOnFirstWord("thread_new");
+
+			let committed: boolean | undefined = undefined;
+			await act(async () => {
+				committed = await editorHarness.commentCommit?.commit();
+			});
+
+			// The comment tool uses false to remove the new mark and keep the composer open.
 			expect(committed).toBe(false);
-			expect(toast.error).toHaveBeenCalledWith("Save your changes before adding a comment.");
-			// No re-read and no retry: nothing may be published behind the member's back.
+			expect(toast.error).toHaveBeenCalledWith("This file is read-only.");
 			expect(convexActionMock).toHaveBeenCalledTimes(1);
+			expect(convexQueryMock).toHaveBeenCalledTimes(1);
+			expect(screen.getByText("1 Words")).toBeTruthy();
 		} finally {
 			vi.useRealTimers();
 		}
@@ -502,7 +525,7 @@ describe("FileEditorRichTextNonCollab", () => {
 		vi.useFakeTimers();
 		try {
 			resolveQueryWithNonCollaborativeContent("alpha\n");
-			convexActionMock.mockResolvedValue({ _yay: { assetId: "asset_saved" } });
+			convexActionMock.mockResolvedValue({ _yay: null });
 
 			const { unmount } = renderNonCollabRichEditor();
 			await flushEditorMount();

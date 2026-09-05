@@ -25,6 +25,8 @@ The signed-in Clerk session lives in the user's own browser profile, so the seco
 vp env exec pnpx playwriter session new --browser headless
 ```
 
+That command worked on 2026-09-05 (Chrome headless, `state.page = await context.newPage()` then `goto`). Each headless session is its own profile, so two of them can hold two signed-in QA accounts at once.
+
 If headless startup is unavailable on the machine, launch the installed Chrome for Testing yourself and attach over direct CDP:
 
 ```powershell
@@ -98,7 +100,7 @@ await cx.mutation(api.organizations.invite_user_to_organization_workspace, {
 ```
 
 - `description` is short-capped; a sentence trips `Description is too long`. Org names are kebab-case and max 20 characters.
-- Extra organizations are quota-capped (two beyond the default `personal` org). `Organization quota reached` means do **not** keep retrying: invite into the seeded `qa-browser` / `home` workspace as `qa.perm.owner` instead (`clerk-test-accounts.md`). That org is already non-default, so invites work.
+- Extra organizations are quota-capped (two beyond the default `personal` org). `Organization quota reached` means do **not** keep retrying: invite into the seeded `qa-browser` / `home` workspace as `qa.perm.owner` instead (`clerk-test-accounts.md`). That org is already non-default, so invites work. When the check only needs an owner and a member, skip the invite: sign `qa.perm.owner` into one headless session and `qa.perm.viewer` (already a `member` of `qa-browser`) into a second one, build the fixture from the owner tab, and read from the member tab (done 2026-09-05 for the restricted-folder search check; delete the minted anonymous user first with `users.delete_current_user_account` if you no longer need it).
 - The invitee lands with the `member` system role: `content.read` and `content.write`, and **no** `content.permissions.manage`. That is exactly the shape most permission refusals need.
 - Each side reads its own membership with `organizations.get_membership_by_organization_workspace_name({ organizationName, workspaceName })`.
 - Confirm the granted level per permission with `access_control.get_current_user_workspace_permission({ membershipId, permission })` — it takes the membership id, not org/workspace ids.

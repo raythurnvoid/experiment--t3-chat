@@ -7690,17 +7690,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					function_name_of(ref) === "files_pending_updates:accept_file_pending_replacement_internal_action"
 				) {
 					raced = true;
-					const current = await runner.t.run((ctx) => ctx.db.get("files_nodes", staleId));
-					if (!current?.assetId) {
-						throw new Error("expected the stale target to have a content asset");
-					}
 					const otherSave = await runner.t.action(internal.files_nodes_content.replace_file_content_internal_action, {
 						organizationId: runner.seeded.organizationId,
 						workspaceId: runner.seeded.workspaceId,
 						userId: runner.seeded.userId,
 						nodeId: staleId,
 						text: "someone else: 1\n",
-						baseAssetId: current.assetId,
 					});
 					if (otherSave._nay) {
 						throw new Error(otherSave._nay.message);

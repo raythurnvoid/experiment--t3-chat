@@ -524,7 +524,7 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 
 	const description = isCollaborative
 		? "Everybody can type in this file at the same time. The edits are merged, and comments stay attached to the text they were written on."
-		: "Saving replaces the whole file. If it changed elsewhere, reload it before saving.";
+		: "Saving replaces the whole file. The last save wins. Earlier saves stay in File Snapshots.";
 
 	return (
 		<section

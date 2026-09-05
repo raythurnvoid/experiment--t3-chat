@@ -741,7 +741,7 @@ export function ai_chat_tool_create_edit_file(
 
 			// A file with collaboration turned off is saved by this call instead of proposed, so the
 			// output below tells the model which of the two happened.
-			const nonCollaborativeBaseAssetId = currentFileContent.nonCollaborativeBaseAssetId ?? undefined;
+			const nonCollaborative = currentFileContent.nonCollaborative;
 			const written = await files_agent_write_file_text(ctx, {
 				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
@@ -750,7 +750,7 @@ export function ai_chat_tool_create_edit_file(
 				pendingUpdateId: currentFileContent.pendingUpdateId ?? undefined,
 				unstagedText: modifiedText,
 				threadId: ctxData.getThreadId() ?? undefined,
-				nonCollaborativeBaseAssetId,
+				nonCollaborative,
 			});
 			// The node can be archived or deleted between the read above and this write;
 			// reporting success would let the model believe the change landed.
@@ -761,9 +761,8 @@ export function ai_chat_tool_create_edit_file(
 						{ cause: written._nay },
 					);
 				}
-				// The direct save refuses with reasons the model can act on: a newer save, the size
-				// caps, the credit gate. Keep them instead of the proposal path's generic sentence.
-				if (nonCollaborativeBaseAssetId) {
+				// Keep the direct save's size-cap and credit refusals so the model can act on them.
+				if (nonCollaborative) {
 					throw new Error(`Cannot edit ${normalizedPath}: ${written._nay.message}`, { cause: written._nay });
 				}
 				throw new Error(
@@ -772,7 +771,7 @@ export function ai_chat_tool_create_edit_file(
 				);
 			}
 			// A non-collaborative file has no pending update to point at; the text is already saved.
-			const nextPendingUpdate = nonCollaborativeBaseAssetId
+			const nextPendingUpdate = nonCollaborative
 				? null
 				: await ctx.runQuery(internal.files_pending_updates.get_file_pending_update_internal, {
 						organizationId: ctxData.organizationId,
@@ -795,7 +794,7 @@ export function ai_chat_tool_create_edit_file(
 					diff,
 					modifiedContent: modifiedText,
 				},
-				output: nonCollaborativeBaseAssetId
+				output: nonCollaborative
 					? `${replacedCount}. Collaboration is off for this file, so the change is already saved and there is nothing to review.`
 					: replacedCount,
 			};
