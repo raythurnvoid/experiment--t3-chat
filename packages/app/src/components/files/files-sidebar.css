@@ -49,8 +49,8 @@
 
 		border-bottom: 1px solid var(--color-fg-02);
 
-		height: 141px;
-		contain: strict;
+		flex-shrink: 0;
+		contain: content;
 	}
 
 	.FilesSidebarTopSection-actions {
@@ -210,13 +210,6 @@
 		gap: 8px;
 	}
 	/* #endregion header */
-
-	/* #region search */
-	.FilesSidebarSearch {
-		width: auto;
-		margin: 0 16px;
-	}
-	/* #endregion search */
 
 	/* #region tree */
 	.FilesSidebarTree {

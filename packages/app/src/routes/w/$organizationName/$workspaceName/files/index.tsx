@@ -35,9 +35,18 @@ const Route = createFileRoute("/w/$organizationName/$workspaceName/files/")({
 			/**
 			 * Seeds the files sidebar search box.
 			 *
-			 * The path splat route uses it for its not-found recovery link.
+			 * The path splat route uses it for its not-found recovery link. The length cap keeps a
+			 * shared link from filling the box with a very long query.
 			 **/
-			q: z.string().optional().catch(undefined),
+			q: z
+				.preprocess(
+					// The router reads search params as JSON, so a hand-typed link like `?q=2026` arrives
+					// as a number. The box wants the text.
+					(value) => (typeof value === "number" || typeof value === "boolean" ? String(value) : value),
+					z.string().max(2000),
+				)
+				.optional()
+				.catch(undefined),
 		}),
 	),
 });

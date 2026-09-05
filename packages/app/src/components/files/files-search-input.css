@@ -1,0 +1,151 @@
+@layer components {
+	/* #region search filter chip */
+	.FilesSearchInputFilterChip {
+		max-width: 100%;
+
+		.MyChipLabel {
+			max-width: 220px;
+		}
+	}
+
+	.FilesSearchInputFilterChip-key {
+		color: var(--color-fg-07);
+		font-weight: 400;
+	}
+
+	.FilesSearchInputFilterChip-invalid {
+		border-color: var(--color-red-09);
+
+		.MyChipLabel,
+		.FilesSearchInputFilterChip-key {
+			color: var(--color-red-09);
+		}
+	}
+	/* #endregion search filter chip */
+
+	/* #region search */
+	.FilesSearchInput {
+		display: flex;
+		flex-direction: column;
+		gap: 6px;
+
+		width: auto;
+		margin: 0 16px;
+	}
+
+	.FilesSearchInput-area {
+		padding-right: 4px;
+	}
+
+	.FilesSearchInput-filters {
+		max-height: 96px;
+		padding: 2px;
+		overflow: hidden auto;
+
+		& > li {
+			max-width: 100%;
+		}
+	}
+
+	.FilesSearchInput-filter-button {
+		width: 28px;
+		height: 28px;
+		flex-shrink: 0;
+	}
+
+	.FilesSearchInput-summary {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 8px;
+
+		min-height: 24px;
+		padding-left: 2px;
+
+		font-size: 0.75rem;
+		color: var(--color-fg-07);
+	}
+
+	.FilesSearchInput-clear {
+		min-height: 24px;
+		height: 24px;
+		padding: 0 6px;
+		font-size: inherit;
+	}
+
+	.FilesSearchInput-error {
+		font-size: 0.75rem;
+		color: var(--color-red-09);
+	}
+
+	.FilesSearchInput-popover {
+		display: flex;
+		flex-direction: column;
+
+		width: min(340px, calc(100vw - 32px));
+		max-height: min(480px, var(--popover-available-height));
+	}
+
+	.FilesSearchInput-popover-scrollable-area {
+		display: flex;
+		flex-direction: column;
+		min-height: 0;
+
+		.MyComboboxList {
+			min-height: 0;
+		}
+	}
+
+	.FilesSearchInput-suggestion {
+		gap: 12px;
+		min-height: 32px;
+	}
+
+	.FilesSearchInput-suggestion-label {
+		min-width: 0;
+		overflow: hidden;
+
+		white-space: nowrap;
+		text-overflow: ellipsis;
+	}
+
+	.FilesSearchInput-suggestion-hint {
+		margin-inline-start: auto;
+		flex-shrink: 0;
+
+		font-size: 0.75rem;
+		color: var(--color-fg-07);
+	}
+
+	.FilesSearchInput-syntax {
+		flex-shrink: 0;
+		padding: 8px 16px;
+		border-top: 1px solid var(--color-base-alt-1-10);
+
+		font-size: 0.75rem;
+		line-height: 1.4;
+		color: var(--color-fg-07);
+
+		summary {
+			width: fit-content;
+			min-height: 24px;
+			padding-top: 4px;
+			cursor: pointer;
+			color: var(--color-fg-10);
+		}
+
+		dl {
+			display: grid;
+			grid-template-columns: auto minmax(0, 1fr);
+			gap: 4px 12px;
+			margin: 8px 0 4px;
+		}
+
+		dd {
+			margin: 0;
+			color: var(--color-fg-10);
+			overflow-wrap: anywhere;
+		}
+	}
+	/* #endregion search */
+}

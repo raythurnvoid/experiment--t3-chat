@@ -49,7 +49,14 @@ export function url_parse_file_link(value: string): { nodeId: string } | { path:
 		return null;
 	}
 
-	const linkPath = decodeURIComponent(url.pathname.slice(filesPathIndex + URL_FILE_LINK_PATH_MARKER.length));
+	// A hand-typed link can hold a raw `%` (`50% off.md`) or a broken escape, which
+	// `decodeURIComponent` refuses with a throw. Such a link is plain text to the caller.
+	let linkPath: string;
+	try {
+		linkPath = decodeURIComponent(url.pathname.slice(filesPathIndex + URL_FILE_LINK_PATH_MARKER.length));
+	} catch {
+		return null;
+	}
 	return { path: `/${path_extract_segments_from(linkPath).join("/")}` };
 }
 

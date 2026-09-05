@@ -1,8 +1,10 @@
+import "./my-floating-surface.css";
 import "./my-combobox.css";
 import "./my-input.css";
 import { memo, type ComponentPropsWithRef, type PointerEvent, type ReactNode } from "react";
 import * as Ariakit from "@ariakit/react";
 import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
+import type { MyFloatingSurface_ClassNames } from "@/components/my-floating-surface.tsx";
 import { cn } from "@/lib/utils.ts";
 import type { ExtractStrict } from "type-fest";
 import type {
@@ -237,7 +239,11 @@ export const MyComboboxPopover = memo(function MyComboboxPopover(props: MyCombob
 
 	return (
 		<Ariakit.ComboboxPopover
-			className={cn("MyComboboxPopover" satisfies MyComboboxPopover_ClassNames, className)}
+			className={cn(
+				"MyComboboxPopover" satisfies MyComboboxPopover_ClassNames,
+				"MyFloatingSurface" satisfies MyFloatingSurface_ClassNames,
+				className,
+			)}
 			gutter={gutter}
 			sameWidth={sameWidth}
 			portal={portal}

@@ -16,7 +16,9 @@ describe("url_parse_file_link", () => {
 	});
 
 	test("keeps other search params out of the way", () => {
-		expect(url_parse_file_link("https://app.test/w/acme/main/files?view=plain_text_editor&nodeId=k57abc&q=api")).toEqual({
+		expect(
+			url_parse_file_link("https://app.test/w/acme/main/files?view=plain_text_editor&nodeId=k57abc&q=api"),
+		).toEqual({
 			nodeId: "k57abc",
 		});
 	});
@@ -39,6 +41,9 @@ describe("url_parse_file_link", () => {
 
 	test("returns null for plain text, bare paths and non-files app links", () => {
 		expect(url_parse_file_link("/docs/api.md")).toBeNull();
+		// A raw `%` or a broken escape cannot be decoded, so the link is plain text, not a throw.
+		expect(url_parse_file_link("https://app.test/w/acme/main/files/50% off.md")).toBeNull();
+		expect(url_parse_file_link("https://app.test/w/acme/main/files/%ZZ")).toBeNull();
 		expect(url_parse_file_link("api.md")).toBeNull();
 		expect(url_parse_file_link("https://app.test/w/acme/main/chat")).toBeNull();
 		expect(url_parse_file_link("not a url at all")).toBeNull();

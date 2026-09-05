@@ -1,10 +1,11 @@
 @layer components {
 	.FilesSearchPalette {
 		/* A palette sits near the top of the screen, not vertically centered like a form modal. */
-		top: 96px;
+		top: min(96px, 8vh);
 		transform: translate(-50%, 0);
 
 		max-width: 640px;
+		max-height: calc(100dvh - min(96px, 8vh) - 16px);
 
 		display: flex;
 		flex-direction: column;
@@ -12,9 +13,19 @@
 
 	.FilesSearchPalette-input {
 		padding: 12px 12px 8px;
+		flex-shrink: 0;
+
+		.FilesSearchInput {
+			margin: 0;
+		}
+
+		.FilesSearchInput-filters {
+			max-height: min(96px, 20dvh);
+		}
 	}
 
 	.FilesSearchPalette-list {
+		min-height: 0;
 		overflow-y: auto;
 		max-height: min(480px, 60vh);
 		padding: 0 8px 8px;
@@ -30,7 +41,35 @@
 		color: var(--color-fg-07);
 	}
 
+	.FilesSearchPalette-footer {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		flex-wrap: wrap;
+		gap: 8px;
+		flex-shrink: 0;
+		padding: 8px 12px;
+		border-top: 1px solid var(--color-base-1-10);
+		font-size: 0.75rem;
+		color: var(--color-fg-08);
+
+		.MyButton {
+			min-height: 28px;
+			height: auto;
+			font-size: inherit;
+		}
+	}
+
+	@media (max-height: 480px) {
+		.FilesSearchPalette-footer:has(.MyButton) > span {
+			display: none;
+		}
+	}
+
 	.FilesSearchPalette-item {
+		width: 100%;
+		height: auto;
+		text-align: left;
 		display: grid;
 		grid-template-columns: auto minmax(0, 1fr) auto;
 		align-items: center;
@@ -42,7 +81,7 @@
 
 		cursor: pointer;
 
-		&[data-active-item] {
+		&:focus-visible {
 			background: var(--color-base-1-06);
 		}
 	}

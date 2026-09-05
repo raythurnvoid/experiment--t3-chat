@@ -4,7 +4,12 @@ import type { ActionCtx } from "../convex/_generated/server.js";
 import type { files_nodes_get_by_path_Result } from "../convex/files_nodes.ts";
 import type { files_metadata_get_by_path_Result, files_metadata_search_Result } from "../convex/files_metadata.ts";
 import { Result } from "common/errors-as-values-utils.ts";
-import { files_metadata_parse_maybe_date, type files_metadata_SearchPlan } from "../shared/files-metadata.ts";
+import {
+	files_metadata_FIELD_SEGMENT_REGEX,
+	files_metadata_METADATA_KEY_REGEX,
+	files_metadata_parse_maybe_date,
+	type files_metadata_SearchPlan,
+} from "../shared/files-metadata.ts";
 import {
 	bash_cursor_id_create,
 	bash_cursor_id_resolve,
@@ -22,11 +27,6 @@ import {
 	type bash_DbFilesRoots,
 } from "./bash-utils.ts";
 
-const FIELD_SEGMENT_REGEX = /^[A-Za-z0-9_-]+$/u;
-// A `metadata.` key is one flat key, never a path, and it may hold a colon, so `slack:message-id`
-// is a single key. This repeats `METADATA_KEY_REGEX` in `shared/files-metadata.ts`, which is the
-// write door. Change both together, or a key a user can write becomes a key nobody can search for.
-const METADATA_KEY_REGEX = /^[\p{L}\p{N}_:-]+$/u;
 const SUPPORTED_METADATA_KINDS = new Set(["frontmatter", "metadata"]);
 
 type MetaCommandSearchFormat = "paths" | "json";
@@ -60,7 +60,7 @@ function parse_qualified_field(value: unknown) {
 	// A metadata key is flat, so everything after the first dot is one key and a second dot is a
 	// mistake. Frontmatter keeps its dotted path, because YAML frontmatter can nest.
 	if (kind === "metadata") {
-		if (!METADATA_KEY_REGEX.test(value.slice(dotIndex + 1))) {
+		if (!files_metadata_METADATA_KEY_REGEX.test(value.slice(dotIndex + 1))) {
 			return Result({
 				_nay: {
 					message:
@@ -73,7 +73,7 @@ function parse_qualified_field(value: unknown) {
 	}
 
 	const segments = value.slice(dotIndex + 1).split(".");
-	if (segments.some((segment) => !FIELD_SEGMENT_REGEX.test(segment))) {
+	if (segments.some((segment) => !files_metadata_FIELD_SEGMENT_REGEX.test(segment))) {
 		return Result({
 			_nay: {
 				message: "meta search field segments may contain only letters, numbers, underscores, and hyphens.",

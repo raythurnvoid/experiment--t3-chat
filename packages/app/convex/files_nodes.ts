@@ -7838,6 +7838,7 @@ function db_text_search_filtered_query(
 		query: string;
 		pathPrefix?: string;
 		pendingNodeIds: Array<Id<"files_nodes">>;
+		nodeIds?: Array<Id<"files_nodes">>;
 	},
 ) {
 	const rawPrefix = args.pathPrefix?.trim();
@@ -7863,6 +7864,10 @@ function db_text_search_filtered_query(
 		searchQuery = searchQuery.filter((q) =>
 			q.and(q.gte(q.field("path"), scopedLowerBound), q.lt(q.field("path"), scopedUpperBound)),
 		);
+	}
+	if (args.nodeIds !== undefined) {
+		const nodeIds = args.nodeIds;
+		searchQuery = searchQuery.filter((q) => q.or(...nodeIds.map((nodeId) => q.eq(q.field("fileNodeId"), nodeId))));
 	}
 	searchQuery = searchQuery.filter((q) =>
 		q.or(
@@ -7892,6 +7897,8 @@ const text_search_args = {
 	query: v.string(),
 	/** Optional subtree scope: keep only matches whose file path is under this folder prefix. */
 	pathPrefix: v.optional(v.string()),
+	/** Files matching the structured filters. This only narrows the existing access checks. */
+	nodeIds: v.optional(v.array(v.id("files_nodes"))),
 };
 
 export const text_search_files = internalQuery({
@@ -8028,6 +8035,7 @@ export const search_content = query({
 		// given while the permission checks answer for the membership's workspace.
 		membershipId: v.id("organizations_workspaces_users"),
 		query: v.string(),
+		nodeIds: v.optional(v.array(v.id("files_nodes"))),
 	},
 	returns: v.object({
 		results: v.array(
@@ -8056,7 +8064,7 @@ export const search_content = query({
 		// typed into the palette. Both return empty instead of erroring so the palette just shows
 		// its idle/no-results state.
 		const trimmedQuery = args.query.trim();
-		if (trimmedQuery.length < 2 || trimmedQuery.length > 200) {
+		if (trimmedQuery.length < 2 || trimmedQuery.length > 200 || args.nodeIds?.length === 0) {
 			return { results: [] };
 		}
 
@@ -8085,6 +8093,7 @@ export const search_content = query({
 				userId: userAuth.id,
 				hasWorkspaceRead: !authorized._nay,
 				query: trimmedQuery,
+				nodeIds: args.nodeIds,
 				numItems: 32,
 				cursor,
 			})) as files_nodes_text_search_files_Result;

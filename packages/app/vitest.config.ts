@@ -14,6 +14,10 @@ export default defineConfig({
 	},
 	test: {
 		exclude: [...configDefaults.exclude],
+		// Pin the zone so a local-day rule that reads the date as UTC fails its test on every machine.
+		// On a UTC machine `new Date(2026, 8, 4)` equals `Date.UTC(2026, 8, 4)`, so that rule would
+		// pass there. London has summer time, so local and UTC differ for most of the year.
+		env: { TZ: "Europe/London" },
 		passWithNoTests: true,
 		silent: "passed-only",
 		testTimeout: 30_000,

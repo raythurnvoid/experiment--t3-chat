@@ -5,7 +5,7 @@ import { files_get_utf8_byte_size } from "./files.ts";
 
 const FRONTMATTER_START = "---\n";
 const FRONTMATTER_REGEX = /^---\n([\s\S]*?)\n---(?:\n|$)/u;
-const FIELD_SEGMENT_REGEX = /^[A-Za-z0-9_-]+$/u;
+export const files_metadata_FIELD_SEGMENT_REGEX = /^[A-Za-z0-9_-]+$/u;
 
 /**
  * Qualified-field prefix for docs extracted from Markdown frontmatter. `files_metadata_docs` now
@@ -198,7 +198,7 @@ function node_has_anchor_or_alias(node: YamlNode | null): boolean {
 }
 
 function scalar_key_segment(node: YamlNode | null) {
-	if (!isScalar(node) || typeof node.value !== "string" || !FIELD_SEGMENT_REGEX.test(node.value)) {
+	if (!isScalar(node) || typeof node.value !== "string" || !files_metadata_FIELD_SEGMENT_REGEX.test(node.value)) {
 		return null;
 	}
 	return node.value;
@@ -425,10 +425,10 @@ const MAX_METADATA_YAML_BYTES = 16 * 1024;
  * to English. The dot is left out, because `metadata.a.b` would read like the real nesting that
  * `frontmatter.a.b` means.
  *
- * `bash-meta-command.ts` repeats this grammar for `meta search`. Change both together, or a key a
- * user can write becomes a key nobody can search for.
+ * `bash-meta-command.ts` (`meta search`) and `files-search-query.ts` (the search box) import this
+ * grammar, so a key a user can write stays a key that can be searched for.
  */
-const METADATA_KEY_REGEX = /^[\p{L}\p{N}_:-]+$/u;
+export const files_metadata_METADATA_KEY_REGEX = /^[\p{L}\p{N}_:-]+$/u;
 
 /**
  * One metadata key and its scalar value. The map is flat: no nesting, no arrays, no null.
@@ -514,7 +514,7 @@ function metadata_key_problem(key: string) {
 		const bareKey = key.slice(files_metadata_METADATA_FIELD_PREFIX.length);
 		return `Metadata key "${key}" is a search field name. Pass the bare key "${bareKey}" instead`;
 	}
-	if (!METADATA_KEY_REGEX.test(key)) {
+	if (!files_metadata_METADATA_KEY_REGEX.test(key)) {
 		return `Metadata key "${key}" may contain only letters, numbers, "_", "-" and ":"`;
 	}
 

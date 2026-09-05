@@ -31,7 +31,11 @@ import {
 	type files_metadata_SearchPlan,
 	type files_metadata_Value,
 } from "../shared/files-metadata.ts";
-import { organizations_is_reserved_workspace_id, organizations_is_global_organization_id } from "../shared/organizations.ts";
+import { files_search_query_qualified_field_is_valid } from "../shared/files-search-query.ts";
+import {
+	organizations_is_reserved_workspace_id,
+	organizations_is_global_organization_id,
+} from "../shared/organizations.ts";
 import { files_db_get_visible_node_by_path, files_pending_update_content_of } from "../server/files.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -301,6 +305,36 @@ function tree_path_from_path(path: string) {
 	return path === "/" ? "/" : `${path.replace(/\/+$/u, "")}/`;
 }
 
+/**
+ * Exclusive upper bound of a subtree scan. A tree path prefix ends in `/`, and `0` is the next
+ * character after `/`, so `>= "/docs/" && < "/docs0"` covers every descendant of `/docs` and
+ * nothing else. `\uffff` would miss paths with characters above the Basic Multilingual Plane.
+ */
+function tree_path_upper_bound(treePathPrefix: string) {
+	return `${treePathPrefix.slice(0, -1)}0`;
+}
+
+/**
+ * Exclusive upper bound of a string prefix scan. Convex sorts strings by their UTF-8 bytes, which
+ * is code point order, so the last code point of the prefix goes up by one: `>= "op" && < "oq"`
+ * covers `open` and `op😀`. `${prefix}\uffff` would miss a value whose next character is above the
+ * Basic Multilingual Plane. The step skips the surrogate range, which no string holds. A prefix
+ * that ends in the last code point carries into the one before it, and a prefix made of that code
+ * point alone has no bound. The code points before it are joined back with `join("")`, not spread
+ * into `String.fromCodePoint(...chars)`, because a spread of a long value throws a RangeError.
+ */
+function string_prefix_upper_bound(prefix: string) {
+	const chars = [...prefix];
+	while (chars.length > 0) {
+		const last = chars.pop()!.codePointAt(0)!;
+		if (last < 0x10ffff) {
+			const next = last + 1 === 0xd800 ? 0xe000 : last + 1;
+			return chars.join("") + String.fromCodePoint(next);
+		}
+	}
+	return null;
+}
+
 function metadata_kind_from_qualified_field(qualifiedField: string) {
 	return qualifiedField.slice(0, qualifiedField.indexOf("."));
 }
@@ -381,23 +415,24 @@ function format_search_result(doc: Doc<"files_metadata_docs">) {
 	}
 }
 
-function search_query(
+/**
+ * The index range of one plan. The folder path (`treePathPrefix`) sits in the index for the exists
+ * and eq plans. The prefix and range plans use the last index column for the value, so their
+ * folder path is checked on the docs read instead.
+ */
+function search_index_query(
 	ctx: QueryCtx,
 	args: {
 		organizationId: Doc<"files_metadata_docs">["organizationId"];
 		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
 		plan: files_metadata_SearchPlan;
 		treePathPrefix?: string;
-		userId: Id<"users">;
-		pendingNodeIds: Array<Id<"files_nodes">>;
 	},
 ) {
-	// Metadata search follows the same pending overlay rule as full-text search:
-	// show the acting user's pending indexed docs and hide stale committed docs for those files.
 	const plan = args.plan;
 	switch (plan.op) {
-		case "exists": {
-			let query = ctx.db
+		case "exists":
+			return ctx.db
 				.query("files_metadata_docs")
 				.withIndex("by_org_workspace_archive_docKind_qualifiedField_tree", (q) => {
 					const base = q
@@ -407,26 +442,13 @@ function search_query(
 						.eq("docKind", "field")
 						.eq("qualifiedField", plan.qualifiedField);
 					return args.treePathPrefix
-						? base.gte("treePath", args.treePathPrefix).lt("treePath", `${args.treePathPrefix}\uffff`)
+						? base.gte("treePath", args.treePathPrefix).lt("treePath", tree_path_upper_bound(args.treePathPrefix))
 						: base;
 				});
-			query = query.filter((q) =>
-				q.or(
-					q.eq(q.field("sourceKind"), "committed"),
-					q.and(q.eq(q.field("sourceKind"), "pending"), q.eq(q.field("userId"), args.userId)),
-				),
-			);
-			for (const pendingNodeId of args.pendingNodeIds) {
-				query = query.filter((q) =>
-					q.or(q.neq(q.field("fileNodeId"), pendingNodeId), q.eq(q.field("sourceKind"), "pending")),
-				);
-			}
-			return query;
-		}
 		case "eq":
 			if (typeof plan.value === "string") {
 				const value = plan.value;
-				let query = ctx.db
+				return ctx.db
 					.query("files_metadata_docs")
 					.withIndex("by_org_workspace_archive_docKind_qualifiedField_string_tree", (q) => {
 						const base = q
@@ -438,25 +460,13 @@ function search_query(
 							.eq("valueKind", "string")
 							.eq("stringValue", value);
 						return args.treePathPrefix
-							? base.gte("treePath", args.treePathPrefix).lt("treePath", `${args.treePathPrefix}\uffff`)
+							? base.gte("treePath", args.treePathPrefix).lt("treePath", tree_path_upper_bound(args.treePathPrefix))
 							: base;
 					});
-				query = query.filter((q) =>
-					q.or(
-						q.eq(q.field("sourceKind"), "committed"),
-						q.and(q.eq(q.field("sourceKind"), "pending"), q.eq(q.field("userId"), args.userId)),
-					),
-				);
-				for (const pendingNodeId of args.pendingNodeIds) {
-					query = query.filter((q) =>
-						q.or(q.neq(q.field("fileNodeId"), pendingNodeId), q.eq(q.field("sourceKind"), "pending")),
-					);
-				}
-				return query;
 			}
 			if (typeof plan.value === "number") {
 				const value = plan.value;
-				let query = ctx.db
+				return ctx.db
 					.query("files_metadata_docs")
 					.withIndex("by_org_workspace_archive_docKind_qualifiedField_number_tree", (q) => {
 						const base = q
@@ -468,25 +478,13 @@ function search_query(
 							.eq("valueKind", "number")
 							.eq("numberValue", value);
 						return args.treePathPrefix
-							? base.gte("treePath", args.treePathPrefix).lt("treePath", `${args.treePathPrefix}\uffff`)
+							? base.gte("treePath", args.treePathPrefix).lt("treePath", tree_path_upper_bound(args.treePathPrefix))
 							: base;
 					});
-				query = query.filter((q) =>
-					q.or(
-						q.eq(q.field("sourceKind"), "committed"),
-						q.and(q.eq(q.field("sourceKind"), "pending"), q.eq(q.field("userId"), args.userId)),
-					),
-				);
-				for (const pendingNodeId of args.pendingNodeIds) {
-					query = query.filter((q) =>
-						q.or(q.neq(q.field("fileNodeId"), pendingNodeId), q.eq(q.field("sourceKind"), "pending")),
-					);
-				}
-				return query;
 			}
 			{
 				const value = plan.value;
-				let query = ctx.db
+				return ctx.db
 					.query("files_metadata_docs")
 					.withIndex("by_org_workspace_archive_docKind_qualifiedField_boolean_tree", (q) => {
 						const base = q
@@ -498,59 +496,29 @@ function search_query(
 							.eq("valueKind", "boolean")
 							.eq("booleanValue", value);
 						return args.treePathPrefix
-							? base.gte("treePath", args.treePathPrefix).lt("treePath", `${args.treePathPrefix}\uffff`)
+							? base.gte("treePath", args.treePathPrefix).lt("treePath", tree_path_upper_bound(args.treePathPrefix))
 							: base;
 					});
-				query = query.filter((q) =>
-					q.or(
-						q.eq(q.field("sourceKind"), "committed"),
-						q.and(q.eq(q.field("sourceKind"), "pending"), q.eq(q.field("userId"), args.userId)),
-					),
-				);
-				for (const pendingNodeId of args.pendingNodeIds) {
-					query = query.filter((q) =>
-						q.or(q.neq(q.field("fileNodeId"), pendingNodeId), q.eq(q.field("sourceKind"), "pending")),
-					);
-				}
-				return query;
 			}
-		case "prefix": {
-			let query = ctx.db
+		case "prefix":
+			return ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_org_workspace_archive_docKind_qualifiedField_string_tree", (q) =>
-					q
+				.withIndex("by_org_workspace_archive_docKind_qualifiedField_string_tree", (q) => {
+					const base = q
 						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
 						.eq("archiveOperationId", undefined)
 						.eq("docKind", "value")
 						.eq("qualifiedField", plan.qualifiedField)
 						.eq("valueKind", "string")
-						.gte("stringValue", plan.value)
-						.lt("stringValue", `${plan.value}\uffff`),
-				);
-			const treePathPrefix = args.treePathPrefix;
-			if (treePathPrefix) {
-				query = query.filter((q) =>
-					q.and(q.gte(q.field("treePath"), treePathPrefix), q.lt(q.field("treePath"), `${treePathPrefix}\uffff`)),
-				);
-			}
-			query = query.filter((q) =>
-				q.or(
-					q.eq(q.field("sourceKind"), "committed"),
-					q.and(q.eq(q.field("sourceKind"), "pending"), q.eq(q.field("userId"), args.userId)),
-				),
-			);
-			for (const pendingNodeId of args.pendingNodeIds) {
-				query = query.filter((q) =>
-					q.or(q.neq(q.field("fileNodeId"), pendingNodeId), q.eq(q.field("sourceKind"), "pending")),
-				);
-			}
-			return query;
-		}
-		case "range": {
+						.gte("stringValue", plan.value);
+					const upperBound = string_prefix_upper_bound(plan.value);
+					return upperBound === null ? base : base.lt("stringValue", upperBound);
+				});
+		case "range":
 			// Reuse the numeric range index for maybe_date docs. Read their epoch milliseconds from
 			// numberValue, and use valueKind to keep them separate from plain number docs.
-			let query = ctx.db
+			return ctx.db
 				.query("files_metadata_docs")
 				.withIndex("by_org_workspace_archive_docKind_qualifiedField_number_tree", (q) => {
 					const base = q
@@ -576,27 +544,93 @@ function search_query(
 					if (plan.lt != null) return base.lt("numberValue", plan.lt);
 					return base;
 				});
-			const treePathPrefix = args.treePathPrefix;
-			if (treePathPrefix) {
-				query = query.filter((q) =>
-					q.and(q.gte(q.field("treePath"), treePathPrefix), q.lt(q.field("treePath"), `${treePathPrefix}\uffff`)),
-				);
-			}
-			query = query.filter((q) =>
-				q.or(
-					q.eq(q.field("sourceKind"), "committed"),
-					q.and(q.eq(q.field("sourceKind"), "pending"), q.eq(q.field("userId"), args.userId)),
-				),
-			);
-			for (const pendingNodeId of args.pendingNodeIds) {
-				query = query.filter((q) =>
-					q.or(q.neq(q.field("fileNodeId"), pendingNodeId), q.eq(q.field("sourceKind"), "pending")),
-				);
-			}
-			return query;
-		}
 	}
 }
+
+/**
+ * Whether one doc read from an index range belongs to the caller's view: under the folder path,
+ * and under the pending overlay rule. Metadata search follows the same overlay rule as full-text
+ * search: show the acting user's pending indexed docs and hide stale committed docs for those files.
+ */
+function search_doc_is_visible(
+	metadataDoc: Doc<"files_metadata_docs">,
+	args: {
+		userId: Id<"users">;
+		pendingNodeIds: Array<Id<"files_nodes">>;
+		treePathPrefix?: string;
+	},
+) {
+	if (args.treePathPrefix && !metadataDoc.treePath.startsWith(args.treePathPrefix)) {
+		return false;
+	}
+	if (metadataDoc.sourceKind === "pending") {
+		return metadataDoc.userId === args.userId;
+	}
+	return !args.pendingNodeIds.includes(metadataDoc.fileNodeId);
+}
+
+/**
+ * The index range of one plan with the rule of `search_doc_is_visible` as query filters, for the
+ * paginated agent `search`. A filter reads the docs it drops, so a door with a read cap reads the
+ * index range raw and checks the docs itself.
+ */
+function search_query(
+	ctx: QueryCtx,
+	args: {
+		organizationId: Doc<"files_metadata_docs">["organizationId"];
+		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
+		plan: files_metadata_SearchPlan;
+		treePathPrefix?: string;
+		userId: Id<"users">;
+		pendingNodeIds: Array<Id<"files_nodes">>;
+	},
+) {
+	let query = search_index_query(ctx, args);
+	const treePathPrefix = args.treePathPrefix;
+	if ((args.plan.op === "prefix" || args.plan.op === "range") && treePathPrefix) {
+		query = query.filter((q) =>
+			q.and(
+				q.gte(q.field("treePath"), treePathPrefix),
+				q.lt(q.field("treePath"), tree_path_upper_bound(treePathPrefix)),
+			),
+		);
+	}
+	query = query.filter((q) =>
+		q.or(
+			q.eq(q.field("sourceKind"), "committed"),
+			q.and(q.eq(q.field("sourceKind"), "pending"), q.eq(q.field("userId"), args.userId)),
+		),
+	);
+	for (const pendingNodeId of args.pendingNodeIds) {
+		query = query.filter((q) =>
+			q.or(q.neq(q.field("fileNodeId"), pendingNodeId), q.eq(q.field("sourceKind"), "pending")),
+		);
+	}
+	return query;
+}
+
+/**
+ * One search plan, as `files_metadata_SearchPlan` in `shared/files-metadata.ts`. The agent's
+ * `search` and the search box's `search_nodes` accept the same shape.
+ */
+const search_plan_validator = v.union(
+	v.object({ op: v.literal("exists"), qualifiedField: v.string() }),
+	v.object({
+		op: v.literal("eq"),
+		qualifiedField: v.string(),
+		value: v.union(v.string(), v.number(), v.boolean()),
+	}),
+	v.object({ op: v.literal("prefix"), qualifiedField: v.string(), value: v.string() }),
+	v.object({
+		op: v.literal("range"),
+		qualifiedField: v.string(),
+		valueKind: v.union(v.literal("number"), v.literal("maybe_date")),
+		gte: v.optional(v.number()),
+		gt: v.optional(v.number()),
+		lte: v.optional(v.number()),
+		lt: v.optional(v.number()),
+	}),
+);
 
 export const search = internalQuery({
 	args: {
@@ -604,24 +638,7 @@ export const search = internalQuery({
 		organizationId: doc(app_convex_schema, "files_metadata_docs").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_metadata_docs").fields.workspaceId,
 		userId: v.id("users"),
-		plan: v.union(
-			v.object({ op: v.literal("exists"), qualifiedField: v.string() }),
-			v.object({
-				op: v.literal("eq"),
-				qualifiedField: v.string(),
-				value: v.union(v.string(), v.number(), v.boolean()),
-			}),
-			v.object({ op: v.literal("prefix"), qualifiedField: v.string(), value: v.string() }),
-			v.object({
-				op: v.literal("range"),
-				qualifiedField: v.string(),
-				valueKind: v.union(v.literal("number"), v.literal("maybe_date")),
-				gte: v.optional(v.number()),
-				gt: v.optional(v.number()),
-				lte: v.optional(v.number()),
-				lt: v.optional(v.number()),
-			}),
-		),
+		plan: search_plan_validator,
 		pathPrefix: v.optional(v.string()),
 		numItems: v.number(),
 		cursor: paginationOptsValidator.fields.cursor,
@@ -697,9 +714,7 @@ export const search = internalQuery({
 		);
 
 		return {
-			items: result.page
-				.filter((metadataDoc) => readableNodeIds.has(metadataDoc.fileNodeId))
-				.map(format_search_result),
+			items: result.page.filter((metadataDoc) => readableNodeIds.has(metadataDoc.fileNodeId)).map(format_search_result),
 			continueCursor: result.continueCursor,
 			isDone: result.isDone,
 		};
@@ -712,6 +727,433 @@ export type files_metadata_search_Result =
 		: never;
 
 // #endregion search
+
+// #region search box
+
+/**
+ * Caps for the search box doors below. The box sends one filter per query. A filter expands to at
+ * most four plans: two metadata kinds times two value kinds. The docs of each plan are read before
+ * the readable-nodes filter runs, so the caps bound the reads, not the answer. A workspace with
+ * more matching docs than one plan reads gets a partial answer. `file.path:` narrows the scan of
+ * the exists and eq plans. The prefix and range plans check the folder on the docs read.
+ *
+ * The readable-nodes filter pays one permission check per distinct restricted folder among the
+ * candidates, and a check costs several index reads. So the candidates are also cut at
+ * `SEARCH_NODES_MAX_SCOPES` restricted folders, to stay inside the 4096 reads Convex allows.
+ */
+const SEARCH_NODES_MAX_PLANS = 4;
+const SEARCH_NODES_DOCS_PER_PLAN = 1000;
+const SEARCH_NODES_MAX_CANDIDATES = 1000;
+const SEARCH_NODES_MAX_SCOPES = 250;
+const SEARCH_PATH_PREFIX_MAX_LENGTH = 1024;
+const SEARCH_QUALIFIED_FIELD_MAX_LENGTH = 160;
+
+/**
+ * Catalog caps. A key, kind, or value is listed only when one of its first few docs in index
+ * order sits on a file the caller can read. A member who was given one folder deep inside a big
+ * restricted tree can miss a key that way. Typing the key still works.
+ *
+ * The read budgets count index reads, not docs. Convex allows 4096 `db.get` and `db.query` calls
+ * per query, and a permission check for one restricted scope costs several of them. The walk
+ * stops early instead of throwing.
+ */
+const SEARCH_CATALOG_SAMPLE_DOCS = 11;
+const SEARCH_FIELDS_MAX_FIELDS = 200;
+const SEARCH_FIELDS_READ_BUDGET = 3000;
+const SEARCH_VALUES_MAX_VALUES = 25;
+const SEARCH_VALUES_READ_BUDGET = 400;
+const SEARCH_SCOPE_CHECK_READS = 8;
+const SEARCH_VALUE_PREFIX_MAX_LENGTH = 200;
+const SEARCH_VALUE_KINDS = ["string", "number", "boolean", "maybe_date"] as const;
+
+/**
+ * The key grammar `shared/files-search-query.ts` produces. Anything else did not come from the
+ * app, and the doors answer it with their empty shape.
+ */
+function search_qualified_field_is_valid(qualifiedField: string) {
+	return (
+		qualifiedField.length <= SEARCH_QUALIFIED_FIELD_MAX_LENGTH &&
+		files_search_query_qualified_field_is_valid(qualifiedField)
+	);
+}
+
+/**
+ * Resolve who is calling through `membershipId`, and whether the workspace lets them read
+ * everything. Return null when the membership is not theirs. Every search door answers that with
+ * its empty shape.
+ *
+ * A failed read check does not end the query. Somebody whose role gives no workspace-wide read
+ * can still have been given one folder, and finding files in that folder is the whole point of
+ * sharing. `hasWorkspaceRead` carries that answer to
+ * `access_control_db_filter_readable_file_nodes`, which keeps only the nodes they were given.
+ */
+async function db_get_search_caller(ctx: QueryCtx, args: { membershipId: Id<"organizations_workspaces_users"> }) {
+	const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+	if (!userAuth) {
+		throw convex_error({ message: "Unauthenticated" });
+	}
+
+	const membership = await organizations_db_get_membership(ctx, {
+		userId: userAuth.id,
+		membershipId: args.membershipId,
+	});
+	if (!membership) {
+		return null;
+	}
+
+	const authorized = await access_control_db_authorize_membership(ctx, {
+		userAuth,
+		membership,
+		permission: "content.read",
+	});
+	return { userAuth, membership, hasWorkspaceRead: !authorized._nay };
+}
+
+/**
+ * What one catalog walk remembers across keys and values: which nodes and which restricted scopes
+ * the caller can read, and how many index reads the walk has spent.
+ */
+type SearchSampleCache = {
+	readableByNodeId: Map<Id<"files_nodes">, boolean>;
+	readableByScopeId: Map<string, boolean>;
+	reads: number;
+};
+
+/**
+ * True when one of the sample docs sits on a file the caller can read. The catalog must not name
+ * a key or value from a doc alone, because the doc's file may sit in a restricted folder.
+ *
+ * Whether a file is readable depends on its restricted scope only, so the answer is cached per
+ * scope as well as per node. A workspace with one restricted folder then pays for one permission
+ * check, not one per sampled file.
+ */
+async function db_search_sample_is_readable(
+	ctx: QueryCtx,
+	args: {
+		caller: NonNullable<Awaited<ReturnType<typeof db_get_search_caller>>>;
+		docs: Doc<"files_metadata_docs">[];
+		mut_cache: SearchSampleCache;
+	},
+) {
+	for (const nodeId of new Set(args.docs.map((metadataDoc) => metadataDoc.fileNodeId))) {
+		let readable = args.mut_cache.readableByNodeId.get(nodeId);
+		if (readable === undefined) {
+			const fileNode = await ctx.db.get("files_nodes", nodeId);
+			args.mut_cache.reads += 1;
+			if (fileNode === null) {
+				readable = false;
+			} else {
+				const scopeKey = fileNode.restrictedScopeNodeId ?? "";
+				readable = args.mut_cache.readableByScopeId.get(scopeKey);
+				if (readable === undefined) {
+					readable =
+						(
+							await access_control_db_filter_readable_file_nodes(ctx, {
+								organizationId: args.caller.membership.organizationId,
+								workspaceId: args.caller.membership.workspaceId,
+								userId: args.caller.userAuth.id,
+								nodes: [fileNode],
+								hasWorkspaceRead: args.caller.hasWorkspaceRead,
+							})
+						).length > 0;
+					// An open node costs the filter no reads. A restricted scope costs one permission check.
+					if (fileNode.restrictedScopeNodeId) {
+						args.mut_cache.reads += SEARCH_SCOPE_CHECK_READS;
+					}
+					args.mut_cache.readableByScopeId.set(scopeKey, readable);
+				}
+			}
+			args.mut_cache.readableByNodeId.set(nodeId, readable);
+		}
+		if (readable) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/**
+ * The search box's door: the files one filter matches, as ids. The box owns the AND across
+ * filters, the negation, and the `file.*` fields, because it already holds every readable node.
+ */
+export const search_nodes = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		plans: v.array(search_plan_validator),
+		pathPrefix: v.optional(v.string()),
+	},
+	returns: v.object({ nodeIds: v.array(v.id("files_nodes")) }),
+	handler: async (ctx, args) => {
+		const caller = await db_get_search_caller(ctx, { membershipId: args.membershipId });
+		if (!caller) {
+			return { nodeIds: [] };
+		}
+
+		// One filter is at most four plans over keys the shared grammar accepts, inside a folder
+		// path. Anything else did not come from the app and gets the empty answer, not an error.
+		if (
+			args.plans.length === 0 ||
+			args.plans.length > SEARCH_NODES_MAX_PLANS ||
+			args.plans.some((plan) => !search_qualified_field_is_valid(plan.qualifiedField)) ||
+			(args.pathPrefix !== undefined &&
+				(!args.pathPrefix.startsWith("/") || args.pathPrefix.length > SEARCH_PATH_PREFIX_MAX_LENGTH))
+		) {
+			return { nodeIds: [] };
+		}
+
+		const { organizationId, workspaceId } = caller.membership;
+		const userId = caller.userAuth.id;
+
+		// A pending content edit changes frontmatter, not the metadata map, so only frontmatter plans
+		// use the pending overlay. See `search` for the rule.
+		const hasFrontmatterPlan = args.plans.some((plan) =>
+			plan.qualifiedField.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX),
+		);
+		const pendingNodeIds = hasFrontmatterPlan
+			? await db_list_pending_file_node_ids(ctx, { organizationId, workspaceId, userId })
+			: [];
+		const treePathPrefix = args.pathPrefix === undefined ? undefined : tree_path_from_path(args.pathPrefix);
+
+		// Read each plan's index range raw, so the cap bounds the docs read. The folder path and the
+		// pending overlay are checked on the docs read.
+		const candidateIds = new Set<Id<"files_nodes">>();
+		for (const plan of args.plans) {
+			const metadataDocs = await search_index_query(ctx, { organizationId, workspaceId, plan, treePathPrefix }).take(
+				SEARCH_NODES_DOCS_PER_PLAN,
+			);
+			const planPendingNodeIds = plan.qualifiedField.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX)
+				? pendingNodeIds
+				: [];
+			for (const metadataDoc of metadataDocs) {
+				if (candidateIds.size >= SEARCH_NODES_MAX_CANDIDATES) {
+					break;
+				}
+				if (search_doc_is_visible(metadataDoc, { userId, pendingNodeIds: planPendingNodeIds, treePathPrefix })) {
+					candidateIds.add(metadataDoc.fileNodeId);
+				}
+			}
+		}
+
+		// A hit inside a restricted folder must not reach a caller who was not given that folder.
+		// Past `SEARCH_NODES_MAX_SCOPES` restricted folders the answer is partial.
+		const candidateNodes = (
+			await Promise.all([...candidateIds].map((nodeId) => ctx.db.get("files_nodes", nodeId)))
+		).filter((fileNode) => fileNode !== null);
+		const scopeIds = new Set<string>();
+		const cappedNodes = candidateNodes.filter((fileNode) => {
+			if (!fileNode.restrictedScopeNodeId) {
+				return true;
+			}
+			if (!scopeIds.has(fileNode.restrictedScopeNodeId) && scopeIds.size >= SEARCH_NODES_MAX_SCOPES) {
+				return false;
+			}
+			scopeIds.add(fileNode.restrictedScopeNodeId);
+			return true;
+		});
+		const readableNodes = await access_control_db_filter_readable_file_nodes(ctx, {
+			organizationId,
+			workspaceId,
+			userId,
+			nodes: cappedNodes,
+			hasWorkspaceRead: caller.hasWorkspaceRead,
+		});
+
+		// No "is complete" flag, on purpose: a flag next to fewer ids than the caps would say outright
+		// that restricted files matched. The caps can still hint at it, but never name a file.
+		return { nodeIds: readableNodes.map((fileNode) => fileNode._id) };
+	},
+});
+
+/**
+ * The qualified fields the search box suggests as keys, with the value kinds each one holds
+ * somewhere the caller can read. They come back in index order, which is alphabetical.
+ */
+export const list_search_fields = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+	},
+	returns: v.array(
+		v.object({
+			qualifiedField: v.string(),
+			valueKinds: v.array(
+				v.union(v.literal("string"), v.literal("number"), v.literal("boolean"), v.literal("maybe_date")),
+			),
+		}),
+	),
+	handler: async (ctx, args) => {
+		const caller = await db_get_search_caller(ctx, { membershipId: args.membershipId });
+		if (!caller) {
+			return [];
+		}
+
+		const { organizationId, workspaceId } = caller.membership;
+		const userId = caller.userAuth.id;
+		const mut_cache: SearchSampleCache = { readableByNodeId: new Map(), readableByScopeId: new Map(), reads: 0 };
+		const fields: Array<{ qualifiedField: string; valueKinds: Array<(typeof SEARCH_VALUE_KINDS)[number]> }> = [];
+		let lastQualifiedField = "";
+
+		// Walk the distinct qualified fields with one index read per field: the first field doc above
+		// the last one seen. Each field then reads a few docs per kind to decide whether the caller
+		// may see it.
+		while (fields.length < SEARCH_FIELDS_MAX_FIELDS && mut_cache.reads < SEARCH_FIELDS_READ_BUDGET) {
+			const after = lastQualifiedField;
+			const nextFieldDoc = await ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_org_workspace_archive_docKind_qualifiedField_tree", (q) =>
+					q
+						.eq("organizationId", organizationId)
+						.eq("workspaceId", workspaceId)
+						.eq("archiveOperationId", undefined)
+						.eq("docKind", "field")
+						.gt("qualifiedField", after),
+				)
+				.first();
+			mut_cache.reads += 1;
+			if (!nextFieldDoc) {
+				break;
+			}
+			const qualifiedField = nextFieldDoc.qualifiedField;
+			lastQualifiedField = qualifiedField;
+			// The other doors refuse a field this long, so the catalog must not offer it.
+			if (!search_qualified_field_is_valid(qualifiedField)) {
+				continue;
+			}
+
+			// The samples are read raw, so one index read is one read. Another user's draft among them
+			// is dropped here instead of by a query filter, which would read on past the cap.
+			const fieldDocs = (
+				await ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_org_workspace_archive_docKind_qualifiedField_tree", (q) =>
+						q
+							.eq("organizationId", organizationId)
+							.eq("workspaceId", workspaceId)
+							.eq("archiveOperationId", undefined)
+							.eq("docKind", "field")
+							.eq("qualifiedField", qualifiedField),
+					)
+					.take(SEARCH_CATALOG_SAMPLE_DOCS)
+			).filter((metadataDoc) => metadataDoc.sourceKind === "committed" || metadataDoc.userId === userId);
+			mut_cache.reads += 1;
+			let readable = await db_search_sample_is_readable(ctx, { caller, docs: fieldDocs, mut_cache });
+
+			// Every value index has `valueKind` right after the key, so the string index serves all
+			// four kinds. A kind is listed only when the caller can read a file that holds it.
+			const valueKinds: Array<(typeof SEARCH_VALUE_KINDS)[number]> = [];
+			for (const valueKind of SEARCH_VALUE_KINDS) {
+				const valueDocs = (
+					await ctx.db
+						.query("files_metadata_docs")
+						.withIndex("by_org_workspace_archive_docKind_qualifiedField_string_tree", (q) =>
+							q
+								.eq("organizationId", organizationId)
+								.eq("workspaceId", workspaceId)
+								.eq("archiveOperationId", undefined)
+								.eq("docKind", "value")
+								.eq("qualifiedField", qualifiedField)
+								.eq("valueKind", valueKind),
+						)
+						.take(SEARCH_CATALOG_SAMPLE_DOCS)
+				).filter((metadataDoc) => metadataDoc.sourceKind === "committed" || metadataDoc.userId === userId);
+				mut_cache.reads += 1;
+				if (valueDocs.length > 0 && (await db_search_sample_is_readable(ctx, { caller, docs: valueDocs, mut_cache }))) {
+					valueKinds.push(valueKind);
+					readable = true;
+				}
+			}
+
+			if (readable) {
+				fields.push({ qualifiedField, valueKinds });
+			}
+		}
+
+		return fields;
+	},
+});
+
+/**
+ * The string values of one key that start with `prefix`, for the search box's value suggestions.
+ */
+export const list_search_values = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		qualifiedField: v.string(),
+		prefix: v.string(),
+	},
+	returns: v.array(v.string()),
+	handler: async (ctx, args) => {
+		const caller = await db_get_search_caller(ctx, { membershipId: args.membershipId });
+		if (!caller) {
+			return [];
+		}
+		if (!search_qualified_field_is_valid(args.qualifiedField) || args.prefix.length > SEARCH_VALUE_PREFIX_MAX_LENGTH) {
+			return [];
+		}
+
+		const { organizationId, workspaceId } = caller.membership;
+		const userId = caller.userAuth.id;
+		const mut_cache: SearchSampleCache = { readableByNodeId: new Map(), readableByScopeId: new Map(), reads: 0 };
+		const values: string[] = [];
+		let lastValue: string | null = null;
+
+		// Walk the distinct values with one index read per value. The index is sorted by value, so
+		// the first value that does not start with the prefix ends the walk. No upper bound is needed.
+		// The first read starts at the prefix itself, every later read starts above the last value.
+		while (values.length < SEARCH_VALUES_MAX_VALUES && mut_cache.reads < SEARCH_VALUES_READ_BUDGET) {
+			const lowerBound: { gte: string } | { gt: string } =
+				lastValue === null ? { gte: args.prefix } : { gt: lastValue };
+			const nextValueDoc = await ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_org_workspace_archive_docKind_qualifiedField_string_tree", (q) => {
+					const base = q
+						.eq("organizationId", organizationId)
+						.eq("workspaceId", workspaceId)
+						.eq("archiveOperationId", undefined)
+						.eq("docKind", "value")
+						.eq("qualifiedField", args.qualifiedField)
+						.eq("valueKind", "string");
+					return "gte" in lowerBound ? base.gte("stringValue", lowerBound.gte) : base.gt("stringValue", lowerBound.gt);
+				})
+				.first();
+			mut_cache.reads += 1;
+			if (
+				!nextValueDoc ||
+				nextValueDoc.stringValue === undefined ||
+				!nextValueDoc.stringValue.startsWith(args.prefix)
+			) {
+				break;
+			}
+			// The annotation breaks an inference cycle: `lastValue` feeds the query that yields this value.
+			const value: string = nextValueDoc.stringValue;
+			lastValue = value;
+
+			// Read raw for the same reason as in `list_search_fields`: one index read is one read.
+			const valueDocs = (
+				await ctx.db
+					.query("files_metadata_docs")
+					.withIndex("by_org_workspace_archive_docKind_qualifiedField_string_tree", (q) =>
+						q
+							.eq("organizationId", organizationId)
+							.eq("workspaceId", workspaceId)
+							.eq("archiveOperationId", undefined)
+							.eq("docKind", "value")
+							.eq("qualifiedField", args.qualifiedField)
+							.eq("valueKind", "string")
+							.eq("stringValue", value),
+					)
+					.take(SEARCH_CATALOG_SAMPLE_DOCS)
+			).filter((metadataDoc) => metadataDoc.sourceKind === "committed" || metadataDoc.userId === userId);
+			mut_cache.reads += 1;
+			if (await db_search_sample_is_readable(ctx, { caller, docs: valueDocs, mut_cache })) {
+				values.push(value);
+			}
+		}
+
+		return values;
+	},
+});
+
+// #endregion search box
 
 // #region get by path
 

@@ -6576,6 +6576,7 @@ describe("file sharing", () => {
 		const fromDefaultWorkspace = await fixture.asOwner.query(api.files_nodes.search_content, {
 			membershipId: fixture.ownerMembershipId,
 			query: "tenantleakneedle",
+			nodeIds: insideOther.results.map((result) => result.nodeId),
 		});
 		expect(fromDefaultWorkspace.results).toEqual([]);
 
@@ -6624,6 +6625,7 @@ describe("file sharing", () => {
 		const memberFound = await fixture.asMember.query(api.files_nodes.search_content, {
 			membershipId: fixture.memberMembershipId,
 			query: "grantsearchneedle",
+			nodeIds: ownerFound.results.map((result) => result.nodeId),
 		});
 		expect(memberFound.results.map((result) => result.path)).toEqual(["/open-notes.md"]);
 
@@ -6641,6 +6643,7 @@ describe("file sharing", () => {
 		const grantOnlyFound = await fixture.asMember.query(api.files_nodes.search_content, {
 			membershipId: fixture.memberMembershipId,
 			query: "grantsearchneedle",
+			nodeIds: ownerFound.results.map((result) => result.nodeId),
 		});
 		expect(grantOnlyFound.results.map((result) => result.path)).toEqual(["/closed/secret-notes.md"]);
 

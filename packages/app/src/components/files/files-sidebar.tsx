@@ -1,4 +1,7 @@
 import "./files-sidebar.css";
+import { FilesSearchInput, type FilesSearchInput_Props } from "./files-search-input.tsx";
+import { useFilesSearchMetadata } from "@/hooks/files-search-hooks.ts";
+import { parse_search_query, search_filter_matches_item, search_path_filter } from "@/lib/files-search.ts";
 import React, {
 	memo,
 	useDeferredValue,
@@ -30,7 +33,6 @@ import {
 	Info,
 	Link2,
 	LockKeyhole,
-	Search,
 	Upload,
 	UserRound,
 	Users,
@@ -61,15 +63,7 @@ import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { FilesNameInputControl } from "./files-name-input.tsx";
 import { FilesShareModal } from "./files-share-modal.tsx";
 import { FilesPropertiesModal } from "./files-properties-modal.tsx";
-import {
-	MyInput,
-	MyInputArea,
-	MyInputBackground,
-	MyInputBox,
-	MyInputControl,
-	MyInputHelperText,
-	MyInputIcon,
-} from "@/components/my-input.tsx";
+import { MyInput, MyInputArea, MyInputBackground, MyInputBox, MyInputHelperText } from "@/components/my-input.tsx";
 import { MyIconButton, MyIconButtonIcon, type MyIconButton_Props } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
 import { MyLink } from "@/components/my-link.tsx";
@@ -111,18 +105,13 @@ import {
 import { useFileNodeActivities } from "@/lib/activities.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { cn, copy_to_clipboard, forward_ref, should_never_happen, sx } from "@/lib/utils.ts";
-import { path_extract_segments_from, path_is_path_like } from "@/lib/paths.ts";
-import {
-	app_convex_api,
-	app_convex_is_id_like,
-	type app_convex_Doc,
-	type app_convex_Id,
-} from "@/lib/app-convex-client.ts";
-import { url_parse_file_link, url_path_file_by_node_id } from "@/lib/urls.ts";
+import { path_extract_segments_from } from "@/lib/paths.ts";
+import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import { url_path_file_by_node_id } from "@/lib/urls.ts";
 import { dom_clear_text_selection, type AppClassName, type AppElementId } from "@/lib/dom-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { useGlobalEventList } from "@/lib/global-event.tsx";
-import { useDebounce, useFn, useVal } from "@/hooks/utils-hooks.ts";
+import { useFn, useVal } from "@/hooks/utils-hooks.ts";
 import {
 	files_ROOT_ID,
 	files_SYNTHETIC_ROOT_FOLDER,
@@ -152,6 +141,7 @@ import {
 	type files_YjsRootKind,
 } from "@/lib/files.ts";
 import { format_relative_time } from "@/lib/date.ts";
+import { files_search_query_parse } from "../../../shared/files-search-query.ts";
 import { async_all_settled_with_limit } from "@/lib/async.ts";
 import { files_prepare_image_upload_file } from "@/lib/files-image-compression.ts";
 
@@ -2404,6 +2394,8 @@ type FilesSidebarTree_Props = {
 	isTreeLoading: boolean;
 	showEmptyState: boolean;
 	isSearchActive: boolean;
+	isSearchLoading: boolean;
+	isSearchFailed: boolean;
 	displayNameByUserId: Map<string, string>;
 	trackActiveFileIds: Set<string>;
 	selectedNodeId: string | null;
@@ -2435,6 +2427,8 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		isTreeLoading,
 		showEmptyState,
 		isSearchActive,
+		isSearchLoading,
+		isSearchFailed,
 		displayNameByUserId,
 		trackActiveFileIds,
 		selectedNodeId,
@@ -2639,7 +2633,13 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 					<>
 						{showEmptyState ? (
 							<div className={cn("FilesSidebarTree-empty-state" satisfies FilesSidebarTree_ClassNames)}>
-								{isSearchActive ? "No files match your search." : "No files yet."}
+								{isSearchLoading
+									? "Searching…"
+									: isSearchFailed
+										? "The search failed. Change a filter to try again."
+										: isSearchActive
+											? "No files match your search."
+											: "No files yet."}
 							</div>
 						) : null}
 						{renderedTreeItems.map((item, itemIndex) => {
@@ -2694,67 +2694,6 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 	);
 });
 // #endregion tree
-
-// #region search
-type FilesSidebarSearch_ClassNames = "FilesSidebarSearch";
-
-type FilesSidebarSearch_Props = {
-	initialQuery: string;
-	onSearchQueryChange: (searchQuery: string) => void;
-	onSubmit: (searchQuery: string) => void;
-};
-
-const FilesSidebarSearch = memo(function FilesSidebarSearch(props: FilesSidebarSearch_Props) {
-	const { initialQuery, onSearchQueryChange, onSubmit } = props;
-
-	const [searchQuery, setSearchQuery] = useState(initialQuery);
-	const searchQueryDebounced = useDebounce(searchQuery, 300);
-
-	const handleInputChange = useFn<ComponentProps<typeof MyInputControl>["onChange"]>((event) => {
-		setSearchQuery(event.target.value);
-	});
-
-	// Enter opens the one node the query identifies. This is what makes "paste a copied
-	// path or link, then press Enter" work as a single motion.
-	const handleInputKeyDown = useFn<ComponentProps<typeof MyInputControl>["onKeyDown"]>((event) => {
-		if (event.key !== "Enter") {
-			return;
-		}
-
-		// Pass the live input value, not the debounced one, so a paste followed straight away by
-		// Enter acts on what was just pasted.
-		onSubmit(searchQuery);
-	});
-
-	useEffect(() => {
-		onSearchQueryChange(searchQueryDebounced);
-	}, [searchQueryDebounced]);
-
-	// `MyInputControl` owns its own generated id for label wiring, so the global id that the
-	// Mod+K shortcut looks up lives on the wrapper.
-	return (
-		<MyInput
-			id={"app_files_sidebar_search" satisfies AppElementId}
-			className={cn("FilesSidebarSearch" satisfies FilesSidebarSearch_ClassNames)}
-		>
-			<MyInputBackground />
-			<MyInputArea>
-				<MyInputIcon>
-					<Search />
-				</MyInputIcon>
-				<MyInputControl
-					aria-label="Search files by name, path, id, or link"
-					placeholder="Search files"
-					value={searchQuery}
-					onChange={handleInputChange}
-					onKeyDown={handleInputKeyDown}
-				/>
-			</MyInputArea>
-			<MyInputBox />
-		</MyInput>
-	);
-});
-// #endregion search
 
 // #region header
 type FilesSidebarHeader_ClassNames =
@@ -2967,9 +2906,12 @@ type FilesSidebarTopSection_Props = {
 	treeItemsList: files_TreeItem[] | undefined;
 	showArchived: boolean;
 	initialSearchQuery: string;
+	isSearchLoading: boolean;
+	isSearchFailed: boolean;
+	searchMatchCount: number | null;
 	onClose: () => void;
 	onSearchQueryChange: (searchQuery: string) => void;
-	onSearchSubmit: (searchQuery: string) => void;
+	onSearchSubmit: (searchQuery: string) => boolean;
 	onExpandTopFilesClick: () => void;
 	onCollapseAllClick: () => void;
 	onClearSelectionClick: () => void;
@@ -2995,6 +2937,9 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 		treeItemsList,
 		showArchived,
 		initialSearchQuery,
+		isSearchLoading,
+		isSearchFailed,
+		searchMatchCount,
 		onClose,
 		onSearchQueryChange,
 		onSearchSubmit,
@@ -3016,8 +2961,13 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 		<div className={cn("FilesSidebarTopSection" satisfies FilesSidebarTopSection_ClassNames)}>
 			<FilesSidebarHeader view={view} onClose={onClose} />
 
-			<FilesSidebarSearch
+			<FilesSearchInput
+				id={"app_files_sidebar_search" satisfies AppElementId}
 				initialQuery={initialSearchQuery}
+				treeItemsList={treeItemsList}
+				isSearchLoading={isSearchLoading}
+				isSearchFailed={isSearchFailed}
+				searchMatchCount={searchMatchCount}
 				onSearchQueryChange={onSearchQueryChange}
 				onSubmit={onSearchSubmit}
 			/>
@@ -3700,47 +3650,39 @@ function get_tree_items_list_after_optimistic_rename(args: {
 	});
 }
 
-type SearchMode = "name" | "path" | "node";
-
-/**
- * Decide what a search query means from its shape.
- *
- * A user pastes whatever they copied: a file name, a copied path, a node id, or a full app
- * link. Reading the shape means they never have to learn a prefix syntax for each case.
- * A pasted link is unwrapped first into the node id or the path it carries.
- */
-function parse_search_query(rawQuery: string): { mode: SearchMode; value: string } {
-	const query = rawQuery.trim();
-
-	const link = url_parse_file_link(query);
-	if (link) {
-		return "nodeId" in link ? { mode: "node", value: link.nodeId } : { mode: "path", value: link.path.toLowerCase() };
-	}
-
-	// The tree lookup in `files_sidebar_get_search_matches` confirms an id guess.
-	if (app_convex_is_id_like(query)) {
-		return { mode: "node", value: query };
-	}
-
-	if (path_is_path_like(query)) {
-		return { mode: "path", value: query.toLowerCase() };
-	}
-
-	return { mode: "name", value: query.toLowerCase() };
-}
-
 /**
  * Match a search query against the tree.
  *
+ * The free text matches by its shape (see `parse_search_query`). A `file.*` filter matches a tree
+ * field. A metadata filter matches the node ids its server query returned, looked up by the
+ * filter's raw token in `metadataNodeIds`. A filter with no entry yet matches nothing, and the
+ * tree says "Searching…" until every entry is there. Only files carry metadata, so once a
+ * metadata filter is present a folder never matches by itself. It shows as an ancestor.
+ *
  * `visibleFileIds` keeps every match plus its ancestor chain so results render as a pruned tree.
  * `topMatchId` is the node Enter opens: the one whose path matched exactly, or the only node
- * that matched at all.
+ * that matched at all. `matchCount` counts the direct matches without the root.
  *
  * This runs on the deferred query for rendering and again on the live input value when the user
  * presses Enter, so a paste followed straight away by Enter cannot act on the previous query.
  */
-function get_search_matches(args: { treeItems: TreeItems; searchQuery: string }) {
-	const parsedQuery = parse_search_query(args.searchQuery);
+function get_search_matches(args: {
+	treeItems: TreeItems;
+	searchQuery: string;
+	metadataNodeIds: ReadonlyMap<string, ReadonlySet<string> | null>;
+}) {
+	const parsed = files_search_query_parse(args.searchQuery);
+	const filters = parsed.filters;
+	if (filters.some((filter) => filter.problem !== null)) {
+		return { visibleFileIds: new Set<string>(), topMatchId: null, matchCount: 0 };
+	}
+	const hasMetadataFilter = filters.some((filter) => filter.key.namespace !== "file");
+	// Quotes in the free text only group words. A text of quotes alone asks for nothing.
+	const text = parsed.text.replace(/"/gu, "").trim();
+	const textQuery = text.length > 0 ? parse_search_query(text) : null;
+	if (filters.length === 0 && textQuery === null) {
+		return { visibleFileIds: new Set<string>(), topMatchId: null, matchCount: 0 };
+	}
 
 	const visibleFileIds = new Set<string>();
 	const directMatchIds: string[] = [];
@@ -3751,27 +3693,43 @@ function get_search_matches(args: { treeItems: TreeItems; searchQuery: string })
 			continue;
 		}
 
-		// Match the field the query shape asked for. Only path and id queries can name one
+		// Match the field the free text's shape asked for. Only path and id queries can name one
 		// exact node, so only they can set the exact match.
-		if (parsedQuery.mode === "node") {
-			if (item._id !== parsedQuery.value) {
+		let isExactMatch = false;
+		if (textQuery?.mode === "node") {
+			if (item._id !== textQuery.value) {
 				continue;
 			}
 
-			exactMatchId = item._id;
-		} else if (parsedQuery.mode === "path") {
+			isExactMatch = true;
+		} else if (textQuery?.mode === "path") {
 			const itemPath = item.path.toLowerCase();
-			if (!itemPath.includes(parsedQuery.value)) {
+			if (!itemPath.includes(textQuery.value)) {
 				continue;
 			}
 
-			if (itemPath === parsedQuery.value) {
-				exactMatchId = item._id;
-			}
-		} else if (!item.name.toLowerCase().includes(parsedQuery.value)) {
+			isExactMatch = itemPath === textQuery.value;
+		} else if (textQuery && !item.name.toLowerCase().includes(textQuery.value)) {
 			continue;
 		}
 
+		// Only files carry metadata, and an archived file has no search docs. So once a metadata
+		// filter is present, a folder or an archived file never matches, not even a negated chip.
+		if (hasMetadataFilter && (!files_is_node(item) || item.kind !== "file" || item.archiveOperationId !== undefined)) {
+			continue;
+		}
+
+		if (
+			!filters.every(
+				(filter) => search_filter_matches_item({ filter, item, metadataNodeIds: args.metadataNodeIds }) === true,
+			)
+		) {
+			continue;
+		}
+
+		if (isExactMatch) {
+			exactMatchId = item._id;
+		}
 		visibleFileIds.add(item._id);
 		directMatchIds.push(item._id);
 
@@ -3800,6 +3758,7 @@ function get_search_matches(args: { treeItems: TreeItems; searchQuery: string })
 	return {
 		visibleFileIds,
 		topMatchId: exactMatchId ?? (directMatchIds.length === 1 ? (directMatchIds[0] ?? null) : null),
+		matchCount: directMatchIds.filter((id) => id !== files_ROOT_ID).length,
 	};
 }
 
@@ -3826,10 +3785,28 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const convex = useConvex();
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 
+	const treeNodesList = useQuery(app_convex_api.files_nodes.list_tree, {
+		membershipId,
+	});
+	const treeItemsList = useMemo(
+		() => (treeNodesList ? files_create_tree_items_list_from_nodes(treeNodesList) : undefined),
+		[treeNodesList],
+	);
+
 	const [searchQuery, setSearchQuery] = useState(initialSearchQuery);
+	const [previousRouteQuery, setPreviousRouteQuery] = useState(initialSearchQuery);
+	if (previousRouteQuery !== initialSearchQuery) {
+		setPreviousRouteQuery(initialSearchQuery);
+		setSearchQuery(initialSearchQuery);
+	}
 	const searchQueryDeferred = useDeferredValue(searchQuery);
 	const isSearchActive = searchQueryDeferred.trim().length > 0;
 
+	const { searchMetadataNodeIds, isSearchLoading, isSearchFailed } = useFilesSearchMetadata(
+		membershipId,
+		searchQueryDeferred,
+		treeItemsList,
+	);
 	const [showArchived, setShowArchived] = useState(false);
 
 	const [isCreatingFile, setIsCreatingFile] = useState(false);
@@ -3857,14 +3834,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const expandedItemsBeforeSearchRef = useRef<Set<string> | null>(null);
 	const selectedFilePathAutoExpandedKeyRef = useRef<string | null>(null);
 
-	const treeNodesList = useQuery(app_convex_api.files_nodes.list_tree, {
-		membershipId,
-	});
 	const readOnlyAncestorIds = useMemo(() => files_collect_read_only_ancestor_ids(treeNodesList ?? []), [treeNodesList]);
-	const treeItemsList = useMemo(
-		() => (treeNodesList ? files_create_tree_items_list_from_nodes(treeNodesList) : undefined),
-		[treeNodesList],
-	);
 	const workspaceWritePermission = useQuery(app_convex_api.access_control.get_current_user_workspace_permission, {
 		membershipId,
 		permission: "content.write",
@@ -4100,15 +4070,16 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	})();
 
 	/**
-	 * Filtered item ids from the search query.
+	 * Filtered item ids from the search query, plus the match count the search box reads out.
 	 */
-	const visibleFileIds = ((/* iife */) => {
-		if (!treeItems || searchQueryDeferred.trim().length === 0) {
-			return treeItems?.itemsIds ?? new Set<string>();
-		}
-
-		return get_search_matches({ treeItems, searchQuery: searchQueryDeferred }).visibleFileIds;
-	})();
+	const searchMatches = useMemo(
+		() =>
+			treeItems && isSearchActive
+				? get_search_matches({ treeItems, searchQuery: searchQueryDeferred, metadataNodeIds: searchMetadataNodeIds })
+				: null,
+		[treeItems, isSearchActive, searchQueryDeferred, searchMetadataNodeIds],
+	);
+	const visibleFileIds = searchMatches?.visibleFileIds ?? treeItems?.itemsIds ?? new Set<string>();
 
 	const hasSelectedFileInTree = Boolean(selectedNodeId && visibleFileIds.has(selectedNodeId));
 
@@ -5337,20 +5308,45 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		onSearchQueryChange(nextSearchQuery);
 	});
 
-	const handleSearchSubmit = useFn<FilesSidebarSearch_Props["onSubmit"]>((searchQuery) => {
-		// Match on the value the input holds right now. `searchResult` lags behind it by the
-		// debounce plus the deferred render, so Enter right after a paste would use the old query.
+	const handleSearchSubmit = useFn<FilesSearchInput_Props["onSubmit"]>((searchQuery) => {
 		if (!treeItems || searchQuery.trim().length === 0) {
-			return;
+			return true;
 		}
 
-		const topMatchId = get_search_matches({ treeItems, searchQuery }).topMatchId;
+		// Match on the value the input holds right now. `searchMatches` lags behind it by the
+		// debounce plus the deferred render, so Enter right after a paste would use the old query.
+		// The metadata results belong to the deferred query, so a chip without a result yet cannot
+		// be matched. Say so instead of opening a wrong node.
+		const liveFilters = files_search_query_parse(searchQuery).filters;
+		const liveMetadataFilters = liveFilters.filter(
+			(filter) => filter.problem === null && filter.key.namespace !== "file",
+		);
+		// A query with no metadata chip needs only the tree, so it never waits.
+		if (liveMetadataFilters.length > 0) {
+			if (isSearchLoading || liveMetadataFilters.some((filter) => !searchMetadataNodeIds.has(filter.raw))) {
+				return false;
+			}
+			// The metadata results were fetched inside the folder of the `file.path` chip the deferred
+			// query had. Right after that chip is removed or changed, the results still belong to the
+			// old folder, so Enter must wait for the new ones instead of opening a node from that folder.
+			if (
+				search_path_filter(liveFilters)?.raw !==
+				search_path_filter(files_search_query_parse(searchQueryDeferred).filters)?.raw
+			) {
+				return false;
+			}
+		}
+
+		const topMatchId = get_search_matches({
+			treeItems,
+			searchQuery,
+			metadataNodeIds: searchMetadataNodeIds,
+		}).topMatchId;
 		const topMatchItem = topMatchId ? treeItems.itemById.get(topMatchId) : undefined;
-		if (!topMatchId || !topMatchItem) {
-			return;
+		if (topMatchId && topMatchItem) {
+			onPrimaryAction(topMatchId, topMatchItem.kind);
 		}
-
-		onPrimaryAction(topMatchId, topMatchItem.kind);
+		return true;
 	});
 
 	const handleArchive = useFn<FilesSidebarTree_Props["onArchive"]>((nodeId) => {
@@ -5751,7 +5747,10 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				canArchiveSelection={canArchiveSelection}
 				treeItemsList={treeItemsList}
 				showArchived={showArchived}
-				initialSearchQuery={initialSearchQuery}
+				initialSearchQuery={searchQuery}
+				isSearchLoading={isSearchLoading}
+				isSearchFailed={isSearchFailed}
+				searchMatchCount={searchMatches?.matchCount ?? null}
 				onClose={onClose}
 				onSearchQueryChange={handleSearchQueryChange}
 				onSearchSubmit={handleSearchSubmit}
@@ -5777,6 +5776,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					isTreeLoading={treeItemsList === undefined}
 					showEmptyState={showEmptyState}
 					isSearchActive={isSearchActive}
+					isSearchLoading={isSearchLoading}
+					isSearchFailed={isSearchFailed}
 					displayNameByUserId={displayNameByUserId}
 					trackActiveFileIds={trackActiveFileIds}
 					selectedNodeId={selectedNodeId}
@@ -5828,6 +5829,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		path?: string;
 		archiveOperationId?: string;
 		restrictedScopeNodeId?: string;
+		updatedAt?: number;
 		readOnlyState?: files_VisibleTreeNode["readOnlyState"];
 	}): files_VisibleTreeNode => {
 		const id = args.id as app_convex_Id<"files_nodes">;
@@ -5851,7 +5853,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			archiveOperationId: args.archiveOperationId,
 			restrictedScopeNodeId: args.restrictedScopeNodeId as app_convex_Id<"files_nodes"> | undefined,
 			createdBy: "test-user" as app_convex_Id<"users">,
-			updatedAt: 1,
+			updatedAt: args.updatedAt ?? 1,
 			updatedBy: "test-user" as app_convex_Id<"users">,
 			readOnlyState: args.readOnlyState ?? "writable",
 		};
@@ -6507,7 +6509,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 		test("treats unrelated sidebar and page elements as outside the selection area", () => {
 			const searchInput = document.createElement("input");
-			searchInput.className = "FilesSidebarSearch" satisfies FilesSidebarSearch_ClassNames;
+			searchInput.className = "FilesSearchInput";
 			const pageElement = document.createElement("main");
 
 			expect(is_inside_tree_selection_area(searchInput)).toBe(false);
@@ -7111,7 +7113,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 	});
 
-	describe("files_sidebar_parse_search_query", () => {
+	describe("parse_search_query", () => {
 		test("treats a plain word as a name query", () => {
 			expect(parse_search_query("  API.md ")).toEqual({ mode: "name", value: "api.md" });
 		});
@@ -7146,6 +7148,237 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(parse_search_query("https://app.test/w/acme/main/chat")).toEqual({
 				mode: "path",
 				value: "https://app.test/w/acme/main/chat",
+			});
+		});
+	});
+
+	describe("search_path_filter", () => {
+		const filters = (query: string) => files_search_query_parse(query).filters;
+
+		test("takes the first plain file.path chip and skips a negated, prefixed, or broken one", () => {
+			expect(search_path_filter(filters("!file.path:/tasks status:open"))).toBeNull();
+			expect(search_path_filter(filters("file.path:tasks* status:open"))).toBeNull();
+			expect(search_path_filter(filters("file.path: status:open"))).toBeNull();
+			expect(search_path_filter(filters("status:open file.path:/a file.path:/b"))).toEqual({
+				raw: "file.path:/a",
+				value: "/a",
+			});
+			expect(search_path_filter(filters("file.path:/tasks/"))).toEqual({ raw: "file.path:/tasks/", value: "/tasks/" });
+		});
+	});
+
+	describe("search_filter_matches_item", () => {
+		const matches = (query: string, item: files_TreeItem) =>
+			search_filter_matches_item({
+				filter: files_search_query_parse(query).filters[0]!,
+				item,
+				metadataNodeIds: new Map(),
+			});
+
+		test("file.ext never matches a folder, even one with a dot in its name", () => {
+			const folder = test_node({ id: "release", parentId: files_ROOT_ID, kind: "folder", name: "v1.2" });
+			const file = test_node({ id: "release_notes", parentId: files_ROOT_ID, kind: "file", name: "v1.2" });
+			expect(matches("file.ext:2", folder)).toBe(false);
+			expect(matches("file.ext:2*", folder)).toBe(false);
+			expect(matches("file.ext:2", file)).toBe(true);
+			expect(matches("file.ext:2*", file)).toBe(true);
+		});
+	});
+
+	describe("get_search_matches", () => {
+		const root = files_SYNTHETIC_ROOT_FOLDER;
+		const tasks = test_node({ id: "tasks", parentId: files_ROOT_ID, kind: "folder", name: "tasks" });
+		const task = test_node({
+			id: "task",
+			parentId: "tasks",
+			kind: "file",
+			name: "raw-media.md",
+			path: "/tasks/raw-media.md",
+			// The one node with a real update time, so `file.updated` can be told from `_creationTime`.
+			updatedAt: new Date(2026, 8, 4, 12).getTime(),
+		});
+		const doneTask = test_node({
+			id: "done_task",
+			parentId: "tasks",
+			kind: "file",
+			name: "done.txt",
+			path: "/tasks/done.txt",
+			archiveOperationId: "archive-operation",
+		});
+		const archive = test_node({ id: "archive", parentId: files_ROOT_ID, kind: "folder", name: "tasks-archive" });
+		const oldTask = test_node({
+			id: "old_task",
+			parentId: "archive",
+			kind: "file",
+			name: "old.md",
+			path: "/tasks-archive/old.md",
+		});
+		const note = test_node({ id: "note", parentId: files_ROOT_ID, kind: "file", name: "notes.txt" });
+		const backup = test_node({ id: "backup", parentId: files_ROOT_ID, kind: "file", name: "backup.tar.gz" });
+		const list = [root, tasks, task, doneTask, archive, oldTask, note, backup];
+		const treeItems = {
+			list,
+			itemsIds: new Set<string>(list.map((item) => item._id)),
+			itemsIdsByParentId: new Map<string, Set<string>>([
+				[files_ROOT_ID, new Set<string>([tasks._id, archive._id, note._id, backup._id])],
+				[tasks._id, new Set<string>([task._id, doneTask._id])],
+				[archive._id, new Set<string>([oldTask._id])],
+			]),
+			sortedItemsIdsByParentId: new Map<string, string[]>([
+				[files_ROOT_ID, [tasks._id, archive._id, note._id, backup._id]],
+				[tasks._id, [task._id, doneTask._id]],
+				[archive._id, [oldTask._id]],
+			]),
+			itemById: new Map<string, files_TreeItem>(list.map((item) => [item._id, item])),
+		} satisfies TreeItems;
+
+		const search = (searchQuery: string, metadataNodeIds = new Map<string, Set<string> | null>()) => {
+			const result = get_search_matches({ treeItems, searchQuery, metadataNodeIds });
+			return {
+				visible: [...result.visibleFileIds].sort(),
+				topMatchId: result.topMatchId,
+				matchCount: result.matchCount,
+			};
+		};
+
+		test("scopes by folder path and file fields, keeping the ancestors", () => {
+			expect(search("file.path:/tasks file.ext:md")).toEqual({
+				visible: [files_ROOT_ID, "task", "tasks"].sort(),
+				topMatchId: "task",
+				matchCount: 1,
+			});
+			// The folder itself is inside its own scope.
+			expect(search("file.path:/tasks-archive").matchCount).toBe(2);
+			expect(search("file.kind:folder tasks").matchCount).toBe(2);
+			// Only `task` was updated in 2026. Folders have an updated time too.
+			expect(search("file.updated:>2026-01-01").matchCount).toBe(1);
+			expect(search("file.updated:<2026-01-01").matchCount).toBe(6);
+		});
+
+		test("a folder path scopes the same with or without its slashes, in any case", () => {
+			expect(search("file.path:/tasks").matchCount).toBe(3);
+			expect(search("file.path:/tasks/").matchCount).toBe(3);
+			expect(search("file.path:tasks").matchCount).toBe(3);
+			expect(search("file.path:tasks/").matchCount).toBe(3);
+			expect(search("file.path:/Tasks").matchCount).toBe(3);
+			expect(search("file.path:/").matchCount).toBe(7);
+		});
+
+		test("file.updated takes a day, or a range that includes the whole day on its side", () => {
+			// Every fixture node was updated 1 ms after the epoch, the root at 0, except `task`, updated
+			// at noon on 2026-09-04. The day is local, like the dates the tree shows, so the test reads
+			// the epoch day from the clock too.
+			const local_day = (timestamp: number) => {
+				const date = new Date(timestamp);
+				const month = String(date.getMonth() + 1).padStart(2, "0");
+				return `${date.getFullYear()}-${month}-${String(date.getDate()).padStart(2, "0")}`;
+			};
+			const updatedDay = local_day(1);
+			const nextDay = local_day(1 + 24 * 60 * 60 * 1000);
+			expect(search(`file.updated:${updatedDay}`).matchCount).toBe(6);
+			expect(search(`file.updated:${nextDay}`).matchCount).toBe(0);
+			expect(search(`file.updated:>=${updatedDay}`).matchCount).toBe(7);
+			expect(search(`file.updated:>${updatedDay}`).matchCount).toBe(1);
+			expect(search(`file.updated:<=${updatedDay}`).matchCount).toBe(6);
+			expect(search(`file.updated:<${updatedDay}`).matchCount).toBe(0);
+			// `task` is the only node updated that day; its `_creationTime` is still 0.
+			expect(search("file.updated:2026-09-04").matchCount).toBe(1);
+			expect(search("file.updated:2026-09-05").matchCount).toBe(0);
+		});
+
+		test("quotes in the free text only group words, and file.ext takes a dot or a prefix", () => {
+			expect(search('"raw-media"').matchCount).toBe(1);
+			expect(search('""').matchCount).toBe(0);
+			expect(search("file.ext:.md").matchCount).toBe(2);
+			expect(search("file.ext:t*").matchCount).toBe(2);
+			// A whole extension matches the end of the name, so a two-part one works. A prefix
+			// matches the last part only.
+			expect(search("file.ext:tar.gz").matchCount).toBe(1);
+			expect(search("file.ext:.tar.gz").matchCount).toBe(1);
+			expect(search("file.ext:gz").matchCount).toBe(1);
+			expect(search("file.ext:tar*").matchCount).toBe(0);
+			// A middle part is neither the end of the name nor the start of the last part.
+			expect(search("file.ext:tar").matchCount).toBe(0);
+			expect(search("file.ext:z*").matchCount).toBe(0);
+		});
+
+		test("a negated file filter keeps the other nodes, and file.kind ignores case", () => {
+			expect(search("!file.path:/tasks").matchCount).toBe(4);
+			expect(search("!file.kind:folder").matchCount).toBe(5);
+			expect(search("file.kind:Folder").matchCount).toBe(2);
+		});
+
+		test("file.name and file.ext ignore case, and a name prefix is a prefix", () => {
+			expect(search("file.name:RAW").matchCount).toBe(1);
+			expect(search("file.name:raw*").matchCount).toBe(1);
+			expect(search("file.name:media*").matchCount).toBe(0);
+			expect(search("file.ext:.MD").matchCount).toBe(2);
+		});
+
+		test("Enter opens the folder the text names exactly, or the one file left under a metadata filter", () => {
+			expect(search("/tasks").topMatchId).toBe("tasks");
+			expect(search("/tasks status:open", new Map([["status:open", new Set(["task"])]])).topMatchId).toBe("task");
+		});
+
+		test("a pasted link with a node id names that one node", () => {
+			expect(search("http://localhost:5173/w/acme/main/files?nodeId=task")).toEqual({
+				visible: [files_ROOT_ID, "task", "tasks"].sort(),
+				topMatchId: "task",
+				matchCount: 1,
+			});
+			expect(search("http://localhost:5173/w/acme/main/files?nodeId=missing").matchCount).toBe(0);
+		});
+
+		test("a metadata filter matches the node ids its query returned, and negation keeps the other files", () => {
+			// `FilesSidebar` keys the results by the raw token, so a negated chip has its own entry.
+			const metadataNodeIds = new Map<string, Set<string>>([
+				["status:open", new Set(["task"])],
+				["!status:open", new Set(["task"])],
+			]);
+
+			expect(search("status:open", metadataNodeIds)).toEqual({
+				visible: [files_ROOT_ID, "task", "tasks"].sort(),
+				topMatchId: "task",
+				matchCount: 1,
+			});
+			// Folders never match a metadata filter by themselves, negated or not.
+			expect(search("!status:open", metadataNodeIds)).toEqual({
+				visible: [files_ROOT_ID, "archive", "old_task", "note", "backup"].sort(),
+				topMatchId: null,
+				matchCount: 3,
+			});
+		});
+
+		test("a metadata filter with no result yet matches nothing, even when negated", () => {
+			expect(search("status:open")).toEqual({ visible: [], topMatchId: null, matchCount: 0 });
+			expect(search("!status:open")).toEqual({ visible: [], topMatchId: null, matchCount: 0 });
+		});
+
+		test("a metadata filter whose query failed matches nothing, even when negated", () => {
+			expect(search("status:open", new Map([["status:open", null]]))).toEqual({
+				visible: [],
+				topMatchId: null,
+				matchCount: 0,
+			});
+			expect(search("!status:open", new Map([["!status:open", null]]))).toEqual({
+				visible: [],
+				topMatchId: null,
+				matchCount: 0,
+			});
+		});
+
+		test("an archived file never matches a metadata filter, not even a negated one", () => {
+			// The archived file has no search docs, so the server never returns it for `status:open`
+			// and a negated chip must not show it either. Without a metadata filter it matches.
+			expect(search("!status:open", new Map([["!status:open", new Set(["task"])]])).visible).not.toContain("done_task");
+			expect(search("file.path:/tasks done").visible).toContain("done_task");
+		});
+
+		test("an invalid filter blocks results until it is fixed or removed", () => {
+			expect(search("priority:>high notes")).toEqual({
+				visible: [],
+				topMatchId: null,
+				matchCount: 0,
 			});
 		});
 	});

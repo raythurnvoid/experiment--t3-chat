@@ -59,6 +59,7 @@ import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.t
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { files_metadata_MAX_FRONTMATTER_FIELDS, type files_metadata_SearchPlan } from "../shared/files-metadata.ts";
+import { files_search_query_parse, files_search_query_to_plans } from "../shared/files-search-query.ts";
 import {
 	organizations_GLOBAL_ORGANIZATION_ID,
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
@@ -7320,9 +7321,7 @@ describe("non-collaborative files", () => {
 		const billed_file_save_ids = () =>
 			enqueueActionSpy.mock.calls.flatMap((call) => {
 				const payload = call[2] as { events?: Array<{ name: string; externalId: string }> };
-				return (payload.events ?? [])
-					.filter((event) => event.name === "file_save")
-					.map((event) => event.externalId);
+				return (payload.events ?? []).filter((event) => event.name === "file_save").map((event) => event.externalId);
 			});
 
 		expect(billed_file_save_ids()).toHaveLength(1);
@@ -9286,6 +9285,896 @@ test("update_entries_by_path lets the agent set and remove keys on an uploaded f
 	expect(await setByPath([{ key: "status", value: "tampered" }], [])).toMatchObject({ _nay: { name: "read_only" } });
 });
 
+describe("search box doors", () => {
+	/**
+	 * Each seeded file spends one Yjs push and the sharing steps spend tree writes, so the strict
+	 * per-user limits run out inside one fixture. Reset them between steps.
+	 */
+	async function reset_file_write_rate_limits(t: ReturnType<typeof test_convex>, userId: Id<"users">) {
+		for (const name of ["files_yjs_push_update", "files_tree_write", "files_sharing_write"]) {
+			await t.mutation(components.rate_limiter.lib.resetRateLimit, { name, key: userId });
+		}
+	}
+
+	/**
+	 * Three tasks with frontmatter, one of them with metadata-map keys too, and a look-alike folder
+	 * `/tasks-archive` that a tree-path bound with the wrong end character would include in `/tasks`.
+	 */
+	async function seed_search_box_fixture(t: ReturnType<typeof test_convex>) {
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		const asOwner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Search Box Owner",
+			email: "search-box-owner@example.com",
+		});
+		test_setup_r2_capture();
+
+		const openTaskId = await test_materialize_markdown_file(
+			t,
+			asOwner,
+			db,
+			"/tasks/2026-09-04-raw-media.md",
+			[
+				"---",
+				"status: open",
+				"priority: 3",
+				"regression: true",
+				"reported: 2026-09-04",
+				"tags:",
+				"  - teams",
+				"  - macos",
+				"source:",
+				"  channel: qa-and-feedback",
+				"---",
+				"Body",
+			].join("\n"),
+		);
+		await reset_file_write_rate_limits(t, db.userId);
+		const fixedTaskId = await test_materialize_markdown_file(
+			t,
+			asOwner,
+			db,
+			"/tasks/2026-08-20-waiting-room.md",
+			["---", "status: fixed", "priority: 2", "reported: 2026-08-20", "---", "Body"].join("\n"),
+		);
+		await reset_file_write_rate_limits(t, db.userId);
+		const archivedTaskId = await test_materialize_markdown_file(
+			t,
+			asOwner,
+			db,
+			"/tasks-archive/2026-07-01-old.md",
+			["---", "status: open", "priority: 1", "legacy: yes", "---", "Body"].join("\n"),
+		);
+		await reset_file_write_rate_limits(t, db.userId);
+
+		// The metadata map is the second metadata kind: this file is "fixed" in its frontmatter and "open"
+		// in its map, and its map holds a key with a colon.
+		const written = await asOwner.mutation(api.files_metadata.set_entries, {
+			membershipId: db.membershipId,
+			fileNodeId: fixedTaskId,
+			metadataYaml: ["status: open", "slack:message-id: '1757003021.482119'"].join("\n"),
+		});
+		if (written._nay) throw new Error(written._nay.message);
+
+		const tree = await asOwner.query(api.files_nodes.list_tree, { membershipId: db.membershipId });
+		const tasksFolderId = tree.find((fileNode) => fileNode.path === "/tasks")!._id;
+
+		return { db, asOwner, openTaskId, fixedTaskId, archivedTaskId, tasksFolderId };
+	}
+
+	/**
+	 * A member with no role at all, so the workspace lets them read nothing and only a share grant
+	 * can let them in. The owner passes every check, so a refusal needs this second identity.
+	 */
+	async function seed_grant_only_member(
+		t: ReturnType<typeof test_convex>,
+		db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>,
+		suffix: string,
+	) {
+		const member = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: `clerk_search_box_${suffix}` });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				active: true,
+				updatedAt: Date.now(),
+			});
+			return { userId, membershipId };
+		});
+		return {
+			...member,
+			asMember: t.withIdentity({
+				issuer: "https://clerk.test",
+				external_id: member.userId,
+				name: `Search Box Member ${suffix}`,
+			}),
+		};
+	}
+
+	const statusOpenPlans: files_metadata_SearchPlan[] = [
+		{ op: "eq", qualifiedField: "frontmatter.status", value: "open" },
+		{ op: "eq", qualifiedField: "metadata.status", value: "open" },
+	];
+
+	test("search_nodes unites metadata kinds and value kinds and scopes by folder path", async () => {
+		const t = test_convex();
+		const seeded = await seed_search_box_fixture(t);
+		const search = (plans: files_metadata_SearchPlan[], pathPrefix?: string) =>
+			seeded.asOwner
+				.query(api.files_metadata.search_nodes, { membershipId: seeded.db.membershipId, plans, pathPrefix })
+				.then((found) => new Set(found.nodeIds));
+
+		// `status:open` from either metadata kind: the open task, the fixed task through its map, the archive.
+		expect(await search(statusOpenPlans)).toEqual(
+			new Set([seeded.openTaskId, seeded.fixedTaskId, seeded.archivedTaskId]),
+		);
+		// `file.path:/tasks` stops at the folder: `/tasks-archive` shares the prefix but not the path.
+		expect(await search(statusOpenPlans, "/tasks")).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId]));
+		expect(await search(statusOpenPlans, "/tasks/")).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId]));
+
+		// `priority:3` asks the number and the text. Only the number exists.
+		expect(
+			await search([
+				{ op: "eq", qualifiedField: "frontmatter.priority", value: "3" },
+				{ op: "eq", qualifiedField: "frontmatter.priority", value: 3 },
+			]),
+		).toEqual(new Set([seeded.openTaskId]));
+		// The plans the box really sends: a bare number or boolean chip carries one plan per metadata
+		// kind and value kind, four in all, and the door must take that many.
+		const chipPlans = (query: string) => files_search_query_to_plans(files_search_query_parse(query).filters[0]!);
+		expect(chipPlans("priority:3")).toHaveLength(4);
+		expect(await search(chipPlans("priority:3"))).toEqual(new Set([seeded.openTaskId]));
+		expect(await search(chipPlans("regression:true"))).toEqual(new Set([seeded.openTaskId]));
+		expect(
+			await search([{ op: "range", qualifiedField: "frontmatter.priority", valueKind: "number", gte: 2 }]),
+		).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId]));
+		// Each bound has its own index line, so every comparator gets a case.
+		expect(await search([{ op: "range", qualifiedField: "frontmatter.priority", valueKind: "number", gt: 2 }])).toEqual(
+			new Set([seeded.openTaskId]),
+		);
+		expect(
+			await search([{ op: "range", qualifiedField: "frontmatter.priority", valueKind: "number", lte: 2 }]),
+		).toEqual(new Set([seeded.fixedTaskId, seeded.archivedTaskId]));
+		expect(await search([{ op: "range", qualifiedField: "frontmatter.priority", valueKind: "number", lt: 2 }])).toEqual(
+			new Set([seeded.archivedTaskId]),
+		);
+		expect(
+			await search([
+				{
+					op: "range",
+					qualifiedField: "frontmatter.reported",
+					valueKind: "maybe_date",
+					gte: Date.UTC(2026, 8, 4),
+					lt: Date.UTC(2026, 8, 5),
+				},
+			]),
+		).toEqual(new Set([seeded.openTaskId]));
+		// A date with a time asks for its instant, so one plan sets both bounds on one index line.
+		expect(await search(chipPlans("reported:2026-09-04T00:00:00Z"))).toEqual(new Set([seeded.openTaskId]));
+		expect(await search(chipPlans("reported:2026-09-04T00:01:00Z"))).toEqual(new Set());
+		// The folder scope applies to an exists plan too.
+		expect(await search([{ op: "exists", qualifiedField: "frontmatter.legacy" }], "/tasks")).toEqual(new Set());
+		expect(await search([{ op: "exists", qualifiedField: "frontmatter.legacy" }], "/tasks-archive")).toEqual(
+			new Set([seeded.archivedTaskId]),
+		);
+		expect(await search([{ op: "eq", qualifiedField: "frontmatter.regression", value: true }])).toEqual(
+			new Set([seeded.openTaskId]),
+		);
+		expect(await search([{ op: "eq", qualifiedField: "frontmatter.tags", value: "macos" }])).toEqual(
+			new Set([seeded.openTaskId]),
+		);
+		// A nested map is a key of its own, without a value.
+		expect(await search([{ op: "exists", qualifiedField: "frontmatter.source" }])).toEqual(
+			new Set([seeded.openTaskId]),
+		);
+		expect(await search([{ op: "exists", qualifiedField: "metadata.slack:message-id" }])).toEqual(
+			new Set([seeded.fixedTaskId]),
+		);
+
+		// The root scope is the whole workspace.
+		expect(await search(statusOpenPlans, "/")).toEqual(
+			new Set([seeded.openTaskId, seeded.fixedTaskId, seeded.archivedTaskId]),
+		);
+
+		// Input the app never sends gets the empty answer, not an error.
+		expect(await search([])).toEqual(new Set());
+		expect(await search(Array.from({ length: 5 }, () => statusOpenPlans[0]!))).toEqual(new Set());
+		expect(await search([{ op: "exists", qualifiedField: "frontmatter.a..b" }])).toEqual(new Set());
+		expect(await search([{ op: "exists", qualifiedField: "status" }])).toEqual(new Set());
+		expect(await search([{ op: "exists", qualifiedField: `frontmatter.${"a".repeat(160)}` }])).toEqual(new Set());
+		expect(await search(statusOpenPlans, "tasks")).toEqual(new Set());
+		expect(await search(statusOpenPlans, `/${"a".repeat(1024)}`)).toEqual(new Set());
+
+		// Somebody else's membership answers nothing.
+		const other = await t.run(async (ctx) =>
+			test_mocks_fill_db_with.membership(ctx, { organizationName: "other-org" }),
+		);
+		const otherMembership = await seeded.asOwner.query(api.files_metadata.search_nodes, {
+			membershipId: other.membershipId,
+			plans: statusOpenPlans,
+		});
+		expect(otherMembership).toEqual({ nodeIds: [] });
+	});
+
+	test("search_nodes applies the pending overlay to frontmatter plans only", async () => {
+		const t = test_convex();
+		const seeded = await seed_search_box_fixture(t);
+		const search = (plans: files_metadata_SearchPlan[]) =>
+			seeded.asOwner
+				.query(api.files_metadata.search_nodes, { membershipId: seeded.db.membershipId, plans })
+				.then((found) => new Set(found.nodeIds));
+
+		const pending = await upsert_pending_update_internal_for_test(t, {
+			organizationId: seeded.db.organizationId,
+			workspaceId: seeded.db.workspaceId,
+			userId: seeded.db.userId,
+			nodeId: seeded.openTaskId,
+			unstagedMarkdown: ["---", "status: triaging", "priority: 3", "---", "Body"].join("\n"),
+		});
+		if (pending._nay) throw new Error(pending._nay.message);
+
+		// The open task now says "triaging" in the owner's draft, so its stale committed "open" is
+		// hidden. The fixed task still matches through its metadata map, which no draft can change.
+		expect(await search(statusOpenPlans)).toEqual(new Set([seeded.fixedTaskId, seeded.archivedTaskId]));
+		expect(await search([{ op: "eq", qualifiedField: "frontmatter.status", value: "triaging" }])).toEqual(
+			new Set([seeded.openTaskId]),
+		);
+		expect(await search([{ op: "eq", qualifiedField: "metadata.status", value: "open" }])).toEqual(
+			new Set([seeded.fixedTaskId]),
+		);
+
+		// A draft on the fixed task changes its frontmatter only: the map still says "open".
+		const fixedPending = await upsert_pending_update_internal_for_test(t, {
+			organizationId: seeded.db.organizationId,
+			workspaceId: seeded.db.workspaceId,
+			userId: seeded.db.userId,
+			nodeId: seeded.fixedTaskId,
+			unstagedMarkdown: ["---", "status: triaging", "---", "Body"].join("\n"),
+		});
+		if (fixedPending._nay) throw new Error(fixedPending._nay.message);
+		expect(await search([{ op: "eq", qualifiedField: "metadata.status", value: "open" }])).toEqual(
+			new Set([seeded.fixedTaskId]),
+		);
+		// Both kinds in one call: the frontmatter plan's overlay must not hide the map doc next to it.
+		expect(await search(statusOpenPlans)).toEqual(new Set([seeded.fixedTaskId, seeded.archivedTaskId]));
+		expect(await search([{ op: "eq", qualifiedField: "frontmatter.status", value: "fixed" }])).toEqual(new Set());
+	});
+
+	test("search_nodes keeps a folder scope closed at its own path, whatever the characters", async () => {
+		const t = test_convex();
+		const seeded = await seed_search_box_fixture(t);
+		// The scope bound must sort after every path under the folder, including characters above
+		// the Basic Multilingual Plane.
+		await reset_file_write_rate_limits(t, seeded.db.userId);
+		const emojiTaskId = await test_materialize_markdown_file(
+			t,
+			seeded.asOwner,
+			seeded.db,
+			"/tasks/😀 media/x.md",
+			["---", "status: open", "---", "Body"].join("\n"),
+		);
+		const search = (plans: files_metadata_SearchPlan[], pathPrefix: string) =>
+			seeded.asOwner
+				.query(api.files_metadata.search_nodes, { membershipId: seeded.db.membershipId, plans, pathPrefix })
+				.then((found) => new Set(found.nodeIds));
+
+		expect(await search(statusOpenPlans, "/tasks")).toEqual(
+			new Set([seeded.openTaskId, seeded.fixedTaskId, emojiTaskId]),
+		);
+		expect(await search(statusOpenPlans, "/tasks/😀 media")).toEqual(new Set([emojiTaskId]));
+		expect(
+			await search([{ op: "prefix", qualifiedField: "frontmatter.status", value: "op" }], "/tasks/😀 media"),
+		).toEqual(new Set([emojiTaskId]));
+	});
+
+	test("search_nodes answers a prefix value of any length", async () => {
+		const t = test_convex();
+		const seeded = await seed_search_box_fixture(t);
+		// The upper bound of the scan is built from the value. A spread of that many code points
+		// into `String.fromCodePoint` would throw a RangeError instead of the empty answer.
+		const found = await seeded.asOwner.query(api.files_metadata.search_nodes, {
+			membershipId: seeded.db.membershipId,
+			plans: [{ op: "prefix", qualifiedField: "frontmatter.title", value: "a".repeat(300_000) }],
+		});
+		expect(found.nodeIds).toEqual([]);
+	});
+
+	test("every door answers somebody else's membership with its empty shape", async () => {
+		const t = test_convex();
+		const seeded = await seed_search_box_fixture(t);
+		const member = await seed_grant_only_member(t, seeded.db, "other");
+
+		expect(
+			await seeded.asOwner.query(api.files_metadata.search_nodes, {
+				membershipId: member.membershipId,
+				plans: statusOpenPlans,
+			}),
+		).toEqual({ nodeIds: [] });
+		expect(
+			await seeded.asOwner.query(api.files_metadata.list_search_fields, { membershipId: member.membershipId }),
+		).toEqual([]);
+		expect(
+			await seeded.asOwner.query(api.files_metadata.list_search_values, {
+				membershipId: member.membershipId,
+				qualifiedField: "frontmatter.status",
+				prefix: "",
+			}),
+		).toEqual([]);
+	});
+
+	test("search_nodes hides a restricted folder from a member until they are given it", async () => {
+		const t = test_convex();
+		const seeded = await seed_search_box_fixture(t);
+		const member = await seed_grant_only_member(t, seeded.db, "search");
+
+		await reset_file_write_rate_limits(t, seeded.db.userId);
+		const restricted = await seeded.asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: seeded.db.membershipId,
+			nodeId: seeded.tasksFolderId,
+		});
+		if (restricted._nay) throw new Error(restricted._nay.message);
+
+		const searchAsMember = () =>
+			member.asMember
+				.query(api.files_metadata.search_nodes, { membershipId: member.membershipId, plans: statusOpenPlans })
+				.then((found) => new Set(found.nodeIds));
+
+		// No role and no grant: the open archive file must not leak through a default
+		// workspace-wide read, and the restricted folder is not theirs either.
+		expect(await searchAsMember()).toEqual(new Set());
+
+		await reset_file_write_rate_limits(t, seeded.db.userId);
+		const granted = await seeded.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: seeded.db.membershipId,
+			nodeId: seeded.tasksFolderId,
+			principal: { kind: "user", userId: member.userId },
+			level: "read",
+		});
+		if (granted._nay) throw new Error(granted._nay.message);
+
+		expect(await searchAsMember()).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId]));
+
+		const ownerFound = await seeded.asOwner.query(api.files_metadata.search_nodes, {
+			membershipId: seeded.db.membershipId,
+			plans: statusOpenPlans,
+		});
+		expect(new Set(ownerFound.nodeIds)).toEqual(
+			new Set([seeded.openTaskId, seeded.fixedTaskId, seeded.archivedTaskId]),
+		);
+	});
+
+	test("list_search_fields lists keys with the kinds the caller can read", async () => {
+		const t = test_convex();
+		const seeded = await seed_search_box_fixture(t);
+
+		const ownerFields = await seeded.asOwner.query(api.files_metadata.list_search_fields, {
+			membershipId: seeded.db.membershipId,
+		});
+		expect(ownerFields).toEqual([
+			{ qualifiedField: "frontmatter.legacy", valueKinds: ["string"] },
+			{ qualifiedField: "frontmatter.priority", valueKinds: ["number"] },
+			{ qualifiedField: "frontmatter.regression", valueKinds: ["boolean"] },
+			{ qualifiedField: "frontmatter.reported", valueKinds: ["string", "maybe_date"] },
+			{ qualifiedField: "frontmatter.source", valueKinds: [] },
+			{ qualifiedField: "frontmatter.source.channel", valueKinds: ["string"] },
+			{ qualifiedField: "frontmatter.status", valueKinds: ["string"] },
+			{ qualifiedField: "frontmatter.tags", valueKinds: ["string"] },
+			{ qualifiedField: "metadata.slack:message-id", valueKinds: ["string"] },
+			{ qualifiedField: "metadata.status", valueKinds: ["string"] },
+		]);
+
+		// A key that only exists in the owner's draft shows up for the owner.
+		const pending = await upsert_pending_update_internal_for_test(t, {
+			organizationId: seeded.db.organizationId,
+			workspaceId: seeded.db.workspaceId,
+			userId: seeded.db.userId,
+			nodeId: seeded.openTaskId,
+			unstagedMarkdown: ["---", "status: open", "draft-key: x", "---", "Body"].join("\n"),
+		});
+		if (pending._nay) throw new Error(pending._nay.message);
+		const ownerFieldsWithDraft = await seeded.asOwner.query(api.files_metadata.list_search_fields, {
+			membershipId: seeded.db.membershipId,
+		});
+		expect(ownerFieldsWithDraft.map((field) => field.qualifiedField)).toContain("frontmatter.draft-key");
+
+		// A member who was given `/tasks` sees its keys, not the archive's `legacy` and not the
+		// owner's draft key.
+		const member = await seed_grant_only_member(t, seeded.db, "fields");
+		expect(
+			await member.asMember.query(api.files_metadata.list_search_fields, { membershipId: member.membershipId }),
+		).toEqual([]);
+
+		await reset_file_write_rate_limits(t, seeded.db.userId);
+		const restricted = await seeded.asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: seeded.db.membershipId,
+			nodeId: seeded.tasksFolderId,
+		});
+		if (restricted._nay) throw new Error(restricted._nay.message);
+		await reset_file_write_rate_limits(t, seeded.db.userId);
+		const granted = await seeded.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: seeded.db.membershipId,
+			nodeId: seeded.tasksFolderId,
+			principal: { kind: "user", userId: member.userId },
+			level: "read",
+		});
+		if (granted._nay) throw new Error(granted._nay.message);
+
+		const memberFields = await member.asMember.query(api.files_metadata.list_search_fields, {
+			membershipId: member.membershipId,
+		});
+		const memberKeys = memberFields.map((field) => field.qualifiedField);
+		expect(memberKeys).toContain("frontmatter.status");
+		expect(memberKeys).toContain("metadata.status");
+		expect(memberKeys).not.toContain("frontmatter.legacy");
+		expect(memberKeys).not.toContain("frontmatter.draft-key");
+	});
+
+	test("archiving a folder drops its keys and values from the catalog", async () => {
+		const t = test_convex();
+		const seeded = await seed_search_box_fixture(t);
+		const tree = await seeded.asOwner.query(api.files_nodes.list_tree, { membershipId: seeded.db.membershipId });
+		const archiveFolderId = tree.find((fileNode) => fileNode.path === "/tasks-archive")!._id;
+		const keys = () =>
+			seeded.asOwner
+				.query(api.files_metadata.list_search_fields, { membershipId: seeded.db.membershipId })
+				.then((fields) => fields.map((field) => field.qualifiedField));
+		const legacyValues = () =>
+			seeded.asOwner.query(api.files_metadata.list_search_values, {
+				membershipId: seeded.db.membershipId,
+				qualifiedField: "frontmatter.legacy",
+				prefix: "",
+			});
+
+		expect(await keys()).toContain("frontmatter.legacy");
+		expect(await legacyValues()).toEqual(["yes"]);
+
+		await reset_file_write_rate_limits(t, seeded.db.userId);
+		const archived = await seeded.asOwner.mutation(api.files_nodes.archive_nodes, {
+			membershipId: seeded.db.membershipId,
+			nodeIds: [archiveFolderId],
+		});
+		if (archived._nay) throw new Error(archived._nay.message);
+
+		expect(await keys()).not.toContain("frontmatter.legacy");
+		expect(await keys()).toContain("frontmatter.status");
+		expect(await legacyValues()).toEqual([]);
+		const found = await seeded.asOwner.query(api.files_metadata.search_nodes, {
+			membershipId: seeded.db.membershipId,
+			plans: statusOpenPlans,
+		});
+		expect(new Set(found.nodeIds)).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId]));
+	});
+
+	test("the doors refuse a field or a prefix over the cap, with data a scan would answer", async () => {
+		const t = test_convex();
+		const seeded = await seed_search_box_fixture(t);
+		// Frontmatter has no cap on a key path's length, so a stored field can be longer than the
+		// doors accept. The control sits exactly at the cap and proves the inserted docs are what the
+		// doors read. `frontmatter.a..b` is a field the key grammar refuses.
+		const longField = `frontmatter.${"a".repeat(160)}`;
+		const badField = "frontmatter.a..b";
+		const controlField = `frontmatter.${"b".repeat(148)}`;
+		await t.run(async (ctx) => {
+			const openTask = (await ctx.db.get("files_nodes", seeded.openTaskId))!;
+			for (const qualifiedField of [longField, badField, controlField]) {
+				const doc = {
+					organizationId: seeded.db.organizationId,
+					workspaceId: seeded.db.workspaceId,
+					fileNodeId: seeded.openTaskId,
+					sourceKind: "committed" as const,
+					path: openTask.path,
+					treePath: openTask.treePath,
+					qualifiedField,
+				};
+				await ctx.db.insert("files_metadata_docs", { ...doc, docKind: "field" });
+				await ctx.db.insert("files_metadata_docs", { ...doc, docKind: "value", valueKind: "string", stringValue: "x" });
+			}
+			// A value longer than the prefix cap: a prefix at the cap finds it, one past the cap is refused.
+			await ctx.db.insert("files_metadata_docs", {
+				organizationId: seeded.db.organizationId,
+				workspaceId: seeded.db.workspaceId,
+				fileNodeId: seeded.openTaskId,
+				sourceKind: "committed",
+				path: openTask.path,
+				treePath: openTask.treePath,
+				qualifiedField: "frontmatter.status",
+				docKind: "value",
+				valueKind: "string",
+				stringValue: "o".repeat(201),
+			});
+		});
+		const keys = await seeded.asOwner
+			.query(api.files_metadata.list_search_fields, { membershipId: seeded.db.membershipId })
+			.then((fields) => fields.map((field) => field.qualifiedField));
+		const nodeIds = (qualifiedField: string) =>
+			seeded.asOwner
+				.query(api.files_metadata.search_nodes, {
+					membershipId: seeded.db.membershipId,
+					plans: [{ op: "exists", qualifiedField }],
+				})
+				.then((found) => found.nodeIds);
+		const values = (qualifiedField: string, prefix: string) =>
+			seeded.asOwner.query(api.files_metadata.list_search_values, {
+				membershipId: seeded.db.membershipId,
+				qualifiedField,
+				prefix,
+			});
+
+		expect(keys).toContain(controlField);
+		expect(await nodeIds(controlField)).toEqual([seeded.openTaskId]);
+		expect(await values(controlField, "")).toEqual(["x"]);
+		for (const refused of [longField, badField]) {
+			expect(keys).not.toContain(refused);
+			expect(await nodeIds(refused)).toEqual([]);
+			expect(await values(refused, "")).toEqual([]);
+		}
+		expect(await values("frontmatter.status", "o".repeat(200))).toEqual(["o".repeat(201)]);
+		expect(await values("frontmatter.status", "o".repeat(201))).toEqual([]);
+		// A path scope that does not start with `/`, or is over its cap, is refused too. Every stored
+		// tree path starts with `/`, so on real data that refusal and a scan give the same empty answer.
+	});
+
+	test("list_search_values lists distinct readable values that start with the prefix", async () => {
+		const t = test_convex();
+		const seeded = await seed_search_box_fixture(t);
+		const values = (qualifiedField: string, prefix: string) =>
+			seeded.asOwner.query(api.files_metadata.list_search_values, {
+				membershipId: seeded.db.membershipId,
+				qualifiedField,
+				prefix,
+			});
+
+		expect(await values("frontmatter.status", "")).toEqual(["fixed", "open"]);
+		expect(await values("frontmatter.status", "o")).toEqual(["open"]);
+		// The first read starts at the prefix itself, so a fully typed value still lists its row.
+		expect(await values("frontmatter.status", "open")).toEqual(["open"]);
+		expect(await values("frontmatter.status", "z")).toEqual([]);
+		expect(await values("metadata.status", "")).toEqual(["open"]);
+		expect(await values("frontmatter.tags", "")).toEqual(["macos", "teams"]);
+		// Input the app never sends gets the empty answer, not an error.
+		expect(await values("status", "")).toEqual([]);
+		expect(await values(`frontmatter.${"a".repeat(160)}`, "")).toEqual([]);
+		expect(await values("frontmatter.status", "o".repeat(201))).toEqual([]);
+
+		const member = await seed_grant_only_member(t, seeded.db, "values");
+		const memberValues = () =>
+			member.asMember.query(api.files_metadata.list_search_values, {
+				membershipId: member.membershipId,
+				qualifiedField: "frontmatter.status",
+				prefix: "",
+			});
+		expect(await memberValues()).toEqual([]);
+
+		await reset_file_write_rate_limits(t, seeded.db.userId);
+		const restricted = await seeded.asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: seeded.db.membershipId,
+			nodeId: seeded.tasksFolderId,
+		});
+		if (restricted._nay) throw new Error(restricted._nay.message);
+		await reset_file_write_rate_limits(t, seeded.db.userId);
+		const granted = await seeded.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: seeded.db.membershipId,
+			nodeId: seeded.tasksFolderId,
+			principal: { kind: "user", userId: member.userId },
+			level: "read",
+		});
+		if (granted._nay) throw new Error(granted._nay.message);
+		expect(await memberValues()).toEqual(["fixed", "open"]);
+		// A value the member cannot read is stepped over, and the walk goes on to the readable ones.
+		await t.run(async (ctx) => {
+			await ctx.db.insert("files_metadata_docs", {
+				organizationId: seeded.db.organizationId,
+				workspaceId: seeded.db.workspaceId,
+				fileNodeId: seeded.archivedTaskId,
+				sourceKind: "committed",
+				path: "/tasks-archive/2026-07-01-old.md",
+				treePath: "/tasks-archive/2026-07-01-old.md",
+				qualifiedField: "frontmatter.status",
+				docKind: "value",
+				valueKind: "string",
+				stringValue: "aaa",
+			});
+		});
+		expect(await memberValues()).toEqual(["fixed", "open"]);
+		expect(await values("frontmatter.status", "")).toEqual(["aaa", "fixed", "open"]);
+		// The archive's `legacy` value stays out of reach: the grant covers `/tasks` only.
+		expect(
+			await member.asMember.query(api.files_metadata.list_search_values, {
+				membershipId: member.membershipId,
+				qualifiedField: "frontmatter.legacy",
+				prefix: "",
+			}),
+		).toEqual([]);
+	});
+
+	test("list_search_values stops at its cap", async () => {
+		const t = test_convex();
+		const seeded = await seed_search_box_fixture(t);
+		await t.run(async (ctx) => {
+			const openTask = (await ctx.db.get("files_nodes", seeded.openTaskId))!;
+			for (let index = 0; index < 26; index += 1) {
+				await ctx.db.insert("files_metadata_docs", {
+					organizationId: seeded.db.organizationId,
+					workspaceId: seeded.db.workspaceId,
+					fileNodeId: seeded.openTaskId,
+					sourceKind: "committed",
+					path: openTask.path,
+					treePath: openTask.treePath,
+					qualifiedField: "frontmatter.cap",
+					docKind: "value",
+					valueKind: "string",
+					stringValue: `v${String(index).padStart(2, "0")}`,
+				});
+			}
+		});
+
+		const values = await seeded.asOwner.query(api.files_metadata.list_search_values, {
+			membershipId: seeded.db.membershipId,
+			qualifiedField: "frontmatter.cap",
+			prefix: "",
+		});
+		expect(values).toHaveLength(25);
+		expect(values[0]).toBe("v00");
+		expect(values[24]).toBe("v24");
+	});
+
+	test("list_search_fields stops at its cap", async () => {
+		const t = test_convex();
+		const seeded = await seed_search_box_fixture(t);
+		await t.run(async (ctx) => {
+			const openTask = (await ctx.db.get("files_nodes", seeded.openTaskId))!;
+			for (let index = 0; index < 201; index += 1) {
+				await ctx.db.insert("files_metadata_docs", {
+					organizationId: seeded.db.organizationId,
+					workspaceId: seeded.db.workspaceId,
+					fileNodeId: seeded.openTaskId,
+					sourceKind: "committed",
+					path: openTask.path,
+					treePath: openTask.treePath,
+					qualifiedField: `frontmatter.cap-${String(index).padStart(3, "0")}`,
+					docKind: "field",
+				});
+			}
+		});
+
+		const fields = await seeded.asOwner.query(api.files_metadata.list_search_fields, {
+			membershipId: seeded.db.membershipId,
+		});
+		expect(fields).toHaveLength(200);
+	});
+
+	test("search_nodes cuts the candidates at a few hundred restricted folders", async () => {
+		const t = test_convex();
+		const seeded = await seed_search_box_fixture(t);
+		// 300 files, each one its own restricted folder root, all `status: capped`. The owner may read
+		// every one, but the readable-nodes filter pays per restricted folder, so the answer stops
+		// at the cap. Ten more files sit in the first file's folder and sort after the cut: the cap
+		// counts folders, not files, so they are all found.
+		await t.run(async (ctx) => {
+			const insertCappedFile = async (name: string, restrictedScopeNodeId: Id<"files_nodes"> | null) => {
+				const nodeId = await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: seeded.db.organizationId,
+					workspaceId: seeded.db.workspaceId,
+					createdBy: seeded.db.userId,
+					updatedBy: seeded.db.userId,
+					parentId: files_ROOT_ID,
+					name,
+					kind: "file",
+					path: `/${name}`,
+					treePath: `/${name}`,
+					pathDepth: 1,
+					lowercaseExtension: "md",
+					updatedAt: 1,
+					contentType: "text/markdown;charset=utf-8",
+				});
+				await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: restrictedScopeNodeId ?? nodeId });
+				await ctx.db.insert("files_metadata_docs", {
+					organizationId: seeded.db.organizationId,
+					workspaceId: seeded.db.workspaceId,
+					fileNodeId: nodeId,
+					sourceKind: "committed",
+					path: `/${name}`,
+					treePath: `/${name}`,
+					qualifiedField: "frontmatter.status",
+					docKind: "value",
+					valueKind: "string",
+					stringValue: "capped",
+				});
+				return nodeId;
+			};
+
+			const firstScopeNodeId = await insertCappedFile("scope-000.md", null);
+			for (let index = 1; index < 300; index += 1) {
+				await insertCappedFile(`scope-${String(index).padStart(3, "0")}.md`, null);
+			}
+			for (let index = 0; index < 10; index += 1) {
+				await insertCappedFile(`z-shared-${String(index).padStart(3, "0")}.md`, firstScopeNodeId);
+			}
+		});
+
+		const found = await seeded.asOwner.query(api.files_metadata.search_nodes, {
+			membershipId: seeded.db.membershipId,
+			plans: [{ op: "eq", qualifiedField: "frontmatter.status", value: "capped" }],
+		});
+		expect(found.nodeIds).toHaveLength(260);
+	});
+
+	test("search_nodes hides another user's draft and keeps the committed value for them", async () => {
+		const t = test_convex();
+		const seeded = await seed_search_box_fixture(t);
+		const member = await seed_grant_only_member(t, seeded.db, "draft");
+		await reset_file_write_rate_limits(t, seeded.db.userId);
+		const restricted = await seeded.asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: seeded.db.membershipId,
+			nodeId: seeded.tasksFolderId,
+		});
+		if (restricted._nay) throw new Error(restricted._nay.message);
+		await reset_file_write_rate_limits(t, seeded.db.userId);
+		const granted = await seeded.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: seeded.db.membershipId,
+			nodeId: seeded.tasksFolderId,
+			principal: { kind: "user", userId: member.userId },
+			level: "read",
+		});
+		if (granted._nay) throw new Error(granted._nay.message);
+
+		// The owner's draft turns the open task into "triaging". A draft belongs to its author: the
+		// member still finds the task by the committed "open", and never by "triaging".
+		const pending = await upsert_pending_update_internal_for_test(t, {
+			organizationId: seeded.db.organizationId,
+			workspaceId: seeded.db.workspaceId,
+			userId: seeded.db.userId,
+			nodeId: seeded.openTaskId,
+			unstagedMarkdown: ["---", "status: triaging", "---", "Body"].join("\n"),
+		});
+		if (pending._nay) throw new Error(pending._nay.message);
+
+		const searchAsMember = (plans: files_metadata_SearchPlan[]) =>
+			member.asMember
+				.query(api.files_metadata.search_nodes, { membershipId: member.membershipId, plans })
+				.then((found) => new Set(found.nodeIds));
+		expect(await searchAsMember([{ op: "eq", qualifiedField: "frontmatter.status", value: "triaging" }])).toEqual(
+			new Set(),
+		);
+		expect(await searchAsMember(statusOpenPlans)).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId]));
+		expect(
+			await member.asMember.query(api.files_metadata.list_search_values, {
+				membershipId: member.membershipId,
+				qualifiedField: "frontmatter.status",
+				prefix: "t",
+			}),
+		).toEqual([]);
+
+		// The author sees the draft instead of the stale committed value.
+		const ownerOpen = await seeded.asOwner.query(api.files_metadata.search_nodes, {
+			membershipId: seeded.db.membershipId,
+			plans: statusOpenPlans,
+		});
+		expect(new Set(ownerOpen.nodeIds)).toEqual(new Set([seeded.fixedTaskId, seeded.archivedTaskId]));
+	});
+
+	test("a prefix finds a value whose next character is an emoji, like the catalog lists it", async () => {
+		const t = test_convex();
+		const seeded = await seed_search_box_fixture(t);
+		// Convex sorts strings by UTF-8 bytes, so `op😀` sorts above `op\uffff`. A bound built from
+		// `\uffff` would drop it from the scan while the value catalog still suggests it.
+		const emojiTaskId = await test_materialize_markdown_file(
+			t,
+			seeded.asOwner,
+			seeded.db,
+			"/tasks/2026-09-05-emoji.md",
+			["---", "status: op😀", "---", "Body"].join("\n"),
+		);
+
+		const found = await seeded.asOwner.query(api.files_metadata.search_nodes, {
+			membershipId: seeded.db.membershipId,
+			plans: [{ op: "prefix", qualifiedField: "frontmatter.status", value: "op" }],
+		});
+		// The archive's task is `open` too.
+		expect(new Set(found.nodeIds)).toEqual(new Set([seeded.openTaskId, seeded.archivedTaskId, emojiTaskId]));
+		expect(
+			await seeded.asOwner.query(api.files_metadata.list_search_values, {
+				membershipId: seeded.db.membershipId,
+				qualifiedField: "frontmatter.status",
+				prefix: "op",
+			}),
+		).toEqual(["open", "op😀"]);
+	});
+
+	test("a member with workspace read still needs the grant for a restricted folder", async () => {
+		const t = test_convex();
+		const seeded = await seed_search_box_fixture(t);
+		const member = await seed_grant_only_member(t, seeded.db, "reader");
+		await t.run(async (ctx) =>
+			access_control_db_ensure_role_assignment(ctx, {
+				organizationId: seeded.db.organizationId,
+				workspaceId: seeded.db.workspaceId,
+				userId: member.userId,
+				role: "member",
+				now: Date.now(),
+			}),
+		);
+		await reset_file_write_rate_limits(t, seeded.db.userId);
+		const restricted = await seeded.asOwner.mutation(api.files_sharing.restrict_node, {
+			membershipId: seeded.db.membershipId,
+			nodeId: seeded.tasksFolderId,
+		});
+		if (restricted._nay) throw new Error(restricted._nay.message);
+
+		const search = () =>
+			member.asMember
+				.query(api.files_metadata.search_nodes, { membershipId: member.membershipId, plans: statusOpenPlans })
+				.then((found) => new Set(found.nodeIds));
+		const keys = () =>
+			member.asMember
+				.query(api.files_metadata.list_search_fields, { membershipId: member.membershipId })
+				.then((fields) => fields.map((field) => field.qualifiedField));
+		const statusValues = () =>
+			member.asMember.query(api.files_metadata.list_search_values, {
+				membershipId: member.membershipId,
+				qualifiedField: "frontmatter.status",
+				prefix: "",
+			});
+
+		// The role reads the whole workspace except the restricted `/tasks`: the archive file is
+		// found, and the catalog names only what the archive holds.
+		expect(await search()).toEqual(new Set([seeded.archivedTaskId]));
+		expect(await statusValues()).toEqual(["open"]);
+		const keysBefore = await keys();
+		expect(keysBefore).toContain("frontmatter.legacy");
+		expect(keysBefore).not.toContain("frontmatter.regression");
+		expect(keysBefore).not.toContain("metadata.status");
+
+		await reset_file_write_rate_limits(t, seeded.db.userId);
+		const granted = await seeded.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: seeded.db.membershipId,
+			nodeId: seeded.tasksFolderId,
+			principal: { kind: "user", userId: member.userId },
+			level: "read",
+		});
+		if (granted._nay) throw new Error(granted._nay.message);
+
+		expect(await search()).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId, seeded.archivedTaskId]));
+		expect(await statusValues()).toEqual(["fixed", "open"]);
+		expect(await keys()).toContain("metadata.status");
+	});
+
+	test("list_search_values still names a committed value that only a draft has replaced", async () => {
+		const t = test_convex();
+		const seeded = await seed_search_box_fixture(t);
+		const statusValues = (prefix: string) =>
+			seeded.asOwner.query(api.files_metadata.list_search_values, {
+				membershipId: seeded.db.membershipId,
+				qualifiedField: "frontmatter.status",
+				prefix,
+			});
+
+		// The owner's draft turns the fixed task into "triaging". `search_nodes` hides the stale
+		// committed "fixed", but the catalog samples do not carry the overlay, so "fixed" is still
+		// suggested and then finds nothing. Accepted: the catalog is a hint, the search is the truth.
+		const pending = await upsert_pending_update_internal_for_test(t, {
+			organizationId: seeded.db.organizationId,
+			workspaceId: seeded.db.workspaceId,
+			userId: seeded.db.userId,
+			nodeId: seeded.fixedTaskId,
+			unstagedMarkdown: ["---", "status: triaging", "---", "Body"].join("\n"),
+		});
+		if (pending._nay) throw new Error(pending._nay.message);
+
+		expect(await statusValues("f")).toEqual(["fixed"]);
+		expect(await statusValues("t")).toEqual(["triaging"]);
+		const found = await seeded.asOwner.query(api.files_metadata.search_nodes, {
+			membershipId: seeded.db.membershipId,
+			plans: [{ op: "eq", qualifiedField: "frontmatter.status", value: "fixed" }],
+		});
+		expect(found.nodeIds).toEqual([]);
+	});
+});
+
 describe("create-time metadata", () => {
 	async function read_metadata_docs(t: ReturnType<typeof test_convex>, nodeId: Id<"files_nodes">) {
 		return await t.run(async (ctx) =>
@@ -9849,6 +10738,33 @@ test("search_content groups readable matches per file for the calling member", a
 	expect(resultsByPath.get("/palette-single.md")).toMatchObject({ nodeId: singleChunkNodeId, matchCount: 1 });
 	expect(resultsByPath.get("/palette-double.md")).toMatchObject({ nodeId: doubleChunkNodeId, matchCount: 2 });
 	expect(resultsByPath.get("/palette-single.md")!.textChunk).toContain("palneedle");
+
+	const scoped = await asUser.query(api.files_nodes.search_content, {
+		membershipId: db.membershipId,
+		query: "palneedle",
+		nodeIds: [doubleChunkNodeId],
+	});
+	expect(scoped.results.map((result) => result.nodeId)).toEqual([doubleChunkNodeId]);
+	expect(scoped.results[0]?.matchCount).toBe(2);
+	const emptyScope = await asUser.query(api.files_nodes.search_content, {
+		membershipId: db.membershipId,
+		query: "palneedle",
+		nodeIds: [],
+	});
+	expect(emptyScope.results).toEqual([]);
+
+	// A full page contains only the selected file, even when other files match the text.
+	const scopedPage = await asUser.query(internal.files_nodes.text_search_files, {
+		organizationId: db.organizationId,
+		workspaceId: db.workspaceId,
+		userId: db.userId,
+		hasWorkspaceRead: true,
+		query: "palneedle",
+		nodeIds: [doubleChunkNodeId],
+		numItems: 2,
+		cursor: null,
+	});
+	expect(scopedPage.items.map((item) => item.nodeId)).toEqual([doubleChunkNodeId, doubleChunkNodeId]);
 
 	// Bounds: a 1-character query (after trim) and an over-200-character query return empty
 	// without touching the search index.

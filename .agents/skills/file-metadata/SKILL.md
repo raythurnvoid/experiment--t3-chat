@@ -1,6 +1,6 @@
 ---
 name: file-metadata
-description: Spec for the flat key-value metadata stored next to a file — the `metadata.*` half of `files_metadata_docs`, the YAML edit format, the two write doors (`files_metadata.set_entries` for the Properties modal and `update_entries_by_path` for the agent), the key grammar and caps, and how it sits beside Markdown frontmatter in `meta search`. Use when changing `packages/app/shared/files-metadata.ts`, the metadata region of `packages/app/convex/files_metadata.ts`, the Properties modal in `packages/app/src/components/files/files-properties-modal.tsx`, the `set_file_metadata` agent tool in `packages/app/server/server-ai-tools.ts`, or `meta search` / `meta get` in `packages/app/server/bash-meta-command.ts`.
+description: Spec for the flat key-value metadata stored next to a file — the `metadata.*` half of `files_metadata_docs`, the YAML edit format, the two write doors (`files_metadata.set_entries` for the Properties modal and `update_entries_by_path` for the agent), the key grammar and caps, how it sits beside Markdown frontmatter in `meta search`, and the sidebar search box language (`packages/app/shared/files-search-query.ts`) with its three doors (`search_nodes`, `list_search_fields`, `list_search_values`). Use when changing `packages/app/shared/files-metadata.ts`, `packages/app/shared/files-search-query.ts`, the metadata or search box regions of `packages/app/convex/files_metadata.ts`, the Properties modal in `packages/app/src/components/files/files-properties-modal.tsx`, the `set_file_metadata` agent tool in `packages/app/server/server-ai-tools.ts`, or `meta search` / `meta get` in `packages/app/server/bash-meta-command.ts`.
 ---
 
 # Mental Model
@@ -237,6 +237,126 @@ The map is for what only the creating flow knows: where the file came from, and 
   `packages/app/server/bash-meta-command.ts`. `meta get` prints frontmatter and metadata fields
   together; its `source:` line describes the frontmatter lines only, because `metadata.*` is always
   the committed map.
+
+# Search Box
+
+The Files sidebar and global search filter by metadata and frontmatter with the same language. The
+parser, the serializer, and `files_search_query_to_plans` (one filter → `files_metadata_SearchPlan`
+values) live in `packages/app/shared/files-search-query.ts`. Both use `FilesSearchInput` for chips and
+suggestions. See the `files-explorer-tree` skill under "Search" and "Global Search" for keyboard
+behavior, content matching, and the sidebar `q` round trip.
+
+| Token                                                                                                                                          | Meaning                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ---------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `status:open`                                                                                                                                  | equals. An unquoted `3` also asks for the number 3, `true` for the boolean; a quoted value asks for the string only                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| `status:*`                                                                                                                                     | the key exists                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| `title:Rec*`                                                                                                                                   | string prefix                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `priority:>2`, `due:<=2026-09-30`                                                                                                              | range on numbers or dates (the `maybe_date` companion docs)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| `!status:done`                                                                                                                                 | negation, applied on the client                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `assignee:"Denys Voloshyn"`, `"slack:message-id":*`                                                                                            | quoted value, quoted key                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| `metadata.status:open`, `frontmatter.status:open`                                                                                              | one metadata kind. A bare key asks both kinds                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| `file.path:/tasks`, `file.name:x`, `file.ext:tar.gz`, `file.ext:m*`, `file.kind:Folder`, `file.updated:2026-09-04`, `file.updated:>2026-09-01` | file fields, matched on the client from the tree, all ignoring case (`file.path:/Tasks` finds `/tasks`). A whole `file.ext` value matches the end of a file's name, so `tar.gz` works although the tree stores `gz` (a folder never matches `file.ext`, not even `v1.2`); a prefix (`m*`) matches that stored last part; a leading dot is ignored. `file.name:x` finds names that contain `x`, `x*` names that start with it, and a leading `*` (`*.md`, for `file.ext` too) gets a problem. `file.kind` takes no prefix (`file.kind:fol*` gets `file.kind is file or folder`). `file.updated` takes a day (the whole local day, like the dates the tree shows) or a date range, never a bare number; a range time with no zone (`>2026-09-04T10:00`) is local too, a time with a zone is taken as it is. `file.path://` is the root. An empty file value (`file.kind:`) gets `file.kind needs a value`; `*` is the wildcard |
+| `title:"Recall the"*`                                                                                                                          | prefix with spaces: the `*` sits after the closing quote. Inside the quotes a `*` is text                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `"raw media" notes`                                                                                                                            | free text. Quotes only group words: the text keeps them, so it reads back as typed, and the name search ignores them. A text of quotes alone matches nothing                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+
+Value spellings follow YAML, so a value the frontmatter parser stored as a number or a boolean can
+be typed the same way: `.5`, `1e3`, `0x10`, and `True` ask for the number or the boolean too. A
+date-only range bound is day-inclusive: `due:<=2026-09-30` means before 2026-10-01, and
+`due:>2026-09-30` means from 2026-10-01 (the private `range_bound`, in UTC like the stored dates).
+An equal filter on a date with a time (`due:2026-09-04T10:00Z`) also asks for the `maybe_date` at
+that instant, so a stored `2026-09-04T10:00:00Z` is found although its spelling differs.
+`files_search_query_file_updated_matches` applies the same rule to `file.updated` on the client, but
+in the local day, because the tree shows local dates, and it reads a time with no zone
+(`>=2026-09-04T10:00`) as local time too (the private `local_time_bound`). `vitest.config.ts` pins
+`TZ` to Europe/London, so a local-day rule that reads the date as UTC fails its test on any machine,
+a UTC one included. A string value is matched exactly, including its case: `status:Open` does not
+find `open`, and the value suggestions show the stored spelling, for the prefix typed in the stored
+case. A query holds at most `files_search_query_MAX_FILTERS` (20) filters; the 21st gets a problem
+and no plan. A token that starts with `http://` or `https://` is free text, so a pasted link never
+becomes a `http:` chip.
+
+A quote left open runs to the end of the query. The parser closes it in the last token's `raw`, so
+a chip made from `assignee:"Denys` reads back as `assignee:"Denys"` and the chips after it stay
+separate (a trailing backslash is escaped first, so the closing quote stays a quote).
+`files_search_query_typing_token` gives the token under the caret with the same quote rule, so
+the value suggestions keep working inside `assignee:"Denys V`. A closed quote must end the value:
+`status:"open"x` gets `Nothing can follow the closing quote`, while `status:""` asks for a stored
+empty string, because the value catalog can list one. Single quotes are not quotes, so a value that
+starts with `'` gets `Use double quotes, like status:"in progress"` instead of a silent search for
+`'Denys`. In the same way `status:!done` gets `Put ! before the key, like !status:done` and
+`priority:=2` gets `Drop the =. A plain value is an exact match, like priority:2`, because both
+would run as exact matches on the text `!done` and `=2`. `files_search_query_format_value` quotes
+a stored value that starts with `'`, `!`, or `=`, so a value picked from the rows reads back as
+itself. A range sign with nothing after it (`priority:> 2` ends the token at the space) gets
+`Put the number or the date right after >, like priority:>2`, and a quoted bound
+(`due:>"2026-09-04"`) gets `Ranges take the number or the date without quotes, like priority:>2`,
+because the generic range hint says to quote the value. Inside quotes only `\"` and `\\` are
+escapes, so `path:"C:\Program Files"` keeps its backslash. A key the grammar refuses gets
+`Keys use letters, digits, _, - and :. Dots join the parts of a frontmatter key`; the message never
+says to quote the key, because quoting does not help. A quoted key may carry its namespace inside
+or outside the quotes: `"metadata.slack:message-id":x` and `metadata."slack:message-id":x` are the
+same filter, and `search_key_text` in the shared input writes the first form back. Only a metadata key
+can hold a colon; under `frontmatter` the same key gets the frontmatter grammar problem.
+
+`file`, `frontmatter`, and `metadata` are reserved first segments, so a system field never collides
+with a user key: a frontmatter key literally named `file` is written `frontmatter.file`. A metadata
+key must match `files_metadata_METADATA_KEY_REGEX` and a frontmatter path
+`files_metadata_FIELD_SEGMENT_REGEX`. Both are exported from `shared/files-metadata.ts` and imported
+by the parser and by `meta search`, so a key a user can write stays a key that can be searched for.
+`files_search_query_qualified_field_is_valid` is that grammar as one check on a qualified field.
+The doors use it through `search_qualified_field_is_valid`, which adds the length cap. A key
+literally named like a namespace (`file`, `file.*`, `metadata`, `frontmatter.*`) keeps its namespace
+in the sidebar's key catalog (`metadata.file`), because typed bare it would read as that namespace.
+
+The doors sit in the search box region of `convex/files_metadata.ts`. Each answers its empty shape
+for a membership that is not the caller's.
+
+- `search_nodes({ membershipId, plans, pathPrefix? })` → `{ nodeIds }`. One filter per call: the box
+  sends one call per chip and ANDs the answers itself, because it already holds every readable node.
+  `pathPrefix` narrows the scan to one folder subtree; `tree_path_upper_bound` stops at `/tasks/`,
+  so `/tasks-archive` is out. The sidebar sends the stored path of the node the typed `file.path:`
+  names (the tree filter ignores case), and nothing when that node is a file: a file has nothing
+  under it, and the tree filter keeps the file by its own path. A string prefix plan scans up to
+  `string_prefix_upper_bound` (the prefix's last code point plus one), because Convex sorts strings
+  by UTF-8 bytes and `${prefix}\uffff` would miss `op😀`. The ids pass
+  `access_control_db_filter_readable_file_nodes`, and there is no "complete" flag on purpose: a
+  flag next to fewer ids than the cap would say outright that restricted files matched. The caps
+  can still hint at it (a file missing from `status:open` but found under `file.path:`), but never
+  name a file. Each plan's index range is read raw (`search_index_query`,
+  `take(SEARCH_NODES_DOCS_PER_PLAN)`), and the folder path and the pending overlay are checked on
+  the docs read (`search_doc_is_visible`), so the cap bounds the docs read. The paginated agent
+  `search` keeps the same rule as query filters in `search_query`. The candidates are also cut at
+  `SEARCH_NODES_MAX_SCOPES` (250) distinct restricted folders before the readable-nodes filter,
+  because that filter pays one permission check per folder.
+- `list_search_fields({ membershipId })` → `[{ qualifiedField, valueKinds }]`, the key catalog for
+  the suggestions, in index order. A stored field the other doors refuse (longer than
+  `SEARCH_QUALIFIED_FIELD_MAX_LENGTH`; frontmatter has no cap on a key path) is skipped, so the
+  catalog never offers a key that then finds nothing.
+- `list_search_values({ membershipId, qualifiedField, prefix })` → the string values of one key that
+  start with `prefix`, in exact case: `d` does not list `Denys`. The sidebar filters its rows by
+  the same rule.
+- The two catalog doors name a key or a value only when one of its first
+  `SEARCH_CATALOG_SAMPLE_DOCS` docs sits on a file the caller can read
+  (`db_search_sample_is_readable`). A member who was given one folder deep inside a large
+  restricted tree can miss a key that way. Typing the key still works. Whether a file is readable
+  depends on its restricted scope only, so one walk caches the answer per node and per scope
+  (`SearchSampleCache`): a workspace with one restricted folder pays for one permission check. The
+  samples are read raw as well, and another user's draft among them is dropped in JS. They carry no
+  pending overlay: after a draft replaces a committed value, the old value is still suggested and
+  then finds nothing. Accepted and pinned by a test: the catalog is a hint, the search is the truth.
+- The caps (`SEARCH_NODES_*`, `SEARCH_FIELDS_*`, `SEARCH_VALUES_*`) bound the reads, not the answer.
+  A workspace with more matching docs than one plan reads gets a partial answer, and `file.path:`
+  narrows the scan. The catalog budgets (`SEARCH_FIELDS_READ_BUDGET`, `SEARCH_VALUES_READ_BUDGET`)
+  count index reads, not docs: Convex allows 4096 `db.get` and `db.query` calls per query, and a
+  restricted scope's permission check is counted as `SEARCH_SCOPE_CHECK_READS` of them. The walk
+  stops early instead of throwing.
+- A member whose role has no workspace-wide `content.read` still finds files in folders shared with
+  them: `db_get_search_caller` passes `hasWorkspaceRead` to the readable-nodes filter instead of
+  refusing. The other way round holds too: a member whose role reads the workspace sees nothing
+  from a restricted folder in any door until it is shared with them.
+- Archiving a file removes it from every door: `search_nodes` and both catalogs read
+  `archiveOperationId: undefined` docs only, so an archived file's keys and values disappear with
+  it, and the sidebar skips archived files once a metadata chip is present, negated or not.
 
 # Dialog Reconciliation
 
