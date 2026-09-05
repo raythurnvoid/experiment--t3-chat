@@ -8988,6 +8988,9 @@ export const yjs_push_update = mutation({
 			return pushResult;
 		}
 
+		// Bill with the lineage id too. Turning collaboration off and on again starts a new lineage
+		// at sequence 0, so the sequence alone would repeat an id Polar has already seen.
+		const saveVersion = `${args.expectedYjsLastSequenceId}:${pushResult._yay.newSequence}`;
 		await billing_ingest_events(ctx, {
 			billedUserEvents: [
 				{
@@ -9004,7 +9007,7 @@ export const yjs_push_update = mutation({
 							membership.organizationId,
 							membership.workspaceId,
 							args.nodeId,
-							pushResult._yay.newSequence,
+							saveVersion,
 						),
 						metadata: {
 							amount: 1,
@@ -9013,7 +9016,7 @@ export const yjs_push_update = mutation({
 							organizationId: fileNode.organizationId,
 							workspaceId: fileNode.workspaceId,
 							nodeId: args.nodeId,
-							version: String(pushResult._yay.newSequence),
+							version: saveVersion,
 						},
 					}),
 				},

@@ -4612,12 +4612,13 @@ describe("save_file_pending_update", () => {
 			throw new Error("Missing save result _yay while testing partial save");
 		}
 		expect(saveResult._yay.newSequence).not.toBeNull();
+		const savedVersion = `${(await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId}:${saveResult._yay.newSequence}`;
 		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, {
 			events: [
 				expect.objectContaining({
 					name: "file_save",
 					externalCustomerId: seeded.userId,
-					externalId: `file_save::${seeded.userId}::${seeded.userId}::${seeded.organizationId}::${seeded.workspaceId}::${seeded.nodeId}::${saveResult._yay.newSequence}`,
+					externalId: `file_save::${seeded.userId}::${seeded.userId}::${seeded.organizationId}::${seeded.workspaceId}::${seeded.nodeId}::${savedVersion}`,
 					metadata: expect.objectContaining({
 						amount: 1,
 						actorUserId: seeded.userId,
@@ -4625,7 +4626,7 @@ describe("save_file_pending_update", () => {
 						organizationId: seeded.organizationId,
 						workspaceId: seeded.workspaceId,
 						nodeId: seeded.nodeId,
-						version: String(saveResult._yay.newSequence),
+						version: savedVersion,
 					}),
 				}),
 			],

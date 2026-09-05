@@ -5576,6 +5576,9 @@ export const save_file_pending_update_in_db = internalMutation({
 			}
 
 			newSequence = result._yay.newSequence;
+			// Bill with the lineage id too. Turning collaboration off and on again starts a new
+			// lineage at sequence 0, so the sequence alone would repeat an id Polar has already seen.
+			const saveVersion = `${args.expectedYjsLastSequenceId}:${result._yay.newSequence}`;
 			await billing_ingest_events(ctx, {
 				billedUserEvents: [
 					{
@@ -5592,7 +5595,7 @@ export const save_file_pending_update_in_db = internalMutation({
 								membership.organizationId,
 								membership.workspaceId,
 								args.nodeId,
-								result._yay.newSequence,
+								saveVersion,
 							),
 							metadata: {
 								amount: 1,
@@ -5601,7 +5604,7 @@ export const save_file_pending_update_in_db = internalMutation({
 								organizationId: membership.organizationId,
 								workspaceId: membership.workspaceId,
 								nodeId: args.nodeId,
-								version: String(result._yay.newSequence),
+								version: saveVersion,
 							},
 						}),
 					},

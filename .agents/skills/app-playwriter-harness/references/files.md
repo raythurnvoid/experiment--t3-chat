@@ -194,6 +194,19 @@ Then rename by id: click `[role="treeitem"][data-file-id="<id>"] .FilesSidebarTr
 
 Do not press `F2` while the new file's editor is still mounting. The create-then-rename race crashed `FileEditorInner` (`NotFoundError: removeChild`, caught by the route error boundary) twice in ~12 editor mount transitions on 2026-08-10 — a filed app follow-up, not a harness bug. Wait for the editor surface first (`.FileEditorRichText-editor-content` or `.monaco-editor`); if the boundary appears, `Try again` recovers.
 
+When the check does not care about the sidebar itself, skip the id diff and the rename: create the file with its final name from page context, the same door the sidebar button calls (verified 2026-09-05). The result carries the node id, so open it straight away with `?nodeId=<id>&view=rich_text_editor`.
+
+```js
+const r = await state.page.evaluate(async (name) => {
+	const m = await import("/src/lib/app-convex-client.ts");
+	const membership = await m.app_convex.query(m.app_convex_api.organizations.get_membership_by_organization_workspace_name, { organizationName: "personal", workspaceName: "home" });
+	const created = await m.app_convex.action(m.app_convex_api.files_nodes_content.create_text_node, { membershipId: membership._id, parentId: "root", path: name });
+	return { membershipId: membership._id, nodeId: created._yay?.nodeId ?? null, nay: created._nay ?? null };
+}, "qa-" + Date.now().toString(36) + ".md");
+```
+
+Archive it the same way at the end: `m.app_convex.mutation(m.app_convex_api.files_nodes.archive_nodes, { membershipId, nodeIds: [nodeId] })`.
+
 ### Sidebar Selection Context
 
 Use this when changing tree focus, context menus, selection, or route sync.
@@ -469,7 +482,10 @@ One dialog holding the file's facts, its read-only lock, and the flat key-value 
   `getByRole("button", { name: "Turn collaboration off" })` or `Turn collaboration on`, next to
   `Cancel` — and nothing is written until that button is clicked (the ON confirm is newer than the
   OFF one; verified 2026-09-04). Focus moves to the confirm button, and the tick keeps its old
-  state until the write lands, so do not read "still checked" as a missed click. Read the state from
+  state until the write lands, so do not read "still checked" as a missed click. The confirm's
+  `locator.click()` can also land nowhere: on 2026-09-05 the description stayed unchanged and no
+  toast appeared after it, while `confirm.focus()` + `keyboard.press("Enter")` toggled both
+  directions every time. Use the keyboard for the confirm step. Read the state from
   `.FilesPropertiesModalCollaboration-description`, not from the tick: the Metadata section repeats
   the same "read-only" and "no permission" sentences, so `getByText` finds several matches.
 - Read-only is one checkbox, but the dialog holds two (Protection and Collaboration), so a bare

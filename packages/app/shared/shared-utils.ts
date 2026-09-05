@@ -162,23 +162,25 @@ export function assume_type<T>(v: any): asserts v is T {}
 export type AppCompositeIds = {
 	rooms: [kind: "files_nodes", organizationId: string, workspaceId: string, nodeId: string];
 	billing:
-		| [name: "manual_credit", userId: string, timestamp: number]
+		| [kind: "manual_credit", userId: string, timestamp: number]
 		| [
-				name: "file_save",
+				kind: "file_save",
 				billedUserId: string,
 				actorUserId: string,
 				organizationId: string,
 				workspaceId: string,
 				nodeId: string,
 				/**
-				 * Which version of the file this save produced: the new Yjs sequence for a
-				 * collaborative save, or the new version snapshot id for a non-collaborative one.
-				 * It only has to make the id unique per save.
+				 * Which version of the file this save produced. It only has to make the id unique
+				 * per save. A collaborative save uses `<yjsLastSequenceId>:<newSequence>`: the Yjs
+				 * sequence alone is not enough, because turning collaboration off and on again
+				 * starts a new lineage doc at sequence 0, and Polar drops an event whose id it has
+				 * already seen. A non-collaborative save uses the new version snapshot id.
 				 */
-				version: string | number,
+				version: string,
 		  ]
 		| [
-				name: "monthly_credit",
+				kind: "monthly_credit",
 				userId: string,
 				subscriptionId: string,
 				/**
@@ -187,7 +189,7 @@ export type AppCompositeIds = {
 				periodStart: string,
 		  ]
 		| [
-				name: "ai_usage",
+				kind: "ai_usage",
 				billedUserId: string,
 				actorUserId: string,
 				organizationId: string,
@@ -196,10 +198,10 @@ export type AppCompositeIds = {
 				messageId: string,
 		  ];
 	plugin:
-		| [name: "upload_completed", eventId: string, installationId: string]
-		| [name: "run_requested", requestId: string, installationId: string]
-		| [name: "account_deleted", deletedUserId: string, installationId: string]
-		| [name: "ui_invoke", requestId: string, installationId: string];
+		| [kind: "upload_completed", eventId: string, installationId: string]
+		| [kind: "run_requested", requestId: string, installationId: string]
+		| [kind: "account_deleted", deletedUserId: string, installationId: string]
+		| [kind: "ui_invoke", requestId: string, installationId: string];
 };
 
 /**

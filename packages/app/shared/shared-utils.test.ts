@@ -42,7 +42,7 @@ describe("composite_id", () => {
 			"organization_1",
 			"workspace_1",
 			"file_1",
-			42,
+			"42",
 		);
 
 		expect(id).toBe("file_save::billed_user_1::actor_user_1::organization_1::workspace_1::file_1::42");

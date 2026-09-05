@@ -31,7 +31,7 @@ describe("billing_event", () => {
 				"organization_1",
 				"workspace_1",
 				"file_1",
-				42,
+				"42",
 			),
 			metadata: {
 				amount: 1,

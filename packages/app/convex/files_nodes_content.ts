@@ -4349,6 +4349,9 @@ export const restore_snapshot = internalMutation({
 		}
 
 		if (restoredYjsSequence !== null) {
+			// Bill with the lineage id too. Turning collaboration off and on again starts a new
+			// lineage at sequence 0, so the sequence alone would repeat an id Polar has already seen.
+			const saveVersion = `${args.expectedYjsLastSequenceId}:${restoredYjsSequence}`;
 			await billing_ingest_events(ctx, {
 				billedUserEvents: [
 					{
@@ -4365,7 +4368,7 @@ export const restore_snapshot = internalMutation({
 								membership.organizationId,
 								membership.workspaceId,
 								args.nodeId,
-								restoredYjsSequence,
+								saveVersion,
 							),
 							metadata: {
 								amount: 1,
@@ -4374,7 +4377,7 @@ export const restore_snapshot = internalMutation({
 								organizationId: membership.organizationId,
 								workspaceId: membership.workspaceId,
 								nodeId: args.nodeId,
-								version: String(restoredYjsSequence),
+								version: saveVersion,
 							},
 						}),
 					},

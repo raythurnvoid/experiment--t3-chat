@@ -4801,8 +4801,7 @@ describe("ingest_events", () => {
 				organizationId: "organization_1" as Id<"organizations">,
 				workspaceId: "workspace_1" as Id<"organizations_workspaces">,
 				nodeId: "file_1" as Id<"files_nodes">,
-				// A number version (a Yjs sequence) must land in metadata as a string.
-				version: 42,
+				version: "42",
 			});
 		});
 

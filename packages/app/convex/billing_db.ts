@@ -123,9 +123,10 @@ export async function billing_db_emit_file_save(
 		workspaceId: Id<"organizations_workspaces">;
 		nodeId: Id<"files_nodes">;
 		/**
-		 * Unique per save: a Yjs sequence, a version snapshot asset id, or a target id.
+		 * Unique per save: a version snapshot asset id or a target id here. See the `file_save`
+		 * tuple in `AppCompositeIds` for the collaborative form.
 		 */
-		version: string | number;
+		version: string;
 	},
 ) {
 	// Declare the event against the type instead of calling `billing_event(...)`, so this module
@@ -151,7 +152,7 @@ export async function billing_db_emit_file_save(
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			nodeId: args.nodeId,
-			version: String(args.version),
+			version: args.version,
 		},
 	};
 

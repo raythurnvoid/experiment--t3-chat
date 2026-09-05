@@ -7284,6 +7284,75 @@ describe("non-collaborative files", () => {
 		expect((await collaborative_doc_counts()).snapshots).toBe(1);
 	});
 
+	test("turning collaboration off and back on never repeats a file_save id", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		// A signed-in payer: only then do the events reach the Polar workpool the spy watches.
+		await t.run(async (ctx) => ctx.db.patch("users", db.userId, { clerkUserId: "clerk-repeat-id-user" }));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Repeat Id User",
+			email: "repeat-id-user@example.com",
+		});
+		test_setup_r2_capture();
+		enqueueActionSpy.mockClear();
+		// The fixture helper pushes sequence 1 of the first lineage and bills it.
+		const nodeId = await test_materialize_markdown_file(t, asUser, db, "/repeat-id.md", "# Repeat id\n");
+
+		const push_text = async (text: string) => {
+			const yjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text });
+			if ("_nay" in yjsDoc) throw new Error(yjsDoc._nay.message);
+			const pushed = await asUser.mutation(api.files_nodes.yjs_push_update, {
+				membershipId: db.membershipId,
+				nodeId,
+				expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
+				update: files_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc)),
+				sessionId: "repeat-id-session",
+			});
+			yjsDoc.destroy();
+			if (pushed._nay) throw new Error(pushed._nay.message);
+			return pushed._yay.newSequence;
+		};
+		// Match on the payload: a generated function reference is a fresh proxy on every access, so
+		// `call[1] === internal.billing.ingest_events` is never true.
+		const billed_file_save_ids = () =>
+			enqueueActionSpy.mock.calls.flatMap((call) => {
+				const payload = call[2] as { events?: Array<{ name: string; externalId: string }> };
+				return (payload.events ?? [])
+					.filter((event) => event.name === "file_save")
+					.map((event) => event.externalId);
+			});
+
+		expect(billed_file_save_ids()).toHaveLength(1);
+
+		const off = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+			membershipId: db.membershipId,
+			nodeId,
+			acknowledgeDropCollaborativeHistory: true,
+		});
+		expect(off._nay).toBeUndefined();
+		await drain_scheduled_continuations(t);
+		const on = await asUser.action(api.files_nodes_content.set_file_collaborative, {
+			membershipId: db.membershipId,
+			nodeId,
+		});
+		expect(on._nay).toBeUndefined();
+
+		// The new lineage starts at sequence 0 again, so this save reuses sequence 1.
+		const secondLineageId = (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId;
+		expect(await push_text("# Repeat id\n\nsecond lineage\n")).toBe(1);
+
+		// Every save must get its own id: Polar drops an event whose id it has already seen.
+		const allIds = billed_file_save_ids();
+		expect(allIds).toHaveLength(2);
+		expect(new Set(allIds).size).toBe(2);
+		expect(allIds[1]).toBe(
+			`file_save::${db.userId}::${db.userId}::${db.organizationId}::${db.workspaceId}::${nodeId}::${secondLineageId}:1`,
+		);
+	});
+
 	test("turning collaboration on clears a stale cleanup marker after every old Yjs doc is gone", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -10621,12 +10690,13 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 		kind: "content_snapshot",
 		size: files_get_utf8_byte_size(restoredMarkdown),
 	});
+	const restoredVersion = `${(await test_get_file_yjs_pointers(t, createdFile._yay.nodeId)).yjsLastSequenceId}:${yjsUpdates[0]?.sequence}`;
 	expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, {
 		events: [
 			expect.objectContaining({
 				name: "file_save",
 				externalCustomerId: db.userId,
-				externalId: `file_save::${db.userId}::${db.userId}::${db.organizationId}::${db.workspaceId}::${createdFile._yay.nodeId}::${yjsUpdates[0]?.sequence}`,
+				externalId: `file_save::${db.userId}::${db.userId}::${db.organizationId}::${db.workspaceId}::${createdFile._yay.nodeId}::${restoredVersion}`,
 				metadata: expect.objectContaining({
 					amount: 1,
 					actorUserId: db.userId,
@@ -10634,7 +10704,7 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
 					nodeId: createdFile._yay.nodeId,
-					version: String(yjsUpdates[0]?.sequence),
+					version: restoredVersion,
 				}),
 			}),
 		],
