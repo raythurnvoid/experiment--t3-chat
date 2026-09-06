@@ -11546,7 +11546,7 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 		expect(readResult?.content).toBe("plain version\n");
 	});
 
-	test("an edit that lands while a version is being restored refuses that restore and survives the next one", async () => {
+	test.each(["saved", "edited"])("a refused restore keeps live edits and cleans up uploads (%s file)", async (state) => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
@@ -11558,6 +11558,11 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 		});
 		const r2Objects = test_setup_r2_capture();
 		const nodeId = await test_materialize_markdown_file(t, asUser, db, "/notes.md", "# Saved\n");
+		if (state === "edited") {
+			await push_unsaved_edit(t, asUser, db, nodeId, "# Earlier unsaved edit");
+			// Leave time between edits so the public edit rate limit can refill.
+			vi.spyOn(Date, "now").mockReturnValue(Date.now() + 10_000);
+		}
 		const version = await seed_version(t, r2Objects, db, {
 			nodeId,
 			body: "plain version\n",
@@ -11566,8 +11571,11 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 			yjsRootKind: "plain_text",
 		});
 
-		// The restore action reads the document state first and writes last. Its read of the
-		// version's bytes sits between the two, so an edit pushed there is one the action never saw.
+		const versionsBefore = await read_versions(t, nodeId);
+		const assetsBefore = await t.run(async (ctx) => ctx.db.query("files_r2_assets").collect());
+		const keysBefore = new Set(r2Objects.keys());
+
+		// Edit while the version downloads, after any backup upload has finished.
 		const fetchMock = vi.mocked(globalThis.fetch);
 		const baseFetch = fetchMock.getMockImplementation();
 		if (baseFetch == null) {
@@ -11576,7 +11584,7 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 		let raced = false;
 		fetchMock.mockImplementation(async (input, init) => {
 			const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-			if (!raced && href.startsWith("https://r2.test/object?key=")) {
+			if (!raced && href === `https://r2.test/object?key=${encodeURIComponent(version.r2Key)}`) {
 				raced = true;
 				await push_unsaved_edit(t, asUser, db, nodeId, "# Edit during restore");
 			}
@@ -11591,6 +11599,25 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 		fetchMock.mockImplementation(baseFetch);
 		expect(raced).toBe(true);
 		expect(refused._nay?.message).toBe("This file changed while the snapshot was being restored. Try again.");
+
+		const liveContent = await asUser.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/notes.md",
+		});
+		expect(liveContent?.content).toContain("Edit during restore");
+		if (state === "edited") {
+			expect(liveContent?.content).toContain("Earlier unsaved edit");
+		}
+		expect(await read_versions(t, nodeId)).toEqual(versionsBefore);
+
+		// Only the refused restore's uploads should be queued for deletion.
+		const uploadedKeys = Array.from(r2Objects.keys()).filter((key) => !keysBefore.has(key));
+		expect(uploadedKeys.length).toBeGreaterThan(0);
+		const cleanupJobs = (await read_deletion_jobs(t)).filter((job) => job.reason === "failed_create");
+		expect(cleanupJobs.map((job) => job.r2Key).sort()).toEqual(uploadedKeys.sort());
+		expect(await t.run(async (ctx) => ctx.db.query("files_r2_assets").collect())).toEqual(assetsBefore);
 
 		// The next restore reads the document again, so the edit becomes a version.
 		const restored = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
