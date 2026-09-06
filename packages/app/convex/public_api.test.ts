@@ -17,7 +17,7 @@ import {
 } from "./r2_client.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
-import { files_get_utf8_byte_size } from "../shared/files.ts";
+import { files_get_utf8_byte_size, files_INVALID_CONTENT_TYPE_MESSAGE } from "../shared/files.ts";
 import {
 	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 	organizations_GLOBAL_ORGANIZATION_ID,
@@ -2512,7 +2512,7 @@ describe("files upload-urls", () => {
 			scopes: ["files:list", "files:write"],
 		});
 		expect(created._nay).toBeUndefined();
-		return { asUser, credential: created._yay!.credential };
+		return { asUser, credential: created._yay!.credential, credentialId: created._yay!.credentialId };
 	}
 
 	async function post_r2_event_for_asset(args: {
@@ -2881,6 +2881,46 @@ describe("files upload-urls", () => {
 				.first(),
 		);
 		expect(quota).toBeNull();
+	});
+
+	test("rejects an invalid content type before writing any upload files or assets", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-upload-urls-content-type" });
+		const { credential, credentialId } = await seed_write_credential({ t, db, clerkSubject: "upload-urls-content-type" });
+		const items = [
+			{ path: "/imports/valid.png", contentType: "image/png", size: 64 },
+			{ path: "/imports/invalid.png", contentType: "not a type", size: 64 },
+		];
+
+		const refused = await t.mutation(internal.public_api.create_file_upload_targets, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			principalRef: { kind: "user_api_key", credentialId },
+			items,
+			skipProcessing: false,
+			overwrite: "replace",
+		});
+		expect(refused._nay?.message).toBe(files_INVALID_CONTENT_TYPE_MESSAGE);
+		expect(refused._nay?.data?.path).toBe("/imports/invalid.png");
+
+		// The same bad type must reach the door through the HTTP body.
+		const response = await t.fetch("/api/v1/files/upload-urls", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ files: items }),
+		});
+		expect(response.status).toBe(400);
+		expect(await response.json()).toEqual({
+			message: files_INVALID_CONTENT_TYPE_MESSAGE,
+			path: "/imports/invalid.png",
+		});
+
+		await t.run(async (ctx) => {
+			expect(await ctx.db.query("files_nodes").collect()).toEqual([]);
+			expect(await ctx.db.query("files_r2_assets").collect()).toEqual([]);
+		});
 	});
 
 	test("checks restricted ancestor nodes before reporting their kind", async () => {
