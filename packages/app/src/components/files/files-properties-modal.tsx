@@ -569,6 +569,15 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 				</span>
 			</MyCheckboxButton>
 
+			{node.collaborationCleanupYjsLastSequenceId !== undefined ? (
+				<p
+					className={"FilesPropertiesModalCollaboration-description" satisfies FilesPropertiesModalCollaboration_ClassNames}
+					role="status"
+				>
+					Old edit history is being removed. You can turn collaboration on after cleanup finishes.
+				</p>
+			) : null}
+
 			{pendingCollaborativeMode !== null ? (
 				<div
 					className={"FilesPropertiesModalCollaboration-confirm" satisfies FilesPropertiesModalCollaboration_ClassNames}

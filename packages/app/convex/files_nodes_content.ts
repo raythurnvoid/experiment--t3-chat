@@ -2771,12 +2771,13 @@ export const finalize_file_content_materialization = internalMutation({
 		workspaceId: v.id("organizations_workspaces"),
 		nodeId: v.id("files_nodes"),
 		userId: v.id("users"),
-		expectedYjsSnapshotId: v.id("files_yjs_snapshots"),
 		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
+		expectedYjsSnapshotAssetId: v.id("files_r2_assets"),
 		sequence: v.number(),
 		targetSequence: v.number(),
 		text: v.string(),
 		versionSnapshotAssetId: v.id("files_r2_assets"),
+		yjsSnapshotAssetId: v.id("files_r2_assets"),
 		textSize: v.number(),
 		yjsSnapshotSize: v.number(),
 		_errors: v.optional(
@@ -2796,37 +2797,23 @@ export const finalize_file_content_materialization = internalMutation({
 			nodeId: args.nodeId,
 			targetSequence: args.targetSequence,
 		})) as get_file_content_materialization_header_Result;
-		if (!header) {
-			return Result({ _yay: null });
-		}
-
 		if (
-			header.fileNode.yjsSnapshotId !== args.expectedYjsSnapshotId ||
+			!header ||
 			header.fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId ||
-			header.yjsSnapshotDoc._id !== args.expectedYjsSnapshotId ||
-			header.yjsLastSequenceDoc._id !== args.expectedYjsLastSequenceId ||
 			header.yjsLastSequenceDoc.lastSequence !== args.sequence ||
-			args.sequence !== args.targetSequence
+			args.sequence !== args.targetSequence ||
+			header.yjsSnapshotDoc.assetId !== args.expectedYjsSnapshotAssetId
 		) {
+			await db_hand_unpublished_assets_to_deletion_ledger(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				assetIds: [args.yjsSnapshotAssetId, args.versionSnapshotAssetId],
+				reason: "failed_create",
+			});
 			return Result({ _yay: null });
 		}
 
 		const now = Date.now();
-
-		// This materialization covers every update up to `args.sequence`. Recompute the aggregate
-		// counters from the docs that stay unmaterialized (pushed while this run was in flight),
-		// so they become exact at every successful finalization even for files whose older
-		// updates were never counted. The writers' reserve budget bounds this read.
-		const remainingUpdatesDocs = await ctx.db
-			.query("files_yjs_updates")
-			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-				q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("fileNodeId", args.nodeId)
-					.gt("sequence", args.sequence),
-			)
-			.collect();
 
 		const dbWriteResult = Result_all(
 			await Promise.all([
@@ -2844,17 +2831,14 @@ export const finalize_file_content_materialization = internalMutation({
 					contentFrontmatterTooLargeIndexDocumentCount: undefined,
 				}),
 				ctx.db.patch("files_yjs_docs_last_sequences", header.yjsLastSequenceDoc._id, {
-					unmaterializedUpdateCount: remainingUpdatesDocs.length,
-					unmaterializedUpdateBytes: remainingUpdatesDocs.reduce(
-						(total, updateData) => total + updateData.update.byteLength,
-						0,
-					),
+					unmaterializedUpdateCount: 0,
+					unmaterializedUpdateBytes: 0,
 				}),
-				ctx.db.patch("files_r2_assets", header.yjsSnapshotAsset._id, {
+				ctx.db.patch("files_r2_assets", args.yjsSnapshotAssetId, {
 					r2Key: r2_create_asset_key({
 						organizationId: args.organizationId,
 						workspaceId: args.workspaceId,
-						assetId: header.yjsSnapshotAsset._id,
+						assetId: args.yjsSnapshotAssetId,
 					}),
 					size: args.yjsSnapshotSize,
 					unfinalizedExpiresAt: undefined,
@@ -2871,6 +2855,7 @@ export const finalize_file_content_materialization = internalMutation({
 					updatedAt: now,
 				}),
 				ctx.db.patch("files_yjs_snapshots", header.yjsSnapshotDoc._id, {
+					assetId: args.yjsSnapshotAssetId,
 					sequence: args.sequence,
 					updatedBy: users_SYSTEM_AUTHOR,
 					updatedAt: now,
@@ -2920,6 +2905,20 @@ export const finalize_file_content_materialization = internalMutation({
 			expectedYjsLastSequenceId: args.expectedYjsLastSequenceId,
 			throughSequence: args.sequence,
 		});
+		// Readers may have loaded the old header before this commit. Keep its object long
+		// enough for those actions to finish, then reference-check it before deletion.
+		await ctx.scheduler.runAfter(
+			FILE_MATERIALIZATION_LATE_PUT_WINDOW_MS,
+			internal.files_nodes_content.cleanup_file_yjs_covered_rows,
+			{
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				nodeId: args.nodeId,
+				throughSequence: args.sequence,
+				supersededYjsAssetId: header.yjsSnapshotAsset._id,
+				expectedActiveYjsLastSequenceId: args.expectedYjsLastSequenceId,
+			},
+		);
 
 		return Result({ _yay: null });
 	},
@@ -2982,7 +2981,6 @@ export const mark_file_content_too_large = internalMutation({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		nodeId: v.id("files_nodes"),
-		expectedYjsSnapshotId: v.id("files_yjs_snapshots"),
 		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
 		sequence: v.number(),
 		targetSequence: v.number(),
@@ -2999,13 +2997,10 @@ export const mark_file_content_too_large = internalMutation({
 			return null;
 		}
 
-		// Use the same staleness gate as `finalize_file_content_materialization`. A newer push
+		// Use the same lineage and sequence checks as finalization. A newer push
 		// already replaced this job. Its own materialization decides whether the content fits.
 		if (
-			state.fileNode.yjsSnapshotId !== args.expectedYjsSnapshotId ||
 			state.fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId ||
-			state.yjsSnapshotDoc._id !== args.expectedYjsSnapshotId ||
-			state.yjsLastSequenceDoc._id !== args.expectedYjsLastSequenceId ||
 			state.yjsLastSequenceDoc.lastSequence !== args.sequence ||
 			args.sequence !== args.targetSequence
 		) {
@@ -3045,7 +3040,6 @@ export const mark_file_content_shape_mismatch = internalMutation({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		nodeId: v.id("files_nodes"),
-		expectedYjsSnapshotId: v.id("files_yjs_snapshots"),
 		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
 		sequence: v.number(),
 		targetSequence: v.number(),
@@ -3061,13 +3055,10 @@ export const mark_file_content_shape_mismatch = internalMutation({
 			return null;
 		}
 
-		// Use the same staleness gate as `finalize_file_content_materialization`. A newer push
+		// Use the same lineage and sequence checks as finalization. A newer push
 		// already replaced this job; its own materialization decides again.
 		if (
-			state.fileNode.yjsSnapshotId !== args.expectedYjsSnapshotId ||
 			state.fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId ||
-			state.yjsSnapshotDoc._id !== args.expectedYjsSnapshotId ||
-			state.yjsLastSequenceDoc._id !== args.expectedYjsLastSequenceId ||
 			state.yjsLastSequenceDoc.lastSequence !== args.sequence ||
 			args.sequence !== args.targetSequence
 		) {
@@ -3102,7 +3093,6 @@ export const mark_file_content_yjs_state_too_large = internalMutation({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		nodeId: v.id("files_nodes"),
-		expectedYjsSnapshotId: v.id("files_yjs_snapshots"),
 		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
 		sequence: v.number(),
 		targetSequence: v.number(),
@@ -3120,10 +3110,7 @@ export const mark_file_content_yjs_state_too_large = internalMutation({
 		}
 
 		if (
-			state.fileNode.yjsSnapshotId !== args.expectedYjsSnapshotId ||
 			state.fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId ||
-			state.yjsSnapshotDoc._id !== args.expectedYjsSnapshotId ||
-			state.yjsLastSequenceDoc._id !== args.expectedYjsLastSequenceId ||
 			state.yjsLastSequenceDoc.lastSequence !== args.sequence ||
 			args.sequence !== args.targetSequence
 		) {
@@ -3161,7 +3148,6 @@ export const mark_file_content_frontmatter_too_large = internalMutation({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		nodeId: v.id("files_nodes"),
-		expectedYjsSnapshotId: v.id("files_yjs_snapshots"),
 		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
 		sequence: v.number(),
 		targetSequence: v.number(),
@@ -3180,13 +3166,10 @@ export const mark_file_content_frontmatter_too_large = internalMutation({
 			return null;
 		}
 
-		// Use the same staleness gate as `finalize_file_content_materialization`. A newer push
+		// Use the same lineage and sequence checks as finalization. A newer push
 		// already replaced this job; its own materialization decides again.
 		if (
-			header.fileNode.yjsSnapshotId !== args.expectedYjsSnapshotId ||
 			header.fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId ||
-			header.yjsSnapshotDoc._id !== args.expectedYjsSnapshotId ||
-			header.yjsLastSequenceDoc._id !== args.expectedYjsLastSequenceId ||
 			header.yjsLastSequenceDoc.lastSequence !== args.sequence ||
 			args.sequence !== args.targetSequence
 		) {
@@ -3242,7 +3225,6 @@ export const materialize_file_content = internalAction({
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				nodeId: args.nodeId,
-				expectedYjsSnapshotId: header.yjsSnapshotDoc._id,
 				expectedYjsLastSequenceId: header.yjsLastSequenceDoc._id,
 				sequence: header.throughSequence,
 				targetSequence: args.targetSequence,
@@ -3333,7 +3315,6 @@ export const materialize_file_content = internalAction({
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
 					nodeId: args.nodeId,
-					expectedYjsSnapshotId: header.yjsSnapshotDoc._id,
 					expectedYjsLastSequenceId: header.yjsLastSequenceDoc._id,
 					sequence: header.throughSequence,
 					targetSequence: args.targetSequence,
@@ -3367,7 +3348,6 @@ export const materialize_file_content = internalAction({
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				nodeId: args.nodeId,
-				expectedYjsSnapshotId: header.yjsSnapshotDoc._id,
 				expectedYjsLastSequenceId: header.yjsLastSequenceDoc._id,
 				sequence,
 				targetSequence: args.targetSequence,
@@ -3394,7 +3374,6 @@ export const materialize_file_content = internalAction({
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				nodeId: args.nodeId,
-				expectedYjsSnapshotId: header.yjsSnapshotDoc._id,
 				expectedYjsLastSequenceId: header.yjsLastSequenceDoc._id,
 				sequence,
 				targetSequence: args.targetSequence,
@@ -3436,7 +3415,6 @@ export const materialize_file_content = internalAction({
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
 					nodeId: args.nodeId,
-					expectedYjsSnapshotId: header.yjsSnapshotDoc._id,
 					expectedYjsLastSequenceId: header.yjsLastSequenceDoc._id,
 					sequence,
 					targetSequence: args.targetSequence,
@@ -3447,26 +3425,39 @@ export const materialize_file_content = internalAction({
 			}
 		}
 
-		const versionSnapshotAssetId = (await ctx.runMutation(internal.r2.insert_asset, {
+		const [yjsSnapshotAssetId, versionSnapshotAssetId] = (await Promise.all([
+			ctx.runMutation(internal.r2.insert_asset, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				kind: "yjs_snapshot",
+				size: snapshotUpdate.byteLength,
+				createdBy: args.userId,
+			}),
+			ctx.runMutation(internal.r2.insert_asset, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				kind: "content_snapshot",
+				size: markdownByteSize,
+				createdBy: args.userId,
+			}),
+		])) as [Id<"files_r2_assets">, Id<"files_r2_assets">];
+
+		const yjsSnapshotR2Key = r2_create_asset_key({
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			kind: "content_snapshot",
-			size: markdownByteSize,
-			createdBy: args.userId,
-		})) as Id<"files_r2_assets">;
-
+			assetId: yjsSnapshotAssetId,
+		});
 		const versionSnapshotR2Key = r2_create_asset_key({
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			assetId: versionSnapshotAssetId,
 		});
 
-		// The current text lives in the committed chunk tables, not in R2. So we only upload
-		// the Yjs snapshot and the new version snapshot here. The version snapshot carries the
-		// node's stored text type, which the snapshot signer pins again when it serves it.
+		// Both objects get fresh keys. A stale action must never overwrite the live Yjs object
+		// before its final mutation can check the file's counter.
 		await Promise.all([
 			r2_put_object(ctx, {
-				key: header.yjsSnapshotAsset.r2Key,
+				key: yjsSnapshotR2Key,
 				body: snapshotUpdate,
 				contentType: "application/octet-stream" satisfies files_ContentType,
 			}),
@@ -3486,12 +3477,13 @@ export const materialize_file_content = internalAction({
 				workspaceId: args.workspaceId,
 				nodeId: args.nodeId,
 				userId: args.userId,
-				expectedYjsSnapshotId: header.yjsSnapshotDoc._id,
 				expectedYjsLastSequenceId: header.yjsLastSequenceDoc._id,
+				expectedYjsSnapshotAssetId: header.yjsSnapshotDoc.assetId,
 				sequence,
 				targetSequence: args.targetSequence,
 				text: extractedText._yay,
 				versionSnapshotAssetId,
+				yjsSnapshotAssetId,
 				textSize: markdownByteSize,
 				yjsSnapshotSize: snapshotUpdate.byteLength,
 			},
@@ -4095,6 +4087,7 @@ async function db_install_file_content_replacement(
 		billedUser: Doc<"users">;
 		fileNode: Doc<"files_nodes">;
 		previousAssetId: Id<"files_r2_assets">;
+		isNewCopy?: boolean;
 		backup?: { assetId: Id<"files_r2_assets">; size: number };
 		contentAssetId: Id<"files_r2_assets">;
 		contentSize: number;
@@ -4112,6 +4105,13 @@ async function db_install_file_content_replacement(
 ) {
 	const { membership, user, billedUser, fileNode } = args;
 	const nodeId = fileNode._id;
+
+	// Removing shared history uses the existing warning and acknowledgement in Properties.
+	if (!args.isNewCopy && files_node_has_editable_yjs_state(fileNode) && args.yjsRootKind === undefined) {
+		return Result({
+			_nay: { message: "Turn collaboration off in Properties before replacing this text file with stored content." },
+		});
+	}
 
 	// Guard the argument contract. A text result always brings its text. A collaborative text
 	// result also brings its new document. Stored bytes bring neither.
@@ -4167,7 +4167,7 @@ async function db_install_file_content_replacement(
 		}))
 	) {
 		return Result({
-			_nay: { message: "The old collaboration history is still being removed. Try again in a moment." },
+			_nay: { message: "The old collaboration history is still being removed. Please try again later." },
 		});
 	}
 
@@ -4201,16 +4201,12 @@ async function db_install_file_content_replacement(
 		// A stored file has no version row for its current asset yet. An editable file already has
 		// one from its last save. Add the row only when it is missing, so the old bytes stay in
 		// history without a duplicate row.
-		const versionRows = await ctx.db
+		const version = await ctx.db
 			.query("files_snapshots")
-			.withIndex("by_organization_workspace_fileNode_archivedAt", (q) =>
-				q
-					.eq("organizationId", membership.organizationId)
-					.eq("workspaceId", membership.workspaceId)
-					.eq("fileNodeId", nodeId),
-			)
-			.collect();
-		if (!versionRows.some((row) => row.assetId === args.previousAssetId)) {
+			.withIndex("by_asset", (q) => q.eq("assetId", args.previousAssetId))
+			.filter((q) => q.eq(q.field("fileNodeId"), nodeId))
+			.first();
+		if (!version) {
 			await store_version_snapshot(ctx, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
@@ -4604,6 +4600,7 @@ export const finalize_file_pending_replacement = internalMutation({
 			billedUser,
 			fileNode,
 			previousAssetId,
+			isNewCopy: pendingUpdate.eagerCreated !== undefined,
 			backup: args.backup,
 			contentAssetId: args.contentAssetId,
 			contentSize: args.contentSize,
@@ -4675,8 +4672,8 @@ export const restore_snapshot = internalMutation({
 		 * carries only one large value (`snapshotMarkdownContent`). Consumed here.
 		 */
 		restoreUpdateStageId: v.optional(v.id("files_yjs_trusted_update_stages")),
-		expectedYjsSnapshotId: v.id("files_yjs_snapshots"),
 		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
+		expectedLastSequence: v.number(),
 		currentSnapshotAssetId: v.id("files_r2_assets"),
 		currentSnapshotSize: v.number(),
 		restoredSnapshotAssetId: v.id("files_r2_assets"),
@@ -4744,9 +4741,10 @@ export const restore_snapshot = internalMutation({
 			});
 		}
 
+		const currentLastSequence = await ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId);
 		if (
-			fileNode.yjsSnapshotId !== args.expectedYjsSnapshotId ||
-			fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId
+			fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId ||
+			currentLastSequence?.lastSequence !== args.expectedLastSequence
 		) {
 			await db_hand_unpublished_assets_to_deletion_ledger(ctx, {
 				organizationId: membership.organizationId,
@@ -5503,8 +5501,7 @@ export const restore_snapshot_r2 = action({
 			});
 		}
 
-		// The version brings its own type, shape, and collaboration mode back. A row from before
-		// versions recorded them keeps the file's own (the backfill migration fills those rows).
+		// Restore the version's type and shape. An existing text file keeps its collaboration mode.
 		const versionRecorded = snapshotContent.contentType !== undefined;
 		const versionContentType = snapshotContent.contentType ?? fileNode.contentType;
 		if (versionContentType === undefined) {
@@ -5516,7 +5513,9 @@ export const restore_snapshot_r2 = action({
 		const version = {
 			contentType: versionContentType,
 			rootKind: versionRecorded ? snapshotContent.yjsRootKind : fileNode.yjsRootKind,
-			nonCollaborative: (versionRecorded ? snapshotContent.nonCollaborative : fileNode.nonCollaborative) === true,
+			nonCollaborative: files_node_has_editable_text_content(fileNode)
+				? fileNode.nonCollaborative === true
+				: snapshotContent.nonCollaborative === true,
 		};
 
 		// A version with the live document's shape is written into that document, so the file's
@@ -5592,6 +5591,14 @@ export const restore_snapshot_r2 = action({
 			console.error(errorMessage, errorData);
 			throw should_never_happen(errorMessage, errorData);
 		}
+		// Rich text parsing can change Markdown. Save the text the shared document produces.
+		const restoredText = files_yjs_doc_get_text({
+			yjsDoc: restoredYjsDocProjection._yay,
+			rootKind: materializationState.fileNode.yjsRootKind,
+		});
+		if (restoredText._nay) {
+			return Result({ _nay: { message: restoredText._nay.message } });
+		}
 		const restoreUpdate = files_yjs_compute_diff_update_from_state_vector({
 			yjsDoc: restoredYjsDocProjection._yay,
 			yjsBeforeStateVector,
@@ -5630,7 +5637,7 @@ export const restore_snapshot_r2 = action({
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				kind: "content_snapshot",
-				size: files_get_utf8_byte_size(snapshotMarkdownContent),
+				size: files_get_utf8_byte_size(restoredText._yay),
 				createdBy: userAuth.id,
 			}),
 		])) as [Id<"files_r2_assets">, Id<"files_r2_assets">];
@@ -5660,7 +5667,7 @@ export const restore_snapshot_r2 = action({
 			}),
 			r2_put_object(ctx, {
 				key: restoredSnapshotR2Key,
-				body: snapshotMarkdownContent,
+				body: restoredText._yay,
 				contentType:
 					files_editable_text_content_type_of(
 						snapshotContent.contentType ?? materializationState.fileNode.contentType,
@@ -5668,21 +5675,32 @@ export const restore_snapshot_r2 = action({
 			}),
 		]);
 
-		return (await ctx.runMutation(internal.files_nodes_content.restore_snapshot, {
+		const restored = (await ctx.runMutation(internal.files_nodes_content.restore_snapshot, {
 			membershipId: args.membershipId,
 			nodeId: args.nodeId,
 			snapshotId: args.snapshotId,
 			sessionId: args.sessionId,
-			snapshotMarkdownContent,
+			snapshotMarkdownContent: restoredText._yay,
 			restoreUpdateStageId,
-			expectedYjsSnapshotId: materializationState.yjsSnapshotDoc._id,
 			expectedYjsLastSequenceId: materializationState.yjsLastSequenceDoc._id,
+			expectedLastSequence: materializationState.yjsLastSequenceDoc.lastSequence,
 			currentSnapshotAssetId,
 			currentSnapshotSize: files_get_utf8_byte_size(currentContent._yay.text),
 			restoredSnapshotAssetId,
-			restoredSnapshotSize: files_get_utf8_byte_size(snapshotMarkdownContent),
+			restoredSnapshotSize: files_get_utf8_byte_size(restoredText._yay),
 			skipRateLimit: true,
 		})) as restore_snapshot_Result;
+		if (restored._nay) {
+			await ctx.runMutation(internal.files_nodes_content.cleanup_file_node_creation_assets, {
+				assetIds: [currentSnapshotAssetId, restoredSnapshotAssetId],
+				r2Keys: [currentSnapshotR2Key, restoredSnapshotR2Key],
+				durableTenantScope: {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+				},
+			});
+		}
+		return restored;
 	},
 });
 
@@ -5952,9 +5970,7 @@ export const repair_file_yjs_state_from_visible_text = internalAction({
 			source,
 			acknowledgeDiscardUnmaterialized: args.acknowledgeDiscardUnmaterialized ?? false,
 			targetSequence: data.throughSequence,
-			expectedYjsSnapshotId: data.yjsSnapshotDoc._id,
 			expectedYjsLastSequenceId: data.yjsLastSequenceDoc._id,
-			expectedLineageGeneration: data.yjsLastSequenceDoc.lineageGeneration,
 			text: visibleText,
 			textByteSize,
 			yjsSnapshotAssetId,
@@ -5993,9 +6009,7 @@ export const finalize_file_yjs_repair = internalMutation({
 		source: v.union(v.literal("latest_state"), v.literal("last_committed")),
 		acknowledgeDiscardUnmaterialized: v.boolean(),
 		targetSequence: v.number(),
-		expectedYjsSnapshotId: v.id("files_yjs_snapshots"),
 		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
-		expectedLineageGeneration: v.number(),
 		/** One bounded text value; every other input travels as ids/scalars. */
 		text: v.string(),
 		textByteSize: v.number(),
@@ -6007,7 +6021,7 @@ export const finalize_file_yjs_repair = internalMutation({
 	returns: v_result({ _yay: v.object({ lineageGeneration: v.number() }) }),
 	handler: async (ctx, args) => {
 		// Recheck everything the action decided on: tenant, membership, node, marker or
-		// acknowledgement, exact target sequence, lineage generation, asset ownership and sizes.
+		// acknowledgement, exact target sequence and document id, asset ownership and sizes.
 		// Any mismatch means the world moved between the action's read and this commit.
 		const membership = await db_get_active_membership_in_workspace(ctx, {
 			organizationId: args.organizationId,
@@ -6044,13 +6058,7 @@ export const finalize_file_yjs_repair = internalMutation({
 		if (state.yjsLastSequenceDoc.lastSequence !== args.targetSequence) {
 			return Result({ _nay: { message: "Stale repair: the file advanced" } });
 		}
-		if (
-			state.fileNode.yjsSnapshotId !== args.expectedYjsSnapshotId ||
-			state.fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId ||
-			state.yjsSnapshotDoc._id !== args.expectedYjsSnapshotId ||
-			state.yjsLastSequenceDoc._id !== args.expectedYjsLastSequenceId ||
-			state.yjsLastSequenceDoc.lineageGeneration !== args.expectedLineageGeneration
-		) {
+		if (state.fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId) {
 			return Result({ _nay: { message: "Stale repair: the lineage advanced" } });
 		}
 		// Same eligibility as the action: the frontmatter markers qualify for latest_state.
@@ -6086,7 +6094,7 @@ export const finalize_file_yjs_repair = internalMutation({
 		}
 
 		const now = Date.now();
-		const nextLineageGeneration = args.expectedLineageGeneration + 1;
+		const nextLineageGeneration = state.yjsLastSequenceDoc.lineageGeneration + 1;
 		// Rotate the exact token even though the numeric sequence stays the same. Every writer and
 		// worker that started before this repair then fails its existing exact-id check.
 		const nextYjsLastSequenceId = await ctx.db.insert("files_yjs_docs_last_sequences", {
@@ -6236,9 +6244,8 @@ export const cleanup_file_yjs_covered_rows = internalMutation({
 		expectedActiveYjsLastSequenceId: v.optional(v.id("files_yjs_docs_last_sequences")),
 		nonCollaborativeCleanupYjsLastSequenceId: v.optional(v.id("files_yjs_docs_last_sequences")),
 		/**
-		 * Hold the R2 deletion job until this time when a materialization worker may still be
-		 * running. That worker reads its header first and writes the snapshot object afterwards, so
-		 * it can put the object back after this cleanup deletes it.
+		 * Keep retrying deletion until this deadline if a PUT may still finish. DELETE starts
+		 * immediately; the job stays unsettled so a late PUT cannot leave an orphaned object.
 		 */
 		putMayArriveUntil: v.optional(v.number()),
 	},
@@ -6250,7 +6257,7 @@ export const cleanup_file_yjs_covered_rows = internalMutation({
 		// Row cleanup must belong either to the current collaborative lineage or to the exact OFF
 		// barrier. Asset cleanup stays independent because its own reference check is safe.
 		// The OFF barrier covers a file with no document at all: turning collaboration off and an
-		// accepted copy of stored bytes both leave the node without a last-sequence pointer.
+		// accepted new copy of stored bytes both leave the node without a last-sequence pointer.
 		const canDeleteCoveredRows = args.nonCollaborativeCleanupYjsLastSequenceId
 			? sameTenant &&
 				fileNode.yjsLastSequenceId === undefined &&
@@ -6360,12 +6367,13 @@ export const delete_unfinalized_repair_assets = internalMutation({
 // ON is cheap and safe: it builds one fresh compact document from the committed text.
 
 /**
- * How long a deletion job waits before removing the old Yjs snapshot object.
+ * Keep old Yjs objects for in-flight readers after materialization. Replacement and OFF
+ * pass the same window to the deletion ledger, which keeps retrying after a late PUT.
  *
  * A materialization worker reads its header first and writes the snapshot object several steps
  * later. Turning collaboration off cancels that worker, but a worker that is already running keeps
  * going and can put the object back after this mutation deleted it. A Convex action runs for at
- * most ten minutes, so wait past that plus the usual margin.
+ * most ten minutes, so allow that plus the usual margin before the final delete.
  */
 const FILE_MATERIALIZATION_LATE_PUT_WINDOW_MS = 10 * 60 * 1000 + r2_PUT_MAY_ARRIVE_MARGIN_MS;
 
@@ -6714,7 +6722,7 @@ export const set_file_collaborative = action({
 			return Result({ _yay: null });
 		}
 		if (preflight.cleanupInProgress) {
-			return Result({ _nay: { message: "The old collaboration history is still being removed. Try again in a moment." } });
+			return Result({ _nay: { message: "The old collaboration history is still being removed. Please try again later." } });
 		}
 
 		// Refuse a locked file here, before the two uploads below. The finalize mutation asks the
@@ -6910,7 +6918,7 @@ export const finalize_file_collaboration_enable = internalMutation({
 			}))
 		) {
 			return Result({
-				_nay: { message: "The old collaboration history is still being removed. Try again in a moment." },
+				_nay: { message: "The old collaboration history is still being removed. Please try again later." },
 			});
 		}
 

@@ -6548,12 +6548,17 @@ async function action_accept_file_pending_replacement(
 		content = { contentAssetId: replacement.assetId, contentSize: replacement.size };
 	} else {
 		const rootKind = replacement.yjsRootKind;
+		// New copies inherit the source's mode. Existing text files keep their own mode.
+		const nonCollaborative =
+			!data.pendingUpdate.eagerCreated && files_node_has_editable_text_content(data.fileNode)
+				? data.fileNode.nonCollaborative === true
+				: replacement.nonCollaborative === true;
 		const stagedText = await r2_fetch_object_from_bucket({ key: data.stagedAssetR2Key }).then((response) =>
 			response.text(),
 		);
 		let text = stagedText;
 		let yjsSnapshot: { assetId: Id<"files_r2_assets">; size: number } | undefined;
-		if (replacement.nonCollaborative !== true) {
+		if (!nonCollaborative) {
 			const yjsDoc = files_yjs_doc_create_from_text({ text: stagedText, rootKind });
 			if ("_nay" in yjsDoc) {
 				return Result({ _nay: { message: yjsDoc._nay.message } });
@@ -6599,7 +6604,7 @@ async function action_accept_file_pending_replacement(
 			contentAssetId,
 			contentSize: textSize,
 			yjsRootKind: rootKind,
-			...(replacement.nonCollaborative === true ? { nonCollaborative: true } : {}),
+			...(nonCollaborative ? { nonCollaborative: true } : {}),
 			...(yjsSnapshot ? { yjsSnapshot } : {}),
 			text,
 		};

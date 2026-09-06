@@ -161,7 +161,12 @@ type ManagementState = {
 
 function mockQueries(args: {
 	management?: ManagementState;
-	node?: typeof NODE & { assetId?: string; yjsRootKind?: "rich_text" | "plain_text"; nonCollaborative?: boolean };
+	node?: typeof NODE & {
+		assetId?: string;
+		yjsRootKind?: "rich_text" | "plain_text";
+		nonCollaborative?: boolean;
+		collaborationCleanupYjsLastSequenceId?: string;
+	};
 	asset?: { size: number } | null;
 	entries?: { key: string; value: string | number | boolean }[];
 	canWrite?: boolean;
@@ -667,7 +672,7 @@ describe("FilesPropertiesModalCollaboration", () => {
 	test("shows the cleanup refusal and keeps collaboration off", async () => {
 		mockQueries({ node: { ...TEXT_NODE, nonCollaborative: true }, entries: [], canWrite: true });
 		actionMock.mockResolvedValueOnce({
-			_nay: { message: "The old collaboration history is still being removed. Try again in a moment." },
+			_nay: { message: "The old collaboration history is still being removed. Please try again later." },
 		});
 
 		renderModal();
@@ -678,6 +683,24 @@ describe("FilesPropertiesModalCollaboration", () => {
 			expect(screen.getByRole("alert").textContent).toContain("old collaboration history is still being removed");
 		});
 		expect(collaborationCheckbox().checked).toBe(false);
+	});
+
+	test("shows cleanup status until the server removes the marker", async () => {
+		mockQueries({
+			node: { ...TEXT_NODE, nonCollaborative: true, collaborationCleanupYjsLastSequenceId: "old_history" },
+			entries: [],
+			canWrite: true,
+		});
+		renderModal();
+		expect(screen.getByRole("status").textContent).toContain("Old edit history is being removed.");
+		mockQueries({ node: { ...TEXT_NODE, nonCollaborative: true }, entries: [], canWrite: true });
+		await act(async () => {
+			for (const listener of queryPushListeners) {
+				listener();
+			}
+		});
+		expect(screen.queryByText("Old edit history is being removed.", { exact: false })).toBeNull();
+		expect(collaborationCheckbox().disabled).toBe(false);
 	});
 
 	// The server asks for the write permission and refuses a locked file, so the box must not offer

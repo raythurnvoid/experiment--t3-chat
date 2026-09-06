@@ -660,6 +660,7 @@ const FileEditorSnapshotsModalPreviewModal = memo(function FileEditorSnapshotsMo
 									(snapshot === undefined || selectedSnapshotContent === undefined)
 								}
 							/>
+							<p>Save changes in all open editors before restoring a version of another file type.</p>
 						</>
 					)}
 				</MyModalScrollableArea>
@@ -888,8 +889,7 @@ export const FileEditorSnapshotsModal = memo(function FileEditorSnapshotsModal(p
 
 		setIsRestoring(true);
 		Promise.try(async () => {
-			// The version brings its own type, shape, and collaboration mode back. The door writes a
-			// same-shape version into the live document and installs any other version as a whole.
+			// Same-shape text restores keep the live document. Other restores replace the whole file.
 			const restoreResult = await convex.action(app_convex_api.files_nodes_content.restore_snapshot_r2, {
 				membershipId,
 				snapshotId: selectedSnapshotId,
@@ -912,6 +912,7 @@ export const FileEditorSnapshotsModal = memo(function FileEditorSnapshotsModal(p
 		})
 			.catch((err) => {
 				console.error("Failed to restore snapshot:", err);
+				toast.error("Could not restore this version. Try again.");
 			})
 			.finally(() => {
 				setIsRestoring(false);

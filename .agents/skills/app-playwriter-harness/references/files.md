@@ -693,6 +693,24 @@ For a non-empty snapshot, wait for `.FileEditorSnapshotsModalPreviewModalDiffBlo
 reading the preview text. The diff container can mount while its content is still loading; reading
 the container alone can report an empty snapshot too early.
 
+### Restore mode and failure checks
+
+Use one new Markdown file in a temporary QA folder. Keep its initial version, turn collaboration
+off through Properties, then save different text. Open `Open file snapshots`, preview the initial
+version, and confirm. The old text must return while collaboration stays off. Read it through
+`get_non_collaborative_file_content` and compare with the signed download body.
+
+To check a thrown restore failure, temporarily throw in `restore_snapshot_r2` for only that QA
+node id. Confirm in the preview and verify the error toast and enabled retry button. Remove the
+temporary branch, wait for the dev watcher to deploy, and confirm again. The preview must close
+and the restored text must appear. This also proves the browser reaches the working tree.
+Snapshot and log reads can run before the action ends; observe again before calling it a failure.
+Do not keep the temporary branch or the QA node id in committed code.
+
+Use `convex/files_nodes_content.test.ts` for the exact overlapping R2 PUT order. Browser request
+interception cannot pause those server-side uploads. The tests hold each PUT and cover stale
+materialization, same-counter workers, restore after an edit, and OFF/ON during materialization.
+
 ## Script Pattern
 
 For anything longer than a one-liner, keep the runner in a dated personal AI folder:

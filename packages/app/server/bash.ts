@@ -7405,13 +7405,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			// Nothing to review: the destination had no document to branch from, so the copy is a save.
 			expect(await list_pending_updates_for_node(runner, targetId)).toHaveLength(0);
 
-			// The copy carries the source's collaboration mode. The source is collaborative, so the
-			// saved file now has a Yjs document of its own.
+			// The existing destination keeps collaboration off after the copy.
 			const savedNode = await get_seeded_node(runner, "/docs/saved-target.md");
 			expect(savedNode._id).toBe(targetId);
-			expect(savedNode.nonCollaborative).toBeUndefined();
-			expect(savedNode.yjsSnapshotId).toBeDefined();
-			expect(savedNode.yjsLastSequenceId).toBeDefined();
+			expect(savedNode.nonCollaborative).toBe(true);
+			expect(savedNode.yjsSnapshotId).toBeUndefined();
+			expect(savedNode.yjsLastSequenceId).toBeUndefined();
 
 			const savedRead = await runner.run(`cat ${test_db_files_mount}/docs/saved-target.md`);
 			expect(savedRead.metadata.exitCode).toBe(0);
@@ -7436,11 +7435,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				"copied: /docs/readme.md -> /data/settings.yaml — collaboration was off for the destination, so the copy is already saved\n",
 			);
 
-			// The save keeps the file's identity and stores the source's text, type, shape, and
-			// collaboration mode as a new version. The name stays .yaml: it never decides the type.
+			// The save keeps the file's identity and mode, with the source's text, type, and shape.
+			// The name stays .yaml: it never decides the type.
 			const targetAfter = await get_seeded_node(runner, "/data/settings.yaml");
 			expect(targetAfter._id).toBe(targetBefore._id);
-			expect(targetAfter.nonCollaborative).toBeUndefined();
+			expect(targetAfter.nonCollaborative).toBe(true);
 			expect(targetAfter.yjsRootKind).toBe("rich_text");
 			expect(targetAfter.contentType).toBe("text/markdown;charset=utf-8");
 			expect(targetAfter.assetId).not.toBe(targetBefore.assetId);
@@ -7731,7 +7730,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			);
 			expect(copied.stderr).toBe("");
 			expect(copied.metadata.exitCode).toBe(0);
-			await accept_pending_update_for_test(runner, { nodeId: targetBefore._id, path: "/docs/rich-target.md" });
+			await accept_pending_replacement_for_test(runner, targetBefore._id);
 
 			const { api } = await import("../convex/_generated/api.js");
 			const asUser = runner_as_user(runner);
@@ -7757,7 +7756,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(on._nay).toBeUndefined();
 			const onNode = await get_seeded_node(runner, "/docs/rich-target.md");
 			expect(onNode.nonCollaborative).toBeUndefined();
-			expect(onNode.yjsRootKind).toBe("rich_text");
+			expect(onNode.yjsRootKind).toBe("plain_text");
 			expect(onNode.yjsSnapshotId).toBeDefined();
 			expect(onNode.yjsSnapshotId).not.toBe(targetBefore.yjsSnapshotId);
 			expect(onNode.yjsLastSequenceId).toBeDefined();

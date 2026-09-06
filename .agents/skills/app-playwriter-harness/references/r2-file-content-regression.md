@@ -20,8 +20,8 @@ $browserKey = "<exact KEY from browser list>"
 $sessionOutput = vp env exec pnpx playwriter session new --browser $browserKey
 $session = ($sessionOutput | Select-String -Pattern "Session (\d+) created").Matches.Groups[1].Value
 if (-not $session) { $session = ($sessionOutput | Select-Object -Last 1).Trim() }
-vp env exec pnpx playwriter -s $session --% -e "const fs = require('node:fs'); const code = fs.readFileSync('.agents/skills/app-playwriter-harness/scripts/install-harness.js', 'utf8'); await eval(code);"
-vp env exec pnpx playwriter -s $session --% -e "await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: '/files' }); await state.appPlaywriterHarness.observe({ label: 'files tab', search: /Files|Agent|Comments|Toolbar|Upload|New file|New folder/i });"
+vp env exec pnpx playwriter -s $session -f "C:/Users/rt0/Documents/workspace/rt0/t3-chat/.agents/skills/app-playwriter-harness/scripts/install-harness.js"
+vp env exec pnpx playwriter -s $session -e 'await state.appPlaywriterHarness.bindOpenTab({ urlIncludes: "/files" }); console.log(await state.appPlaywriterHarness.observe({ label: "files tab", search: /Files|Agent|Comments|Toolbar|Upload|New file|New folder/i }));'
 ```
 
 4. Use one unique folder per run, for example `aaa-pw-r2-<timestamp>`, and archive it during cleanup.

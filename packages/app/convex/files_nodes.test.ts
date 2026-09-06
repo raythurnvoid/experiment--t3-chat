@@ -4998,7 +4998,7 @@ test("files_snapshot_write rate limit runs before restore snapshot validation", 
 		nodeId: db.files.file_root_1._id,
 		// The rate limit must win before any file or lineage validation.
 		expectedYjsLastSequenceId: restoreAssets.expectedYjsLastSequenceId,
-		expectedYjsSnapshotId: restoreAssets.expectedYjsSnapshotId,
+		expectedLastSequence: 0,
 		snapshotId: restoreAssets.snapshotId,
 		sessionId: "snapshot-rate-limit",
 		snapshotMarkdownContent: "",
@@ -5382,7 +5382,7 @@ test("materialize_file_content rolls back Convex writes when committed chunking 
 		name: "Chunk Failure User",
 		email: "chunk-failure-user@example.com",
 	});
-	test_setup_r2_capture();
+	const r2Writes = test_setup_r2_capture();
 
 	const nodeId = await test_materialize_markdown_file(t, asUser, db, "/chunk-failure.md", "# Last good\n");
 	const nextYjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text: "# Next version\n" });
@@ -5416,8 +5416,10 @@ test("materialize_file_content rolls back Convex writes when committed chunking 
 					.eq("fileNodeId", nodeId),
 			)
 			.collect();
-		return { fileNode, yjsSnapshot, textChunks };
+		const yjsAsset = yjsSnapshot ? await ctx.db.get("files_r2_assets", yjsSnapshot.assetId) : null;
+		return { fileNode, yjsSnapshot, textChunks, yjsKey: yjsAsset?.r2Key };
 	});
+	const savedYjsBytes = r2Writes.get(before.yjsKey!);
 
 	const chunkMarkdownSpy = vi
 		.spyOn(await import("../server/files-markdown-chunking-mastra.ts"), "files_chunk_markdown")
@@ -5471,6 +5473,8 @@ test("materialize_file_content rolls back Convex writes when committed chunking 
 	});
 
 	expect(after.fileNode?.assetId).toBe(before.fileNode?.assetId);
+	expect(after.yjsSnapshot?.assetId).toBe(before.yjsSnapshot?.assetId);
+	expect(r2Writes.get(before.yjsKey!)).toEqual(savedYjsBytes);
 	expect(after.yjsSnapshot?.sequence).toBe(before.yjsSnapshot?.sequence);
 	expect(after.textChunks).toEqual(before.textChunks);
 	expect(after.yjsUpdates).not.toHaveLength(0);
@@ -7519,7 +7523,7 @@ describe("non-collaborative files", () => {
 			nodeId,
 		});
 		expect(blockedOn._nay?.message).toBe(
-			"The old collaboration history is still being removed. Try again in a moment.",
+			"The old collaboration history is still being removed. Please try again later.",
 		);
 		expect(r2Writes.size).toBe(writesBeforeBlockedOn);
 
@@ -7577,7 +7581,6 @@ describe("non-collaborative files", () => {
 			workspaceId: db.workspaceId,
 			nodeId,
 			expectedYjsLastSequenceId: oldLineage.lastSequenceId,
-			expectedYjsSnapshotId: oldLineage.snapshotId,
 			sequence: 1,
 			targetSequence: 1,
 			byteSize: files_MAX_TEXT_CONTENT_BYTES + 1,
@@ -8003,7 +8006,6 @@ describe("non-collaborative files", () => {
 			workspaceId: db.workspaceId,
 			nodeId,
 			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
-			expectedYjsSnapshotId: (await test_get_file_yjs_pointers(t, nodeId)).yjsSnapshotId,
 			sequence,
 			targetSequence: sequence,
 			byteSize: files_MAX_TEXT_CONTENT_BYTES + 1,
@@ -11957,7 +11959,7 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 		membershipId: db.membershipId,
 		nodeId: createdFile._yay.nodeId,
 		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, createdFile._yay.nodeId)).yjsLastSequenceId,
-		expectedYjsSnapshotId: (await test_get_file_yjs_pointers(t, createdFile._yay.nodeId)).yjsSnapshotId,
+		expectedLastSequence: 0,
 		snapshotId: restoreAssets.snapshotId,
 		sessionId: "restore-credit-test",
 		snapshotMarkdownContent: restoredMarkdown,
@@ -12259,7 +12261,7 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 		membershipId: db.membershipId,
 		nodeId: createdFile._yay.nodeId,
 		expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, createdFile._yay.nodeId)).yjsLastSequenceId,
-		expectedYjsSnapshotId: (await test_get_file_yjs_pointers(t, createdFile._yay.nodeId)).yjsSnapshotId,
+		expectedLastSequence: 0,
 		snapshotId: restoreAssets.snapshotId,
 		sessionId: "restore-billing-test",
 		snapshotMarkdownContent: restoredMarkdown,
@@ -14141,9 +14143,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 			source: "latest_state",
 			acknowledgeDiscardUnmaterialized: false,
 			targetSequence: 999,
-			expectedYjsSnapshotId: pointers.yjsSnapshotId,
 			expectedYjsLastSequenceId: pointers.yjsLastSequenceId,
-			expectedLineageGeneration: 0,
 			text: "stale.",
 			textByteSize: files_get_utf8_byte_size("stale."),
 			yjsSnapshotAssetId,
@@ -17831,7 +17831,7 @@ describe("files_nodes_content.restore_snapshot read-only gates", () => {
 			membershipId: db.membershipId,
 			nodeId: seeded.nodeId,
 			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
-			expectedYjsSnapshotId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsSnapshotId,
+			expectedLastSequence: 0,
 			snapshotId: seeded.snapshotId,
 			sessionId: "restore-lock-test",
 			snapshotMarkdownContent: "# restored\n",
@@ -17878,7 +17878,7 @@ describe("files_nodes_content.restore_snapshot read-only gates", () => {
 				membershipId: db.membershipId,
 				nodeId: seeded.nodeId,
 				expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
-				expectedYjsSnapshotId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsSnapshotId,
+				expectedLastSequence: 0,
 				snapshotId: seeded.snapshotId,
 				sessionId: "restore-retry-test",
 				snapshotMarkdownContent: "# restored\n",
@@ -17954,7 +17954,7 @@ describe("files_nodes_content.restore_snapshot read-only gates", () => {
 			membershipId: db.membershipId,
 			nodeId: seeded.nodeId,
 			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
-			expectedYjsSnapshotId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsSnapshotId,
+			expectedLastSequence: 0,
 			snapshotId: seeded.snapshotId,
 			sessionId: "restore-unlocked-test",
 			snapshotMarkdownContent: restoredMarkdown,
@@ -18147,9 +18147,7 @@ describe("files_nodes_content.finalize_file_yjs_repair read-only gates", () => {
 			source: "latest_state",
 			acknowledgeDiscardUnmaterialized: false,
 			targetSequence: 999,
-			expectedYjsSnapshotId: pointers.yjsSnapshotId,
 			expectedYjsLastSequenceId: pointers.yjsLastSequenceId,
-			expectedLineageGeneration: 0,
 			text: "repair.",
 			textByteSize: files_get_utf8_byte_size("repair."),
 			yjsSnapshotAssetId: seeded.yjsSnapshotAssetId,

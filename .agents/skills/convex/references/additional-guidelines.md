@@ -364,6 +364,18 @@ This applies to any mutation flow, not only errors-as-values:
 - If a failure branch must roll back prior writes, throw. Prefer arranging all fallible work before writes; use `Result` or `null` only when no related prior writes need rollback. Prefer `convex_error(...)` over raw `Error` in Convex code.
 - Exception: explicit cleanup markers in `finally` can be intentional side effects; document this clearly.
 
+## Actions that upload before a final mutation
+
+File writes in `files_nodes_content.ts` are the reference for this split:
+
+- The action reads and checks the file, builds the content, and uploads to fresh asset keys. It must not overwrite a published R2 object before the final mutation can check whether the file changed.
+- The final mutation checks the current access, lock, and the values that make the action's result valid before publishing. Use the smallest check that covers the real race: the Yjs sequence doc id identifies the lineage; its counter catches intervening edits. Materialization also checks the previous snapshot asset id, because two runs can publish at the same counter. Do not add duplicate snapshot-doc or generation checks when the sequence doc id already identifies them.
+- Preserve the door's write policy. Non-collaborative member saves intentionally use last write wins; enabling collaboration checks the old content asset because it builds a document from that text. Do not add a base-asset check to every write.
+- Handle returned `_nay` values as well as thrown failures. After a final refusal, hand all unused uploads to the existing deletion ledger. A refusal mutation can record cleanup before returning; these cleanup writes intentionally commit. Keep temporary assets and trusted stages expiry-swept so a crashed action still has a cleanup path.
+- When uploads run together, wait for all started uploads to finish before immediate cleanup. A rejected `Promise.all` does not cancel the other uploads; use `Promise.allSettled` on those promises before deleting keys that another upload can still write.
+- Publish related node, asset, snapshot, and chunk changes in one mutation. If a later chunk write fails, throw so those writes roll back. Schedule large update-log cleanup in bounded batches after that commit.
+- R2 deletion jobs try DELETE immediately. A `putMayArriveUntil` deadline keeps the job after an early successful delete, so the hourly recovery can delete again after a possible late upload. This is separate from materialization keeping an old Yjs object for 15 minutes before cleanup, for readers that already loaded its header.
+
 ## Type-safe `convex_error` pattern (this repo)
 
 Add `_errors` metadata only when a real client catches a thrown `ConvexError` and needs to narrow its message. Result-returning APIs already expose their error contract in `returns`, so do not add `_errors` to them. Keep the validator inline with the owning registration.

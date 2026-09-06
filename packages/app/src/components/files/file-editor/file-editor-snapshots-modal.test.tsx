@@ -1,4 +1,5 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { toast } from "sonner";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
@@ -63,6 +64,42 @@ afterEach(() => {
 });
 
 describe("FileEditorSnapshotsModal", () => {
+	test("shows an upload failure and keeps the preview open for retry", async () => {
+		const errorToast = vi.spyOn(toast, "error").mockReturnValue("error");
+		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
+		const originalAction = convex.action.getMockImplementation()!;
+		let failRestore = true;
+		convex.action.mockImplementation((name: string) =>
+			name === "restore_snapshot_r2" && failRestore ? Promise.reject(new Error("Upload failed")) : originalAction(name),
+		);
+		const onApplySnapshotText = vi.fn();
+		try {
+			render(
+				<FileEditorSnapshotsModal
+					nodeId={"node_1" as app_convex_Id<"files_nodes">}
+					sessionId="session_1"
+					editable={true}
+					getCurrentText={() => "current text\n"}
+					onApplySnapshotText={onApplySnapshotText}
+				/>,
+			);
+			fireEvent.click(screen.getByRole("button", { name: "Open file snapshots" }));
+			fireEvent.click(await screen.findByRole("button", { name: format_relative_time(SNAPSHOT_TIME) }));
+			const confirm = await screen.findByRole("button", { name: "Confirm" });
+			await waitFor(() => expect(confirm.hasAttribute("disabled")).toBe(false));
+			fireEvent.click(confirm);
+			await waitFor(() => expect(errorToast).toHaveBeenCalledWith("Could not restore this version. Try again."));
+			expect(onApplySnapshotText).not.toHaveBeenCalled();
+			await waitFor(() => expect(confirm.hasAttribute("disabled")).toBe(false));
+			failRestore = false;
+			fireEvent.click(confirm);
+			await waitFor(() => expect(onApplySnapshotText).toHaveBeenCalledWith("older text\n"));
+		} finally {
+			errorToast.mockRestore();
+			consoleError.mockRestore();
+		}
+	});
+
 	test("restores the selected snapshot without a base asset", async () => {
 		const onApplySnapshotText = vi.fn();
 		render(

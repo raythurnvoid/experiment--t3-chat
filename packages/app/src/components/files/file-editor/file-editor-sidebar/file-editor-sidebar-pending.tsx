@@ -1272,7 +1272,8 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 						className={cn("FileEditorSidebarPending-item-diff" satisfies FileEditorSidebarPending_ClassNames)}
 					>
 						Replaces the file's content and type with a copy of {pendingUpdate.copiedFrom.path} (
-						{pendingUpdate.pendingReplacement.contentType}).
+						{pendingUpdate.pendingReplacement.contentType}).{" "}
+						Save changes in all open editors first. An existing text file keeps its collaboration setting.
 					</div>
 				) : isOpen && diffText != null ? (
 					<DiffMonospaceBlock
