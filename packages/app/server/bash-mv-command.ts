@@ -129,7 +129,7 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					`mv: cannot write to app file '${destOperand}': only app files can be moved within the app tree.\n` +
 					(dbFilesRoots.app.fs.allowDbFilesMkdir
 						? sourceIsFile
-							? `To write that content at '${destDbFilesPath}', redirect instead: cat ${bash_shell_arg_quote(nonAppSourceOperand)} > ${bash_shell_arg_quote(destOperand)} — a collaborative destination creates a pending proposal; a collaboration-off destination saves immediately, and Bash says which happened.\n`
+							? `To write that content at '${destDbFilesPath}', redirect instead: cat ${bash_shell_arg_quote(nonAppSourceOperand)} > ${bash_shell_arg_quote(destOperand)} — the redirect creates a pending proposal.\n`
 							: ""
 						: "App file writes are available in Agent mode; Ask mode is read-only for app files.\n") +
 					"Moving /tmp files into the app tree through bash is not supported.\n",

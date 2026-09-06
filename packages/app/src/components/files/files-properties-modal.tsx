@@ -589,8 +589,8 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 						}
 					>
 						{pendingCollaborativeMode
-							? "Turn collaboration on for this file? Only the last saved text is used. Save any open editor changes first, or they will be lost."
-							: "Turn collaboration off for this file? The edit history is deleted. Every comment written inside the text loses the words it was attached to, so it disappears from the file for everybody. Changes waiting for review lose their new text. Nobody can bring these back. Only the last saved text and saved versions are kept. Save any open editor changes first, or they will be lost."}
+							? "Turn collaboration on for this file? Only the last saved text is used. Text changes waiting for review are deleted. Save any open editor changes first, or they will be lost."
+							: "Turn collaboration off for this file? The edit history is deleted. Every comment written inside the text loses the words it was attached to, so it disappears from the file for everybody. Text changes waiting for review are deleted. Nobody can bring these back. Only the last saved text and saved versions are kept. Save any open editor changes first, or they will be lost."}
 					</p>
 					<div
 						className={"FilesPropertiesModalCollaboration-actions" satisfies FilesPropertiesModalCollaboration_ClassNames}

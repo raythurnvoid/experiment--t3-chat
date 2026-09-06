@@ -6400,7 +6400,6 @@ test("external (reserved) scope reads committed chunks and R2 without Yjs, pendi
 	expect(full.content).toBe(markdown);
 	expect(full.moreLines).toBe(false);
 	expect(full.pendingUpdateId).toBeNull();
-	expect(full.nonCollaborative).toBe(false);
 
 	// Line read slices the same range as slicing the full committed text.
 	const lineRead = await t.query(internal.files_nodes.read_file_content_from_chunks, {
@@ -6506,7 +6505,6 @@ test("external (reserved) scope reads committed chunks and R2 without Yjs, pendi
 	if (!available) throw new Error("expected external available content");
 	expect(available.content).toBe(markdown);
 	expect(available.pendingUpdateId).toBeNull();
-	expect(available.nonCollaborative).toBe(false);
 });
 
 describe("non-collaborative files", () => {
@@ -6655,7 +6653,6 @@ describe("non-collaborative files", () => {
 		if (!full) throw new Error("expected a full read");
 		expect(full.content).toBe(markdown);
 		expect(full.pendingUpdateId).toBeNull();
-		expect(full.nonCollaborative).toBe(true);
 
 		// The same door refuses text over the caller's cap. Before the byte-size fallback learned
 		// about content-snapshot assets this read `0` and returned the whole file instead.
@@ -6677,7 +6674,6 @@ describe("non-collaborative files", () => {
 		expect(lineRead).not.toBeNull();
 		if (!lineRead) throw new Error("expected a line read");
 		expect(lineRead.content).toBe(files_line_range_from_text(markdown, 1, 3).content);
-		expect(lineRead.nonCollaborative).toBe(true);
 
 		// read_committed_file_chunk_stats: the door behind `wc`.
 		const stats = await t.query(internal.files_nodes.read_committed_file_chunk_stats, {
@@ -6713,7 +6709,6 @@ describe("non-collaborative files", () => {
 		expect(state).not.toBeNull();
 		if (!state) throw new Error("expected a content state");
 		expect(state.content).toBe(markdown);
-		expect(state.nonCollaborative).toBe(true);
 		// No Yjs document, so nothing to materialize and nothing for the caller to rebuild.
 		expect(state.materializationState).toBeNull();
 		const available = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
@@ -6721,7 +6716,7 @@ describe("non-collaborative files", () => {
 			userId: db.userId,
 			path,
 		});
-		expect(available).toMatchObject({ content: markdown, nonCollaborative: true });
+		expect(available).toMatchObject({ content: markdown });
 
 		// Workspace search already read committed chunks with no Yjs term. Objective 20.
 		const search = await t.query(internal.files_nodes.text_search_files, {
@@ -8140,6 +8135,97 @@ describe("non-collaborative files", () => {
 		// A leftover marker would make the diff editor refetch forever after collaboration is
 		// turned back on, because the fresh document starts counting at 1 again.
 		expect(pendingAfter.lastSequenceSaved).toBe(0);
+	});
+
+	test("turning collaboration on drops content proposals and keeps move proposals", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Pending Drop On User",
+			email: "pending-drop-on-user@example.com",
+		});
+		const r2Writes = test_setup_r2_capture();
+
+		const contentOnly = await seed_non_collaborative_file(t, db, "/off-content.md", "# Off\n\nbody\n");
+		const contentAndMove = await seed_non_collaborative_file(t, db, "/off-both.md", "# Off\n\nbody\n");
+		// The seed helper writes no R2 object, and the ON toggle reads the committed text from R2.
+		r2Writes.set("content-snapshot/off-content.md", "# Off\n\nbody\n");
+		r2Writes.set("content-snapshot/off-both.md", "# Off\n\nbody\n");
+
+		// Seed one content-only proposal and one content-plus-move proposal the way the agent's
+		// write leaves them on a file with collaboration off: an asset base, no Yjs sequence.
+		await t.run(async (ctx) => {
+			const now = Date.now();
+			for (const { nodeId } of [contentOnly, contentAndMove]) {
+				const node = await ctx.db.get("files_nodes", nodeId);
+				if (!node?.assetId) throw new Error("Expected the seeded file to have a content asset");
+				const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId: db.userId,
+					fileNodeId: nodeId,
+					pendingMove:
+						nodeId === contentAndMove.nodeId
+							? { destParentId: "root", destName: "moved.md", fromPath: "/off-both.md" }
+							: undefined,
+					size: 12,
+					updatedAt: now,
+				});
+				const [baseStateId, stagedStateId, unstagedStateId] = await Promise.all(
+					(["base", "staged", "unstaged"] as const).map((role) =>
+						ctx.db.insert("files_pending_update_yjs_states", {
+							organizationId: db.organizationId,
+							workspaceId: db.workspaceId,
+							userId: db.userId,
+							fileNodeId: nodeId,
+							owner: { kind: "active", pendingUpdateId, role },
+							sealed: true,
+							pageCount: 1,
+							totalBytes: 12,
+							digest: "0000000000000000",
+						}),
+					),
+				);
+				await ctx.db.patch("files_pending_updates", pendingUpdateId, {
+					baseAssetId: node.assetId,
+					baseStateId,
+					stagedStateId,
+					unstagedStateId,
+				});
+			}
+		});
+
+		for (const { nodeId } of [contentOnly, contentAndMove]) {
+			const on = await asUser.action(api.files_nodes_content.set_file_collaborative, {
+				membershipId: db.membershipId,
+				nodeId,
+			});
+			expect(on._nay).toBeUndefined();
+		}
+
+		// The new document replaces the text the proposals were built from, so a content-only
+		// proposal is deleted and a content-plus-move proposal keeps only its move.
+		const pendingAfter = await t.run(async (ctx) => {
+			const docs = await ctx.db.query("files_pending_updates").collect();
+			return {
+				docs: docs.map((doc) => ({
+					fileNodeId: doc.fileNodeId,
+					hasContent: doc.baseStateId !== undefined,
+					hasAssetBase: doc.baseAssetId !== undefined,
+					destName: doc.pendingMove?.destName,
+				})),
+				activeStates: (await ctx.db.query("files_pending_update_yjs_states").collect()).filter(
+					(state) => state.owner.kind === "active",
+				).length,
+			};
+		});
+		expect(pendingAfter.docs).toEqual([
+			{ fileNodeId: contentAndMove.nodeId, hasContent: false, hasAssetBase: false, destName: "moved.md" },
+		]);
+		expect(pendingAfter.activeStates).toBe(0);
 	});
 
 	test("renaming a non-collaborative file keeps the stored type", async () => {

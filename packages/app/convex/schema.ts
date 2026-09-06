@@ -274,18 +274,29 @@ const app_convex_schema = defineSchema({
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.string(),
 		fileNodeId: v.id("files_nodes"),
-		/** Base sequence of the content proposal. Part of the canonical content group below. */
+		/**
+		 * Base sequence of a content proposal on a collaborative file.
+		 */
 		baseYjsSequence: v.optional(v.number()),
 		/**
 		 * Canonical paged content group, set together or not at all (and only together with
 		 * `baseYjsSequence`). Each id points at a sealed `files_pending_update_yjs_states` doc
 		 * whose pages hold that branch's full state. Optional at the table level (move-only
 		 * docs have no group); readers and writers require all five content fields together.
+		 * A file with collaboration off has no Yjs sequence: its proposal sets the three state
+		 * ids together with `baseAssetId` instead.
 		 */
 		baseLineageGeneration: v.optional(v.number()),
 		baseStateId: v.optional(v.id("files_pending_update_yjs_states")),
 		stagedStateId: v.optional(v.id("files_pending_update_yjs_states")),
 		unstagedStateId: v.optional(v.id("files_pending_update_yjs_states")),
+		/**
+		 * Base of a content proposal on a file with collaboration off: the `files_nodes.assetId`
+		 * the three branches were built from. Set together with the three state ids and never
+		 * together with `baseYjsSequence`. A member save changes the node's asset, which makes
+		 * the proposal stale.
+		 */
+		baseAssetId: v.optional(v.id("files_r2_assets")),
 		/** Pending move/rename proposal. Ids are authoritative; `fromPath` is display/conflict metadata only. */
 		pendingMove: v.optional(
 			v.object({
@@ -440,8 +451,11 @@ const app_convex_schema = defineSchema({
 				cleanupTaskId: v.id("files_pending_update_state_cleanup_tasks"),
 			}),
 		),
-		/** Lineage generation of the live document this state was built against. */
-		lineageGeneration: v.number(),
+		/**
+		 * Lineage generation of the live document this state was built against. Absent for a
+		 * state built for a file with collaboration off, which has no Yjs document and no lineage.
+		 */
+		lineageGeneration: v.optional(v.number()),
 		/** True once every page is written and the totals below describe the complete state. */
 		sealed: v.boolean(),
 		pageCount: v.number(),

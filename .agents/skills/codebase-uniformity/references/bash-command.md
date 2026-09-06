@@ -11,7 +11,7 @@ Use this reference when touching `packages/app/server/bash.ts`, `packages/app/se
 - Command-local Pascal types should include command ownership when useful, such as `MetaCommandSearchFormat`.
 - Option parsing should reuse local helpers like `read_option_value`, `parse_limit`, cursor helpers, and path conversion helpers.
 - Continuations should print in the same `Next page:` style as listing/search commands.
-- Command tests live in the in-source `action_run` group in `server/bash.ts` unless a nearby test file already owns the behavior.
+- Command tests live in the `bash_run_command` group in `server/bash.test.ts` unless a nearby test file already owns the behavior. Only the tests of the private helpers (`truncate_output`, `format_bash_output`, `tmp_fs_evict_to_limits`) stay in-source in `server/bash.ts`.
 - `convex/bash.ts` should only register the action and validators. `server/bash.ts` exposes `bash_run_command` for that action boundary. `server/bash-delegate.ts` owns native Just Bash value imports, `bash_ALLOWED_COMMANDS`, `bash_command_build_builtin_delegation_args`, `bash_delegate_builtin_command`, and `bash_delegate_native_just_bash_tmp_command`. Shared path helpers, constants, the `cp`/`mv` operand parser, cursor helpers, db-files shell-path resolution, `bash_DbFilesFs`, `bash_DbFilesFsOptions`, and `bash_DbFilesContentUnavailableError` live in `server/bash-utils.ts`. Keep `bash_fs_create`, `BashTmpFs`, `ReadOnlyBaseFs`, tmp helpers, command factories, and formatting helpers private.
 
 ## Review

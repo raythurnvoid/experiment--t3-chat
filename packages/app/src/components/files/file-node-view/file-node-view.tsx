@@ -84,7 +84,7 @@ import {
 	files_get_upload_pipeline_state,
 	files_monaco_language_id_of_content_type,
 	files_node_has_editable_text_content,
-	files_pending_update_has_yjs_content,
+	files_pending_update_has_content,
 	files_resolve_effective_editor_view,
 	type files_EditorView,
 	type files_SpecialFileName,
@@ -258,7 +258,7 @@ type FileNodeViewHeader_Props = {
 	filesSidebarOpen: boolean;
 	showFileControls: boolean;
 	onlineUsers: FileEditor_OnlineUser[];
-	onEditorModeChange: (mode: FileEditor_Mode) => void;
+	onEditorModeChange: (mode: FileEditor_Mode, options?: { replace?: boolean }) => void;
 	onNavigateNode: (nodeId: app_convex_Id<"files_nodes">) => void;
 };
 
@@ -691,6 +691,8 @@ type FileNodeViewFileEditor_Props = {
 	rootKind: FileEditor_Props["rootKind"];
 	monacoLanguageId: FileEditor_Props["monacoLanguageId"];
 	nonCollaborative: FileEditor_Props["nonCollaborative"];
+	committedAssetId: FileEditor_Props["committedAssetId"];
+	pendingUpdatesLoaded: FileEditor_Props["pendingUpdatesLoaded"];
 	serverSequence?: number;
 	yjsLastSequenceId?: app_convex_Id<"files_yjs_docs_last_sequences">;
 	editorMode: FileEditor_Mode;
@@ -698,7 +700,7 @@ type FileNodeViewFileEditor_Props = {
 	presenceStore: FileEditor_Props["presenceStore"];
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
-	onEditorModeChange: (mode: FileEditor_Mode) => void;
+	onEditorModeChange: (mode: FileEditor_Mode, options?: { replace?: boolean }) => void;
 	topViewZoneSlot?: React.ReactNode;
 };
 
@@ -710,6 +712,8 @@ const FileNodeViewFileEditor = memo(function FileNodeViewFileEditor(props: FileN
 		rootKind,
 		monacoLanguageId,
 		nonCollaborative,
+		committedAssetId,
+		pendingUpdatesLoaded,
 		serverSequence,
 		yjsLastSequenceId,
 		editorMode,
@@ -729,6 +733,8 @@ const FileNodeViewFileEditor = memo(function FileNodeViewFileEditor(props: FileN
 			rootKind={rootKind}
 			monacoLanguageId={monacoLanguageId}
 			nonCollaborative={nonCollaborative}
+			committedAssetId={committedAssetId}
+			pendingUpdatesLoaded={pendingUpdatesLoaded}
 			serverSequence={serverSequence}
 			yjsLastSequenceId={yjsLastSequenceId}
 			editorMode={editorMode}
@@ -748,6 +754,8 @@ type FileNodeViewFile_Props = {
 	fileNodesList: FileNodeViewContent_Props["fileNodesList"];
 	readOnlyAncestorIds: FileNodeViewHeader_Props["readOnlyAncestorIds"];
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
+	committedAssetId: FileEditor_Props["committedAssetId"];
+	pendingUpdatesLoaded: FileEditor_Props["pendingUpdatesLoaded"];
 	serverSequence?: number;
 	yjsLastSequenceId?: app_convex_Id<"files_yjs_docs_last_sequences">;
 	topSafeArea: number;
@@ -757,7 +765,7 @@ type FileNodeViewFile_Props = {
 	onlineUsers: FileEditor_OnlineUser[];
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
-	onEditorModeChange: (mode: FileEditor_Mode) => void;
+	onEditorModeChange: (mode: FileEditor_Mode, options?: { replace?: boolean }) => void;
 	onNavigateNode: FileNodeViewHeader_Props["onNavigateNode"];
 };
 
@@ -768,6 +776,8 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 		fileNodesList,
 		readOnlyAncestorIds,
 		pendingUpdateId,
+		committedAssetId,
+		pendingUpdatesLoaded,
 		serverSequence,
 		yjsLastSequenceId,
 		topSafeArea,
@@ -802,6 +812,8 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 				rootKind={node.yjsRootKind}
 				monacoLanguageId={files_monaco_language_id_of_content_type(node.contentType)}
 				nonCollaborative={node.nonCollaborative === true}
+				committedAssetId={committedAssetId}
+				pendingUpdatesLoaded={pendingUpdatesLoaded}
 				serverSequence={serverSequence}
 				yjsLastSequenceId={yjsLastSequenceId}
 				topSafeArea={topSafeArea}
@@ -1411,6 +1423,8 @@ type FileNodeViewFolder_Props = {
 	fileNodesList: FileNodeViewContent_Props["fileNodesList"];
 	readOnlyAncestorIds: ReadonlySet<app_convex_Id<"files_nodes">>;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
+	committedAssetId: FileEditor_Props["committedAssetId"];
+	pendingUpdatesLoaded: FileEditor_Props["pendingUpdatesLoaded"];
 	serverSequence?: number;
 	yjsLastSequenceId?: app_convex_Id<"files_yjs_docs_last_sequences">;
 	topSafeArea: number;
@@ -1418,7 +1432,7 @@ type FileNodeViewFolder_Props = {
 	presenceStore: FileEditor_Props["presenceStore"];
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
-	onEditorModeChange: (mode: FileEditor_Mode) => void;
+	onEditorModeChange: (mode: FileEditor_Mode, options?: { replace?: boolean }) => void;
 };
 
 const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewFolder_Props) {
@@ -1427,6 +1441,8 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		fileNodesList,
 		readOnlyAncestorIds,
 		pendingUpdateId,
+		committedAssetId,
+		pendingUpdatesLoaded,
 		serverSequence,
 		yjsLastSequenceId,
 		topSafeArea,
@@ -1683,6 +1699,8 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 			rootKind={readmeNode?.yjsRootKind ?? "rich_text"}
 			monacoLanguageId={files_monaco_language_id_of_content_type(readmeNode?.contentType)}
 			nonCollaborative={readmeNode?.nonCollaborative === true}
+			committedAssetId={committedAssetId}
+			pendingUpdatesLoaded={pendingUpdatesLoaded}
 			serverSequence={serverSequence}
 			yjsLastSequenceId={yjsLastSequenceId}
 			editorMode={editorMode}
@@ -2785,13 +2803,15 @@ type FileNodeViewFolderReadmeEditor_Props = {
 	rootKind: files_YjsRootKind;
 	monacoLanguageId: string;
 	nonCollaborative: FileEditor_Props["nonCollaborative"];
+	committedAssetId: FileEditor_Props["committedAssetId"];
+	pendingUpdatesLoaded: FileEditor_Props["pendingUpdatesLoaded"];
 	serverSequence?: number;
 	yjsLastSequenceId?: app_convex_Id<"files_yjs_docs_last_sequences">;
 	editorMode: FileEditor_Mode;
 	presenceStore: FileEditor_Props["presenceStore"];
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
-	onEditorModeChange: (mode: FileEditor_Mode) => void;
+	onEditorModeChange: (mode: FileEditor_Mode, options?: { replace?: boolean }) => void;
 	topViewZoneSlot?: React.ReactNode;
 };
 
@@ -2805,6 +2825,8 @@ const FileNodeViewFolderReadmeEditor = memo(function FileNodeViewFolderReadmeEdi
 		rootKind,
 		monacoLanguageId,
 		nonCollaborative,
+		committedAssetId,
+		pendingUpdatesLoaded,
 		serverSequence,
 		yjsLastSequenceId,
 		editorMode,
@@ -2825,6 +2847,8 @@ const FileNodeViewFolderReadmeEditor = memo(function FileNodeViewFolderReadmeEdi
 				rootKind={rootKind}
 				monacoLanguageId={monacoLanguageId}
 				nonCollaborative={nonCollaborative}
+				committedAssetId={committedAssetId}
+				pendingUpdatesLoaded={pendingUpdatesLoaded}
 				serverSequence={serverSequence}
 				yjsLastSequenceId={yjsLastSequenceId}
 				editorMode={editorMode}
@@ -2846,6 +2870,8 @@ type FileNodeViewContent_Props = {
 	fileNodesList: files_VisibleTreeNode[] | undefined;
 	readOnlyAncestorIds: FileNodeViewHeader_Props["readOnlyAncestorIds"];
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
+	committedAssetId: FileEditor_Props["committedAssetId"];
+	pendingUpdatesLoaded: FileEditor_Props["pendingUpdatesLoaded"];
 	serverSequence?: number;
 	yjsLastSequenceId?: app_convex_Id<"files_yjs_docs_last_sequences">;
 	topSafeArea: number;
@@ -2855,7 +2881,7 @@ type FileNodeViewContent_Props = {
 	onlineUsers: FileEditor_OnlineUser[];
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
-	onEditorModeChange: (mode: FileEditor_Mode) => void;
+	onEditorModeChange: (mode: FileEditor_Mode, options?: { replace?: boolean }) => void;
 	onNavigateNode: FileNodeViewHeader_Props["onNavigateNode"];
 };
 
@@ -2866,6 +2892,8 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 		fileNodesList,
 		readOnlyAncestorIds,
 		pendingUpdateId,
+		committedAssetId,
+		pendingUpdatesLoaded,
 		serverSequence,
 		yjsLastSequenceId,
 		topSafeArea,
@@ -2900,6 +2928,8 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 					fileNodesList={fileNodesList}
 					readOnlyAncestorIds={readOnlyAncestorIds}
 					pendingUpdateId={pendingUpdateId}
+					committedAssetId={committedAssetId}
+					pendingUpdatesLoaded={pendingUpdatesLoaded}
 					serverSequence={serverSequence}
 					yjsLastSequenceId={yjsLastSequenceId}
 					topSafeArea={topSafeArea}
@@ -2938,6 +2968,8 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 					fileNodesList={fileNodesList}
 					readOnlyAncestorIds={readOnlyAncestorIds}
 					pendingUpdateId={pendingUpdateId}
+					committedAssetId={committedAssetId}
+					pendingUpdatesLoaded={pendingUpdatesLoaded}
 					serverSequence={serverSequence}
 					yjsLastSequenceId={yjsLastSequenceId}
 					topSafeArea={topSafeArea}
@@ -2975,6 +3007,8 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 			fileNodesList={fileNodesList}
 			readOnlyAncestorIds={readOnlyAncestorIds}
 			pendingUpdateId={pendingUpdateId}
+			committedAssetId={committedAssetId}
+			pendingUpdatesLoaded={pendingUpdatesLoaded}
 			serverSequence={serverSequence}
 			yjsLastSequenceId={yjsLastSequenceId}
 			topSafeArea={topSafeArea}
@@ -3138,10 +3172,10 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		onNavigateSearch({ nodeId, view, q: searchParams.q });
 	});
 
-	const navigateToView = useFn<FileNodeViewContent_Props["onEditorModeChange"]>((nextView) => {
+	const navigateToView = useFn<FileNodeViewContent_Props["onEditorModeChange"]>((nextView, options) => {
 		const nodeId = searchNodeId ?? files_ROOT_ID;
 		const view = nextView === "rich_text_editor" ? undefined : nextView;
-		onNavigateSearch({ nodeId, view, q: searchParams.q });
+		onNavigateSearch({ nodeId, view, q: searchParams.q }, options);
 	});
 
 	/**
@@ -3168,7 +3202,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 
 	// The pager/floating bar reviews diffs, so count only content-bearing rows; pure moves are
 	// reviewed in the Pending panel only.
-	const pendingUpdates = (allPendingUpdatesResult ?? []).filter(files_pending_update_has_yjs_content);
+	const pendingUpdates = (allPendingUpdatesResult ?? []).filter(files_pending_update_has_content);
 	const hasPendingUpdates = pendingUpdates.length > 0;
 	// 44px = 40px for the floating content area plus 4px of spacing.
 	// Keep this reserve visible even without pending updates so folder and file content
@@ -3413,6 +3447,8 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				fileNodesList={fileNodesList}
 				readOnlyAncestorIds={readOnlyAncestorIds}
 				pendingUpdateId={currentPendingUpdate?._id}
+				committedAssetId={activeEditorNode?.nonCollaborative === true ? (activeEditorNode.assetId ?? null) : null}
+				pendingUpdatesLoaded={allPendingUpdatesResult !== undefined}
 				serverSequence={activeEditorServerSequenceData?.lastSequence}
 				yjsLastSequenceId={activeEditorServerSequenceData?.yjsLastSequenceId}
 				topSafeArea={topSafeArea}

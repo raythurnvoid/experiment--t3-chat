@@ -41,12 +41,13 @@ import {
 	files_SYNTHETIC_ROOT_FOLDER,
 	files_get_normalized_node_path_segments,
 	files_get_utf8_byte_size,
-	files_node_has_editable_yjs_state,
+	files_node_has_editable_text_content,
 	files_normalize_lf_newlines,
 	files_pending_path_overlay_build,
 	files_pending_path_overlay_project_committed_path,
 	files_pending_path_overlay_translate_path,
-	files_pending_update_has_yjs_content,
+	files_pending_update_content_is_stale,
+	files_pending_update_has_content,
 	type files_PendingPathOverlay,
 } from "../shared/files.ts";
 import { LruCache, math_clamp, should_never_happen } from "../shared/shared-utils.ts";
@@ -403,7 +404,6 @@ export class bash_DbFilesFs implements IFileSystem {
 	private entryCache = new Map<string, DbFilesCacheEntry>();
 	private contentCache = new Map<string, string>();
 	private overlayPromise: Promise<files_PendingPathOverlay> | null = null;
-	private directSavedPaths = new Set<string>();
 	/** Command-owned per-run caches (cat's content cache) cleared together with resetProposalCaches. */
 	private linkedProposalCaches: Array<Map<string, string>> = [];
 
@@ -583,8 +583,8 @@ export class bash_DbFilesFs implements IFileSystem {
 
 	/**
 	 * Write an app file from shell redirection, `tee`, or builtin `touch`, Agent mode only.
-	 * Existing files with collaboration off save immediately. Other writes use the pending
-	 * unstaged branch; a missing target is eagerly created empty first.
+	 * Every write goes to the pending unstaged branch; a missing target is eagerly created
+	 * empty first.
 	 *
 	 * Thrown errors become the whole command's stderr (redirection has no per-write catch
 	 * in Just Bash), so every message must tell the model what to do instead.
@@ -670,7 +670,6 @@ export class bash_DbFilesFs implements IFileSystem {
 			nodeId: Id<"files_nodes">;
 			content: string;
 			pendingUpdateId: Id<"files_pending_updates"> | null;
-			nonCollaborative: boolean;
 		} | null = (await this.ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
 			organizationId,
 			workspaceId,
@@ -810,9 +809,6 @@ export class bash_DbFilesFs implements IFileSystem {
 				// parent folders this write eagerly created.
 				eagerCreatedAncestorIds: createdAncestorIds,
 				threadId: threadId ?? undefined,
-				// A file created by this same write is collaborative, so the read is the only
-				// source of this and an eager create leaves it unset.
-				nonCollaborative: currentContent?.nonCollaborative,
 			});
 		} catch (error) {
 			if (eagerCreatedCommittedSequence === undefined) {
@@ -826,19 +822,8 @@ export class bash_DbFilesFs implements IFileSystem {
 		if (written._nay) {
 			throw new Error(`cannot write '${shellPath}': ${written._nay.message}${await eager_created_failure_note()}`);
 		}
-		if (currentContent?.nonCollaborative) {
-			// The shell itself has no stdout for redirection. Keep a per-run path set so the tool can
-			// tell the agent that this write is already saved and must not be reviewed as pending.
-			this.directSavedPaths.add(shellPath);
-		}
 		// Later commands chained in this same bash call must see the new proposal.
 		this.resetProposalCaches();
-	}
-
-	consumeDirectSavedPaths() {
-		const paths = Array.from(this.directSavedPaths);
-		this.directSavedPaths.clear();
-		return paths;
 	}
 
 	async exists(path: string) {
@@ -2081,17 +2066,14 @@ export type files_agent_write_file_text_Result =
 	| { _yay?: undefined; _nay: { name?: string; message: string } };
 
 /**
- * Record the agent's new text for one file, behind bash writes (`>`, `tee`, `sed -i`, `touch`,
- * `cp`, `mv -f`) and `edit_file`.
+ * Record the agent's new text for one file, behind the bash file writes (`>`, `>>`, heredocs,
+ * `tee`, builtin `touch`) and `edit_file`. A `cp` and a `mv -f` stage their own doc kinds.
  *
- * A collaborative file gets a proposal the user reviews: create a server-side operation batch,
- * stage the one bounded unstaged text under it, then run the finishing internal action that
- * carries only ids. A staging refusal retires the batch first, or the abandoned "already in
- * progress" batch would block this user/node's next write until the TTL.
- *
- * A file with collaboration turned off has no document to propose against, so the text is saved
- * straight away instead. Refusals return unchanged either way, so every caller keeps its own
- * `_nay` surfacing.
+ * The file gets a proposal the user reviews, in both collaboration modes: create a server-side
+ * operation batch, stage the one bounded unstaged text under it, then run the finishing internal
+ * action that carries only ids. A staging refusal retires the batch first, or the abandoned
+ * "already in progress" batch would block this user/node's next write until the TTL. Refusals
+ * return unchanged, so every caller keeps its own `_nay` surfacing.
  */
 export async function files_agent_write_file_text(
 	ctx: ActionCtx,
@@ -2106,23 +2088,8 @@ export async function files_agent_write_file_text(
 		eagerCreatedCommittedSequence?: number;
 		eagerCreatedAncestorIds?: Id<"files_nodes">[];
 		threadId?: Id<"ai_chat_threads">;
-		/**
-		 * True when the caller's read found a file with collaboration turned off.
-		 */
-		nonCollaborative?: boolean;
 	},
 ): Promise<files_agent_write_file_text_Result> {
-	// Collaboration off: no branch to build, no review step. Save the whole text now.
-	if (args.nonCollaborative) {
-		return (await ctx.runAction(internal.files_nodes_content.replace_file_content_internal_action, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			userId: args.userId,
-			nodeId: args.nodeId,
-			text: args.unstagedText,
-		})) as files_agent_write_file_text_Result;
-	}
-
 	const batch = (await ctx.runMutation(
 		internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
 		{
@@ -2559,7 +2526,7 @@ export async function bash_get_db_file_byte_size(args: {
 	const organizationId = args.ctxData.organizationId;
 	const workspaceId = args.ctxData.workspaceId;
 	if (
-		files_node_has_editable_yjs_state(args.dbFilesDoc) &&
+		files_node_has_editable_text_content(args.dbFilesDoc) &&
 		!organizations_is_global_organization_id(organizationId) &&
 		!organizations_is_reserved_workspace_id(workspaceId)
 	) {
@@ -2570,7 +2537,11 @@ export async function bash_get_db_file_byte_size(args: {
 			fileNodeId: args.dbFilesDoc._id,
 		})) as files_pending_updates_get_by_file_node_Result;
 		// A move-only pending update doc stores size 0; only a content-bearing doc may shadow the committed asset size.
-		if (files_pending_update_has_yjs_content(pendingUpdate)) {
+		// A stale proposal on a file with collaboration off does not shadow it either.
+		if (
+			files_pending_update_has_content(pendingUpdate) &&
+			!files_pending_update_content_is_stale(pendingUpdate, args.dbFilesDoc)
+		) {
 			return pendingUpdate.size;
 		}
 	}

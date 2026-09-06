@@ -625,7 +625,7 @@ describe("FilesPropertiesModalCollaboration", () => {
 		const warning = screen.getByText("Turn collaboration off for this file?", { exact: false }).textContent ?? "";
 		expect(warning).toContain("edit history");
 		expect(warning).toContain("comment");
-		expect(warning).toContain("waiting for review");
+		expect(warning).toContain("Text changes waiting for review are deleted.");
 		expect(warning).toContain("last saved text");
 		expect(warning).toContain("open editor changes");
 		// The box still shows the state the server has, not the one the click asked for.
@@ -661,6 +661,8 @@ describe("FilesPropertiesModalCollaboration", () => {
 
 		expect(actionMock).not.toHaveBeenCalled();
 		expect(screen.getByText("Only the last saved text is used.", { exact: false })).toBeTruthy();
+		// The ON toggle drops the agent's content proposals too.
+		expect(screen.getByText("Text changes waiting for review are deleted.", { exact: false })).toBeTruthy();
 		expect(document.activeElement).toBe(screen.getByRole("button", { name: "Turn collaboration on" }));
 		fireEvent.click(screen.getByRole("button", { name: "Turn collaboration on" }));
 		expect(actionMock).toHaveBeenCalledWith("set_file_collaborative", {

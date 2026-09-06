@@ -41,6 +41,7 @@ import {
 	organizations_is_global_organization_id,
 } from "../shared/organizations.ts";
 import { files_db_get_visible_node_by_path, files_pending_update_has_pending_chunks } from "../server/files.ts";
+import { files_pending_update_content_is_stale } from "../shared/files.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -328,11 +329,23 @@ async function db_list_pending_file_node_ids(
 		)
 		.order("asc")
 		.collect();
-	// Move-only docs have no pending metadata docs: only content-bearing
-	// docs hide their file's committed docs.
-	return pendingUpdates
-		.filter((pendingUpdate) => files_pending_update_has_pending_chunks(pendingUpdate))
-		.map((pendingUpdate) => pendingUpdate.fileNodeId);
+	// Move-only docs have no pending metadata docs: only content-bearing docs hide their file's
+	// committed docs. A stale proposal on a file with collaboration off hides nothing either: the
+	// member's saved text is the file now.
+	const pendingNodes = await Promise.all(
+		pendingUpdates
+			.filter((pendingUpdate) => files_pending_update_has_pending_chunks(pendingUpdate))
+			.map(async (pendingUpdate) => ({
+				pendingUpdate,
+				fileNode: await ctx.db.get("files_nodes", pendingUpdate.fileNodeId),
+			})),
+	);
+	return pendingNodes
+		.filter(
+			({ pendingUpdate, fileNode }) =>
+				fileNode !== null && !files_pending_update_content_is_stale(pendingUpdate, fileNode),
+		)
+		.map(({ pendingUpdate }) => pendingUpdate.fileNodeId);
 }
 
 function format_search_result(doc: Doc<"files_metadata_docs">) {
@@ -524,7 +537,9 @@ function search_index_query(
 /**
  * Whether one doc read from an index range belongs to the caller's view: under the folder path,
  * and under the pending overlay rule. Metadata search follows the same overlay rule as full-text
- * search: show the acting user's pending indexed docs and hide stale committed docs for those files.
+ * search: for a file with a live proposal by the acting user, show the pending indexed docs and
+ * hide the committed ones. A stale proposal on a file with collaboration off keeps its pending docs
+ * until Discard, and those must not match.
  */
 function search_doc_is_visible(
 	metadataDoc: Doc<"files_metadata_docs">,
@@ -538,7 +553,7 @@ function search_doc_is_visible(
 		return false;
 	}
 	if (metadataDoc.sourceKind === "pending") {
-		return metadataDoc.userId === args.userId;
+		return metadataDoc.userId === args.userId && args.pendingNodeIds.includes(metadataDoc.fileNodeId);
 	}
 	return !args.pendingNodeIds.includes(metadataDoc.fileNodeId);
 }
@@ -572,7 +587,13 @@ function search_query(
 	query = query.filter((q) =>
 		q.or(
 			q.eq(q.field("sourceKind"), "committed"),
-			q.and(q.eq(q.field("sourceKind"), "pending"), q.eq(q.field("userId"), args.userId)),
+			...args.pendingNodeIds.map((pendingNodeId) =>
+				q.and(
+					q.eq(q.field("sourceKind"), "pending"),
+					q.eq(q.field("userId"), args.userId),
+					q.eq(q.field("fileNodeId"), pendingNodeId),
+				),
+			),
 		),
 	);
 	for (const pendingNodeId of args.pendingNodeIds) {
@@ -892,6 +913,11 @@ export const search_nodes = query({
 		// pending overlay are checked on the docs read.
 		const candidateIds = new Set<Id<"files_nodes">>();
 		for (const plan of args.plans) {
+			// Stop before the next plan once the set is full. The plans left could add nothing, and each
+			// one would still cost a full range read.
+			if (candidateIds.size >= SEARCH_NODES_MAX_CANDIDATES) {
+				break;
+			}
 			const metadataDocs = await search_index_query(ctx, { organizationId, workspaceId, plan, treePathPrefix }).take(
 				SEARCH_NODES_DOCS_PER_PLAN,
 			);
@@ -1237,9 +1263,13 @@ export const get_by_path = internalQuery({
 						.eq("fileNodeId", fileNode._id),
 				)
 				.first();
-			// A move-only doc carries no pending metadata docs: committed
-			// metadata stays authoritative for it.
-			if (row && files_pending_update_has_pending_chunks(row)) {
+			// A move-only doc carries no pending metadata docs: committed metadata stays
+			// authoritative for it, and for a stale proposal on a file with collaboration off.
+			if (
+				row &&
+				files_pending_update_has_pending_chunks(row) &&
+				!files_pending_update_content_is_stale(row, fileNode)
+			) {
 				pendingUpdate = row;
 			}
 		}

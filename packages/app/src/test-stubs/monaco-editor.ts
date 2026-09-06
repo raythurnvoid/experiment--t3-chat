@@ -4,9 +4,25 @@
  */
 const FULL_MODEL_RANGE = Object.freeze({ fullModelRange: true });
 
+/**
+ * The diff editor's hunk widget builds one decoration range per change. The stub keeps the four
+ * numbers and nothing else.
+ */
+export class Range {
+	constructor(
+		public startLineNumber: number,
+		public startColumn: number,
+		public endLineNumber: number,
+		public endColumn: number,
+	) {}
+}
+
 export const editor = {
 	EndOfLineSequence: {
 		LF: 0,
+	},
+	TrackedRangeStickiness: {
+		NeverGrowsWhenTypingAtEdges: 1,
 	},
 	createModel(value?: string) {
 		// Hold the text so component tests can read and change the model like Monaco would.

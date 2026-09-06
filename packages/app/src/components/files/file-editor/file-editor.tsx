@@ -369,6 +369,17 @@ type FileEditorRender_Props = {
 	 * Collaboration is off for this node: no Yjs document; the editors edit the stored string.
 	 */
 	nonCollaborative: boolean;
+	/**
+	 * The node's current content asset, for a node with collaboration off. The diff editor compares
+	 * it with the proposal's base to detect a stale proposal. `null` for a collaborative node.
+	 */
+	committedAssetId: app_convex_Id<"files_r2_assets"> | null;
+	/**
+	 * Whether the caller has loaded the pending list that decides `pendingUpdateId`. While it is
+	 * loading, the diff view of a node with collaboration off shows a skeleton instead of mounting
+	 * the local-edits view and swapping it for the proposal one frame later.
+	 */
+	pendingUpdatesLoaded: boolean;
 	yjsLastSequenceId?: app_convex_Id<"files_yjs_docs_last_sequences">;
 	editorMode: FileEditor_Mode;
 	editable: boolean;
@@ -390,6 +401,8 @@ function FileEditorRender(props: FileEditorRender_Props) {
 		rootKind,
 		monacoLanguageId,
 		nonCollaborative,
+		committedAssetId,
+		pendingUpdatesLoaded,
 		yjsLastSequenceId,
 		editorMode,
 		editable,
@@ -451,9 +464,15 @@ function FileEditorRender(props: FileEditorRender_Props) {
 	}
 
 	if (editorMode === "diff_editor") {
-		// A file with collaboration turned off has no pending updates and no shared document, so
-		// its diff view compares the committed text with the member's local edits instead.
-		if (nonCollaborative) {
+		// A file with collaboration off reviews the agent's proposal when it has one. Wait for the
+		// pending list before choosing, so the first frame does not mount the local-edits view.
+		if (nonCollaborative && !pendingUpdatesLoaded) {
+			return <FileEditorDiffSkeleton />;
+		}
+
+		// With no proposal, a file with collaboration off has no shared document to diff, so its
+		// diff view compares the committed text with the member's local edits instead.
+		if (nonCollaborative && pendingUpdateId == null) {
 			return (
 				<FileEditorDiffNonCollab
 					key={nodeId}
@@ -478,6 +497,8 @@ function FileEditorRender(props: FileEditorRender_Props) {
 				rootKind={rootKind}
 				monacoLanguageId={monacoLanguageId}
 				pendingUpdateId={pendingUpdateId}
+				nonCollaborative={nonCollaborative}
+				committedAssetId={committedAssetId}
 				presenceStore={presenceStore}
 				commentsPortalHost={commentsPortalHost}
 				toolbarPortalHost={toolbarPortalHost}
@@ -535,6 +556,17 @@ type FileEditorInner_Props = {
 	 * Collaboration is off for this node: no Yjs document; the editors edit the stored string.
 	 */
 	nonCollaborative: boolean;
+	/**
+	 * The node's current content asset, for a node with collaboration off. The diff editor compares
+	 * it with the proposal's base to detect a stale proposal. `null` for a collaborative node.
+	 */
+	committedAssetId: app_convex_Id<"files_r2_assets"> | null;
+	/**
+	 * Whether the caller has loaded the pending list that decides `pendingUpdateId`. While it is
+	 * loading, the diff view of a node with collaboration off shows a skeleton instead of mounting
+	 * the local-edits view and swapping it for the proposal one frame later.
+	 */
+	pendingUpdatesLoaded: boolean;
 	yjsLastSequenceId?: app_convex_Id<"files_yjs_docs_last_sequences">;
 	serverSequence?: number;
 	editorMode: FileEditor_Mode;
@@ -542,7 +574,7 @@ type FileEditorInner_Props = {
 	presenceStore: files_PresenceStore | null;
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
-	onEditorModeChange: (mode: FileEditor_Mode) => void;
+	onEditorModeChange: (mode: FileEditor_Mode, options?: { replace?: boolean }) => void;
 	onDiffExit?: () => void;
 	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
@@ -556,6 +588,8 @@ function FileEditorInner(props: FileEditorInner_Props) {
 		rootKind,
 		monacoLanguageId,
 		nonCollaborative,
+		committedAssetId,
+		pendingUpdatesLoaded,
 		yjsLastSequenceId,
 		serverSequence,
 		editorMode,
@@ -589,10 +623,43 @@ function FileEditorInner(props: FileEditorInner_Props) {
 		canWrite === false ? "permission" : readOnlyState === "writable" ? null : "read_only";
 	const editable = canWrite === true && readOnlyState === "writable";
 
+	// A proposal on a file with collaboration off has no live-file view to fall back to. When its
+	// doc goes away while the diff view shows it (Save or Discard in the toolbar, a pending row
+	// action, another tab), leave the diff view instead of showing two equal panes with a Save
+	// button. The rule lives here and not in `FileEditorDiff`: the chooser below unmounts that
+	// component in the same render that drops the doc, before any effect of its own could run.
+	// Remember the shown proposal in state (the "previous props" pattern `files-search-input.tsx`
+	// uses too), so "no proposal yet" and "the proposal just went away" can be told apart.
+	// The exit checks the mode and not `nonCollaborative`: turning collaboration on from the review
+	// deletes the proposal and flips the flag in one update, and the view must leave then too.
+	const inDiffView = effectiveEditorMode === "diff_editor";
+	const [shownProposal, setShownProposal] = useState<{
+		nodeId: app_convex_Id<"files_nodes">;
+		pendingUpdateId: app_convex_Id<"files_pending_updates">;
+	} | null>(null);
+	if (!inDiffView) {
+		if (shownProposal !== null) {
+			setShownProposal(null);
+		}
+	} else if (
+		nonCollaborative &&
+		pendingUpdateId != null &&
+		(shownProposal?.nodeId !== nodeId || shownProposal.pendingUpdateId !== pendingUpdateId)
+	) {
+		setShownProposal({ nodeId, pendingUpdateId });
+	} else if (shownProposal !== null && shownProposal.nodeId !== nodeId) {
+		// Another node with no proposal: the remembered proposal belongs to the node before it.
+		// Forget it, or a later return to that node would exit its diff view as "went away".
+		setShownProposal(null);
+	}
+	const proposalWentAway = inDiffView && pendingUpdateId == null && shownProposal?.nodeId === nodeId;
+	const renderHostRef = useRef<HTMLDivElement>(null);
+
 	const handleDiffExit = useFn(() => {
 		// Leaving the diff goes back to the node's own default editor, not always the rich editor:
 		// a plain-text node has no rich view.
-		onEditorModeChange(rootKind === "plain_text" ? "plain_text_editor" : "rich_text_editor");
+		// Replace the review entry so Back cannot reopen a proposal that is gone.
+		onEditorModeChange(rootKind === "plain_text" ? "plain_text_editor" : "rich_text_editor", { replace: true });
 		onDiffExit?.();
 	});
 
@@ -633,6 +700,20 @@ function FileEditorInner(props: FileEditorInner_Props) {
 				? ("FileEditor-mode-plain-text" satisfies FileEditor_ClassNames)
 				: ("FileEditor-mode-diff" satisfies FileEditor_ClassNames);
 
+	// Leave the diff view once the proposal is gone. `shownProposal` is cleared by the render block
+	// above when the mode changes, not here: clearing it now would mount the local-edits view for
+	// the render before the URL change lands.
+	useEffect(() => {
+		if (!proposalWentAway) return;
+
+		handleDiffExit();
+		// The toolbar button the member pressed went away with the view, so focus fell to the page
+		// body. Take it to the editor host, so the next Tab reaches the editor that mounts next.
+		if (document.activeElement === document.body) {
+			renderHostRef.current?.focus();
+		}
+	}, [proposalWentAway, handleDiffExit]);
+
 	return (
 		<div
 			className={cn(
@@ -657,26 +738,36 @@ function FileEditorInner(props: FileEditorInner_Props) {
 					errorComponent={FileEditorError}
 					onCatch={handleCatchBoundaryError}
 				>
-					<div style={renderHostStyle}>
-						<FileEditorRender
-							nodeId={nodeId}
-							pendingUpdateId={pendingUpdateId}
-							rootKind={rootKind}
-							monacoLanguageId={monacoLanguageId}
-							nonCollaborative={nonCollaborative}
-							editorMode={effectiveEditorMode}
-							editable={editable}
-							editBlockReason={editBlockReason}
-							topSafeArea={topSafeArea}
-							presenceStore={presenceStore}
-							commentsPortalHost={commentsPortalHost}
-							toolbarPortalHost={toolbarPortalHost}
-							serverSequence={serverSequence}
-							yjsLastSequenceId={yjsLastSequenceId}
-							onDiffExit={handleDiffExit}
-							topStickyFloatingSlot={topStickyFloatingSlot}
-							topViewZoneSlot={topViewZoneSlot}
-						/>
+					<div ref={renderHostRef} tabIndex={-1} style={renderHostStyle}>
+						{/*
+							Show the skeleton from the doc going away until the exit below lands, so the
+							local-edits diff view never mounts in between.
+							*/}
+						{proposalWentAway ? (
+							<FileEditorDiffSkeleton />
+						) : (
+							<FileEditorRender
+								nodeId={nodeId}
+								pendingUpdateId={pendingUpdateId}
+								rootKind={rootKind}
+								monacoLanguageId={monacoLanguageId}
+								nonCollaborative={nonCollaborative}
+								committedAssetId={committedAssetId}
+								pendingUpdatesLoaded={pendingUpdatesLoaded}
+								editorMode={effectiveEditorMode}
+								editable={editable}
+								editBlockReason={editBlockReason}
+								topSafeArea={topSafeArea}
+								presenceStore={presenceStore}
+								commentsPortalHost={commentsPortalHost}
+								toolbarPortalHost={toolbarPortalHost}
+								serverSequence={serverSequence}
+								yjsLastSequenceId={yjsLastSequenceId}
+								onDiffExit={handleDiffExit}
+								topStickyFloatingSlot={topStickyFloatingSlot}
+								topViewZoneSlot={topViewZoneSlot}
+							/>
+						)}
 					</div>
 				</CatchBoundary>
 			</div>
@@ -701,6 +792,17 @@ export type FileEditor_Props = {
 	 * Collaboration is off for this node: no Yjs document; the editors edit the stored string.
 	 */
 	nonCollaborative: boolean;
+	/**
+	 * The node's current content asset, for a node with collaboration off. The diff editor compares
+	 * it with the proposal's base to detect a stale proposal. `null` for a collaborative node.
+	 */
+	committedAssetId: app_convex_Id<"files_r2_assets"> | null;
+	/**
+	 * Whether the caller has loaded the pending list that decides `pendingUpdateId`. While it is
+	 * loading, the diff view of a node with collaboration off shows a skeleton instead of mounting
+	 * the local-edits view and swapping it for the proposal one frame later.
+	 */
+	pendingUpdatesLoaded: boolean;
 	yjsLastSequenceId?: app_convex_Id<"files_yjs_docs_last_sequences">;
 	serverSequence?: number;
 	editorMode: FileEditor_Mode;
@@ -708,7 +810,7 @@ export type FileEditor_Props = {
 	presenceStore: files_PresenceStore | null;
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
-	onEditorModeChange: (mode: FileEditor_Mode) => void;
+	onEditorModeChange: (mode: FileEditor_Mode, options?: { replace?: boolean }) => void;
 	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
 };
@@ -722,6 +824,8 @@ export function FileEditor(props: FileEditor_Props) {
 		rootKind,
 		monacoLanguageId,
 		nonCollaborative,
+		committedAssetId,
+		pendingUpdatesLoaded,
 		yjsLastSequenceId,
 		serverSequence,
 		editorMode,
@@ -750,6 +854,8 @@ export function FileEditor(props: FileEditor_Props) {
 			rootKind={rootKind}
 			monacoLanguageId={monacoLanguageId}
 			nonCollaborative={nonCollaborative}
+			committedAssetId={committedAssetId}
+			pendingUpdatesLoaded={pendingUpdatesLoaded}
 			serverSequence={serverSequence}
 			yjsLastSequenceId={yjsLastSequenceId}
 			editorMode={editorMode}

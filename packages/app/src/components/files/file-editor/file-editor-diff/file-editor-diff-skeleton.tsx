@@ -8,7 +8,8 @@ export type FileEditorDiffSkeleton_ClassNames =
 
 export function FileEditorDiffSkeleton() {
 	return (
-		<div className={cn("FileEditorDiffSkeleton" satisfies FileEditorDiffSkeleton_ClassNames)}>
+		<div role="status" className={cn("FileEditorDiffSkeleton" satisfies FileEditorDiffSkeleton_ClassNames)}>
+			<span className="sr-only">Loading changes…</span>
 			<div className={cn("FileEditorDiffSkeleton-content" satisfies FileEditorDiffSkeleton_ClassNames)}>
 				{Array.from({ length: 12 }, (_, index) => (
 					<div

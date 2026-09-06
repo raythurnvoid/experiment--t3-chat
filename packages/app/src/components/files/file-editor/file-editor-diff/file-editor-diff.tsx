@@ -23,7 +23,13 @@ import {
 	file_editor_warn_unsaved_text_dropped,
 } from "@/lib/file-editor.ts";
 import type { files_PresenceStore } from "@/lib/files.ts";
-import { app_convex, app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import {
+	app_convex,
+	app_convex_api,
+	app_convex_wait_new_query_value,
+	type app_convex_Doc,
+	type app_convex_Id,
+} from "@/lib/app-convex-client.ts";
 import { CheckCheck, RefreshCcw, Save, SaveAll, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
@@ -37,7 +43,9 @@ import {
 	files_get_utf8_byte_size,
 	files_monaco_create_editor_model,
 	files_monaco_execute_edits_with_read_only_fallback,
-	files_pending_update_has_yjs_content,
+	files_pending_update_content_is_stale,
+	files_pending_update_has_content,
+	files_PENDING_UPDATE_STALE_BASE_MESSAGE,
 	files_persist_file_pending_update_rebased_state,
 	files_u8_to_array_buffer,
 	files_upsert_file_pending_update,
@@ -66,6 +74,14 @@ type FileEditorDiffToolbarActions_ClassNames =
 type FileEditorDiffToolbarActions_Props = {
 	byteSize: number;
 	editable: boolean;
+	/**
+	 * Hide Sync when collaboration is off because the file has no live Yjs document.
+	 */
+	showSync: boolean;
+	/**
+	 * Hide versions during that review because a restore would drop the proposal being reviewed.
+	 */
+	showSnapshots: boolean;
 	isSaveDisabled: boolean;
 	isSyncDisabled: boolean;
 	isAcceptAllDisabled: boolean;
@@ -89,6 +105,8 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 	const {
 		byteSize,
 		editable,
+		showSync,
+		showSnapshots,
 		isSaveDisabled,
 		isSyncDisabled,
 		isAcceptAllDisabled,
@@ -128,20 +146,22 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 				</MyButtonIcon>
 				Save
 			</MyButton>
-			<MyButton
-				variant="ghost-highlightable"
-				className={cn("FileEditorDiffToolbarActions-button" satisfies FileEditorDiffToolbarActions_ClassNames)}
-				aria-label="Sync with live file"
-				disabled={isSyncDisabled}
-				onClick={onClickSync}
-			>
-				<MyButtonIcon
-					className={cn("FileEditorDiffToolbarActions-icon" satisfies FileEditorDiffToolbarActions_ClassNames)}
+			{showSync && (
+				<MyButton
+					variant="ghost-highlightable"
+					className={cn("FileEditorDiffToolbarActions-button" satisfies FileEditorDiffToolbarActions_ClassNames)}
+					aria-label="Sync with live file"
+					disabled={isSyncDisabled}
+					onClick={onClickSync}
 				>
-					<RefreshCcw />
-				</MyButtonIcon>
-				Sync
-			</MyButton>
+					<MyButtonIcon
+						className={cn("FileEditorDiffToolbarActions-icon" satisfies FileEditorDiffToolbarActions_ClassNames)}
+					>
+						<RefreshCcw />
+					</MyButtonIcon>
+					Sync
+				</MyButton>
+			)}
 			<MyButton
 				variant="ghost-highlightable"
 				className={cn(
@@ -208,18 +228,77 @@ const FileEditorDiffToolbarActions = memo(function FileEditorDiffToolbarActions(
 			<span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
 				{file_editor_get_size_status_message({ byteSize, blocks: "saving" })}
 			</span>
-			<FileEditorSnapshotsModal
-				nodeId={nodeId}
-				sessionId={sessionId}
-				editable={editable}
-				getCurrentText={getCurrentText}
-				onApplySnapshotText={onApplySnapshotText}
-			/>
+			{showSnapshots && (
+				<FileEditorSnapshotsModal
+					nodeId={nodeId}
+					sessionId={sessionId}
+					editable={editable}
+					getCurrentText={getCurrentText}
+					onApplySnapshotText={onApplySnapshotText}
+				/>
+			)}
 		</div>,
 		toolbarPortalHost,
 	);
 });
 // #endregion toolbar
+
+// #region stale toolbar
+type FileEditorDiffStaleToolbarActions_ClassNames =
+	| "FileEditorDiffStaleToolbarActions"
+	| "FileEditorDiffStaleToolbarActions-button"
+	| "FileEditorDiffStaleToolbarActions-icon";
+
+type FileEditorDiffStaleToolbarActions_Props = {
+	/** Id of the status line that explains why only Discard is offered. */
+	describedById: string;
+	isBusy: boolean;
+	toolbarPortalHost: HTMLElement;
+	onClickDiscard: () => void;
+};
+
+/**
+ * The toolbar of a stale proposal on a file with collaboration off. A member saved the file after
+ * the agent made the proposal, so the server refuses every edit and the accept on it. Discard is
+ * the one action left. It is not gated by `editable`: the server lets the owner discard their own
+ * doc without content.write, the same as the pending row.
+ */
+const FileEditorDiffStaleToolbarActions = memo(function FileEditorDiffStaleToolbarActions(
+	props: FileEditorDiffStaleToolbarActions_Props,
+) {
+	const { describedById, isBusy, toolbarPortalHost, onClickDiscard } = props;
+
+	return createPortal(
+		<div
+			role="group"
+			aria-label="Diff editor actions"
+			className={cn("FileEditorDiffStaleToolbarActions" satisfies FileEditorDiffStaleToolbarActions_ClassNames)}
+		>
+			<MyButton
+				variant="ghost-highlightable"
+				className={cn(
+					"FileEditorDiffStaleToolbarActions-button" satisfies FileEditorDiffStaleToolbarActions_ClassNames,
+				)}
+				aria-describedby={describedById}
+				// Keep the button enabled while the discard runs, or the browser throws a keyboard user
+				// out to the page body. The click handler ignores a second press instead.
+				aria-busy={isBusy}
+				onClick={onClickDiscard}
+			>
+				<MyButtonIcon
+					className={cn(
+						"FileEditorDiffStaleToolbarActions-icon" satisfies FileEditorDiffStaleToolbarActions_ClassNames,
+					)}
+				>
+					<Trash2 />
+				</MyButtonIcon>
+				Discard proposal
+			</MyButton>
+		</div>,
+		toolbarPortalHost,
+	);
+});
+// #endregion stale toolbar
 
 // #region top sticky floating container
 type FileEditorDiffTopStickyFloatingContainer_ClassNames = "FileEditorDiffTopStickyFloatingContainer";
@@ -447,7 +526,11 @@ type RemoteEditorContentState = {
 	stagedMarkdown: string;
 	unstagedYjsDoc: YDoc;
 	unstagedMarkdown: string;
-	yjsSequence: number;
+	/**
+	 * The Yjs sequence the branches were built from. `null` for a proposal on a file with
+	 * collaboration off, which has no Yjs document.
+	 */
+	yjsSequence: number | null;
 };
 
 function file_editor_diff_editor_base_yjs_sequence(args: {
@@ -522,6 +605,18 @@ function check_markdown_fits_size_cap(markdown: string) {
 	return false;
 }
 
+/**
+ * A content discard deletes the doc, unless the doc also proposes a move or a delete. Then only
+ * the text change goes, and that part stays in the Pending list.
+ */
+function content_discard_toast_text(
+	pendingUpdate: Pick<app_convex_Doc<"files_pending_updates">, "pendingMove" | "pendingArchive">,
+) {
+	if (pendingUpdate.pendingArchive) return "Text change discarded. The delete is still pending.";
+	if (pendingUpdate.pendingMove) return "Text change discarded. The move is still pending.";
+	return "Proposal discarded";
+}
+
 function editor_content_states_match(left: RemoteEditorContentState, right: RemoteEditorContentState) {
 	return (
 		left.baselineMarkdown === right.baselineMarkdown &&
@@ -543,7 +638,7 @@ async function create_editor_content_state_from_pending_update(args: {
 	rootKind: files_YjsRootKind;
 }) {
 	const { membershipId, pendingUpdate, rootKind } = args;
-	if (!files_pending_update_has_yjs_content(pendingUpdate)) {
+	if (!files_pending_update_has_content(pendingUpdate)) {
 		return Result({ _nay: { message: "Pending update has no content" } });
 	}
 
@@ -588,7 +683,7 @@ async function create_editor_content_state_from_pending_update(args: {
 			stagedMarkdown: stagedMarkdown._yay,
 			unstagedYjsDoc,
 			unstagedMarkdown: unstagedMarkdown._yay,
-			yjsSequence: pendingUpdate.baseYjsSequence,
+			yjsSequence: pendingUpdate.baseYjsSequence ?? null,
 		} satisfies RemoteEditorContentState,
 	});
 }
@@ -616,10 +711,12 @@ type FileEditorDiff_ClassNames =
 	| "FileEditorDiff"
 	| "FileEditorDiff-editor"
 	| "FileEditorDiff-anchor"
-	| "FileEditorDiff-refusal";
+	| "FileEditorDiff-refusal"
+	| "FileEditorDiff-stale";
 
 type FileEditorDiff_CssVars = {
 	"--FileEditorDiff-anchor-name": string;
+	"--FileEditorDiff-status-top-padding": string;
 };
 
 export type FileEditorDiff_Props = {
@@ -634,6 +731,19 @@ export type FileEditorDiff_Props = {
 	/** Monaco language for the node, derived from its content type via `files_monaco_language_id_of_content_type`. */
 	monacoLanguageId: string;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
+	/**
+	 * Collaboration is off for this node. The review then loads only the proposal's branches:
+	 * there is no live Yjs document to fetch or sync with, and a version restore would drop the
+	 * proposal under review.
+	 */
+	nonCollaborative: boolean;
+	/**
+	 * The `assetId` of the editor node `FileNodeView` chose: the selected file or a folder's README,
+	 * for a node with collaboration off. The proposal is stale when its `baseAssetId` differs: a
+	 * member saved the file after the agent made the proposal. `null` for a collaborative node, or
+	 * while that node has not loaded.
+	 */
+	committedAssetId: app_convex_Id<"files_r2_assets"> | null;
 	presenceStore: files_PresenceStore;
 	threadId?: string;
 	commentsPortalHost: HTMLElement | null;
@@ -651,8 +761,19 @@ type FileEditorDiffInner_Props = FileEditorDiff_Props & {
 	isSaving: boolean;
 	isSyncing: boolean;
 	isSyncDisabled: boolean;
+	/** See `isStale` in `FileEditorDiff`: the review is read-only and offers only Discard. */
+	isStale: boolean;
+	/** See `isBranchReloading` in `FileEditorDiff`: the panes still show the old branches. */
+	isBranchReloading: boolean;
+	/**
+	 * The doc under review, or null when the collaborative view has no proposal. A content discard
+	 * keeps a move or delete on the doc, and the toast for a proposal that is over says so.
+	 */
+	pendingUpdate: Pick<app_convex_Doc<"files_pending_updates">, "pendingMove" | "pendingArchive"> | null;
+	isDiscardingStaleProposal: boolean;
 	onSave: (args: { flushPendingUpdateUpsertIfNeeded: () => Promise<boolean> }) => void;
 	onClickSync: (editorValues: { stagedMarkdown: string; unstagedMarkdown: string }) => void;
+	onClickDiscardStaleProposal: () => void;
 };
 
 const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorDiffInner_Props) {
@@ -663,6 +784,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		rootKind,
 		monacoLanguageId,
 		pendingUpdateId,
+		nonCollaborative,
 		presenceStore,
 		commentsPortalHost,
 		toolbarPortalHost,
@@ -671,9 +793,14 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		isSaving,
 		isSyncing,
 		isSyncDisabled,
+		isStale,
+		isBranchReloading,
+		pendingUpdate,
+		isDiscardingStaleProposal,
 		topSafeArea,
 		onSave,
 		onClickSync,
+		onClickDiscardStaleProposal,
 		topStickyFloatingSlot,
 		topViewZoneSlot,
 	} = props;
@@ -682,6 +809,14 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 
 	const id = useId();
 	const anchorName = `${"--FileEditorDiff-anchor-name" satisfies keyof FileEditorDiff_CssVars}-${id}`;
+	const staleStatusId = `FileEditorDiff-${id}-stale-status`;
+	// Whether keyboard focus is inside the toolbar. When the proposal turns stale, the toolbar is
+	// replaced and a focused button would vanish under the user, so the Discard button takes the
+	// focus instead. The focusout handler below keeps the flag true when the button was removed.
+	const toolbarFocusWithinRef = useRef(false);
+	// True while focus left the toolbar because of a swap or a busy window. The effects after the
+	// focus listeners move it back once the toolbar is idle.
+	const refocusToolbarWhenIdleRef = useRef(false);
 
 	const editorRef = useRef<monaco_editor.IStandaloneDiffEditor | null>(null);
 	const [mountedModifiedEditor, setMountedModifiedEditor] = useState<monaco_editor.IStandaloneCodeEditor | null>(null);
@@ -1011,6 +1146,14 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 
 		pendingUpdateSyncStatusRef.current = "mutation_in_flight";
 
+		// With collaboration off, a proposal put back on the saved text is over: the server deletes
+		// the doc (or keeps only its move or delete) and `FileEditorInner` leaves the view. Say so,
+		// because the view closes by itself.
+		const endedProposal =
+			nonCollaborative && stagedMarkdown === unstagedMarkdown && stagedMarkdown === editorContentState.baselineMarkdown
+				? pendingUpdate
+				: null;
+
 		return files_upsert_file_pending_update({
 			membershipId,
 			nodeId,
@@ -1027,6 +1170,9 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 					return false;
 				}
 
+				if (endedProposal) {
+					toast.success(content_discard_toast_text(endedProposal));
+				}
 				return true;
 			})
 			.finally(() => {
@@ -1130,6 +1276,9 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 
 	const doSave = () => {
 		if (!editable) return;
+		// The save disables every toolbar button, and the browser drops the focus of a disabled
+		// button to `body`. Remember whether focus was in the toolbar; the idle effect finishes the move.
+		refocusToolbarWhenIdleRef.current = toolbarFocusWithinRef.current;
 
 		if (!editorModelsRef.current) {
 			const error = should_never_happen("[FileEditorDiff.handleClickSave] Missing editor models", {
@@ -1332,7 +1481,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 
 	const handleOnMount = useFn<DiffEditorProps["onMount"]>((editor) => {
 		editorRef.current = editor;
-		editor.updateOptions({ readOnly: !editable });
+		editor.updateOptions({ readOnly: !editable || isStale || isBranchReloading });
 		setMountedModifiedEditor(editor.getModifiedEditor());
 
 		const prevModels = [editor.getModel()?.original, editor.getModel()?.modified];
@@ -1573,11 +1722,73 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		lastAppliedRemoteEditorContentStateRef.current = editorContentState;
 	}, [editorContentState, editorModels]);
 
-	// The permission query can resolve or change after Monaco mounts. Update the live editor instead
-	// of rebuilding its models, which would drop the cursor and undo history.
+	// The permission query can resolve or change after Monaco mounts, and a proposal can turn stale
+	// while it is open. Update the live editor instead of rebuilding its models, which would drop
+	// the cursor and undo history. Read-only plus no hunk widgets also means no model change ever
+	// reaches the debounced upsert, which the server would refuse on a stale doc. The same lock
+	// covers the reload after the agent's rewrite: the panes still show the old branches, and an
+	// edit there would be upserted into the fresh doc.
 	useEffect(() => {
-		editorRef.current?.updateOptions({ readOnly: !editable });
-	}, [editable]);
+		editorRef.current?.updateOptions({ readOnly: !editable || isStale || isBranchReloading });
+	}, [editable, isStale, isBranchReloading]);
+
+	// Track focus inside the toolbar host, so the effect below can keep focus in the toolbar when
+	// the toolbar is swapped. See `toolbarFocusWithinRef`.
+	useEffect(() => {
+		const handleFocusIn = () => {
+			toolbarFocusWithinRef.current = true;
+		};
+		const handleFocusOut = (event: FocusEvent) => {
+			// Edge fires focusout while React removes the focused button, with no `relatedTarget`,
+			// the same as a click on plain page background. Tell the two apart after the removal is
+			// done: a button that is gone lost its focus to the swap, not to the user.
+			const target = event.target instanceof Node ? event.target : null;
+			queueMicrotask(() => {
+				toolbarFocusWithinRef.current =
+					target?.isConnected === false || toolbarPortalHost.contains(document.activeElement);
+			});
+		};
+		toolbarPortalHost.addEventListener("focusin", handleFocusIn);
+		toolbarPortalHost.addEventListener("focusout", handleFocusOut);
+		return () => {
+			toolbarPortalHost.removeEventListener("focusin", handleFocusIn);
+			toolbarPortalHost.removeEventListener("focusout", handleFocusOut);
+		};
+	}, [toolbarPortalHost]);
+
+	// The stale flip swaps the whole toolbar, in both directions: a member save makes the proposal
+	// stale, and the agent's next write makes a fresh one. A button that had focus is gone after
+	// the swap, so focus would fall to `body`. Move it to the first button of the new toolbar.
+	useEffect(() => {
+		if (!toolbarFocusWithinRef.current) return;
+
+		const button = toolbarPortalHost.querySelector<HTMLElement>("button:not(:disabled)");
+		if (button) {
+			button.focus();
+			return;
+		}
+		// The fresh toolbar is busy while the rewritten branches load (`isBranchReloading` in the
+		// parent), so every button is disabled. Finish the move once it is idle.
+		refocusToolbarWhenIdleRef.current = true;
+	}, [isStale, toolbarPortalHost]);
+
+	// A Save disables every button while it runs, and the browser drops the focus of a disabled
+	// button to `body`. `doSave` sets the flag; finish the move here once the toolbar is idle.
+	useEffect(() => {
+		if (isSaving || isSyncing || !refocusToolbarWhenIdleRef.current) return;
+
+		refocusToolbarWhenIdleRef.current = false;
+		// The first idle render still compares the panes with the old branches, so the Save button
+		// is enabled for one frame and disabled again once the rewritten branches are applied.
+		// Focus after that settles, or the focus lands on Save and falls to `body` again.
+		const timeoutId = setTimeout(() => {
+			// The member may have moved on during the busy window, into the pane or the pending
+			// list. Rescue only a focus that fell to `body`.
+			if (document.activeElement !== document.body) return;
+			toolbarPortalHost.querySelector<HTMLElement>("button:not(:disabled)")?.focus();
+		}, 0);
+		return () => clearTimeout(timeoutId);
+	}, [isSaving, isSyncing, toolbarPortalHost]);
 
 	// Name each pane for screen readers. This has to run after the mount, not inside `onMount`:
 	// Monaco rebuilds the two inner editors' options right after the diff editor is created, and
@@ -1637,28 +1848,55 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 				aria-label="File diff editor"
 				style={sx({
 					"--FileEditorDiff-anchor-name": anchorName,
+					"--FileEditorDiff-status-top-padding": `${Math.max(8, topSafeArea ?? 0)}px`,
 				} satisfies Partial<FileEditorDiff_CssVars>)}
 			>
-				<FileEditorDiffToolbarActions
-					byteSize={byteSize}
-					editable={editable}
-					isSaveDisabled={isSaveDisabled}
-					isSyncDisabled={isSyncDisabled || isSaving}
-					isAcceptAllDisabled={isAcceptAllDisabled}
-					isAcceptAllAndSaveDisabled={isAcceptAllAndSaveDisabled}
-					isDiscardAllDisabled={isDiscardAllDisabled}
-					nodeId={nodeId}
-					sessionId={presenceStore.localSessionId}
-					toolbarPortalHost={toolbarPortalHost}
-					getCurrentText={getCurrentText}
-					onApplySnapshotText={handleApplySnapshotText}
-					onClickSave={handleClickSave}
-					onClickSync={handleClickSync}
-					onClickAcceptAll={handleClickAcceptAll}
-					onClickAcceptAllAndSave={handleClickAcceptAllAndSave}
-					onClickDiscardAll={handleClickDiscardAll}
-				/>
+				{isStale ? (
+					<FileEditorDiffStaleToolbarActions
+						describedById={staleStatusId}
+						isBusy={isDiscardingStaleProposal}
+						toolbarPortalHost={toolbarPortalHost}
+						onClickDiscard={onClickDiscardStaleProposal}
+					/>
+				) : (
+					<FileEditorDiffToolbarActions
+						byteSize={byteSize}
+						editable={editable}
+						showSync={!nonCollaborative}
+						showSnapshots={!nonCollaborative}
+						isSaveDisabled={isSaveDisabled}
+						isSyncDisabled={isSyncDisabled || isSaving}
+						isAcceptAllDisabled={isAcceptAllDisabled}
+						isAcceptAllAndSaveDisabled={isAcceptAllAndSaveDisabled}
+						isDiscardAllDisabled={isDiscardAllDisabled}
+						nodeId={nodeId}
+						sessionId={presenceStore.localSessionId}
+						toolbarPortalHost={toolbarPortalHost}
+						getCurrentText={getCurrentText}
+						onApplySnapshotText={handleApplySnapshotText}
+						onClickSave={handleClickSave}
+						onClickSync={handleClickSync}
+						onClickAcceptAll={handleClickAcceptAll}
+						onClickAcceptAllAndSave={handleClickAcceptAllAndSave}
+						onClickDiscardAll={handleClickDiscardAll}
+					/>
+				)}
 				<FileEditorDiffTopStickyFloatingContainer topStickyFloatingSlot={topStickyFloatingSlot} />
+				{/*
+					The toolbar is portaled away, so this line sits right before the editor in reading
+					order. Keep the live region mounted while fresh (empty): `role="status"` then announces
+					the sentence when a member save turns the proposal stale. An element inserted together
+					with its text is not announced by every screen reader. The same line says when the
+					rewritten branches are loading: the swap to a disabled toolbar and a read-only pane is
+					silent otherwise.
+					*/}
+				<p id={staleStatusId} role="status" className={"FileEditorDiff-stale" satisfies FileEditorDiff_ClassNames}>
+					{isStale
+						? files_PENDING_UPDATE_STALE_BASE_MESSAGE
+						: isBranchReloading
+							? "Loading the updated proposal…"
+							: null}
+				</p>
 				<div className={"FileEditorDiff-editor" satisfies FileEditorDiff_ClassNames}>
 					<DiffEditor
 						height="100%"
@@ -1684,7 +1922,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 					<FileEditorCommentsSidebar threadIds={commentThreadIds} canResolve={editable} />,
 					commentsPortalHost,
 				)}
-			{editable
+			{editable && !isStale && !isBranchReloading
 				? contentWidgets.map((widget) =>
 						createPortal(
 							<FileEditorDiffWidgetAcceptDiscard
@@ -1706,11 +1944,14 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 		editable,
 		rootKind,
 		pendingUpdateId,
+		nonCollaborative,
+		committedAssetId,
 		presenceStore,
 		commentsPortalHost,
 		toolbarPortalHost,
 		className,
 		serverSequence,
+		onExit,
 		topStickyFloatingSlot,
 		topViewZoneSlot,
 	} = props;
@@ -1726,14 +1967,27 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 	// Move-only pending update docs carry no content to diff: treat them as "no pending update"
 	// so the editor degrades to the plain live-file view. Loading (`undefined`) passes through.
 	const pendingUpdate =
-		pendingUpdateResult && !files_pending_update_has_yjs_content(pendingUpdateResult) ? null : pendingUpdateResult;
+		pendingUpdateResult && !files_pending_update_has_content(pendingUpdateResult) ? null : pendingUpdateResult;
+	// The saved sequence only matters for Sync against the live Yjs document, which a file with
+	// collaboration off does not have.
 	const pendingUpdateLastSequenceSaved = useQuery(
 		api.files_pending_updates.get_file_pending_update_last_sequence_saved,
-		{
-			membershipId,
-			nodeId,
-		},
+		nonCollaborative
+			? "skip"
+			: {
+					membershipId,
+					nodeId,
+				},
 	);
+
+	// A member saved the file (collaboration off) after the agent made this proposal, so the
+	// proposal's base is not the committed text any more. The server refuses every edit and the
+	// accept on it; the view turns read-only and offers only Discard.
+	const isStale =
+		nonCollaborative &&
+		pendingUpdate != null &&
+		committedAssetId != null &&
+		files_pending_update_content_is_stale(pendingUpdate, { assetId: committedAssetId });
 
 	const [fileContentData, setFileContentData] = useState<
 		Awaited<ReturnType<typeof files_fetch_file_yjs_state_and_text>> | undefined
@@ -1745,12 +1999,21 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 	>(undefined);
 	const [isSaving, setIsSaving] = useState(false);
 	const [isSyncing, setIsSyncing] = useState(false);
+	const [isDiscardingStaleProposal, setIsDiscardingStaleProposal] = useState(false);
+	// The base the loaded branches were built from (collaboration off). Set when a load lands.
+	const [loadedBaseAssetId, setLoadedBaseAssetId] = useState<app_convex_Id<"files_r2_assets"> | undefined>(undefined);
 	const currentPendingUpdateId = pendingUpdate?._id ?? pendingUpdateId;
+	// The agent's rewrite of a stale proposal, and a partial Save, move the doc to another base.
+	// Until the reload effect below lands, the panes still show the old branches, so the toolbar
+	// stays busy: an accept there would send the old text into the fresh doc.
+	const isBranchReloading =
+		nonCollaborative && pendingUpdate != null && pendingUpdate.baseAssetId !== loadedBaseAssetId;
 
 	const editorBaseYjsSequence = file_editor_diff_editor_base_yjs_sequence({
 		pendingUpdate,
 		fileContentYjsSequence: fileContentData?.yjsSequence,
-		remoteYjsSequence: remoteEditorContentState === "refused" ? undefined : remoteEditorContentState?.yjsSequence,
+		remoteYjsSequence:
+			remoteEditorContentState === "refused" ? undefined : (remoteEditorContentState?.yjsSequence ?? undefined),
 		lastSequenceSaved: pendingUpdateLastSequenceSaved?.lastSequenceSaved,
 	});
 
@@ -1813,6 +2076,37 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 					return;
 				}
 				toast.error(savePendingResult._nay.message ?? "Failed to save pending updates");
+				return;
+			}
+
+			// A file with collaboration off has no live Yjs state to refetch. The pending doc query
+			// tells the rest: a full save takes the content off the doc and `FileEditorInner` leaves the
+			// diff view; a partial save rewrites the doc and the reconcile effect reloads the branches.
+			if (nonCollaborative) {
+				toast.success("Changes saved");
+				// The doc query can deliver the save later than the action result. Until it does, the
+				// cache still holds the doc whose state pages the save deleted, and the reconcile effect
+				// would reload them as soon as `isSaving` flips. So keep `isSaving` until the cache shows
+				// what this save left behind: no doc, the doc rewritten by the save, or a newer doc.
+				const savedUpdatedAt = savePendingResult._yay.pendingUpdateUpdatedAt;
+				const pendingUpdateWatch = convex.watchQuery(api.files_pending_updates.get_file_pending_update, {
+					membershipId,
+					nodeId,
+					pendingUpdateId,
+				});
+				const cacheShowsSave = () => {
+					const doc = pendingUpdateWatch.localQueryResult();
+					if (doc === undefined) return false;
+					if (doc === null || doc._id !== currentPendingUpdateId) return true;
+					return savedUpdatedAt != null && doc.updatedAt >= savedUpdatedAt;
+				};
+				while (!cacheShowsSave()) {
+					await app_convex_wait_new_query_value(api.files_pending_updates.get_file_pending_update, {
+						membershipId,
+						nodeId,
+						pendingUpdateId,
+					});
+				}
 				return;
 			}
 
@@ -1995,16 +2289,53 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 			});
 	});
 
+	const handleClickDiscardStaleProposal = useFn(() => {
+		if (isDiscardingStaleProposal || !pendingUpdate) return;
+
+		setIsDiscardingStaleProposal(true);
+		convex
+			.mutation(api.files_pending_updates.discard_file_pending_content, {
+				membershipId,
+				nodeId,
+				pendingUpdateId: pendingUpdate._id,
+			})
+			.then((result) => {
+				if (result._nay) {
+					toast.error(result._nay.message ?? "Failed to discard pending changes");
+					return;
+				}
+
+				// The deleted doc reaches the pending list, and `FileEditorInner` leaves the diff view.
+				toast.success(content_discard_toast_text(pendingUpdate));
+			})
+			.catch((error: unknown) => {
+				console.error("[FileEditorDiff.handleClickDiscardStaleProposal] Unexpected error while discarding", {
+					error,
+					nodeId,
+				});
+				toast.error("Failed to discard pending changes");
+			})
+			.finally(() => {
+				setIsDiscardingStaleProposal(false);
+			});
+	});
+
 	// Reset state when `nodeId` changes
 	useLayoutEffect(() => {
 		setFileContentData(undefined);
 		setRemoteEditorContentState(undefined);
 		setIsSaving(false);
 		setIsSyncing(false);
+		setIsDiscardingStaleProposal(false);
+		setLoadedBaseAssetId(undefined);
 	}, [nodeId]);
 
 	// Fetch file content for initial load and `nodeId` changes
 	useEffect(() => {
+		// A file with collaboration off has no Yjs state, and its review needs only the proposal's
+		// branches. The bootstrap below does not wait for `fileContentData` in that mode.
+		if (nonCollaborative) return;
+
 		let didCancel = false;
 
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
@@ -2026,7 +2357,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 		return () => {
 			didCancel = true;
 		};
-	}, [nodeId]);
+	}, [nodeId, nonCollaborative]);
 
 	// Refetch live file content only after a pending-edit save marker advances past the local file snapshot.
 	useEffect(() => {
@@ -2068,7 +2399,11 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 	// Bootstrap the remote editor content state once `fileContentData` and `pendingUpdate` are
 	// ready. The pending branch loads paged states, so it is async with a cancel guard.
 	useLayoutEffect(() => {
-		if (remoteEditorContentState !== undefined || pendingUpdate === undefined || fileContentData === undefined) {
+		if (
+			remoteEditorContentState !== undefined ||
+			pendingUpdate === undefined ||
+			(!nonCollaborative && fileContentData === undefined)
+		) {
 			return;
 		}
 
@@ -2084,6 +2419,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 				});
 				if (didCancel) return;
 				if (pendingUpdateInitialEditorContentState._yay) {
+					setLoadedBaseAssetId(pendingUpdate.baseAssetId);
 					setRemoteEditorContentStateIfNotMatch(pendingUpdateInitialEditorContentState._yay);
 					return;
 				}
@@ -2109,6 +2445,12 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 			};
 		}
 
+		// With collaboration off there is no live-file view to fall back to. `FileEditorInner`
+		// leaves the view once the doc is gone; do not flash the refusal alert before that.
+		if (nonCollaborative) {
+			return;
+		}
+
 		if (fileContentData) {
 			const nextRemoteEditorContentState = create_editor_content_state_from_file_content_data(fileContentData);
 			if (nextRemoteEditorContentState) {
@@ -2121,7 +2463,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 		// A missing or refused content read renders the refusal state, never three fabricated
 		// empty documents: every downstream comparison would diff against fabricated emptiness.
 		setRemoteEditorContentState("refused");
-	}, [fileContentData, membershipId, nodeId, pendingUpdate, remoteEditorContentState, rootKind]);
+	}, [fileContentData, membershipId, nodeId, nonCollaborative, pendingUpdate, remoteEditorContentState, rootKind]);
 
 	// Needs to be a layout effect so sync/save convergence updates the remote editor
 	// state before paint, avoiding a brief render with stale button enablement. The pending
@@ -2145,14 +2487,22 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 				});
 				if (didCancel) return;
 				if (nextRemoteEditorContentState._nay) {
-					// Keep the last good state: it holds real decoded content, not a stand-in.
 					console.error("[FileEditorDiff.pendingUpdateReconcile] Failed to reconstruct remote editor content state", {
 						error: nextRemoteEditorContentState._nay,
 						nodeId,
 					});
+					// Collaboration off: the old branches may belong to a base the file no longer has,
+					// and the toolbar would stay busy for good. Leave the review instead.
+					if (nonCollaborative) {
+						toast.error("Failed to load the updated proposal. Open it again.");
+						onExit();
+						return;
+					}
+					// Keep the last good state: it holds real decoded content, not a stand-in.
 					setIsSyncing(false);
 					return;
 				}
+				setLoadedBaseAssetId(pendingUpdate.baseAssetId);
 				if (!editor_content_states_match(currentRemoteEditorContentState, nextRemoteEditorContentState._yay)) {
 					setRemoteEditorContentState(nextRemoteEditorContentState._yay);
 				}
@@ -2164,6 +2514,11 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 					error,
 					nodeId,
 				});
+				if (nonCollaborative) {
+					toast.error("Failed to load the updated proposal. Open it again.");
+					onExit();
+					return;
+				}
 				setIsSyncing(false);
 			});
 
@@ -2219,7 +2574,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 	return forceLoading ||
 		hoistingContainer == null ||
 		pendingUpdate === undefined ||
-		fileContentData === undefined ||
+		(!nonCollaborative && fileContentData === undefined) ||
 		remoteEditorContentState === undefined ? (
 		<FileEditorDiffSkeleton />
 	) : remoteEditorContentState === "refused" ? (
@@ -2242,10 +2597,15 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 			hoistingContainer={hoistingContainer}
 			editorContentState={remoteEditorContentState}
 			isSaving={isSaving}
-			isSyncing={isSyncing}
+			isSyncing={isSyncing || isBranchReloading}
 			isSyncDisabled={isSyncDisabled}
+			isStale={isStale}
+			isBranchReloading={isBranchReloading}
+			pendingUpdate={pendingUpdate}
+			isDiscardingStaleProposal={isDiscardingStaleProposal}
 			onSave={handleSave}
 			onClickSync={handleClickSync}
+			onClickDiscardStaleProposal={handleClickDiscardStaleProposal}
 			topStickyFloatingSlot={topStickyFloatingSlot}
 			topViewZoneSlot={topViewZoneSlot}
 		/>
@@ -2432,6 +2792,9 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 	const dirtyCheckTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
 	const [isSaving, setIsSaving] = useState(false);
+	// The text the save in flight sent, or `null`. Read from the unmount cleanup, which runs
+	// outside render.
+	const saveInFlightMarkdownRef = useRef<string | null>(null);
 
 	const [byteSize, setByteSize] = useState(() => files_get_utf8_byte_size(initialData.text));
 
@@ -2626,11 +2989,11 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 		if (isSaving || dirtyCheckState !== "dirty") return;
 
 		setIsSaving(true);
+		const localMarkdown = editorModels.modified.getValue();
+		saveInFlightMarkdownRef.current = localMarkdown;
 
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
-			const localMarkdown = editorModels.modified.getValue();
-
 			// Nothing is persisted until this point, so the cap is enforced here instead of on
 			// paste. The content stays in the editor, so the user can trim it and save again.
 			const localByteSize = files_get_utf8_byte_size(localMarkdown);
@@ -2650,8 +3013,18 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 					nay: replaced._nay,
 				});
 				toast.error(replaced._nay.message);
+				// The view was replaced while the save waited (see below), so the refused text is off the
+				// screen now: warn the way the unmount would have.
+				if (!editorModelsRef.current) {
+					file_editor_warn_unsaved_text_dropped(localMarkdown);
+				}
 				return;
 			}
+
+			// The agent's proposal can replace this view while the save waits (the chooser in
+			// `FileEditorInner` swaps to the review). The saved text is the file now, so there is
+			// nothing left to update here.
+			if (!editorModelsRef.current) return;
 
 			// The saved text becomes the committed pane.
 			pushChangeToOriginalEditor(localMarkdown);
@@ -2666,8 +3039,12 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 			.catch((err) => {
 				console.error("[FileEditorDiffNonCollab.handleClickSave] Save failed", err);
 				toast.error(err?.message ?? "Failed to save");
+				if (!editorModelsRef.current) {
+					file_editor_warn_unsaved_text_dropped(localMarkdown);
+				}
 			})
 			.finally(() => {
+				saveInFlightMarkdownRef.current = null;
 				setIsSaving(false);
 			});
 	});
@@ -2754,8 +3131,12 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 			return;
 		}
 
+		// A save in flight owns the text it sent: it lands as the file, or the save's own failure
+		// path warns. Without this, the swap to the agent's review during a save would say that text
+		// was dropped. Text typed after the click is not in the save, so it still gets the warning.
 		const currentModified = editorModels.modified.getValue();
-		if (currentModified === editorModels.original.getValue()) {
+		const keptText = saveInFlightMarkdownRef.current ?? editorModels.original.getValue();
+		if (currentModified === keptText) {
 			return;
 		}
 
@@ -2850,9 +3231,9 @@ export type FileEditorDiffNonCollab_Props = {
 };
 
 /**
- * The diff view for a file with collaboration turned off. There is no pending update and no shared
- * document here: the original pane shows the committed text, the modified pane is where the member
- * edits, and Save replaces the whole text.
+ * The diff view for a file with collaboration turned off, when the member has no proposal on it
+ * (`FileEditorDiff` reviews a proposal). There is no shared document here: the original pane shows
+ * the committed text, the modified pane is where the member edits, and Save replaces the whole text.
  */
 export const FileEditorDiffNonCollab = memo(function FileEditorDiffNonCollab(props: FileEditorDiffNonCollab_Props) {
 	const {

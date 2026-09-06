@@ -11,7 +11,6 @@ import type {
 	files_nodes_get_file_last_available_text_content_by_path_Result,
 } from "../convex/files_nodes_content.ts";
 import type {
-	files_pending_updates_accept_file_pending_replacement_Result,
 	files_pending_updates_stage_file_pending_replacement_Result,
 } from "../convex/files_pending_updates.ts";
 import {
@@ -269,18 +268,6 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					sourceText = sourceContent.content;
 				}
 
-				// Copying onto a text file with collaboration turned off saves right away: that file
-				// has no review step for text writes, and the copy keeps that. Every other destination
-				// gets a pending replacement the user reviews as a whole.
-				//
-				// The local below is annotated on purpose. This command sits inside the generated-API
-				// type graph (convex/bash.ts -> server/bash.ts -> here), so a value TypeScript can only
-				// type by looking at a node read from that API makes this function's inferred return
-				// type depend on itself. TypeScript then gives up and types the whole generated API as
-				// `any`.
-				const destSavesImmediately: boolean =
-					occupant?.nonCollaborative === true && files_node_has_editable_text_content(occupant);
-
 				let destNodeId: Id<"files_nodes">;
 				let replacesExisting: boolean;
 				let eagerCreatedCommittedSequence: number | undefined;
@@ -411,34 +398,6 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				// Later commands chained in this same bash call must see the new proposal.
 				dbFilesRoots.app.fs.resetProposalCaches();
 
-				// A collaboration-off text destination is saved now, so telling the agent to review a
-				// proposal in Files would send it looking for something that does not exist.
-				if (destSavesImmediately) {
-					const accepted = (await ctx.runAction(
-						internal.files_pending_updates.accept_file_pending_replacement_internal_action,
-						{
-							organizationId,
-							workspaceId,
-							userId,
-							nodeId: destNodeId,
-							pendingUpdateId: staged._yay.pendingUpdateId,
-						},
-					)) as files_pending_updates_accept_file_pending_replacement_Result;
-					if (accepted._nay) {
-						return {
-							stdout: "",
-							stderr: `cp: cannot save '${destPath}': ${accepted._nay.message} — the copy stays pending; review it in Files\n`,
-							exitCode: bash_COMMAND_EXIT_FAILURE,
-						};
-					}
-					dbFilesRoots.app.fs.resetProposalCaches();
-					return {
-						stdout: `copied: ${sourceDbFilesPath} -> ${destPath} — collaboration was off for the destination, so the copy is already saved\n`,
-						stderr: "",
-						exitCode: 0,
-					};
-				}
-
 				const copiedStdout: string = replacesExisting
 					? `pending copy created: ${sourceDbFilesPath} -> ${destPath} — replaces the existing file's content and type when accepted; review in Files\n`
 					: `pending copy created: ${sourceDbFilesPath} -> ${destPath} — review in Files\n`;
@@ -477,7 +436,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				stderr: dbFilesRoots.app.fs.allowDbFilesMkdir
 					? `cp: cannot write to app file '${operands[1]}': only app files can be copied within the app tree.\n` +
 						(sourceIsFile
-							? `To write that content at '${destDbFilesPath}', redirect instead: cat ${bash_shell_arg_quote(operands[0])} > ${bash_shell_arg_quote(redirectDestShellPath)} — a collaborative destination creates a pending proposal; a collaboration-off destination saves immediately, and Bash says which happened.\n`
+							? `To write that content at '${destDbFilesPath}', redirect instead: cat ${bash_shell_arg_quote(operands[0])} > ${bash_shell_arg_quote(redirectDestShellPath)} — this creates a pending proposal you review in Files.\n`
 							: "")
 					: `cp: cannot write to app file '${operands[1]}' in Ask mode.\n` +
 						"App file writes are available in Agent mode; Ask mode is read-only for app files.\n",

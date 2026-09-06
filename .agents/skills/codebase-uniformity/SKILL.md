@@ -92,7 +92,7 @@ When adding or polishing a command:
 - print continuation commands in the same `Next page:` style as search/listing commands
 - place formatting helpers before `*_command_create`
 - return `{ stdout, stderr, exitCode }` directly
-- keep command tests in the existing in-source `action_run` group unless a nearby focused test file, such as `bash-meta-command.test.ts`, already owns the behavior
+- keep command tests in the existing `bash_run_command` group in `server/bash.test.ts` unless a nearby focused test file, such as `bash-meta-command.test.ts`, already owns the behavior
 - keep `convex/bash.ts` to action registration and validators; `server/bash.ts` exports `bash_run_command` for that action boundary; `server/bash-delegate.ts` owns native Just Bash value imports and built-in delegation; `server/bash-utils.ts` owns prefixed path helpers, shared bash constants, db-files helpers, and the `cp`/`mv` operand parser used by extracted command modules; and `bash_fs_create`, raw filesystem classes, command factories, tmp helpers, and formatting helpers stay module-private unless preserving an original moved signature requires exporting an existing symbol
 - verify with a focused `vitest` filter for the command behavior
 

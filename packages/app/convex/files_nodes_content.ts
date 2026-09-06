@@ -37,6 +37,7 @@ import {
 	files_normalize_text_document_input,
 	files_node_has_editable_text_content,
 	files_node_has_editable_yjs_state,
+	files_pending_update_content_is_stale,
 	files_pending_update_content_of,
 	files_REPLACE_FILE_CONTENT_STALE_MESSAGE,
 	files_db_cancel_pending_update_cleanup_tasks,
@@ -1665,11 +1666,6 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 			displayNodeId: v.id("files_nodes"),
 			pendingUpdateId: v.union(v.id("files_pending_updates"), v.null()),
 			materializationState: v.union(file_content_materialization_state_validator, v.null()),
-			/**
-			 * True for a tenant file with collaboration off. Its agent writes save immediately.
-			 * False for other files, including read-only mounts and pending content.
-			 */
-			nonCollaborative: v.boolean(),
 		}),
 		v.null(),
 	),
@@ -1718,7 +1714,6 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 				displayNodeId: fileNode._id,
 				pendingUpdateId: null,
 				materializationState: null,
-				nonCollaborative: false,
 			};
 		}
 
@@ -1767,7 +1762,6 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 					displayNodeId: fileNode._id,
 					pendingUpdateId: pendingUpdate._id,
 					materializationState: null,
-					nonCollaborative: false,
 				};
 			}
 		}
@@ -1785,13 +1779,19 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 		// from the committed tree. The doc keeps its `pendingUpdateId` below, so the agent's
 		// next write mixes onto it and rebuilds the family from the live state.
 		//
-		// A non-collaborative file has no last-sequence doc and, by the same rule, no pending
-		// content, so the second condition skips a lookup that would find nothing.
-		if (pendingUpdateContent && fileNode.yjsLastSequenceId) {
+		// A non-collaborative file has no last-sequence doc; the asset check below screens its
+		// proposals instead.
+		if (pendingUpdate && pendingUpdateContent && fileNode.yjsLastSequenceId) {
 			const lastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId);
-			if (!lastSequenceDoc || lastSequenceDoc.lineageGeneration !== pendingUpdateContent.baseLineageGeneration) {
+			if (!lastSequenceDoc || lastSequenceDoc.lineageGeneration !== pendingUpdate.baseLineageGeneration) {
 				pendingUpdateContent = null;
 			}
+		}
+		// A proposal on a file with collaboration off is stale once a member saved the file after
+		// the agent made it. Serve the committed text then, like the stale generation above. The
+		// agent's next write rebuilds the proposal from the saved text.
+		if (pendingUpdate && pendingUpdateContent && files_pending_update_content_is_stale(pendingUpdate, fileNode)) {
+			pendingUpdateContent = null;
 		}
 		if (pendingUpdate && pendingUpdateContent) {
 			// Rebuild the pending branch from its canonical unstaged paged state (a full state, so
@@ -1843,7 +1843,6 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 				displayNodeId: fileNode._id,
 				pendingUpdateId: pendingUpdate._id,
 				materializationState: null,
-				nonCollaborative: false,
 			};
 		}
 
@@ -1854,8 +1853,6 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 						asset && asset.organizationId === organizationId && asset.workspaceId === workspaceId ? asset : null,
 					)
 			: null;
-
-		const nonCollaborative = fileNode.nonCollaborative === true;
 
 		const materializationState = pendingUpdateContent
 			? null
@@ -1894,7 +1891,6 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 					displayNodeId: fileNode._id,
 					pendingUpdateId: pendingUpdate?._id ?? null,
 					materializationState: null,
-					nonCollaborative,
 				};
 			}
 		}
@@ -1905,7 +1901,6 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 			displayNodeId: fileNode._id,
 			pendingUpdateId: pendingUpdate?._id ?? null,
 			materializationState,
-			nonCollaborative,
 		};
 	},
 });
@@ -1924,7 +1919,6 @@ type get_file_last_available_text_content_by_path_Result = {
 	nodeId: Id<"files_nodes">;
 	displayNodeId: Id<"files_nodes">;
 	pendingUpdateId: Id<"files_pending_updates"> | null;
-	nonCollaborative: boolean;
 } | null;
 
 export const get_file_last_available_text_content_by_path = internalAction({
@@ -1945,10 +1939,6 @@ export const get_file_last_available_text_content_by_path = internalAction({
 			nodeId: v.id("files_nodes"),
 			displayNodeId: v.id("files_nodes"),
 			pendingUpdateId: v.union(v.id("files_pending_updates"), v.null()),
-			/**
-			 * See the same field on `get_file_text_content_db_state_by_path`.
-			 */
-			nonCollaborative: v.boolean(),
 		}),
 		v.null(),
 	),
@@ -2022,7 +2012,6 @@ export const get_file_last_available_text_content_by_path = internalAction({
 			nodeId: contentState.nodeId,
 			displayNodeId: contentState.displayNodeId,
 			pendingUpdateId: contentState.pendingUpdateId,
-			nonCollaborative: contentState.nonCollaborative,
 		};
 	},
 });
@@ -3579,9 +3568,9 @@ type files_content_public_action_Result =
  * A non-collaborative file has no Yjs document to merge with, so each save replaces the whole
  * text. The last save to commit wins, and each saved text stays in version history.
  *
- * The two doors below both run this body. They differ only in how they learn the tenant and the
- * user: the person's door resolves the membership it was handed, the agent's door is already
- * carrying the ids the chat route accepted.
+ * The member's door `replace_file_content` below runs this body after it resolves the membership
+ * it was handed. The agent never saves directly: its writes become pending updates, and Accept
+ * commits them through `files_nodes_db_commit_text_replacement`.
  */
 async function action_replace_file_content(
 	ctx: ActionCtx,
@@ -3816,31 +3805,73 @@ export const replace_file_content = action({
 });
 
 /**
- * The agent's door onto the same save.
- *
- * The chat route already accepted this user and tenant, and the file tools carry those ids instead
- * of a membership, so this door takes them directly. It keeps its own rate limit: an agent loop can
- * call it much faster than a person clicking Save.
+ * Publish new text on a file with collaboration off: point the node at the version snapshot,
+ * finalize that asset, replace the committed chunks, and add the version row. The member save
+ * door and the pending-update Accept both end here. Throw on a failed write so Convex rolls back
+ * every write of the calling mutation. Returning `_nay` would commit the node and asset changes
+ * after the chunk replacement had already failed.
  */
-export const replace_file_content_internal_action = internalAction({
+export async function files_nodes_db_commit_text_replacement(
+	ctx: MutationCtx,
 	args: {
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		userId: v.id("users"),
-		nodeId: v.id("files_nodes"),
-		text: v.string(),
+		// The caller's tenant, already checked against the node.
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		fileNode: Doc<"files_nodes">;
+		userId: Id<"users">;
+		text: string;
+		textSize: number;
+		versionSnapshotAssetId: Id<"files_r2_assets">;
 	},
-	returns: v_result({ _yay: v.null() }),
-	// The annotation breaks same-file generated-API circularity.
-	handler: async (ctx, args): Promise<files_content_public_action_Result> => {
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: args.userId });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
-		}
+) {
+	const { fileNode } = args;
+	const now = Date.now();
+	const dbWriteResult = Result_all(
+		await Promise.all([
+			// Point the node at the new version snapshot. It now holds the file's current bytes,
+			// so downloads sign it and reads use its size as the byte cap.
+			ctx.db.patch("files_nodes", fileNode._id, {
+				assetId: args.versionSnapshotAssetId,
+				contentFrontmatterTooLargeFieldCount: undefined,
+				contentFrontmatterTooLargeIndexDocumentCount: undefined,
+				updatedBy: args.userId,
+				updatedAt: now,
+			}),
+			ctx.db.patch("files_r2_assets", args.versionSnapshotAssetId, {
+				r2Key: r2_create_asset_key({
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					assetId: args.versionSnapshotAssetId,
+				}),
+				size: args.textSize,
+				unfinalizedExpiresAt: undefined,
+				updatedAt: now,
+			}),
+			db_replace_file_chunks(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				nodeId: fileNode._id,
+				textContent: args.text,
+			}),
+			store_version_snapshot(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				nodeId: fileNode._id,
+				assetId: args.versionSnapshotAssetId,
+				userId: args.userId,
+				contentType: fileNode.contentType,
+				yjsRootKind: fileNode.yjsRootKind,
+				nonCollaborative: fileNode.nonCollaborative,
+			}),
+		]),
+	);
 
-		return await action_replace_file_content(ctx, args);
-	},
-});
+	if (dbWriteResult._nay) {
+		const errorMessage = "Failed to replace file content";
+		console.error(errorMessage, { dbWriteResult, nodeId: fileNode._id });
+		throw convex_error({ message: errorMessage, cause: dbWriteResult._nay });
+	}
+}
 
 export const finalize_file_content_replacement = internalMutation({
 	args: {
@@ -3925,54 +3956,15 @@ export const finalize_file_content_replacement = internalMutation({
 			return Result({ _nay: { message: "Insufficient funds" } });
 		}
 
-		const now = Date.now();
-		const dbWriteResult = Result_all(
-			await Promise.all([
-				// Point the node at the new version snapshot. It now holds the file's current bytes,
-				// so downloads sign it and reads use its size as the byte cap.
-				ctx.db.patch("files_nodes", args.nodeId, {
-					assetId: args.versionSnapshotAssetId,
-					contentFrontmatterTooLargeFieldCount: undefined,
-					contentFrontmatterTooLargeIndexDocumentCount: undefined,
-					updatedBy: user._id,
-					updatedAt: now,
-				}),
-				ctx.db.patch("files_r2_assets", args.versionSnapshotAssetId, {
-					r2Key: r2_create_asset_key({
-						organizationId: membership.organizationId,
-						workspaceId: membership.workspaceId,
-						assetId: args.versionSnapshotAssetId,
-					}),
-					size: args.textSize,
-					unfinalizedExpiresAt: undefined,
-					updatedAt: now,
-				}),
-				db_replace_file_chunks(ctx, {
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					nodeId: args.nodeId,
-					textContent: args.text,
-				}),
-				store_version_snapshot(ctx, {
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					nodeId: args.nodeId,
-					assetId: args.versionSnapshotAssetId,
-					userId: user._id,
-					contentType: fileNode.contentType,
-					yjsRootKind: fileNode.yjsRootKind,
-					nonCollaborative: fileNode.nonCollaborative,
-				}),
-			]),
-		);
-
-		if (dbWriteResult._nay) {
-			const errorMessage = "Failed to replace file content";
-			console.error(errorMessage, { dbWriteResult, nodeId: args.nodeId });
-			// Throw so Convex rolls back every write above. Returning `_nay` would commit the node
-			// and asset changes after chunk replacement had already failed.
-			throw convex_error({ message: errorMessage, cause: dbWriteResult._nay });
-		}
+		await files_nodes_db_commit_text_replacement(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			fileNode,
+			userId: user._id,
+			text: args.text,
+			textSize: args.textSize,
+			versionSnapshotAssetId: args.versionSnapshotAssetId,
+		});
 
 		await billing_ingest_events(ctx, {
 			billedUserEvents: [
@@ -4231,6 +4223,16 @@ async function db_install_file_content_replacement(
 		expectedActiveYjsLastSequenceId?: Id<"files_yjs_docs_last_sequences">;
 		nonCollaborativeCleanupYjsLastSequenceId?: Id<"files_yjs_docs_last_sequences">;
 	} | null = null;
+	// Every member's text proposal uses the text that goes away now, including the acting member's
+	// own proposal. A file with collaboration off has no document, but its proposals hold the
+	// committed text as their base, so they go the same way.
+	if (files_node_has_editable_text_content(fileNode)) {
+		await files_pending_updates_db_drop_content_for_node(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			nodeId,
+		});
+	}
 	if (files_node_has_editable_yjs_state(fileNode)) {
 		// Stop the queued materialization of the old document. It would work on content that is
 		// gone after this write.
@@ -4249,13 +4251,6 @@ async function db_install_file_content_replacement(
 			console.error(errorMessage, errorData);
 			throw should_never_happen(errorMessage, errorData);
 		}
-		// Other members' text proposals were built against the document that goes away now.
-		await files_pending_updates_db_drop_content_for_node(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			nodeId,
-		});
-
 		if (args.yjsSnapshot) {
 			// Replace the lineage in place, like the Yjs repair does. The snapshot doc keeps its
 			// id and points at the new document at the current sequence number, the exact
@@ -7041,6 +7036,15 @@ export const finalize_file_collaboration_enable = internalMutation({
 			// `_nay` would commit a node pointing at a document whose chunks failed to write.
 			throw convex_error({ message: errorMessage, cause: enableWriteResult._nay });
 		}
+
+		// A proposal on this file was built from the saved text (its `baseAssetId`). The new
+		// document replaces that text, so every content proposal is dropped, like the OFF toggle
+		// does. A doc that also proposes a move or a delete keeps that part.
+		await files_pending_updates_db_drop_content_for_node(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			nodeId: args.nodeId,
+		});
 
 		return Result({ _yay: null });
 	},

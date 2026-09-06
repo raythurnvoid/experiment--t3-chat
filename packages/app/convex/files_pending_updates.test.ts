@@ -2,6 +2,7 @@ import { R2 } from "@convex-dev/r2";
 import { RateLimiter } from "@convex-dev/rate-limiter";
 import { Workpool } from "@convex-dev/workpool";
 import { afterEach, beforeEach, describe, expect, test as baseTest, vi, type MockInstance } from "vitest";
+import { getFunctionName } from "convex/server";
 import { api, internal } from "./_generated/api.js";
 import { test_convex, test_get_file_yjs_pointers, test_mocks_fill_db_with } from "./setup.test.ts";
 import type { MutationCtx } from "./_generated/server.js";
@@ -9,6 +10,8 @@ import type { Id } from "./_generated/dataModel.js";
 import { billing_PRODUCTS, billing_get_recurring_credits_cents } from "../shared/billing.ts";
 import { billing_db_ensure_anonymous_user_usage_snapshot } from "./billing.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
+import { files_nodes_db_insert_file_content_docs } from "./files_nodes_content.ts";
+import { files_pending_updates_db_drop_content_for_node } from "./files_pending_updates.ts";
 
 const test = baseTest;
 import { billing_event } from "../server/billing.ts";
@@ -16,6 +19,7 @@ import { r2_create_asset_key } from "./r2_client.ts";
 import {
 	files_db_load_pending_update_yjs_state_bytes,
 	files_db_reschedule_pending_update_cleanup_for_user,
+	files_default_text_shape_for_name,
 	files_ROOT_ID,
 	files_pending_update_has_yjs_content,
 	files_u8_to_array_buffer,
@@ -31,6 +35,7 @@ import {
 	files_MAX_YJS_RECONSTRUCTED_STATE_BYTES,
 	files_MAX_YJS_WIRE_BYTES,
 	files_get_utf8_byte_size,
+	files_PENDING_UPDATE_STALE_BASE_MESSAGE,
 } from "../shared/files.ts";
 import {
 	files_metadata_MAX_FRONTMATTER_FIELDS,
@@ -333,6 +338,119 @@ async function seed_signed_in_file_with_markdown(
 		...args,
 		membership,
 	});
+}
+
+/**
+ * Seed a text file with collaboration off: a content asset, committed chunks, and no Yjs docs.
+ * The name decides the shape (`.md` rich text, `.txt` plain text). The same seed as the fixture
+ * in `files_nodes.test.ts`, on a mutation ctx instead of the test harness. The owner is a
+ * Clerk-backed user so its saves bill through the workpool the tests spy on; an anonymous user's
+ * events take another path.
+ */
+async function seed_non_collaborative_file(ctx: MutationCtx, path: string, text: string) {
+	const clerkUserId = await ctx.db.insert("users", {
+		clerkUserId: `clerk_pending_update_test_${seed_signed_in_file_user_counter++}`,
+	});
+	const { userId, organizationId, workspaceId, membershipId } = await test_mocks_fill_db_with.membership(ctx, {
+		userId: clerkUserId,
+	});
+	const now = Date.now();
+	const name = path.split("/").filter(Boolean).at(-1);
+	if (!name) throw new Error("Expected a root-level file path");
+	const { rootKind, contentType } = files_default_text_shape_for_name(name);
+
+	const assetId = await ctx.db.insert("files_r2_assets", {
+		organizationId,
+		workspaceId,
+		kind: "content_snapshot",
+		r2Bucket: "test-bucket",
+		r2Key: `content-snapshot${path}`,
+		size: files_get_utf8_byte_size(text),
+		createdBy: userId,
+		updatedAt: now,
+	});
+	const nodeId = await ctx.db.insert("files_nodes", {
+		organizationId,
+		workspaceId,
+		parentId: files_ROOT_ID,
+		path,
+		treePath: path,
+		pathDepth: 1,
+		lowercaseExtension: name.split(".").at(-1) ?? null,
+		name,
+		kind: "file",
+		contentType,
+		assetId,
+		createdBy: userId,
+		updatedBy: userId,
+		updatedAt: now,
+	});
+	await files_nodes_db_insert_file_content_docs(ctx, {
+		organizationId,
+		workspaceId,
+		nodeId,
+		path,
+		contentType,
+		rootKind,
+		textContent: text,
+		readOnly: false,
+		nonCollaborative: true,
+		userId,
+		now,
+	});
+
+	return { organizationId, workspaceId, membershipId, userId, nodeId, assetId };
+}
+
+/**
+ * Save `text` on a file with collaboration off through the member save door. Returns the node's
+ * new content asset id.
+ */
+async function save_as_member(
+	t: ReturnType<typeof test_convex>,
+	seeded: Awaited<ReturnType<typeof seed_non_collaborative_file>>,
+	text: string,
+) {
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: seeded.userId,
+		name: "Test User",
+	});
+	const saved = await asUser.action(api.files_nodes_content.replace_file_content, {
+		membershipId: seeded.membershipId,
+		nodeId: seeded.nodeId,
+		text,
+	});
+	if (saved._nay) {
+		throw new Error(saved._nay.message);
+	}
+	const node = await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId));
+	if (!node?.assetId || node.assetId === seeded.assetId) {
+		throw new Error("Expected the member save to move the node to a new content asset");
+	}
+	return node.assetId;
+}
+
+/**
+ * The committed text of a file, read back from its committed chunks in order.
+ */
+async function read_committed_text(args: {
+	ctx: MutationCtx;
+	organizationId: Id<"organizations">;
+	workspaceId: Id<"organizations_workspaces">;
+	nodeId: Id<"files_nodes">;
+}) {
+	const chunks = await args.ctx.db
+		.query("files_text_chunks")
+		.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
+			q
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("sourceKind", "committed")
+				.eq("fileNodeId", args.nodeId),
+		)
+		.collect();
+	return chunks.map((chunk) => chunk.textChunk).join("");
 }
 
 async function read_file_yjs_snapshot_update(args: {
@@ -995,6 +1113,109 @@ async function upsert_file_pending_archive_for_test(args: {
 		nodeId: args.nodeId,
 		...(args.threadId ? { threadId: args.threadId } : {}),
 	});
+}
+
+/**
+ * Stage and seal one output family under a server-side batch, for tests that drive the upsert
+ * commit directly. Every role holds the same empty-doc update: these tests assert the commit's
+ * base check, not the branch bytes.
+ */
+async function seal_output_family_for_test(
+	t: ReturnType<typeof test_convex>,
+	seeded: Awaited<ReturnType<typeof seed_non_collaborative_file>>,
+) {
+	const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
+		organizationId: seeded.organizationId,
+		workspaceId: seeded.workspaceId,
+		userId: seeded.userId,
+		nodeId: seeded.nodeId,
+	});
+	if (batch._nay) {
+		throw new Error(batch._nay.message);
+	}
+	const operationBatchId = batch._yay.operationBatchId;
+	const stateUpdate = files_u8_to_array_buffer(encodeStateAsUpdate(new YDoc()));
+
+	const sealedByRole = new Map<
+		"base" | "staged" | "unstaged",
+		{ stateId: Id<"files_pending_update_yjs_states">; digest: string }
+	>();
+	for (const role of ["base", "staged", "unstaged"] as const) {
+		const staged = await t.mutation(internal.files_pending_updates.stage_file_pending_update_state_page_internal, {
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			operationBatchId,
+			phase: "output",
+			role,
+			pageIndex: 0,
+			bytes: stateUpdate,
+		});
+		if (staged._nay) {
+			throw new Error(staged._nay.message);
+		}
+		const sealed = await t.mutation(internal.files_pending_updates.seal_file_pending_update_state_internal, {
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			operationBatchId,
+			phase: "output",
+			role,
+			expectedTotalBytes: stateUpdate.byteLength,
+		});
+		if (sealed._nay) {
+			throw new Error(sealed._nay.message);
+		}
+		sealedByRole.set(role, { stateId: sealed._yay.stateId, digest: sealed._yay.digest });
+	}
+
+	return {
+		operationBatchId,
+		base: sealedByRole.get("base")!,
+		staged: sealedByRole.get("staged")!,
+		unstaged: sealedByRole.get("unstaged")!,
+	};
+}
+
+async function accept_as_member(
+	t: ReturnType<typeof test_convex>,
+	seeded: Awaited<ReturnType<typeof seed_non_collaborative_file>>,
+	pendingUpdateId: Id<"files_pending_updates">,
+) {
+	const asUser = t.withIdentity({
+		issuer: "https://clerk.test",
+		external_id: seeded.userId,
+		name: "Test User",
+	});
+	return await asUser.action(api.ai_chat.save_file_pending_update, {
+		membershipId: seeded.membershipId,
+		nodeId: seeded.nodeId,
+		pendingUpdateId,
+	});
+}
+
+async function read_seeded_pending_row(
+	t: ReturnType<typeof test_convex>,
+	seeded: Awaited<ReturnType<typeof seed_non_collaborative_file>>,
+) {
+	const row = await t.run((ctx) =>
+		read_pending_update_row({
+			ctx,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		}),
+	);
+	if (!row) {
+		throw new Error("Expected a pending content doc");
+	}
+	return row;
+}
+
+function file_save_events() {
+	// Function references are fresh proxy objects on every access, so compare names.
+	return enqueueActionSpy.mock.calls.filter((call) => getFunctionName(call[1]) === "billing:ingest_events");
 }
 
 describe("upsert_file_pending_update", () => {
@@ -2825,6 +3046,787 @@ describe("upsert_file_pending_update", () => {
 		// strict `v_result` returns validator in a real deployment.
 		expect(upserted).toEqual({
 			_nay: { message: "Failed to apply unstaged text to pending branch" },
+		});
+	});
+});
+
+describe("upsert, discard, move, and restore on a file with collaboration off", () => {
+	test("builds the branches from the committed text and records the node's asset as base", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-create.md", "# Off base"));
+		const unstagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAgent line");
+
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown,
+		});
+		expect(upserted._nay).toBeUndefined();
+
+		await t.run(async (ctx) => {
+			const row = await read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			});
+			if (!row) {
+				throw new Error("Expected a pending content doc");
+			}
+			expect(row.baseAssetId).toBe(seeded.assetId);
+			expect(row.baseYjsSequence).toBeUndefined();
+			expect(row.baseLineageGeneration).toBeUndefined();
+			expect(files_pending_update_has_yjs_content(row)).toBe(false);
+			expect(await read_pending_row_markdown_state({ ctx, pendingUpdate: row })).toEqual({
+				baseMarkdown: normalize_pending_update_markdown("# Off base"),
+				stagedMarkdown: normalize_pending_update_markdown("# Off base"),
+				unstagedMarkdown,
+			});
+
+			// The file has no Yjs document, so its states carry no lineage.
+			const states = await ctx.db.query("files_pending_update_yjs_states").collect();
+			expect(states).toHaveLength(3);
+			expect(states.map((state) => state.lineageGeneration)).toEqual([undefined, undefined, undefined]);
+
+			// Pending chunks let the agent's overlay reads see the proposal.
+			expect(await list_pending_update_text_chunks({ ctx, pendingUpdateId: row._id })).not.toHaveLength(0);
+		});
+	});
+
+	test("a second write on the same base keeps the doc and its base asset", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-second-write.md", "# Off base"));
+		const ids = {
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		};
+		const read_row = () =>
+			t.run((ctx) =>
+				read_pending_update_row({
+					ctx,
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					userId: seeded.userId,
+					nodeId: seeded.nodeId,
+				}),
+			);
+
+		// The member accepted the first hunk: the staged branch differs from the base. A second
+		// write must reuse this branch family, not rebuild it, or the accepted hunk is lost.
+		const stagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAccepted");
+		const first = await upsert_file_pending_update_internal_for_test({
+			...ids,
+			stagedMarkdown,
+			unstagedMarkdown: normalize_pending_update_markdown("# Off base\n\nAccepted\n\nFirst"),
+		});
+		expect(first._nay).toBeUndefined();
+		const firstRow = await read_row();
+		if (!firstRow) {
+			throw new Error("Expected a pending content doc after the first write");
+		}
+
+		const secondMarkdown = normalize_pending_update_markdown("# Off base\n\nAccepted\n\nSecond");
+		const second = await upsert_file_pending_update_internal_for_test({
+			...ids,
+			pendingUpdateId: firstRow._id,
+			unstagedMarkdown: secondMarkdown,
+		});
+		expect(second._nay).toBeUndefined();
+
+		const secondRow = await read_row();
+		expect(secondRow?._id).toBe(firstRow._id);
+		expect(secondRow?.baseAssetId).toBe(seeded.assetId);
+		// A rebuild would clone the base into the staged branch and lose the accepted hunk.
+		const state = await t.run((ctx) => read_pending_row_markdown_state({ ctx, pendingUpdate: secondRow! }));
+		expect(state.baseMarkdown).toBe(normalize_pending_update_markdown("# Off base"));
+		expect(state.stagedMarkdown).toBe(stagedMarkdown);
+		expect(state.unstagedMarkdown).toBe(secondMarkdown);
+	});
+
+	test("accepts a client edit on a fresh proposal, the way the pending row does before Accept", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-client-fresh.md", "# Off base"));
+		const proposalMarkdown = normalize_pending_update_markdown("# Off base\n\nAgent line");
+
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: proposalMarkdown,
+		});
+		expect(upserted._nay).toBeUndefined();
+		const row = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		if (!row) {
+			throw new Error("Expected a pending content doc");
+		}
+
+		// The row's Accept first stages every hunk through the anchored public upsert.
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const staged = await upsert_file_pending_update_public_for_test(asUser, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			pendingUpdateId: row._id,
+			reviewedUpdatedAt: row.updatedAt,
+			stagedMarkdown: proposalMarkdown,
+			unstagedMarkdown: proposalMarkdown,
+		});
+		expect(staged._nay).toBeUndefined();
+
+		const rowAfter = await t.run((ctx) => ctx.db.get("files_pending_updates", row._id));
+		expect(rowAfter?.baseAssetId).toBe(seeded.assetId);
+		const state = await t.run((ctx) => read_pending_row_markdown_state({ ctx, pendingUpdate: rowAfter! }));
+		expect(state.stagedMarkdown).toBe(proposalMarkdown);
+		expect(state.unstagedMarkdown).toBe(proposalMarkdown);
+	});
+
+	test("refuses a client edit after a member saved the file and leaves the proposal untouched", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-client-stale.md", "# Off base"));
+
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: normalize_pending_update_markdown("# Off base\n\nAgent line"),
+		});
+		expect(upserted._nay).toBeUndefined();
+		const row = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		if (!row) {
+			throw new Error("Expected a pending content doc");
+		}
+
+		await save_as_member(t, seeded, "# Off base\n\nMember line");
+
+		// The client reviewed the doc as it is (`reviewedUpdatedAt` matches), so the only refusal
+		// left is the stale base.
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const edited = await upsert_file_pending_update_public_for_test(asUser, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			pendingUpdateId: row._id,
+			reviewedUpdatedAt: row.updatedAt,
+			unstagedMarkdown: normalize_pending_update_markdown("# Off base\n\nAgent line edited"),
+		});
+		expect(edited._nay?.message).toBe(files_PENDING_UPDATE_STALE_BASE_MESSAGE);
+
+		// The stale proposal stays as it was, for Discard.
+		const rowAfter = await t.run((ctx) => ctx.db.get("files_pending_updates", row._id));
+		expect(rowAfter?.baseAssetId).toBe(seeded.assetId);
+		expect(rowAfter?.updatedAt).toBe(row.updatedAt);
+		expect(rowAfter?.unstagedStateId).toBe(row.unstagedStateId);
+
+		// The refusal retired its operation batch, so the next attempt is refused for the same
+		// reason, not as a batch that is still in progress.
+		const activeBatches = await t.run(
+			async (ctx) =>
+				(await ctx.db.query("files_pending_update_operation_batches").collect()).filter(
+					(batch) => batch.fileNodeId === seeded.nodeId && batch.expiresAt > Date.now(),
+				).length,
+		);
+		expect(activeBatches).toBe(0);
+		const editedAgain = await upsert_file_pending_update_public_for_test(asUser, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			pendingUpdateId: row._id,
+			reviewedUpdatedAt: row.updatedAt,
+			unstagedMarkdown: normalize_pending_update_markdown("# Off base\n\nAgent line edited twice"),
+		});
+		expect(editedAgain._nay?.message).toBe(files_PENDING_UPDATE_STALE_BASE_MESSAGE);
+	});
+
+	test("the agent's next write rebuilds a stale proposal from the saved text", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-agent-rebuild.md", "# Off base"));
+		const ids = {
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		};
+
+		const first = await upsert_file_pending_update_internal_for_test({
+			...ids,
+			unstagedMarkdown: normalize_pending_update_markdown("# Off base\n\nAgent line"),
+		});
+		expect(first._nay).toBeUndefined();
+		const firstRow = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		if (!firstRow) {
+			throw new Error("Expected a pending content doc");
+		}
+
+		const savedAssetId = await save_as_member(t, seeded, "# Off base\n\nMember line");
+
+		const rebuiltMarkdown = normalize_pending_update_markdown("# Off base\n\nMember line\n\nAgent line");
+		const second = await upsert_file_pending_update_internal_for_test({
+			...ids,
+			pendingUpdateId: firstRow._id,
+			unstagedMarkdown: rebuiltMarkdown,
+		});
+		expect(second._nay).toBeUndefined();
+
+		await t.run(async (ctx) => {
+			const row = await ctx.db.get("files_pending_updates", firstRow._id);
+			if (!row) {
+				throw new Error("Expected the rebuilt proposal to keep the doc");
+			}
+			expect(row.baseAssetId).toBe(savedAssetId);
+			// The old family is retired: only the three rebuilt states stay active on the doc.
+			const activeRoles = (await ctx.db.query("files_pending_update_yjs_states").collect())
+				.flatMap((state) =>
+					state.owner.kind === "active" && state.owner.pendingUpdateId === row._id ? [state.owner.role] : [],
+				)
+				.sort();
+			expect(activeRoles).toEqual(["base", "staged", "unstaged"]);
+			expect(await read_pending_row_markdown_state({ ctx, pendingUpdate: row })).toEqual({
+				baseMarkdown: normalize_pending_update_markdown("# Off base\n\nMember line"),
+				stagedMarkdown: normalize_pending_update_markdown("# Off base\n\nMember line"),
+				unstagedMarkdown: rebuiltMarkdown,
+			});
+		});
+	});
+
+	test("a version restore drops the content proposal with its base", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-restore-drop.md", "# Off base"));
+		const ids = {
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		};
+		// The first save is the version to restore. The second save is the base of the proposal.
+		const versionAssetId = await save_as_member(t, seeded, "# Off base\n\nFirst save");
+		await save_as_member(t, seeded, "# Off base\n\nSecond save");
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			...ids,
+			unstagedMarkdown: normalize_pending_update_markdown("# Off base\n\nSecond save\n\nAgent line"),
+		});
+		expect(upserted._nay).toBeUndefined();
+		const row = await read_seeded_pending_row(t, seeded);
+
+		const versionId = await t.run(async (ctx) => {
+			const snapshot = await ctx.db
+				.query("files_snapshots")
+				.withIndex("by_asset", (q) => q.eq("assetId", versionAssetId))
+				.first();
+			if (!snapshot) {
+				throw new Error("Expected the first save to keep a version");
+			}
+			return snapshot._id;
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const restored = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			snapshotId: versionId,
+			sessionId: "restore-drop",
+		});
+		expect(restored._nay).toBeUndefined();
+
+		// The proposal was built on the second save. It can never be accepted now, so it is gone
+		// instead of sitting stale until someone discards it.
+		await t.run(async (ctx) => {
+			expect(await read_committed_text({ ctx, ...seeded })).toBe("# Off base\n\nFirst save");
+			expect(await ctx.db.get("files_pending_updates", row._id)).toBeNull();
+		});
+	});
+
+	test("the commit refuses a base asset the node no longer has", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-commit-stale.md", "# Off base"));
+		const commit = async (expectedAssetId: Id<"files_r2_assets">) => {
+			const family = await seal_output_family_for_test(t, seeded);
+			const committed = await t.mutation(internal.files_pending_updates.commit_file_pending_update_upsert_in_db, {
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+				operationBatchId: family.operationBatchId,
+				expectedUpdatedAt: null,
+				base: { kind: "asset", expectedAssetId },
+				baseStateId: family.base.stateId,
+				stagedStateId: family.staged.stateId,
+				unstagedStateId: family.unstaged.stateId,
+				baseStateDigest: family.base.digest,
+				stagedStateDigest: family.staged.digest,
+				unstagedStateDigest: family.unstaged.digest,
+				unstagedText: "# Off base\n\nAgent line",
+				unstagedBranchChanged: true,
+			});
+			// The action retires the batch on a refusal; do the same so the next commit can open one.
+			if (committed._nay) {
+				await t.mutation(internal.files_pending_updates.retire_file_pending_update_operation_batch, {
+					operationBatchId: family.operationBatchId,
+				});
+			}
+			return committed;
+		};
+
+		// The action read the seeded asset; a member saved before the commit landed.
+		const savedAssetId = await save_as_member(t, seeded, "# Off base\n\nMember line");
+		const stale = await commit(seeded.assetId);
+		expect(stale._nay?.message).toBe(
+			"Pending update base is stale and must be rebuilt from the latest live file state",
+		);
+
+		// The asset check comes before the mode check: with collaboration turned on in the meantime
+		// the agent still reads the stale message, not `Not found`.
+		await t.run((ctx) => ctx.db.patch("files_nodes", seeded.nodeId, { nonCollaborative: undefined }));
+		const staleAndCollaborative = await commit(seeded.assetId);
+		expect(staleAndCollaborative._nay?.message).toBe(
+			"Pending update base is stale and must be rebuilt from the latest live file state",
+		);
+		await t.run((ctx) => ctx.db.patch("files_nodes", seeded.nodeId, { nonCollaborative: true }));
+
+		// Positive control: the same commit with the node's current asset lands.
+		const fresh = await commit(savedAssetId);
+		expect(fresh._nay).toBeUndefined();
+		const row = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		expect(row?.baseAssetId).toBe(savedAssetId);
+	});
+
+	test("Discard deletes a stale proposal even when its staged branch differs from base", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-discard-stale.md", "# Off base"));
+
+		// The positive control is the first test of `discard_file_pending_content`: a collaborative
+		// doc with accepted staged text survives Discard.
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown: normalize_pending_update_markdown("# Off base\n\nAccepted change"),
+			unstagedMarkdown: normalize_pending_update_markdown("# Off base\n\nAccepted change\n\nUnresolved change"),
+		});
+		expect(upserted._nay).toBeUndefined();
+		const row = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		if (!row) {
+			throw new Error("Expected a pending content doc");
+		}
+
+		await save_as_member(t, seeded, "# Off base\n\nMember line");
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const discarded = await asUser.mutation(api.files_pending_updates.discard_file_pending_content, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			pendingUpdateId: row._id,
+		});
+		expect(discarded._nay).toBeUndefined();
+
+		// The branches are retired to a cleanup task; the sweeper drain deletes them.
+		await t.mutation(internal.files_pending_updates.cleanup_expired_pending_state_rows, {});
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_pending_updates", row._id)).toBeNull();
+			expect(await ctx.db.query("files_pending_update_yjs_states").collect()).toHaveLength(0);
+			expect(await list_pending_update_text_chunks({ ctx, pendingUpdateId: row._id })).toHaveLength(0);
+		});
+	});
+
+	test("Discard on a stale mixed row keeps the move and drops the content with its base", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-discard-stale-mixed.md", "# Off base"));
+		const ids = {
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		};
+		// The staged branch differs from the base, so only the stale rule can collapse the content.
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			...ids,
+			stagedMarkdown: normalize_pending_update_markdown("# Off base\n\nStale staged change"),
+			unstagedMarkdown: normalize_pending_update_markdown("# Off base\n\nStale mixed change"),
+		});
+		expect(upserted._nay).toBeUndefined();
+		const moved = await upsert_file_pending_move_for_test({
+			...ids,
+			destParentId: files_ROOT_ID,
+			destName: "off-discard-stale-mixed-renamed.md",
+		});
+		expect(moved._nay).toBeUndefined();
+		const row = await t.run((ctx) => read_pending_update_row({ ctx, ...ids }));
+		if (!row) {
+			throw new Error("Expected a pending content doc");
+		}
+
+		await save_as_member(t, seeded, "# Off base\n\nMember line");
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const discarded = await asUser.mutation(api.files_pending_updates.discard_file_pending_content, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			pendingUpdateId: row._id,
+		});
+		expect(discarded._nay).toBeUndefined();
+
+		await t.run(async (ctx) => {
+			const after = await ctx.db.get("files_pending_updates", row._id);
+			expect(after?.pendingMove?.destName).toBe("off-discard-stale-mixed-renamed.md");
+			expect(after?.baseAssetId).toBeUndefined();
+			expect(after?.stagedStateId).toBeUndefined();
+			expect(after?.unstagedStateId).toBeUndefined();
+			expect(after?.size).toBe(0);
+		});
+	});
+
+	test("Discard on a stale row with a delete keeps the delete and drops the content", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-discard-stale-delete.md", "# Off base"));
+		const ids = {
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		};
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			...ids,
+			unstagedMarkdown: normalize_pending_update_markdown("# Off base\n\nStale change"),
+		});
+		expect(upserted._nay).toBeUndefined();
+		const archived = await upsert_file_pending_archive_for_test(ids);
+		expect(archived._nay).toBeUndefined();
+		const row = await t.run((ctx) => read_pending_update_row({ ctx, ...ids }));
+		if (!row) {
+			throw new Error("Expected a pending content doc");
+		}
+
+		await save_as_member(t, seeded, "# Off base\n\nMember line");
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const discarded = await asUser.mutation(api.files_pending_updates.discard_file_pending_content, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			pendingUpdateId: row._id,
+		});
+		expect(discarded._nay).toBeUndefined();
+
+		await t.run(async (ctx) => {
+			const after = await ctx.db.get("files_pending_updates", row._id);
+			expect(after?.pendingArchive).toEqual(row.pendingArchive);
+			expect(after?.baseAssetId).toBeUndefined();
+			expect(after?.stagedStateId).toBeUndefined();
+			expect(after?.unstagedStateId).toBeUndefined();
+		});
+	});
+
+	test("Discard on a fresh proposal deletes the doc when no hunk was accepted", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-discard-fresh.md", "# Off base"));
+
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: normalize_pending_update_markdown("# Off base\n\nUnresolved change"),
+		});
+		expect(upserted._nay).toBeUndefined();
+		const row = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		if (!row) {
+			throw new Error("Expected a pending content doc");
+		}
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const discarded = await asUser.mutation(api.files_pending_updates.discard_file_pending_content, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			pendingUpdateId: row._id,
+		});
+		expect(discarded._nay).toBeUndefined();
+
+		// Staged equals base, so nothing is left to review: the doc goes, like on a collaborative file.
+		await t.mutation(internal.files_pending_updates.cleanup_expired_pending_state_rows, {});
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_pending_updates", row._id)).toBeNull();
+			expect(await ctx.db.query("files_pending_update_yjs_states").collect()).toHaveLength(0);
+			expect(await list_pending_update_text_chunks({ ctx, pendingUpdateId: row._id })).toHaveLength(0);
+		});
+	});
+
+	test("Discard on a fresh proposal keeps the accepted hunks and drops only the unstaged edits", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-discard-partial.md", "# Off base"));
+		const stagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAccepted change");
+
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown,
+			unstagedMarkdown: normalize_pending_update_markdown("# Off base\n\nAccepted change\n\nUnresolved change"),
+		});
+		expect(upserted._nay).toBeUndefined();
+		const row = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		if (!row) {
+			throw new Error("Expected a pending content doc");
+		}
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const discarded = await asUser.mutation(api.files_pending_updates.discard_file_pending_content, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			pendingUpdateId: row._id,
+		});
+		expect(discarded._nay).toBeUndefined();
+
+		// The doc stays with its base asset. The unstaged branch is now a copy of the staged one,
+		// stored in a new state that carries no lineage, like the other states of this file.
+		const rowAfter = await t.run((ctx) => ctx.db.get("files_pending_updates", row._id));
+		if (!rowAfter) {
+			throw new Error("Expected the doc to survive Discard");
+		}
+		expect(rowAfter.baseAssetId).toBe(seeded.assetId);
+		expect(rowAfter.stagedStateId).toBe(row.stagedStateId);
+		expect(rowAfter.unstagedStateId).not.toBe(row.unstagedStateId);
+		const state = await t.run((ctx) => read_pending_row_markdown_state({ ctx, pendingUpdate: rowAfter }));
+		expect(state.stagedMarkdown).toBe(stagedMarkdown);
+		expect(state.unstagedMarkdown).toBe(stagedMarkdown);
+		const unstagedState = await t.run((ctx) =>
+			ctx.db.get("files_pending_update_yjs_states", rowAfter.unstagedStateId!),
+		);
+		expect(unstagedState?.lineageGeneration).toBeUndefined();
+	});
+
+	test("apply_file_pending_move keeps the content proposal of a mixed row", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-apply-mixed.md", "# Off base"));
+		const ids = {
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		};
+
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			...ids,
+			unstagedMarkdown: normalize_pending_update_markdown("# Off base\n\nApply mixed change"),
+		});
+		expect(upserted._nay).toBeUndefined();
+		const moved = await upsert_file_pending_move_for_test({
+			...ids,
+			destParentId: files_ROOT_ID,
+			destName: "off-apply-mixed-renamed.md",
+		});
+		expect(moved._nay).toBeUndefined();
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const applied = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+		});
+		expect(applied._nay).toBeUndefined();
+
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", seeded.nodeId);
+			expect(node?.path).toBe("/off-apply-mixed-renamed.md");
+
+			const row = await read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			});
+			if (!row) {
+				throw new Error("Expected the content proposal to survive the applied move");
+			}
+			expect(row.pendingMove).toBeUndefined();
+			expect(row.baseAssetId).toBe(seeded.assetId);
+			const state = await read_pending_row_markdown_state({ ctx, pendingUpdate: row });
+			expect(state.unstagedMarkdown).toContain("Apply mixed change");
+		});
+	});
+
+	test("dropping the content of a mixed row clears the base asset with the branches", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-drop-mixed.md", "# Off base"));
+		const ids = {
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		};
+
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			...ids,
+			unstagedMarkdown: normalize_pending_update_markdown("# Off base\n\nDropped change"),
+		});
+		expect(upserted._nay).toBeUndefined();
+		const moved = await upsert_file_pending_move_for_test({
+			...ids,
+			destParentId: files_ROOT_ID,
+			destName: "off-drop-mixed-renamed.md",
+		});
+		expect(moved._nay).toBeUndefined();
+
+		await t.run(async (ctx) => {
+			await files_pending_updates_db_drop_content_for_node(ctx, {
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				nodeId: seeded.nodeId,
+			});
+
+			const row = await read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			});
+			if (!row) {
+				throw new Error("Expected the move to survive as a move-only row");
+			}
+			expect(row.pendingMove).toBeDefined();
+			expect(row.baseAssetId).toBeUndefined();
+			expect(row.baseStateId).toBeUndefined();
+			expect(row.stagedStateId).toBeUndefined();
+			expect(row.unstagedStateId).toBeUndefined();
+		});
+	});
+	test("builds the base from an empty file, which stores no chunk", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-empty.md", ""));
+		const unstagedMarkdown = normalize_pending_update_markdown("Agent line");
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown,
+		});
+		expect(upserted._nay).toBeUndefined();
+
+		await t.run(async (ctx) => {
+			const row = await read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			});
+			if (!row) {
+				throw new Error("Expected a pending content doc");
+			}
+			expect(row.baseAssetId).toBe(seeded.assetId);
+			const state = await read_pending_row_markdown_state({ ctx, pendingUpdate: row });
+			expect(state.stagedMarkdown).toBe("");
+			expect(state.unstagedMarkdown).toBe(unstagedMarkdown);
 		});
 	});
 });
@@ -5098,6 +6100,1118 @@ describe("save_file_pending_update", () => {
 			});
 			expect(row?.baseYjsSequence).toBe(0);
 		});
+	});
+});
+
+describe("save_file_pending_update on a file with collaboration off", () => {
+	test("a full accept publishes the staged text as a member save and settles the proposal", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-accept.txt", "base line"));
+		const stagedText = "base line\nagent line";
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown: stagedText,
+			unstagedMarkdown: stagedText,
+		});
+		expect(upserted._nay).toBeUndefined();
+		const row = await read_seeded_pending_row(t, seeded);
+
+		const saved = await accept_as_member(t, seeded, row._id);
+		expect(saved).toEqual({ _yay: { newSequence: null, pendingUpdateUpdatedAt: null } });
+
+		// The branches are retired to a cleanup task; the sweeper drain deletes them.
+		await t.mutation(internal.files_pending_updates.cleanup_expired_pending_state_rows, {});
+		const after = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", seeded.nodeId);
+			if (!node?.assetId) {
+				throw new Error("Expected the node to keep a content asset");
+			}
+			return {
+				assetId: node.assetId,
+				asset: await ctx.db.get("files_r2_assets", node.assetId),
+				committedText: await read_committed_text({ ctx, ...seeded }),
+				snapshots: (await ctx.db.query("files_snapshots").collect()).filter(
+					(snapshot) => snapshot.fileNodeId === seeded.nodeId,
+				),
+				doc: await ctx.db.get("files_pending_updates", row._id),
+				states: await ctx.db.query("files_pending_update_yjs_states").collect(),
+				pendingChunks: await list_pending_update_text_chunks({ ctx, pendingUpdateId: row._id }),
+				lastSequenceSaved: await read_pending_update_last_sequence_saved_doc({
+					ctx,
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					userId: seeded.userId,
+					nodeId: seeded.nodeId,
+				}),
+			};
+		});
+
+		// The staged text is the file now, byte for byte, under a new version snapshot.
+		expect(after.assetId).not.toBe(seeded.assetId);
+		expect(after.committedText).toBe(stagedText);
+		expect(after.snapshots).toHaveLength(1);
+		expect(after.snapshots[0]?.assetId).toBe(after.assetId);
+
+		// The version object holds the staged text, and its asset row is finalized, so the
+		// unfinalized-asset sweep leaves the file's current content alone.
+		const versionKey = r2_create_asset_key({
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			assetId: after.assetId,
+		});
+		expect(after.asset?.r2Key).toBe(versionKey);
+		expect(after.asset?.unfinalizedExpiresAt).toBeUndefined();
+		expect(r2Objects.get(versionKey)).toBe(stagedText);
+
+		// The proposal is done: no doc, no branches, no pending chunks, and no Sync marker (that
+		// marker only feeds the Sync gate, which this mode hides).
+		expect(after.doc).toBeNull();
+		expect(after.states).toHaveLength(0);
+		expect(after.pendingChunks).toHaveLength(0);
+		expect(after.lastSequenceSaved).toBeNull();
+
+		// One save billed, with the version snapshot as the save id.
+		expect(file_save_events()).toHaveLength(1);
+		expect(enqueueActionSpy).toHaveBeenCalledWith(expect.anything(), internal.billing.ingest_events, {
+			events: [
+				expect.objectContaining({
+					name: "file_save",
+					externalCustomerId: seeded.userId,
+					externalId: `file_save::${seeded.userId}::${seeded.userId}::${seeded.organizationId}::${seeded.workspaceId}::${seeded.nodeId}::${after.assetId}`,
+					metadata: expect.objectContaining({ amount: 1, nodeId: seeded.nodeId, version: after.assetId }),
+				}),
+			],
+		});
+	});
+
+	test("a full accept with a pending move publishes the text and keeps the doc as move-only", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-accept-mixed.txt", "base line"));
+		const ids = {
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		};
+		const stagedText = "base line\nagent line";
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			...ids,
+			stagedMarkdown: stagedText,
+			unstagedMarkdown: stagedText,
+		});
+		expect(upserted._nay).toBeUndefined();
+		const moved = await upsert_file_pending_move_for_test({
+			...ids,
+			destParentId: files_ROOT_ID,
+			destName: "off-accept-mixed-renamed.txt",
+		});
+		expect(moved._nay).toBeUndefined();
+		const row = await read_seeded_pending_row(t, seeded);
+
+		const saved = await accept_as_member(t, seeded, row._id);
+		expect(saved._nay).toBeUndefined();
+
+		// Save publishes the content only. The move proposal survives as a move-only doc with no
+		// branches and no base, and the result names that doc so the diff view can wait for it.
+		await t.run(async (ctx) => {
+			expect(await read_committed_text({ ctx, ...seeded })).toBe(stagedText);
+			const docAfter = await ctx.db.get("files_pending_updates", row._id);
+			if (!docAfter) {
+				throw new Error("Expected the move proposal to survive the save");
+			}
+			expect(docAfter.pendingMove).toBeDefined();
+			expect(docAfter.baseAssetId).toBeUndefined();
+			expect(docAfter.baseStateId).toBeUndefined();
+			expect(docAfter.stagedStateId).toBeUndefined();
+			expect(docAfter.unstagedStateId).toBeUndefined();
+			expect(docAfter.eagerCreated).toBeUndefined();
+			expect(docAfter.size).toBe(0);
+			expect(saved._yay).toEqual({ newSequence: null, pendingUpdateUpdatedAt: docAfter.updatedAt });
+			expect(await list_pending_update_text_chunks({ ctx, pendingUpdateId: row._id })).toHaveLength(0);
+			expect((await ctx.db.get("files_nodes", seeded.nodeId))?.path).toBe("/off-accept-mixed.txt");
+		});
+		expect(file_save_events()).toHaveLength(1);
+	});
+
+	test("a member save between the upload and the commit refuses and hands the upload to the deletion ledger", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-accept-race.txt", "base line"));
+		const stagedText = "base line\nagent line";
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown: stagedText,
+			unstagedMarkdown: stagedText,
+		});
+		expect(upserted._nay).toBeUndefined();
+		const row = await read_seeded_pending_row(t, seeded);
+
+		// The action has read the doc and is uploading the version object when the first PUT
+		// lands. A member save right then moves the node to another asset before the commit runs.
+		const fetchMock = vi.mocked(globalThis.fetch);
+		const uploadFetch = fetchMock.getMockImplementation();
+		if (!uploadFetch) throw new Error("Expected the R2 fetch stub");
+		let savedDuringUpload = false;
+		fetchMock.mockImplementation(async (url, init) => {
+			const urlString = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+			if (!savedDuringUpload && urlString.startsWith("https://r2.test/upload?key=")) {
+				savedDuringUpload = true;
+				await save_as_member(t, seeded, "member line");
+			}
+			return uploadFetch(url, init);
+		});
+		const saved = await accept_as_member(t, seeded, row._id);
+		fetchMock.mockImplementation(uploadFetch);
+		expect(savedDuringUpload).toBe(true);
+		expect(saved._nay?.message).toBe(files_PENDING_UPDATE_STALE_BASE_MESSAGE);
+
+		const after = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", seeded.nodeId);
+			return {
+				assetId: node?.assetId,
+				committedText: await read_committed_text({ ctx, ...seeded }),
+				doc: await ctx.db.get("files_pending_updates", row._id),
+				assetKeys: (await ctx.db.query("files_r2_assets").collect()).map((asset) =>
+					r2_create_asset_key({
+						organizationId: asset.organizationId,
+						workspaceId: asset.workspaceId,
+						assetId: asset._id,
+					}),
+				),
+				deletionJobs: (await ctx.db.query("files_r2_object_deletion_jobs").collect()).filter(
+					(job) => job.reason === "failed_create",
+				),
+			};
+		});
+		// The member's text stays the file, and the proposal stays for the member to discard.
+		expect(after.committedText).toBe("member line");
+		expect(after.doc).not.toBeNull();
+
+		// The accept's version object was uploaded but is nobody's content now: its asset row is
+		// gone and a deletion job owns its key, so nothing waits for the unfinalized-asset sweep.
+		expect(after.deletionJobs).toHaveLength(1);
+		const releasedKey = after.deletionJobs[0]!.r2Key;
+		expect(r2Objects.get(releasedKey)).toBe(stagedText);
+		expect(after.assetKeys).not.toContain(releasedKey);
+		expect(after.assetKeys).toContain(
+			r2_create_asset_key({
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				assetId: after.assetId!,
+			}),
+		);
+	});
+
+	test("a full accept on a Markdown file commits the staged branch as the rich text document reads it", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-accept.md", "# Off base"));
+		const stagedMarkdown = normalize_pending_update_markdown("# Off base\n\n- Agent item");
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown,
+			unstagedMarkdown: stagedMarkdown,
+		});
+		expect(upserted._nay).toBeUndefined();
+		const row = await read_seeded_pending_row(t, seeded);
+
+		const saved = await accept_as_member(t, seeded, row._id);
+		expect(saved).toEqual({ _yay: { newSequence: null, pendingUpdateUpdatedAt: null } });
+
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", seeded.nodeId);
+			expect(node?.assetId).not.toBe(seeded.assetId);
+			expect(await read_committed_text({ ctx, ...seeded })).toBe(stagedMarkdown);
+		});
+	});
+
+	test("a partial accept publishes the staged text and keeps the unstaged edits on the new base", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-partial.md", "# Off base"));
+		const stagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAccepted change");
+		const unstagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAccepted change\n\nUnresolved change");
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown,
+			unstagedMarkdown,
+		});
+		expect(upserted._nay).toBeUndefined();
+		const row = await read_seeded_pending_row(t, seeded);
+
+		const saved = await accept_as_member(t, seeded, row._id);
+		expect(saved._nay).toBeUndefined();
+
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", seeded.nodeId);
+			expect(node?.assetId).not.toBe(seeded.assetId);
+			expect(await read_committed_text({ ctx, ...seeded })).toBe(stagedMarkdown);
+
+			// The doc lives on, based on the new content asset, with the unstaged text untouched.
+			const docAfter = await ctx.db.get("files_pending_updates", row._id);
+			if (!docAfter) {
+				throw new Error("Expected the unstaged edits to keep the pending doc");
+			}
+			expect(docAfter.baseAssetId).toBe(node?.assetId);
+			expect(docAfter.updatedAt).not.toBe(row.updatedAt);
+			// The result names the rewritten doc, so the diff view can wait for its doc query to show it.
+			expect(saved._yay).toEqual({ newSequence: null, pendingUpdateUpdatedAt: docAfter.updatedAt });
+			expect(await read_pending_row_markdown_state({ ctx, pendingUpdate: docAfter })).toEqual({
+				baseMarkdown: stagedMarkdown,
+				stagedMarkdown,
+				unstagedMarkdown,
+			});
+			expect(await list_pending_update_text_chunks({ ctx, pendingUpdateId: row._id })).not.toHaveLength(0);
+		});
+		expect(file_save_events()).toHaveLength(1);
+	});
+
+	test("an accept with nothing staged writes and bills nothing and leaves the doc as it is", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-nothing-staged.md", "# Off base"));
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown: normalize_pending_update_markdown("# Off base"),
+			unstagedMarkdown: normalize_pending_update_markdown("# Off base\n\nUnresolved change"),
+		});
+		expect(upserted._nay).toBeUndefined();
+		const row = await read_seeded_pending_row(t, seeded);
+
+		const saved = await accept_as_member(t, seeded, row._id);
+		expect(saved).toEqual({ _yay: { newSequence: null, pendingUpdateUpdatedAt: row.updatedAt } });
+
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", seeded.nodeId);
+			expect(node?.assetId).toBe(seeded.assetId);
+			expect(
+				(await ctx.db.query("files_snapshots").collect()).filter((s) => s.fileNodeId === seeded.nodeId),
+			).toHaveLength(0);
+			expect(await ctx.db.get("files_pending_updates", row._id)).toEqual(row);
+		});
+		expect(file_save_events()).toHaveLength(0);
+	});
+
+	test("refuses a stale proposal after a member save and changes nothing", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-accept-stale.md", "# Off base"));
+		const stagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAgent line");
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown,
+			unstagedMarkdown: stagedMarkdown,
+		});
+		expect(upserted._nay).toBeUndefined();
+		const row = await read_seeded_pending_row(t, seeded);
+
+		const savedAssetId = await save_as_member(t, seeded, "# Off base\n\nMember line");
+		const read_file = () =>
+			t.run(async (ctx) => ({
+				assetId: (await ctx.db.get("files_nodes", seeded.nodeId))?.assetId,
+				committedText: await read_committed_text({ ctx, ...seeded }),
+				snapshotCount: (await ctx.db.query("files_snapshots").collect()).filter((s) => s.fileNodeId === seeded.nodeId)
+					.length,
+			}));
+		const beforeAccept = await read_file();
+		expect(beforeAccept.assetId).toBe(savedAssetId);
+		const billedBefore = file_save_events().length;
+		const count_deletion_jobs = () =>
+			t.run(async (ctx) => (await ctx.db.query("files_r2_object_deletion_jobs").collect()).length);
+		const objectsBefore = r2Objects.size;
+		const deletionJobsBefore = await count_deletion_jobs();
+
+		const saved = await accept_as_member(t, seeded, row._id);
+		expect(saved._nay?.message).toBe(files_PENDING_UPDATE_STALE_BASE_MESSAGE);
+
+		// The member's text stays the file; nothing was uploaded, versioned, or billed. The action
+		// refuses before its upload: no new object in the bucket and no deletion job for one.
+		expect(await read_file()).toEqual(beforeAccept);
+		expect(r2Objects.size).toBe(objectsBefore);
+		expect(await count_deletion_jobs()).toBe(deletionJobsBefore);
+		expect(file_save_events()).toHaveLength(billedBefore);
+		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", row._id))).toEqual(row);
+	});
+
+	test("refuses at zero credits before inserting the version asset", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-no-credits.md", "# Off base"));
+		const stagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAgent line");
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown,
+			unstagedMarkdown: stagedMarkdown,
+		});
+		expect(upserted._nay).toBeUndefined();
+		const row = await read_seeded_pending_row(t, seeded);
+
+		await t.run(async (ctx) => {
+			await test_mocks_fill_db_with.plan(ctx, { userId: seeded.userId, plan: "Free" });
+			const usageSnapshot = await ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+				.unique();
+			if (!usageSnapshot?.meter) {
+				throw new Error("Expected seeded billing snapshot meter");
+			}
+			await ctx.db.patch("billing_usage_snapshots", usageSnapshot._id, {
+				meter: { ...usageSnapshot.meter, creditedUnits: 0, balance: 0 },
+			});
+		});
+		const assetsBefore = await t.run((ctx) => ctx.db.query("files_r2_assets").collect());
+		const count_deletion_jobs = () =>
+			t.run(async (ctx) => (await ctx.db.query("files_r2_object_deletion_jobs").collect()).length);
+		const objectsBefore = r2Objects.size;
+		const deletionJobsBefore = await count_deletion_jobs();
+
+		const saved = await accept_as_member(t, seeded, row._id);
+		expect(saved).toEqual({ _nay: { message: "Insufficient funds" } });
+
+		// The credit check runs before the upload: no asset row, no object, no deletion job.
+		expect(await t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toEqual(assetsBefore);
+		expect(r2Objects.size).toBe(objectsBefore);
+		expect(await count_deletion_jobs()).toBe(deletionJobsBefore);
+		expect(file_save_events()).toHaveLength(0);
+	});
+
+	test("refuses a read-only file", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-read-only.md", "# Off base"));
+		const stagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAgent line");
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown,
+			unstagedMarkdown: stagedMarkdown,
+		});
+		expect(upserted._nay).toBeUndefined();
+		const row = await read_seeded_pending_row(t, seeded);
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		await set_pending_test_read_only(asUser, seeded.membershipId, seeded.nodeId);
+
+		const objectsBefore = r2Objects.size;
+		const deletionJobsBefore = await t.run((ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect());
+		const saved = await accept_as_member(t, seeded, row._id);
+		expect(saved._nay?.name).toBe("read_only");
+		expect(r2Objects.size).toBe(objectsBefore);
+		expect(await t.run((ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect())).toEqual(deletionJobsBefore);
+		await t.run(async (ctx) => {
+			expect((await ctx.db.get("files_nodes", seeded.nodeId))?.assetId).toBe(seeded.assetId);
+		});
+		expect(file_save_events()).toHaveLength(0);
+	});
+
+	test("the action refuses a pending delete before uploading a version", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-action-delete.md", "# Off base"));
+		const stagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAgent line");
+		const ids = {
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		};
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			...ids,
+			stagedMarkdown,
+			unstagedMarkdown: stagedMarkdown,
+		});
+		expect(upserted._nay).toBeUndefined();
+		const archived = await upsert_file_pending_archive_for_test(ids);
+		expect(archived._nay).toBeUndefined();
+		const row = await read_seeded_pending_row(t, seeded);
+		const assetsBefore = await t.run((ctx) => ctx.db.query("files_r2_assets").collect());
+		const objectsBefore = r2Objects.size;
+		const deletionJobsBefore = await t.run((ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect());
+
+		const saved = await accept_as_member(t, seeded, row._id);
+		expect(saved._nay?.message).toBe("File has a pending delete");
+		expect(r2Objects.size).toBe(objectsBefore);
+		expect(await t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toEqual(assetsBefore);
+		expect(await t.run((ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect())).toEqual(deletionJobsBefore);
+		expect(await read_seeded_pending_row(t, seeded)).toEqual(row);
+		expect(await t.run((ctx) => read_committed_text({ ctx, ...seeded }))).toBe("# Off base");
+		expect(file_save_events()).toHaveLength(0);
+	});
+
+	test("a rate-limited accept writes nothing and leaves the doc as it was", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-rate-limit.md", "# Off base"));
+		const stagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAgent line");
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown,
+			unstagedMarkdown: stagedMarkdown,
+		});
+		expect(upserted._nay).toBeUndefined();
+		const row = await read_seeded_pending_row(t, seeded);
+		const assetsBefore = await t.run((ctx) => ctx.db.query("files_r2_assets").collect());
+		const objectsBefore = r2Objects.size;
+		const limitSpy = vi
+			.spyOn(RateLimiter.prototype, "limit")
+			.mockResolvedValueOnce({ ok: false, retryAfter: 5_000 } as never);
+
+		const saved = await accept_as_member(t, seeded, row._id);
+		expect(saved).toEqual({ _nay: { message: "Rate limit exceeded" } });
+		expect(limitSpy).toHaveBeenCalledWith(expect.anything(), "save_file_pending_update", expect.anything());
+
+		expect(await t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toEqual(assetsBefore);
+		expect(r2Objects.size).toBe(objectsBefore);
+		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", row._id))).toEqual(row);
+		expect(file_save_events()).toHaveLength(0);
+	});
+
+	test("the commit refuses a save action that read the doc before another tab rewrote it", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-replay.md", "# Off base"));
+		const stagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAgent line");
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown,
+			unstagedMarkdown: stagedMarkdown,
+		});
+		expect(upserted._nay).toBeUndefined();
+		const row = await read_seeded_pending_row(t, seeded);
+
+		// The action read `updatedAt` before another tab's partial accept rewrote the doc. Its
+		// commit must not publish the old staged text over that.
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const replayed = await asUser.mutation(
+			internal.files_pending_updates.save_file_pending_update_non_collaborative_in_db,
+			{
+				membershipId: seeded.membershipId,
+				nodeId: seeded.nodeId,
+				pendingUpdateId: row._id,
+				expectedUpdatedAt: row.updatedAt - 1,
+				publish: null,
+			},
+		);
+		expect(replayed._nay?.message).toBe("Stale save");
+
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", seeded.nodeId);
+			expect(node?.assetId).toBe(seeded.assetId);
+			expect(await read_committed_text({ ctx, ...seeded })).toBe("# Off base");
+			expect(await ctx.db.get("files_pending_updates", row._id)).toEqual(row);
+		});
+		expect(file_save_events()).toHaveLength(0);
+	});
+
+	test("the commit refuses when a delete was proposed after the action read the doc", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-commit-delete.md", "# Off base"));
+		const stagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAgent line");
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown,
+			unstagedMarkdown: stagedMarkdown,
+		});
+		expect(upserted._nay).toBeUndefined();
+		const archived = await upsert_file_pending_archive_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		});
+		expect(archived._nay).toBeUndefined();
+		const row = await read_seeded_pending_row(t, seeded);
+
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const committed = await asUser.mutation(
+			internal.files_pending_updates.save_file_pending_update_non_collaborative_in_db,
+			{
+				membershipId: seeded.membershipId,
+				nodeId: seeded.nodeId,
+				pendingUpdateId: row._id,
+				expectedUpdatedAt: row.updatedAt,
+				publish: null,
+			},
+		);
+		expect(committed._nay?.message).toBe("File has a pending delete");
+
+		await t.run(async (ctx) => {
+			expect(await read_committed_text({ ctx, ...seeded })).toBe("# Off base");
+			expect(await ctx.db.get("files_pending_updates", row._id)).toEqual(row);
+		});
+		expect(file_save_events()).toHaveLength(0);
+	});
+
+	test("the commit checks the lock again after the action's own check", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-commit-lock.md", "# Off base"));
+		const stagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAgent line");
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown,
+			unstagedMarkdown: stagedMarkdown,
+		});
+		expect(upserted._nay).toBeUndefined();
+		const row = await read_seeded_pending_row(t, seeded);
+
+		// The action saw an unlocked file; a member locked it before the commit ran.
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+		});
+		expect(locked._nay).toBeUndefined();
+		const committed = await asUser.mutation(
+			internal.files_pending_updates.save_file_pending_update_non_collaborative_in_db,
+			{
+				membershipId: seeded.membershipId,
+				nodeId: seeded.nodeId,
+				pendingUpdateId: row._id,
+				expectedUpdatedAt: row.updatedAt,
+				publish: null,
+			},
+		);
+		expect(committed._nay).toMatchObject({ name: "read_only", message: "This item is read-only." });
+
+		await t.run(async (ctx) => {
+			expect(await read_committed_text({ ctx, ...seeded })).toBe("# Off base");
+			expect(await ctx.db.get("files_pending_updates", row._id)).toEqual(row);
+		});
+		expect(file_save_events()).toHaveLength(0);
+	});
+
+	test("the commit refuses when collaboration was turned on after the action read the doc", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-commit-collab-on.md", "# Off base"));
+		const stagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAgent line");
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown,
+			unstagedMarkdown: stagedMarkdown,
+		});
+		expect(upserted._nay).toBeUndefined();
+		const row = await read_seeded_pending_row(t, seeded);
+
+		// The ON toggle also drops the proposal. Flip the flag alone, so the commit's own check is
+		// the one that refuses.
+		await t.run((ctx) => ctx.db.patch("files_nodes", seeded.nodeId, { nonCollaborative: undefined }));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const committed = await asUser.mutation(
+			internal.files_pending_updates.save_file_pending_update_non_collaborative_in_db,
+			{
+				membershipId: seeded.membershipId,
+				nodeId: seeded.nodeId,
+				pendingUpdateId: row._id,
+				expectedUpdatedAt: row.updatedAt,
+				publish: null,
+			},
+		);
+		expect(committed._nay?.message).toBe("Not found");
+
+		await t.run(async (ctx) => {
+			expect(await read_committed_text({ ctx, ...seeded })).toBe("# Off base");
+			expect(await ctx.db.get("files_pending_updates", row._id)).toEqual(row);
+		});
+		expect(file_save_events()).toHaveLength(0);
+	});
+
+	test("the commit refuses at zero credits even when the action's check passed", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-commit-credits.md", "# Off base"));
+		const stagedMarkdown = normalize_pending_update_markdown("# Off base\n\nAgent line");
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown,
+			unstagedMarkdown: stagedMarkdown,
+		});
+		expect(upserted._nay).toBeUndefined();
+		const row = await read_seeded_pending_row(t, seeded);
+
+		// The action checked credits and uploaded the version object; the credits ran out before
+		// its commit ran.
+		const versionSnapshotAssetId = await t.run(async (ctx) => {
+			await test_mocks_fill_db_with.plan(ctx, { userId: seeded.userId, plan: "Free" });
+			const usageSnapshot = await ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_user", (q) => q.eq("userId", seeded.userId))
+				.unique();
+			if (!usageSnapshot?.meter) {
+				throw new Error("Expected seeded billing snapshot meter");
+			}
+			await ctx.db.patch("billing_usage_snapshots", usageSnapshot._id, {
+				meter: { ...usageSnapshot.meter, creditedUnits: 0, balance: 0 },
+			});
+			return await ctx.db.insert("files_r2_assets", {
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				kind: "content_snapshot",
+				r2Bucket: "test-bucket",
+				r2Key: "version-snapshot/off-commit-credits.md",
+				size: files_get_utf8_byte_size(stagedMarkdown),
+				createdBy: seeded.userId,
+				updatedAt: Date.now(),
+			});
+		});
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const committed = await asUser.mutation(
+			internal.files_pending_updates.save_file_pending_update_non_collaborative_in_db,
+			{
+				membershipId: seeded.membershipId,
+				nodeId: seeded.nodeId,
+				pendingUpdateId: row._id,
+				expectedUpdatedAt: row.updatedAt,
+				publish: {
+					text: stagedMarkdown,
+					textSize: files_get_utf8_byte_size(stagedMarkdown),
+					versionSnapshotAssetId,
+				},
+			},
+		);
+		expect(committed).toEqual({ _nay: { message: "Insufficient funds" } });
+
+		await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", seeded.nodeId);
+			expect(node?.assetId).toBe(seeded.assetId);
+			expect(await read_committed_text({ ctx, ...seeded })).toBe("# Off base");
+			expect(await ctx.db.get("files_pending_updates", row._id)).toEqual(row);
+		});
+		expect(file_save_events()).toHaveLength(0);
+	});
+
+	test("a refused partial accept retires its output batch, so the next operation is not blocked", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/off-accept-race-partial.txt", "base line"));
+		const stagedText = "base line\nagent line";
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown: stagedText,
+			unstagedMarkdown: stagedText + "\nunstaged line",
+		});
+		expect(upserted._nay).toBeUndefined();
+		const row = await read_seeded_pending_row(t, seeded);
+		// The retire marks the batch expired; the scheduled cleanup deletes the row later.
+		const count_active_batches = () =>
+			t.run(
+				async (ctx) =>
+					(await ctx.db.query("files_pending_update_operation_batches").collect()).filter(
+						(batch) => batch.fileNodeId === seeded.nodeId && batch.expiresAt > Date.now(),
+					).length,
+			);
+		const count_active_temporary_states = () =>
+			t.run(
+				async (ctx) =>
+					(await ctx.db.query("files_pending_update_yjs_states").collect()).filter(
+						(state) => state.owner.kind === "temporary" && state.owner.expiresAt > Date.now(),
+					).length,
+			);
+		expect(await count_active_batches()).toBe(0);
+
+		// Same race as above, in the partial shape: the unstaged edit survives the accept, so the
+		// action seals an output family under a batch before it uploads.
+		const fetchMock = vi.mocked(globalThis.fetch);
+		const uploadFetch = fetchMock.getMockImplementation();
+		if (!uploadFetch) throw new Error("Expected the R2 fetch stub");
+		let savedDuringUpload = false;
+		fetchMock.mockImplementation(async (url, init) => {
+			const urlString = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+			if (!savedDuringUpload && urlString.startsWith("https://r2.test/upload?key=")) {
+				savedDuringUpload = true;
+				await save_as_member(t, seeded, "member line");
+			}
+			return uploadFetch(url, init);
+		});
+		const saved = await accept_as_member(t, seeded, row._id);
+		fetchMock.mockImplementation(uploadFetch);
+		expect(savedDuringUpload).toBe(true);
+		expect(saved._nay?.message).toBe(files_PENDING_UPDATE_STALE_BASE_MESSAGE);
+
+		// The batch is gone with the refusal, with its output states, and the doc still holds its
+		// own states.
+		expect(await count_active_batches()).toBe(0);
+		expect(await count_active_temporary_states()).toBe(0);
+		const after = await t.run((ctx) => ctx.db.get("files_pending_updates", row._id));
+		expect(after?.stagedStateId).toBe(row.stagedStateId);
+		expect(after?.unstagedStateId).toBe(row.unstagedStateId);
+		// The one event is the member save during the upload. The refused accept billed nothing.
+		expect(file_save_events()).toHaveLength(1);
+	});
+});
+
+describe("overlay reads on a file with collaboration off", () => {
+	const committedMarkdown = "# Off overlay\n\ncommitted needle\n";
+	// The needle moves from line 3 to line 5 so `grep` tells the two texts apart by line number.
+	const proposalMarkdown = normalize_pending_update_markdown("# Off overlay\n\nnew first line\n\nproposal needle");
+
+	async function seed_file_with_proposal(t: ReturnType<typeof test_convex>, path: string) {
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, path, committedMarkdown));
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: proposalMarkdown,
+		});
+		if (upserted._nay) {
+			throw new Error(upserted._nay.message);
+		}
+		const row = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		if (!row) {
+			throw new Error("Expected a pending content doc");
+		}
+		return { seeded, row, readScope: { organizationId: seeded.organizationId, workspaceId: seeded.workspaceId } };
+	}
+
+	test("the read doors serve the proposal instead of the committed text", async () => {
+		const t = test_convex();
+		const path = "/off-overlay-fresh.md";
+		const { seeded, row, readScope } = await seed_file_with_proposal(t, path);
+
+		// read_file_content_from_chunks: the door behind bash `cat` and the agent file tools.
+		const full = await t.query(internal.files_nodes.read_file_content_from_chunks, {
+			...readScope,
+			userId: seeded.userId,
+			path,
+			mode: { kind: "full", maxBytes: 10_000 },
+		});
+		if (!full) throw new Error("expected a full read");
+		expect(full.content).toBe(proposalMarkdown);
+		expect(full.pendingUpdateId).toBe(row._id);
+
+		// read_committed_file_chunk_stats: the door behind `wc`. A proposal is not in the
+		// committed chunks, so the caller must count the in-memory text instead.
+		const stats = await t.query(internal.files_nodes.read_committed_file_chunk_stats, {
+			...readScope,
+			userId: seeded.userId,
+			path,
+		});
+		expect(stats.usable).toBe(false);
+
+		// match_plain_text_file_lines: the door behind `textgrep`.
+		const textgrep = await t.query(internal.files_nodes.match_plain_text_file_lines, {
+			...readScope,
+			userId: seeded.userId,
+			fileNodeId: seeded.nodeId,
+			pattern: "needle",
+			ignoreCase: false,
+			fixedStrings: true,
+			invert: false,
+		});
+		if (!textgrep) throw new Error("expected a textgrep result");
+		expect(textgrep.lines.map(({ lineNumber }) => lineNumber)).toEqual([5]);
+
+		// match_text_file_lines: the door behind `grep` and `sed`.
+		const grep = await t.query(internal.files_nodes.match_text_file_lines, {
+			...readScope,
+			userId: seeded.userId,
+			fileNodeId: seeded.nodeId,
+			pattern: "needle",
+			ignoreCase: false,
+			fixedStrings: true,
+			invert: false,
+			before: 0,
+			after: 0,
+		});
+		if (!grep) throw new Error("expected a grep result");
+		expect(grep.lines.map(({ lineNumber }) => lineNumber)).toEqual([5]);
+
+		// get_file_text_content_db_state_by_path: the door behind the app editor and `edit_file`.
+		const state = await t.query(internal.files_nodes_content.get_file_text_content_db_state_by_path, {
+			...readScope,
+			userId: seeded.userId,
+			path,
+		});
+		if (!state) throw new Error("expected a content state");
+		expect(state.content).toBe(proposalMarkdown);
+		expect(state.pendingUpdateId).toBe(row._id);
+
+		// Workspace search reads the proposal's pending chunks instead of the committed ones.
+		const search = async (query: string) => {
+			const result = await t.query(internal.files_nodes.text_search_files, {
+				...readScope,
+				userId: seeded.userId,
+				hasWorkspaceRead: true,
+				query,
+				numItems: 10,
+				cursor: null,
+			});
+			return result.items.map((item) => item.path);
+		};
+		expect(await search("proposal")).toContain(path);
+		expect(await search("committed")).not.toContain(path);
+	});
+
+	test("after a member save the read doors hide the stale proposal and serve the saved text", async () => {
+		const t = test_convex();
+		const path = "/off-overlay-stale.md";
+		const { seeded, row, readScope } = await seed_file_with_proposal(t, path);
+		const savedMarkdown = "# Off overlay\n\nsaved needle\n";
+		await save_as_member(t, seeded, savedMarkdown);
+
+		const full = await t.query(internal.files_nodes.read_file_content_from_chunks, {
+			...readScope,
+			userId: seeded.userId,
+			path,
+			mode: { kind: "full", maxBytes: 10_000 },
+		});
+		if (!full) throw new Error("expected a full read");
+		expect(full.content).toBe(savedMarkdown);
+
+		// read_committed_file_chunk_stats: the door behind `wc`. The stale proposal has no text of
+		// its own, so the committed chunks answer with the saved text's counts.
+		const stats = await t.query(internal.files_nodes.read_committed_file_chunk_stats, {
+			...readScope,
+			userId: seeded.userId,
+			path,
+		});
+		expect(stats).toMatchObject({ usable: true, nodeId: seeded.nodeId, lineCount: 3 });
+
+		const textgrep = await t.query(internal.files_nodes.match_plain_text_file_lines, {
+			...readScope,
+			userId: seeded.userId,
+			fileNodeId: seeded.nodeId,
+			pattern: "needle",
+			ignoreCase: false,
+			fixedStrings: true,
+			invert: false,
+		});
+		if (!textgrep) throw new Error("expected a textgrep result");
+		expect(textgrep.lines.map(({ lineNumber }) => lineNumber)).toEqual([3]);
+
+		const grep = await t.query(internal.files_nodes.match_text_file_lines, {
+			...readScope,
+			userId: seeded.userId,
+			fileNodeId: seeded.nodeId,
+			pattern: "needle",
+			ignoreCase: false,
+			fixedStrings: true,
+			invert: false,
+			before: 0,
+			after: 0,
+		});
+		if (!grep) throw new Error("expected a grep result");
+		expect(grep.lines.map(({ lineNumber }) => lineNumber)).toEqual([3]);
+
+		// The stale doc stays, and the door still names it, so the agent's next write rebuilds
+		// the proposal on it instead of creating a second doc.
+		const state = await t.query(internal.files_nodes_content.get_file_text_content_db_state_by_path, {
+			...readScope,
+			userId: seeded.userId,
+			path,
+		});
+		if (!state) throw new Error("expected a content state");
+		expect(state.content).toBe(savedMarkdown);
+		expect(state.pendingUpdateId).toBe(row._id);
+		expect(state.materializationState).toBeNull();
+
+		const search = async (query: string) => {
+			const result = await t.query(internal.files_nodes.text_search_files, {
+				...readScope,
+				userId: seeded.userId,
+				hasWorkspaceRead: true,
+				query,
+				numItems: 10,
+				cursor: null,
+			});
+			return result.items.map((item) => item.path);
+		};
+		expect(await search("saved")).toContain(path);
+		expect(await search("proposal")).not.toContain(path);
+	});
+
+	test("wc counts the committed text behind a move-only doc", async () => {
+		const t = test_convex();
+		const path = "/off-overlay-move.md";
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, path, committedMarkdown));
+		const moved = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			destParentId: files_ROOT_ID,
+			destName: "off-overlay-moved.md",
+		});
+		expect(moved._nay).toBeUndefined();
+
+		// A move-only doc has no text, so `wc` must not be sent to the in-memory read path.
+		const stats = await t.query(internal.files_nodes.read_committed_file_chunk_stats, {
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			path,
+		});
+		expect(stats).toMatchObject({ usable: true, nodeId: seeded.nodeId, lineCount: 3 });
+	});
+
+	test("metadata search reads the proposal's frontmatter until a member save makes it stale", async () => {
+		const t = test_convex();
+		const path = "/off-overlay-frontmatter.md";
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file(ctx, path, "---\ntitle: committed\n---\n\n# Body\n"),
+		);
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: "---\ntitle: proposal\n---\n\n# Body",
+		});
+		if (upserted._nay) {
+			throw new Error(upserted._nay.message);
+		}
+		const search_title = async (value: string) => {
+			const result = await t.query(internal.files_metadata.search, {
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				plan: { op: "eq", qualifiedField: "frontmatter.title", value },
+				numItems: 20,
+				cursor: null,
+			});
+			return result.items.map((item) => item.path);
+		};
+
+		expect(await search_title("proposal")).toContain(path);
+		expect(await search_title("committed")).not.toContain(path);
+
+		await save_as_member(t, seeded, "---\ntitle: saved\n---\n\n# Body\n");
+		expect(await search_title("saved")).toContain(path);
+		expect(await search_title("proposal")).not.toContain(path);
+	});
+
+	test("the sidebar search and the by-path metadata door follow the same stale rule", async () => {
+		const t = test_convex();
+		const path = "/off-overlay-frontmatter-doors.md";
+		const seeded = await t.run((ctx) =>
+			seed_non_collaborative_file(ctx, path, "---\ntitle: committed\n---\n\n# Body\n"),
+		);
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: "---\ntitle: proposal\n---\n\n# Body",
+		});
+		if (upserted._nay) {
+			throw new Error(upserted._nay.message);
+		}
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const search_nodes_title = async (value: string) => {
+			const found = await asUser.query(api.files_metadata.search_nodes, {
+				membershipId: seeded.membershipId,
+				plans: [{ op: "eq", qualifiedField: "frontmatter.title", value }],
+			});
+			return found.nodeIds;
+		};
+		const title_by_path = async () => {
+			const found = await t.query(internal.files_metadata.get_by_path, {
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				path,
+			});
+			return found?.values.find((value) => value.qualifiedField === "frontmatter.title")?.stringValue;
+		};
+
+		expect(await search_nodes_title("proposal")).toEqual([seeded.nodeId]);
+		expect(await search_nodes_title("committed")).toEqual([]);
+		expect(await title_by_path()).toBe("proposal");
+
+		await save_as_member(t, seeded, "---\ntitle: saved\n---\n\n# Body\n");
+		expect(await search_nodes_title("saved")).toEqual([seeded.nodeId]);
+		expect(await search_nodes_title("proposal")).toEqual([]);
+		expect(await title_by_path()).toBe("saved");
 	});
 });
 
@@ -13165,6 +15279,68 @@ describe("structural rows on content collapse", () => {
 			const cleanupTasks = await list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: row._id });
 			expect(cleanupTasks).toHaveLength(1);
 			expect(cleanupTasks[0]?.expectedUpdatedAt).toBe(row.updatedAt);
+		});
+	});
+
+	test.each([false, true])("content collapse keeps a delete when collaboration off is %s", async (nonCollaborative) => {
+		const t = test_convex();
+		const baseMarkdown = normalize_pending_update_markdown("# Delete base");
+		const seeded = await t.run(async (ctx) =>
+			nonCollaborative
+				? seed_non_collaborative_file(ctx, "/degrade-delete.md", baseMarkdown)
+				: seed_file_with_markdown({
+						ctx,
+						path: "/degrade-delete.md",
+						name: "degrade-delete.md",
+						markdown: baseMarkdown,
+					}),
+		);
+		const ids = {
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		};
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			...ids,
+			stagedMarkdown: baseMarkdown,
+			unstagedMarkdown: `${baseMarkdown}\n\nAgent line`,
+		});
+		expect(upserted._nay).toBeUndefined();
+		const archived = await upsert_file_pending_archive_for_test(ids);
+		expect(archived._nay).toBeUndefined();
+		const beforeCollapse = await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }));
+		expect(beforeCollapse?.unstagedStateId).toBeDefined();
+
+		// Discard all sends both branches back to the base. The delete still needs review.
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const collapsed = await upsert_file_pending_update_public_for_test(asUser, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown: baseMarkdown,
+			unstagedMarkdown: baseMarkdown,
+		});
+		expect(collapsed._nay).toBeUndefined();
+		await t.run(async (ctx) => {
+			const pendingUpdate = await read_pending_update_row({ ctx, ...seeded });
+			expect(pendingUpdate).not.toBeNull();
+			expect(pendingUpdate?.pendingArchive).toEqual({ fromPath: "/degrade-delete.md" });
+			expect(pendingUpdate?.baseStateId).toBeUndefined();
+			expect(pendingUpdate?.stagedStateId).toBeUndefined();
+			expect(pendingUpdate?.unstagedStateId).toBeUndefined();
+			expect(pendingUpdate?.baseAssetId).toBeUndefined();
+			expect(pendingUpdate?.baseYjsSequence).toBeUndefined();
+			expect(pendingUpdate?.size).toBe(0);
+			expect(await list_pending_update_text_chunks({ ctx, pendingUpdateId: pendingUpdate!._id })).toHaveLength(0);
+			const cleanupTasks = await list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingUpdate!._id });
+			expect(cleanupTasks).toHaveLength(1);
+			expect(cleanupTasks[0]?.expectedUpdatedAt).toBe(pendingUpdate?.updatedAt);
+			expect((await ctx.db.get("files_nodes", seeded.nodeId))?.archiveOperationId).toBeUndefined();
 		});
 	});
 

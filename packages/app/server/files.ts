@@ -12,6 +12,8 @@ import { internal } from "../convex/_generated/api.js";
 import type { Doc, Id } from "../convex/_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../convex/_generated/server";
 import {
+	files_pending_update_has_asset_content,
+	files_pending_update_has_content,
 	files_pending_update_has_yjs_content,
 	files_pending_path_overlay_build,
 	files_pending_path_overlay_translate_path,
@@ -341,12 +343,36 @@ export async function files_db_get_visible_node_by_path(
 }
 
 /**
- * Return the pending update's content proposal (the canonical content group: base sequence,
- * lineage generation, and the three paged-state ids, set together or not at all), or `null`
- * for move-only pending update docs. The state bytes live in the paged families; load them
- * with `files_db_load_pending_update_yjs_state_bytes` or the one-page queries.
+ * Return the three paged-state ids of a content proposal of either kind (built against a Yjs
+ * sequence, or against a content asset for a file with collaboration off), or `null` for a doc
+ * with no content proposal: move-only, delete-only, or a whole-file replacement. Use
+ * `files_pending_update_yjs_content_of` or `files_pending_update_asset_content_of` when the door
+ * also needs the base pointer. The state bytes live in the paged families; load them with
+ * `files_db_load_pending_update_yjs_state_bytes` or the one-page queries.
  */
 export function files_pending_update_content_of(
+	pendingUpdate: Pick<
+		Doc<"files_pending_updates">,
+		"baseYjsSequence" | "baseLineageGeneration" | "baseAssetId" | "baseStateId" | "stagedStateId" | "unstagedStateId"
+	>,
+) {
+	if (!files_pending_update_has_content(pendingUpdate)) {
+		return null;
+	}
+
+	return {
+		baseStateId: pendingUpdate.baseStateId,
+		stagedStateId: pendingUpdate.stagedStateId,
+		unstagedStateId: pendingUpdate.unstagedStateId,
+	};
+}
+
+/**
+ * Return the content proposal of a collaborative file (the canonical content group: base
+ * sequence, lineage generation, and the three paged-state ids, set together or not at all), or
+ * `null` for every other doc, including a proposal on a file with collaboration off.
+ */
+export function files_pending_update_yjs_content_of(
 	pendingUpdate: Pick<
 		Doc<"files_pending_updates">,
 		"baseYjsSequence" | "baseLineageGeneration" | "baseStateId" | "stagedStateId" | "unstagedStateId"
@@ -366,6 +392,25 @@ export function files_pending_update_content_of(
 }
 
 /**
+ * Return the content proposal of a file with collaboration off: the content asset the branches
+ * were built from plus the three paged-state ids, or `null` for every other doc.
+ */
+export function files_pending_update_asset_content_of(
+	pendingUpdate: Pick<Doc<"files_pending_updates">, "baseAssetId" | "baseStateId" | "stagedStateId" | "unstagedStateId">,
+) {
+	if (!files_pending_update_has_asset_content(pendingUpdate)) {
+		return null;
+	}
+
+	return {
+		baseAssetId: pendingUpdate.baseAssetId,
+		baseStateId: pendingUpdate.baseStateId,
+		stagedStateId: pendingUpdate.stagedStateId,
+		unstagedStateId: pendingUpdate.unstagedStateId,
+	};
+}
+
+/**
  * Whether the pending update doc owns pending chunk docs: a content proposal, or a whole-file
  * copy of a text file (its staged text is chunked too). A move-only doc and a copy of a stored
  * file have none, so their file's committed chunks stay the ones to read and search.
@@ -375,6 +420,7 @@ export function files_pending_update_has_pending_chunks(
 		Doc<"files_pending_updates">,
 		| "baseYjsSequence"
 		| "baseLineageGeneration"
+		| "baseAssetId"
 		| "baseStateId"
 		| "stagedStateId"
 		| "unstagedStateId"
@@ -415,7 +461,8 @@ export async function files_db_insert_pending_update_yjs_state(
 		pendingUpdateId: Id<"files_pending_updates">;
 		role: "base" | "staged" | "unstaged";
 		update: ArrayBuffer;
-		lineageGeneration: number;
+		/** Absent for a state built for a file with collaboration off, which has no lineage. */
+		lineageGeneration?: number;
 	},
 ) {
 	// A Yjs state encode is never empty (the empty document encodes as 2 bytes), so every state

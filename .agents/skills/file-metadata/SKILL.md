@@ -149,6 +149,16 @@ This is a weakness in `yaml` 2.8.2, not a depth nobody should use: `JSON.parse` 
 of the same shape without complaint. If a later version reports it in `doc.errors` instead, the
 `try` becomes redundant but stays correct.
 
+### TODO: report unreadable frontmatter to the user
+
+Today, unreadable frontmatter is only logged on the server. The file still saves.
+Plan a general `problems` table with generic pointers to files, workspaces, plugins, or other resources.
+Show a UI list that says what the app could not do and why, in plain words.
+The first problem kind is unreadable frontmatter: the file's frontmatter is not indexed.
+See the warnings in [r2.ts](../../../packages/app/convex/r2.ts#L857) and [files_metadata.ts](../../../packages/app/convex/files_metadata.ts#L155) ([pending content](../../../packages/app/convex/files_metadata.ts#L229)).
+The nearest pattern is the [too-large marker pair](../../../packages/app/convex/schema.ts#L746)
+and its [file banner](../../../packages/app/src/components/files/file-node-view/file-node-view.tsx#L561).
+
 # Write Doors
 
 Both live in the `// #region file metadata` of `packages/app/convex/files_metadata.ts`.

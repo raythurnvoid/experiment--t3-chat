@@ -379,7 +379,7 @@ The checkbox writes as soon as it is clicked. There is no Save for the lock — 
 - `convex/data_import.test.ts` — normal import respects locks; bypasses are named and internal.
 - `convex/access_control.test.ts` — management authority, owner non-bypass, public-query lock-source privacy, hidden-outer-lock management state.
 - `src/lib/files-yjs-provider.test.ts` — current-lock terminal drop, access-change resync, and unchanged transient retries.
-- `server/bash.ts` in-source `action_run` — command matrix and eager-create compensation.
+- `server/bash.test.ts` `bash_run_command` — command matrix and eager-create compensation.
 - `server/server-ai-tools.test.ts` — tool description says locked paths are read-only and copy-out is allowed.
 - Frontend: sidebar in-source tests, `file-editor-sidebar-pending.test.tsx`, plain/diff editor and snapshot-modal tests, comment-tool tests, and lock-modal tests.
 

@@ -4081,11 +4081,14 @@ async function write_one_text_file(
 		// publish mutation, and a 200 here would let a service confirm the exact content of a
 		// member file inside its destination.
 		if (args.skipIfUnchanged && args.principalRef.kind !== "plugin_service") {
+			// Compare against the saved text. The caller's own proposal on this file is not the
+			// file, and a write of that proposal's text must still land as a save.
 			const current = (await ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				userId: args.visibilityUserId,
 				path: args.path,
+				committedOnly: true,
 				mode: { kind: "full", maxBytes: files_MAX_TEXT_CONTENT_BYTES },
 			})) as files_nodes_read_file_content_from_chunks_Result;
 			// Skip only when the commit-time write check would also say yes. When it says no, fall

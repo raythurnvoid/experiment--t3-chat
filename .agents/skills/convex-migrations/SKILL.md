@@ -88,7 +88,7 @@ its own:
 3. **Push B** — make the new field mandatory, make the old field `v.optional(...)` (comment it as
    legacy), and rename every code usage: args validators (`doc(...).fields.<new>`), all reads and
    writes, and every `ctx.db.insert` seed in `*.test.ts` and harness files (grep `<old_field>:`
-   across `packages/app` — seeds hide outside `convex/` too, e.g. `server/bash.ts`). Add the strip
+   across `packages/app` — seeds hide outside `convex/` too, e.g. `server/bash.test.ts`). Add the strip
    migration in THIS push — it cannot typecheck earlier, because its destructure+replace omits a
    field the phase-A schema still requires.
 4. **Run the strip** — `vp env exec pnpm --dir packages/app exec convex run "migrations:run_remove_<table>_<old_field>"` removes the old

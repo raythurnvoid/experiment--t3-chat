@@ -87,17 +87,29 @@ function isNotAsyncIterable<T>(value: T | AsyncIterable<T>): value is T {
 }
 
 describe("ai_chat_tool_create_bash", () => {
-	test("describes direct saves when collaboration is off", () => {
+	test("describes every app-file write as a pending proposal", () => {
 		const { ctx } = makeCtx(async () => null);
 		const tool = ai_chat_tool_create_bash(ctx, server_ai_tools_test_ctx_data, {
 			allowDbFilesMkdir: true,
 		});
 
+		// A file with collaboration off gets a proposal too, so the description must not promise
+		// a direct save anywhere.
 		expect(tool).toEqual(
 			expect.objectContaining({
-				description: expect.stringContaining(
-					"If collaboration is off for an existing target, a shell write or edit_file saves immediately instead",
-				),
+				description: expect.stringContaining("create pending proposals the user reviews in Files"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.not.stringContaining("saves immediately"),
+			}),
+		);
+		// A member save after the agent's write makes the proposal stale; the agent must know
+		// its next write starts from the saved text.
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining("your pending change becomes stale"),
 			}),
 		);
 	});
@@ -657,7 +669,7 @@ test("edit tool describes preserving nested app path suffixes", () => {
 	);
 });
 
-test("edit tool describes direct saves when collaboration is off", () => {
+test("edit tool describes every edit as a pending update", () => {
 	const { ctx } = makeCtx(async () => null);
 	const editTool = ai_chat_tool_create_edit_file(
 		ctx,
@@ -666,9 +678,12 @@ test("edit tool describes direct saves when collaboration is off", () => {
 
 	expect(editTool).toEqual(
 		expect.objectContaining({
-			description: expect.stringContaining(
-				"If collaboration is off for the file, it saves the edit immediately",
-			),
+			description: expect.stringContaining("This tool saves a pending update for human review."),
+		}),
+	);
+	expect(editTool).toEqual(
+		expect.objectContaining({
+			description: expect.not.stringContaining("saves the edit immediately"),
 		}),
 	);
 });
@@ -731,7 +746,7 @@ test("edit_file tool surfaces the upsert rejection when the file is archived aft
 			{ path: "/docs/hello.md", oldString: "world", newString: "team", replaceAll: false },
 			{ toolCallId: "test", messages: [] },
 		),
-	).rejects.toThrow("the proposal was not recorded");
+	).rejects.toThrow("the proposal was not recorded: Not found");
 
 	// The tool stops at the failed upsert: no success payload, no follow-up pending update doc read.
 	expect(runAction).toHaveBeenCalledTimes(2);
@@ -817,70 +832,6 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 	expect(result.metadata.pendingUpdateId).toBe(pendingUpdateId);
 	expect(result.metadata.matches).toBe(1);
 	expect(result.metadata.matcher).toBe("simple");
-});
-
-test("edit_file tool saves a non-collaborative file instead of proposing an update", async () => {
-	const nodeId = "p789";
-	const currentContent = {
-		nodeId,
-		displayNodeId: nodeId,
-		content: "Hello world",
-		pendingUpdateId: null,
-		nonCollaborative: true,
-	};
-
-	let runActionCallCount = 0;
-	// Both mocks answer as the proposal path expects, so taking that path here would succeed and
-	// only the assertions below would notice.
-	const { ctx, runQuery, runMutation, runAction } = makeCtx(async () => null, {
-		runMutationImpl: async () => ({ _yay: { operationBatchId: "batch789", expiresAt: Date.now() + 60_000 } }),
-		runActionImpl: async () => {
-			runActionCallCount += 1;
-			return runActionCallCount === 1 ? currentContent : { _yay: null };
-		},
-	});
-	const tool = ai_chat_tool_create_edit_file(
-		ctx,
-		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_edit_file>[1],
-	);
-	const result = await tool.execute?.(
-		{
-			path: "/docs/hello.md",
-			oldString: "world",
-			newString: "team",
-			replaceAll: false,
-		},
-		{ toolCallId: "test", messages: [] },
-	);
-
-	if (!result) {
-		throw new Error("`result` is undefined");
-	}
-	if (!isNotAsyncIterable(result)) {
-		throw new Error("`result` is AsyncIterable but expected sync object");
-	}
-
-	// The read is followed by the save itself: no operation batch, no staged text input, and no
-	// pending update to look up afterwards.
-	//
-	// Compare call counts, not the mocks: a failing `toHaveBeenCalled` prints the recorded
-	// arguments, and Convex function references throw while vitest formats them.
-	expect(runMutation.mock.calls.length).toBe(0);
-	expect(runQuery.mock.calls.length).toBe(0);
-	expect(runAction.mock.calls.length).toBe(2);
-	const [, saveArgs] = runAction.mock.calls[1]!;
-	expect(saveArgs).toEqual({
-		organizationId: test_mocks_hardcoded.organization_id.organization_1,
-		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
-		userId: server_ai_tools_test_user_id,
-		nodeId,
-		text: "Hello team",
-	});
-
-	expect(result.metadata.pendingUpdateId).toBe(null);
-	expect(result.output).toBe(
-		"Replaced 1 occurrence. Collaboration is off for this file, so the change is already saved and there is nothing to review.",
-	);
 });
 
 test("replace_once_or_all: line-trimmed matching preserves the following newline", () => {

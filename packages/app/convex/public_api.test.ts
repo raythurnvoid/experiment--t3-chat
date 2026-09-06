@@ -1173,6 +1173,78 @@ describe("public files API", () => {
 		});
 	});
 
+	test("skipIfUnchanged compares against the saved text, not the caller's own proposal", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-skip-proposal" });
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "public-api-skip-proposal",
+			external_id: db.userId,
+		});
+		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			name: "Skip writer",
+			scopes: ["files:read", "files:write"],
+		});
+		expect(created._nay).toBeUndefined();
+		const credential = created._yay!.credential;
+
+		const content = "# Report\n\nSaved content\n";
+		const first = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/skip/proposal.md", content, nonCollaborative: true }),
+		});
+		expect(first.status).toBe(200);
+		const nodeId = ((await first.json()) as { nodeId: string }).nodeId as Id<"files_nodes">;
+
+		// The agent proposed a change to this user. The proposal's text is not the file.
+		const proposalContent = "# Report\n\nProposed content\n";
+		const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			nodeId,
+		});
+		if (batch._nay) {
+			throw new Error(batch._nay.message);
+		}
+		const staged = await t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			operationBatchId: batch._yay.operationBatchId,
+			role: "unstaged",
+			text: proposalContent,
+		});
+		if (staged._nay) {
+			throw new Error(staged._nay.message);
+		}
+		const pending = await t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			nodeId,
+			operationBatchId: batch._yay.operationBatchId,
+		});
+		if (pending._nay) {
+			throw new Error(pending._nay.message);
+		}
+		const before = await t.run(async (ctx) => ctx.db.get("files_nodes", nodeId));
+
+		// Writing the proposal's text with the flag is a real save, not a no-op.
+		const written = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(credential),
+			body: JSON.stringify({ path: "/skip/proposal.md", content: proposalContent, skipIfUnchanged: true }),
+		});
+		expect(written.status).toBe(200);
+		expect(await written.json()).not.toHaveProperty("unchanged");
+		const after = await t.run(async (ctx) => ctx.db.get("files_nodes", nodeId));
+		expect(after?.assetId).not.toBe(before?.assetId);
+	});
+
 	test("skipIfUnchanged skips staging when the content did not change", async () => {
 		const t = test_convex();
 		install_r2_object_reads();
@@ -4230,6 +4302,7 @@ describe("files read-only locks", () => {
 		content: string;
 		overwrite?: "replace" | "fail";
 		skipIfUnchanged?: boolean;
+		nonCollaborative?: boolean;
 	}) {
 		return await args.t.fetch("/api/v1/files/write", {
 			method: "POST",
@@ -4239,6 +4312,7 @@ describe("files read-only locks", () => {
 				content: args.content,
 				...(args.overwrite ? { overwrite: args.overwrite } : {}),
 				...(args.skipIfUnchanged === undefined ? {} : { skipIfUnchanged: args.skipIfUnchanged }),
+				...(args.nonCollaborative ? { nonCollaborative: true } : {}),
 			}),
 		});
 	}
@@ -4327,6 +4401,35 @@ describe("files read-only locks", () => {
 		await set_lock({ writer, nodeId: folder!._id, locked: false });
 		const allowed = await write_file({ t, credential: writer.credential, path: "/locked-dir/other.md", content: "# Yes\n" });
 		expect(allowed.status).toBe(200);
+	});
+
+	test("skipIfUnchanged on a locked file with collaboration off is refused, not skipped", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-lock-skip-off" });
+
+		const seeded = await write_file({
+			t,
+			credential: writer.credential,
+			path: "/locks/off.md",
+			content: "# Same\n",
+			nonCollaborative: true,
+		});
+		expect(seeded.status).toBe(200);
+		const node = await find_active_node({ t, db: writer.db, path: "/locks/off.md" });
+		await set_lock({ writer, nodeId: node!._id, locked: true });
+
+		// The probe finds the saved text equal. A 200 here would tell a caller who cannot write the
+		// file what it holds, so the write check runs before the shortcut.
+		const refused = await write_file({
+			t,
+			credential: writer.credential,
+			path: "/locks/off.md",
+			content: "# Same\n",
+			skipIfUnchanged: true,
+		});
+		expect(refused.status).toBe(409);
+		expect(await refused.json()).toEqual({ message: "This item is read-only." });
 	});
 
 	test("write-many reports a locked item as a per-item conflict and still writes the others", async () => {

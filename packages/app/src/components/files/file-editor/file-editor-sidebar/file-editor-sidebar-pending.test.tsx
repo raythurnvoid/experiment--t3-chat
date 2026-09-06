@@ -49,9 +49,9 @@ vi.mock("@/hooks/convex-hooks.ts", () => ({
 	useStableQuery: (...args: unknown[]) => useStableQueryMock(...args),
 }));
 
-// Spy target: tests assert on toast.error calls.
+// Spy target: tests assert on toast.error and toast.warning calls.
 vi.mock("sonner", () => ({
-	toast: { error: vi.fn() },
+	toast: { error: vi.fn(), warning: vi.fn() },
 }));
 
 // Provider boundary: the real useContext throws without an AppTenantProvider mounted above.
@@ -142,6 +142,7 @@ vi.mock("@/components/my-link.tsx", () => ({
 import { FileEditorSidebarPending } from "./file-editor-sidebar-pending.tsx";
 import { encodeStateAsUpdate } from "yjs";
 import { files_yjs_doc_create_from_text } from "../../../../../shared/files-tiptap.ts";
+import { files_PENDING_UPDATE_STALE_BASE_MESSAGE } from "../../../../../shared/files.ts";
 import { files_u8_to_array_buffer } from "@/lib/files.ts";
 
 /**
@@ -171,6 +172,8 @@ function makePendingUpdate(args: {
 	eagerCreated?: { committedSequence: number };
 	pendingArchive?: { fromPath: string };
 	threadIds?: string[];
+	/** Set for a proposal on a file with collaboration off: the content asset it was built from. */
+	baseAssetId?: string;
 }): app_convex_Doc<"files_pending_updates"> {
 	return {
 		_id: args.id,
@@ -182,8 +185,7 @@ function makePendingUpdate(args: {
 		// Structural-only rows leave the whole canonical content group unset, like the server does.
 		...(args.staged != null && args.unstaged != null
 			? {
-					baseYjsSequence: 0,
-					baseLineageGeneration: 0,
+					...(args.baseAssetId ? { baseAssetId: args.baseAssetId } : { baseYjsSequence: 0, baseLineageGeneration: 0 }),
 					baseStateId: registerPendingState(`${args.id}_base`, "") as never,
 					stagedStateId: registerPendingState(`${args.id}_staged`, args.staged) as never,
 					unstagedStateId: registerPendingState(`${args.id}_unstaged`, args.unstaged) as never,
@@ -225,6 +227,7 @@ function makeNode(args: {
 	parentId?: string;
 	hasEditableYjsState?: boolean;
 	readOnlyState?: "writable" | "self" | "inherited";
+	nonCollaborative?: boolean;
 }): app_convex_Doc<"files_nodes"> {
 	const kind = args.kind ?? "file";
 	return {
@@ -240,11 +243,13 @@ function makeNode(args: {
 					assetId: `asset_${args.id}`,
 					...(args.hasEditableYjsState === false
 						? {}
-						: {
-								yjsSnapshotId: `snapshot_${args.id}`,
-								yjsLastSequenceId: `sequence_${args.id}`,
-								yjsRootKind: "rich_text",
-							}),
+						: args.nonCollaborative
+							? { yjsRootKind: "rich_text", nonCollaborative: true }
+							: {
+									yjsSnapshotId: `snapshot_${args.id}`,
+									yjsLastSequenceId: `sequence_${args.id}`,
+									yjsRootKind: "rich_text",
+								}),
 				}
 			: {}),
 	} as unknown as app_convex_Doc<"files_nodes">;
@@ -1260,6 +1265,54 @@ describe("FileEditorSidebarPending", () => {
 
 		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Modified");
 		expect(container.querySelector(".FileEditorSidebarPending-item-path-text-added")).toBeNull();
+	});
+
+	test("a stale row shows Out of date, refuses Accept with the sentence, and is skipped by Accept all", async () => {
+		// Collaboration off on both files. /a.md was saved after its proposal: the node moved to
+		// another asset than the one the proposal was built from.
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({ id: "pu_stale", fileNodeId: "node_a", staged: "s", unstaged: "u", baseAssetId: "asset_old" }),
+			makePendingUpdate({
+				id: "pu_fresh",
+				fileNodeId: "node_b",
+				staged: "s",
+				unstaged: "u",
+				baseAssetId: "asset_node_b",
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_a", path: "/a.md", nonCollaborative: true }),
+			makeNode({ id: "node_b", path: "/b.md", nonCollaborative: true }),
+		]);
+
+		const { container } = render(<FileEditorSidebarPending />);
+
+		const captions = Array.from(container.querySelectorAll(".FileEditorSidebarPending-item-caption")).map(
+			(caption) => caption.textContent,
+		);
+		expect(captions).toEqual(["Out of date", "Modified"]);
+		// The suffix gives assistive tech the caption's meaning.
+		expect(screen.getByRole("link", { name: "/a.md, out of date" })).toBeTruthy();
+		expect(screen.getByRole("link", { name: "/b.md" })).toBeTruthy();
+
+		// Accept on the stale row explains instead of sending: the server would refuse the same way.
+		fireEvent.click(screen.getByTitle(files_PENDING_UPDATE_STALE_BASE_MESSAGE));
+		await act(async () => {});
+		expect(toast.error).toHaveBeenCalledWith(files_PENDING_UPDATE_STALE_BASE_MESSAGE);
+		expect(upsertPendingMock).not.toHaveBeenCalled();
+		expect(actionMock).not.toHaveBeenCalled();
+
+		// Accept all skips the stale row, says so once, and accepts the fresh one.
+		fireEvent.click(screen.getByText("Accept all"));
+		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(1));
+		expect(toast.warning).toHaveBeenCalledWith(
+			"Out-of-date changes are skipped. Ask the agent to make them again, or discard them.",
+		);
+		expect(actionMock).toHaveBeenCalledWith("save_file_pending_update", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_b",
+			pendingUpdateId: "pu_fresh",
+		});
 	});
 
 	test("mixed row keeps the accordion and shows the from → dest move label", () => {

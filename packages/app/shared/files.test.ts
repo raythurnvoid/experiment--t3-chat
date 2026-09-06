@@ -29,6 +29,10 @@ import {
 	files_pending_path_overlay_pick_visible_entry,
 	files_pending_path_overlay_project_committed_path,
 	files_pending_path_overlay_translate_path,
+	files_pending_update_content_is_stale,
+	files_pending_update_has_asset_content,
+	files_pending_update_has_content,
+	files_pending_update_has_yjs_content,
 	files_ROOT_ID,
 	type files_PendingPathOverlayNode,
 	type files_PendingPathOverlayRow,
@@ -694,6 +698,55 @@ describe("files_node_has_editable_yjs_state", () => {
 				yjsRootKind: "rich_text",
 			}),
 		).toBe(false);
+	});
+});
+
+describe("files_pending_update_has_content", () => {
+	const baseStateId = "base" as NonNullable<app_convex_Doc<"files_pending_updates">["baseStateId"]>;
+	const stagedStateId = "staged" as NonNullable<app_convex_Doc<"files_pending_updates">["stagedStateId"]>;
+	const unstagedStateId = "unstaged" as NonNullable<app_convex_Doc<"files_pending_updates">["unstagedStateId"]>;
+	const baseAssetId = "asset" as NonNullable<app_convex_Doc<"files_pending_updates">["baseAssetId"]>;
+	const yjsContent = { baseYjsSequence: 3, baseLineageGeneration: 1, baseStateId, stagedStateId, unstagedStateId };
+	const assetContent = { baseAssetId, baseStateId, stagedStateId, unstagedStateId };
+
+	test("three state ids with a base asset are asset content, not Yjs content", () => {
+		expect(files_pending_update_has_asset_content(assetContent)).toBe(true);
+		expect(files_pending_update_has_yjs_content(assetContent)).toBe(false);
+		expect(files_pending_update_has_content(assetContent)).toBe(true);
+	});
+
+	test("the five Yjs fields are Yjs content, not asset content", () => {
+		expect(files_pending_update_has_yjs_content(yjsContent)).toBe(true);
+		expect(files_pending_update_has_asset_content(yjsContent)).toBe(false);
+		expect(files_pending_update_has_content(yjsContent)).toBe(true);
+	});
+
+	test("a move-only doc and an incomplete group are no content", () => {
+		expect(files_pending_update_has_content({})).toBe(false);
+		expect(files_pending_update_has_asset_content({ baseAssetId, baseStateId, stagedStateId })).toBe(false);
+		expect(files_pending_update_has_content({ baseAssetId, baseStateId, stagedStateId })).toBe(false);
+	});
+});
+
+describe("files_pending_update_content_is_stale", () => {
+	const baseStateId = "base" as NonNullable<app_convex_Doc<"files_pending_updates">["baseStateId"]>;
+	const stagedStateId = "staged" as NonNullable<app_convex_Doc<"files_pending_updates">["stagedStateId"]>;
+	const unstagedStateId = "unstaged" as NonNullable<app_convex_Doc<"files_pending_updates">["unstagedStateId"]>;
+	const baseAssetId = "asset" as NonNullable<app_convex_Doc<"files_pending_updates">["baseAssetId"]>;
+	const savedAssetId = "saved-asset" as NonNullable<app_convex_Doc<"files_nodes">["assetId"]>;
+	const assetContent = { baseAssetId, baseStateId, stagedStateId, unstagedStateId };
+
+	test("true only when the asset content group is complete and its base differs from the node's asset", () => {
+		expect(files_pending_update_content_is_stale(assetContent, { assetId: baseAssetId })).toBe(false);
+		expect(files_pending_update_content_is_stale(assetContent, { assetId: savedAssetId })).toBe(true);
+		expect(
+			files_pending_update_content_is_stale(
+				{ baseYjsSequence: 3, baseLineageGeneration: 1, baseStateId, stagedStateId, unstagedStateId },
+				{ assetId: savedAssetId },
+			),
+		).toBe(false);
+		// A leftover base asset on a move-only doc must never read as stale.
+		expect(files_pending_update_content_is_stale({ baseAssetId }, { assetId: savedAssetId })).toBe(false);
 	});
 });
 

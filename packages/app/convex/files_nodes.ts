@@ -97,6 +97,7 @@ import {
 	files_normalize_markdown_name,
 	files_normalize_name,
 	files_normalize_upload_file_name,
+	files_pending_update_content_is_stale,
 } from "../shared/files.ts";
 import { files_metadata_db_patch_file_scope, files_metadata_db_write_entries } from "./files_metadata.ts";
 import {
@@ -6261,19 +6262,7 @@ async function db_resolve_committed_chunk_source(
 		return { nodeId: fileNode._id, byteSize, counts: await resolve_counts() };
 	}
 
-	if (!files_node_has_editable_yjs_state(fileNode)) {
-		if (!files_node_has_editable_text_content(fileNode)) return null;
-
-		// A non-collaborative file has no Yjs document and so no materialization state. Its
-		// committed chunks are always current, and its byte size comes from the linked content
-		// asset, the same way the reserved scope above reads it. Do not check the asset kind:
-		// `node.assetId` always holds the file's current bytes but the kind varies, as
-		// `db_get_file_content_materialization_header` explains.
-		const asset = await ctx.db.get("files_r2_assets", fileNode.assetId);
-		const byteSize =
-			asset && asset.organizationId === args.organizationId && asset.workspaceId === args.workspaceId ? asset.size : 0;
-		return { nodeId: fileNode._id, byteSize, counts: await resolve_counts() };
-	}
+	if (!files_node_has_editable_text_content(fileNode)) return null;
 
 	// Tenant scope (the guards above narrowed both ids): bind them so the narrowing reaches the
 	// `withIndex` callback — TS drops property narrowing at closure boundaries.
@@ -6281,6 +6270,9 @@ async function db_resolve_committed_chunk_source(
 	const workspaceId = args.workspaceId;
 
 	// The user's unstaged branch is not materialized into chunks; read it via the in-memory path.
+	// This holds in both editable modes: a file with collaboration off carries proposals too. A
+	// move-only doc has no text of its own, and a stale proposal's text is not served, so the
+	// committed chunks below answer for both, the same way the read doors fall through.
 	const pendingUpdate = await ctx.db
 		.query("files_pending_updates")
 		.withIndex("by_organization_workspace_user_fileNode", (q) =>
@@ -6291,7 +6283,25 @@ async function db_resolve_committed_chunk_source(
 				.eq("fileNodeId", fileNode._id),
 		)
 		.first();
-	if (pendingUpdate) return null;
+	if (
+		pendingUpdate != null &&
+		files_pending_update_has_pending_chunks(pendingUpdate) &&
+		!files_pending_update_content_is_stale(pendingUpdate, fileNode)
+	) {
+		return null;
+	}
+
+	if (!files_node_has_editable_yjs_state(fileNode)) {
+		// A non-collaborative file has no Yjs document and so no materialization state. Its
+		// committed chunks are always current, and its byte size comes from the linked content
+		// asset, the same way the reserved scope above reads it. Do not check the asset kind:
+		// `node.assetId` always holds the file's current bytes but the kind varies, as
+		// `db_get_file_content_materialization_header` explains.
+		const asset = await ctx.db.get("files_r2_assets", fileNode.assetId);
+		const byteSize =
+			asset && asset.organizationId === args.organizationId && asset.workspaceId === args.workspaceId ? asset.size : 0;
+		return { nodeId: fileNode._id, byteSize, counts: await resolve_counts() };
+	}
 
 	const materializationState = await db_get_file_content_materialization_db_state(ctx, {
 		organizationId,
@@ -6549,6 +6559,11 @@ export const read_file_content_from_chunks = internalQuery({
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
 		/** When set, resolve `path` through this user's pending path overlay (their pending moves). */
 		overlayUserId: v.optional(v.id("users")),
+		/**
+		 * Skip the lookup of this user's pending doc, so the read serves the committed chunks. An
+		 * explicit `pendingUpdateId` and the `overlayUserId` path overlay still apply.
+		 */
+		committedOnly: v.optional(v.boolean()),
 		mode: v.union(
 			v.object({
 				kind: v.literal("full"),
@@ -6567,10 +6582,6 @@ export const read_file_content_from_chunks = internalQuery({
 			content: v.string(),
 			moreLines: v.boolean(),
 			pendingUpdateId: v.union(v.id("files_pending_updates"), v.null()),
-			/**
-			 * True for a tenant file with collaboration off. Its agent writes save immediately.
-			 */
-			nonCollaborative: v.boolean(),
 		}),
 		v.null(),
 	),
@@ -6610,15 +6621,16 @@ export const read_file_content_from_chunks = internalQuery({
 						workspaceId: requestedWorkspaceId,
 					};
 		const isEditableTextFile = files_node_has_editable_yjs_state(fileNode);
-		// A non-collaborative file is editable text with no Yjs document. It skips the pending and
-		// materialization branches below and reads its committed chunks directly.
+		// A non-collaborative file is editable text with no Yjs document. Its pending proposals
+		// apply the same way, but it has no materialization state and reads its committed chunks
+		// directly.
 		const isNonCollaborativeTextFile = !isEditableTextFile && files_node_has_editable_text_content(fileNode);
 		const isReadOnlyPlainTextFile =
 			!isEditableTextFile && !isNonCollaborativeTextFile && (fileNode.contentType?.startsWith("text/plain") ?? false);
 		if (realTenantScope) {
 			if (!isEditableTextFile && !isNonCollaborativeTextFile && !isReadOnlyPlainTextFile) return null;
 
-			if (isEditableTextFile) {
+			if (isEditableTextFile || isNonCollaborativeTextFile) {
 				// Bind the guard-narrowed ids; TS drops property narrowing inside the closures below.
 				const { organizationId, workspaceId } = realTenantScope;
 
@@ -6639,7 +6651,7 @@ export const read_file_content_from_chunks = internalQuery({
 						return pendingUpdate;
 					});
 					if (pendingUpdate == null) return null;
-				} else {
+				} else if (args.committedOnly !== true) {
 					pendingUpdate = await ctx.db
 						.query("files_pending_updates")
 						.withIndex("by_organization_workspace_user_fileNode", (q) =>
@@ -6653,8 +6665,14 @@ export const read_file_content_from_chunks = internalQuery({
 				}
 
 				// Move-only docs and copies of stored files have no pending chunks; fall through to
-				// the committed chunks so reads do not return an empty file behind them.
-				if (pendingUpdate != null && files_pending_update_has_pending_chunks(pendingUpdate)) {
+				// the committed chunks so reads do not return an empty file behind them. A stale
+				// proposal (a member saved the file with collaboration off after it was made) falls
+				// through too: the member's text is the file now, and Discard is all that is left.
+				if (
+					pendingUpdate != null &&
+					files_pending_update_has_pending_chunks(pendingUpdate) &&
+					!files_pending_update_content_is_stale(pendingUpdate, fileNode)
+				) {
 					// Pending chunks are already the markdown text the user sees. Full reads
 					// still honor maxBytes; line reads stream only the overlapping chunks.
 					const chunks = ctx.db
@@ -6672,7 +6690,6 @@ export const read_file_content_from_chunks = internalQuery({
 										content: "",
 										moreLines: false,
 										pendingUpdateId: pendingUpdate._id,
-										nonCollaborative: false,
 									};
 						}
 
@@ -6683,7 +6700,6 @@ export const read_file_content_from_chunks = internalQuery({
 							content,
 							moreLines: false,
 							pendingUpdateId: pendingUpdate._id,
-							nonCollaborative: false,
 						};
 					}
 
@@ -6705,7 +6721,6 @@ export const read_file_content_from_chunks = internalQuery({
 						content: range.content,
 						moreLines: range.moreLines,
 						pendingUpdateId: pendingUpdate._id,
-						nonCollaborative: false,
 					};
 				}
 			} else if (args.pendingUpdateId != null) {
@@ -6749,8 +6764,6 @@ export const read_file_content_from_chunks = internalQuery({
 					: 0;
 		}
 
-		const nonCollaborative = realTenantScope !== null && isNonCollaborativeTextFile;
-
 		if (args.mode.kind === "full") {
 			// Full reads use the byte size as the cheap cap check, then merge the materialized chunks
 			// only when the file is small enough to return inline.
@@ -6774,13 +6787,12 @@ export const read_file_content_from_chunks = internalQuery({
 							content: "",
 							moreLines: false,
 							pendingUpdateId: null,
-							nonCollaborative,
 						};
 			}
 
 			const content = files_merge_contiguous_chunks(chunks);
 			if (content == null) return null;
-			return { nodeId: fileNode._id, content, moreLines: false, pendingUpdateId: null, nonCollaborative };
+			return { nodeId: fileNode._id, content, moreLines: false, pendingUpdateId: null };
 		}
 
 		// Line reads use the lineEnd index to seek near the requested start line
@@ -6820,7 +6832,6 @@ export const read_file_content_from_chunks = internalQuery({
 			content: range.content,
 			moreLines: range.moreLines,
 			pendingUpdateId: null,
-			nonCollaborative,
 		};
 	},
 });
@@ -7458,8 +7469,13 @@ export const match_text_file_lines = internalQuery({
 					.first();
 			}
 			// Move-only docs have no pending chunks; leave the id null so the scan falls
-			// through to the committed chunks instead of a silent no-match.
-			if (pendingUpdate != null && files_pending_update_has_pending_chunks(pendingUpdate)) {
+			// through to the committed chunks instead of a silent no-match. A stale proposal on a
+			// file with collaboration off falls through too: the member's saved text is the file.
+			if (
+				pendingUpdate != null &&
+				files_pending_update_has_pending_chunks(pendingUpdate) &&
+				!files_pending_update_content_is_stale(pendingUpdate, fileNode)
+			) {
 				pendingUpdateId = pendingUpdate._id;
 			}
 		} else if (args.pendingUpdateId != null) {
@@ -7685,8 +7701,13 @@ export const match_plain_text_file_lines = internalQuery({
 					.first();
 			}
 			// Move-only docs have no pending chunks; leave the id null so the scan falls
-			// through to the committed chunks instead of a silent no-match.
-			if (pendingUpdate != null && files_pending_update_has_pending_chunks(pendingUpdate)) {
+			// through to the committed chunks instead of a silent no-match. A stale proposal on a
+			// file with collaboration off falls through too: the member's saved text is the file.
+			if (
+				pendingUpdate != null &&
+				files_pending_update_has_pending_chunks(pendingUpdate) &&
+				!files_pending_update_content_is_stale(pendingUpdate, fileNode)
+			) {
 				pendingUpdateId = pendingUpdate._id;
 			}
 		} else if (args.pendingUpdateId != null) {
@@ -7867,10 +7888,18 @@ function db_text_search_filtered_query(
 		const nodeIds = args.nodeIds;
 		searchQuery = searchQuery.filter((q) => q.or(...nodeIds.map((nodeId) => q.eq(q.field("fileNodeId"), nodeId))));
 	}
+	// A pending chunk is searched only for a node whose proposal is live. A stale proposal on a
+	// file with collaboration off keeps its chunks until Discard, and those must not match.
 	searchQuery = searchQuery.filter((q) =>
 		q.or(
 			q.eq(q.field("sourceKind"), "committed"),
-			q.and(q.eq(q.field("sourceKind"), "pending"), q.eq(q.field("userId"), args.userId)),
+			...args.pendingNodeIds.map((pendingNodeId) =>
+				q.and(
+					q.eq(q.field("sourceKind"), "pending"),
+					q.eq(q.field("userId"), args.userId),
+					q.eq(q.field("fileNodeId"), pendingNodeId),
+				),
+			),
 		),
 	);
 	for (const pendingNodeId of args.pendingNodeIds) {
@@ -7963,10 +7992,22 @@ export const text_search_files = internalQuery({
 				.order("asc")
 				.collect();
 			// Only docs with pending chunks are searched instead of their file. Move-only docs
-			// must keep their committed chunks searchable.
-			pendingNodeIds = pendingUpdates
-				.filter((pendingUpdate) => files_pending_update_has_pending_chunks(pendingUpdate))
-				.map((pendingUpdate) => pendingUpdate.fileNodeId);
+			// must keep their committed chunks searchable, and so must a stale proposal on a file
+			// with collaboration off: the member's saved text is the file now.
+			const pendingNodes = await Promise.all(
+				pendingUpdates
+					.filter((pendingUpdate) => files_pending_update_has_pending_chunks(pendingUpdate))
+					.map(async (pendingUpdate) => ({
+						pendingUpdate,
+						fileNode: await ctx.db.get("files_nodes", pendingUpdate.fileNodeId),
+					})),
+			);
+			pendingNodeIds = pendingNodes
+				.filter(
+					({ pendingUpdate, fileNode }) =>
+						fileNode !== null && !files_pending_update_content_is_stale(pendingUpdate, fileNode),
+				)
+				.map(({ pendingUpdate }) => pendingUpdate.fileNodeId);
 		}
 
 		const result = await db_text_search_filtered_query(ctx, {

@@ -628,6 +628,14 @@ export const files_UPLOAD_PATH_TAKEN_MESSAGE = "This file already exists.";
 export const files_REPLACE_FILE_CONTENT_STALE_MESSAGE =
 	"This file changed while you were saving. Copy your local changes before reloading, then try again.";
 
+/**
+ * What the pending doors answer when a content proposal on a file with collaboration off is out
+ * of date: a member saved the file after the agent made the change. The Pending changes row, the
+ * diff view, and the server all show this one sentence, so it lives in one place.
+ */
+export const files_PENDING_UPDATE_STALE_BASE_MESSAGE =
+	"This file was saved after the agent made this change, so the change is out of date. Ask the agent to make the change again, or discard it.";
+
 export function files_create_tree_items_list_from_nodes(nodes: files_VisibleTreeNode[]) {
 	return [files_SYNTHETIC_ROOT_FOLDER, ...nodes];
 }
@@ -755,9 +763,10 @@ type FilePendingUpdateFieldsForYjsContent = Pick<
 >;
 
 /**
- * Narrow a pending update doc to a content-bearing one. Move-only docs leave the whole canonical
- * content group unset; the 5 fields are set together or not at all. The state bytes live in the
- * paged `files_pending_update_yjs_states` families the three ids point at.
+ * Narrow a pending update doc to a content proposal on a collaborative file (Yjs base).
+ * A proposal on a file with collaboration off fails this check. Use
+ * `files_pending_update_has_content` for either kind. The state bytes live in the paged
+ * `files_pending_update_yjs_states` families the three ids point at.
  */
 export function files_pending_update_has_yjs_content<
 	Row extends FilePendingUpdateFieldsForYjsContent | null | undefined,
@@ -778,6 +787,67 @@ export function files_pending_update_has_yjs_content<
 		row.stagedStateId !== undefined &&
 		row.unstagedStateId !== undefined
 	);
+}
+
+type FilePendingUpdateFieldsForAssetContent = Pick<
+	app_convex_Doc<"files_pending_updates">,
+	"baseAssetId" | "baseStateId" | "stagedStateId" | "unstagedStateId"
+>;
+
+/**
+ * Narrow a pending update doc to a content proposal on a file with collaboration off. Such a
+ * file has no Yjs document, so the proposal records the content asset the three branches were
+ * built from instead of a Yjs sequence. The 4 fields are set together or not at all.
+ */
+export function files_pending_update_has_asset_content<
+	Row extends FilePendingUpdateFieldsForAssetContent | null | undefined,
+>(
+	row: Row,
+): row is NonNullable<Row> & {
+	baseAssetId: NonNullable<FilePendingUpdateFieldsForAssetContent["baseAssetId"]>;
+	baseStateId: NonNullable<FilePendingUpdateFieldsForAssetContent["baseStateId"]>;
+	stagedStateId: NonNullable<FilePendingUpdateFieldsForAssetContent["stagedStateId"]>;
+	unstagedStateId: NonNullable<FilePendingUpdateFieldsForAssetContent["unstagedStateId"]>;
+} {
+	return (
+		row != null &&
+		row.baseAssetId !== undefined &&
+		row.baseStateId !== undefined &&
+		row.stagedStateId !== undefined &&
+		row.unstagedStateId !== undefined
+	);
+}
+
+type FilePendingUpdateFieldsForContent = FilePendingUpdateFieldsForYjsContent & FilePendingUpdateFieldsForAssetContent;
+
+/**
+ * Narrow a pending update doc to one that carries a content proposal of either kind: three
+ * branches built against a Yjs sequence (collaboration on) or against a content asset
+ * (collaboration off). Use this wherever the code only needs the three state ids.
+ */
+export function files_pending_update_has_content<Row extends FilePendingUpdateFieldsForContent | null | undefined>(
+	row: Row,
+): row is NonNullable<Row> & {
+	baseStateId: NonNullable<FilePendingUpdateFieldsForContent["baseStateId"]>;
+	stagedStateId: NonNullable<FilePendingUpdateFieldsForContent["stagedStateId"]>;
+	unstagedStateId: NonNullable<FilePendingUpdateFieldsForContent["unstagedStateId"]>;
+} {
+	return files_pending_update_has_yjs_content(row) || files_pending_update_has_asset_content(row);
+}
+
+/**
+ * A content proposal on a file with collaboration off is stale when a member saved the file
+ * after the proposal was made: the node's content asset is no longer the one the branches were
+ * built from. Accept and every client edit refuse a stale proposal, the agent's reads skip it,
+ * and Discard deletes it, or keeps only its move or delete. A collaborative proposal is never
+ * stale by this rule. A move-only doc is never stale either, because the rule needs the whole
+ * asset content group.
+ */
+export function files_pending_update_content_is_stale(
+	row: FilePendingUpdateFieldsForContent,
+	node: Pick<app_convex_Doc<"files_nodes">, "assetId">,
+) {
+	return files_pending_update_has_asset_content(row) && row.baseAssetId !== node.assetId;
 }
 
 // #region pending path overlay

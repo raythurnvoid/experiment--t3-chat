@@ -36,8 +36,11 @@ import {
 	files_fetch_file_yjs_state_and_text,
 	files_format_size,
 	files_get_read_only_capabilities,
+	files_node_has_editable_text_content,
 	files_node_has_editable_yjs_state,
-	files_pending_update_has_yjs_content,
+	files_pending_update_content_is_stale,
+	files_pending_update_has_content,
+	files_PENDING_UPDATE_STALE_BASE_MESSAGE,
 	files_upsert_file_pending_update,
 	type files_YjsRootKind,
 	type files_VisibleTreeNode,
@@ -91,14 +94,19 @@ type FileEditorSidebarPendingRow = {
 	 * proposal). `null` when the node is missing from the tree; content decode then refuses.
 	 */
 	rootKind: files_YjsRootKind | null;
+	/**
+	 * True for a content proposal on a file with collaboration off whose file a member saved after
+	 * the agent made it. The server refuses to accept it, so the row can only be discarded.
+	 */
+	isStale: boolean;
 };
 
 /**
  * Pair each pending update with its file path and sort by path (the list query returns pending
  * update docs in creation order). Rows whose file node is missing from `list_tree` keep a
  * fallback label so the user can still discard them. The row `kind` is derived from field
- * presence: `pendingMove` marks a move (plus content when the Yjs fields are set), `copiedFrom`
- * marks a copy.
+ * presence: `pendingMove` marks a move (plus content when the doc carries a content proposal, in
+ * either collaboration mode), `copiedFrom` marks a copy.
  */
 function build_pending_rows(
 	pendingUpdates: readonly app_convex_Doc<"files_pending_updates">[],
@@ -144,7 +152,7 @@ function build_pending_rows(
 				: pendingReplacement
 					? ("replacement" as const)
 					: pendingMove
-						? files_pending_update_has_yjs_content(pendingUpdate)
+						? files_pending_update_has_content(pendingUpdate)
 							? ("content_and_move" as const)
 							: ("move" as const)
 						: copiedFrom
@@ -203,7 +211,10 @@ function build_pending_rows(
 				canPreviewDeleteDiff: kind === "delete" && files_node_has_editable_yjs_state(node),
 				isFolder: node?.kind === "folder",
 				isAddedFile: pendingUpdate.eagerCreated != null,
-				rootKind: files_node_has_editable_yjs_state(node) ? node.yjsRootKind : null,
+				// A file with collaboration off keeps its shape too; its branches decode the same way.
+				rootKind: files_node_has_editable_text_content(node) ? node.yjsRootKind : null,
+				// Accepting a delete ignores the content branches, so stale content does not block it.
+				isStale: kind !== "delete" && node != null && files_pending_update_content_is_stale(pendingUpdate, node),
 			};
 		})
 		.sort((left, right) => left.path.localeCompare(right.path));
@@ -302,7 +313,7 @@ async function decode_staged_unstaged(args: {
 	rootKind: files_YjsRootKind | null;
 }) {
 	const { membershipId, pendingUpdate, rootKind } = args;
-	if (!files_pending_update_has_yjs_content(pendingUpdate)) {
+	if (!files_pending_update_has_content(pendingUpdate)) {
 		return Result({ _nay: { message: "Pending update has no content to decode" } });
 	}
 	if (rootKind === null) {
@@ -406,7 +417,7 @@ async function files_pending_row_accept(
 		// A move `_nay` is a real conflict (missing or settled pending update docs resolve as
 		// no-op `_yay`), so a content-plus-move accept stops here instead of saving content
 		// onto a failed move.
-		if (moved._nay || (!files_pending_update_has_yjs_content(pendingUpdate) && !pendingUpdate.pendingReplacement)) {
+		if (moved._nay || (!files_pending_update_has_content(pendingUpdate) && !pendingUpdate.pendingReplacement)) {
 			return moved;
 		}
 	}
@@ -449,7 +460,7 @@ async function files_pending_row_discard(
 		return await files_pending_discard(convex, membershipId, pendingUpdate);
 	}
 
-	if (files_pending_update_has_yjs_content(pendingUpdate) && !pendingUpdate.copiedFrom && !pendingUpdate.eagerCreated) {
+	if (files_pending_update_has_content(pendingUpdate) && !pendingUpdate.copiedFrom && !pendingUpdate.eagerCreated) {
 		const reverted = await files_pending_discard(convex, membershipId, pendingUpdate);
 		if (reverted._nay) return reverted;
 	}
@@ -510,6 +521,13 @@ function files_pending_rows_build_accept_units(rows: FileEditorSidebarPendingRow
 
 const PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE =
 	"Use All changes to accept changes that also affect pending changes from another source";
+
+/**
+ * "Accept all" skips stale rows (collaboration off, file saved since). The per-row sentence in
+ * `files_PENDING_UPDATE_STALE_BASE_MESSAGE` talks about one file, so the bulk action has its own.
+ */
+const PENDING_ACCEPT_ALL_SKIPS_STALE_MESSAGE =
+	"Out-of-date changes are skipped. Ask the agent to make them again, or discard them.";
 
 /**
  * Mark shown rows whose accept can settle or invalidate a hidden row. Keep those accepts in the
@@ -901,6 +919,7 @@ type FileEditorSidebarPendingItem_Props = {
 	canPreviewDeleteDiff: boolean;
 	isAddedFile: boolean;
 	rootKind: files_YjsRootKind | null;
+	isStale: boolean;
 	acceptRequiresAllChanges: boolean;
 	canAccept: boolean;
 	disabled?: boolean;
@@ -920,6 +939,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 		canPreviewDeleteDiff,
 		isAddedFile,
 		rootKind,
+		isStale,
 		acceptRequiresAllChanges,
 		canAccept,
 		disabled,
@@ -1038,6 +1058,12 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	const handleAccept = useFn((event: MouseEvent<HTMLButtonElement>) => {
 		event.preventDefault();
 		if (isBusy || !canAccept) return;
+		// The button stays enabled so the explanation is reachable by click too, not only by
+		// hovering the `title`. The server would refuse the accept with the same sentence.
+		if (isStale) {
+			toast.error(files_PENDING_UPDATE_STALE_BASE_MESSAGE);
+			return;
+		}
 		if (acceptRequiresAllChanges) {
 			toast.error(PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE);
 			return;
@@ -1140,7 +1166,13 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 							variant="ghost"
 							className={cn("FileEditorSidebarPending-accept" satisfies FileEditorSidebarPending_ClassNames)}
 							aria-label={`Accept ${actionLabel}`}
-							title={acceptRequiresAllChanges ? PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE : undefined}
+							title={
+								isStale
+									? files_PENDING_UPDATE_STALE_BASE_MESSAGE
+									: acceptRequiresAllChanges
+										? PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE
+										: undefined
+							}
 							aria-busy={isBusy}
 							disabled={isBusy || disabled || !canAccept}
 							onClick={handleAccept}
@@ -1166,26 +1198,31 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	// everything (a delete supersedes the doc's other aspects). The replace indicator wins the
 	// next slot: a move onto an occupied destination archives that file, so mark it as Replaced.
 	// Copy and replacement rows also show Replaced: accepting them installs a whole-file replacement
-	// (content and type). Plain edits show Modified.
+	// (content and type). Plain edits show Modified. A stale proposal (collaboration off, file
+	// saved since) shows Out of date, because it can only be discarded.
 	const caption =
 		kind === "delete"
 			? "Deleted"
-			: replacedNodeId != null
-				? "Replaced"
-				: isAddedFile
-					? "Added"
-					: kind === "content_and_move"
-						? "Moved"
-						: kind === "copy" || kind === "replacement"
-							? "Replaced"
-							: "Modified";
+			: isStale
+				? "Out of date"
+				: replacedNodeId != null
+					? "Replaced"
+					: isAddedFile
+						? "Added"
+						: kind === "content_and_move"
+							? "Moved"
+							: kind === "copy" || kind === "replacement"
+								? "Replaced"
+								: "Modified";
 
 	// Content-plus-move rows show the same red → green move label as move-only rows; the link
-	// still opens the diff. Delete rows always show only their own path.
+	// still opens the diff. Delete rows always show only their own path. The stale suffix gives
+	// assistive tech the caption's meaning, like the tree's " added" suffix.
 	const rowLabel =
 		(kind === "move" || kind === "content_and_move") && moveDestinationPath != null
 			? `${path} → ${moveDestinationPath}`
 			: path;
+	const rowAccessibleLabel = isStale ? `${rowLabel}, out of date` : rowLabel;
 
 	return (
 		<li>
@@ -1216,8 +1253,8 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 								? { nodeId: pendingUpdate.fileNodeId }
 								: { nodeId: pendingUpdate.fileNodeId, view: "diff_editor" }
 						}
-						aria-label={rowLabel}
-						title={rowLabel}
+						aria-label={rowAccessibleLabel}
+						title={rowAccessibleLabel}
 					>
 						{(kind === "move" || kind === "content_and_move") && moveDestinationPath != null ? (
 							<PendingMoveLabel path={path} moveDestinationPath={moveDestinationPath} />
@@ -1241,7 +1278,13 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 							variant="ghost"
 							className={cn("FileEditorSidebarPending-accept" satisfies FileEditorSidebarPending_ClassNames)}
 							aria-label={`Accept ${actionLabel}`}
-							title={acceptRequiresAllChanges ? PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE : undefined}
+							title={
+								isStale
+									? files_PENDING_UPDATE_STALE_BASE_MESSAGE
+									: acceptRequiresAllChanges
+										? PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE
+										: undefined
+							}
 							aria-busy={isBusy}
 							disabled={isBusy || disabled || !canAccept}
 							onClick={handleAccept}
@@ -1500,17 +1543,24 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 			toast.error(PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE);
 			return;
 		}
+		// A stale proposal (collaboration off, file saved since) cannot be accepted, and the
+		// server would refuse it. Accept the other rows and explain the skipped ones once.
+		const acceptRows = visibleRows.filter((row) => !row.isStale);
+		if (acceptRows.length < visibleRows.length) {
+			toast.warning(PENDING_ACCEPT_ALL_SKIPS_STALE_MESSAGE);
+		}
+		if (acceptRows.length === 0) return;
 		setIsBulkBusy(true);
 
 		// Use an async IIFE because the React compiler has problems with try catch finally blocks
 		(async (/* iife */) => {
-			const failures = await files_pending_rows_run_bulk(visibleRows, (row) =>
+			const failures = await files_pending_rows_run_bulk(acceptRows, (row) =>
 				files_pending_row_accept(convex, membershipId, row.pendingUpdate, row.rootKind),
 			);
 			if (failures > 0) {
-				toast.error(`Failed to accept ${failures} of ${visibleRows.length} pending changes`);
+				toast.error(`Failed to accept ${failures} of ${acceptRows.length} pending changes`);
 			} else {
-				announceActionSuccess(`Accepted ${visibleRows.length} pending changes`);
+				announceActionSuccess(`Accepted ${acceptRows.length} pending changes`);
 			}
 		})()
 			.catch((error) => {
@@ -1599,7 +1649,15 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 								"FileEditorSidebarPending-accept" satisfies FileEditorSidebarPending_ClassNames,
 							)}
 							aria-label="Accept all shown pending changes"
-							title={acceptRequiresAllChangesIds.size > 0 ? PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE : undefined}
+							title={
+								// Same order as the click: a row that requires all changes stops the bulk accept,
+								// stale rows are only skipped.
+								acceptRequiresAllChangesIds.size > 0
+									? PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE
+									: visibleRows.some((row) => row.isStale)
+										? PENDING_ACCEPT_ALL_SKIPS_STALE_MESSAGE
+										: undefined
+							}
 							aria-busy={isBulkBusy}
 							disabled={isBulkBusy || !canAcceptAllVisibleRows}
 							onClick={handleAcceptAll}
@@ -1641,6 +1699,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 							canPreviewDeleteDiff={row.canPreviewDeleteDiff}
 							isAddedFile={row.isAddedFile}
 							rootKind={row.rootKind}
+							isStale={row.isStale}
 							acceptRequiresAllChanges={acceptRequiresAllChangesIds.has(row.pendingUpdate._id)}
 							canAccept={canAcceptRow(row)}
 							disabled={isBulkBusy}
@@ -1669,19 +1728,28 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		copiedFrom?: { nodeId: string; path: string };
 		eagerCreated?: { committedSequence: number };
 		pendingArchive?: { fromPath: string };
+		/** A proposal on a file with collaboration off stores the asset it was built from. */
+		baseAssetId?: string;
 	}) =>
 		({
 			_id: args.id,
 			fileNodeId: args.fileNodeId,
 			// Move-only docs leave the whole canonical content group unset, like the server does.
 			...(args.staged != null && args.unstaged != null
-				? {
-						baseYjsSequence: 0,
-						baseLineageGeneration: 0,
-						baseStateId: `${args.id}_base`,
-						stagedStateId: `${args.id}_staged`,
-						unstagedStateId: `${args.id}_unstaged`,
-					}
+				? args.baseAssetId
+					? {
+							baseAssetId: args.baseAssetId,
+							baseStateId: `${args.id}_base`,
+							stagedStateId: `${args.id}_staged`,
+							unstagedStateId: `${args.id}_unstaged`,
+						}
+					: {
+							baseYjsSequence: 0,
+							baseLineageGeneration: 0,
+							baseStateId: `${args.id}_base`,
+							stagedStateId: `${args.id}_staged`,
+							unstagedStateId: `${args.id}_unstaged`,
+						}
 				: {}),
 			...(args.pendingMove ? { pendingMove: args.pendingMove } : {}),
 			...(args.copiedFrom ? { copiedFrom: args.copiedFrom } : {}),
@@ -1689,13 +1757,25 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			...(args.pendingArchive ? { pendingArchive: args.pendingArchive } : {}),
 		}) as unknown as app_convex_Doc<"files_pending_updates">;
 
-	const makeNode = (args: { id: string; path: string; kind?: "file" | "folder"; parentId?: string }) =>
+	const makeNode = (args: {
+		id: string;
+		path: string;
+		kind?: "file" | "folder";
+		parentId?: string;
+		/** A text file with collaboration off, like `list_tree` returns it, with the asset `asset_<id>`. */
+		nonCollaborative?: boolean;
+		yjsRootKind?: "rich_text" | "plain_text";
+	}) =>
 		({
 			_id: args.id,
 			path: args.path,
 			name: args.path.split("/").pop() ?? args.path,
 			kind: args.kind ?? "file",
 			parentId: args.parentId ?? "root",
+			...(args.nonCollaborative
+				? { nonCollaborative: true, assetId: `asset_${args.id}`, contentType: "text/markdown" }
+				: {}),
+			...(args.yjsRootKind ? { yjsRootKind: args.yjsRootKind } : {}),
 		}) as unknown as app_convex_Doc<"files_nodes">;
 
 	const makeNodesById = (nodes: app_convex_Doc<"files_nodes">[]) =>
@@ -1725,6 +1805,61 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(rows).toHaveLength(1);
 			expect(rows[0]?.path).toBe("(unknown file)");
+		});
+
+		test("builds a content row with the node's shape for a proposal on a file with collaboration off", () => {
+			const updates = [
+				makePendingUpdate({
+					id: "pu_off",
+					fileNodeId: "node_off",
+					staged: "s",
+					unstaged: "u",
+					baseAssetId: "asset_node_off",
+				}),
+			];
+			const nodesById = makeNodesById([
+				makeNode({ id: "node_off", path: "/off.md", nonCollaborative: true, yjsRootKind: "plain_text" }),
+			]);
+
+			const rows = build_pending_rows(updates, nodesById);
+
+			expect(rows[0]).toMatchObject({ kind: "content", rootKind: "plain_text", isStale: false });
+		});
+
+		test("marks the proposal stale once the node's asset is not the one it was built from", () => {
+			const updates = [
+				makePendingUpdate({ id: "pu_off", fileNodeId: "node_off", staged: "s", unstaged: "u", baseAssetId: "asset_1" }),
+				makePendingUpdate({
+					id: "pu_gone",
+					fileNodeId: "node_missing",
+					staged: "s",
+					unstaged: "u",
+					baseAssetId: "asset_1",
+				}),
+				makePendingUpdate({
+					id: "pu_delete",
+					fileNodeId: "node_off_deleted",
+					staged: "s",
+					unstaged: "u",
+					baseAssetId: "asset_1",
+					pendingArchive: { fromPath: "/off-deleted.md" },
+				}),
+			];
+			const nodesById = makeNodesById([
+				makeNode({ id: "node_off", path: "/off.md", nonCollaborative: true, yjsRootKind: "rich_text" }),
+				makeNode({ id: "node_off_deleted", path: "/off-deleted.md", nonCollaborative: true, yjsRootKind: "rich_text" }),
+			]);
+
+			const rows = build_pending_rows(updates, nodesById);
+
+			expect(rows.find((row) => row.pendingUpdate._id === "pu_off")?.isStale).toBe(true);
+			// A node hidden from the tree cannot be compared, so it is never shown as stale.
+			expect(rows.find((row) => row.pendingUpdate._id === "pu_gone")?.isStale).toBe(false);
+			// Accepting a delete ignores the content branches, so stale content does not block it.
+			expect(rows.find((row) => row.pendingUpdate._id === "pu_delete")).toMatchObject({
+				kind: "delete",
+				isStale: false,
+			});
 		});
 
 		test("derives row kinds from field presence", () => {

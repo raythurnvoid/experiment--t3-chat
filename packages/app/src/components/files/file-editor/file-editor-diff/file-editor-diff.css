@@ -19,11 +19,27 @@
 		font-size: 0.95rem;
 		color: var(--color-fg-08);
 	}
+
+	/* Status line before the editor: the stale sentence, or a loading sentence while rewritten
+	   branches load. Keep this live region mounted and empty otherwise. It takes space only when
+	   it has text. */
+	.FileEditorDiff-stale {
+		margin: 0;
+
+		font-size: 0.9rem;
+		color: var(--color-fg-08);
+
+		&:not(:empty) {
+			/* Keep the text below the floating Pending bar. */
+			padding: var(--FileEditorDiff-status-top-padding) 16px 8px;
+		}
+	}
 	/* #endregion root */
 
 	/* #region toolbar */
 	.FileEditorDiffToolbarActions,
-	.FileEditorDiffNonCollabToolbarActions {
+	.FileEditorDiffNonCollabToolbarActions,
+	.FileEditorDiffStaleToolbarActions {
 		display: flex;
 		flex-direction: row;
 		align-items: center;
@@ -35,7 +51,8 @@
 	}
 
 	.FileEditorDiffToolbarActions-button,
-	.FileEditorDiffNonCollabToolbarActions-button {
+	.FileEditorDiffNonCollabToolbarActions-button,
+	.FileEditorDiffStaleToolbarActions-button {
 		gap: 4px;
 	}
 
@@ -81,7 +98,8 @@
 	}
 
 	.FileEditorDiffToolbarActions-icon,
-	.FileEditorDiffNonCollabToolbarActions-icon {
+	.FileEditorDiffNonCollabToolbarActions-icon,
+	.FileEditorDiffStaleToolbarActions-icon {
 		width: 20px;
 		height: 20px;
 	}
