@@ -9,6 +9,7 @@ import { organizations_db_create_workspace } from "./organizations.ts";
 import {
 	plugins_data_db_apply_file_access_binding,
 	plugins_data_db_count_installation_docs,
+	plugins_data_db_prepare_file_access_binding,
 	plugins_data_max_last_append,
 	plugins_data_parse_append_key_at,
 } from "./plugins_data.ts";
@@ -1707,6 +1708,451 @@ describe("public API routes", () => {
 		expect(replayed.status).toBe(409);
 		expect(await replayed.json()).toEqual({ message: "This reservation was already released" });
 		expect(await read_usage(t, fixture)).toMatchObject({ reservedBytes: 0, reservedDocuments: 0 });
+	});
+});
+
+describe("invoke file write preconditions", () => {
+	async function seed_file_writer(t: ReturnType<typeof test_convex>) {
+		const userId = await t.run((ctx) => ctx.db.insert("users", { clerkUserId: "invoke-file-writer" }));
+		const capabilities: plugins_Capability[] = ["workspace.files.own-write", "workspace.files.own-access"];
+		const fixture = await seed_installation(t, { userId, acceptedCapabilities: capabilities, plan: "Pay As You Go" });
+		const run = await start_plugin_run(t, fixture, { acceptedCapabilities: capabilities, tokenSeed: "e" });
+		await t.run((ctx) =>
+			ctx.db.patch("plugins_event_runs", run.runId, {
+				event: "ui.invoke.requested",
+				endpointId: "chat",
+				serializationKey: "installation",
+				assetId: undefined,
+				fileNodeId: undefined,
+			}),
+		);
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", subject: "invoke-file-writer", external_id: userId });
+		const folder = await t.mutation(internal.public_api_plugin_files.ensure_plugin_folder, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.workspaceId,
+			userId,
+			runId: run.runId,
+			path: "/mirror/private",
+		});
+		if (folder._nay) throw new Error(folder._nay.message);
+		const consumed = await t.mutation(internal.plugins_runtime.consume_run_api_call, {
+			runId: run.runId,
+			kind: "api_request",
+			route: "/api/v1/files/write",
+		});
+		if (consumed._nay) throw new Error(consumed._nay.message);
+		return { ...fixture, ...run, asUser, parentId: folder._yay.nodeId, callId: consumed._yay.callId };
+	}
+
+	async function prepare_file(
+		t: ReturnType<typeof test_convex>,
+		fixture: Awaited<ReturnType<typeof seed_file_writer>>,
+		expectedParentNodeId: string = fixture.parentId,
+	) {
+		return await t.mutation(internal.public_api.prepare_file_write, {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.workspaceId,
+			userId: fixture.userId,
+			principalRef: { kind: "plugin_run", runId: fixture.runId, callId: fixture.callId },
+			path: "/mirror/private/doc.md",
+			expectedParentNodeId,
+			overwrite: "replace",
+			contentType: "text/markdown",
+			yjsRootKind: "rich_text",
+			contentSize: 11,
+			yjsSnapshotSize: 0,
+		});
+	}
+
+	test("rejects invalid IDs with 400 and other parent identities with 409 before creating a stage", async () => {
+		const t = test_convex();
+		const fixture = await seed_file_writer(t);
+		for (const [expectedParentNodeId, status] of [
+			["not-an-id", 400],
+			[fixture.organizationId, 400],
+			[fixture.parentId, 409],
+		] as const) {
+			const response = await t.fetch("/api/v1/files/write", {
+				method: "POST",
+				headers: service_headers(fixture.apiToken),
+				body: JSON.stringify({ path: "/mirror/missing/doc.md", content: "# Original\n", expectedParentNodeId }),
+			});
+			expect(response.status).toBe(status);
+		}
+		expect(await t.run((ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
+		expect(
+			await t.run((ctx) =>
+				ctx.db
+					.query("files_nodes")
+					.filter((q) => q.eq(q.field("path"), "/mirror/missing"))
+					.collect(),
+			),
+		).toEqual([]);
+	});
+
+	test.each(["folder", "file"] as const)(
+		"a hidden %s returns 403 before parent details and a write grant restores access",
+		async (kind) => {
+			const t = test_convex();
+			const fixture = await seed_file_writer(t);
+			const member = await join_member_with_role(t, fixture, { clerkUserId: "invoke-hidden-writer", role: "member" });
+			let restrictedNodeId = fixture.parentId;
+			if (kind === "file") {
+				const prepared = await prepare_file(t, fixture);
+				if (prepared._nay) throw new Error(prepared._nay.message);
+				const created = await t.mutation(internal.public_api.publish_file_write, {
+					stageId: prepared._yay.stageId,
+					targetAnchor: prepared._yay.targetAnchor,
+					content: "# Original\n",
+					nonCollaborative: true,
+				});
+				if (created._nay) throw new Error(created._nay.message);
+				restrictedNodeId = created._yay.nodeId;
+			}
+			expect(
+				await fixture.asUser.mutation(api.files_sharing.restrict_node, {
+					membershipId: fixture.membershipId,
+					nodeId: restrictedNodeId,
+				}),
+			).toEqual({ _yay: null });
+			await t.run(async (ctx) => {
+				await test_mocks_fill_db_with.plan(ctx, { userId: member.userId, plan: "Pay As You Go" });
+				await ctx.db.patch("plugins_event_runs", fixture.runId, { actorUserId: member.userId });
+			});
+			const parent = await t.run((ctx) => ctx.db.get("files_nodes", fixture.parentId));
+			if (!parent || parent.parentId === files_ROOT_ID) throw new Error("Expected a nested folder");
+			const request = () =>
+				t.fetch("/api/v1/files/write", {
+					method: "POST",
+					headers: service_headers(fixture.apiToken),
+					body: JSON.stringify({
+						path: "/mirror/private/doc.md",
+						content: "# Changed\n",
+						expectedParentNodeId: parent.parentId,
+					}),
+				});
+			const denied = await request();
+			expect(denied.status).toBe(403);
+			expect(await denied.json()).toEqual({ message: "Permission denied" });
+			expect(await t.run((ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
+
+			expect(
+				await fixture.asUser.mutation(api.files_sharing.set_node_share_grant, {
+					membershipId: fixture.membershipId,
+					nodeId: restrictedNodeId,
+					principal: { kind: "user", userId: member.userId },
+					level: "write",
+				}),
+			).toEqual({ _yay: null });
+			const accessible = await request();
+			expect(accessible.status).toBe(409);
+			expect(await accessible.json()).toEqual({ message: "The parent folder changed during the write" });
+			const prepared = await prepare_file(t, { ...fixture, userId: member.userId });
+			if (prepared._nay) throw new Error(prepared._nay.message);
+			const published =
+				kind === "file"
+					? await t.mutation(internal.public_api.publish_file_fill, {
+							stageId: prepared._yay.stageId,
+							expectedNodeId: restrictedNodeId,
+							content: "# Changed\n",
+							nonCollaborative: true,
+						})
+					: await t.mutation(internal.public_api.publish_file_write, {
+							stageId: prepared._yay.stageId,
+							targetAnchor: prepared._yay.targetAnchor,
+							content: "# Changed\n",
+							nonCollaborative: true,
+						});
+			expect(published._nay).toBeUndefined();
+			expect(published._yay?.nodeId).toBeDefined();
+		},
+	);
+
+	test("refuses an anchored upload run", async () => {
+		const t = test_convex();
+		const fixture = await seed_file_writer(t);
+		const upload = await start_plugin_run(t, fixture, {
+			acceptedCapabilities: ["workspace.files.write"],
+			tokenSeed: "f",
+		});
+		const response = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: service_headers(upload.apiToken),
+			body: JSON.stringify({ path: "/photo.md", content: "# Original\n", expectedParentNodeId: fixture.parentId }),
+		});
+		expect(response.status).toBe(403);
+	});
+
+	test.each(["create", "fill", "collaborative fill"] as const)(
+		"%s refuses a parent renamed, moved, archived, or replaced after prepare",
+		async (mode) => {
+			for (const change of ["rename", "move", "archive", "replace"] as const) {
+				const t = test_convex();
+				const fixture = await seed_file_writer(t);
+				let nodeId: Id<"files_nodes"> | undefined;
+				if (mode !== "create") {
+					const prepared = await prepare_file(t, fixture);
+					if (prepared._nay) throw new Error(prepared._nay.message);
+					const created = await t.mutation(internal.public_api.publish_file_write, {
+						stageId: prepared._yay.stageId,
+						targetAnchor: prepared._yay.targetAnchor,
+						content: "# Original\n",
+						nonCollaborative: mode !== "collaborative fill",
+					});
+					if (created._nay) throw new Error(created._nay.message);
+					nodeId = created._yay.nodeId;
+				}
+				const beforeNode = nodeId ? await t.run((ctx) => ctx.db.get("files_nodes", nodeId!)) : null;
+				const prepared = await prepare_file(t, fixture);
+				if (prepared._nay) throw new Error(prepared._nay.message);
+				expect(
+					(await t.run((ctx) => ctx.db.get("public_api_file_write_stages", prepared._yay.stageId)))
+						?.expectedParentNodeId,
+				).toBe(fixture.parentId);
+				if (change === "rename") {
+					expect(
+						(
+							await fixture.asUser.mutation(api.files_nodes.rename_node, {
+								membershipId: fixture.membershipId,
+								nodeId: fixture.parentId,
+								path: "/mirror/renamed",
+							})
+						)._nay,
+					).toBeUndefined();
+				} else if (change === "move") {
+					expect(
+						(
+							await fixture.asUser.mutation(api.files_nodes.move_nodes, {
+								membershipId: fixture.membershipId,
+								itemIds: [fixture.parentId],
+								targetParentId: files_ROOT_ID,
+							})
+						)._nay,
+					).toBeUndefined();
+				} else {
+					expect(
+						(
+							await fixture.asUser.mutation(api.files_nodes.archive_nodes, {
+								membershipId: fixture.membershipId,
+								nodeIds: [fixture.parentId],
+							})
+						)._nay,
+					).toBeUndefined();
+					if (change === "replace") {
+						const replacement = await t.mutation(internal.public_api_plugin_files.ensure_plugin_folder, {
+							organizationId: fixture.organizationId,
+							workspaceId: fixture.workspaceId,
+							userId: fixture.userId,
+							runId: fixture.runId,
+							path: "/mirror/private",
+						});
+						if (replacement._nay) throw new Error(replacement._nay.message);
+						expect(replacement._yay.nodeId).not.toBe(fixture.parentId);
+					}
+				}
+				const published =
+					mode !== "create"
+						? await t.mutation(internal.public_api.publish_file_fill, {
+								stageId: prepared._yay.stageId,
+								expectedNodeId: nodeId!,
+								content: "# Changed\n",
+								nonCollaborative: mode !== "collaborative fill",
+							})
+						: await t.mutation(internal.public_api.publish_file_write, {
+								stageId: prepared._yay.stageId,
+								targetAnchor: prepared._yay.targetAnchor,
+								content: "# Changed\n",
+								nonCollaborative: true,
+							});
+				expect([change, published._nay]).toEqual([
+					change,
+					{ name: "stale_write", message: "The parent folder changed during the write" },
+				]);
+				expect(await t.run((ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
+				const jobs = await t.run((ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect());
+				expect(jobs).toHaveLength(1);
+				expect(jobs[0]?.r2Key).toContain(prepared._yay.contentSnapshotAssetId);
+				if (nodeId)
+					expect((await t.run((ctx) => ctx.db.get("files_nodes", nodeId!)))?.assetId).toBe(beforeNode?.assetId);
+				expect(
+					await t.run((ctx) =>
+						ctx.db
+							.query("files_nodes")
+							.filter((q) =>
+								q.and(q.eq(q.field("path"), "/mirror/private/doc.md"), q.eq(q.field("archiveOperationId"), undefined)),
+							)
+							.collect(),
+					),
+				).toEqual([]);
+			}
+		},
+	);
+
+	test("archiving the whole labelled root returns 409 without recreating it", async () => {
+		const t = test_convex();
+		const fixture = await seed_file_writer(t);
+		const parent = await t.run((ctx) => ctx.db.get("files_nodes", fixture.parentId));
+		expect(
+			(
+				await fixture.asUser.mutation(api.files_nodes.archive_nodes, {
+					membershipId: fixture.membershipId,
+					nodeIds: [parent!.parentId],
+				})
+			)._nay,
+		).toBeUndefined();
+		const response = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: service_headers(fixture.apiToken),
+			body: JSON.stringify({
+				path: "/mirror/private/doc.md",
+				content: "# Original\n",
+				expectedParentNodeId: fixture.parentId,
+			}),
+		});
+		expect(response.status).toBe(409);
+		expect(await t.run((ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
+	});
+
+	test("a tagged file stays writable after parent opt-out and source edits, and equal bytes cannot bypass file opt-out", async () => {
+		const t = test_convex();
+		const fixture = await seed_file_writer(t);
+		const prepared = await prepare_file(t, fixture);
+		if (prepared._nay) throw new Error(prepared._nay.message);
+		const created = await t.mutation(internal.public_api.publish_file_write, {
+			stageId: prepared._yay.stageId,
+			targetAnchor: prepared._yay.targetAnchor,
+			content: "# Original\n",
+			nonCollaborative: true,
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		for (const [fileNodeId, metadataYaml] of [
+			[fixture.parentId, "source: plugin"],
+			[created._yay.nodeId, "plugin-name: council\nsource: member"],
+		] as const) {
+			expect(
+				(
+					await fixture.asUser.mutation(api.files_metadata.set_entries, {
+						membershipId: fixture.membershipId,
+						fileNodeId,
+						metadataYaml,
+					})
+				)._nay,
+			).toBeUndefined();
+		}
+		const fillStage = await prepare_file(t, fixture);
+		if (fillStage._nay) throw new Error(fillStage._nay.message);
+		expect(
+			(
+				await t.mutation(internal.public_api.publish_file_fill, {
+					stageId: fillStage._yay.stageId,
+					expectedNodeId: created._yay.nodeId,
+					content: "# Original\n",
+					nonCollaborative: true,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			(
+				await fixture.asUser.mutation(api.files_metadata.set_entries, {
+					membershipId: fixture.membershipId,
+					fileNodeId: created._yay.nodeId,
+					metadataYaml: "source: plugin",
+				})
+			)._nay,
+		).toBeUndefined();
+		const response = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: service_headers(fixture.apiToken),
+			body: JSON.stringify({
+				path: "/mirror/private/doc.md",
+				content: "# Original\n",
+				skipIfUnchanged: true,
+				expectedParentNodeId: fixture.parentId,
+			}),
+		});
+		expect(response.status).toBe(403);
+	});
+
+	test.each(["create", "fill"] as const)("%s rechecks the editable label at publish", async (mode) => {
+		const t = test_convex();
+		const fixture = await seed_file_writer(t);
+		let fileNodeId = fixture.parentId;
+		if (mode === "fill") {
+			const prepared = await prepare_file(t, fixture);
+			if (prepared._nay) throw new Error(prepared._nay.message);
+			const created = await t.mutation(internal.public_api.publish_file_write, {
+				stageId: prepared._yay.stageId,
+				targetAnchor: prepared._yay.targetAnchor,
+				content: "# Original\n",
+				nonCollaborative: true,
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			fileNodeId = created._yay.nodeId;
+		}
+		const beforeNode = await t.run((ctx) => ctx.db.get("files_nodes", fileNodeId));
+		const prepared = await prepare_file(t, fixture);
+		if (prepared._nay) throw new Error(prepared._nay.message);
+		expect(
+			(
+				await fixture.asUser.mutation(api.files_metadata.set_entries, {
+					membershipId: fixture.membershipId,
+					fileNodeId,
+					metadataYaml: "source: plugin\nplugin-name: other",
+				})
+			)._nay,
+		).toBeUndefined();
+		const published =
+			mode === "fill"
+				? await t.mutation(internal.public_api.publish_file_fill, {
+						stageId: prepared._yay.stageId,
+						expectedNodeId: fileNodeId,
+						content: "# Changed\n",
+						nonCollaborative: true,
+					})
+				: await t.mutation(internal.public_api.publish_file_write, {
+						stageId: prepared._yay.stageId,
+						targetAnchor: prepared._yay.targetAnchor,
+						content: "# Changed\n",
+						nonCollaborative: true,
+					});
+		expect(published._nay?.message).toBe("Permission denied");
+		expect((await t.run((ctx) => ctx.db.get("files_nodes", fileNodeId)))?.assetId).toBe(beforeNode?.assetId);
+		expect(
+			await fixture.asUser.query(api.files_metadata.get_entries, { membershipId: fixture.membershipId, fileNodeId }),
+		).toEqual([
+			{ key: "source", value: "plugin" },
+			{ key: "plugin-name", value: "other" },
+		]);
+		await t.mutation(internal.public_api.cleanup_file_write_stage, { stageId: prepared._yay.stageId });
+	});
+
+	test("a member lock outside a nested plugin lock blocks the write", async () => {
+		const t = test_convex();
+		const fixture = await seed_file_writer(t);
+		const parent = await t.run((ctx) => ctx.db.get("files_nodes", fixture.parentId));
+		expect(
+			(
+				await t.mutation(internal.public_api_plugin_files.set_plugin_access, {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					userId: fixture.userId,
+					runId: fixture.runId,
+					callId: fixture.callId,
+					path: "/mirror/private",
+					readOnly: true,
+				})
+			)._nay,
+		).toBeUndefined();
+		if (!parent || parent.parentId === files_ROOT_ID) throw new Error("Expected a nested folder");
+		expect(
+			(
+				await fixture.asUser.mutation(api.files_nodes.set_node_read_only, {
+					membershipId: fixture.membershipId,
+					nodeId: parent.parentId,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect((await prepare_file(t, fixture))._nay?.name).toBe("read_only");
 	});
 });
 
@@ -4758,9 +5204,7 @@ describe("user_append_document", () => {
 
 		// A lost-response retry gets its first answer, but it must not bring the deleted message back.
 		expect(await send("hello")).toEqual(first);
-		expect((await send("changed"))._nay?.message).toBe(
-			"This idempotency key was already used for a different write",
-		);
+		expect((await send("changed"))._nay?.message).toBe("This idempotency key was already used for a different write");
 		expect(await read_documents(t, fixture)).toHaveLength(0);
 
 		await t.run(async (ctx) => {
@@ -8078,8 +8522,7 @@ async function read_all_store_tables(
 	fixture: Awaited<ReturnType<typeof seed_installation>>,
 ) {
 	return await t.run(async (ctx) => {
-		const [documents, reservations, appendReplayReceipts, tombstones, usage, memberUsage, grants] =
-			await Promise.all([
+		const [documents, reservations, appendReplayReceipts, tombstones, usage, memberUsage, grants] = await Promise.all([
 			ctx.db
 				.query("plugins_data")
 				.withIndex("by_installation_collection_key", (q) => q.eq("installationId", fixture.installationId))
@@ -8296,7 +8739,6 @@ describe("plugins_data_db_drain_batch", () => {
 				treePath: "/frozen.md",
 				pathDepth: 1,
 				lowercaseExtension: "md",
-				pluginOwnerName: "council",
 				restrictedScopeNodeId: undefined,
 				updatedAt: now,
 			});
@@ -11611,7 +12053,7 @@ async function seed_binding_fixture(t: ReturnType<typeof test_convex>, args: { c
 	return fixture;
 }
 
-async function insert_stamped_node(
+async function insert_binding_node(
 	t: ReturnType<typeof test_convex>,
 	fixture: Awaited<ReturnType<typeof seed_binding_fixture>>,
 	args: { name: string; kind: "file" | "folder"; parentId?: Id<"files_nodes">; parentPath?: string },
@@ -11631,7 +12073,6 @@ async function insert_stamped_node(
 			treePath: args.kind === "folder" ? `${path}/` : path,
 			pathDepth: path.split("/").length - 1,
 			lowercaseExtension: args.kind === "file" ? "md" : null,
-			pluginOwnerName: "data-probe",
 			updatedAt: Date.now(),
 		});
 	});
@@ -11648,11 +12089,20 @@ async function apply_binding(
 		if (!installation || !node) {
 			throw new Error("Binding fixture rows are missing");
 		}
-		return await plugins_data_db_apply_file_access_binding(ctx, {
+		const prepared = await plugins_data_db_prepare_file_access_binding(ctx, {
 			installation,
-			node,
+			nodeId: node._id,
 			readScopeId: args.readScopeId,
 		});
+		if (prepared._nay) {
+			return prepared;
+		}
+		await plugins_data_db_apply_file_access_binding(ctx, {
+			installation,
+			node,
+			prepared: prepared._yay,
+		});
+		return prepared;
 	});
 }
 
@@ -11698,7 +12148,7 @@ async function read_binding_rows(
 }
 
 describe("plugins_data_db_apply_file_access_binding", () => {
-	test("binds a stamped folder to a live scope, mirrors member grants, and releases on null", async () => {
+	test("binds a folder to a live scope, mirrors member grants, and releases on null", async () => {
 		const t = test_convex();
 		const fixture = await seed_binding_fixture(t, { clerkUserId: "binding-owner" });
 		const bob = await join_member_with_role(t, fixture, { clerkUserId: "binding-bob", role: "member" });
@@ -11708,8 +12158,8 @@ describe("plugins_data_db_apply_file_access_binding", () => {
 		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
 			action: { kind: "set_principal", scopeId: "p/room", userId: bob.userId, level: "member" },
 		});
-		const folderId = await insert_stamped_node(t, fixture, { name: "reports", kind: "folder" });
-		const childId = await insert_stamped_node(t, fixture, {
+		const folderId = await insert_binding_node(t, fixture, { name: "reports", kind: "folder" });
+		const childId = await insert_binding_node(t, fixture, {
 			name: "notes.md",
 			kind: "file",
 			parentId: folderId,
@@ -11755,7 +12205,7 @@ describe("plugins_data_db_apply_file_access_binding", () => {
 		});
 		const nodeIds: Id<"files_nodes">[] = [];
 		for (let index = 0; index < 5; index += 1) {
-			nodeIds.push(await insert_stamped_node(t, fixture, { name: `bound-${index}.md`, kind: "file" }));
+			nodeIds.push(await insert_binding_node(t, fixture, { name: `bound-${index}.md`, kind: "file" }));
 		}
 
 		const dead = await apply_binding(t, fixture, { nodeId: nodeIds[0]!, readScopeId: "p/ghost" });
@@ -11772,6 +12222,208 @@ describe("plugins_data_db_apply_file_access_binding", () => {
 	});
 });
 
+describe("files_sharing.set_node_share_grant", () => {
+	test("keeps bindings on unchanged or denied shares", async () => {
+		const t = test_convex();
+		const fixture = await seed_binding_fixture(t, { clerkUserId: "binding-share-owner" });
+		const bob = await join_member_with_role(t, fixture, { clerkUserId: "binding-share-bob", role: "member" });
+		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "create", scopeId: "p/share", collections: ["messages"], keyPrefix: "p/share" },
+		});
+		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "set_principal", scopeId: "p/share", userId: bob.userId, level: "member" },
+		});
+		const nodeId = await insert_binding_node(t, fixture, { name: "shared.md", kind: "file" });
+		expect((await apply_binding(t, fixture, { nodeId, readScopeId: "p/share" }))._nay).toBeUndefined();
+		const bindings = await read_binding_rows(t, fixture);
+		const grants = await read_node_read_grants(t, fixture, nodeId);
+
+		const unchanged = await fixture.asUser.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: fixture.membershipId,
+			nodeId,
+			principal: { kind: "user", userId: bob.userId },
+			level: "read",
+		});
+		expect(unchanged._nay).toBeUndefined();
+		const denied = await bob.asUser.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: bob.membershipId,
+			nodeId,
+			principal: { kind: "user", userId: bob.userId },
+			level: "write",
+		});
+		expect(denied._nay).toBeDefined();
+		expect(await read_binding_rows(t, fixture)).toEqual(bindings);
+		expect(await read_node_read_grants(t, fixture, nodeId)).toEqual(grants);
+	});
+
+	test("detaches changed shares and keeps them through later scope changes and deletion", async () => {
+		const t = test_convex();
+		const fixture = await seed_binding_fixture(t, { clerkUserId: "binding-takeover-owner" });
+		const bob = await join_member_with_role(t, fixture, { clerkUserId: "binding-takeover-bob", role: "member" });
+		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "create", scopeId: "p/takeover", collections: ["messages"], keyPrefix: "p/takeover" },
+		});
+		const nodeId = await insert_binding_node(t, fixture, { name: "taken-over.md", kind: "file" });
+		expect((await apply_binding(t, fixture, { nodeId, readScopeId: "p/takeover" }))._nay).toBeUndefined();
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", nodeId, { readOnlyScopeNodeId: nodeId, readOnlyPluginName: "data-probe" });
+		});
+		const before = await t.run(async (ctx) => ctx.db.get("files_nodes", nodeId));
+
+		const shared = await fixture.asUser.mutation(api.files_sharing.set_node_share_grant, {
+			membershipId: fixture.membershipId,
+			nodeId,
+			principal: { kind: "user", userId: bob.userId },
+			level: "write",
+		});
+		expect(shared._nay).toBeUndefined();
+		expect(await read_binding_rows(t, fixture)).toEqual([]);
+		const grants = [
+			`${fixture.userId}:content.read`,
+			`${bob.userId}:content.read`,
+			`${bob.userId}:content.write`,
+		].sort();
+		expect(await read_node_read_grants(t, fixture, nodeId)).toEqual(grants);
+		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", nodeId))).toEqual(before);
+
+		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "set_principal", scopeId: "p/takeover", userId: bob.userId, level: "member" },
+		});
+		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "remove_principal", scopeId: "p/takeover", userId: bob.userId },
+		});
+		const deleted = await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "delete", scopeId: "p/takeover" },
+		});
+		expect(deleted._nay).toBeUndefined();
+		expect(await read_node_read_grants(t, fixture, nodeId)).toEqual(grants);
+		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", nodeId))).toEqual(before);
+	});
+});
+
+describe("files_sharing.remove_node_share_grant", () => {
+	test("detaches only when an existing grant is removed", async () => {
+		const t = test_convex();
+		const fixture = await seed_binding_fixture(t, { clerkUserId: "binding-remove-owner" });
+		const bob = await join_member_with_role(t, fixture, { clerkUserId: "binding-remove-bob", role: "member" });
+		const carol = await join_member_with_role(t, fixture, { clerkUserId: "binding-remove-carol", role: "member" });
+		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "create", scopeId: "p/remove", collections: ["messages"], keyPrefix: "p/remove" },
+		});
+		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "set_principal", scopeId: "p/remove", userId: bob.userId, level: "member" },
+		});
+		const nodeId = await insert_binding_node(t, fixture, { name: "remove.md", kind: "file" });
+		expect((await apply_binding(t, fixture, { nodeId, readScopeId: "p/remove" }))._nay).toBeUndefined();
+		const bindings = await read_binding_rows(t, fixture);
+		const grants = await read_node_read_grants(t, fixture, nodeId);
+
+		const unchanged = await fixture.asUser.mutation(api.files_sharing.remove_node_share_grant, {
+			membershipId: fixture.membershipId,
+			nodeId,
+			principal: { kind: "user", userId: carol.userId },
+		});
+		expect(unchanged._nay).toBeUndefined();
+		const denied = await bob.asUser.mutation(api.files_sharing.remove_node_share_grant, {
+			membershipId: bob.membershipId,
+			nodeId,
+			principal: { kind: "user", userId: bob.userId },
+		});
+		expect(denied._nay).toBeDefined();
+		expect(await read_binding_rows(t, fixture)).toEqual(bindings);
+		expect(await read_node_read_grants(t, fixture, nodeId)).toEqual(grants);
+
+		const removed = await fixture.asUser.mutation(api.files_sharing.remove_node_share_grant, {
+			membershipId: fixture.membershipId,
+			nodeId,
+			principal: { kind: "user", userId: bob.userId },
+		});
+		expect(removed._nay).toBeUndefined();
+		expect(await read_binding_rows(t, fixture)).toEqual([]);
+		expect(await read_node_read_grants(t, fixture, nodeId)).toEqual([`${fixture.userId}:content.read`]);
+	});
+});
+
+describe("files_sharing.restrict_node", () => {
+	test("keeps a live binding on an already restricted node and when restricting a child", async () => {
+		const t = test_convex();
+		const fixture = await seed_binding_fixture(t, { clerkUserId: "binding-restrict-owner" });
+		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "create", scopeId: "p/restrict", collections: ["messages"], keyPrefix: "p/restrict" },
+		});
+		const folderId = await insert_binding_node(t, fixture, { name: "restricted", kind: "folder" });
+		const childId = await insert_binding_node(t, fixture, {
+			name: "child.md",
+			kind: "file",
+			parentId: folderId,
+			parentPath: "/restricted",
+		});
+		expect((await apply_binding(t, fixture, { nodeId: folderId, readScopeId: "p/restrict" }))._nay).toBeUndefined();
+		const bindings = await read_binding_rows(t, fixture);
+		const grants = await read_node_read_grants(t, fixture, folderId);
+
+		for (const nodeId of [folderId, childId]) {
+			const restricted = await fixture.asUser.mutation(api.files_sharing.restrict_node, {
+				membershipId: fixture.membershipId,
+				nodeId,
+			});
+			expect(restricted._nay).toBeUndefined();
+		}
+		expect(await read_binding_rows(t, fixture)).toEqual(bindings);
+		expect(await read_node_read_grants(t, fixture, folderId)).toEqual(grants);
+		expect(await t.run(async (ctx) => (await ctx.db.get("files_nodes", childId))?.restrictedScopeNodeId)).toBe(childId);
+	});
+});
+
+describe("files_sharing.unrestrict_node", () => {
+	test("detaches the binding and falls back to the parent's reader scope", async () => {
+		const t = test_convex();
+		const fixture = await seed_binding_fixture(t, { clerkUserId: "binding-unrestrict-owner" });
+		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "create", scopeId: "p/inner", collections: ["messages"], keyPrefix: "p/inner" },
+		});
+		const outerId = await insert_binding_node(t, fixture, { name: "outer", kind: "folder" });
+		expect(
+			(
+				await fixture.asUser.mutation(api.files_sharing.restrict_node, {
+					membershipId: fixture.membershipId,
+					nodeId: outerId,
+				})
+			)._nay,
+		).toBeUndefined();
+		const innerId = await insert_binding_node(t, fixture, {
+			name: "inner",
+			kind: "folder",
+			parentId: outerId,
+			parentPath: "/outer",
+		});
+		const childId = await insert_binding_node(t, fixture, {
+			name: "child.md",
+			kind: "file",
+			parentId: innerId,
+			parentPath: "/outer/inner",
+		});
+		expect((await apply_binding(t, fixture, { nodeId: innerId, readScopeId: "p/inner" }))._nay).toBeUndefined();
+
+		const unrestricted = await fixture.asUser.mutation(api.files_sharing.unrestrict_node, {
+			membershipId: fixture.membershipId,
+			nodeId: innerId,
+		});
+		expect(unrestricted._nay).toBeUndefined();
+		expect(await read_binding_rows(t, fixture)).toEqual([]);
+		expect(await read_node_read_grants(t, fixture, innerId)).toEqual([]);
+		for (const nodeId of [innerId, childId]) {
+			expect(await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))?.restrictedScopeNodeId)).toBe(
+				outerId,
+			);
+		}
+		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
+			action: { kind: "delete", scopeId: "p/inner" },
+		});
+		expect(await t.run(async (ctx) => (await ctx.db.get("files_nodes", innerId))?.restrictedScopeNodeId)).toBe(outerId);
+	});
+});
+
 describe("plugins_data_db_sync_file_access_bindings", () => {
 	test("membership changes sync mirrored grants for any plugin with bindings", async () => {
 		const t = test_convex();
@@ -11780,7 +12432,7 @@ describe("plugins_data_db_sync_file_access_bindings", () => {
 		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
 			action: { kind: "create", scopeId: "p/sync", collections: ["messages"], keyPrefix: "p/sync" },
 		});
-		const nodeId = await insert_stamped_node(t, fixture, { name: "synced.md", kind: "file" });
+		const nodeId = await insert_binding_node(t, fixture, { name: "synced.md", kind: "file" });
 		expect((await apply_binding(t, fixture, { nodeId, readScopeId: "p/sync" }))._nay).toBeUndefined();
 		expect(await read_node_read_grants(t, fixture, nodeId)).toEqual([`${fixture.userId}:content.read`]);
 
@@ -11827,7 +12479,7 @@ describe("plugins_data_db_sync_file_access_bindings", () => {
 		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
 			action: { kind: "set_principal", scopeId: "p/gone", userId: bob.userId, level: "member" },
 		});
-		const nodeId = await insert_stamped_node(t, fixture, { name: "frozen.md", kind: "file" });
+		const nodeId = await insert_binding_node(t, fixture, { name: "frozen.md", kind: "file" });
 		expect((await apply_binding(t, fixture, { nodeId, readScopeId: "p/gone" }))._nay).toBeUndefined();
 		expect(await read_node_read_grants(t, fixture, nodeId)).toHaveLength(2);
 
@@ -11849,7 +12501,7 @@ describe("plugins_data_db_sync_file_access_bindings", () => {
 		await bob.asPage.mutation(api.plugins_data.user_manage_scope, {
 			action: { kind: "create", scopeId: "p/stranded", collections: ["messages"], keyPrefix: "p/stranded" },
 		});
-		const nodeId = await insert_stamped_node(t, fixture, { name: "stranded.md", kind: "file" });
+		const nodeId = await insert_binding_node(t, fixture, { name: "stranded.md", kind: "file" });
 		expect((await apply_binding(t, fixture, { nodeId, readScopeId: "p/stranded" }))._nay).toBeUndefined();
 		expect(await read_node_read_grants(t, fixture, nodeId)).toEqual([`${bob.userId}:content.read`]);
 
@@ -11895,7 +12547,7 @@ describe("plugins_data_db_sync_file_access_bindings", () => {
 		await fixture.asPage.mutation(api.plugins_data.user_manage_scope, {
 			action: { kind: "set_principal", scopeId: "p/org-gone", userId: bob.userId, level: "member" },
 		});
-		const nodeId = await insert_stamped_node(t, fixture, { name: "org-gone.md", kind: "file" });
+		const nodeId = await insert_binding_node(t, fixture, { name: "org-gone.md", kind: "file" });
 		expect((await apply_binding(t, fixture, { nodeId, readScopeId: "p/org-gone" }))._nay).toBeUndefined();
 		expect(await read_node_read_grants(t, fixture, nodeId)).toHaveLength(2);
 

@@ -55,13 +55,15 @@ Membership says where you are. Access control says what you may do there.
   cascade helper, `set_node_read_only`, and `set_node_writable` in
   `packages/app/convex/files_nodes.ts`. That is what makes a member's lock change take the bypass
   away. Once a member locks or unlocks the node, no service target owns that lock any more.
-- The plugin file doors add a second provenance-bound lock pointer, `readOnlyPluginName`, and the
-  same clearing rule applies to it. The split of who may release such a lock rides the ownership
-  stamp and is specified in `../files-read-only/SKILL.md`. The stamp itself
-  (`files_nodes.pluginOwnerName`, any plugin name) closes the member sharing doors: every
-  `files_sharing.ts` writer and both member lock doors refuse a stamped node and any node whose
-  effective lock comes from one — it covers every node a plugin creates through the owned-file
-  doors.
+- Plugin locks also carry `readOnlyPluginName`. Actual member lock changes clear both origin fields;
+  no-ops preserve them. Members with manage permission can use normal lock and sharing controls on
+  plugin output. Editable `plugin-name` metadata selects a plugin destination but grants no ACL power.
+- An actual successful manual sharing change deletes that node's `plugins_file_access_bindings` doc
+  only. It leaves unrelated grants intact. A denied or no-op sharing request preserves the binding.
+  Later plugin scope changes do not rewrite detached sharing. Metadata edits never detach bindings.
+- Explicit plugin access changes require live `content.permissions.manage` on the node and affected
+  restricted subtrees. Plugin archive-and-recreate replacement requires manage on the old file, even
+  without a new lock request. In-place content updates keep current sharing and require content write.
 
 ## Where a role binds
 

@@ -2544,7 +2544,7 @@ describe("process_workspace_deletion_request", () => {
 			}),
 		);
 
-		const { victimWorkspaceId, controlWorkspaceId, requestId, r2Keys } = await t.run(async (ctx) => {
+		const { victimWorkspaceId, controlWorkspaceId, requestId, r2Keys, metadataFolderIds } = await t.run(async (ctx) => {
 			const victimWorkspace = await organizations_db_create_workspace(ctx, {
 				userId: user.userId,
 				organizationId: user.defaultOrganizationId,
@@ -2580,6 +2580,24 @@ describe("process_workspace_deletion_request", () => {
 				tag: "ws-batch-control",
 			});
 
+			const metadataFolderIds: Id<"files_nodes">[] = [];
+			for (const workspaceId of [victimWorkspace._yay.workspaceId, controlWorkspace._yay.workspaceId]) {
+				const scope = { organizationId: user.defaultOrganizationId, workspaceId, userId: user.userId };
+				const folder = await ctx.runMutation(internal.files_nodes.create_folder_node_by_path, {
+					...scope,
+					path: "/folder-metadata",
+				});
+				if (folder._nay) throw new Error(folder._nay.message);
+				const metadata = await ctx.runMutation(internal.files_metadata.update_entries_by_path, {
+					...scope,
+					path: "/folder-metadata",
+					set: [{ key: "plugin-name", value: "chitchat" }],
+					remove: [],
+				});
+				if (metadata._nay) throw new Error(metadata._nay.message);
+				metadataFolderIds.push(folder._yay.nodeId);
+			}
+
 			const requestId = await data_deletion_db_request(ctx, {
 				userId: user.userId,
 				organizationId: user.defaultOrganizationId,
@@ -2591,9 +2609,21 @@ describe("process_workspace_deletion_request", () => {
 				controlWorkspaceId: controlWorkspace._yay.workspaceId,
 				requestId,
 				r2Keys: seeded.r2Keys,
+				metadataFolderIds,
 			};
 		});
 
+		const beforeMetadata = await t.run(async (ctx) =>
+			(await ctx.db.query("files_metadata_docs").collect()).filter((doc) => metadataFolderIds.includes(doc.fileNodeId)),
+		);
+		for (const nodeId of metadataFolderIds) {
+			expect(
+				beforeMetadata
+					.filter((doc) => doc.fileNodeId === nodeId)
+					.map((doc) => doc.docKind)
+					.sort(),
+			).toEqual(["field", "value"]);
+		}
 		const beforeCount = await t.run((ctx) =>
 			data_deletion_test_count_workspace_content(ctx, {
 				organizationId: user.defaultOrganizationId,
@@ -2655,6 +2685,14 @@ describe("process_workspace_deletion_request", () => {
 		expect(afterDone.controlCount).toBeGreaterThan(0);
 		for (const r2Key of r2Keys) {
 			expect(afterDone.deletionJobs.some((job) => job.r2Key === r2Key)).toBe(true);
+		}
+		const afterMetadata = await t.run(async (ctx) =>
+			(await ctx.db.query("files_metadata_docs").collect()).filter((doc) => metadataFolderIds.includes(doc.fileNodeId)),
+		);
+		expect(afterMetadata.map((doc) => doc.docKind).sort()).toEqual(["field", "value"]);
+		for (const doc of afterMetadata) {
+			expect(doc.fileNodeId).toBe(metadataFolderIds[1]);
+			expect(doc.workspaceId).toBe(controlWorkspaceId);
 		}
 	});
 

@@ -63,7 +63,11 @@ import {
 	type files_YjsRootKind,
 } from "../server/files.ts";
 import { files_yjs_COMPACTION_RETRY_MESSAGE, files_yjs_scan_client_update } from "../shared/files-yjs.ts";
-import { files_metadata_METADATA_FIELD_PREFIX, type files_metadata_Entry } from "../shared/files-metadata.ts";
+import {
+	files_metadata_METADATA_FIELD_PREFIX,
+	files_metadata_apply_set_and_remove,
+	type files_metadata_Entry,
+} from "../shared/files-metadata.ts";
 import { path_name_of } from "../shared/paths.ts";
 import { Result, Result_all } from "common/errors-as-values-utils.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
@@ -262,21 +266,22 @@ async function db_patch_plain_text_chunks_scope(
 	await Promise.all(chunks.map((chunk) => ctx.db.patch("files_plain_text_chunks", chunk._id, patch)));
 }
 
-export async function db_patch_file_chunks_scope(
+async function db_patch_node_search_scope(
 	ctx: MutationCtx,
 	args: {
 		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
 		nodeId: Id<"files_nodes">;
+		kind: Doc<"files_nodes">["kind"];
 		path?: string;
 		archiveOperationId?: string;
 	},
 ) {
 	await Promise.all([
-		db_patch_plain_text_chunks_scope(ctx, args),
+		args.kind === "file" ? db_patch_plain_text_chunks_scope(ctx, args) : undefined,
 		files_metadata_db_patch_file_scope(ctx, {
 			...args,
-			...(args.path === undefined ? {} : { treePath: args.path }),
+			...(args.path === undefined ? {} : { treePath: derive_tree_path_for_file_node(args.path, args.kind) }),
 		}),
 	]);
 }
@@ -445,14 +450,13 @@ async function cascade_file_descendants_path(
 					pathDepth: files_path_depth(childPath),
 					lowercaseExtension: files_lowercase_extension(childPath, child.kind),
 				});
-				if (child.kind === "file") {
-					await db_patch_file_chunks_scope(ctx, {
-						organizationId: args.organizationId,
-						workspaceId: args.workspaceId,
-						nodeId: child._id,
-						path: childPath,
-					});
-				}
+				await db_patch_node_search_scope(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					nodeId: child._id,
+					kind: child.kind,
+					path: childPath,
+				});
 				stack.push({
 					parentId: child._id,
 					parentPath: childPath,
@@ -598,6 +602,7 @@ export async function files_nodes_db_cascade_read_only_scope(
 					await ctx.db.patch("files_nodes", child._id, {
 						readOnlyScopeNodeId: args.scopeNodeId,
 						readOnlyPluginServiceTargetId: undefined,
+						readOnlyPluginName: undefined,
 					});
 				}
 				stack.push(child._id);
@@ -814,22 +819,6 @@ async function db_authorize_lock_management(
 }
 
 /**
- * A plugin-owner stamp is internal authority. Public lock and sharing controls must not change the
- * stamped node or anything whose effective lock comes from a stamped plugin-owned folder.
- */
-export async function files_nodes_db_has_plugin_owner_authority(ctx: QueryCtx | MutationCtx, node: Doc<"files_nodes">) {
-	if (node.pluginOwnerName !== undefined) {
-		return true;
-	}
-	if (node.readOnlyScopeNodeId === undefined) {
-		return false;
-	}
-
-	const lockSource = await ctx.db.get("files_nodes", node.readOnlyScopeNodeId);
-	return lockSource?.pluginOwnerName !== undefined;
-}
-
-/**
  * Load active and archived descendants once. Reuse them for all checks and updates.
  */
 async function db_load_swept_descendants(
@@ -934,21 +923,19 @@ export const get_node_read_only_management_state = query({
 		}
 		const { fileNode: node, organization, defaultWorkspaceId } = authorized._yay;
 
-		const canManage =
-			!(await files_nodes_db_has_plugin_owner_authority(ctx, node)) &&
-			(await access_control_db_has_permission(ctx, {
-				organizationId: organization._id,
-				workspaceId: membership.workspaceId,
-				defaultWorkspaceId,
-				organizationOwnerUserId: organization.ownerUserId,
-				resource: {
-					kind: "file",
-					id: String(node._id),
-					restrictedScopeNodeId: node.restrictedScopeNodeId ?? null,
-				},
-				permission: "content.permissions.manage",
-				userId: userAuth.id,
-			}));
+		const canManage = await access_control_db_has_permission(ctx, {
+			organizationId: organization._id,
+			workspaceId: membership.workspaceId,
+			defaultWorkspaceId,
+			organizationOwnerUserId: organization.ownerUserId,
+			resource: {
+				kind: "file",
+				id: String(node._id),
+				restrictedScopeNodeId: node.restrictedScopeNodeId ?? null,
+			},
+			permission: "content.permissions.manage",
+			userId: userAuth.id,
+		});
 
 		const readOnlyState: "writable" | "self" | "inherited" =
 			node.readOnlyScopeNodeId === undefined
@@ -1024,9 +1011,6 @@ export const set_node_read_only = mutation({
 			return authorized;
 		}
 		const { membership, node } = authorized._yay;
-		if (await files_nodes_db_has_plugin_owner_authority(ctx, node)) {
-			return Result({ _nay: { message: "This item is managed by a plugin." } });
-		}
 
 		// The node is already directly locked. Return success for repeated calls.
 		if (node.readOnlyScopeNodeId === node._id) {
@@ -1045,6 +1029,7 @@ export const set_node_read_only = mutation({
 		await ctx.db.patch("files_nodes", node._id, {
 			readOnlyScopeNodeId: node._id,
 			readOnlyPluginServiceTargetId: undefined,
+			readOnlyPluginName: undefined,
 		});
 		await files_nodes_db_cascade_read_only_scope(ctx, {
 			organizationId: membership.organizationId,
@@ -1083,9 +1068,6 @@ export const set_node_writable = mutation({
 			return authorized;
 		}
 		const { membership, node } = authorized._yay;
-		if (await files_nodes_db_has_plugin_owner_authority(ctx, node)) {
-			return Result({ _nay: { message: "This item is managed by a plugin." } });
-		}
 
 		// The node is already writable. Return success for repeated calls.
 		if (node.readOnlyScopeNodeId === undefined) {
@@ -1109,8 +1091,7 @@ export const set_node_writable = mutation({
 			parentId: node.parentId,
 		});
 
-		// A service-written file can carry a plugin-named lock without being plugin-managed.
-		// A member unlock ends that provenance too, the same rule as the service target pointer.
+		// A member unlock clears the direct lock's plugin origin.
 		await ctx.db.patch("files_nodes", node._id, {
 			readOnlyScopeNodeId: parentScopeNodeId,
 			readOnlyPluginServiceTargetId: undefined,
@@ -1273,10 +1254,6 @@ async function db_insert_node(
 		 * The new node gets the parent lock and stays read-only.
 		 */
 		inheritParentReadOnlyScope?: true;
-		/**
-		 * Plugin doors only. Public create and copy flows must never forward this field.
-		 */
-		pluginOwnerName?: Doc<"files_nodes">["pluginOwnerName"];
 		now: number;
 	},
 ) {
@@ -1298,7 +1275,6 @@ async function db_insert_node(
 		path: args.path,
 		restrictedScopeNodeId,
 		readOnlyScopeNodeId,
-		pluginOwnerName: args.pluginOwnerName,
 		treePath: derive_tree_path_for_file_node(args.path, args.kind),
 		pathDepth: files_path_depth(args.path),
 		lowercaseExtension: files_lowercase_extension(args.path, args.kind),
@@ -1367,16 +1343,15 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		/** Forwarded to `db_insert_node` for the leaf only; see the arg doc there. */
 		expectsTextContent?: true;
 		/**
-		 * File metadata that says where this file came from. It is written on the leaf node only.
-		 * The folders this walk creates on the way get nothing, because `files_metadata.set_entries`
-		 * refuses a node that is not a file. Nobody could ever change or clear a map that sat on a
-		 * folder.
+		 * Metadata for the leaf file or folder only. Import names must not spread to ancestors.
 		 *
 		 * Never pass this for the agent's eager-created nodes. A node with committed `metadata.` docs
 		 * can no longer be hard-deleted (`files_nodes_db_is_eager_node_safe_to_hard_delete`), so
 		 * discarding the proposal would leave the empty file behind forever.
 		 */
 		metadata?: files_metadata_Entry[];
+		/** Initial metadata on each new node. Reused nodes keep their existing maps. */
+		createdNodesMetadata?: files_metadata_Entry[];
 		now: number;
 		/**
 		 * When set, receives the `_id` of every intermediate folder this call creates (reused
@@ -1384,8 +1359,8 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		 */
 		mut_createdAncestorIds?: Array<Id<"files_nodes">>;
 		/**
-		 * Plugin owned-area doors only. Skip membership ACL and the parent lock check. The caller
-		 * must already have proved this path is inside the plugin's own folder area. Do not pass
+		 * Plugin doors only. Skip membership ACL and the parent lock check. The caller
+		 * must already have checked this path's metadata, ACL, and locks. Do not pass
 		 * this from user or agent doors.
 		 */
 		skipAccessControlAndLock?: true;
@@ -1394,13 +1369,6 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		 * is locked so files created under it stay locked.
 		 */
 		inheritParentReadOnlyScope?: true;
-		/**
-		 * Plugin owned-area doors only. Stamp EVERY node this call creates — the leaf and each
-		 * intermediate folder — with the plugin name. Without this, an owned-area write creating
-		 * `/owned/a/b/note.md` would leave `a` and `b` unstamped, and the next write under them
-		 * would find an unstamped deepest ancestor and be refused by the stamp rule.
-		 */
-		stampCreatedNodesPluginName?: Doc<"files_nodes">["pluginOwnerName"];
 	},
 ) {
 	let currentParent: Doc<"files_nodes">["parentId"] = args.parentId;
@@ -1537,7 +1505,6 @@ export async function files_nodes_db_create_node_recursively_at_path(
 			assetId: isLeaf ? args.assetId : undefined,
 			archiveOperationId: isLeaf ? args.archiveOperationId : undefined,
 			expectsTextContent: isLeaf ? args.expectsTextContent : undefined,
-			pluginOwnerName: args.stampCreatedNodesPluginName,
 			...(args.inheritParentReadOnlyScope ? { inheritParentReadOnlyScope: true } : {}),
 			now: args.now,
 		});
@@ -1546,21 +1513,23 @@ export async function files_nodes_db_create_node_recursively_at_path(
 			return nodeIdResult;
 		}
 
+		const metadata =
+			isLeaf && args.metadata
+				? files_metadata_apply_set_and_remove(args.createdNodesMetadata ?? [], { set: args.metadata, remove: [] })
+				: args.createdNodesMetadata;
+		if (metadata) {
+			const createdNode = await ctx.db.get("files_nodes", nodeIdResult._yay);
+			if (!createdNode) {
+				const errorMessage = "created node is missing right after insert";
+				const errorData = { nodeId: nodeIdResult._yay };
+				console.error(errorMessage, errorData);
+				throw should_never_happen(errorMessage, errorData);
+			}
+			await files_metadata_db_write_entries(ctx, { fileNode: createdNode, entries: metadata });
+		}
+
 		// Return the requested leaf; otherwise continue creating below the new folder.
 		if (isLeaf) {
-			// Stamp the file's origin in the same transaction that creates it, so a `meta search`
-			// finds it as soon as the file exists. Folders are skipped: only files carry a map.
-			if (args.metadata && kind === "file") {
-				const leafNode = await ctx.db.get("files_nodes", nodeIdResult._yay);
-				if (!leafNode) {
-					const errorMessage = "created file node is missing right after insert";
-					const errorData = { nodeId: nodeIdResult._yay };
-					console.error(errorMessage, errorData);
-					throw should_never_happen(errorMessage, errorData);
-				}
-				await files_metadata_db_write_entries(ctx, { fileNode: leafNode, entries: args.metadata });
-			}
-
 			return Result({ _yay: nodeIdResult._yay });
 		}
 
@@ -2239,9 +2208,23 @@ export async function files_nodes_db_remove_created_ancestor_folders_if_safe(
 			ancestorsLeft = args.createdAncestorIds.length - i;
 			break;
 		}
-		// Folder creation writes only the files_nodes doc (db_insert_node returns before any side docs
-		// for folders), and the check above ruled out the one other doc a folder can own, so one delete
-		// removes the whole folder.
+		// Metadata is a committed member edit, even when the folder is still empty.
+		const metadataDoc = await ctx.db
+			.query("files_metadata_docs")
+			.withIndex("by_organization_workspace_source_fileNode_qualifiedField", (q) =>
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("sourceKind", "committed")
+					.eq("fileNodeId", ancestor._id)
+					.gte("qualifiedField", files_metadata_METADATA_FIELD_PREFIX)
+					.lt("qualifiedField", "metadata/"),
+			)
+			.first();
+		if (metadataDoc) {
+			ancestorsLeft = args.createdAncestorIds.length - i;
+			break;
+		}
 		await ctx.db.delete("files_nodes", ancestor._id);
 	}
 	return { ancestorsLeft };
@@ -3632,14 +3615,13 @@ async function db_apply_node_move(
 		updatedBy: args.updatedBy,
 		updatedAt: args.now,
 	});
-	if (args.node.kind === "file") {
-		await db_patch_file_chunks_scope(ctx, {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			nodeId: args.node._id,
-			path: args.destPath,
-		});
-	}
+	await db_patch_node_search_scope(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		nodeId: args.node._id,
+		kind: args.node.kind,
+		path: args.destPath,
+	});
 	await cascade_file_descendants_path(ctx, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
@@ -4266,14 +4248,13 @@ export const rename_node = mutation({
 			updatedBy: userAuth.id,
 			updatedAt: now,
 		});
-		if (fileNode.kind === "file") {
-			await db_patch_file_chunks_scope(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				nodeId: args.nodeId,
-				path: renamedPath,
-			});
-		}
+		await db_patch_node_search_scope(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			nodeId: args.nodeId,
+			kind: fileNode.kind,
+			path: renamedPath,
+		});
 		await cascade_file_descendants_path(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -4488,14 +4469,13 @@ export const move_nodes = mutation({
 				updatedBy: userAuth.id,
 				updatedAt: now,
 			});
-			if (fileNodeToMove.fileNode.kind === "file") {
-				await db_patch_file_chunks_scope(ctx, {
-					organizationId: membership.organizationId,
-					workspaceId: membership.workspaceId,
-					nodeId: fileNodeToMove.itemId,
-					path: fileNodeToMove.movedPath,
-				});
-			}
+			await db_patch_node_search_scope(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				nodeId: fileNodeToMove.itemId,
+				kind: fileNodeToMove.fileNode.kind,
+				path: fileNodeToMove.movedPath,
+			});
 			await cascade_file_descendants_path(ctx, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
@@ -4548,14 +4528,13 @@ export async function files_nodes_db_archive_nodes(
 				updatedBy: args.updatedBy,
 				updatedAt: args.now,
 			});
-			if (fileNode.kind === "file") {
-				await db_patch_file_chunks_scope(ctx, {
-					organizationId: fileNode.organizationId,
-					workspaceId: fileNode.workspaceId,
-					nodeId,
-					archiveOperationId,
-				});
-			}
+			await db_patch_node_search_scope(ctx, {
+				organizationId: fileNode.organizationId,
+				workspaceId: fileNode.workspaceId,
+				nodeId,
+				kind: fileNode.kind,
+				archiveOperationId,
+			});
 		}),
 	);
 }
@@ -5156,15 +5135,14 @@ export const unarchive_nodes = mutation({
 					...(plan.targetPath !== plan.fileNode.path ? { path: plan.targetPath } : {}),
 					...(plan.targetParentId !== plan.fileNode.parentId ? { parentId: plan.targetParentId } : {}),
 				});
-				if (plan.fileNode.kind === "file") {
-					await db_patch_file_chunks_scope(ctx, {
-						organizationId: membership.organizationId,
-						workspaceId: membership.workspaceId,
-						nodeId: plan.fileNode._id,
-						path: plan.targetPath,
-						archiveOperationId: undefined,
-					});
-				}
+				await db_patch_node_search_scope(ctx, {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					nodeId: plan.fileNode._id,
+					kind: plan.fileNode.kind,
+					path: plan.targetPath,
+					archiveOperationId: undefined,
+				});
 			}),
 		);
 
@@ -5199,7 +5177,7 @@ export const unarchive_nodes = mutation({
 /**
  * Fields for a node returned by public queries.
  *
- * Do not return raw lock or provenance fields. They are internal authority, and the scope may name
+ * Do not return raw lock fields. They are internal authority, and the scope may name
  * a hidden folder.
  * Return `readOnlyState`, and return the lock source only when the caller can read it.
  */
@@ -5208,8 +5186,8 @@ const files_node_public_doc_fields = ((/* iife */) => {
 		readOnlyScopeNodeId: _readOnlyScopeNodeId,
 		readOnlyPluginName: _readOnlyPluginName,
 		readOnlyPluginServiceTargetId: _readOnlyPluginServiceTargetId,
-		pluginServiceWritePluginName: _pluginServiceWritePluginName,
 		pluginOwnerName: _pluginOwnerName,
+		pluginServiceWritePluginName: _pluginServiceWritePluginName,
 		...rest
 	} = doc(app_convex_schema, "files_nodes").fields;
 
@@ -5234,8 +5212,8 @@ function files_node_project_read_only(
 		readOnlyScopeNodeId,
 		readOnlyPluginName: _readOnlyPluginName,
 		readOnlyPluginServiceTargetId: _readOnlyPluginServiceTargetId,
-		pluginServiceWritePluginName: _pluginServiceWritePluginName,
 		pluginOwnerName: _pluginOwnerName,
+		pluginServiceWritePluginName: _pluginServiceWritePluginName,
 		...rest
 	} = fileNode;
 

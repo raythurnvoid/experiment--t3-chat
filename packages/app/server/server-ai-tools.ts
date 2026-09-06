@@ -551,7 +551,7 @@ export function ai_chat_tool_create_bash(
 			Shell pathname expansion works for /tmp scratch paths. General app-file and mount glob operands such as src/**/*.ts, foo?.txt, and [abc].md are unsupported; simple find patterns like *.md are converted to indexed extension search.
 			ls --limit and find --limit are app-file pagination commands. Relative paths resolve against the current working directory.
 			Content-vs-path rule: use search for text inside files, and use find only for path/name discovery. Plain requests like "search for X with limit N" mean content search, so run search --limit N X. If the user says "search for the X file", "find the X file", "file named X", or "path/name contains X", use find. If the user says "search inside <folder> for X", "where does X appear", or "files mention X", run search --path <folder> X or search X; do not substitute find --path-query.
-			Use meta search --where '{"eq":["frontmatter.from","alice@example.com"]}' to search the indexed metadata of app files. Prefer meta search/meta get over reading raw file text when answering which files have a field or value. Fields must be qualified names of one of two kinds. frontmatter.* is the Markdown YAML frontmatter, which is part of the file's own text. metadata.* is the metadata stored next to the file: every file kind has it, uploads included, it is not part of the file content, and saving the content does not change it. A metadata key is flat and may contain letters, numbers, "_", "-" and ":", for example {"eq":["metadata.created-by","slack"]} or {"exists":"metadata.slack:message-id"}. One positive predicate per command is supported: exists, eq, prefix, or range. range works on numeric fields and on date-like string fields: strings shaped like ISO dates (e.g. 2026-07-29 or 2026-07-29T14:30:36.264Z) are also indexed as a second maybe_date value, and meta get marks those lines with (maybe_date), so a field is date-filterable only when meta get shows a maybe_date line for it. range takes a bounds object, e.g. {"range":["frontmatter.estimate",{"gte":5,"lte":120}]} or {"range":["frontmatter.realStartTime",{"gte":"2026-07-27","lt":"2026-08-02"}]} (any of gte/gt/lte/lt; bounds must be all numbers or all ISO date strings). The bound type picks which indexed values are scanned: number bounds scan number values, ISO date string bounds scan maybe_date values, so querying a numeric field with date bounds (or the reverse) returns an empty result instead of an error — check the field's kind with meta get first. Write a full YYYY-MM-DD; partial bounds such as 2026-07 are rejected. A date-only bound means midnight UTC, so for a whole day or month use an exclusive upper bound such as {"gte":"2026-07-29","lt":"2026-07-30"} rather than lte on the same day, which would drop that day's later timestamps. Default output is paths; use --format json for metadata details and cursors. Combine multiple predicates outside meta with shell tools over path output. There is no not/neq: to find where a field is NOT a value, first run exists <field> to list every file that has the field, then remove the eq <field> <value> matches (e.g. comm -23 or grep -vxF) — the eq matches are only a subset, so never infer the complement from an eq result alone. Use meta get <file> to inspect one file's indexed metadata; it lists that file's frontmatter.* and metadata.* fields together, and its source: line describes the frontmatter.* lines only, because metadata.* is always the committed map. In Agent mode, use the set_file_metadata tool to write metadata.* keys. If field names are unclear, read nearby README.md files because folders may document frontmatter conventions.
+			Use meta search --where '{"eq":["frontmatter.from","alice@example.com"]}' to search the indexed metadata of app files and folders. Prefer meta search/meta get over reading raw file text when answering which files or folders have a field or value. Fields must be qualified names of one of two kinds. frontmatter.* is the Markdown YAML frontmatter, which is part of the file's own text. metadata.* is the metadata stored next to the file or folder: every file kind supports it, uploads included, it is not part of the file content, and saving the content does not change it. A metadata key is flat and may contain letters, numbers, "_", "-" and ":", for example {"eq":["metadata.created-by","slack"]} or {"exists":"metadata.slack:message-id"}. One positive predicate per command is supported: exists, eq, prefix, or range. range works on numeric fields and on date-like string fields: strings shaped like ISO dates (e.g. 2026-07-29 or 2026-07-29T14:30:36.264Z) are also indexed as a second maybe_date value, and meta get marks those lines with (maybe_date), so a field is date-filterable only when meta get shows a maybe_date line for it. range takes a bounds object, e.g. {"range":["frontmatter.estimate",{"gte":5,"lte":120}]} or {"range":["frontmatter.realStartTime",{"gte":"2026-07-27","lt":"2026-08-02"}]} (any of gte/gt/lte/lt; bounds must be all numbers or all ISO date strings). The bound type picks which indexed values are scanned: number bounds scan number values, ISO date string bounds scan maybe_date values, so querying a numeric field with date bounds (or the reverse) returns an empty result instead of an error — check the field's kind with meta get first. Write a full YYYY-MM-DD; partial bounds such as 2026-07 are rejected. A date-only bound means midnight UTC, so for a whole day or month use an exclusive upper bound such as {"gte":"2026-07-29","lt":"2026-07-30"} rather than lte on the same day, which would drop that day's later timestamps. Default output is paths; use --format json for metadata details and cursors. Combine multiple predicates outside meta with shell tools over path output. There is no not/neq: to find where a field is NOT a value, first run exists <field> to list every file or folder that has the field, then remove the eq <field> <value> matches (e.g. comm -23 or grep -vxF) — the eq matches are only a subset, so never infer the complement from an eq result alone. Use meta get <path> to inspect one file or folder's indexed metadata; it lists frontmatter.* from file text and metadata.* from the item's map together, and its source: line describes the frontmatter.* lines only, because metadata.* is always the committed map. In Agent mode, use the set_file_metadata tool to write metadata.* keys. If field names are unclear, read nearby README.md files because folders may document frontmatter conventions.
 			For search --path and meta search --path, the same app-root path rule applies: pass ${currentWorkspacePath}/folder or relative folder, never raw /folder.
 			When a content-search request already names a folder, do not run ls first to verify that folder; run search --path <folder> <content terms> directly and let search report missing or invalid scopes.
 			For recursive grep requests over an app folder, the first Bash command should be search --path <folder> <content terms>; do not run ls, native rg, or multi-file grep first.
@@ -796,12 +796,12 @@ export type ai_chat_tool_create_edit_file_ToolOutput = InferToolOutput<ai_chat_t
 
 // #region set file metadata
 /**
- * Tool for writing the metadata stored next to a file.
+ * Tool for writing the metadata stored next to a file or folder.
  *
  * Unlike `edit_file`, this applies straight away instead of proposing a pending update. Metadata is
- * not file content: it is a small key-value map beside the file, the pending-update system only
+ * not file content: it is a small key-value map beside the item, the pending-update system only
  * models content branches and move/copy/archive intents, and the same write is already available to
- * the user in the file's Properties modal.
+ * the user in the item's Properties modal.
  */
 export function ai_chat_tool_create_set_file_metadata(
 	ctx: ActionCtx,
@@ -813,10 +813,10 @@ export function ai_chat_tool_create_set_file_metadata(
 ) {
 	return tool({
 		description: dedent`\
-			Sets and removes keys in the metadata stored next to a file, and returns the file's whole metadata map afterwards.
+			Sets and removes keys in the metadata stored next to a file or folder, and returns the item's whole metadata map afterwards.
 
 			Usage:
-			- The path must refer to an existing app file (absolute, starting with "/"). Every file kind works, uploads included, because metadata lives next to the file and not inside its content. A folder has no metadata; a folder path answers "Not found".
+			- The path must refer to an existing app file or folder (absolute, starting with "/"). Every file kind works, uploads included, because metadata lives next to the item and not inside its content.
 			- If copying a path from bash, remove the /home/cloud-usr/w/<organization>/<workspace> current workspace path prefix before passing it here.
 			- Preserve the full remaining suffix after that prefix; /home/cloud-usr/w/personal/home/folder/README.md becomes /folder/README.md, never /README.md.
 			- Metadata is a flat map. A value is text, a number, or true/false. There is no nesting and no lists.
@@ -824,13 +824,13 @@ export function ai_chat_tool_create_set_file_metadata(
 			- Pass bare keys here. meta get and meta search print the search field name metadata.<key>; this tool takes <key> on its own, in both set and remove.
 			- This tool never writes Markdown frontmatter. meta get lists frontmatter.<key> lines from the file's own text next to the metadata.<key> lines; this tool cannot change those. To change frontmatter, edit the file's text with edit_file. Never drop the frontmatter. prefix and pass the rest here, because that would write a different key in a different place.
 			- Keys are a convention, not a permission: any writer may set any key. Read a folder's README.md first when the user expects a house convention.
-			- Only the keys you name change. Everything else on the file stays as it is; pass remove to delete a key. A key listed in both set and remove is removed.
+			- Only the keys you name change. Everything else on the item stays as it is; pass remove to delete a key. A key listed in both set and remove is removed.
 			- This applies right away, so there is nothing for the user to accept. It does not touch the file's content, and saving the content later does not change it.
-			- A read-only refusal is terminal for this file. Do not retry it with another tool; it cannot change until the user makes the file writable.
-			- Read the current map with the bash command meta get <file>, and find files that have a key with meta search --where '{"exists":"metadata.<key>"}', or a key and a value with '{"eq":["metadata.<key>","<value>"]}'.`,
+			- A read-only refusal is terminal for this item. Do not retry it with another tool; it cannot change until the user makes the item writable.
+			- Read the current map with the bash command meta get <path>, and find files or folders that have a key with meta search --where '{"exists":"metadata.<key>"}', or a key and a value with '{"eq":["metadata.<key>","<value>"]}'.`,
 
 		inputSchema: z.object({
-			path: z.string().describe('Absolute path to an existing app file (must start with "/").'),
+			path: z.string().describe('Absolute path to an existing app file or folder (must start with "/").'),
 			set: z
 				.array(
 					z.object({
@@ -892,7 +892,7 @@ export function ai_chat_tool_create_set_file_metadata(
 				},
 				output:
 					entries.length === 0
-						? "The file has no metadata now."
+						? "This item has no metadata now."
 						: entries.map((entry) => `${entry.key} = ${JSON.stringify(entry.value)}`).join("\n"),
 			};
 		},

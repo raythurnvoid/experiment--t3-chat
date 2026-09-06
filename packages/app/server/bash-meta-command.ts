@@ -384,15 +384,15 @@ function parse_get_args(args: string[], options: { cwd: string }) {
 			return Result({ _nay: { message: `meta get: unsupported option ${arg}` } });
 		}
 		if (pathValue != null) {
-			return Result({ _nay: { message: "meta get: expected exactly one file path" } });
+			return Result({ _nay: { message: "meta get: expected exactly one path" } });
 		}
 		pathValue = arg;
 	}
 
 	if (pathValue == null || pathValue === "") {
-		return Result({ _nay: { message: "meta get: missing file path" } });
+		return Result({ _nay: { message: "meta get: missing path" } });
 	}
-	// Keep the file as an absolute shell path; the handler classifies it (workspace vs. mount).
+	// Keep an absolute shell path to choose the workspace or mount scope below.
 	const pathShell = bash_resolve_path(options.cwd, pathValue);
 	return Result({ _yay: { pathShell, format } });
 }
@@ -467,7 +467,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				stderr:
 					"meta: expected subcommand search or get\n" +
 					"Usage: meta search --where '<json>' [--format paths|json] [--path <folder>] [--limit N] [--cursor CURSOR]\n" +
-					"Usage: meta get <file> [--format text|json]\n",
+					"Usage: meta get <path> [--format text|json]\n",
 				exitCode: bash_COMMAND_EXIT_USAGE,
 			};
 		}
@@ -477,17 +477,17 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			if (parsed._nay) {
 				return {
 					stdout: "",
-					stderr: `${parsed._nay.message}\nUsage: meta get <file> [--format text|json]\n`,
+					stderr: `${parsed._nay.message}\nUsage: meta get <path> [--format text|json]\n`,
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
 			}
-			// meta get reads one file; classify its path to pick the workspace or mount scope.
+			// meta get reads one item; classify its path to pick the workspace or mount scope.
 			const target = bash_resolve_db_files_shell_path(parsed._yay.pathShell, dbFilesRoots);
 			if (target.kind === "external_mounts_root") {
 				return {
 					stdout: "",
 					stderr:
-						`meta get: ${bash_normalize_path(parsed._yay.pathShell)} is the mounts root, not a file; pick a file under /.mounts/<name>.\n` +
+						`meta get: ${bash_normalize_path(parsed._yay.pathShell)} is the mounts root; pick a file or folder under /.mounts/<name>.\n` +
 						"Run 'ls /.mounts' to list the available mounts.\n",
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
@@ -496,7 +496,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				return {
 					stdout: "",
 					stderr:
-						`meta get: ${bash_normalize_path(parsed._yay.pathShell)} is the plugins root, not a file; pick a file under /.plugins/<pluginName>.\n` +
+						`meta get: ${bash_normalize_path(parsed._yay.pathShell)} is the plugins root; pick a file or folder under /.plugins/<pluginName>.\n` +
 						"Run 'ls /.plugins' to list the installed plugins.\n",
 					exitCode: bash_COMMAND_EXIT_USAGE,
 				};
@@ -518,7 +518,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			if (!result) {
 				return {
 					stdout: "",
-					stderr: `meta get: file not found: ${target.renderShellPath(target.dbFilesPath)}\n`,
+					stderr: `meta get: item not found: ${target.renderShellPath(target.dbFilesPath)}\n`,
 					exitCode: bash_COMMAND_EXIT_FAILURE,
 				};
 			}
@@ -702,7 +702,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 			}
 		}
 
-		// A file can match through multiple metadata values; command output lists each path once.
+		// An item can match through multiple metadata values; command output lists each path once.
 		const dedupedItems = [
 			...new Map([...visibleItems, ...injectedItems].map((item) => [item.nodeId, item])).values(),
 		];

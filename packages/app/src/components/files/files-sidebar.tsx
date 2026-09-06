@@ -3625,8 +3625,8 @@ function get_tree_items_list_after_optimistic_rename(args: {
  * The free text matches by its shape (see `parse_search_query`). A `file.*` filter matches a tree
  * field. A metadata filter matches the node ids its server query returned, looked up by the
  * filter's raw token in `metadataNodeIds`. A filter with no entry yet matches nothing, and the
- * tree says "Searching…" until every entry is there. Only files carry metadata, so once a
- * metadata filter is present a folder never matches by itself. It shows as an ancestor.
+ * tree says "Searching…" until every entry is there. Files and folders match their own metadata.
+ * Archived nodes and synthetic folders cannot be direct metadata matches.
  *
  * `visibleFileIds` keeps every match plus its ancestor chain so results render as a pruned tree.
  * `topMatchId` is the node Enter opens: the one whose path matched exactly, or the only node
@@ -3682,9 +3682,8 @@ function get_search_matches(args: {
 			continue;
 		}
 
-		// Only files carry metadata, and an archived file has no search docs. So once a metadata
-		// filter is present, a folder or an archived file never matches, not even a negated chip.
-		if (hasMetadataFilter && (!files_is_node(item) || item.kind !== "file" || item.archiveOperationId !== undefined)) {
+		// Archived nodes and synthetic folders never match metadata, even under a negated filter.
+		if (hasMetadataFilter && (!files_is_node(item) || item.archiveOperationId !== undefined)) {
 			continue;
 		}
 
@@ -7270,7 +7269,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(search("http://localhost:5173/w/acme/main/files?nodeId=missing").matchCount).toBe(0);
 		});
 
-		test("a metadata filter matches the node ids its query returned, and negation keeps the other files", () => {
+		test("a metadata filter matches the node ids its query returned, and negation keeps other files and folders", () => {
 			// `FilesSidebar` keys the results by the raw token, so a negated chip has its own entry.
 			const metadataNodeIds = new Map<string, Set<string>>([
 				["status:open", new Set(["task"])],
@@ -7282,11 +7281,20 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				topMatchId: "task",
 				matchCount: 1,
 			});
-			// Folders never match a metadata filter by themselves, negated or not.
 			expect(search("!status:open", metadataNodeIds)).toEqual({
-				visible: [files_ROOT_ID, "archive", "old_task", "note", "backup"].sort(),
+				visible: [files_ROOT_ID, "tasks", "archive", "old_task", "note", "backup"].sort(),
 				topMatchId: null,
-				matchCount: 3,
+				matchCount: 5,
+			});
+		});
+
+		test("a folder can be the only metadata match and open on Enter", () => {
+			expect(
+				search("metadata.plugin-name:chitchat", new Map([["metadata.plugin-name:chitchat", new Set(["tasks"])]])),
+			).toEqual({
+				visible: [files_ROOT_ID, "tasks"].sort(),
+				topMatchId: "tasks",
+				matchCount: 1,
 			});
 		});
 
@@ -7313,6 +7321,20 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			// and a negated chip must not show it either. Without a metadata filter it matches.
 			expect(search("!status:open", new Map([["!status:open", new Set(["task"])]])).visible).not.toContain("done_task");
 			expect(search("file.path:/tasks done").visible).toContain("done_task");
+		});
+
+		test.each(["status:open", "!status:open"])("an archived folder never matches %s", (searchQuery) => {
+			const archivedFolder = { ...doneTask, kind: "folder" as const };
+			const result = get_search_matches({
+				treeItems: {
+					...treeItems,
+					list: list.map((item) => (item._id === archivedFolder._id ? archivedFolder : item)),
+					itemById: new Map(treeItems.itemById).set(archivedFolder._id, archivedFolder),
+				},
+				searchQuery,
+				metadataNodeIds: new Map([[searchQuery, new Set(searchQuery === "status:open" ? [archivedFolder._id] : ["task"])]]),
+			});
+			expect(result.visibleFileIds.has(archivedFolder._id)).toBe(false);
 		});
 
 		test("an invalid filter blocks results until it is fixed or removed", () => {

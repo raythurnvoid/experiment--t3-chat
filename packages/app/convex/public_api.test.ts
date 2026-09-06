@@ -96,9 +96,7 @@ function install_r2_object_reads() {
 				: new Response(body, {
 						status: 200,
 						headers:
-							metadata === undefined
-								? undefined
-								: { "Content-Length": String(metadata.size), ETag: metadata.etag },
+							metadata === undefined ? undefined : { "Content-Length": String(metadata.size), ETag: metadata.etag },
 					});
 		}),
 	);
@@ -880,10 +878,11 @@ describe("public files API", () => {
 		expect(unchanged.status).toBe(200);
 		expect((await unchanged.json()) as { unchanged?: boolean }).toMatchObject({ unchanged: true });
 		expect(
-			await t.run(async (ctx) =>
-				(await ctx.db.query("files_snapshots").collect()).filter(
-					(snapshot) => snapshot.fileNodeId === (writtenBody.nodeId as Id<"files_nodes">),
-				).length,
+			await t.run(
+				async (ctx) =>
+					(await ctx.db.query("files_snapshots").collect()).filter(
+						(snapshot) => snapshot.fileNodeId === (writtenBody.nodeId as Id<"files_nodes">),
+					).length,
 			),
 		).toBe(2);
 	});
@@ -957,9 +956,9 @@ describe("public files API", () => {
 			generation: job.generation,
 			deletedAt: now,
 		});
-		expect(
-			await t.run(async (ctx) => ctx.db.get("files_r2_object_deletion_jobs", job._id)),
-		).toMatchObject({ nextAttemptAt: putMayArriveUntil });
+		expect(await t.run(async (ctx) => ctx.db.get("files_r2_object_deletion_jobs", job._id))).toMatchObject({
+			nextAttemptAt: putMayArriveUntil,
+		});
 
 		// The R2 write then arrives and the action crashes. The saved job must delete once more after
 		// no later write can arrive.
@@ -996,9 +995,7 @@ describe("public files API", () => {
 			const jobs = await ctx.db.query("files_r2_object_deletion_jobs").collect();
 			expect(jobs.map((job) => job.r2Key).sort()).toEqual([...staged.keys].sort());
 			expect(jobs.every((job) => job.reason === "failed_create")).toBe(true);
-			expect(
-				jobs.every((job) => job.putMayArriveUntil === now - 1 + r2_PUT_MAY_ARRIVE_MARGIN_MS),
-			).toBe(true);
+			expect(jobs.every((job) => job.putMayArriveUntil === now - 1 + r2_PUT_MAY_ARRIVE_MARGIN_MS)).toBe(true);
 			expect(await ctx.db.get("files_r2_assets", staged.yjsSnapshotAssetId)).toBeNull();
 			expect(await ctx.db.get("files_r2_assets", staged.contentSnapshotAssetId)).toBeNull();
 			expect(await ctx.db.get("public_api_file_write_stages", staged.stageId)).toBeNull();
@@ -3001,7 +2998,11 @@ describe("files upload-urls", () => {
 		const t = test_convex();
 		install_r2_object_reads();
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-upload-urls-content-type" });
-		const { credential, credentialId } = await seed_write_credential({ t, db, clerkSubject: "upload-urls-content-type" });
+		const { credential, credentialId } = await seed_write_credential({
+			t,
+			db,
+			clerkSubject: "upload-urls-content-type",
+		});
 		const items = [
 			{ path: "/imports/valid.png", contentType: "image/png", size: 64 },
 			{ path: "/imports/invalid.png", contentType: "not a type", size: 64 },
@@ -4342,7 +4343,12 @@ describe("files read-only locks", () => {
 
 		await set_lock({ writer, nodeId, locked: true });
 
-		const refused = await write_file({ t, credential: writer.credential, path: "/locks/doc.md", content: "# Change\n" });
+		const refused = await write_file({
+			t,
+			credential: writer.credential,
+			path: "/locks/doc.md",
+			content: "# Change\n",
+		});
 		expect(refused.status).toBe(409);
 		expect(await refused.json()).toEqual({ message: "This item is read-only." });
 
@@ -4363,11 +4369,18 @@ describe("files read-only locks", () => {
 
 		// The first check refused the write before it created temporary docs.
 		expect(await t.run(async (ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
-		expect(await read_file_content({ t, credential: writer.credential, path: "/locks/doc.md" })).toContain("# Original");
+		expect(await read_file_content({ t, credential: writer.credential, path: "/locks/doc.md" })).toContain(
+			"# Original",
+		);
 
 		// Unlock the file and prove the same write now works.
 		await set_lock({ writer, nodeId, locked: false });
-		const allowed = await write_file({ t, credential: writer.credential, path: "/locks/doc.md", content: "# Change\n" });
+		const allowed = await write_file({
+			t,
+			credential: writer.credential,
+			path: "/locks/doc.md",
+			content: "# Change\n",
+		});
 		expect(allowed.status).toBe(200);
 		expect(await read_file_content({ t, credential: writer.credential, path: "/locks/doc.md" })).toContain("# Change");
 	});
@@ -4377,7 +4390,12 @@ describe("files read-only locks", () => {
 		install_r2_object_reads();
 		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-lock-folder" });
 
-		const seeded = await write_file({ t, credential: writer.credential, path: "/locked-dir/seed.md", content: "# Seed\n" });
+		const seeded = await write_file({
+			t,
+			credential: writer.credential,
+			path: "/locked-dir/seed.md",
+			content: "# Seed\n",
+		});
 		expect(seeded.status).toBe(200);
 		const folder = await find_active_node({ t, db: writer.db, path: "/locked-dir" });
 		expect(folder).not.toBeNull();
@@ -4399,7 +4417,12 @@ describe("files read-only locks", () => {
 
 		// Unlock the folder and prove the same write now works.
 		await set_lock({ writer, nodeId: folder!._id, locked: false });
-		const allowed = await write_file({ t, credential: writer.credential, path: "/locked-dir/other.md", content: "# Yes\n" });
+		const allowed = await write_file({
+			t,
+			credential: writer.credential,
+			path: "/locked-dir/other.md",
+			content: "# Yes\n",
+		});
 		expect(allowed.status).toBe(200);
 	});
 
@@ -4437,7 +4460,12 @@ describe("files read-only locks", () => {
 		install_r2_object_reads();
 		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-lock-write-many" });
 
-		const seeded = await write_file({ t, credential: writer.credential, path: "/bulk-lock/locked.md", content: "# Keep\n" });
+		const seeded = await write_file({
+			t,
+			credential: writer.credential,
+			path: "/bulk-lock/locked.md",
+			content: "# Keep\n",
+		});
 		expect(seeded.status).toBe(200);
 		const lockedNode = await find_active_node({ t, db: writer.db, path: "/bulk-lock/locked.md" });
 		await set_lock({ writer, nodeId: lockedNode!._id, locked: true });
@@ -4476,7 +4504,12 @@ describe("files read-only locks", () => {
 		install_r2_object_reads();
 		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-lock-skip" });
 
-		const seeded = await write_file({ t, credential: writer.credential, path: "/skip-lock/doc.md", content: "# Same\n" });
+		const seeded = await write_file({
+			t,
+			credential: writer.credential,
+			path: "/skip-lock/doc.md",
+			content: "# Same\n",
+		});
 		expect(seeded.status).toBe(200);
 
 		// First prove an unchanged write returns 200 while the file is writable.
@@ -4512,7 +4545,12 @@ describe("files read-only locks", () => {
 		const writer = await seed_locks_writer({ t, clerkUserId: "clerk-lock-touch" });
 
 		// Locked existing target: the already-exists shortcut answers the conflict itself.
-		const seeded = await write_file({ t, credential: writer.credential, path: "/touch-locked.md", content: "# Hold\n" });
+		const seeded = await write_file({
+			t,
+			credential: writer.credential,
+			path: "/touch-locked.md",
+			content: "# Hold\n",
+		});
 		expect(seeded.status).toBe(200);
 		const lockedFile = await find_active_node({ t, db: writer.db, path: "/touch-locked.md" });
 		await set_lock({ writer, nodeId: lockedFile!._id, locked: true });
@@ -4526,7 +4564,12 @@ describe("files read-only locks", () => {
 
 		// Locked destination folder: the batch refuses at the locked path, but the touch a loop
 		// turn earlier already committed and stays.
-		const dirSeed = await write_file({ t, credential: writer.credential, path: "/touch-dir/seed.md", content: "# S\n" });
+		const dirSeed = await write_file({
+			t,
+			credential: writer.credential,
+			path: "/touch-dir/seed.md",
+			content: "# S\n",
+		});
 		expect(dirSeed.status).toBe(200);
 		const folder = await find_active_node({ t, db: writer.db, path: "/touch-dir" });
 		await set_lock({ writer, nodeId: folder!._id, locked: true });
@@ -5604,13 +5647,18 @@ describe("service file writes", () => {
 		expect(await find_active_node({ t, db, path: "/meetings/meeting-broke/meeting.md" })).toBeNull();
 	});
 
-	test("creates its own stamped file and updates it in place", async () => {
+	test("labels every new file and folder and updates the file in place", async () => {
 		const t = test_convex();
 		install_r2_object_reads();
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-service-write-create" });
 		const service = await seed_sealed_service({ t, db });
 
-		const written = await service_write({ t, token: service.token, path: "/meetings/meeting-1/meeting.md", content: "# Meeting\n" });
+		const written = await service_write({
+			t,
+			token: service.token,
+			path: "/meetings/meeting-1/meeting.md",
+			content: "# Meeting\n",
+		});
 		expect(written.status).toBe(200);
 		const writtenBody = (await written.json()) as { path: string; nodeId: string; contentType: string };
 		expect(writtenBody).toEqual({
@@ -5619,14 +5667,23 @@ describe("service file writes", () => {
 			contentType: "text/markdown;charset=utf-8",
 		});
 
-		// The write stamps service provenance on the file, and only on the file: member sharing and
-		// the member lock door keep working because the plugin-owner stamp stays unset.
-		const node = await find_active_node({ t, db, path: "/meetings/meeting-1/meeting.md" });
-		expect(node?.pluginServiceWritePluginName).toBe("council");
-		expect(node?.pluginOwnerName).toBeUndefined();
-		const folder = await find_active_node({ t, db, path: "/meetings/meeting-1" });
-		expect(folder?.pluginServiceWritePluginName).toBeUndefined();
-		expect(folder?.pluginOwnerName).toBeUndefined();
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "clerk-service-write-create",
+			external_id: db.userId,
+		});
+		for (const path of ["/meetings", "/meetings/meeting-1", "/meetings/meeting-1/meeting.md"]) {
+			const node = await find_active_node({ t, db, path });
+			expect(
+				await asUser.query(api.files_metadata.get_entries, {
+					membershipId: db.membershipId,
+					fileNodeId: node!._id,
+				}),
+			).toEqual([
+				{ key: "source", value: "plugin" },
+				{ key: "plugin-name", value: "council" },
+			]);
+		}
 
 		const updated = await service_write({
 			t,
@@ -5668,7 +5725,7 @@ describe("service file writes", () => {
 		expect(await find_active_node({ t, db, path: "/meetings/note.md" })).toBeNull();
 	});
 
-	test("cannot update a file it did not create, and never confirms unchanged member content", async () => {
+	test("requires the exact editable plugin label and never skips a plugin write", async () => {
 		const t = test_convex();
 		install_r2_object_reads();
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-service-write-ownership" });
@@ -5683,8 +5740,7 @@ describe("service file writes", () => {
 			committedMarkdown: memberContent,
 		});
 
-		// Sending the member file's exact bytes with skipIfUnchanged must not answer "unchanged":
-		// that answer would confirm to the service what a file it does not own contains.
+		// Equal bytes cannot bypass the label check.
 		const probe = await service_write({
 			t,
 			token: service.token,
@@ -5703,10 +5759,20 @@ describe("service file writes", () => {
 		});
 		expect(overwrite.status).toBe(403);
 
-		// A file stamped by another plugin's service refuses the same way.
-		await t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", nodeId, { pluginServiceWritePluginName: "other-plugin" });
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "clerk-service-write-ownership",
+			external_id: db.userId,
 		});
+		expect(
+			(
+				await asUser.mutation(api.files_metadata.set_entries, {
+					membershipId: db.membershipId,
+					fileNodeId: nodeId,
+					metadataYaml: "plugin-name: other-plugin\nsource: plugin",
+				})
+			)._nay,
+		).toBeUndefined();
 		const foreign = await service_write({
 			t,
 			token: service.token,
@@ -5715,18 +5781,54 @@ describe("service file writes", () => {
 		});
 		expect(foreign.status).toBe(403);
 
-		// The stamp is the whole gate: with its own name on the file the same update is allowed.
-		await t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", nodeId, { pluginServiceWritePluginName: "council" });
-		});
-		const owned = await service_write({
+		// A member can opt in this file without labelling its parent. Source is only descriptive.
+		expect(
+			(
+				await asUser.mutation(api.files_metadata.set_entries, {
+					membershipId: db.membershipId,
+					fileNodeId: nodeId,
+					metadataYaml: "plugin-name: council\nsource: member",
+				})
+			)._nay,
+		).toBeUndefined();
+		const adopted = await service_write({
 			t,
 			token: service.token,
 			path: "/meetings/notes.md",
-			content: "# Updated by council\n",
+			content: memberContent,
+			skipIfUnchanged: true,
 		});
-		expect(owned.status).toBe(200);
-		expect(((await owned.json()) as { nodeId: string }).nodeId).toBe(nodeId);
+		expect(adopted.status).toBe(200);
+		expect(await adopted.json()).toEqual({
+			path: "/meetings/notes.md",
+			nodeId,
+			contentType: "text/markdown;charset=utf-8",
+		});
+		expect(
+			await asUser.query(api.files_metadata.get_entries, { membershipId: db.membershipId, fileNodeId: nodeId }),
+		).toEqual([
+			{ key: "plugin-name", value: "council" },
+			{ key: "source", value: "member" },
+		]);
+		for (const metadataYaml of ["plugin-name: council", "plugin-name: Council", "plugin-name: 123", "source: plugin"]) {
+			expect(
+				(
+					await asUser.mutation(api.files_metadata.set_entries, {
+						membershipId: db.membershipId,
+						fileNodeId: nodeId,
+						metadataYaml,
+					})
+				)._nay,
+			).toBeUndefined();
+			const result = await service_write({
+				t,
+				token: service.token,
+				path: "/meetings/notes.md",
+				content: memberContent,
+				skipIfUnchanged: true,
+			});
+			expect(result.status).toBe(metadataYaml === "plugin-name: council" ? 200 : 403);
+		}
 	});
 
 	test("a grant revoked between prepare and publish refuses the publish and the stage can still be cleaned", async () => {
@@ -5769,7 +5871,7 @@ describe("service file writes", () => {
 		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", stage.contentSnapshotAssetId))).toBeNull();
 	});
 
-	test("creates a read-only file, updates through its own lock, and a member unlock ends the plugin claim", async () => {
+	test("passes its own lock, preserves a member unlock, and refuses a member lock", async () => {
 		const t = test_convex();
 		install_r2_object_reads();
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-service-write-lock" });
@@ -5787,7 +5889,6 @@ describe("service file writes", () => {
 		expect(node).toMatchObject({
 			readOnlyScopeNodeId: node!._id,
 			readOnlyPluginName: "council",
-			pluginServiceWritePluginName: "council",
 		});
 
 		// The plugin's own named lock does not lock the plugin out.
@@ -5799,8 +5900,7 @@ describe("service file writes", () => {
 		});
 		expect(updated.status).toBe(200);
 
-		// The file carries no plugin-owner stamp, so the member lock door still owns it: an unlock
-		// works and ends the plugin's claim with it.
+		// Unlocking removes the lock pass but keeps the editable label.
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
 			subject: "clerk-service-write-lock",
@@ -5814,6 +5914,20 @@ describe("service file writes", () => {
 		const afterUnlock = await find_active_node({ t, db, path: "/meetings/meeting-1/transcript.md" });
 		expect(afterUnlock?.readOnlyScopeNodeId).toBeUndefined();
 		expect(afterUnlock?.readOnlyPluginName).toBeUndefined();
+		expect(
+			(
+				await service_write({
+					t,
+					token: service.token,
+					path: "/meetings/meeting-1/transcript.md",
+					content: "# Unlocked\n",
+					readOnly: true,
+				})
+			).status,
+		).toBe(200);
+		expect(
+			(await find_active_node({ t, db, path: "/meetings/meeting-1/transcript.md" }))?.readOnlyScopeNodeId,
+		).toBeUndefined();
 
 		// A member re-lock carries no plugin name, so the service cannot pass it.
 		const relocked = await asUser.mutation(api.files_nodes.set_node_read_only, {
@@ -5915,6 +6029,106 @@ describe("service file writes", () => {
 		expect(await userKeyLocked.json()).toEqual({ message: "Permission denied" });
 	});
 
+	test.each(["missing consent", "member actor", "outer member lock"] as const)(
+		"replacement refuses %s before archiving the stored file",
+		async (refusal) => {
+			const t = test_convex();
+			install_r2_object_reads();
+			const db = await seed_signed_in_membership({ t, clerkUserId: "service-replacement-preflight" });
+			const asUser = t.withIdentity({
+				issuer: "https://clerk.test",
+				subject: "service-replacement-preflight",
+				external_id: db.userId,
+			});
+			const service = await seed_sealed_service({ t, db });
+			expect(
+				(await service_write({ t, token: service.token, path: "/meetings/keep.md", content: "# Keep\n" })).status,
+			).toBe(200);
+			const folder = await find_active_node({ t, db, path: "/meetings" });
+			const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+				membershipId: db.membershipId,
+				parentId: folder!._id,
+				filename: "stored.md",
+				contentType: "text/markdown;charset=utf-8",
+				size: 3,
+			});
+			if (upload._nay) throw new Error(upload._nay.message);
+			expect(
+				(
+					await asUser.mutation(api.files_metadata.set_entries, {
+						membershipId: db.membershipId,
+						fileNodeId: upload._yay.nodeId,
+						metadataYaml: "plugin-name: council\nmember-note: keep",
+					})
+				)._nay,
+			).toBeUndefined();
+			if (refusal === "missing consent") {
+				await t.run((ctx) =>
+					ctx.db.patch("plugins_workspace_installations", service.installationId, {
+						acceptedCapabilities: ["plugin.service.connect", "workspace.files.write"],
+					}),
+				);
+			} else if (refusal === "member actor") {
+				const userId = await t.run(async (ctx) => {
+					const now = Date.now();
+					const userId = await ctx.db.insert("users", { clerkUserId: "service-replacement-member" });
+					await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Pay As You Go" });
+					await ctx.db.insert("organizations_workspaces_users", {
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						userId,
+						active: true,
+						updatedAt: now,
+					});
+					await access_control_db_ensure_role_assignment(ctx, {
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						userId,
+						role: "member",
+						now,
+					});
+					await ctx.db.patch("plugin_service_grants", service.grantId, { actorUserId: userId });
+					return userId;
+				});
+				expect(userId).not.toBe(db.userId);
+				// Filling an editable file keeps its sharing and still needs only content.write.
+				expect(
+					(await service_write({ t, token: service.token, path: "/meetings/keep.md", content: "# Member edit\n" }))
+						.status,
+				).toBe(200);
+			} else {
+				expect(
+					(
+						await asUser.mutation(api.files_nodes.set_node_read_only, {
+							membershipId: db.membershipId,
+							nodeId: folder!._id,
+						})
+					)._nay,
+				).toBeUndefined();
+			}
+			const beforeNode = await t.run((ctx) => ctx.db.get("files_nodes", upload._yay.nodeId));
+			const response = await service_write({
+				t,
+				token: service.token,
+				path: "/meetings/stored.md",
+				content: "# Replace\n",
+				readOnly: refusal === "missing consent",
+			});
+			expect(response.status).toBe(refusal === "outer member lock" ? 409 : 403);
+			expect(await find_active_node({ t, db, path: "/meetings/stored.md" })).toEqual(beforeNode);
+			expect(
+				await asUser.query(api.files_metadata.get_entries, {
+					membershipId: db.membershipId,
+					fileNodeId: upload._yay.nodeId,
+				}),
+			).toEqual([
+				{ key: "plugin-name", value: "council" },
+				{ key: "member-note", value: "keep" },
+			]);
+			expect(await t.run((ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
+		},
+	);
+
 	test("replaces the file its own read-only upload target created and respects another plugin's lock", async () => {
 		const t = test_convex();
 		install_r2_object_reads();
@@ -5957,8 +6171,7 @@ describe("service file writes", () => {
 			readOnlyPluginServiceTargetId: target._id,
 		});
 
-		// The target lock is the service's own, so the write may pass it, and the same target
-		// proof answers the ownership question the stored file cannot answer with a stamp.
+		// The created file has the plugin label, and the live upload target lets this service pass its lock.
 		const replaced = await service_write({
 			t,
 			token: service.token,
@@ -5972,7 +6185,20 @@ describe("service file writes", () => {
 			archiveOperationId: expect.any(String),
 		});
 		const replacedNode = await find_active_node({ t, db, path: "/meetings/meeting-1/notes.md" });
-		expect(replacedNode?.pluginServiceWritePluginName).toBe("council");
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "clerk-service-write-target",
+			external_id: db.userId,
+		});
+		expect(
+			await asUser.query(api.files_metadata.get_entries, {
+				membershipId: db.membershipId,
+				fileNodeId: replacedNode!._id,
+			}),
+		).toEqual([
+			{ key: "source", value: "plugin" },
+			{ key: "plugin-name", value: "council" },
+		]);
 
 		// A lock naming another plugin is not this service's to pass.
 		await t.run(async (ctx) => {

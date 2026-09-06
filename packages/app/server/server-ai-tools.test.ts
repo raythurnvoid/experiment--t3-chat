@@ -1158,45 +1158,48 @@ describe("ai_chat_tool_create_set_file_metadata", () => {
 		expect(mutationArgs.path).toBe("/docs/hello.md");
 	});
 
-	test("writes the set and remove lists and reports the stored map", async () => {
-		const { tool, runMutation } = makeTool(async () => ({
-			_yay: {
-				path: "/docs/hello.md",
-				entries: [
-					{ key: "created-by", value: "agent" },
-					{ key: "priority", value: 3 },
-					{ key: "archived", value: false },
-				],
-			},
-		}));
+	test.each(["/docs/hello.md", "/docs"])(
+		"writes the set and remove lists at %s and reports the stored map",
+		async (path) => {
+			const { tool, runMutation } = makeTool(async () => ({
+				_yay: {
+					path,
+					entries: [
+						{ key: "created-by", value: "agent" },
+						{ key: "priority", value: 3 },
+						{ key: "archived", value: false },
+					],
+				},
+			}));
+
+			const result = await tool.execute?.(
+				{ path, set: [{ key: "created-by", value: "agent" }], remove: ["stale"] },
+				{ toolCallId: "test", messages: [] },
+			);
+
+			const [, mutationArgs] = runMutation.mock.calls[0]!;
+			expect(mutationArgs).toMatchObject({
+				path,
+				set: [{ key: "created-by", value: "agent" }],
+				remove: ["stale"],
+			});
+			expect(result).toMatchObject({
+				title: path,
+				metadata: { path },
+				output: 'created-by = "agent"\npriority = 3\narchived = false',
+			});
+		},
+	);
+
+	test.each(["/docs/hello.md", "/docs"])("reports an empty map after removing the last key at %s", async (path) => {
+		const { tool } = makeTool(async () => ({ _yay: { path, entries: [] } }));
 
 		const result = await tool.execute?.(
-			{ path: "/docs/hello.md", set: [{ key: "created-by", value: "agent" }], remove: ["stale"] },
+			{ path, set: [], remove: ["created-by"] },
 			{ toolCallId: "test", messages: [] },
 		);
 
-		const [, mutationArgs] = runMutation.mock.calls[0]!;
-		expect(mutationArgs).toMatchObject({
-			path: "/docs/hello.md",
-			set: [{ key: "created-by", value: "agent" }],
-			remove: ["stale"],
-		});
-		expect(result).toMatchObject({
-			title: "/docs/hello.md",
-			metadata: { path: "/docs/hello.md" },
-			output: 'created-by = "agent"\npriority = 3\narchived = false',
-		});
-	});
-
-	test("says the file has no metadata when the last key was removed", async () => {
-		const { tool } = makeTool(async () => ({ _yay: { path: "/docs/hello.md", entries: [] } }));
-
-		const result = await tool.execute?.(
-			{ path: "/docs/hello.md", set: [], remove: ["created-by"] },
-			{ toolCallId: "test", messages: [] },
-		);
-
-		expect(result).toMatchObject({ output: "The file has no metadata now." });
+		expect(result).toMatchObject({ output: "This item has no metadata now." });
 	});
 
 	// A read-only refusal is terminal: retrying the same path with another write tool cannot work,

@@ -650,6 +650,7 @@ export type BonoboHttpApi = {
 			body: {
 				path: string;
 				content: string;
+				expectedParentNodeId?: string | undefined;
 				overwrite?: "replace" | "fail" | undefined;
 				skipIfUnchanged?: boolean | undefined;
 				nonCollaborative?: boolean | undefined;

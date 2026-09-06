@@ -243,6 +243,8 @@ const app_convex_schema = defineSchema({
 		grantId: v.optional(v.id("plugin_service_grants")),
 		/** Normalized absolute target path; parents are resolved again at publication. */
 		path: v.string(),
+		/** Invoke-only immediate parent identity, checked again at publication. */
+		expectedParentNodeId: v.optional(v.id("files_nodes")),
 		overwrite: v.union(v.literal("replace"), v.literal("fail")),
 		/**
 		 * The type and document shape a created file gets. Settled at staging, so the publish
@@ -779,24 +781,12 @@ const app_convex_schema = defineSchema({
 		 */
 		readOnlyPluginServiceTargetId: v.optional(v.id("plugin_service_storage_targets")),
 		/**
-		 * The plugin whose own door created this node's direct lock. Only `plugin-access/set`,
-		 * `plugin-archive`, and the same plugin's `archive-destination` can release it.
+		 * The plugin whose door created this node's direct lock. Member lock changes clear it.
 		 * Never returned to clients.
 		 */
 		readOnlyPluginName: v.optional(v.string()),
-		/**
-		 * Internal plugin-ownership stamp. Public file doors cannot set this field. Keep the plugin
-		 * name, not an installation id, so frozen output can be adopted on reinstall. Any stamped
-		 * node refuses the member sharing and lock doors: the host owns its reader list and locks,
-		 * so members must not edit those grants by hand.
-		 */
+		// Temporary: keep the old fields only until the approved dev conversion is audited.
 		pluginOwnerName: v.optional(v.string()),
-		/**
-		 * The plugin whose sealed service grant created this file through `/api/v1/files/write`.
-		 * Only later service updates and the per-file archive read it as ownership proof; member
-		 * sharing and lock code must ignore it, so the file stays a normal member-manageable file.
-		 * Never returned to clients.
-		 */
 		pluginServiceWritePluginName: v.optional(v.string()),
 		/** Created by user ID. SYSTEM is the pseudo user ID for reserved global-organization content. */
 		createdBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
@@ -2247,9 +2237,10 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
 
 	/**
-	 * One doc binds a plugin-owned file node's reader list to a plugin-data scope. The host keeps
+	 * One doc binds a file or folder's reader list to a plugin-data scope. The host keeps
 	 * exactly one `content.read` grant per active scope member on the node, updating them in the
-	 * same mutations that change the scope's membership. At most
+	 * same mutations that change the scope's membership. An actual manual sharing change removes
+	 * the binding and keeps its remaining grants. At most
 	 * `MAX_ACCESS_BINDINGS_PER_SCOPE` (4) nodes per scope keep that synchronous work bounded.
 	 */
 	plugins_file_access_bindings: defineTable({

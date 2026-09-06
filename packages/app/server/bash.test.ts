@@ -34,6 +34,7 @@ import {
 	bash_READ_INLINE_MAX_BYTES,
 	bash_get_db_file_byte_size,
 } from "./bash-utils.ts";
+import { ai_chat_tool_create_set_file_metadata } from "./server-ai-tools.ts";
 
 const test_db_files_mount = "/home/cloud-usr/w/personal/home";
 const function_name_of = (ref: unknown) => {
@@ -2758,6 +2759,50 @@ describe("bash_run_command", () => {
 
 		expect(invalid.metadata.exitCode).toBe(2);
 		expect(invalid.stderr).toContain("must be qualified");
+	});
+
+	test("reads and searches a folder map written by the metadata tool", async () => {
+		const runner = await create_bash_runner();
+		const tool = ai_chat_tool_create_set_file_metadata(runner.ctx, runner.ctxData);
+		const written = await tool.execute?.(
+			{
+				path: "/docs",
+				set: [
+					{ key: "plugin-name", value: "chitchat" },
+					{ key: "reviewed", value: false },
+				],
+				remove: [],
+			},
+			{ toolCallId: "folder-metadata", messages: [] },
+		);
+		expect(written).toMatchObject({ metadata: { path: "/docs" } });
+
+		const get = await runner.run(`meta get ${test_db_files_mount}/docs`);
+		expect(get.metadata.exitCode).toBe(0);
+		expect(get.stdout).toContain('metadata.plugin-name = "chitchat"');
+		expect(get.stdout).toContain("metadata.reviewed = false");
+		expect(get.stdout).not.toContain("frontmatter.");
+		const json = await runner.run(`meta get ${test_db_files_mount}/docs --format json`);
+		expect(json.metadata.exitCode).toBe(0);
+		expect(JSON.parse(json.stdout)).toMatchObject({
+			path: `${test_db_files_mount}/docs`,
+			fields: ["metadata.plugin-name", "metadata.reviewed"],
+			values: [
+				{ field: "metadata.plugin-name", valueKind: "string", value: "chitchat" },
+				{ field: "metadata.reviewed", valueKind: "boolean", value: false },
+			],
+		});
+		const search = await runner.run(`meta search --where '{"eq":["metadata.plugin-name","chitchat"]}'`);
+		expect(search.metadata.exitCode).toBe(0);
+		expect(search.stdout).toBe(`${test_db_files_mount}/docs\n`);
+
+		await tool.execute?.(
+			{ path: "/docs", set: [], remove: ["plugin-name", "reviewed"] },
+			{ toolCallId: "remove-folder-metadata", messages: [] },
+		);
+		const empty = await runner.run(`meta get ${test_db_files_mount}/docs --format json`);
+		expect(empty.metadata.exitCode).toBe(0);
+		expect(JSON.parse(empty.stdout)).toMatchObject({ fields: [], values: [] });
 	});
 
 	test("does not scan markdown files when indexed search misses", async () => {

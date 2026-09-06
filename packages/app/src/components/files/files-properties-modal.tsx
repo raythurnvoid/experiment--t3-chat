@@ -706,7 +706,7 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 	// Show the permission reason first when permission and the lock both block writing, so the
 	// section matches the order the server checks them in.
 	const blockedReason =
-		canWrite === false ? "You don't have permission to edit this file." : isLocked ? "This file is read-only." : null;
+		canWrite === false ? "You don't have permission to edit this item." : isLocked ? "This item is read-only." : null;
 
 	// Keep these options in one state slot that never changes. @monaco-editor/react deep-clones the
 	// options object whenever it changes, and some values in here point back at DOM nodes, so the
@@ -722,7 +722,7 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 	// acceptable.
 	const [editorOptions] = useState(() => {
 		return {
-			ariaLabel: "File metadata YAML",
+			ariaLabel: "Metadata YAML",
 			// Let Tab move focus out to the footer instead of typing a tab character. Monaco traps Tab
 			// by default, which leaves a keyboard user stuck inside this small field, and YAML cannot
 			// use tabs for indentation anyway.
@@ -899,7 +899,7 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 	return (
 		<div className={"FilesPropertiesModalMetadata" satisfies FilesPropertiesModalMetadata_ClassNames}>
 			<p className={"FilesPropertiesModalMetadata-description" satisfies FilesPropertiesModalMetadata_ClassNames}>
-				Keys and values stored next to this file. A value is text, a number, or true/false. Lists and nested values are
+				Keys and values stored next to this item. A value is text, a number, or true/false. Lists and nested values are
 				not allowed.
 			</p>
 
@@ -1030,19 +1030,15 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 								    that from the node. A folder never can, so do not even ask. */}
 								{nodeKind === "file" ? <FilesPropertiesModalCollaboration nodeId={nodeId} /> : null}
 
-								{/* Only a file carries a metadata map. `set_entries` refuses a folder, so a folder
-								    gets no editor at all instead of one that always fails to save. */}
-								{nodeKind === "file" ? (
-									<section
-										aria-label="Metadata"
-										className={"FilesPropertiesModal-section" satisfies FilesPropertiesModal_ClassNames}
-									>
-										<h3 className={"FilesPropertiesModal-section-heading" satisfies FilesPropertiesModal_ClassNames}>
-											Metadata
-										</h3>
-										<FilesPropertiesModalMetadata nodeId={nodeId} onDirtyChange={setDirty} />
-									</section>
-								) : null}
+								<section
+									aria-label="Metadata"
+									className={"FilesPropertiesModal-section" satisfies FilesPropertiesModal_ClassNames}
+								>
+									<h3 className={"FilesPropertiesModal-section-heading" satisfies FilesPropertiesModal_ClassNames}>
+										Metadata
+									</h3>
+									<FilesPropertiesModalMetadata nodeId={nodeId} onDirtyChange={setDirty} />
+								</section>
 							</>
 						) : null}
 					</div>

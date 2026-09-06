@@ -941,6 +941,96 @@ describe("service upload targets", () => {
 		expect(await read_targets(t)).toHaveLength(1);
 	});
 
+	test("member lock no-ops keep the exact service target and actual changes clear it", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture);
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body({ readOnly: true }))).status).toBe(200);
+		const target = (await read_targets(t))[0]!;
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: fixture.userId, name: "Test User" });
+		const args = { membershipId: fixture.membershipId, nodeId: target.nodeId };
+		const before = await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId));
+		expect(before?.readOnlyPluginServiceTargetId).toBe(target._id);
+		expect(await asUser.mutation(api.files_nodes.set_node_read_only, args)).toEqual({ _yay: null });
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId))).toEqual(before);
+
+		expect(await asUser.mutation(api.files_nodes.set_node_writable, args)).toEqual({ _yay: null });
+		const unlocked = await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId));
+		expect(unlocked?.readOnlyScopeNodeId).toBeUndefined();
+		expect(unlocked?.readOnlyPluginServiceTargetId).toBeUndefined();
+		expect(unlocked?.readOnlyPluginName).toBeUndefined();
+		expect(await asUser.mutation(api.files_nodes.set_node_writable, args)).toEqual({ _yay: null });
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId))).toEqual(unlocked);
+
+		expect(await asUser.mutation(api.files_nodes.set_node_read_only, args)).toEqual({ _yay: null });
+		const relocked = await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId));
+		expect(relocked?.readOnlyScopeNodeId).toBe(target.nodeId);
+		expect(relocked?.readOnlyPluginServiceTargetId).toBeUndefined();
+		expect(relocked?.readOnlyPluginName).toBeUndefined();
+		expect(await asUser.mutation(api.files_nodes.set_node_read_only, args)).toEqual({ _yay: null });
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId))).toEqual(relocked);
+		expect((await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete", targetKey: "recording" })).status).toBe(409);
+	});
+
+	test("an accepted upload finishes after label removal and a later member lock", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture);
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
+		const target = (await read_targets(t))[0]!;
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: fixture.userId, name: "Test User" });
+		expect(
+			await asUser.query(api.files_metadata.get_entries, {
+				membershipId: fixture.membershipId,
+				fileNodeId: target.nodeId,
+			}),
+		).toEqual([
+			{ key: "source", value: "plugin" },
+			{ key: "plugin-name", value: "council" },
+			{ key: "original-name", value: "recording.mp4" },
+		]);
+		expect(
+			await asUser.mutation(api.files_metadata.set_entries, {
+				membershipId: fixture.membershipId,
+				fileNodeId: target.nodeId,
+				metadataYaml: "source: member",
+			}),
+		).toEqual({ _yay: null });
+		expect(
+			await asUser.mutation(api.files_nodes.set_node_read_only, {
+				membershipId: fixture.membershipId,
+				nodeId: target.nodeId,
+			}),
+		).toEqual({ _yay: null });
+		expect((await call(t, REMINT_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" })).status).toBe(
+			200,
+		);
+		await simulate_finalizer(t, fixture, target, { size: 2 * MIB });
+		const finalized = await call(t, FINALIZE_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" });
+		expect(finalized.status).toBe(200);
+		expect((await read_targets(t))[0]).toMatchObject({ state: "committed", actualBytes: 2 * MIB });
+		const node = await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId));
+		expect(node?.assetId).toBe(target.assetId);
+		expect(node?.readOnlyScopeNodeId).toBe(target.nodeId);
+		expect(node?.readOnlyPluginName).toBeUndefined();
+		expect(node?.readOnlyPluginServiceTargetId).toBeUndefined();
+		expect(
+			await asUser.query(api.files_metadata.get_entries, {
+				membershipId: fixture.membershipId,
+				fileNodeId: target.nodeId,
+			}),
+		).toEqual([{ key: "source", value: "member" }]);
+
+		expect(
+			await asUser.mutation(api.files_nodes.set_node_writable, {
+				membershipId: fixture.membershipId,
+				nodeId: target.nodeId,
+			}),
+		).toEqual({ _yay: null });
+		expect((await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete", targetKey: "recording" })).status).toBe(200);
+		expect((await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId)))?.archiveOperationId).toBeDefined();
+	});
+
 	test("requires the read-only capability and live manage permission before writing a target", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);

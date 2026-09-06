@@ -1501,18 +1501,14 @@ function format_capability_label(value: string) {
 		return "Run its backend when a member uses its pages and file views";
 	}
 
-	// The plain rule writes "Workspace Files Own Write", which reads as writing the member's own
-	// files. Say the boundary instead: the write surface is only the folders the plugin creates and
-	// owns, never a member's files.
+	// Explain the editable labels that select the plugin's files.
 	if (value === "workspace.files.own-write") {
-		return "Create, update, and archive files in the folders it creates and owns";
+		return "Create, update, and archive files and folders marked for this plugin. Members can edit their labels.";
 	}
 
-	// The plain rule writes "Workspace Files Own Access", which says nothing about locks or
-	// readers. Say both halves: the plugin can lock its own files read-only, and it decides which
-	// members can read them — and while it does, members cannot change those grants by hand.
+	// Explain both the plugin's access controls and the member's manage permission.
 	if (value === "workspace.files.own-access") {
-		return "Lock its own files read-only and choose which members can read them";
+		return "Set locks and readers for its output. Members with manage permission can change them.";
 	}
 
 	return format_access_label(value);
@@ -2791,13 +2787,15 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(invokeLabel).not.toBe(format_access_label("plugin.backend.invoke"));
 		});
 
-		test("names the two own-file capabilities apart from the base write", () => {
-			// The plain rule writes "Workspace Files Own Write" / "Own Access", which read as writing
-			// the member's own files. The labels must carry the boundary: the plugin's own folders.
+		test("explains editable labels and member control for plugin file capabilities", () => {
 			const ownWriteLabel = format_capability_label("workspace.files.own-write");
-			expect(ownWriteLabel).toBe("Create, update, and archive files in the folders it creates and owns");
+			expect(ownWriteLabel).toBe(
+				"Create and update files marked for this plugin. Members can edit their labels.",
+			);
 			const ownAccessLabel = format_capability_label("workspace.files.own-access");
-			expect(ownAccessLabel).toBe("Lock its own files read-only and choose which members can read them");
+			expect(ownAccessLabel).toBe(
+				"Set locks and readers for its output. Members with manage permission can change them.",
+			);
 			expect(ownWriteLabel).not.toBe(format_capability_label("workspace.files.write"));
 			expect(ownAccessLabel).not.toBe(ownWriteLabel);
 		});

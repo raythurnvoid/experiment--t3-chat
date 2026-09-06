@@ -73,7 +73,6 @@ const FilesSearchPaletteContent = memo(function FilesSearchPaletteContent(props:
 	const textQuery = parse_search_query(text);
 	const hasFilters = parsed.filters.length > 0;
 	const hasInvalidFilter = parsed.filters.some((filter) => filter.problem !== null);
-	const hasMetadata = parsed.filters.some((filter) => filter.key.namespace !== "file");
 	const isActive = searchQuery.trim().length > 0;
 
 	const candidates = useMemo(
@@ -82,13 +81,12 @@ const FilesSearchPaletteContent = memo(function FilesSearchPaletteContent(props:
 				(item) =>
 					files_is_node(item) &&
 					item.archiveOperationId === undefined &&
-					(!hasMetadata || item.kind === "file") &&
 					!hasInvalidFilter &&
 					parsed.filters.every(
 						(filter) => search_filter_matches_item({ filter, item, metadataNodeIds: searchMetadataNodeIds }) === true,
 					),
 			),
-		[treeItems, hasMetadata, hasInvalidFilter, parsed.filters, searchMetadataNodeIds],
+		[treeItems, hasInvalidFilter, parsed.filters, searchMetadataNodeIds],
 	);
 	// Filter the content query before its page limit, including when no candidate matches.
 	const contentNodeIds = useMemo(

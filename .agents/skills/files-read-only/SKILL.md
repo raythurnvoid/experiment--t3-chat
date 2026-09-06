@@ -41,18 +41,14 @@ On `files_nodes`, beside `restrictedScopeNodeId`:
 - `readOnlyPluginName`: internal provenance for a direct lock a plugin door created (`access.readOnly`
   on `/api/v1/files/write`, `plugin-folders/ensure`, or `plugin-access/set` — see
   `../public-api/SKILL.md#plugin-file-doors`). Public node query answers remove it, and member
-  lock/unlock transitions clear it the same way as the service target pointer. Who can release such a
-  lock splits on the ownership stamp: a member CAN unlock a service-written file (no stamp — the
-  unlock clears the pointer, same rule as `readOnlyPluginServiceTargetId`), but a member CANNOT
-  unlock a stamped run-owned node (`This item is managed by a plugin.`) — only `plugin-access/set`
-  with `readOnly: false` and `plugin-archive` release it.
-- `pluginOwnerName`: internal ownership stamp, the plugin NAME that owns the node — every node a
-  plugin backend creates through the owned-file doors (`plugin-folders/ensure`, and a `plugin_run`
-  write through `/api/v1/files/write` inside its owned area) carries it. Public node queries remove
-  it, and public create, copy, collaboration, and lock doors cannot set it. A normal copy gets no stamp; moving the original node
-  keeps its stamp. Public lock, unlock, restrict, unrestrict, and share-grant doors refuse a stamped
-  node and any descendant whose effective lock comes from a stamped folder. Only the owning plugin's
-  doors may change those policy fields.
+  lock/unlock transitions clear it the same way as the service target pointer. A member with manage
+  permission can unlock every plugin-created node through the normal Files control. No-op requests
+  preserve both origin fields. Unlocking and locking again creates a member lock the plugin cannot pass.
+
+Plugin selection lives in ordinary editable `plugin-name` metadata. It is separate from these lock
+fields. No schema ownership field or label fallback exists. Metadata edits never change locks or
+reader bindings. A real inherited-pointer rewrite clears both lock-origin fields; nested direct
+locks and their subtrees keep their own origin.
 
 There is no read-only generation or lock-history table. A past lock does not make later work stale.
 Every write checks the current pointer in its final transaction. If the pointer is clear at that time,
@@ -167,20 +163,22 @@ Both mutations resolve auth and membership, apply the tree-write rate bucket, an
   Normal operator imports in `data_import.ts` do not bypass it.
 - A sealed service upload may create its new placeholder with a direct lock only when the plugin has
   `workspace.files.create-read-only` and the actor has live `content.permissions.manage` at the
-  destination ACL. Its `delete` and `archive-destination` doors may pass only that exact target's
-  direct lock. They recheck tenant, installation, destination node, open epoch, target state,
+  destination ACL. Its `delete` and `archive-destination` doors may pass that exact target's
+  direct lock. This exception rechecks tenant, installation, destination node, open epoch, target state,
   capability, provenance, and live manage ACL before any cleanup write. Inherited, member-created,
   member-recreated, moved, released, deleting, stale-epoch, or unrelated locks never pass. A member
-  lock on any folder above the file does not pass either.
+  lock on any folder above the file does not pass either. `archive-destination` also permits a direct
+  `readOnlyPluginName` lock from the same plugin inside the seal when `workspace.files.create-read-only`
+  remains accepted. A locked parent refuses this exception too.
 - The plugin write engine passes a read-only lock only for a lock its own plugin created, and the
   two principal kinds are judged differently
   (`public_api_db_can_pass_read_only_for_plugin`, `public_api.ts`).
   - A `plugin_run` must be an invoke run. The engine resolves the lock's owning scope node and
-    passes when that node's `readOnlyPluginName` is the plugin's name, so a file inside a folder
-    the plugin locked stays writable to it. `own-access` is NOT checked here: `own-access` is the
+    checks its `readOnlyPluginName`, then follows outer lock sources too. Every passed lock must
+    name this plugin. An outer member lock blocks a nested plugin lock. `own-access` is NOT checked here: it is the
     capability to CREATE a lock, `own-write` the capability to write the file, and revalidation
-    already proved own-area and own-write. A plugin that later loses `own-access` can still
-    maintain the files it owns.
+    already checked the editable label and own-write. Losing own-access alone does not stop a
+    plugin from maintaining otherwise writable, matching files.
   - A `plugin_service` passes only a lock on the file itself: the plugin-named lock its write door
     created (`public_api_service_uploads_db_can_release_plugin_named_lock`, which requires
     `workspace.files.create-read-only` and refuses when a member lock sits on a folder above), or
@@ -194,17 +192,16 @@ Both mutations resolve auth and membership, apply the tree-write rate bucket, an
   read-only. So both doors refuse the whole call while any folder above the file is locked. `delete`
   reads the parent folder's pointer, and `archive-destination` sees the same lock while it sweeps its
   destination subtree. The released pointer still falls back to the parent's current scope, the same way
-  `set_node_writable` does, and after those refusals that scope is always writable. Only a file ever
-  carries this provenance, so a lock above is always a member lock and there is no subtree to cascade to.
-- Plugin-owned files go through the plugin file doors (`plugin-folders/ensure`, `/api/v1/files/write`
+  `set_node_writable` does, and after those refusals that scope is always writable. Service-target
+  provenance is file-only; releasing a plugin-named folder lock also updates its descendants.
+- Plugin files go through the plugin file doors (`plugin-folders/ensure`, `/api/v1/files/write`
   for a plugin run, `plugin-archive`, `plugin-access/set` — `../public-api/SKILL.md#plugin-file-doors`).
   They are not user or agent doors. `files_node_require_writable` stays strict and has no bypass
   flag. The recursive create helper may take `skipAccessControlAndLock` and
-  `inheritParentReadOnlyScope` **only** from those doors. Clients cannot send those flags. The write
-  engine passes a plugin lock only when it is a direct lock whose `readOnlyPluginName` equals the
-  calling plugin's name, the capability is still accepted, and the node is inside the caller's
-  stamped authority area; a lock made through `set_node_read_only` cannot grant that authority. Bash `replace_file_content` and `create_file_by_path` under a plugin-locked
-  folder still return `_nay.name === "read_only"`.
+  `inheritParentReadOnlyScope` **only** from those doors. Clients cannot send those flags. Invoke writes
+  check the target's label separately and may pass this plugin's current lock sources, including
+  ancestors. A member lock still blocks the write. Bash `replace_file_content` and `create_file_by_path`
+  under a plugin-locked folder still return `_nay.name === "read_only"`.
 - A plugin asking for `readOnly: true` on a node under a lock **its own plugin** already holds is
   asking for nothing new, so the door answers success and writes no second lock. Releasing under any
   lock above stays refused, because the lock above would keep the node read-only anyway, and so does
@@ -213,6 +210,10 @@ Both mutations resolve auth and membership, apply the tree-write rate bucket, an
 - `plugin-folders/ensure` passes `inheritParentReadOnlyScope`, like the write doors. A folder created
   under a locked root must come out carrying the lock pointer, or the tree above reads read-only while
   the folder's own field says nothing and the `readOnly: true` on it locks nothing.
+- Ensure applies requested access only to a new folder. An existing folder keeps the member's locks,
+  metadata, and sharing. A member-relocked folder refuses. Explicit `plugin-access/set` also needs
+  live manage permission on the node and affected restricted subtrees. Access and binding checks
+  finish before any node, lock, or grant write.
 - If discard or expiry finds a locked eager-created node or created ancestor, remove the pending docs
   but keep the empty committed branch. `eagerCreated` stores the creation-time committed sequence and
   optional `createdAncestorIds`. Cleanup checks every existing node's current lock before its first

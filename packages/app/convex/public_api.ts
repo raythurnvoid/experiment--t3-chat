@@ -63,10 +63,12 @@ import {
 	files_node_require_writable,
 	files_nodes_db_archive_nodes,
 	files_nodes_db_create_node_recursively_at_path,
+	files_nodes_db_resolve_parent_read_only_scope,
 	type files_nodes_get_by_path_Result,
 	type files_nodes_read_file_content_from_chunks_Result,
 	type get_file_content_materialization_state_Result,
 } from "./files_nodes.ts";
+import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import {
 	files_nodes_create_yjs_snapshot_update_from_text,
 	files_nodes_db_fill_text_node_content,
@@ -320,7 +322,7 @@ async function has_workspace_content_permission(
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
-		permission: "content.read" | "content.write";
+		permission: "content.read" | "content.write" | "content.permissions.manage";
 		fileNode?: Doc<"files_nodes">;
 	},
 ) {
@@ -1204,7 +1206,7 @@ export const resolve_principal = internalQuery({
 				scopes.push("files:read", "files:list");
 			}
 			// An invoke run has no source, so the sibling-write baseline above gave it no `files:write`.
-			// Own-write is its one write consent, bounded to the plugin's stamped folders by the write
+			// Own-write is its one write consent, bounded by editable plugin labels in the write
 			// doors.
 			if (
 				pluginRun.event === "ui.invoke.requested" &&
@@ -1709,6 +1711,7 @@ export async function public_api_db_revalidate_file_write_principal(
 		userId: Id<"users">;
 		principalRef: Infer<typeof file_write_principal_ref_validator>;
 		path: string;
+		expectedParentNodeId?: Id<"files_nodes">;
 		now: number;
 	},
 ) {
@@ -1724,21 +1727,17 @@ export async function public_api_db_revalidate_file_write_principal(
 		}
 		const { pluginRun, installation } = liveRun._yay;
 
-		// An invoke run has no source upload, so its write authority is the plugin's own stamped
-		// area instead of the sibling rule. Branch on the event: upload runs keep the sibling rule
-		// below exactly as it is.
+		// Invoke writes select nodes by their editable plugin label. Upload runs keep the sibling rule.
 		if (pluginRun.event === "ui.invoke.requested") {
-			// Own-write is the consent for writing inside the plugin's stamped folders. The
+			// Own-write is the consent for writing nodes marked with this plugin's name. The
 			// resolver already gated the `files:write` scope on it; ask again here because the
 			// consent can be taken back while a write is staged.
 			if (!installation.acceptedCapabilities.includes("workspace.files.own-write")) {
 				return Result({ _nay: { message: "Permission denied" } });
 			}
 
-			// The stamp rule: the active node at the target path, or the deepest existing
-			// ancestor, must carry this plugin's stamp. Nothing existing at all means the plugin
-			// never created its root through `plugin-folders/ensure`, so the write is refused.
-			const ownedNode =
+			// An existing target needs its own label. A create uses the nearest existing ancestor.
+			const labelledNode =
 				(await db_get_active_node_at_path(ctx, {
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
@@ -1749,10 +1748,6 @@ export async function public_api_db_revalidate_file_write_principal(
 					workspaceId: args.workspaceId,
 					path: args.path,
 				}));
-			if (!ownedNode || ownedNode.pluginOwnerName !== installation.pluginName) {
-				return Result({ _nay: { message: "Permission denied" } });
-			}
-
 			// The run writes as the member who invoked it, so that member must still be one, and
 			// must still be allowed to write where the output lands.
 			const invokeActorMembership = await ctx.db
@@ -1774,8 +1769,23 @@ export async function public_api_db_revalidate_file_write_principal(
 					workspaceId: args.workspaceId,
 					userId: args.userId,
 					permission: "content.write",
-					fileNode: ownedNode,
+					...(labelledNode ? { fileNode: labelledNode } : {}),
 				}))
+			) {
+				return Result({ _nay: { message: "Permission denied" } });
+			}
+			const parent = await db_require_file_write_parent(ctx, args);
+			if (parent._nay) {
+				return parent;
+			}
+			if (
+				!labelledNode ||
+				(await files_metadata_db_read_entry(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					fileNodeId: labelledNode._id,
+					key: "plugin-name",
+				})) !== installation.pluginName
 			) {
 				return Result({ _nay: { message: "Permission denied" } });
 			}
@@ -2002,15 +2012,9 @@ async function db_service_lock_is_own_live_target(
 }
 
 /**
- * Whether a service principal may replace or fill this exact existing file. A path inside the
- * seal is only a location bound, not proof the service created the file — without this gate a
- * service could overwrite a member-created Markdown file inside its destination.
- *
- * Proof is the write-door provenance stamp, or the installation's own live read-only upload target
- * on the node (a file created read-only through `create-target` carries no stamp but must stay
- * updatable by the service that created it).
+ * The service seal limits location. The exact file's editable plugin label selects it for updates.
  */
-async function db_service_owns_existing_file(
+async function db_service_matches_file_label(
 	ctx: MutationCtx,
 	args: { facts: FileWritePluginFacts; node: Doc<"files_nodes"> },
 ) {
@@ -2018,22 +2022,23 @@ async function db_service_owns_existing_file(
 	if (!installation || !args.facts.serviceGrant) {
 		return false;
 	}
-	if (args.node.pluginServiceWritePluginName === installation.pluginName) {
-		return true;
-	}
-	return await db_service_lock_is_own_live_target(ctx, args);
+	return (
+		(await files_metadata_db_read_entry(ctx, {
+			organizationId: args.node.organizationId,
+			workspaceId: args.node.workspaceId,
+			fileNodeId: args.node._id,
+			key: "plugin-name",
+		})) === installation.pluginName
+	);
 }
 
 /**
  * Whether a plugin principal may write through a `files_node_require_writable` refusal. Every
  * other caller keeps today's 409.
  *
- * Run-owned area: pass when the lock's OWNING node is a direct lock this plugin's own doors
- * created. Resolve the scope node instead of requiring the lock to sit on this node, so files
- * inside a folder the plugin locked stay writable to the plugin's backend. Own-area and
- * own-write were already proved by revalidation for invoke runs; own-access is not asked here,
- * because own-access is the capability to CREATE a lock and own-write the capability to write
- * the file — a plugin that later loses own-access can still maintain the files it owns.
+ * Invoke runs may pass locks bearing their plugin name. Check every outer lock too, so a
+ * member lock still blocks a nested plugin lock. Labels and own-write consent were checked
+ * by revalidation; own-access is needed to create locks, not to write through them.
  *
  * Service seal: only the file's own direct locks can pass — the plugin-named lock the write door
  * created, or the lock of this installation's own live upload target.
@@ -2059,8 +2064,15 @@ export async function public_api_db_can_pass_read_only_for_plugin(
 		if (args.facts.pluginRun.event !== "ui.invoke.requested") {
 			return false;
 		}
-		const scopeNode = await ctx.db.get("files_nodes", args.node.readOnlyScopeNodeId);
-		return scopeNode?.readOnlyPluginName === installation.pluginName;
+		let scopeId: Id<"files_nodes"> | undefined = args.node.readOnlyScopeNodeId;
+		while (scopeId !== undefined) {
+			const scopeNode: Doc<"files_nodes"> | null = await ctx.db.get("files_nodes", scopeId);
+			if (!scopeNode || scopeNode.readOnlyPluginName !== installation.pluginName) {
+				return false;
+			}
+			scopeId = await files_nodes_db_resolve_parent_read_only_scope(ctx, { parentId: scopeNode.parentId });
+		}
+		return true;
 	}
 
 	const serviceGrant = args.facts.serviceGrant;
@@ -2171,7 +2183,10 @@ async function db_preflight_file_write_target(
 
 		// Check the lock again at publish time. If the target is writable then, the write can finish.
 		const writable = files_node_require_writable(activeNode);
-		if (writable._nay && !(await public_api_db_can_pass_read_only_for_plugin(ctx, { facts: args.pluginFacts, node: activeNode }))) {
+		if (
+			writable._nay &&
+			!(await public_api_db_can_pass_read_only_for_plugin(ctx, { facts: args.pluginFacts, node: activeNode }))
+		) {
 			return writable;
 		}
 
@@ -2198,12 +2213,44 @@ async function db_preflight_file_write_target(
 
 		// Do not create temporary docs below a read-only node.
 		const writable = files_node_require_writable(ancestor);
-		if (writable._nay && !(await public_api_db_can_pass_read_only_for_plugin(ctx, { facts: args.pluginFacts, node: ancestor }))) {
+		if (
+			writable._nay &&
+			!(await public_api_db_can_pass_read_only_for_plugin(ctx, { facts: args.pluginFacts, node: ancestor }))
+		) {
 			return writable;
 		}
 	}
 
 	return Result({ _yay: { targetAnchor: { kind: "create" as const } } });
+}
+
+/**
+ * Check the immediate parent after the caller's normal target access checks.
+ */
+async function db_require_file_write_parent(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		path: string;
+		expectedParentNodeId?: Id<"files_nodes">;
+	},
+) {
+	if (args.expectedParentNodeId === undefined) {
+		return Result({ _yay: null });
+	}
+	const parent = await ctx.db.get("files_nodes", args.expectedParentNodeId);
+	if (
+		!parent ||
+		parent.organizationId !== args.organizationId ||
+		parent.workspaceId !== args.workspaceId ||
+		parent.kind !== "folder" ||
+		parent.archiveOperationId !== undefined ||
+		parent.path !== server_path_parent_of(args.path)
+	) {
+		return Result({ _nay: { name: "stale_write", message: "The parent folder changed during the write" } });
+	}
+	return Result({ _yay: null });
 }
 
 /**
@@ -2275,6 +2322,7 @@ export const prepare_file_write = internalMutation({
 		userId: v.id("users"),
 		principalRef: file_write_principal_ref_validator,
 		path: v.string(),
+		expectedParentNodeId: v.optional(v.string()),
 		overwrite: v.union(v.literal("replace"), v.literal("fail")),
 		contentSize: v.number(),
 		yjsSnapshotSize: v.number(),
@@ -2295,16 +2343,27 @@ export const prepare_file_write = internalMutation({
 	}),
 	handler: async (ctx, args) => {
 		const now = Date.now();
+		const expectedParentNodeId =
+			args.expectedParentNodeId === undefined
+				? undefined
+				: ctx.db.normalizeId("files_nodes", args.expectedParentNodeId);
+		if (expectedParentNodeId === null) {
+			return Result({ _nay: { name: "invalid_input", message: "expectedParentNodeId must be a file node ID" } });
+		}
 		const revalidated = await public_api_db_revalidate_file_write_principal(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
 			principalRef: args.principalRef,
 			path: args.path,
+			expectedParentNodeId,
 			now,
 		});
 		if (revalidated._nay) {
 			return revalidated;
+		}
+		if (expectedParentNodeId !== undefined && revalidated._yay.pluginRun?.event !== "ui.invoke.requested") {
+			return Result({ _nay: { message: "Permission denied" } });
 		}
 
 		// Check the current target before creating temporary docs. Publish checks it again before its
@@ -2348,6 +2407,7 @@ export const prepare_file_write = internalMutation({
 					? { grantId: args.principalRef.grantId }
 					: { credentialId: args.principalRef.credentialId }),
 			path: args.path,
+			expectedParentNodeId,
 			overwrite: args.overwrite,
 			contentType: args.contentType,
 			yjsRootKind: args.yjsRootKind,
@@ -2418,9 +2478,21 @@ export const publish_file_write = internalMutation({
 			userId: stage.userId,
 			principalRef,
 			path: stage.path,
+			expectedParentNodeId: stage.expectedParentNodeId,
 			now,
 		});
 		if (revalidated._nay) {
+			if (revalidated._nay.name === "stale_write") {
+				await db_abandon_file_write_stage_conflict(ctx, {
+					stage,
+					putAssetIds:
+						args.nonCollaborative === true
+							? [stage.contentSnapshotAssetId]
+							: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
+					refusalMessage: revalidated._nay.message,
+					deletionReason: "failed_create",
+				});
+			}
 			return revalidated;
 		}
 
@@ -2501,11 +2573,23 @@ export const publish_file_write = internalMutation({
 				return Result({ _nay: { message: "A file already exists at this path" } });
 			}
 
-			// Replacing an existing file is an update, so a service needs proof it created this
-			// exact file, not only a path inside its seal.
+			// The service seal does not replace the exact file's label check.
 			if (
 				principalRef.kind === "plugin_service" &&
-				!(await db_service_owns_existing_file(ctx, { facts: revalidated._yay, node: activeNode }))
+				!(await db_service_matches_file_label(ctx, { facts: revalidated._yay, node: activeNode }))
+			) {
+				return Result({ _nay: { message: "Permission denied" } });
+			}
+			// A replacement gets new sharing from its parent, so a plugin's actor must manage this file.
+			if (
+				revalidated._yay.installation &&
+				!(await has_workspace_content_permission(ctx, {
+					organizationId: stage.organizationId,
+					workspaceId: stage.workspaceId,
+					userId: stage.userId,
+					permission: "content.permissions.manage",
+					fileNode: activeNode,
+				}))
 			) {
 				return Result({ _nay: { message: "Permission denied" } });
 			}
@@ -2532,10 +2616,24 @@ export const publish_file_write = internalMutation({
 				) {
 					return Result({ _nay: { message: "Permission denied" } });
 				}
+				const writable = files_node_require_writable(ancestor);
+				if (writable._nay) {
+					if (!(await public_api_db_can_pass_read_only_for_plugin(ctx, { facts: revalidated._yay, node: ancestor }))) {
+						await db_abandon_file_write_stage_conflict(ctx, {
+							stage,
+							putAssetIds:
+								args.nonCollaborative === true
+									? [stage.contentSnapshotAssetId]
+									: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
+							refusalMessage: writable._nay.message,
+							deletionReason: "read_only_stage",
+						});
+						return writable;
+					}
+					createThroughOwnLock = true;
+				}
 				ancestorId = ancestor.parentId;
 			}
-
-			await files_nodes_db_archive_nodes(ctx, { nodeIds: [activeNode._id], updatedBy: stage.userId, now });
 		}
 
 		// A create still needs an empty target path. Check the current parent lock before the first
@@ -2573,9 +2671,7 @@ export const publish_file_write = internalMutation({
 			if (ancestor) {
 				const writable = files_node_require_writable(ancestor);
 				if (writable._nay) {
-					if (
-						!(await public_api_db_can_pass_read_only_for_plugin(ctx, { facts: revalidated._yay, node: ancestor }))
-					) {
+					if (!(await public_api_db_can_pass_read_only_for_plugin(ctx, { facts: revalidated._yay, node: ancestor }))) {
 						await db_abandon_file_write_stage_conflict(ctx, {
 							stage,
 							putAssetIds: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
@@ -2649,16 +2745,11 @@ export const publish_file_write = internalMutation({
 			}
 		}
 
-		// Owned-area runs stamp every node this write creates — the file and each new intermediate
-		// folder — so the stamp rule keeps answering for later writes below them. Driven by the
-		// principal reference, never by a request field: public doors must stay unable to set the
-		// stamp.
-		const stampPluginName =
-			principalRef.kind === "plugin_run" &&
-			revalidated._yay.pluginRun?.event === "ui.invoke.requested" &&
-			revalidated._yay.installation
-				? revalidated._yay.installation.pluginName
-				: undefined;
+		// Every refusal above must leave the old file active.
+		if (activeNode) {
+			await files_nodes_db_archive_nodes(ctx, { nodeIds: [activeNode._id], updatedBy: stage.userId, now });
+		}
+		const pluginName = revalidated._yay.installation?.pluginName;
 
 		const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
 			userId: stage.userId,
@@ -2672,8 +2763,14 @@ export const publish_file_write = internalMutation({
 			// the file's first version snapshot.
 			assetId: stage.contentSnapshotAssetId,
 			expectsTextContent: true,
-			metadata: [{ key: "source", value: "api" }],
-			...(stampPluginName ? { stampCreatedNodesPluginName: stampPluginName } : {}),
+			...(pluginName
+				? {
+						createdNodesMetadata: [
+							{ key: "source", value: "plugin" },
+							{ key: "plugin-name", value: pluginName },
+						],
+					}
+				: { metadata: [{ key: "source", value: "api" }] }),
 			// The refusing lock is the plugin's own, and the ACL questions were asked above. Skip
 			// the helper's re-check of that same lock, and keep the new nodes under the locked
 			// folder's pointer so they stay read-only for members.
@@ -2685,13 +2782,6 @@ export const publish_file_write = internalMutation({
 			return Result({ _nay: { message: created._nay.message } });
 		}
 
-		// A service-created file records which plugin wrote it. Later service updates and the
-		// per-file archive read this as ownership proof; member sharing and lock code ignore it.
-		if (principalRef.kind === "plugin_service" && revalidated._yay.installation) {
-			await ctx.db.patch("files_nodes", created._yay, {
-				pluginServiceWritePluginName: revalidated._yay.installation.pluginName,
-			});
-		}
 		// The requested lock was authorized above, before anything was written. The node is brand
 		// new and has no descendants, so no cascade is needed.
 		if (args.requestReadOnly === true && revalidated._yay.installation) {
@@ -2857,20 +2947,25 @@ export const publish_file_fill = internalMutation({
 			userId: stage.userId,
 			principalRef,
 			path: stage.path,
+			expectedParentNodeId: stage.expectedParentNodeId,
 			now,
 		});
 		if (revalidated._nay) {
+			if (revalidated._nay.name === "stale_write") {
+				await db_abandon_file_write_stage_conflict(ctx, {
+					stage,
+					putAssetIds: [stage.contentSnapshotAssetId],
+					refusalMessage: revalidated._nay.message,
+					deletionReason: "failed_create",
+				});
+			}
 			return revalidated;
 		}
 
 		// Bind only the tenant and node before access checks. Path, archive, type, mode, and lineage
 		// are details a caller without node access must not learn from the conflict response.
 		const fileNode = await ctx.db.get("files_nodes", args.expectedNodeId);
-		if (
-			!fileNode ||
-			fileNode.organizationId !== stage.organizationId ||
-			fileNode.workspaceId !== stage.workspaceId
-		) {
+		if (!fileNode || fileNode.organizationId !== stage.organizationId || fileNode.workspaceId !== stage.workspaceId) {
 			return Result({ _nay: { message: "The file changed during the write" } });
 		}
 
@@ -2889,11 +2984,10 @@ export const publish_file_fill = internalMutation({
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
-		// Filling is an update, so a service needs proof it created this exact file, not only a
-		// path inside its seal.
+		// Filling keeps the file and its policy, but still needs its current plugin label.
 		if (
 			principalRef.kind === "plugin_service" &&
-			!(await db_service_owns_existing_file(ctx, { facts: revalidated._yay, node: fileNode }))
+			!(await db_service_matches_file_label(ctx, { facts: revalidated._yay, node: fileNode }))
 		) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
@@ -2901,7 +2995,10 @@ export const publish_file_fill = internalMutation({
 		// Check ACL, then check the current lock before the first write. A refusal also cleans up the
 		// stage in this transaction. The fill path uploaded only the content snapshot.
 		const writable = files_node_require_writable(fileNode);
-		if (writable._nay && !(await public_api_db_can_pass_read_only_for_plugin(ctx, { facts: revalidated._yay, node: fileNode }))) {
+		if (
+			writable._nay &&
+			!(await public_api_db_can_pass_read_only_for_plugin(ctx, { facts: revalidated._yay, node: fileNode }))
+		) {
 			await db_abandon_file_write_stage_conflict(ctx, {
 				stage,
 				putAssetIds: [stage.contentSnapshotAssetId],
@@ -2918,8 +3015,7 @@ export const publish_file_fill = internalMutation({
 			fileNode.archiveOperationId !== undefined ||
 			!files_node_has_editable_text_content(fileNode) ||
 			(fileNode.nonCollaborative === true) !== (args.nonCollaborative === true) ||
-			(fileNode.nonCollaborative !== true &&
-				fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId)
+			(fileNode.nonCollaborative !== true && fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId)
 		) {
 			return Result({ _nay: { message: "The file changed during the write" } });
 		}
@@ -3227,16 +3323,7 @@ export const publish_file_touch = internalMutation({
 			});
 		}
 
-		// Stamp what the touch creates, the same way `publish_file_write` does. The stamp rule reads
-		// the node at the target path before it falls back to the ancestor, so an unstamped file here
-		// would refuse the plugin's own later write to fill it — and refuse the archive of the folder
-		// holding it. Driven by the principal reference, never by a request field.
-		const stampPluginName =
-			principalRef.kind === "plugin_run" &&
-			revalidated._yay.pluginRun?.event === "ui.invoke.requested" &&
-			revalidated._yay.installation
-				? revalidated._yay.installation.pluginName
-				: undefined;
+		const pluginName = revalidated._yay.installation?.pluginName;
 
 		const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
 			userId: stage.userId,
@@ -3250,8 +3337,14 @@ export const publish_file_touch = internalMutation({
 			// also becomes the file's first version snapshot.
 			assetId: stage.contentSnapshotAssetId,
 			expectsTextContent: true,
-			metadata: [{ key: "source", value: "api" }],
-			...(stampPluginName ? { stampCreatedNodesPluginName: stampPluginName } : {}),
+			...(pluginName
+				? {
+						createdNodesMetadata: [
+							{ key: "source", value: "plugin" },
+							{ key: "plugin-name", value: pluginName },
+						],
+					}
+				: { metadata: [{ key: "source", value: "api" }] }),
 			// The refusing lock is the plugin's own, and the ACL questions were asked above. Skip
 			// the helper's re-check of that same lock, and keep the new nodes under the locked
 			// folder's pointer so they stay read-only for members.
@@ -3320,11 +3413,9 @@ export const can_write_file_node = internalQuery({
 		userId: v.id("users"),
 		nodeId: v.id("files_nodes"),
 		/**
-		 * Set for an invoke run, whose authority is its plugin's stamped area. The touch route answers
-		 * an already-existing file from this query and never reaches `publish_file_touch`, so the stamp
-		 * rule revalidation applies on the create path has to be asked here too.
+		 * Existing-file touches return from this query, so they must check the current plugin label here.
 		 */
-		requireStampedForInstallationId: v.optional(v.id("plugins_workspace_installations")),
+		requireLabelForInstallationId: v.optional(v.id("plugins_workspace_installations")),
 	},
 	returns: v.union(v.literal("ok"), v.literal("permission_denied"), v.literal("read_only")),
 	handler: async (ctx, args) => {
@@ -3336,9 +3427,17 @@ export const can_write_file_node = internalQuery({
 		// status: 200 for a file its actor may write, 409 for a folder or a locked file, 403 for one
 		// that is not there. The refusal is the same word the actor check below uses, so the two
 		// cases stay indistinguishable.
-		if (args.requireStampedForInstallationId) {
-			const installation = await ctx.db.get("plugins_workspace_installations", args.requireStampedForInstallationId);
-			if (!installation || fileNode.pluginOwnerName !== installation.pluginName) {
+		if (args.requireLabelForInstallationId) {
+			const installation = await ctx.db.get("plugins_workspace_installations", args.requireLabelForInstallationId);
+			if (
+				!installation ||
+				(await files_metadata_db_read_entry(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					fileNodeId: fileNode._id,
+					key: "plugin-name",
+				})) !== installation.pluginName
+			) {
 				return "permission_denied";
 			}
 		}
@@ -4000,6 +4099,7 @@ async function write_one_text_file(
 		visibilityUserId: Id<"users">;
 		principalRef: Infer<typeof file_write_principal_ref_validator>;
 		path: string;
+		expectedParentNodeId?: string;
 		content: string;
 		contentBytes: number;
 		overwrite: "replace" | "fail";
@@ -4077,10 +4177,8 @@ async function write_one_text_file(
 		activeNodeContentType !== null
 	) {
 		// Re-running an import must not mint a new version for a file whose text did not change.
-		// A service never takes this shortcut: its proof that it created the file lives in the
-		// publish mutation, and a 200 here would let a service confirm the exact content of a
-		// member file inside its destination.
-		if (args.skipIfUnchanged && args.principalRef.kind !== "plugin_service") {
+		// Plugin writes must reach the mutation's current label, permission, and lock checks.
+		if (args.skipIfUnchanged && args.principalRef.kind === "user_api_key") {
 			// Compare against the saved text. The caller's own proposal on this file is not the
 			// file, and a write of that proposal's text must still land as a save.
 			const current = (await ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
@@ -4120,6 +4218,7 @@ async function write_one_text_file(
 			userId: args.userId,
 			principalRef: args.principalRef,
 			path: args.path,
+			expectedParentNodeId: args.expectedParentNodeId,
 			overwrite: args.overwrite,
 			contentSize: args.contentBytes,
 			// This path never uploads a Yjs snapshot object; publish_file_fill drops the staged
@@ -4129,6 +4228,11 @@ async function write_one_text_file(
 			yjsRootKind: activeNode.yjsRootKind,
 		});
 		if (prepared._nay) {
+			if (prepared._nay.name === "invalid_input") {
+				return Result({
+					_nay: { name: "nay", message: prepared._nay.message, data: { status: 400, errorCode: "invalid_input" } },
+				});
+			}
 			if (prepared._nay.message === "Permission denied") {
 				return Result({
 					_nay: {
@@ -4140,7 +4244,7 @@ async function write_one_text_file(
 			}
 			// A locked target is a conflict, not a permission error. A permission error would stop the
 			// whole batch. A conflict stops only this item.
-			if (prepared._nay.name === "read_only") {
+			if (prepared._nay.name === "read_only" || prepared._nay.name === "stale_write") {
 				return Result({
 					_nay: { name: "nay", message: prepared._nay.message, data: { status: 409, errorCode: "conflict" } },
 				});
@@ -4281,10 +4385,8 @@ async function write_one_text_file(
 			// change. A null diff means projecting the incoming Markdown was a semantic no-op,
 			// so return before staging: no stage, no asset docs, no uploads, no version snapshot.
 			//
-			// A service never takes this shortcut: its proof that it created the file lives in
-			// the publish mutation, and a 200 here would let a service confirm the exact content
-			// of a member file inside its destination.
-			if (args.skipIfUnchanged && fillUpdate === null && args.principalRef.kind !== "plugin_service") {
+			// Plugin writes must reach the mutation's current label, permission, and lock checks.
+			if (args.skipIfUnchanged && fillUpdate === null && args.principalRef.kind === "user_api_key") {
 				// Skip only when the commit-time write check would also say yes. When it says no,
 				// fall through to the normal write path so the caller gets the same refusal a plain
 				// write gets — a 200 here would let a caller who cannot write the node confirm its
@@ -4313,6 +4415,7 @@ async function write_one_text_file(
 				userId: args.userId,
 				principalRef: args.principalRef,
 				path: args.path,
+				expectedParentNodeId: args.expectedParentNodeId,
 				overwrite: args.overwrite,
 				contentSize: args.contentBytes,
 				// The fill path never uploads a Yjs snapshot object; publish_file_fill drops
@@ -4322,6 +4425,11 @@ async function write_one_text_file(
 				yjsRootKind: activeNode.yjsRootKind,
 			});
 			if (prepared._nay) {
+				if (prepared._nay.name === "invalid_input") {
+					return Result({
+						_nay: { name: "nay", message: prepared._nay.message, data: { status: 400, errorCode: "invalid_input" } },
+					});
+				}
 				if (prepared._nay.message === "Permission denied") {
 					return Result({
 						_nay: {
@@ -4333,7 +4441,7 @@ async function write_one_text_file(
 				}
 				// A locked target is a conflict, not a permission error. A permission error would stop the
 				// whole batch. A conflict stops only this item.
-				if (prepared._nay.name === "read_only") {
+				if (prepared._nay.name === "read_only" || prepared._nay.name === "stale_write") {
 					return Result({
 						_nay: { name: "nay", message: prepared._nay.message, data: { status: 409, errorCode: "conflict" } },
 					});
@@ -4487,6 +4595,7 @@ async function write_one_text_file(
 		userId: args.userId,
 		principalRef: args.principalRef,
 		path: args.path,
+		expectedParentNodeId: args.expectedParentNodeId,
 		overwrite: args.overwrite,
 		contentSize: args.contentBytes,
 		yjsSnapshotSize: snapshotUpdate?.byteLength ?? 0,
@@ -4494,6 +4603,11 @@ async function write_one_text_file(
 		yjsRootKind: createShape.rootKind,
 	});
 	if (prepared._nay) {
+		if (prepared._nay.name === "invalid_input") {
+			return Result({
+				_nay: { name: "nay", message: prepared._nay.message, data: { status: 400, errorCode: "invalid_input" } },
+			});
+		}
 		if (prepared._nay.message === "Permission denied") {
 			return Result({
 				_nay: { name: "nay", message: prepared._nay.message, data: { status: 403, errorCode: "permission_denied" } },
@@ -4501,7 +4615,7 @@ async function write_one_text_file(
 		}
 		// A locked target or parent is a conflict, not a permission error. A permission error would
 		// stop the whole batch. A conflict stops only this item.
-		if (prepared._nay.name === "read_only") {
+		if (prepared._nay.name === "read_only" || prepared._nay.name === "stale_write") {
 			return Result({
 				_nay: { name: "nay", message: prepared._nay.message, data: { status: 409, errorCode: "conflict" } },
 			});
@@ -4801,6 +4915,10 @@ export async function public_api_http_read_many(ctx: ActionCtx, request: Request
 
 const write_file_body_validator = z.object({
 	path: z.string(),
+	/**
+	 * Invoke writes can require the same immediate parent at prepare and publication.
+	 */
+	expectedParentNodeId: z.string().optional(),
 	content: z.string(),
 	overwrite: z.enum(["replace", "fail"]).optional(),
 	skipIfUnchanged: z.boolean().optional(),
@@ -4873,6 +4991,15 @@ export async function public_api_http_write_file(ctx: ActionCtx, request: Reques
 		return {
 			status: 400,
 			body: await fail({ status: 400, message: body._nay.message, errorCode: "invalid_input" }),
+		} as const;
+	}
+	if (
+		body._yay.expectedParentNodeId !== undefined &&
+		(principal.kind !== "plugin_run" || principal.outputParentPath !== null)
+	) {
+		return {
+			status: 403,
+			body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
 		} as const;
 	}
 
@@ -4952,7 +5079,7 @@ export async function public_api_http_write_file(ctx: ActionCtx, request: Reques
 	}
 	// Upload-triggered plugins may only create Markdown siblings of their triggering file; the
 	// same constraint is revalidated transactionally at prepare and publish time. An invoke run
-	// has no source file (`outputParentPath` is null); its authority is the plugin's stamped area,
+	// has no source file (`outputParentPath` is null); its authority uses editable plugin labels,
 	// which only the transactional checks can prove, so it passes here. A non-invoke run with no
 	// source never carries the `files:write` scope, so it never reaches this line.
 	if (
@@ -5027,6 +5154,7 @@ export async function public_api_http_write_file(ctx: ActionCtx, request: Reques
 		visibilityUserId: public_api_visibility_user_id(principal),
 		principalRef,
 		path: requestedPath,
+		expectedParentNodeId: body._yay.expectedParentNodeId,
 		content,
 		contentBytes,
 		overwrite,
@@ -5042,6 +5170,9 @@ export async function public_api_http_write_file(ctx: ActionCtx, request: Reques
 			errorCode: written._nay.data.errorCode,
 		});
 		// Branch per literal so the response union keeps exact status literals.
+		if (written._nay.data.status === 400) {
+			return { status: 400, body: failBody } as const;
+		}
 		if (written._nay.data.status === 409) {
 			return { status: 409, body: failBody } as const;
 		}
@@ -5305,6 +5436,9 @@ export async function public_api_http_write_many(ctx: ActionCtx, request: Reques
 			if (result._nay.data.errorCode === "unauthenticated") {
 				return { status: 401, body: { message: result._nay.message } } as const;
 			}
+			if (result._nay.data.errorCode === "invalid_input") {
+				return { status: 400, body: { message: result._nay.message } } as const;
+			}
 			errors.push({
 				path: file.path,
 				message: result._nay.message,
@@ -5429,7 +5563,7 @@ export async function public_api_http_touch_files(ctx: ActionCtx, request: Reque
 		}
 		// Upload-triggered plugins may only create Markdown siblings of their triggering file; the
 		// same constraint is revalidated transactionally at publish time. An invoke run has no source
-		// file (`outputParentPath` is null); its authority is the plugin's stamped area, which only
+		// file (`outputParentPath` is null); its authority uses editable plugin labels, which only
 		// the transactional check in `publish_file_touch` can prove, so it passes here. A non-invoke
 		// run with no source never carries the `files:write` scope, so it never reaches this line.
 		if (
@@ -5489,10 +5623,10 @@ export async function public_api_http_touch_files(ctx: ActionCtx, request: Reque
 				userId: principal.kind === "plugin_run" ? principal.actorUserId : principal.userId,
 				nodeId: activeNode._id,
 				// An invoke run is the one principal the pre-check above lets through with no path
-				// bound of its own, so its stamped area has to be proved here. An upload run is
+				// bound of its own, so its file label has to be checked here. An upload run is
 				// already held to its triggering file's folder, and a key holder has no plugin area.
 				...(principal.kind === "plugin_run" && principal.outputParentPath === null
-					? { requireStampedForInstallationId: principal.installationId }
+					? { requireLabelForInstallationId: principal.installationId }
 					: {}),
 			})) as "ok" | "permission_denied" | "read_only";
 			if (canWriteNode === "permission_denied") {

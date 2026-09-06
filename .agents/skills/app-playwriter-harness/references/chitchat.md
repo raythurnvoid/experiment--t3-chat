@@ -738,13 +738,31 @@ proof that this backend wrote the file now.
 
 A private channel's transcript lives in its own restricted folder,
 `/chitchat/private/<slug>-<digest8(channelKey)>/<slug>-<digest8>.md`, readable by the channel's
-scope members — and by the organization owner, who reads every restricted file in the workspace,
+scope members initially — and by the organization owner, who reads every restricted file in the workspace,
 which is why an owner-only run proves nothing. The digest suffix comes from the channel key (a
 client UUID), so two same-named private channels get separate folders and a guessed channel name
 cannot be confirmed by probing the path. The backend binds the folder to the channel's data scope
 (`access.readScopeId`, binding table `plugins_file_access_bindings`), and the host mirrors one
 `content.read` grant per scope member onto it. Adds and removals are BOTH synchronous inside the
-scope mutation — the old "adds wait for the next sync" asymmetry is gone.
+scope mutation while the binding remains attached. A Files manager can change transcript sharing;
+an actual manual sharing change detaches the binding. Later channel member changes leave that manual
+sharing alone. Metadata edits do not detach it.
+
+For the editable plugin-label flow, verify these cases through the app and read back the stored docs:
+
+- Unlock `/chitchat` through Properties. Metadata and sharing controls follow ordinary permissions.
+  Reopen the channel and send: ensure keeps the root unlocked and keeps its current metadata.
+- Change a private transcript folder's sharing. Reopen the channel and send: ensure does not reattach
+  the binding, and the next transcript update keeps the manual sharing. Use a second non-owner member
+  to prove visibility; an owner-only check cannot prove private access.
+- Remove `plugin-name` from a transcript or unlock then relock it. A later mirror write refuses.
+  A source-store write that already succeeded keeps its message key and reports
+  `transcriptUpdated: false`. Check both the source message and unchanged file content.
+- Recreate a missing private folder through a normal Chitchat invoke. Its initial reader binding must
+  exist before transcript publication. The fresh folder ID is passed as `expectedParentNodeId` on
+  every private write. Staged host tests cover a parent move/archive/replacement during that gap.
+- Relock an outer folder while a nested plugin lock remains. Ensure, write, access, and archive must
+  refuse without changing any content, grants, or lock origin.
 
 **Proven live 2026-09-01, after the fix below.** A private channel created in `personal/home` now
 projects to `/chitchat/private/<slug>-<digest8>/<slug>-<digest8>.md` within a few seconds, holding the

@@ -121,7 +121,7 @@ vi.mock("@monaco-editor/react", async () => {
 				onMount?.(editorHandle);
 			}, [onMount]);
 
-			return <textarea aria-label="File metadata YAML" readOnly value={props.value ?? ""} />;
+			return <textarea aria-label="Metadata YAML" readOnly value={props.value ?? ""} />;
 		},
 	};
 });
@@ -723,7 +723,7 @@ describe("FilesPropertiesModalCollaboration", () => {
 		renderModal();
 
 		expect(collaborationCheckbox().disabled).toBe(true);
-		// The metadata section below reports the same two reasons, so read this one's own line.
+		// Read the collaboration section's own reason.
 		expect(document.querySelector(".FilesPropertiesModalCollaboration-description")?.textContent).toContain(
 			expectedText,
 		);
@@ -755,7 +755,7 @@ describe("FilesPropertiesModalMetadata", () => {
 
 		renderModal();
 
-		expect((screen.getByLabelText("File metadata YAML") as HTMLTextAreaElement).value).toContain("created-by: slack");
+		expect((screen.getByLabelText("Metadata YAML") as HTMLTextAreaElement).value).toContain("created-by: slack");
 		expect(screen.getByRole("button", { name: "Save metadata" }).hasAttribute("disabled")).toBe(true);
 
 		typeDraft("created-by: email\n");
@@ -821,7 +821,7 @@ describe("FilesPropertiesModalMetadata", () => {
 		renderModal();
 		typeDraft("created-by: agent\n");
 
-		expect(screen.getByRole("status").textContent).toBe("This file is read-only.");
+		expect(screen.getByRole("status").textContent).toBe("This item is read-only.");
 		const save = screen.getByRole("button", { name: "Save metadata" });
 		// Native `disabled` drops the button from the tab order, so a keyboard user never reaches
 		// the reason. Keep it focusable with `aria-disabled`, the same way the users page does.
@@ -839,7 +839,7 @@ describe("FilesPropertiesModalMetadata", () => {
 
 		renderModal();
 
-		expect(screen.getByRole("status").textContent).toBe("You don't have permission to edit this file.");
+		expect(screen.getByRole("status").textContent).toBe("You don't have permission to edit this item.");
 		const save = screen.getByRole("button", { name: "Save metadata" });
 		expect(save.hasAttribute("disabled")).toBe(false);
 		expect(save.getAttribute("aria-disabled")).toBe("true");
@@ -890,7 +890,7 @@ describe("FilesPropertiesModalMetadata", () => {
 
 		expect(screen.queryByRole("alert")).toBeNull();
 		expect(screen.getByRole("status").textContent).toBe("Metadata saved");
-		expect((screen.getByLabelText("File metadata YAML") as HTMLTextAreaElement).value).toBe("created-by: agent\n");
+		expect((screen.getByLabelText("Metadata YAML") as HTMLTextAreaElement).value).toBe("created-by: agent\n");
 		expect(screen.getByRole("button", { name: "Save metadata" }).hasAttribute("disabled")).toBe(true);
 	});
 
@@ -919,7 +919,7 @@ describe("FilesPropertiesModalMetadata", () => {
 		expect((await screen.findByRole("alert")).textContent).toBe(
 			"Metadata changed elsewhere. Review this draft before saving it over the newer version.",
 		);
-		expect((screen.getByLabelText("File metadata YAML") as HTMLTextAreaElement).value).toBe("created-by: me\n");
+		expect((screen.getByLabelText("Metadata YAML") as HTMLTextAreaElement).value).toBe("created-by: me\n");
 	});
 
 	test("follows the server when the draft was never touched", async () => {
@@ -929,7 +929,7 @@ describe("FilesPropertiesModalMetadata", () => {
 		await pushServerEntries([{ key: "created-by", value: "agent" }]);
 
 		expect(screen.queryByRole("alert")).toBeNull();
-		expect((screen.getByLabelText("File metadata YAML") as HTMLTextAreaElement).value).toBe("created-by: agent\n");
+		expect((screen.getByLabelText("Metadata YAML") as HTMLTextAreaElement).value).toBe("created-by: agent\n");
 	});
 
 	// Closing the dialog throws the draft away, and a modal is easier to dismiss by accident than the
@@ -976,13 +976,63 @@ describe("FilesPropertiesModalMetadata", () => {
 		expect(screen.queryByText("Unsaved metadata will be lost.")).toBeNull();
 	});
 
-	// `set_entries` refuses a non-file, so a folder must not get an editor that always fails to save.
-	test("shows no metadata editor for a folder", () => {
-		mockQueries({ entries: [], canWrite: true });
+	test("edits and removes folder metadata without showing collaboration", async () => {
+		mockQueries({
+			node: { ...NODE, kind: "folder", name: "docs", path: "/docs" },
+			entries: [{ key: "plugin-name", value: "chitchat" }],
+			canWrite: true,
+		});
 
-		renderModal({ nodeKind: "folder" });
+		renderModal({ nodeKind: "folder", nodeName: "docs" });
 
-		expect(screen.queryByLabelText("File metadata YAML")).toBeNull();
-		expect(screen.queryByRole("button", { name: "Save metadata" })).toBeNull();
+		expect((screen.getByLabelText("Metadata YAML") as HTMLTextAreaElement).value).toBe("plugin-name: chitchat\n");
+		expect(editorOptionsRef.current?.ariaLabel).toBe("Metadata YAML");
+		expect(screen.queryByRole("region", { name: "Collaboration" })).toBeNull();
+		typeDraft("plugin-name: council\n");
+		clickSave();
+		expect(mutationMock).toHaveBeenLastCalledWith("set_entries", {
+			membershipId: MEMBERSHIP_ID,
+			fileNodeId: NODE_ID,
+			metadataYaml: "plugin-name: council\n",
+		});
+		await pushServerEntries([{ key: "plugin-name", value: "council" }]);
+		expect(screen.getByRole("button", { name: "Save metadata" }).hasAttribute("disabled")).toBe(true);
+
+		typeDraft("");
+		clickSave();
+		expect(mutationMock).toHaveBeenLastCalledWith("set_entries", {
+			membershipId: MEMBERSHIP_ID,
+			fileNodeId: NODE_ID,
+			metadataYaml: "",
+		});
+		await pushServerEntries([]);
+		expect((screen.getByLabelText("Metadata YAML") as HTMLTextAreaElement).value).toBe("");
+	});
+
+	test.each([
+		[{ canWrite: false, locked: false }, "You don't have permission to edit this item."],
+		[{ canWrite: true, locked: true }, "This item is read-only."],
+	] as const)("blocks folder metadata when writing is not allowed", (blocked, expectedText) => {
+		mockQueries({
+			node: { ...NODE, kind: "folder", name: "docs", path: "/docs" },
+			entries: [],
+			canWrite: blocked.canWrite,
+			management: {
+				canManage: true,
+				readOnlyState: blocked.locked ? "self" : "writable",
+				hasInheritedParentLock: false,
+				source: null,
+			},
+		});
+		renderModal({ nodeKind: "folder", nodeName: "docs" });
+		typeDraft("plugin-name: chitchat\n");
+		clickSave();
+		expect(editorHandle.options.readOnly).toBe(true);
+		const save = screen.getByRole("button", { name: "Save metadata" });
+		expect(save.hasAttribute("disabled")).toBe(false);
+		expect(save.getAttribute("aria-disabled")).toBe("true");
+		expect(save.getAttribute("aria-describedby")).toBe(screen.getByRole("status").id);
+		expect(screen.getByRole("status").textContent).toBe(expectedText);
+		expect(mutationMock).not.toHaveBeenCalled();
 	});
 });

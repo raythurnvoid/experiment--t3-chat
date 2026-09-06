@@ -2273,6 +2273,52 @@ describe("files_nodes.remove_eager_created_node_if_safe", () => {
 		});
 	});
 
+	test("keeps a metadata-bearing eager ancestor and prunes its untouched empty child", async () => {
+		const t = test_convex();
+		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
+		const { db, nodeId, eagerCreatedCommittedSequence, createdAncestorIds } = await create_eager_node(
+			t,
+			"/eager-folder-metadata/deep/note.md",
+		);
+		const [deepId, folderId] = createdAncestorIds;
+		if (!deepId || !folderId) throw new Error("Expected two created folders");
+		const asOwner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Eager Folder Owner",
+		});
+		expect(
+			await asOwner.mutation(api.files_metadata.set_entries, {
+				membershipId: db.membershipId,
+				fileNodeId: folderId,
+				metadataYaml: "plugin-name: member-choice",
+			}),
+		).toEqual({ _yay: null });
+		expect(
+			(
+				await t.mutation(internal.files_nodes.remove_eager_created_node_if_safe, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId: db.userId,
+					nodeId,
+					eagerCreatedCommittedSequence,
+					createdAncestorIds,
+				})
+			)._yay,
+		).toEqual({ removed: true, ancestorsLeft: 1 });
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_nodes", nodeId)).toBeNull();
+			expect(await ctx.db.get("files_nodes", deepId)).toBeNull();
+			expect(await ctx.db.get("files_nodes", folderId)).not.toBeNull();
+		});
+		expect(
+			await asOwner.query(api.files_metadata.get_entries, {
+				membershipId: db.membershipId,
+				fileNodeId: folderId,
+			}),
+		).toEqual([{ key: "plugin-name", value: "member-choice" }]);
+	});
+
 	test("keeps an ancestor folder that gained another committed child", async () => {
 		const t = test_convex();
 		vi.spyOn(R2.prototype, "deleteObject").mockResolvedValue(undefined);
@@ -9557,7 +9603,7 @@ test("file metadata stays visible while a pending content edit hides committed f
 	]);
 });
 
-test("set_entries refuses bad YAML, folders, and read-only files", async () => {
+test("set_entries accepts folders and refuses bad YAML and read-only nodes", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
@@ -9590,7 +9636,21 @@ test("set_entries refuses bad YAML, folders, and read-only files", async () => {
 	});
 	if (folder._nay) throw new Error(folder._nay.message);
 	expect(await setEntries(folder._yay.nodeId, "title: on a folder\n")).toMatchObject({
-		_nay: { message: "Not found" },
+		_yay: null,
+	});
+	expect(
+		await asUser.query(api.files_metadata.get_entries, {
+			membershipId: db.membershipId,
+			fileNodeId: folder._yay.nodeId,
+		}),
+	).toEqual([{ key: "title", value: "on a folder" }]);
+	const lockedFolder = await asUser.mutation(api.files_nodes.set_node_read_only, {
+		membershipId: db.membershipId,
+		nodeId: folder._yay.nodeId,
+	});
+	if (lockedFolder._nay) throw new Error(lockedFolder._nay.message);
+	expect(await setEntries(folder._yay.nodeId, "title: changed\n")).toMatchObject({
+		_nay: { name: "read_only", message: "This item is read-only." },
 	});
 
 	const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
@@ -9701,6 +9761,380 @@ test("update_entries_by_path lets the agent set and remove keys on an uploaded f
 	});
 	if (locked._nay) throw new Error(locked._nay.message);
 	expect(await setByPath([{ key: "status", value: "tampered" }], [])).toMatchObject({ _nay: { name: "read_only" } });
+});
+
+describe("folder metadata", () => {
+	async function seed_folder_metadata() {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asOwner = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Folder Metadata Owner",
+		});
+		const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
+		const folder = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
+			...scope,
+			path: "/folder-metadata",
+		});
+		const nested = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
+			...scope,
+			path: "/folder-metadata/nested",
+		});
+		if (folder._nay) throw new Error(folder._nay.message);
+		if (nested._nay) throw new Error(nested._nay.message);
+		return { t, db, asOwner, scope, folderId: folder._yay.nodeId, nestedId: nested._yay.nodeId };
+	}
+
+	test("set_entries and update_entries_by_path keep an editable committed folder map", async () => {
+		const { t, db, asOwner, scope, folderId } = await seed_folder_metadata();
+		expect(
+			await asOwner.mutation(api.files_metadata.set_entries, {
+				membershipId: db.membershipId,
+				fileNodeId: folderId,
+				metadataYaml: "plugin-name: chitchat\npriority: 3\nreviewed: false\n",
+			}),
+		).toEqual({ _yay: null });
+		const updated = await t.mutation(internal.files_metadata.update_entries_by_path, {
+			...scope,
+			path: "/folder-metadata",
+			set: [
+				{ key: "plugin-name", value: "council" },
+				{ key: "source", value: "member" },
+			],
+			remove: ["priority"],
+		});
+		if (updated._nay) throw new Error(updated._nay.message);
+		expect(updated._yay.entries).toEqual([
+			{ key: "plugin-name", value: "council" },
+			{ key: "reviewed", value: false },
+			{ key: "source", value: "member" },
+		]);
+		expect(
+			await asOwner.query(api.files_metadata.get_entries, {
+				membershipId: db.membershipId,
+				fileNodeId: folderId,
+			}),
+		).toEqual(updated._yay.entries);
+		const read = await t.query(internal.files_metadata.get_by_path, {
+			...scope,
+			path: "/folder-metadata",
+			overlayUserId: db.userId,
+		});
+		expect(read).toMatchObject({ nodeId: folderId, path: "/folder-metadata", sourceKind: "committed" });
+		expect(read?.fields.slice().sort()).toEqual(["metadata.plugin-name", "metadata.reviewed", "metadata.source"]);
+		expect(read?.values.map((value) => value.valueKind).sort()).toEqual(["boolean", "string", "string"]);
+
+		expect(
+			await asOwner.mutation(api.files_metadata.set_entries, {
+				membershipId: db.membershipId,
+				fileNodeId: folderId,
+				metadataYaml: "",
+			}),
+		).toEqual({ _yay: null });
+		expect(
+			await t.query(internal.files_metadata.get_by_path, {
+				...scope,
+				path: "/folder-metadata",
+				overlayUserId: db.userId,
+			}),
+		).toMatchObject({ fields: [], values: [], sourceKind: "committed" });
+	});
+
+	test.each(["direct", "inherited"] as const)(
+		"both folder write doors refuse a %s lock and work after unlock",
+		async (lockKind) => {
+			const { t, db, asOwner, scope, folderId, nestedId } = await seed_folder_metadata();
+			const lockId = lockKind === "direct" ? nestedId : folderId;
+			expect(
+				(
+					await asOwner.mutation(api.files_nodes.set_node_read_only, {
+						membershipId: db.membershipId,
+						nodeId: lockId,
+					})
+				)._nay,
+			).toBeUndefined();
+			expect(
+				await asOwner.mutation(api.files_metadata.set_entries, {
+					membershipId: db.membershipId,
+					fileNodeId: nestedId,
+					metadataYaml: "status: blocked",
+				}),
+			).toMatchObject({ _nay: { name: "read_only" } });
+			expect(
+				await t.mutation(internal.files_metadata.update_entries_by_path, {
+					...scope,
+					path: "/folder-metadata/nested",
+					set: [{ key: "status", value: "blocked" }],
+					remove: [],
+				}),
+			).toMatchObject({ _nay: { name: "read_only" } });
+			expect(
+				await asOwner.query(api.files_metadata.get_entries, {
+					membershipId: db.membershipId,
+					fileNodeId: nestedId,
+				}),
+			).toEqual([]);
+			expect(
+				(
+					await asOwner.mutation(api.files_nodes.set_node_writable, {
+						membershipId: db.membershipId,
+						nodeId: lockId,
+					})
+				)._nay,
+			).toBeUndefined();
+			expect(
+				(
+					await t.mutation(internal.files_metadata.update_entries_by_path, {
+						...scope,
+						path: "/folder-metadata/nested",
+						set: [{ key: "status", value: "open" }],
+						remove: [],
+					})
+				)._nay,
+			).toBeUndefined();
+			expect(
+				await asOwner.query(api.files_metadata.get_entries, {
+					membershipId: db.membershipId,
+					fileNodeId: nestedId,
+				}),
+			).toEqual([{ key: "status", value: "open" }]);
+		},
+	);
+
+	test("rename, move, archive and restore update folder maps and nested index scopes", async () => {
+		const { t, db, asOwner, scope, folderId, nestedId } = await seed_folder_metadata();
+		for (const nodeId of [folderId, nestedId]) {
+			expect(
+				await asOwner.mutation(api.files_metadata.set_entries, {
+					membershipId: db.membershipId,
+					fileNodeId: nodeId,
+					metadataYaml: "folder-key: shared",
+				}),
+			).toEqual({ _yay: null });
+		}
+		const destination = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
+			...scope,
+			path: "/destination",
+		});
+		if (destination._nay) throw new Error(destination._nay.message);
+		const search = (pathPrefix?: string) =>
+			t.query(internal.files_metadata.search, {
+				...scope,
+				plan: { op: "eq", qualifiedField: "metadata.folder-key", value: "shared" },
+				pathPrefix,
+				numItems: 10,
+				cursor: null,
+			});
+		const assertScope = async (paths: string[], archived: boolean) => {
+			const docs = await t.run(async (ctx) =>
+				(await ctx.db.query("files_metadata_docs").collect()).filter(
+					(doc) => doc.fileNodeId === folderId || doc.fileNodeId === nestedId,
+				),
+			);
+			expect(docs).toHaveLength(4);
+			expect([...new Set(docs.map((doc) => doc.path))].sort()).toEqual(paths.slice().sort());
+			for (const doc of docs) {
+				expect(doc.treePath).toBe(doc.path + "/");
+				expect(doc.archiveOperationId !== undefined).toBe(archived);
+			}
+			expect((await search()).items.map((item) => item.path).sort()).toEqual(archived ? [] : paths.slice().sort());
+		};
+		expect(
+			(
+				await asOwner.mutation(api.files_nodes.rename_node, {
+					membershipId: db.membershipId,
+					nodeId: nestedId,
+					path: "inner",
+				})
+			)._nay,
+		).toBeUndefined();
+		await assertScope(["/folder-metadata", "/folder-metadata/inner"], false);
+		expect(
+			(
+				await asOwner.mutation(api.files_nodes.rename_node, {
+					membershipId: db.membershipId,
+					nodeId: folderId,
+					path: "renamed",
+				})
+			)._nay,
+		).toBeUndefined();
+		await assertScope(["/renamed", "/renamed/inner"], false);
+		expect((await search("/folder-metadata")).items).toEqual([]);
+		expect(
+			(
+				await asOwner.mutation(api.files_nodes.move_nodes, {
+					membershipId: db.membershipId,
+					itemIds: [folderId],
+					targetParentId: destination._yay.nodeId,
+				})
+			)._nay,
+		).toBeUndefined();
+		await assertScope(["/destination/renamed", "/destination/renamed/inner"], false);
+		expect((await search("/renamed")).items).toEqual([]);
+		expect((await search("/destination/renamed")).items).toHaveLength(2);
+		await t.mutation(components.rate_limiter.lib.resetRateLimit, { name: "files_tree_write", key: db.userId });
+		expect(
+			(
+				await asOwner.mutation(api.files_nodes.archive_nodes, {
+					membershipId: db.membershipId,
+					nodeIds: [folderId],
+				})
+			)._nay,
+		).toBeUndefined();
+		await assertScope(["/destination/renamed", "/destination/renamed/inner"], true);
+		expect(await asOwner.query(api.files_metadata.list_search_fields, { membershipId: db.membershipId })).toEqual([]);
+		expect(
+			await asOwner.query(api.files_metadata.list_search_values, {
+				membershipId: db.membershipId,
+				qualifiedField: "metadata.folder-key",
+				prefix: "",
+			}),
+		).toEqual([]);
+		expect(
+			(
+				await asOwner.mutation(api.files_nodes.rename_node, {
+					membershipId: db.membershipId,
+					nodeId: destination._yay.nodeId,
+					path: "restored-parent",
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			(
+				await asOwner.mutation(api.files_nodes.unarchive_nodes, {
+					membershipId: db.membershipId,
+					nodeIds: [folderId],
+				})
+			)._nay,
+		).toBeUndefined();
+		await assertScope(["/restored-parent/renamed", "/restored-parent/renamed/inner"], false);
+		expect((await search("/destination")).items).toEqual([]);
+		expect(await asOwner.query(api.files_metadata.list_search_fields, { membershipId: db.membershipId })).toEqual([
+			{ qualifiedField: "metadata.folder-key", valueKinds: ["string"] },
+		]);
+		expect(
+			await asOwner.query(api.files_metadata.list_search_values, {
+				membershipId: db.membershipId,
+				qualifiedField: "metadata.folder-key",
+				prefix: "",
+			}),
+		).toEqual(["shared"]);
+	});
+
+	test("a pending folder move reads and updates committed maps through each user's visible path", async () => {
+		const { t, db, asOwner, scope, folderId, nestedId } = await seed_folder_metadata();
+		for (const nodeId of [folderId, nestedId]) {
+			expect(
+				await asOwner.mutation(api.files_metadata.set_entries, {
+					membershipId: db.membershipId,
+					fileNodeId: nodeId,
+					metadataYaml: "status: open",
+				}),
+			).toEqual({ _yay: null });
+		}
+		const otherUserId = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk_folder_metadata_reader" });
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				active: true,
+				updatedAt: Date.now(),
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				role: "member",
+				now: Date.now(),
+			});
+			return userId;
+		});
+		expect(
+			(
+				await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+					...scope,
+					nodeId: folderId,
+					destParentId: files_ROOT_ID,
+					destName: "pending-folder",
+				})
+			)._nay,
+		).toBeUndefined();
+		const read = (path: string, userId: Id<"users">) =>
+			t.query(internal.files_metadata.get_by_path, {
+				...scope,
+				userId,
+				path,
+				overlayUserId: userId,
+			});
+		for (const suffix of ["", "/nested"]) {
+			expect(await read("/folder-metadata" + suffix, db.userId)).toBeNull();
+			expect(await read("/pending-folder" + suffix, db.userId)).toMatchObject({ sourceKind: "committed" });
+			expect(await read("/folder-metadata" + suffix, otherUserId)).toMatchObject({ sourceKind: "committed" });
+			expect(await read("/pending-folder" + suffix, otherUserId)).toBeNull();
+		}
+		expect(
+			(
+				await t.mutation(internal.files_metadata.update_entries_by_path, {
+					...scope,
+					path: "/pending-folder/nested",
+					set: [{ key: "status", value: "changed" }],
+					remove: [],
+				})
+			)._nay,
+		).toBeUndefined();
+		expect((await read("/folder-metadata/nested", otherUserId))?.values).toMatchObject([
+			{ qualifiedField: "metadata.status", stringValue: "changed" },
+		]);
+		expect(
+			await t.mutation(internal.files_metadata.update_entries_by_path, {
+				...scope,
+				path: "/folder-metadata/nested",
+				set: [{ key: "status", value: "wrong path" }],
+				remove: [],
+			}),
+		).toMatchObject({ _nay: { message: "Not found" } });
+		expect(
+			(
+				await asOwner.mutation(api.files_pending_updates.apply_file_pending_move, {
+					membershipId: db.membershipId,
+					nodeId: folderId,
+				})
+			)._nay,
+		).toBeUndefined();
+		for (const [nodeId, path] of [
+			[folderId, "/pending-folder"],
+			[nestedId, "/pending-folder/nested"],
+		] as const) {
+			const docs = await t.run(async (ctx) =>
+				(await ctx.db.query("files_metadata_docs").collect()).filter((doc) => doc.fileNodeId === nodeId),
+			);
+			expect(docs).toHaveLength(2);
+			for (const doc of docs) expect(doc).toMatchObject({ path, treePath: path + "/", sourceKind: "committed" });
+		}
+		const plans: files_metadata_SearchPlan[] = [{ op: "exists", qualifiedField: "metadata.status" }];
+		expect(
+			(
+				await asOwner.query(api.files_metadata.search_nodes, {
+					membershipId: db.membershipId,
+					plans,
+					pathPrefix: "/folder-metadata",
+				})
+			).nodeIds,
+		).toEqual([]);
+		expect(
+			new Set(
+				(
+					await asOwner.query(api.files_metadata.search_nodes, {
+						membershipId: db.membershipId,
+						plans,
+						pathPrefix: "/pending-folder",
+					})
+				).nodeIds,
+			),
+		).toEqual(new Set([folderId, nestedId]));
+	});
 });
 
 describe("search box doors", () => {
@@ -10062,6 +10496,109 @@ describe("search box doors", () => {
 		expect(new Set(ownerFound.nodeIds)).toEqual(
 			new Set([seeded.openTaskId, seeded.fixedTaskId, seeded.archivedTaskId]),
 		);
+	});
+
+	test("folder maps follow read and write grants in every metadata door", async () => {
+		const t = test_convex();
+		const seeded = await seed_search_box_fixture(t);
+		const member = await seed_grant_only_member(t, seeded.db, "folder-map");
+		await reset_file_write_rate_limits(t, seeded.db.userId);
+		expect(
+			await seeded.asOwner.mutation(api.files_metadata.set_entries, {
+				membershipId: seeded.db.membershipId,
+				fileNodeId: seeded.tasksFolderId,
+				metadataYaml: "folder-secret: visible-with-grant",
+			}),
+		).toEqual({ _yay: null });
+		expect(
+			(
+				await seeded.asOwner.mutation(api.files_sharing.restrict_node, {
+					membershipId: seeded.db.membershipId,
+					nodeId: seeded.tasksFolderId,
+				})
+			)._nay,
+		).toBeUndefined();
+		const plans: files_metadata_SearchPlan[] = [{ op: "exists", qualifiedField: "metadata.folder-secret" }];
+		const entries = () =>
+			member.asMember.query(api.files_metadata.get_entries, {
+				membershipId: member.membershipId,
+				fileNodeId: seeded.tasksFolderId,
+			});
+		const byPath = () =>
+			t.query(internal.files_metadata.get_by_path, {
+				organizationId: seeded.db.organizationId,
+				workspaceId: seeded.db.workspaceId,
+				userId: member.userId,
+				overlayUserId: member.userId,
+				path: "/tasks",
+			});
+		const search = () =>
+			member.asMember.query(api.files_metadata.search_nodes, { membershipId: member.membershipId, plans });
+		const fields = () =>
+			member.asMember.query(api.files_metadata.list_search_fields, { membershipId: member.membershipId });
+		const values = () =>
+			member.asMember.query(api.files_metadata.list_search_values, {
+				membershipId: member.membershipId,
+				qualifiedField: "metadata.folder-secret",
+				prefix: "",
+			});
+		const set = () =>
+			member.asMember.mutation(api.files_metadata.set_entries, {
+				membershipId: member.membershipId,
+				fileNodeId: seeded.tasksFolderId,
+				metadataYaml: "folder-secret: changed",
+			});
+		const update = () =>
+			t.mutation(internal.files_metadata.update_entries_by_path, {
+				organizationId: seeded.db.organizationId,
+				workspaceId: seeded.db.workspaceId,
+				userId: member.userId,
+				path: "/tasks",
+				set: [{ key: "folder-secret", value: "agent-edit" }],
+				remove: [],
+			});
+		expect(await entries()).toEqual([]);
+		expect(await byPath()).toBeNull();
+		expect((await search()).nodeIds).toEqual([]);
+		expect(await fields()).toEqual([]);
+		expect(await values()).toEqual([]);
+		expect((await set())._nay).toBeDefined();
+		expect((await update())._nay).toBeDefined();
+
+		await reset_file_write_rate_limits(t, seeded.db.userId);
+		expect(
+			(
+				await seeded.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+					membershipId: seeded.db.membershipId,
+					nodeId: seeded.tasksFolderId,
+					principal: { kind: "user", userId: member.userId },
+					level: "read",
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(await entries()).toEqual([{ key: "folder-secret", value: "visible-with-grant" }]);
+		expect(await byPath()).toMatchObject({ nodeId: seeded.tasksFolderId, fields: ["metadata.folder-secret"] });
+		expect((await search()).nodeIds).toEqual([seeded.tasksFolderId]);
+		expect(await fields()).toContainEqual({ qualifiedField: "metadata.folder-secret", valueKinds: ["string"] });
+		expect(await values()).toEqual(["visible-with-grant"]);
+		expect((await set())._nay).toBeDefined();
+		expect((await update())._nay).toBeDefined();
+
+		await reset_file_write_rate_limits(t, seeded.db.userId);
+		expect(
+			(
+				await seeded.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+					membershipId: seeded.db.membershipId,
+					nodeId: seeded.tasksFolderId,
+					principal: { kind: "user", userId: member.userId },
+					level: "write",
+				})
+			)._nay,
+		).toBeUndefined();
+		expect((await set())._nay).toBeUndefined();
+		expect(await values()).toEqual(["changed"]);
+		expect((await update())._nay).toBeUndefined();
+		expect(await entries()).toEqual([{ key: "folder-secret", value: "agent-edit" }]);
 	});
 
 	test("list_search_fields lists keys with the kinds the caller can read", async () => {
@@ -16859,11 +17396,9 @@ describe("files_nodes public read-only view", () => {
 		const member = await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", inner._yay.nodeId, {
 				restrictedScopeNodeId: inner._yay.nodeId,
-				pluginOwnerName: "chitchat",
 			});
 			await ctx.db.patch("files_nodes", file._yay.nodeId, {
 				restrictedScopeNodeId: inner._yay.nodeId,
-				pluginOwnerName: "chitchat",
 			});
 
 			const memberUserId = await ctx.db.insert("users", { clerkUserId: "clerk_stamp_member" });
@@ -16922,7 +17457,6 @@ describe("files_nodes public read-only view", () => {
 			// The raw pointer must not leave the backend: it would name the hidden outer folder.
 			expect("readOnlyScopeNodeId" in node).toBe(false);
 			expect("readOnlyPluginServiceTargetId" in node).toBe(false);
-			expect("pluginOwnerName" in node).toBe(false);
 		}
 
 		// The owner can read the lock root, so each returned node may name it.
@@ -16954,7 +17488,6 @@ describe("files_nodes public read-only view", () => {
 		expect(memberView?.readOnlySourcePath).toBeUndefined();
 		expect(memberView !== null && "readOnlyScopeNodeId" in memberView).toBe(false);
 		expect(memberView !== null && "readOnlyPluginServiceTargetId" in memberView).toBe(false);
-		expect(memberView !== null && "pluginOwnerName" in memberView).toBe(false);
 
 		const ownerView = await f.asOwner.query(api.files_nodes.get_file_node_for_membership, {
 			membershipId: f.db.membershipId,
@@ -16978,7 +17511,7 @@ describe("files_nodes public read-only view", () => {
 		});
 	});
 
-	test("get_file_node_for_membership never returns the plugin provenance stamps", async () => {
+	test("get_file_node_for_membership hides the plugin lock origin while metadata stays readable", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({
@@ -16995,14 +17528,18 @@ describe("files_nodes public read-only view", () => {
 			throw new Error(folder._nay.message);
 		}
 
-		// Stamp the doc the way a plugin lock and a service write do. Both fields are declared
-		// "Never returned to clients" in the schema, so the projection must strip them.
 		const nodeId = folder._yay.nodeId;
+		expect(
+			await asUser.mutation(api.files_metadata.set_entries, {
+				membershipId: db.membershipId,
+				fileNodeId: nodeId,
+				metadataYaml: "plugin-name: data-probe",
+			}),
+		).toEqual({ _yay: null });
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", nodeId, {
 				readOnlyScopeNodeId: nodeId,
 				readOnlyPluginName: "data-probe",
-				pluginServiceWritePluginName: "data-probe",
 			});
 		});
 
@@ -17012,7 +17549,12 @@ describe("files_nodes public read-only view", () => {
 		});
 		expect(view).toMatchObject({ readOnlyState: "self" });
 		expect(view !== null && "readOnlyPluginName" in view).toBe(false);
-		expect(view !== null && "pluginServiceWritePluginName" in view).toBe(false);
+		expect(
+			await asUser.query(api.files_metadata.get_entries, {
+				membershipId: db.membershipId,
+				fileNodeId: nodeId,
+			}),
+		).toEqual([{ key: "plugin-name", value: "data-probe" }]);
 	});
 
 	test("a writable node projects writable state with no source", async () => {
@@ -17042,210 +17584,276 @@ describe("files_nodes public read-only view", () => {
 	});
 });
 
-describe("files_nodes_db_has_plugin_owner_authority", () => {
-	/**
-	 * One stamped folder with an unstamped file inside whose effective lock points at it, an
-	 * unstamped sibling folder, and a second member to use as a share-grant principal.
-	 *
-	 * The stamp is plugin authority, so the six public sharing and lock doors must refuse
-	 * stamped nodes.
-	 */
-	async function seed_stamped_authority(t: ReturnType<typeof test_convex>) {
+describe("member controls on plugin-labeled nodes", () => {
+	async function seed_labeled_folders(t: ReturnType<typeof test_convex>) {
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const asOwner = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: db.userId,
-			name: "Stamp Owner",
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId, name: "Folder Owner" });
+		const created = await t.mutation(internal.files_nodes.create_folder_node_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/labeled/child/leaf",
 		});
-
-		const stamped = await asOwner.mutation(api.files_nodes.create_folder_node, {
-			membershipId: db.membershipId,
-			parentId: files_ROOT_ID,
-			path: "stamped",
-		});
-		if (stamped._nay) {
-			throw new Error(stamped._nay.message);
-		}
-		const sibling = await asOwner.mutation(api.files_nodes.create_folder_node, {
-			membershipId: db.membershipId,
-			parentId: files_ROOT_ID,
-			path: "sibling",
-		});
-		if (sibling._nay) {
-			throw new Error(sibling._nay.message);
-		}
-		const inherited = await asOwner.action(api.files_nodes_content.create_text_node, {
-			membershipId: db.membershipId,
-			parentId: stamped._yay.nodeId,
-			path: "note.md",
-		});
-		if (inherited._nay) {
-			throw new Error(inherited._nay.message);
-		}
-
-		const memberUserId = await t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", stamped._yay.nodeId, { pluginOwnerName: "chitchat" });
-			// The file carries no stamp of its own; only its effective lock names the stamped folder.
-			await ctx.db.patch("files_nodes", inherited._yay.nodeId, { readOnlyScopeNodeId: stamped._yay.nodeId });
-
-			const userId = await ctx.db.insert("users", { clerkUserId: "clerk_stamp_member" });
-			await ctx.db.insert("organizations_workspaces_users", {
+		if (created._nay) throw new Error(created._nay.message);
+		const tree = await asOwner.query(api.files_nodes.list_tree, { membershipId: db.membershipId });
+		const folderId = tree.find((node) => node.path === "/labeled")!._id;
+		const childId = tree.find((node) => node.path === "/labeled/child")!._id;
+		const leafId = created._yay.nodeId;
+		expect(
+			await asOwner.mutation(api.files_metadata.set_entries, {
+				membershipId: db.membershipId,
+				fileNodeId: folderId,
+				metadataYaml: "source: plugin\nplugin-name: chitchat",
+			}),
+		).toEqual({ _yay: null });
+		const member = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk_labeled_member" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId,
 				active: true,
 				updatedAt: Date.now(),
 			});
-			return userId;
+			return { userId, membershipId };
 		});
-
-		return {
-			db,
-			asOwner,
-			memberUserId,
-			stampedId: stamped._yay.nodeId,
-			siblingId: sibling._yay.nodeId,
-			inheritedId: inherited._yay.nodeId,
-		};
+		const asMember = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: member.userId,
+			name: "Folder Writer",
+		});
+		return { db, asOwner, asMember, member, folderId, childId, leafId };
 	}
 
-	test("a stamped node refuses all four sharing doors and both lock doors", async () => {
+	test.each(["labeled", "inherited"] as const)("a manager can share a %s node and unlock its source", async (kind) => {
 		const t = test_convex();
-		const f = await seed_stamped_authority(t);
-
-		const restricted = await f.asOwner.mutation(api.files_sharing.restrict_node, {
-			membershipId: f.db.membershipId,
-			nodeId: f.stampedId,
+		const f = await seed_labeled_folders(t);
+		const nodeId = kind === "labeled" ? f.folderId : f.childId;
+		const args = { membershipId: f.db.membershipId, nodeId };
+		expect(await f.asOwner.query(api.files_sharing.get_node_share_state, args)).toMatchObject({
+			canManage: true,
+			canRestrict: true,
+			canShareWithRoles: true,
 		});
-		expect(restricted._nay?.message).toBe("Plugin-managed files cannot be shared.");
-		const unrestricted = await f.asOwner.mutation(api.files_sharing.unrestrict_node, {
-			membershipId: f.db.membershipId,
-			nodeId: f.stampedId,
+		expect(await f.asOwner.query(api.files_nodes.get_node_read_only_management_state, args)).toMatchObject({
+			canManage: true,
+			readOnlyState: "writable",
 		});
-		expect(unrestricted._nay?.message).toBe("Plugin-managed files cannot be shared.");
-		const granted = await f.asOwner.mutation(api.files_sharing.set_node_share_grant, {
-			membershipId: f.db.membershipId,
-			nodeId: f.stampedId,
-			principal: { kind: "user", userId: f.memberUserId },
-			level: "read",
+		expect(
+			(
+				await f.asOwner.mutation(api.files_nodes.set_node_read_only, {
+					membershipId: f.db.membershipId,
+					nodeId: f.folderId,
+				})
+			)._nay,
+		).toBeUndefined();
+		await t.run(async (ctx) => {
+			for (const id of [f.folderId, f.childId, f.leafId]) {
+				await ctx.db.patch("files_nodes", id, { readOnlyPluginName: "chitchat" });
+			}
 		});
-		expect(granted._nay?.message).toBe("Plugin-managed files cannot be shared.");
-		const removed = await f.asOwner.mutation(api.files_sharing.remove_node_share_grant, {
-			membershipId: f.db.membershipId,
-			nodeId: f.stampedId,
-			principal: { kind: "user", userId: f.memberUserId },
+		expect((await f.asOwner.mutation(api.files_sharing.restrict_node, args))._nay).toBeUndefined();
+		expect(
+			(
+				await f.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+					...args,
+					principal: { kind: "user", userId: f.member.userId },
+					level: "read",
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			(
+				await f.asOwner.mutation(api.files_sharing.remove_node_share_grant, {
+					...args,
+					principal: { kind: "user", userId: f.member.userId },
+				})
+			)._nay,
+		).toBeUndefined();
+		expect((await f.asOwner.mutation(api.files_sharing.unrestrict_node, args))._nay).toBeUndefined();
+		if (kind === "inherited") {
+			expect((await f.asOwner.mutation(api.files_nodes.set_node_writable, args))._nay?.message).toBe(
+				"This is not directly read-only",
+			);
+		}
+		expect(
+			(
+				await f.asOwner.mutation(api.files_nodes.set_node_writable, {
+					membershipId: f.db.membershipId,
+					nodeId: f.folderId,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(await f.asOwner.query(api.files_nodes.get_node_read_only_management_state, args)).toMatchObject({
+			canManage: true,
+			readOnlyState: "writable",
 		});
-		expect(removed._nay?.message).toBe("Plugin-managed files cannot be shared.");
-
-		const locked = await f.asOwner.mutation(api.files_nodes.set_node_read_only, {
-			membershipId: f.db.membershipId,
-			nodeId: f.stampedId,
-		});
-		expect(locked._nay?.message).toBe("This item is managed by a plugin.");
-		const unlocked = await f.asOwner.mutation(api.files_nodes.set_node_writable, {
-			membershipId: f.db.membershipId,
-			nodeId: f.stampedId,
-		});
-		expect(unlocked._nay?.message).toBe("This item is managed by a plugin.");
+		expect((await f.asOwner.mutation(api.files_nodes.set_node_read_only, args))._nay).toBeUndefined();
 	});
 
-	test("a file with no stamp of its own is refused when its lock points at a stamped folder", async () => {
+	test("a writer can edit the label but cannot use manager sharing or lock controls", async () => {
 		const t = test_convex();
-		const f = await seed_stamped_authority(t);
-
-		// The inherited branch of the helper: the node itself is unstamped; only the lock source is.
-		const restricted = await f.asOwner.mutation(api.files_sharing.restrict_node, {
-			membershipId: f.db.membershipId,
-			nodeId: f.inheritedId,
+		const f = await seed_labeled_folders(t);
+		const ownerArgs = { membershipId: f.db.membershipId, nodeId: f.folderId };
+		expect((await f.asOwner.mutation(api.files_sharing.restrict_node, ownerArgs))._nay).toBeUndefined();
+		expect(
+			(
+				await f.asOwner.mutation(api.files_sharing.set_node_share_grant, {
+					...ownerArgs,
+					principal: { kind: "user", userId: f.member.userId },
+					level: "write",
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			await f.asMember.mutation(api.files_metadata.set_entries, {
+				membershipId: f.member.membershipId,
+				fileNodeId: f.folderId,
+				metadataYaml: "plugin-name: council",
+			}),
+		).toEqual({ _yay: null });
+		const args = { membershipId: f.member.membershipId, nodeId: f.folderId };
+		expect(await f.asMember.query(api.files_sharing.get_node_share_state, args)).toMatchObject({
+			canManage: false,
+			canRestrict: false,
+			canShareWithRoles: false,
 		});
-		expect(restricted._nay?.message).toBe("Plugin-managed files cannot be shared.");
-		const unrestricted = await f.asOwner.mutation(api.files_sharing.unrestrict_node, {
-			membershipId: f.db.membershipId,
-			nodeId: f.inheritedId,
+		expect(await f.asMember.query(api.files_nodes.get_node_read_only_management_state, args)).toMatchObject({
+			canManage: false,
 		});
-		expect(unrestricted._nay?.message).toBe("Plugin-managed files cannot be shared.");
-		const granted = await f.asOwner.mutation(api.files_sharing.set_node_share_grant, {
-			membershipId: f.db.membershipId,
-			nodeId: f.inheritedId,
-			principal: { kind: "user", userId: f.memberUserId },
-			level: "read",
-		});
-		expect(granted._nay?.message).toBe("Plugin-managed files cannot be shared.");
-		const removed = await f.asOwner.mutation(api.files_sharing.remove_node_share_grant, {
-			membershipId: f.db.membershipId,
-			nodeId: f.inheritedId,
-			principal: { kind: "user", userId: f.memberUserId },
-		});
-		expect(removed._nay?.message).toBe("Plugin-managed files cannot be shared.");
-
-		const locked = await f.asOwner.mutation(api.files_nodes.set_node_read_only, {
-			membershipId: f.db.membershipId,
-			nodeId: f.inheritedId,
-		});
-		expect(locked._nay?.message).toBe("This item is managed by a plugin.");
-		const unlocked = await f.asOwner.mutation(api.files_nodes.set_node_writable, {
-			membershipId: f.db.membershipId,
-			nodeId: f.inheritedId,
-		});
-		expect(unlocked._nay?.message).toBe("This item is managed by a plugin.");
+		expect((await f.asMember.mutation(api.files_sharing.restrict_node, args))._nay).toBeDefined();
+		expect((await f.asMember.mutation(api.files_sharing.unrestrict_node, args))._nay).toBeDefined();
+		expect(
+			(
+				await f.asMember.mutation(api.files_sharing.set_node_share_grant, {
+					...args,
+					principal: { kind: "user", userId: f.db.userId },
+					level: "read",
+				})
+			)._nay,
+		).toBeDefined();
+		expect(
+			(
+				await f.asMember.mutation(api.files_sharing.remove_node_share_grant, {
+					...args,
+					principal: { kind: "user", userId: f.member.userId },
+				})
+			)._nay,
+		).toBeDefined();
+		expect((await f.asMember.mutation(api.files_nodes.set_node_read_only, args))._nay).toBeDefined();
+		expect((await f.asMember.mutation(api.files_nodes.set_node_writable, args))._nay).toBeDefined();
 	});
 
-	test("an unstamped sibling folder still allows all six doors", async () => {
+	test("a no-op lock preserves plugin origins; unlock and relock clear inherited origins", async () => {
 		const t = test_convex();
-		const f = await seed_stamped_authority(t);
-
-		// Success order matters: the grant doors need the folder restricted first.
-		const restricted = await f.asOwner.mutation(api.files_sharing.restrict_node, {
-			membershipId: f.db.membershipId,
-			nodeId: f.siblingId,
+		const f = await seed_labeled_folders(t);
+		const args = { membershipId: f.db.membershipId, nodeId: f.folderId };
+		expect((await f.asOwner.mutation(api.files_nodes.set_node_read_only, args))._nay).toBeUndefined();
+		await t.run(async (ctx) => {
+			for (const nodeId of [f.folderId, f.childId, f.leafId]) {
+				await ctx.db.patch("files_nodes", nodeId, { readOnlyPluginName: "chitchat" });
+			}
 		});
-		expect(restricted).toEqual({ _yay: null });
-		const granted = await f.asOwner.mutation(api.files_sharing.set_node_share_grant, {
-			membershipId: f.db.membershipId,
-			nodeId: f.siblingId,
-			principal: { kind: "user", userId: f.memberUserId },
-			level: "read",
+		expect((await f.asOwner.mutation(api.files_nodes.set_node_read_only, args))._nay).toBeUndefined();
+		await t.run(async (ctx) => {
+			for (const nodeId of [f.folderId, f.childId, f.leafId]) {
+				expect(await ctx.db.get("files_nodes", nodeId)).toMatchObject({
+					readOnlyScopeNodeId: f.folderId,
+					readOnlyPluginName: "chitchat",
+				});
+			}
 		});
-		expect(granted).toEqual({ _yay: null });
-		const removed = await f.asOwner.mutation(api.files_sharing.remove_node_share_grant, {
-			membershipId: f.db.membershipId,
-			nodeId: f.siblingId,
-			principal: { kind: "user", userId: f.memberUserId },
+		expect((await f.asOwner.mutation(api.files_nodes.set_node_writable, args))._nay).toBeUndefined();
+		await t.run(async (ctx) => {
+			for (const nodeId of [f.folderId, f.childId, f.leafId]) {
+				const node = await ctx.db.get("files_nodes", nodeId);
+				expect(node?.readOnlyScopeNodeId).toBeUndefined();
+				expect(node?.readOnlyPluginName).toBeUndefined();
+			}
 		});
-		expect(removed).toEqual({ _yay: null });
-		const unrestricted = await f.asOwner.mutation(api.files_sharing.unrestrict_node, {
-			membershipId: f.db.membershipId,
-			nodeId: f.siblingId,
+		expect((await f.asOwner.mutation(api.files_nodes.set_node_read_only, args))._nay).toBeUndefined();
+		await t.run(async (ctx) => {
+			for (const nodeId of [f.folderId, f.childId, f.leafId]) {
+				const node = await ctx.db.get("files_nodes", nodeId);
+				expect(node?.readOnlyScopeNodeId).toBe(f.folderId);
+				expect(node?.readOnlyPluginName).toBeUndefined();
+			}
 		});
-		expect(unrestricted).toEqual({ _yay: null });
-
-		const locked = await f.asOwner.mutation(api.files_nodes.set_node_read_only, {
-			membershipId: f.db.membershipId,
-			nodeId: f.siblingId,
-		});
-		expect(locked._nay).toBeUndefined();
-		const unlocked = await f.asOwner.mutation(api.files_nodes.set_node_writable, {
-			membershipId: f.db.membershipId,
-			nodeId: f.siblingId,
-		});
-		expect(unlocked._nay).toBeUndefined();
+		expect(
+			await f.asOwner.query(api.files_metadata.get_entries, {
+				membershipId: f.db.membershipId,
+				fileNodeId: f.folderId,
+			}),
+		).toEqual([
+			{ key: "source", value: "plugin" },
+			{ key: "plugin-name", value: "chitchat" },
+		]);
 	});
 
-	test("get_node_share_state offers no sharing controls on a stamped node", async () => {
+	test("a member direct lock under a plugin lock clears origins when added and removed", async () => {
 		const t = test_convex();
-		const f = await seed_stamped_authority(t);
-
-		const stampedState = await f.asOwner.query(api.files_sharing.get_node_share_state, {
-			membershipId: f.db.membershipId,
-			nodeId: f.stampedId,
+		const f = await seed_labeled_folders(t);
+		expect(
+			(
+				await f.asOwner.mutation(api.files_nodes.set_node_read_only, {
+					membershipId: f.db.membershipId,
+					nodeId: f.folderId,
+				})
+			)._nay,
+		).toBeUndefined();
+		await t.run(async (ctx) => {
+			for (const nodeId of [f.folderId, f.childId, f.leafId]) {
+				await ctx.db.patch("files_nodes", nodeId, { readOnlyPluginName: "chitchat" });
+			}
 		});
-		expect(stampedState).toMatchObject({ canManage: false, canRestrict: false, canShareWithRoles: false });
-
-		const siblingState = await f.asOwner.query(api.files_sharing.get_node_share_state, {
-			membershipId: f.db.membershipId,
-			nodeId: f.siblingId,
+		const args = { membershipId: f.db.membershipId, nodeId: f.childId };
+		expect((await f.asOwner.mutation(api.files_nodes.set_node_read_only, args))._nay).toBeUndefined();
+		await t.run(async (ctx) => {
+			for (const nodeId of [f.childId, f.leafId]) {
+				const node = await ctx.db.get("files_nodes", nodeId);
+				expect(node?.readOnlyScopeNodeId).toBe(f.childId);
+				expect(node?.readOnlyPluginName).toBeUndefined();
+			}
 		});
-		expect(siblingState).toMatchObject({ canManage: true, canRestrict: true, canShareWithRoles: true });
+		expect((await f.asOwner.mutation(api.files_nodes.set_node_writable, args))._nay).toBeUndefined();
+		await t.run(async (ctx) => {
+			expect((await ctx.db.get("files_nodes", f.folderId))?.readOnlyPluginName).toBe("chitchat");
+			for (const nodeId of [f.childId, f.leafId]) {
+				const node = await ctx.db.get("files_nodes", nodeId);
+				expect(node?.readOnlyScopeNodeId).toBe(f.folderId);
+				expect(node?.readOnlyPluginName).toBeUndefined();
+			}
+		});
+	});
+
+	test("changing an outer lock preserves a nested direct plugin lock", async () => {
+		const t = test_convex();
+		const f = await seed_labeled_folders(t);
+		expect(
+			(
+				await f.asOwner.mutation(api.files_nodes.set_node_read_only, {
+					membershipId: f.db.membershipId,
+					nodeId: f.childId,
+				})
+			)._nay,
+		).toBeUndefined();
+		await t.run(async (ctx) => {
+			for (const nodeId of [f.childId, f.leafId]) {
+				await ctx.db.patch("files_nodes", nodeId, { readOnlyPluginName: "chitchat" });
+			}
+		});
+		const args = { membershipId: f.db.membershipId, nodeId: f.folderId };
+		expect((await f.asOwner.mutation(api.files_nodes.set_node_read_only, args))._nay).toBeUndefined();
+		expect((await f.asOwner.mutation(api.files_nodes.set_node_writable, args))._nay).toBeUndefined();
+		await t.run(async (ctx) => {
+			expect((await ctx.db.get("files_nodes", f.folderId))?.readOnlyScopeNodeId).toBeUndefined();
+			for (const nodeId of [f.childId, f.leafId]) {
+				expect(await ctx.db.get("files_nodes", nodeId)).toMatchObject({
+					readOnlyScopeNodeId: f.childId,
+					readOnlyPluginName: "chitchat",
+				});
+			}
+		});
 	});
 });
 

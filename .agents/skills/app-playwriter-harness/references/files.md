@@ -546,7 +546,7 @@ One dialog holding the file's facts, its read-only lock, and the flat key-value 
   the 12px padding and not roughly half the row.
 - The editor is Monaco. Synthetic keyboard input does not reach it. Set the text through the editor
   handle from page context:
-  `monaco.editor.getEditors().find((e) => e.getRawOptions().ariaLabel === "File metadata YAML").setValue(yaml)`.
+  `monaco.editor.getEditors().find((e) => e.getRawOptions().ariaLabel === "Metadata YAML").setValue(yaml)`.
   Get `monaco` with `await import("/@id/monaco-editor")` — the bare specifier `"monaco-editor"` does not
   resolve in page context under the Vite dev server, it throws `Failed to resolve module specifier`.
 - Monaco inside this dialog hoists nothing, unlike the file editors. Its suggest and hover widgets
@@ -566,8 +566,10 @@ One dialog holding the file's facts, its read-only lock, and the flat key-value 
 - Read the stored map back from Convex instead of trusting the dialog:
   `app_convex.query(app_convex_api.files_metadata.get_entries, { membershipId, fileNodeId })` from
   page context returns the entries in stored order.
-- Properties work on uploads. Open a PDF node and the same dialog is there.
-- Agent side: ask the chat agent to run `meta get <file>` and to call `set_file_metadata`. The tool
+- Properties work on uploads and folders. Folder Metadata uses the same save and lock states;
+  Collaboration stays file-only. Save a folder label, search it in the sidebar and global palette,
+  then rename/move/archive/restore the folder and read back its current metadata and search path.
+- Agent side: ask the chat agent to run `meta get <path>` and to call `set_file_metadata`. The tool
   takes bare keys (`status`), and the model tends to paste the bash mount path — both are covered by
   the tool description now, but a run that fails with `Not found` is usually the path, not permissions.
 

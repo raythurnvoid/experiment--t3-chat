@@ -1232,7 +1232,7 @@ export const get_by_path = internalQuery({
 			path: args.path,
 			overlayUserId: args.overlayUserId,
 		});
-		if (!fileNode || fileNode.kind !== "file") {
+		if (!fileNode) {
 			return null;
 		}
 
@@ -1405,6 +1405,31 @@ async function db_read_metadata(
 		}));
 }
 
+export async function files_metadata_db_read_entry(
+	ctx: QueryCtx,
+	args: {
+		organizationId: Doc<"files_metadata_docs">["organizationId"];
+		workspaceId: Doc<"files_metadata_docs">["workspaceId"];
+		fileNodeId: Id<"files_nodes">;
+		key: string;
+	},
+) {
+	const docs = await ctx.db
+		.query("files_metadata_docs")
+		.withIndex("by_organization_workspace_source_fileNode_qualifiedField", (q) =>
+			q
+				.eq("organizationId", args.organizationId)
+				.eq("workspaceId", args.workspaceId)
+				.eq("sourceKind", "committed")
+				.eq("fileNodeId", args.fileNodeId)
+				.eq("qualifiedField", `${files_metadata_METADATA_FIELD_PREFIX}${args.key}`),
+		)
+		.collect();
+	// A scalar has an existence doc and a value doc, plus a date index when applicable.
+	const valueDoc = docs.find((doc) => doc.docKind === "value" && doc.valueKind !== "maybe_date");
+	return valueDoc ? read_entry_value(valueDoc) : undefined;
+}
+
 /**
  * Replace one file's metadata in a single transaction: delete the `metadata.` docs it has now,
  * then insert one field doc and one value doc per key. The file's frontmatter docs are untouched,
@@ -1487,13 +1512,11 @@ async function db_authorize_metadata_write(
 	},
 ) {
 	const fileNode = await ctx.db.get("files_nodes", args.fileNodeId);
-	// Only files carry metadata, and a node from another workspace is not this member's to see, so
-	// both answer "Not found" instead of naming what exists.
+	// A node from another workspace is not this member's to see.
 	if (
 		!fileNode ||
 		fileNode.organizationId !== args.membership.organizationId ||
-		fileNode.workspaceId !== args.membership.workspaceId ||
-		fileNode.kind !== "file"
+		fileNode.workspaceId !== args.membership.workspaceId
 	) {
 		return Result({ _nay: { message: "Not found" } });
 	}
@@ -1637,7 +1660,7 @@ export const update_entries_by_path = internalMutation({
 			path: args.path,
 			overlayUserId: args.userId,
 		});
-		if (!fileNode || fileNode.kind !== "file") {
+		if (!fileNode) {
 			return Result({ _nay: { message: "Not found" } });
 		}
 

@@ -1,22 +1,25 @@
 ---
 name: file-metadata
-description: Spec for the flat key-value metadata stored next to a file — the `metadata.*` half of `files_metadata_docs`, the YAML edit format, the two write doors (`files_metadata.set_entries` for the Properties modal and `update_entries_by_path` for the agent), the key grammar and caps, how it sits beside Markdown frontmatter in `meta search`, and the sidebar search box language (`packages/app/shared/files-search-query.ts`) with its three doors (`search_nodes`, `list_search_fields`, `list_search_values`). Use when changing `packages/app/shared/files-metadata.ts`, `packages/app/shared/files-search-query.ts`, the metadata or search box regions of `packages/app/convex/files_metadata.ts`, the Properties modal in `packages/app/src/components/files/files-properties-modal.tsx`, the `set_file_metadata` agent tool in `packages/app/server/server-ai-tools.ts`, or `meta search` / `meta get` in `packages/app/server/bash-meta-command.ts`.
+description: Spec for the flat key-value metadata stored next to a file or folder — the `metadata.*` half of `files_metadata_docs`, the YAML edit format, the two write doors (`files_metadata.set_entries` for the Properties modal and `update_entries_by_path` for the agent), the key grammar and caps, how it sits beside Markdown frontmatter in `meta search`, and the sidebar search box language (`packages/app/shared/files-search-query.ts`) with its three doors (`search_nodes`, `list_search_fields`, `list_search_values`). Use when changing `packages/app/shared/files-metadata.ts`, `packages/app/shared/files-search-query.ts`, the metadata or search box regions of `packages/app/convex/files_metadata.ts`, the Properties modal in `packages/app/src/components/files/files-properties-modal.tsx`, the `set_file_metadata` agent tool in `packages/app/server/server-ai-tools.ts`, or `meta search` / `meta get` in `packages/app/server/bash-meta-command.ts`.
 ---
 
 # Mental Model
 
-Every file can carry a metadata map: a flat set of keys with scalar values. It is stored NEXT TO the
-file, not inside it. That is the whole point:
+Every file and folder can carry a metadata map: a flat set of keys with scalar values. It is stored
+next to the node, outside its content:
 
-- Frontmatter only exists in Markdown. Metadata works on every file kind, uploads and binaries
-  included.
+- Frontmatter only exists in Markdown. Metadata works on folders and every file kind, including uploads and binaries.
 - Frontmatter is part of the file's own text, so an integration that rewrites the content replaces
   it. Metadata survives a content save untouched.
 
-Keys are a convention, not a permission. Anybody who may write the file may set any key. There is no
+Anybody who may write the node may set any key. There is no
 namespace ownership, no per-plugin rule, and no special case: `created-by` and `slack:message-id` are
 ordinary keys that some team agreed on. If a folder has a house convention, it belongs in that
 folder's `README.md`, not in code.
+
+`plugin-name` is an editable opt-in for plugin file doors. Only an exact string match selects the
+node. `source: plugin` describes its origin and does not select it. Neither key grants capabilities,
+membership, permissions, or a lock bypass. Changing a label never detaches a reader binding.
 
 The stored form is validated structured data, not a text blob. YAML is only the edit format the
 Properties modal shows and parses. Nothing stores YAML.
@@ -32,7 +35,7 @@ Entries are indexed in the same `files_metadata_docs` table that Markdown frontm
 | Source | Prefix | Written by |
 | --- | --- | --- |
 | Markdown YAML frontmatter | `frontmatter.` | content materialization, from the file's own text; for a file with collaboration turned off there is no materialization, so the content replacement door writes it instead |
-| Metadata next to the file | `metadata.` | a user in the Properties modal, an agent, or a file-creation flow (see "Metadata Written By The File-Creation Flows") |
+| Metadata next to the file or folder | `metadata.` | a user in the Properties modal, an agent, or a file-creation flow (see "Metadata Written By The File-Creation Flows") |
 
 Both prefixes are exported from `shared/files-metadata.ts`. A range over one source bounds at
 `frontmatter/` or `metadata/`, because `/` (0x2F) is the next character after `.` (0x2E), so the
@@ -57,7 +60,7 @@ pending content proposal changes the file's text, and metadata is not text.
 - **Remove wins over set.** A key listed in both is removed, so a confused call cannot leave behind a
   key the caller asked to delete.
 - **A key named twice keeps its last value**, whether or not the file already had that key.
-- **Metadata uses `content.write`.** There is no separate permission. A read-only file refuses
+- **Metadata uses `content.write`.** There is no separate permission. A read-only node refuses
   metadata writes too, exactly like its content.
 - **A metadata write keeps an eager-created node alive.** Agent-mode `cp` and a bash write to a
   missing path create the node right away and stamp `eagerCreated`. When the proposal is discarded,
@@ -66,6 +69,8 @@ pending content proposal changes the file's text, and metadata is not text.
   be deleted with the file. `files_nodes_db_is_eager_node_safe_to_hard_delete` therefore keeps any
   node that already has committed `metadata.` docs. Frontmatter docs do not count: they come from the
   very content the proposal created.
+  An eager ancestor folder with committed metadata also survives pruning. Empty, unchanged ancestors
+  remain eligible for cleanup.
 - **Caps** (all in `shared/files-metadata.ts`): 128 keys, 128 characters per key, 1024 characters per
   string value, and 16 KiB for the YAML document. Both doors enforce the document cap — the agent
   writes entries, so its door measures the document those entries would make. Without that the agent
@@ -168,7 +173,7 @@ Both live in the `// #region file metadata` of `packages/app/convex/files_metada
 1. auth
 2. `files_tree_write` rate limit (the bucket other per-node property writes use)
 3. membership owned by the caller and active
-4. node load, tenancy compare, `kind === "file"` — anything else answers `Not found`
+4. node load and tenancy compare; files and folders are accepted
 5. ACL on the node (`content.write`, passing the `fileNode` so a restricted folder is resolved)
 6. `files_node_require_writable`
 7. parse the YAML, then write
@@ -188,23 +193,25 @@ only when Convex auth has no usable identity.
 
 The two doors above are the only doors a person or an agent can knock on. The file-creation flows
 write the map directly with `files_metadata_db_write_entries`, exported from `files_metadata.ts`.
-They write it once, at create time, and nothing writes metadata later.
+They write initial metadata once. Later content writes and repeated ensure calls leave it unchanged.
 
 That writer checks nothing on purpose. A create runs before anybody could have an opinion about
 that file, and mount files and plugin source mirrors are created read-only with a SYSTEM author, so
 `db_authorize_metadata_write` and `files_node_require_writable` would refuse the very writes that
 say where the file came from. Keep both doors as they are for user writes.
 
-`files_nodes_db_create_node_recursively_at_path` takes `metadata` and applies it to the
-**leaf only**. The folders it creates on the way get nothing: `set_entries` refuses a node that is
-not a file, so a folder carrying a map could never be edited back.
+`files_nodes_db_create_node_recursively_at_path` applies `metadata` to the leaf file or folder only.
+Its internal `createdNodesMetadata` argument supplies initial keys on every new node. Leaf keys take
+precedence. Reused nodes keep their maps. Plugins use it for `source` and `plugin-name`; upload names
+stay on the leaf.
 
 | Flow | Entrypoint | Keys |
 | --- | --- | --- |
 | Browser file upload | `files_nodes.create_upload_node` | `source: upload`, `original-name` |
 | Browser folder import | `files_nodes.create_upload_nodes` | `source: upload`, `original-name`, `import-relative-path` |
 | Plugin service-grant upload | `public_api_service_uploads.create_upload_target` | `source: plugin`, `original-name`, `plugin-name` |
-| Public API write / touch / upload-urls | `public_api.ts` (three creates) | `source: api` |
+| User API write / touch / upload-urls | `public_api.ts` | `source: api` |
+| Plugin invoke or upload-run write / touch, service write, folder ensure | `public_api.ts`, `public_api_plugin_files.ts` | `source: plugin`, `plugin-name` on every new node |
 | Operator data import | `data_import.create_upload_targets` | `source: import`, `original-name` |
 | GitHub mount file | `files_nodes_content.create_file_node_internal`, GITHUB scope | `source: github-mount`, `repo-path` |
 | Plugin source mirror | `files_nodes_content.create_file_node_internal`, PLUGINS scope | `source: plugin-source` |
@@ -232,21 +239,26 @@ map. So do not copy them into the map. A copy would go stale the moment the uplo
 replaces the bytes or a `cp` gives the file another type, and the user could delete or edit it,
 because everything in the map is the user's to change.
 
-The map is for what only the creating flow knows: where the file came from, and under what name.
+The map holds member-defined labels and details recorded by creation flows.
 
 # Surfaces
 
 - **Properties modal**: `packages/app/src/components/files/files-properties-modal.tsx`.
   One dialog per node, opened from the sidebar row menu (`Properties`) or the breadcrumb button. It
   holds the node's facts, the read-only checkbox, and a Monaco YAML editor for the map. The editor
-  section renders for a file only, because `set_entries` refuses a non-file. It replaced the sidebar
+  section renders for files and folders. Its editor name is `Metadata YAML`. Collaboration controls stay file-only. It replaced the sidebar
   `Metadata` tab and the separate `Read-only settings` modal; both are gone.
 - **Agent tool**: `set_file_metadata` in `packages/app/server/server-ai-tools.ts`. It is in
   `ai_chat_WRITE_TOOL_NAMES`, so Ask mode drops it from the tool record, not only from `activeTools`.
-- **Agent search**: `meta search --where '{"exists":"metadata.<key>"}'` and `meta get <file>`, both in
+- **Agent search**: `meta search --where '{"exists":"metadata.<key>"}'` and `meta get <path>`, both in
   `packages/app/server/bash-meta-command.ts`. `meta get` prints frontmatter and metadata fields
   together; its `source:` line describes the frontmatter lines only, because `metadata.*` is always
   the committed map.
+
+Folder metadata participates in sidebar and global search. Rename, move, archive, and restore update
+its indexed scope with the folder's own path, including nested and archived descendants. Folder
+pending moves keep the committed map and the existing per-user search overlay. True deletion removes
+both field and value docs. File copy does not copy metadata; folder copy is unsupported.
 
 # Search Box
 

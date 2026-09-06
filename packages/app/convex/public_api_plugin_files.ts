@@ -2,9 +2,8 @@
  * The plugin file doors behind `/api/v1/files/plugin-folders/ensure`, `/api/v1/files/plugin-archive`,
  * and `/api/v1/files/plugin-access/set` (routes in `public_api_plugin_files_http_routes.ts`).
  *
- * An invoke run owns the folders its plugin created: every node it creates carries the plugin's
- * `pluginOwnerName` stamp, and the stamp is what these doors check. A sealed service grant
- * reaches only the per-file archive, for the files it created through `/api/v1/files/write`.
+ * Editable `plugin-name` metadata selects the files and folders a plugin can use.
+ * Current capabilities, actor permissions, and locks still control each operation.
  */
 import { v, type Infer } from "convex/values";
 import type { RegisteredMutation } from "convex/server";
@@ -13,15 +12,17 @@ import { z } from "zod";
 import { internalMutation, type ActionCtx, type MutationCtx } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
-import { access_control_db_can_act_on_file_node, access_control_db_has_permission } from "./access_control.ts";
+import { access_control_db_has_permission } from "./access_control.ts";
 import {
 	files_node_require_writable,
 	files_nodes_db_archive_nodes,
 	files_nodes_db_can_act_on_swept_nodes,
 	files_nodes_db_cascade_read_only_scope,
+	files_nodes_db_collect_descendants,
 	files_nodes_db_create_node_recursively_at_path,
 	files_nodes_db_resolve_parent_read_only_scope,
 } from "./files_nodes.ts";
+import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import {
 	public_api_db_can_pass_read_only_for_plugin,
 	public_api_db_revalidate_file_write_principal,
@@ -33,7 +34,10 @@ import {
 	public_api_service_uploads_MAX_ARCHIVE_NODES,
 } from "./public_api_service_uploads.ts";
 import { public_api_authorize_request, public_api_settle_plugin_call_best_effort } from "./public_api_http_auth.ts";
-import { plugins_data_db_apply_file_access_binding } from "./plugins_data.ts";
+import {
+	plugins_data_db_apply_file_access_binding,
+	plugins_data_db_prepare_file_access_binding,
+} from "./plugins_data.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { files_ROOT_ID } from "../server/files.ts";
 import { server_path_normalize, server_request_json_parse_and_validate } from "../server/server-utils.ts";
@@ -68,19 +72,14 @@ async function db_get_active_node_at_path(
 }
 
 /**
- * Apply the declared access to one of this plugin's own nodes: `readOnly: true` writes the direct
- * plugin-named lock, `readOnly: false` releases it, and `readScopeId` binds or releases the
- * node's reader list against a plugin-data scope. Own-access is the consent for all of it — the
- * capability that creates a lock or a binding also removes it.
- *
- * The lock release here is the only unlock for a stamped read-only node, because the member unlock
- * door refuses everything plugin-managed.
+ * Finish access checks before creating a folder or changing its locks and readers.
  */
-async function db_apply_owned_access(
+async function db_prepare_plugin_access(
 	ctx: MutationCtx,
 	args: {
 		installation: Doc<"plugins_workspace_installations">;
-		node: Doc<"files_nodes">;
+		node: Doc<"files_nodes"> | null;
+		parentId: Doc<"files_nodes">["parentId"];
 		readOnly?: boolean;
 		readScopeId?: string | null;
 	},
@@ -88,82 +87,80 @@ async function db_apply_owned_access(
 	if (!args.installation.acceptedCapabilities.includes("workspace.files.own-access")) {
 		return Result({ _nay: { message: "Permission denied" } });
 	}
-	if (args.node.pluginOwnerName !== args.installation.pluginName) {
-		return Result({ _nay: { message: "Permission denied" } });
-	}
-
+	let readOnlyChange: boolean | undefined;
 	if (args.readOnly !== undefined) {
-		// A lock on a folder above always wins, whoever made it: this door changes only the node's
-		// own lock, and under a locked folder the node would stay read-only either way.
-		const parentScopeNodeId = await files_nodes_db_resolve_parent_read_only_scope(ctx, {
-			parentId: args.node.parentId,
+		let parentScopeNodeId = await files_nodes_db_resolve_parent_read_only_scope(ctx, {
+			parentId: args.parentId,
 		});
-		if (parentScopeNodeId !== undefined) {
-			// Asking for read-only under a lock this plugin already holds asks for nothing new, so
-			// answer that it is done instead of refusing. A plugin that locks its own root and then
-			// builds subfolders inside it could otherwise never create one: Chitchat locks
-			// `/chitchat` and then ensures `/chitchat/private/<channel>` read-only, and every one of
-			// those calls used to come back "This item is read-only."
-			//
-			// Releasing is still refused, because the lock above would keep the node read-only anyway,
-			// and so is any request under a lock somebody else owns.
+		const hasParentLock = parentScopeNodeId !== undefined;
+		// A nested plugin lock must not hide an outer member lock.
+		while (parentScopeNodeId !== undefined) {
 			const parentScopeNode = await ctx.db.get("files_nodes", parentScopeNodeId);
 			if (args.readOnly !== true || parentScopeNode?.readOnlyPluginName !== args.installation.pluginName) {
 				return Result({ _nay: { name: "read_only", message: "This item is read-only." } });
 			}
-		} else if (args.readOnly) {
-			if (args.node.readOnlyScopeNodeId === args.node._id) {
-				// Already locked. On a stamped node a direct lock is always this plugin's own, because
-				// the member lock door refuses plugin-managed nodes. Repeated calls are a no-op.
-				if (args.node.readOnlyPluginName !== args.installation.pluginName) {
-					return Result({ _nay: { name: "read_only", message: "This item is read-only." } });
-				}
-			} else {
-				await ctx.db.patch("files_nodes", args.node._id, {
-					readOnlyScopeNodeId: args.node._id,
-					readOnlyPluginName: args.installation.pluginName,
-				});
-				await files_nodes_db_cascade_read_only_scope(ctx, {
-					organizationId: args.node.organizationId,
-					workspaceId: args.node.workspaceId,
-					parentId: args.node._id,
-					scopeNodeId: args.node._id,
-				});
-			}
-		} else if (args.node.readOnlyScopeNodeId !== undefined) {
-			if (
-				args.node.readOnlyScopeNodeId !== args.node._id ||
-				args.node.readOnlyPluginName !== args.installation.pluginName
-			) {
+			parentScopeNodeId = await files_nodes_db_resolve_parent_read_only_scope(ctx, {
+				parentId: parentScopeNode.parentId,
+			});
+		}
+		if (args.node && args.node.readOnlyScopeNodeId === args.node._id) {
+			if (args.node.readOnlyPluginName !== args.installation.pluginName) {
 				return Result({ _nay: { name: "read_only", message: "This item is read-only." } });
 			}
-			// The parent holds no lock (checked above), so the release leaves the node and its
-			// subtree writable.
-			await ctx.db.patch("files_nodes", args.node._id, {
-				readOnlyScopeNodeId: undefined,
-				readOnlyPluginName: undefined,
-			});
-			await files_nodes_db_cascade_read_only_scope(ctx, {
-				organizationId: args.node.organizationId,
-				workspaceId: args.node.workspaceId,
-				parentId: args.node._id,
-				scopeNodeId: undefined,
-			});
+			if (!args.readOnly) {
+				readOnlyChange = false;
+			}
+		} else if (args.readOnly && !hasParentLock) {
+			readOnlyChange = true;
 		}
 	}
 
+	let binding: NonNullable<Awaited<ReturnType<typeof plugins_data_db_prepare_file_access_binding>>["_yay"]> | null =
+		null;
 	if (args.readScopeId !== undefined) {
-		const bound = await plugins_data_db_apply_file_access_binding(ctx, {
+		const prepared = await plugins_data_db_prepare_file_access_binding(ctx, {
 			installation: args.installation,
-			node: args.node,
+			nodeId: args.node?._id ?? null,
 			readScopeId: args.readScopeId,
 		});
-		if (bound._nay) {
-			return bound;
+		if (prepared._nay) {
+			return prepared;
 		}
+		binding = prepared._yay;
 	}
 
-	return Result({ _yay: null });
+	return Result({ _yay: { readOnlyChange, binding } });
+}
+
+async function db_apply_plugin_access(
+	ctx: MutationCtx,
+	args: {
+		installation: Doc<"plugins_workspace_installations">;
+		node: Doc<"files_nodes">;
+		prepared: NonNullable<Awaited<ReturnType<typeof db_prepare_plugin_access>>["_yay"]>;
+	},
+) {
+	if (args.prepared.readOnlyChange !== undefined) {
+		const scopeNodeId = args.prepared.readOnlyChange ? args.node._id : undefined;
+		await ctx.db.patch("files_nodes", args.node._id, {
+			readOnlyScopeNodeId: scopeNodeId,
+			readOnlyPluginName: args.prepared.readOnlyChange ? args.installation.pluginName : undefined,
+			readOnlyPluginServiceTargetId: undefined,
+		});
+		await files_nodes_db_cascade_read_only_scope(ctx, {
+			organizationId: args.node.organizationId,
+			workspaceId: args.node.workspaceId,
+			parentId: args.node._id,
+			scopeNodeId,
+		});
+	}
+	if (args.prepared.binding) {
+		await plugins_data_db_apply_file_access_binding(ctx, {
+			installation: args.installation,
+			node: args.node,
+			prepared: args.prepared.binding,
+		});
+	}
 }
 
 // #region ensure
@@ -197,8 +194,7 @@ export const ensure_plugin_folder = internalMutation({
 		}
 		const { pluginRun, installation } = liveRun._yay;
 
-		// Ensure is the one door that creates plugin roots, and only an invoke run owns folders —
-		// an upload run writes beside its source and never needs one.
+		// Upload runs keep their sibling-write rule and cannot ensure folders.
 		if (pluginRun.event !== "ui.invoke.requested" || pluginRun.actorUserId !== args.userId) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
@@ -239,15 +235,6 @@ export const ensure_plugin_folder = internalMutation({
 			currentParent = existing._id;
 		}
 
-		// The deepest existing node must be this plugin's own folder. An unstamped or
-		// other-plugin occupant — or a file on the path — is a conflict; the plugin resolves it
-		// by picking another name.
-		if (deepest && (deepest.kind !== "folder" || deepest.pluginOwnerName !== installation.pluginName)) {
-			return Result({
-				_nay: { name: "conflict", message: "This path is used by an item this plugin does not own" },
-			});
-		}
-
 		// The run acts for its member, so the member must still be one and must still be allowed
 		// to write here — the same rule as the write engine, asked against the deepest existing
 		// node so a restricted plugin folder is judged by the grants that let the actor in.
@@ -264,35 +251,41 @@ export const ensure_plugin_folder = internalMutation({
 		if (!actorMembership) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
-		let canWrite = false;
-		if (deepest) {
-			canWrite = await access_control_db_can_act_on_file_node(ctx, {
-				organizationId: args.organizationId,
-				workspaceId: args.workspaceId,
-				userId: args.userId,
-				fileNode: deepest,
+		const [organization, workspace] = await Promise.all([
+			ctx.db.get("organizations", args.organizationId),
+			ctx.db.get("organizations_workspaces", args.workspaceId),
+		]);
+		const canWrite =
+			organization?.defaultWorkspaceId &&
+			workspace &&
+			(await access_control_db_has_permission(ctx, {
+				organizationId: organization._id,
+				workspaceId: workspace._id,
+				defaultWorkspaceId: organization.defaultWorkspaceId,
+				organizationOwnerUserId: organization.ownerUserId,
+				resource: deepest
+					? { kind: "file", id: String(deepest._id), restrictedScopeNodeId: deepest.restrictedScopeNodeId ?? null }
+					: { kind: "workspace", id: String(workspace._id) },
 				permission: "content.write",
-			});
-		} else {
-			const [organization, workspace] = await Promise.all([
-				ctx.db.get("organizations", args.organizationId),
-				ctx.db.get("organizations_workspaces", args.workspaceId),
-			]);
-			if (organization && organization.defaultWorkspaceId && workspace) {
-				canWrite = await access_control_db_has_permission(ctx, {
-					organizationId: organization._id,
-					workspaceId: workspace._id,
-					defaultWorkspaceId: organization.defaultWorkspaceId,
-					organizationOwnerUserId: organization.ownerUserId,
-					resource: { kind: "workspace", id: String(workspace._id) },
-					permission: "content.write",
-					userId: args.userId,
-				});
-			}
-		}
+				userId: args.userId,
+			}));
 
 		if (!canWrite) {
 			return Result({ _nay: { message: "Permission denied" } });
+		}
+		if (
+			deepest &&
+			(deepest.kind !== "folder" ||
+				(await files_metadata_db_read_entry(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					fileNodeId: deepest._id,
+					key: "plugin-name",
+				})) !== installation.pluginName)
+		) {
+			return Result({
+				_nay: { name: "conflict", message: "This path is used by an item without this plugin's label" },
+			});
 		}
 
 		// A lock on the existing chain refuses the create, unless it is the plugin's own lock.
@@ -317,7 +310,42 @@ export const ensure_plugin_folder = internalMutation({
 				throw should_never_happen("plugin folder ensure walked no segments", { path: args.path });
 			}
 			nodeId = deepest._id;
+			const binding = await ctx.db
+				.query("plugins_file_access_bindings")
+				.withIndex("by_node", (q) => q.eq("nodeId", nodeId))
+				.first();
+			if (
+				binding &&
+				(binding.installationId !== installation._id ||
+					(args.readScopeId !== undefined && binding.scopeId !== args.readScopeId))
+			) {
+				return Result({ _nay: { name: "conflict", message: "This item has a different plugin reader binding" } });
+			}
+			if (binding) {
+				const preparedBinding = await plugins_data_db_prepare_file_access_binding(ctx, {
+					installation,
+					nodeId,
+					readScopeId: binding.scopeId,
+				});
+				if (preparedBinding._nay) {
+					return preparedBinding;
+				}
+			}
 		} else {
+			let preparedAccess: NonNullable<Awaited<ReturnType<typeof db_prepare_plugin_access>>["_yay"]> | null = null;
+			if (args.readOnly !== undefined || args.readScopeId !== undefined) {
+				const prepared = await db_prepare_plugin_access(ctx, {
+					installation,
+					node: null,
+					parentId: deepest?._id ?? files_ROOT_ID,
+					readOnly: args.readOnly,
+					readScopeId: args.readScopeId,
+				});
+				if (prepared._nay) {
+					return prepared;
+				}
+				preparedAccess = prepared._yay;
+			}
 			const createdResult = await files_nodes_db_create_node_recursively_at_path(ctx, {
 				userId: args.userId,
 				organizationId: args.organizationId,
@@ -332,7 +360,10 @@ export const ensure_plugin_folder = internalMutation({
 				// lock pointer, so the tree above says read-only while the folder's own field says
 				// nothing, and `access: { readOnly: true }` on it becomes a no-op that locks nothing.
 				inheritParentReadOnlyScope: true,
-				stampCreatedNodesPluginName: installation.pluginName,
+				createdNodesMetadata: [
+					{ key: "source", value: "plugin" },
+					{ key: "plugin-name", value: installation.pluginName },
+				],
 				now,
 			});
 			if (createdResult._nay) {
@@ -341,21 +372,12 @@ export const ensure_plugin_folder = internalMutation({
 			}
 			nodeId = createdResult._yay;
 			created = true;
-		}
-
-		if (args.readOnly !== undefined || args.readScopeId !== undefined) {
-			const node = await ctx.db.get("files_nodes", nodeId);
-			if (!node) {
-				throw should_never_happen("ensured plugin folder is missing right after resolve", { nodeId });
-			}
-			const applied = await db_apply_owned_access(ctx, {
-				installation,
-				node,
-				readOnly: args.readOnly,
-				readScopeId: args.readScopeId,
-			});
-			if (applied._nay) {
-				return applied;
+			if (preparedAccess) {
+				const node = await ctx.db.get("files_nodes", nodeId);
+				if (!node) {
+					throw should_never_happen("ensured plugin folder is missing right after create", { nodeId });
+				}
+				await db_apply_plugin_access(ctx, { installation, node, prepared: preparedAccess });
 			}
 		}
 
@@ -410,6 +432,9 @@ export const archive_plugin_path = internalMutation({
 			return revalidated;
 		}
 		const facts = revalidated._yay;
+		if (args.principalRef.kind === "plugin_run" && facts.pluginRun?.event !== "ui.invoke.requested") {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
 		const installation = facts.installation;
 		if (!installation) {
 			// Unreachable: both allowed principal kinds resolve an installation.
@@ -427,11 +452,14 @@ export const archive_plugin_path = internalMutation({
 		}
 
 		if (args.principalRef.kind === "plugin_run") {
-			// The target itself must carry this plugin's stamp. Revalidation proves that for an invoke
-			// run, but an upload run is revalidated by the sibling rule instead, which only says the
-			// path sits beside the triggering upload. Without this check a run could archive a member's
-			// file that happens to sit in the same folder as the file it was started for.
-			if (node.pluginOwnerName !== installation.pluginName) {
+			if (
+				(await files_metadata_db_read_entry(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					fileNodeId: node._id,
+					key: "plugin-name",
+				})) !== installation.pluginName
+			) {
 				return Result({ _nay: { message: "Permission denied" } });
 			}
 
@@ -451,13 +479,18 @@ export const archive_plugin_path = internalMutation({
 				});
 			}
 
-			// Every node in the subtree must be this plugin's own. A member can put their own file
-			// inside an open plugin folder, and archiving it through the plugin door would take a
-			// member's work without a member door's checks.
+			// Every descendant must opt in before any lock is released or node is archived.
 			for (const swept of descendants) {
-				if (swept.pluginOwnerName !== installation.pluginName) {
+				if (
+					(await files_metadata_db_read_entry(ctx, {
+						organizationId: args.organizationId,
+						workspaceId: args.workspaceId,
+						fileNodeId: swept._id,
+						key: "plugin-name",
+					})) !== installation.pluginName
+				) {
 					return Result({
-						_nay: { name: "conflict", message: "This folder holds items this plugin does not own" },
+						_nay: { name: "conflict", message: "This folder holds items without this plugin's label" },
 					});
 				}
 			}
@@ -504,11 +537,16 @@ export const archive_plugin_path = internalMutation({
 			return Result({ _yay: { archivedNodes: activeDescendants.length + 1 } });
 		}
 
-		// The service branch archives one FILE: the per-file removal door for a file the service
-		// created through `/api/v1/files/write`, which the key-addressed service delete door
-		// cannot reach. A folder can never carry service write provenance, so a folder path is
-		// refused here.
-		if (node.kind !== "file" || node.pluginServiceWritePluginName !== installation.pluginName) {
+		// A sealed service grant archives one matching file through this door.
+		if (
+			node.kind !== "file" ||
+			(await files_metadata_db_read_entry(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				fileNodeId: node._id,
+				key: "plugin-name",
+			})) !== installation.pluginName
+		) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 		const writable = files_node_require_writable(node);
@@ -563,6 +601,9 @@ export const set_plugin_access = internalMutation({
 			return revalidated;
 		}
 		const installation = revalidated._yay.installation;
+		if (revalidated._yay.pluginRun?.event !== "ui.invoke.requested") {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
 		if (!installation) {
 			// Unreachable: the plugin_run branch always resolves an installation.
 			throw should_never_happen("plugin access change without an installation", { path: args.path });
@@ -577,15 +618,71 @@ export const set_plugin_access = internalMutation({
 			return Result({ _nay: { message: "Not found" } });
 		}
 
-		const applied = await db_apply_owned_access(ctx, {
+		const organization = await ctx.db.get("organizations", args.organizationId);
+		if (
+			!organization?.defaultWorkspaceId ||
+			!(await access_control_db_has_permission(ctx, {
+				organizationId: organization._id,
+				workspaceId: args.workspaceId,
+				defaultWorkspaceId: organization.defaultWorkspaceId,
+				organizationOwnerUserId: organization.ownerUserId,
+				resource: { kind: "file", id: String(node._id), restrictedScopeNodeId: node.restrictedScopeNodeId ?? null },
+				userId: args.userId,
+				permission: "content.permissions.manage",
+			}))
+		) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+		const writable = files_node_require_writable(node);
+		if (
+			writable._nay &&
+			!(await public_api_db_can_pass_read_only_for_plugin(ctx, {
+				facts: revalidated._yay,
+				node,
+			}))
+		) {
+			return writable;
+		}
+		const binding = await ctx.db
+			.query("plugins_file_access_bindings")
+			.withIndex("by_node", (q) => q.eq("nodeId", node._id))
+			.first();
+		if (binding && binding.installationId !== installation._id) {
+			return Result({ _nay: { name: "conflict", message: "This item has a different plugin reader binding" } });
+		}
+		const prepared = await db_prepare_plugin_access(ctx, {
 			installation,
 			node,
+			parentId: node.parentId,
 			readOnly: args.readOnly,
 			readScopeId: args.readScopeId,
 		});
-		if (applied._nay) {
-			return applied;
+		if (prepared._nay) {
+			return prepared;
 		}
+		const changesBinding =
+			prepared._yay.binding &&
+			(prepared._yay.binding.readScopeId !== null || prepared._yay.binding.existingBinding !== null);
+		if (node.kind === "folder" && (prepared._yay.readOnlyChange !== undefined || changesBinding)) {
+			const descendants = await files_nodes_db_collect_descendants(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				parentId: node._id,
+			});
+			if (
+				!(await files_nodes_db_can_act_on_swept_nodes(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					userId: args.userId,
+					rootScopeNodeId: node.restrictedScopeNodeId,
+					nodes: descendants,
+					permission: "content.permissions.manage",
+				}))
+			) {
+				return Result({ _nay: { message: "Permission denied" } });
+			}
+		}
+		await db_apply_plugin_access(ctx, { installation, node, prepared: prepared._yay });
 
 		return Result({ _yay: { nodeId: node._id } });
 	},

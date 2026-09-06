@@ -456,7 +456,7 @@ export async function public_api_service_uploads_db_can_release_plugin_named_loc
 	args: {
 		installation: Doc<"plugins_workspace_installations">;
 		/**
-		 * The caller's authority area: the grant's sealed destination, or a run's stamped root path.
+		 * The service grant's sealed destination.
 		 */
 		pathPrefix: string;
 		node: Doc<"files_nodes">;
@@ -488,7 +488,7 @@ export async function public_api_service_uploads_db_can_release_plugin_named_loc
  *
  * Fall back to the parent's pointer the same way `set_node_writable` does. Both doors already
  * refused when a folder above the file still holds a lock, so that pointer is writable here.
- * A folder can carry a plugin-named lock (the owned-area doors lock folders), so a released
+ * A folder can carry a plugin-named lock (the invoke file doors lock folders), so a released
  * folder also cascades the parent pointer down its subtree, or its descendants would keep
  * pointing at a lock that no longer exists.
  */
@@ -1172,13 +1172,11 @@ export const create_upload_target = internalMutation({
 			kind: "file",
 			contentType,
 			assetId,
-			// Name the plugin that uploaded the file, so a member reading the file later can see
-			// which installation put it there.
-			metadata: [
+			createdNodesMetadata: [
 				{ key: "source", value: "plugin" },
-				{ key: "original-name", value: name },
 				{ key: "plugin-name", value: installation.pluginName },
 			],
+			metadata: [{ key: "original-name", value: name }],
 			now,
 		});
 		// The validation above cleared every failure this helper can hit. Throw so a surprise rolls

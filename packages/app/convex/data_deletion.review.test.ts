@@ -894,7 +894,7 @@ async function review_seed_all_workspace_content(
 			nodeId: node._id,
 			updatedAt: now,
 		});
-		await ctx.db.patch("files_nodes", node._id, { pluginOwnerName: pluginName, restrictedScopeNodeId: node._id });
+		await ctx.db.patch("files_nodes", node._id, { restrictedScopeNodeId: node._id });
 		await ctx.db.insert("access_control_permission_grants", {
 			...tenant,
 			resourceKind: "plugin_scope",

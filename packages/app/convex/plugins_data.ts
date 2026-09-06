@@ -3801,7 +3801,7 @@ function db_binding_file_grants(
  * Keep the mirrored `content.read` grants on scope-bound file nodes in step with a scope
  * membership change. Called at every place a scope's member list changes.
  *
- * There is no plugin allowlist guard here: any plugin may bind its owned files to a scope.
+ * There is no plugin allowlist here: the file door checks access before creating a binding.
  * Additions apply synchronously too — a binding has no interleaved file write to wait for,
  * so there is no reason to let a new member show up late.
  *
@@ -3873,52 +3873,29 @@ async function db_sync_file_access_bindings(
 }
 
 /**
- * Bind one plugin-owned node's reader list to a live private scope, or release that binding.
- * The plugin access door (`plugin-folders/ensure` and `plugin-access/set`) is the only caller;
- * it already proved the node carries the calling plugin's stamp and the own-access consent.
+ * Check a binding change before the caller creates a node or changes its lock.
  */
-export async function plugins_data_db_apply_file_access_binding(
-	ctx: MutationCtx,
+export async function plugins_data_db_prepare_file_access_binding(
+	ctx: QueryCtx | MutationCtx,
 	args: {
 		installation: Doc<"plugins_workspace_installations">;
-		node: Doc<"files_nodes">;
+		nodeId: Id<"files_nodes"> | null;
 		readScopeId: string | null;
 	},
 ) {
-	const now = Date.now();
-	const existingBinding = await ctx.db
-		.query("plugins_file_access_bindings")
-		.withIndex("by_node", (q) => q.eq("nodeId", args.node._id))
-		.first();
+	const nodeId = args.nodeId;
+	const existingBinding = nodeId
+		? await ctx.db
+				.query("plugins_file_access_bindings")
+				.withIndex("by_node", (q) => q.eq("nodeId", nodeId))
+				.first()
+		: null;
+	if (existingBinding && existingBinding.installationId !== args.installation._id) {
+		return Result({ _nay: { message: "This item is bound to another plugin installation." } });
+	}
 
 	if (args.readScopeId === null) {
-		// Release. Only a binding this installation made is this door's to undo; any other
-		// restriction on the node is a member's and stays.
-		if (!existingBinding || existingBinding.installationId !== args.installation._id) {
-			return Result({ _yay: null });
-		}
-		const grants = await db_binding_file_grants(ctx, {
-			organizationId: existingBinding.organizationId,
-			workspaceId: existingBinding.workspaceId,
-			nodeId: existingBinding.nodeId,
-		});
-		for (const grant of grants) {
-			await ctx.db.delete("access_control_permission_grants", grant._id);
-		}
-		await ctx.db.delete("plugins_file_access_bindings", existingBinding._id);
-
-		// The binding was the reason for the restriction. Give the node back its parent's scope,
-		// exactly like the member unshare door, so a binding nested under another restricted
-		// folder stays inside that folder's list.
-		const parentScope = await files_nodes_db_resolve_parent_restricted_scope(ctx, { parentId: args.node.parentId });
-		await ctx.db.patch("files_nodes", args.node._id, { restrictedScopeNodeId: parentScope });
-		await files_nodes_db_cascade_restricted_scope(ctx, {
-			organizationId: args.node.organizationId,
-			workspaceId: args.node.workspaceId,
-			parentId: args.node._id,
-			scopeNodeId: parentScope,
-		});
-		return Result({ _yay: null });
+		return Result({ _yay: { existingBinding, readScopeId: args.readScopeId } });
 	}
 
 	// The scope must be live in this installation. A released or foreign scope id answers the
@@ -3939,11 +3916,54 @@ export async function plugins_data_db_apply_file_access_binding(
 			q.eq("installationId", args.installation._id).eq("scopeId", readScopeId),
 		)
 		.take(MAX_ACCESS_BINDINGS_PER_SCOPE + 1);
-	const alreadyBoundHere = boundRows.some((row) => row.nodeId === args.node._id);
+	const alreadyBoundHere = boundRows.some((row) => row.nodeId === nodeId);
 	if (!alreadyBoundHere && boundRows.length >= MAX_ACCESS_BINDINGS_PER_SCOPE) {
 		return Result({
 			_nay: { message: `One private space can be bound to at most ${MAX_ACCESS_BINDINGS_PER_SCOPE} files or folders.` },
 		});
+	}
+
+	return Result({ _yay: { existingBinding, readScopeId } });
+}
+
+/**
+ * Apply a checked binding change in the same mutation that prepared it.
+ * The caller already checked metadata, consent, permissions, and locks.
+ */
+export async function plugins_data_db_apply_file_access_binding(
+	ctx: MutationCtx,
+	args: {
+		installation: Doc<"plugins_workspace_installations">;
+		node: Doc<"files_nodes">;
+		prepared: NonNullable<Awaited<ReturnType<typeof plugins_data_db_prepare_file_access_binding>>["_yay"]>;
+	},
+) {
+	const now = Date.now();
+	const { existingBinding, readScopeId } = args.prepared;
+	if (readScopeId === null) {
+		// A detached binding leaves the member's sharing unchanged.
+		if (!existingBinding) {
+			return;
+		}
+		const grants = await db_binding_file_grants(ctx, {
+			organizationId: existingBinding.organizationId,
+			workspaceId: existingBinding.workspaceId,
+			nodeId: existingBinding.nodeId,
+		});
+		for (const grant of grants) {
+			await ctx.db.delete("access_control_permission_grants", grant._id);
+		}
+		await ctx.db.delete("plugins_file_access_bindings", existingBinding._id);
+
+		const parentScope = await files_nodes_db_resolve_parent_restricted_scope(ctx, { parentId: args.node.parentId });
+		await ctx.db.patch("files_nodes", args.node._id, { restrictedScopeNodeId: parentScope });
+		await files_nodes_db_cascade_restricted_scope(ctx, {
+			organizationId: args.node.organizationId,
+			workspaceId: args.node.workspaceId,
+			parentId: args.node._id,
+			scopeNodeId: parentScope,
+		});
+		return;
 	}
 
 	// Restrict the node on itself and cascade, like the member share door does.
@@ -3958,12 +3978,11 @@ export async function plugins_data_db_apply_file_access_binding(
 	}
 
 	// Exactly one `content.read` grant per active scope member. The kept set makes a duplicate
-	// grant for the same user get deleted. Deleting every other grant is safe because the member
-	// share door refuses stamped nodes, so nothing else writes grants here.
+	// grant for the same user get deleted. The caller has permission to replace this reader list.
 	//
 	// The node's own tenant fields are typed with the special workspace literals, so use the
 	// installation's ids — the door already proved the node lives in this workspace.
-	const resourceId = scope_resource_id(args.installation._id, args.readScopeId);
+	const resourceId = scope_resource_id(args.installation._id, readScopeId);
 	const scopeGrants = await db_scope_grants(ctx, {
 		organizationId: args.installation.organizationId,
 		workspaceId: args.installation.workspaceId,
@@ -4015,7 +4034,7 @@ export async function plugins_data_db_apply_file_access_binding(
 
 	if (existingBinding) {
 		await ctx.db.patch("plugins_file_access_bindings", existingBinding._id, {
-			scopeId: args.readScopeId,
+			scopeId: readScopeId,
 			updatedAt: now,
 		});
 	} else {
@@ -4023,13 +4042,11 @@ export async function plugins_data_db_apply_file_access_binding(
 			organizationId: args.installation.organizationId,
 			workspaceId: args.installation.workspaceId,
 			installationId: args.installation._id,
-			scopeId: args.readScopeId,
+			scopeId: readScopeId,
 			nodeId: args.node._id,
 			updatedAt: now,
 		});
 	}
-
-	return Result({ _yay: null });
 }
 
 /**

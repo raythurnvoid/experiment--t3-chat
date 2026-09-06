@@ -47,14 +47,12 @@ export const plugins_CAPABILITIES = [
 	// It narrows `workspace.files.write` instead of replacing it, because a read-only file is still
 	// a file this installation writes.
 	"workspace.files.create-read-only",
-	// Consent line: the plugin's backend may create, update, and archive files inside the folders
-	// this plugin creates and owns. Every node it creates carries the plugin's ownership stamp, and
-	// the write doors refuse any path whose existing chain does not carry that stamp, so this opens
-	// no write over a member's own files.
+	// Consent line: the plugin may create, update, and archive files and folders marked for it.
+	// The exact plugin-name metadata value selects each existing node. Members may edit the label;
+	// actor permissions and current locks still apply.
 	"workspace.files.own-write",
-	// Consent line: the plugin may lock its own folders and files read-only and restrict them to its
-	// own private scopes; the host keeps the reader lists equal to the scope members. It only ever
-	// applies to nodes carrying this plugin's ownership stamp, so a member's files are out of reach.
+	// Consent line: the plugin may set locks and readers on matching files and folders. Members
+	// with manage permission may change them. A real manual sharing change stops reader syncing.
 	"workspace.files.own-access",
 	"plugin.data.read",
 	"plugin.data.write",
@@ -1290,8 +1288,7 @@ export function plugins_validate_manifest(input: unknown) {
 	if (endpointIds.size > 0 && !capabilities.has("plugin.backend.invoke" satisfies plugins_Capability)) {
 		return Result({ _nay: { message: "Backend endpoints require the plugin.backend.invoke capability" } });
 	}
-	// Own-access only creates and releases locks on files own-write maintains, so on its own it
-	// would consent to authority over files this plugin can never produce.
+	// Own-access changes policy on the same labeled nodes that own-write maintains.
 	if (
 		capabilities.has("workspace.files.own-access" satisfies plugins_Capability) &&
 		!capabilities.has("workspace.files.own-write" satisfies plugins_Capability)
