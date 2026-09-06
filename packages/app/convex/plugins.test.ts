@@ -15,6 +15,7 @@ import {
 } from "../shared/plugins.ts";
 import type { access_control_Permission } from "../shared/access-control.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
+import { path_tree_prefix_upper_bound } from "../server/server-utils.ts";
 import { files_ROOT_ID } from "../server/files.ts";
 import { r2_create_asset_key, r2_confirmed_object_delete } from "./r2_client.ts";
 import {
@@ -456,7 +457,7 @@ describe("plugins Phase 0", () => {
 						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
 						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
 						.gte("treePath", `/${first.pluginVersionId}/`)
-						.lt("treePath", `/${first.pluginVersionId}/\uffff`),
+						.lt("treePath", path_tree_prefix_upper_bound(`/${first.pluginVersionId}/`)),
 				)
 				.collect(),
 		);
@@ -10328,7 +10329,7 @@ describe("plugins publish artifact cleanup", () => {
 						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
 						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
 						.gte("treePath", `/${registered.pluginVersionId}/`)
-						.lt("treePath", `/${registered.pluginVersionId}/\uffff`),
+						.lt("treePath", path_tree_prefix_upper_bound(`/${registered.pluginVersionId}/`)),
 				)
 				.collect(),
 		);
@@ -10516,7 +10517,7 @@ describe("plugins publish artifact cleanup", () => {
 						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
 						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
 						.gte("treePath", `/${registered.pluginVersionId}/`)
-						.lt("treePath", `/${registered.pluginVersionId}/\uffff`),
+						.lt("treePath", path_tree_prefix_upper_bound(`/${registered.pluginVersionId}/`)),
 				)
 				.collect(),
 		);
@@ -10839,7 +10840,7 @@ describe("plugins list_bash_source_mounts", () => {
 							.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
 							.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
 							.gte("treePath", `/${registered.pluginVersionId}/`)
-							.lt("treePath", `/${registered.pluginVersionId}/\uffff`),
+							.lt("treePath", path_tree_prefix_upper_bound(`/${registered.pluginVersionId}/`)),
 					)
 					.collect(),
 			);
@@ -12826,6 +12827,40 @@ describe("plugins users.account.deleted dispatch", () => {
 });
 
 describe("plugins admin hard delete", () => {
+	test.each(["😀", "\uffff"])("counts and deletes every %s source node", async (suffix) => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const registered = await register_media_plugin(t, db.userId, {
+			name: "unicode-source",
+			sourceFiles: [{ path: `${suffix}folder/needle.ts`, rawText: "export const value = 1;" }],
+		});
+		const nodes = await t.run(async (ctx) =>
+			(await ctx.db.query("files_nodes").collect()).filter((node) =>
+				node.path.startsWith(`/${registered.pluginVersionId}`),
+			),
+		);
+		expect(nodes).toHaveLength(3);
+		expect(nodes.map((node) => node.path)).toContain(`/${registered.pluginVersionId}/${suffix}folder/needle.ts`);
+		const preview = await t.query(internal.plugins.preview_hard_delete_registered_plugin, {
+			pluginName: "unicode-source",
+		});
+		expect(preview.previewTruncated).toBe(false);
+		expect(preview.sourceFileNodes).toBe(nodes.length);
+		let done = false;
+		for (let pass = 0; pass < 10 && !done; pass++) {
+			const batch = await t.mutation(internal.plugins.delete_plugin_source_tree_batch, {
+				pluginVersionId: registered.pluginVersionId,
+				_test_batchSize: 2,
+			});
+			expect(batch.deletedCount).toBeLessThanOrEqual(2);
+			done = batch.done;
+		}
+		expect(done).toBe(true);
+		// Read saved ids so the check cannot hide a node with the same broken range.
+		const remaining = await t.run((ctx) => Promise.all(nodes.map((node) => ctx.db.get("files_nodes", node._id))));
+		expect(remaining).toEqual([null, null, null]);
+	});
+
 	test("hard-deletes a rejected first publish with no registered version", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -13132,7 +13167,7 @@ describe("plugins admin hard delete", () => {
 							.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
 							.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
 							.gte("treePath", `/${version._id}/`)
-							.lt("treePath", `/${version._id}/\uffff`),
+							.lt("treePath", path_tree_prefix_upper_bound(`/${version._id}/`)),
 					)
 					.collect()
 			).map((node) => node._id);
@@ -13159,7 +13194,7 @@ describe("plugins admin hard delete", () => {
 								.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
 								.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
 								.gte("treePath", `/${registered.pluginVersionId}/`)
-								.lt("treePath", `/${registered.pluginVersionId}/\uffff`),
+								.lt("treePath", path_tree_prefix_upper_bound(`/${registered.pluginVersionId}/`)),
 						)
 						.collect()
 				).map((node) => node._id),
@@ -13183,7 +13218,7 @@ describe("plugins admin hard delete", () => {
 							.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
 							.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
 							.gte("treePath", `/${registered.pluginVersionId}/`)
-							.lt("treePath", `/${registered.pluginVersionId}/\uffff`),
+							.lt("treePath", path_tree_prefix_upper_bound(`/${registered.pluginVersionId}/`)),
 					)
 					.collect(),
 			),

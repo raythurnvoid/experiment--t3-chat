@@ -9,6 +9,7 @@ import {
 	github_mount_is_lfs_pointer,
 } from "./github_mounts.ts";
 import { github_codeload_url } from "../server/github.ts";
+import { path_tree_prefix_upper_bound } from "../server/server-utils.ts";
 import { files_MAX_TEXT_CONTENT_BYTES } from "../shared/files.ts";
 import { organizations_GLOBAL_ORGANIZATION_ID, organizations_GLOBAL_GITHUB_WORKSPACE_ID } from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
@@ -157,7 +158,7 @@ async function list_mount_file_paths(t: ReturnType<typeof test_convex>, mount: s
 					.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
 					.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
 					.gte("treePath", `/${mount}/`)
-					.lt("treePath", `/${mount}/￿`),
+					.lt("treePath", path_tree_prefix_upper_bound(`/${mount}/`)),
 			)
 			.collect();
 		return nodes.filter((node) => node.kind === "file").map((node) => node.path);
@@ -376,6 +377,44 @@ describe("list_mounts", () => {
 // #region pending-root barrier + gc
 
 describe("clear_pending_root_batch", () => {
+	test.each(["😀", "\uffff"])("removes a partial root with a %s descendant", async (suffix) => {
+		const t = test_convex();
+		install_fetch({ commitSha: COMMIT_2, treeSha: TREE_2, zip: build_repo_zip(COMMIT_2, {}) });
+		const mountId = await create_running_mount(t, {
+			name: MOUNT,
+			syncRunId: "unicode-clear",
+			pendingCommitSha: COMMIT_2,
+		});
+		const path = `/${MOUNT}/${COMMIT_2}/${suffix}folder/partial.ts`;
+		const created = await t.action(internal.files_nodes_content.create_file_node_internal, {
+			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+			path,
+			rawText: "export const partial = 1;",
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const nodes = await t.run(async (ctx) =>
+			(await ctx.db.query("files_nodes").collect()).filter((node) =>
+				node.treePath.startsWith(`/${MOUNT}/${COMMIT_2}/`),
+			),
+		);
+		expect(nodes).toHaveLength(3);
+		expect(nodes.map((node) => node.path)).toContain(path);
+		let done = false;
+		for (let pass = 0; pass < 10 && !done; pass++) {
+			const batch = await t.mutation(internal.github_mounts.clear_pending_root_batch, {
+				mountId,
+				syncRunId: "unicode-clear",
+				_test_batchSize: 2,
+			});
+			expect(batch.superseded).toBe(false);
+			expect(batch.deletedCount).toBeLessThanOrEqual(2);
+			done = batch.done;
+		}
+		expect(done).toBe(true);
+		const remaining = await t.run((ctx) => Promise.all(nodes.map((node) => ctx.db.get("files_nodes", node._id))));
+		expect(remaining).toEqual([null, null, null]);
+	});
+
 	test("clears the pending root and leaves the active root and prefix-overlapping mounts intact", async () => {
 		const t = test_convex();
 		install_fetch({ commitSha: COMMIT_2, treeSha: TREE_2, zip: build_repo_zip(COMMIT_2, { "README.md": "x" }) });

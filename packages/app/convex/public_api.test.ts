@@ -404,6 +404,48 @@ afterEach(() => {
 });
 
 describe("public files API", () => {
+	test.each(["😀", "\uffff"])("lists %s descendants and content type suffixes", async (suffix) => {
+		const t = test_convex();
+		install_r2_object_reads();
+		vi.spyOn(Workpool.prototype, "enqueueAction").mockResolvedValue("work_prefix_test" as never);
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-prefix" });
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: `scope/${suffix}folder`,
+		});
+		if (folder._nay) throw new Error(folder._nay.message);
+		const contentType = `image/png;charset=${suffix}`;
+		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: folder._yay.nodeId,
+			filename: "needle.png",
+			contentType,
+			size: 1,
+		});
+		if (upload._nay) throw new Error(upload._nay.message);
+		const key = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			name: "Prefix reader",
+			scopes: ["files:list"],
+		});
+		if (key._nay) throw new Error(key._nay.message);
+		for (const path of ["/", "/scope", `/scope/${suffix}folder`]) {
+			for (const contentTypePrefixes of [undefined, ["image/png;charset="]]) {
+				const response = await t.fetch("/api/v1/files/list", {
+					method: "POST",
+					headers: auth_headers(key._yay.credential),
+					body: JSON.stringify({ path, recursive: true, kind: "file", contentTypePrefixes }),
+				});
+				expect(response.status).toBe(200);
+				expect(await response.json()).toMatchObject({
+					items: [{ path: `/scope/${suffix}folder/needle.png`, contentType }],
+				});
+			}
+		}
+	});
+
 	test("returns only the public validation message for malformed request bodies", async () => {
 		const t = test_convex();
 		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-validation" });

@@ -8518,6 +8518,70 @@ test("file_stats stay fresh after an edit: re-materialization patches the same d
 	expect(statsDocCount).toBe(1);
 });
 
+describe("search_paths", () => {
+	test.each(["😀", "\uffff"])("includes a %s folder in a scoped path search", async (suffix) => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: `scope/${suffix}folder`,
+		});
+		if (folder._nay) throw new Error(folder._nay.message);
+		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: folder._yay.nodeId,
+			filename: "needle.png",
+			contentType: "image/png",
+			size: 1,
+		});
+		if (upload._nay) throw new Error(upload._nay.message);
+		const path = `/scope/${suffix}folder/needle.png`;
+		for (const pathPrefix of [undefined, "/scope"]) {
+			const result = await t.query(internal.files_nodes.search_paths, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				visibilityUserId: db.userId,
+				pathQuery: path,
+				numItems: 50,
+				cursor: null,
+				kind: "file",
+				pathPrefix,
+			});
+			expect(result.items.map((item) => item.path)).toEqual([path]);
+		}
+	});
+});
+
+describe("text_search_files", () => {
+	test.each(["😀", "\uffff"])("includes a %s descendant and excludes a sibling prefix", async (suffix) => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		await t.run((ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		test_setup_r2_capture();
+		const path = `/scope/${suffix}folder/inside.md`;
+		await test_materialize_markdown_file(t, asUser, db, path, "prefixneedle");
+		await test_materialize_markdown_file(t, asUser, db, "/scope-other/outside.md", "prefixneedle");
+		for (const pathPrefix of [undefined, "/scope"]) {
+			const result = await asUser.query(internal.files_nodes.text_search_files, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: db.userId,
+				hasWorkspaceRead: true,
+				query: "prefixneedle",
+				numItems: 50,
+				cursor: null,
+				pathPrefix,
+			});
+			expect(new Set(result.items.map((item) => item.path))).toEqual(
+				new Set(pathPrefix === undefined ? [path, "/scope-other/outside.md"] : [path]),
+			);
+		}
+	});
+});
+
 test("text_search_files scopes to a path prefix without sibling-prefix leakage and limits after filtering", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));

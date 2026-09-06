@@ -15,7 +15,11 @@ import { organizations_db_get_membership } from "./organizations.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
-import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import {
+	path_tree_prefix_upper_bound,
+	server_convex_get_user_fallback_to_anonymous,
+	string_prefix_upper_bound,
+} from "../server/server-utils.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import {
 	files_metadata_FRONTMATTER_FIELD_PREFIX,
@@ -305,36 +309,6 @@ function tree_path_from_path(path: string) {
 	return path === "/" ? "/" : `${path.replace(/\/+$/u, "")}/`;
 }
 
-/**
- * Exclusive upper bound of a subtree scan. A tree path prefix ends in `/`, and `0` is the next
- * character after `/`, so `>= "/docs/" && < "/docs0"` covers every descendant of `/docs` and
- * nothing else. `\uffff` would miss paths with characters above the Basic Multilingual Plane.
- */
-function tree_path_upper_bound(treePathPrefix: string) {
-	return `${treePathPrefix.slice(0, -1)}0`;
-}
-
-/**
- * Exclusive upper bound of a string prefix scan. Convex sorts strings by their UTF-8 bytes, which
- * is code point order, so the last code point of the prefix goes up by one: `>= "op" && < "oq"`
- * covers `open` and `op😀`. `${prefix}\uffff` would miss a value whose next character is above the
- * Basic Multilingual Plane. The step skips the surrogate range, which no string holds. A prefix
- * that ends in the last code point carries into the one before it, and a prefix made of that code
- * point alone has no bound. The code points before it are joined back with `join("")`, not spread
- * into `String.fromCodePoint(...chars)`, because a spread of a long value throws a RangeError.
- */
-function string_prefix_upper_bound(prefix: string) {
-	const chars = [...prefix];
-	while (chars.length > 0) {
-		const last = chars.pop()!.codePointAt(0)!;
-		if (last < 0x10ffff) {
-			const next = last + 1 === 0xd800 ? 0xe000 : last + 1;
-			return chars.join("") + String.fromCodePoint(next);
-		}
-	}
-	return null;
-}
-
 function metadata_kind_from_qualified_field(qualifiedField: string) {
 	return qualifiedField.slice(0, qualifiedField.indexOf("."));
 }
@@ -442,7 +416,7 @@ function search_index_query(
 						.eq("docKind", "field")
 						.eq("qualifiedField", plan.qualifiedField);
 					return args.treePathPrefix
-						? base.gte("treePath", args.treePathPrefix).lt("treePath", tree_path_upper_bound(args.treePathPrefix))
+						? base.gte("treePath", args.treePathPrefix).lt("treePath", path_tree_prefix_upper_bound(args.treePathPrefix))
 						: base;
 				});
 		case "eq":
@@ -460,7 +434,7 @@ function search_index_query(
 							.eq("valueKind", "string")
 							.eq("stringValue", value);
 						return args.treePathPrefix
-							? base.gte("treePath", args.treePathPrefix).lt("treePath", tree_path_upper_bound(args.treePathPrefix))
+							? base.gte("treePath", args.treePathPrefix).lt("treePath", path_tree_prefix_upper_bound(args.treePathPrefix))
 							: base;
 					});
 			}
@@ -478,7 +452,7 @@ function search_index_query(
 							.eq("valueKind", "number")
 							.eq("numberValue", value);
 						return args.treePathPrefix
-							? base.gte("treePath", args.treePathPrefix).lt("treePath", tree_path_upper_bound(args.treePathPrefix))
+							? base.gte("treePath", args.treePathPrefix).lt("treePath", path_tree_prefix_upper_bound(args.treePathPrefix))
 							: base;
 					});
 			}
@@ -496,7 +470,7 @@ function search_index_query(
 							.eq("valueKind", "boolean")
 							.eq("booleanValue", value);
 						return args.treePathPrefix
-							? base.gte("treePath", args.treePathPrefix).lt("treePath", tree_path_upper_bound(args.treePathPrefix))
+							? base.gte("treePath", args.treePathPrefix).lt("treePath", path_tree_prefix_upper_bound(args.treePathPrefix))
 							: base;
 					});
 			}
@@ -591,7 +565,7 @@ function search_query(
 		query = query.filter((q) =>
 			q.and(
 				q.gte(q.field("treePath"), treePathPrefix),
-				q.lt(q.field("treePath"), tree_path_upper_bound(treePathPrefix)),
+				q.lt(q.field("treePath"), path_tree_prefix_upper_bound(treePathPrefix)),
 			),
 		);
 	}

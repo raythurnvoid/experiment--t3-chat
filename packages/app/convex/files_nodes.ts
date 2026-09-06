@@ -26,6 +26,8 @@ import {
 	server_path_normalize,
 	server_convex_get_user_fallback_to_anonymous,
 	path_join,
+	path_tree_prefix_upper_bound,
+	string_prefix_upper_bound,
 } from "../server/server-utils.ts";
 import { v } from "convex/values";
 import {
@@ -1730,7 +1732,7 @@ export type files_nodes_create_folder_node_by_path_Result =
 
 /**
  * Delete one bounded batch of a subtree: range-scan `files_nodes` by `treePath` over
- * `[prefix, prefix + "￿")` and, for each node, delete its committed chunks, `file_stats`,
+ * `[prefix, path_tree_prefix_upper_bound(prefix))` and, for each node, delete its committed chunks, `file_stats`,
  * metadata docs, and R2 asset (object + doc, gated on `r2Key`) BEFORE the node doc itself, so a
  * crash never orphans children. Asset and node deletion are one budget unit pair so a node never
  * commits with a missing asset reference. Callers drive this to `done: true` by calling repeatedly.
@@ -1746,7 +1748,7 @@ export async function files_nodes_db_delete_subtree_batch(
 	},
 ) {
 	const lower = args.treePathPrefix;
-	const upper = `${args.treePathPrefix}￿`;
+	const upper = path_tree_prefix_upper_bound(lower);
 
 	let deletedCount = 0;
 	while (deletedCount < args.batchSize) {
@@ -5647,7 +5649,7 @@ export const list_subtree = internalQuery({
 
 		const normalizedPath = server_path_normalize(args.folderPath);
 		const lowerBound = derive_tree_path_for_file_node(normalizedPath, "folder");
-		const upperBound = `${lowerBound}\uffff`;
+		const upperBound = path_tree_prefix_upper_bound(lowerBound);
 		const baseDepth = files_path_depth(normalizedPath);
 		const minAbsoluteDepth = args.minDepth == null ? null : baseDepth + args.minDepth;
 		const maxAbsoluteDepth = args.maxDepth == null ? null : baseDepth + args.maxDepth;
@@ -5697,9 +5699,11 @@ export const list_subtree = internalQuery({
 			// still bounds sparse matches.
 			filteredQuery = filteredQuery.filter((q) =>
 				q.or(
-					...contentTypePrefixes.map((prefix) =>
-						q.and(q.gte(q.field("contentType"), prefix), q.lt(q.field("contentType"), `${prefix}\uffff`)),
-					),
+					...contentTypePrefixes.map((prefix) => {
+						const lower = q.gte(q.field("contentType"), prefix);
+						const upperBound = string_prefix_upper_bound(prefix);
+						return upperBound === null ? lower : q.and(lower, q.lt(q.field("contentType"), upperBound));
+					}),
 				),
 			);
 		}
@@ -5809,11 +5813,14 @@ export const search_paths = internalQuery({
 		});
 		// Subtree scope rides a post-index `.filter()` (search filterFields are equality-only, so a
 		// prefix range cannot ride the index): numItems counts docs that pass the filter, so pages
-		// fill with descendants instead of thinning, and the `\uffff` upper bound keeps a
+		// fill with descendants instead of thinning, and the tree prefix upper bound keeps a
 		// sibling-prefix folder like /foo-bar out of a /foo scope.
 		if (pathPrefixFilter != null) {
 			searchQuery = searchQuery.filter((q) =>
-				q.and(q.gte(q.field("treePath"), pathPrefixFilter), q.lt(q.field("treePath"), `${pathPrefixFilter}\uffff`)),
+				q.and(
+					q.gte(q.field("treePath"), pathPrefixFilter),
+					q.lt(q.field("treePath"), path_tree_prefix_upper_bound(pathPrefixFilter)),
+				),
 			);
 		}
 
@@ -7835,7 +7842,7 @@ function db_text_search_filtered_query(
 	const rawPrefix = args.pathPrefix?.trim();
 	const scopePrefix = rawPrefix && rawPrefix !== "/" ? `/${rawPrefix.replace(/^\/+|\/+$/gu, "")}` : null;
 	const scopedLowerBound = scopePrefix === null ? "/" : `${scopePrefix}/`;
-	const scopedUpperBound = `${scopedLowerBound}\uffff`;
+	const scopedUpperBound = path_tree_prefix_upper_bound(scopedLowerBound);
 
 	let searchQuery = ctx.db
 		.query("files_plain_text_chunks")

@@ -115,6 +115,7 @@ When polishing Convex modules:
 
 Shared modules should stay runtime-portable and direct.
 
+- Use `shared/` for code used by both the browser and backend. Helpers used only by the backend belong in `server/`, even when they are runtime-portable.
 - Keep exported types/functions limited to real cross-module API.
 - Keep parser normalization or coercion narrow and documented when it differs from a strict external format.
 - Prefer explicit small helpers when they mark a boundary, such as extraction, normalization, parsing, or formatting.

@@ -605,14 +605,16 @@ Treat `.collect()` as a heavy read because it materializes the full result set i
 
 Do not use `prefix + "\uffff"` as a general upper bound for a string-prefix scan. `\uffff` is only the largest Basic Multilingual Plane code point. Valid strings can contain supplementary Unicode characters that sort above it, so that bound can silently omit matching docs.
 
-Use a real exclusive lexicographic successor for the stored key, or validate a restricted stored alphabet at the owning public boundary and derive the bound from that contract. The successor rule must be covered by tests for the full allowed alphabet before it becomes a shared helper or documented pattern.
+Use `string_prefix_upper_bound` from `packages/app/server/server-utils.ts` for valid Unicode strings in Convex's UTF-8 order. It skips surrogates and carries past trailing U+10FFFF characters. A `null` result means no upper bound: keep the lower bound and omit `.lt()`. Tests in `server/server-utils.test.ts` cover every Unicode scalar, carry cases, long strings, and prefix membership against `compareValues`. A private helper for a validated restricted prefix alphabet, such as `plugins_data.key_prefix_upper_bound`, can keep its simpler rule.
 
-For file-tree scans, query the materialized `files_nodes.treePath` key instead of raw `path`. Files and root store their canonical path, and non-root folders store `path + "/"`. Because a descendant prefix ends in `/`, its exclusive upper bound can replace that final slash with `0`: `treePath >= "/docs/" && treePath < "/docs0"`. The differing `/` and `0` characters decide the ordering before any descendant Unicode content, so the range includes the `/docs` folder and all descendants while excluding sibling-prefix paths such as `/docs-archive`.
+Cover the full allowed alphabet in tests before adding or changing a shared prefix rule.
+
+For file-tree scans, use `path_tree_prefix_upper_bound` from `packages/app/server/server-utils.ts`. Both prefix helpers have only backend callers, so they belong in `server/`. The tree prefix must already end in `/`; the helper does not normalize paths. Query the materialized `files_nodes.treePath` key: files and root store their canonical path, and non-root folders store `path + "/"`. The helper replaces the final slash with `0`: `treePath >= "/docs/" && treePath < "/docs0"`. This includes the `/docs` folder and all Unicode descendants while excluding sibling prefixes such as `/docs-archive`. Root `/` has upper bound `0`. File-only text chunks store raw file paths, so their scoped search uses the same slash-ending prefix and bound.
 
 This only works on regular indexes. Search indexes (`withSearchIndex`) accept exactly one `.search()` plus `.eq()` on `filterFields` — equality only, no `gte`/`lt` — so a prefix constraint on a full-text query cannot ride the search index. Express the same range as a post-index `.filter()` instead (see the next section for what `.filter()` does to pagination):
 
 ```ts
-const treePathUpperBound = `${treePathPrefix.slice(0, -1)}0`;
+const treePathUpperBound = path_tree_prefix_upper_bound(treePathPrefix);
 
 const results = await ctx.db
 	.query("files_nodes")
@@ -631,7 +633,7 @@ const results = await ctx.db
 	);
 ```
 
-Apply this bound when fixing `files_nodes.search_paths`; do not copy its current `\uffff` bound.
+Keep both emoji and U+FFFF suffix cases in query regression tests. In `convex-test` 0.0.53, index ranges use UTF-8 `compareValues`, but `.filter()` comparisons use JavaScript's UTF-16 order. That can hide an emoji failure seen in Convex. U+FFFF suffix cases expose the old bound in both orders. Do not change production behavior to match the test mock.
 
 ## Pagination: `.filter()` semantics, short pages, and empty pages
 

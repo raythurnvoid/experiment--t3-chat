@@ -157,6 +157,32 @@ export function path_join(parentPath: string, pathSegment: string): string {
 	return parentPath === "/" ? `/${pathSegment}` : `${parentPath}/${pathSegment}`;
 }
 
+/**
+ * Exclusive upper bound for a tree prefix ending in `/`, including the root `/`.
+ * Replacing `/` with `0` includes all Unicode descendants and excludes sibling prefixes.
+ */
+export function path_tree_prefix_upper_bound(treePathPrefix: string) {
+	return `${treePathPrefix.slice(0, -1)}0`;
+}
+
+/**
+ * Exclusive upper bound for a valid Unicode prefix in UTF-8 order.
+ * Skip the surrogate range and carry past trailing U+10FFFF characters.
+ * Empty prefixes and prefixes made only of U+10FFFF have no upper bound.
+ * Use join instead of spreading code points into a call, which fails on long strings.
+ */
+export function string_prefix_upper_bound(prefix: string) {
+	const chars = [...prefix];
+	while (chars.length > 0) {
+		const last = chars.pop()!.codePointAt(0)!;
+		if (last < 0x10ffff) {
+			const next = last + 1 === 0xd800 ? 0xe000 : last + 1;
+			return chars.join("") + String.fromCodePoint(next);
+		}
+	}
+	return null;
+}
+
 export function json_parse_and_validate<T>(json: string, schema: z.ZodSchema<T>) {
 	try {
 		const value = JSON.parse(json);

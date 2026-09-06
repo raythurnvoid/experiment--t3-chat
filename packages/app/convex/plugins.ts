@@ -46,7 +46,7 @@ import {
 } from "../shared/organizations.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { github_fetch_repo_head, github_fetch_with_retry, github_raw_url } from "../server/github.ts";
-import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
+import { path_tree_prefix_upper_bound, server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import {
 	crypto_decrypt_secret_value,
 	crypto_encrypt_secret_value,
@@ -5931,14 +5931,6 @@ export const run_installation_on_files = internalMutation({
 });
 
 /**
- * Delete one bounded batch of a GLOBAL/PLUGINS files tree: range-scan `files_nodes` by `treePath`
- * over `[treePathPrefix, treePathPrefix + "\uffff")`, and for each node delete its committed chunks,
- * `file_stats`, metadata docs (defensive), and R2 asset (object + doc, gated on `r2Key`) BEFORE the
- * node doc itself, so a crash never orphans children. Asset and node deletion are one budget unit
- * pair so a node never commits with a missing asset reference. Mirrors
- * `github_mounts.clear_pending_root_batch`, minus the sync-run supersede gate.
- */
-/**
  * Delete one bounded batch of a plugin version's source tree (`/<pluginVersionId>/...` in the
  * reserved `GLOBAL`/`PLUGINS` scope). Drive to `done:true` by calling repeatedly.
  */
@@ -6142,7 +6134,7 @@ export const preview_hard_delete_registered_plugin = internalQuery({
 								.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
 								.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
 								.gte("treePath", `/${version._id}/`)
-								.lt("treePath", `/${version._id}/\uffff`),
+								.lt("treePath", path_tree_prefix_upper_bound(`/${version._id}/`)),
 						)
 						.take(limit),
 				)

@@ -642,7 +642,7 @@ const app_convex_schema = defineSchema({
 		 * Materialized subtree scan key used only for ordered tree range queries.
 		 *
 		 * Files and root use their canonical `path`. Non-root folders use `path + "/"`, so a range like
-		 * `treePath >= "/docs/" && treePath < "/docs/\uffff"` returns `/docs` first
+		 * `treePath >= "/docs/" && treePath < "/docs0"` returns `/docs` first
 		 * followed by descendants, while excluding sibling-prefix paths such as `/docs-archive`.
 		 */
 		treePath: v.string(),
