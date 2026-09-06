@@ -1165,8 +1165,8 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	// Short neutral helper describing what accepting does, always visible. Deleted wins over
 	// everything (a delete supersedes the doc's other aspects). The replace indicator wins the
 	// next slot: a move onto an occupied destination archives that file, so mark it as Replaced.
-	// Replace-moves and non-eager-created copies replace the target's content (a replace-move also
-	// archives the source). Plain edits show Modified.
+	// Copy and replacement rows also show Replaced: accepting them installs a whole-file replacement
+	// (content and type). Plain edits show Modified.
 	const caption =
 		kind === "delete"
 			? "Deleted"

@@ -232,7 +232,7 @@ Fixture recipe: see "Non-Collaborative File Fixture" in `files.md`.
 - For pointer QA, scope the row by its path link and click the first button inside its `summary`. Do not click the middle of `.FileEditorSidebarPending-item-summary`; the nested path link or action buttons may receive that click.
 - For keyboard QA, focus the row's native `summary` and press `Enter`, then `Space`, in separate observe-act-observe steps. Verify each key toggles the preview, the path link and `Accept` / `Discard` buttons keep their accessible names, and the browser logs stay clean.
 - Editable Markdown delete rows use the same expandable preview and prefetch their committed content. Binary and folder delete rows are plain rows with no chevron because there is no text diff to show.
-- Per-item actions, scoped to the row, are `Accept` and `Discard`. `Accept` applies a pure move directly; content and copy rows save the accepted content; mixed rows apply the move before saving content. The same `All changes` guard protects hidden dependent rows.
+- Per-item actions, scoped to the row, are `Accept` and `Discard`. `Accept` applies a pure move directly; content rows save the accepted content; copy rows install the whole-file replacement (content, type, shape, and collaboration mode); mixed rows apply the move before saving content. The same `All changes` guard protects hidden dependent rows.
 - `Discard` removes the proposal or restores the committed path/content as required by its kind. Assert the reactive `list_files_pending_updates` result through list membership rather than a fixed index.
 - Bulk actions are `Accept all` and `Discard all`.
 

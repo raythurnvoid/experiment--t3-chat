@@ -8276,31 +8276,7 @@ describe("non-collaborative files", () => {
 			name: "Restore Non-Collaborative User",
 			email: "restore-non-collaborative@example.com",
 		});
-		const r2Objects = new Map<string, BodyInit>();
-		generateUploadUrlSpy.mockImplementation(async (customKey?: string) => {
-			const key = customKey ?? "test-upload-key";
-			return { key, url: `https://r2.test/upload?key=${encodeURIComponent(key)}` };
-		});
-		vi.spyOn(R2.prototype, "getUrl").mockImplementation(
-			async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
-		);
-		vi.stubGlobal(
-			"fetch",
-			vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-				const urlString = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
-				if (urlString.startsWith("https://r2.test/upload?key=") && init?.method === "PUT") {
-					const key = decodeURIComponent(urlString.slice("https://r2.test/upload?key=".length));
-					r2Objects.set(key, init.body ?? "");
-					return new Response(null, { status: 200 });
-				}
-				if (urlString.startsWith("https://r2.test/object?key=")) {
-					const key = decodeURIComponent(urlString.slice("https://r2.test/object?key=".length));
-					const body = r2Objects.get(key);
-					return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { status: 200 });
-				}
-				return new Response(null, { status: 404 });
-			}),
-		);
+		const r2Objects = test_setup_r2_capture();
 
 		const currentText = "- [x] done\n";
 		const { nodeId, assetId } = await seed_non_collaborative_file(t, db, "/todo.txt", currentText);
@@ -11212,35 +11188,7 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 		name: "Restore R2 User",
 		email: "restore-r2-user@example.com",
 	});
-	const r2Objects = new Map<string, BodyInit>();
-	generateUploadUrlSpy.mockImplementation(async (customKey?: string) => {
-		const key = customKey ?? "test-upload-key";
-		return {
-			key,
-			url: `https://r2.test/upload?key=${encodeURIComponent(key)}`,
-		};
-	});
-	vi.spyOn(R2.prototype, "getUrl").mockImplementation(
-		async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
-	);
-	vi.stubGlobal(
-		"fetch",
-		vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-			const urlString = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
-			if (urlString.startsWith("https://r2.test/upload?key=") && init?.method === "PUT") {
-				const key = decodeURIComponent(urlString.slice("https://r2.test/upload?key=".length));
-				r2Objects.set(key, init.body ?? "");
-				return new Response(null, { status: 200 });
-			}
-			if (urlString.startsWith("https://r2.test/object?key=")) {
-				const key = decodeURIComponent(urlString.slice("https://r2.test/object?key=".length));
-				const body = r2Objects.get(key);
-				return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { status: 200 });
-			}
-
-			return new Response(null, { status: 404 });
-		}),
-	);
+	const r2Objects = test_setup_r2_capture();
 
 	const createdFile = await asUser.action(internal.files_nodes_content.create_file_by_path, {
 		organizationId: db.organizationId,
@@ -11340,36 +11288,6 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 });
 
 describe("restore_snapshot_r2 whole-file restore", () => {
-	// An in-memory bucket: signed PUTs store the body, signed GETs read it back.
-	function stub_r2_bucket() {
-		const r2Objects = new Map<string, BodyInit>();
-		generateUploadUrlSpy.mockImplementation(async (customKey?: string) => {
-			const key = customKey ?? "test-upload-key";
-			return { key, url: `https://r2.test/upload?key=${encodeURIComponent(key)}` };
-		});
-		vi.spyOn(R2.prototype, "getUrl").mockImplementation(
-			async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
-		);
-		vi.stubGlobal(
-			"fetch",
-			vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
-				const urlString = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
-				if (urlString.startsWith("https://r2.test/upload?key=") && init?.method === "PUT") {
-					const key = decodeURIComponent(urlString.slice("https://r2.test/upload?key=".length));
-					r2Objects.set(key, init.body ?? "");
-					return new Response(null, { status: 200 });
-				}
-				if (urlString.startsWith("https://r2.test/object?key=")) {
-					const key = decodeURIComponent(urlString.slice("https://r2.test/object?key=".length));
-					const body = r2Objects.get(key);
-					return body === undefined ? new Response(null, { status: 404 }) : new Response(body, { status: 200 });
-				}
-				return new Response(null, { status: 404 });
-			}),
-		);
-		return r2Objects;
-	}
-
 	// A version row that recorded the type, shape, and collaboration mode of its content.
 	async function seed_version(
 		t: ReturnType<typeof test_convex>,
@@ -11443,7 +11361,7 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 			name: "Restore Shape User",
 			email: "restore-shape-user@example.com",
 		});
-		const r2Objects = stub_r2_bucket();
+		const r2Objects = test_setup_r2_capture();
 
 		const createdFile = await asUser.action(internal.files_nodes_content.create_file_by_path, {
 			organizationId: db.organizationId,
@@ -11486,7 +11404,11 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 			const lastSequence = node?.yjsLastSequenceId
 				? await ctx.db.get("files_yjs_docs_last_sequences", node.yjsLastSequenceId)
 				: null;
-			return { assetId: node?.assetId, yjsSnapshotId: node?.yjsSnapshotId, generation: lastSequence?.lineageGeneration };
+			return {
+				assetId: node?.assetId,
+				yjsSnapshotId: node?.yjsSnapshotId,
+				generation: lastSequence?.lineageGeneration,
+			};
 		});
 
 		const versionText = "plain version\nline two\n";
@@ -11541,7 +11463,8 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 		// current, and the restored content as the newest row.
 		const versions = await read_versions(t, nodeId);
 		const backup = versions.find(
-			(row) => row.assetId !== before.assetId && row.r2Key !== undefined && r2Objects.get(row.r2Key) === currentMarkdown,
+			(row) =>
+				row.assetId !== before.assetId && row.r2Key !== undefined && r2Objects.get(row.r2Key) === currentMarkdown,
 		);
 		expect(backup).toMatchObject({ contentType: "text/markdown;charset=utf-8", yjsRootKind: "rich_text" });
 		expect(versions.find((row) => row.assetId === after.assetId)).toMatchObject({
@@ -11560,7 +11483,7 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 			name: "Restore Stored User",
 			email: "restore-stored-user@example.com",
 		});
-		const r2Objects = stub_r2_bucket();
+		const r2Objects = test_setup_r2_capture();
 		const copyCalls: Array<{ sourceKey: string; destinationKey: string }> = [];
 		vi.spyOn(r2_server_side_copy, "copy_object").mockImplementation(async (_ctx, copyArgs) => {
 			copyCalls.push({ sourceKey: copyArgs.sourceKey, destinationKey: copyArgs.destinationKey });

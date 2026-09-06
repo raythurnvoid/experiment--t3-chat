@@ -3078,8 +3078,8 @@ type FilesSidebarUploadDraft = {
 	parentId: app_convex_Id<"files_nodes"> | typeof files_ROOT_ID;
 	filename: string;
 	contentType?: string;
-	/** The extension classifier's class for `filename`: rich text, plain text, or null for a stored upload. */
-	textClass: files_YjsRootKind | null;
+	/** The document shape the picked content type gives `filename`: rich text, plain text, or null for a stored upload. */
+	rootKind: files_YjsRootKind | null;
 	reason: "path_conflict" | "missing_extension";
 	conflict?: {
 		nodeId: app_convex_Id<"files_nodes">;
@@ -3108,9 +3108,9 @@ type FilesSidebarUploadConflictModal_Props = {
 };
 
 function get_upload_conflict_modal_state(args: { draft: FilesSidebarUploadDraft | null; filename: string }) {
-	const draftTextClass = args.draft?.textClass ?? null;
+	const draftRootKind = args.draft?.rootKind ?? null;
 	const normalizedFilenameResult =
-		draftTextClass === "rich_text"
+		draftRootKind === "rich_text"
 			? files_normalize_markdown_name(args.filename)
 			: { _yay: files_normalize_upload_file_name(args.filename) };
 	const normalizedFilename = normalizedFilenameResult?._yay ?? "";
@@ -3119,7 +3119,7 @@ function get_upload_conflict_modal_state(args: { draft: FilesSidebarUploadDraft 
 	// changes what the upload becomes. Any valid name is fine.
 	const invalidFilenameMessage =
 		normalizedFilenameResult?._nay?.message ??
-		(draftTextClass === null && !upload_filename_has_real_extension(normalizedFilename)
+		(draftRootKind === null && !upload_filename_has_real_extension(normalizedFilename)
 			? "Uploaded files must include a file extension."
 			: undefined);
 	const pathConflictMessage =
@@ -4224,21 +4224,21 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			parentId: app_convex_Id<"files_nodes"> | typeof files_ROOT_ID;
 			filename: string;
 			contentType?: string;
-			textClass: files_YjsRootKind | null;
+			rootKind: files_YjsRootKind | null;
 		}) => {
 			if (!treeItems) {
 				console.error(should_never_happen("[FilesSidebar.uploadFile] missing deps", { treeItems }));
 				return;
 			}
 
-			// A classified text upload always carries an extension; only stored uploads can miss one.
-			if (args.textClass === null && !upload_filename_has_real_extension(args.filename)) {
+			// A text upload always carries an extension; only stored uploads can miss one.
+			if (args.rootKind === null && !upload_filename_has_real_extension(args.filename)) {
 				setUploadDraft({
 					file: args.file,
 					parentId: args.parentId,
 					filename: args.filename,
 					contentType: args.contentType,
-					textClass: args.textClass,
+					rootKind: args.rootKind,
 					reason: "missing_extension",
 				});
 				return;
@@ -4268,7 +4268,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 							parentId: args.parentId,
 							filename: args.filename,
 							contentType: args.contentType,
-							textClass: args.textClass,
+							rootKind: args.rootKind,
 							reason: "path_conflict",
 							conflict: {
 								nodeId: existingNode.nodeId,
@@ -4306,9 +4306,9 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			// `.md` as octet-stream or `.ts` as video/mp2t, and that would store a text file as
 			// bytes. A name with no hint keeps the browser type, or none.
 			const contentType = files_guess_content_type_from_name(file.name) ?? (file.type || undefined);
-			const textClass = files_yjs_root_kind_of_content_type(contentType);
+			const rootKind = files_yjs_root_kind_of_content_type(contentType);
 			const filenameResult =
-				textClass === "rich_text"
+				rootKind === "rich_text"
 					? files_normalize_markdown_name(file.name)
 					: { _yay: files_normalize_upload_file_name(file.name) };
 			if (filenameResult._nay) {
@@ -4321,7 +4321,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				parentId: args.parentId,
 				filename: filenameResult._yay,
 				contentType,
-				textClass,
+				rootKind,
 			});
 		},
 	);
@@ -4599,7 +4599,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				parentId: itemData.parentId,
 				kind: itemData.kind,
 				nameOrPath: trimmedValue,
-				// A rename keeps whatever extension was typed; the class check below judges it.
+				// A rename keeps whatever extension was typed. The stored content type does not change.
 				fileNamePolicy: "keep_extension",
 			});
 
@@ -5506,7 +5506,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			parentId: uploadDraft.parentId,
 			filename,
 			contentType: uploadDraft.contentType,
-			textClass: uploadDraft.textClass,
+			rootKind: uploadDraft.rootKind,
 		});
 	});
 
@@ -5819,7 +5819,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			parentId: files_ROOT_ID,
 			filename,
 			contentType: "application/pdf",
-			textClass: files_yjs_root_kind_of_content_type(files_guess_content_type_from_name(filename) ?? undefined),
+			rootKind: files_yjs_root_kind_of_content_type(files_guess_content_type_from_name(filename) ?? undefined),
 			reason,
 			...(reason === "path_conflict"
 				? {

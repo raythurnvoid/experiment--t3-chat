@@ -19,6 +19,7 @@ import { convex_error, v_result } from "../server/convex-utils.ts";
 import app_convex_schema from "./schema.ts";
 import { api, internal } from "./_generated/api.js";
 import {
+	db_get_file_content_materialization_db_state,
 	files_db_yjs_push_update,
 	files_node_require_writable,
 	files_nodes_db_apply_pending_move,
@@ -34,9 +35,11 @@ import {
 	files_nodes_db_validate_pending_move_target_for_proposal,
 	authorize_leaving_restricted_scope,
 	files_yjs_NODE_NEEDS_REPAIR_MESSAGE,
+	file_content_materialization_state_validator,
 	type get_file_content_materialization_header_Result,
 	type get_file_next_yjs_update_Result,
 } from "./files_nodes.ts";
+import { files_nodes_reconstruct_latest_file_content_from_materialization_state } from "./files_nodes_reconstruct_content.ts";
 import { billing_event } from "../server/billing.ts";
 import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing_db.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
@@ -179,6 +182,13 @@ function files_pending_update_check_branch_doc_shape(args: { yjsDoc: YDoc; rootK
  * re-read before writing.
  */
 const PENDING_BASE_STALE_MESSAGE = "Pending update base is stale and must be rebuilt from the latest live file state";
+
+/**
+ * A text write onto a file whose pending row is a whole-file copy. The copy carries its own
+ * content type and shape. A text edit would drop them, so the write waits for the review.
+ */
+const PENDING_REPLACEMENT_BLOCKS_WRITE_MESSAGE =
+	"This file has a pending copy. Accept or discard the copy in Files before writing to the file.";
 
 /** Lifetime of one pending-state operation batch and everything staged under it. */
 const PENDING_OPERATION_BATCH_TTL_MS = 30 * 60 * 1000;
@@ -602,13 +612,17 @@ async function files_pending_update_db_replace_chunks(
 			? (args.rootKind ?? (files_node_has_editable_yjs_state(fileNode) ? fileNode.yjsRootKind : undefined))
 			: undefined;
 	if (!fileNode || rootKind === undefined) {
-		console.error("Failed to replace pending update chunks: fileNode is missing or mismatched", {
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			nodeId: args.nodeId,
-			pendingUpdateId: args.pendingUpdateId,
-			fileNode,
-		});
+		console.error(
+			"Failed to replace pending update chunks: fileNode is missing, mismatched, or has no document shape",
+			{
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				nodeId: args.nodeId,
+				pendingUpdateId: args.pendingUpdateId,
+				rootKind: args.rootKind,
+				fileNode,
+			},
+		);
 		return Result({ _yay: null });
 	}
 	const chunks =
@@ -2208,7 +2222,9 @@ export const cleanup_expired_pending_state_rows = internalMutation({
  * Settle a no-change content write: the branch texts match their base, so nothing new is
  * proposed. A doc under a move proposal degrades to move-only; any other doc is deleted. The
  * operation batch is always consumed. `expectedUpdatedAt` guards the race where the doc changed
- * after the action read it — a newer proposal must never be destroyed by a stale no-change.
+ * after the action read it — a newer proposal must never be destroyed by a stale no-change. Null
+ * means the action read no doc; a doc that appeared since then (a copy row, a newer write) is
+ * left alone too.
  */
 export const settle_file_pending_update_no_change_in_db = internalMutation({
 	args: {
@@ -2218,7 +2234,7 @@ export const settle_file_pending_update_no_change_in_db = internalMutation({
 		nodeId: v.id("files_nodes"),
 		operationBatchId: v.id("files_pending_update_operation_batches"),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
-		expectedUpdatedAt: v.optional(v.number()),
+		expectedUpdatedAt: v.union(v.number(), v.null()),
 	},
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
@@ -2260,10 +2276,13 @@ export const settle_file_pending_update_no_change_in_db = internalMutation({
 		if (!pendingUpdate) {
 			return Result({ _yay: null });
 		}
-		if (args.pendingUpdateId != null && pendingUpdate._id !== args.pendingUpdateId) {
-			return Result({ _yay: null });
-		}
-		if (args.expectedUpdatedAt !== undefined && pendingUpdate.updatedAt !== args.expectedUpdatedAt) {
+		// Only the exact doc the action read. When the action read no doc, any doc that exists now
+		// was made by a concurrent operation, and a stale no-change must not delete it.
+		if (
+			args.expectedUpdatedAt === null ||
+			(args.pendingUpdateId != null && pendingUpdate._id !== args.pendingUpdateId) ||
+			pendingUpdate.updatedAt !== args.expectedUpdatedAt
+		) {
 			return Result({ _yay: null });
 		}
 
@@ -2690,22 +2709,12 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 			});
 		} else {
 			pendingUpdateId = existingPendingUpdate._id;
-			// The newest intent wins: a text write after a whole-file copy replaces the copy, and
-			// the copy's staged object is released.
-			if (existingPendingUpdate.pendingReplacement) {
-				await files_pending_update_db_release_replacement_asset(ctx, {
-					organizationId: args.organizationId,
-					workspaceId: args.workspaceId,
-					assetId: existingPendingUpdate.pendingReplacement.assetId,
-				});
-			}
 			await ctx.db.patch("files_pending_updates", pendingUpdateId, {
 				baseYjsSequence: args.baseYjsSequence,
 				baseLineageGeneration: args.baseLineageGeneration,
 				baseStateId: args.baseStateId,
 				stagedStateId: args.stagedStateId,
 				unstagedStateId: args.unstagedStateId,
-				pendingReplacement: undefined,
 				// The newest structural intent wins: a later cp re-records where the content comes from.
 				...(args.copiedFrom ? { copiedFrom: args.copiedFrom } : {}),
 				// Never overwrite an existing eagerCreated: its committedSequence stamp must stay immutable.
@@ -2832,6 +2841,14 @@ async function action_upsert_file_pending_update(
 	) {
 		await retireBatch();
 		return Result({ _nay: { message: "Pending changes were revised, review the latest version" } });
+	}
+
+	// A copy row carries the source's content type and shape. A text edit on top of it would turn
+	// it into a plain edit in the file's old shape and silently drop that type, so the write waits
+	// until the copy is accepted or discarded.
+	if (existingPendingUpdate?.pendingReplacement) {
+		await retireBatch();
+		return Result({ _nay: { message: PENDING_REPLACEMENT_BLOCKS_WRITE_MESSAGE } });
 	}
 
 	if (!data.textInputRoles.includes("unstaged")) {
@@ -2979,7 +2996,7 @@ async function action_upsert_file_pending_update(
 			nodeId: args.nodeId,
 			operationBatchId: args.operationBatchId,
 			pendingUpdateId: existingPendingUpdate?._id,
-			expectedUpdatedAt: existingPendingUpdate?.updatedAt,
+			expectedUpdatedAt: existingPendingUpdate?.updatedAt ?? null,
 		})) as settle_file_pending_update_no_change_in_db_Result;
 		if (settled._nay) {
 			await retireBatch();
@@ -5836,6 +5853,13 @@ export const save_file_pending_update = action({
 export const files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE =
 	"The file changed after this copy was proposed. Discard the copy and copy again.";
 
+/**
+ * Accept refuses when an edit reached the document while it ran. The copy is still valid, so
+ * the user only needs to accept it again, and that run keeps the edit as a version.
+ */
+export const files_PENDING_REPLACEMENT_EDITED_DURING_ACCEPT_MESSAGE =
+	"The file was edited while the copy was being accepted. Accept the copy again.";
+
 const PENDING_REPLACEMENT_SOURCE_CHANGED_MESSAGE = "The source file changed while it was being copied. Copy again.";
 
 /**
@@ -6168,6 +6192,7 @@ export const commit_file_pending_replacement_in_db = internalMutation({
 		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
+
 		const refuse = async (message: string) => {
 			await files_pending_update_db_release_replacement_asset(ctx, {
 				organizationId: args.organizationId,
@@ -6186,6 +6211,7 @@ export const commit_file_pending_replacement_in_db = internalMutation({
 		) {
 			return await refuse("Not found");
 		}
+
 		if (
 			!(await access_control_db_can_act_on_file_node(ctx, {
 				organizationId: args.organizationId,
@@ -6197,10 +6223,12 @@ export const commit_file_pending_replacement_in_db = internalMutation({
 		) {
 			return await refuse("Permission denied");
 		}
+
 		const nodeWritable = files_node_require_writable(file);
 		if (nodeWritable._nay) {
 			return await refuse(nodeWritable._nay.message);
 		}
+
 		if (file.assetId !== args.replacement.baseAssetId) {
 			return await refuse(files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE);
 		}
@@ -6332,6 +6360,11 @@ export const commit_file_pending_replacement_in_db = internalMutation({
 	},
 });
 
+/**
+ * Everything the accept action reads before it uploads: the file, the copy row, the staged
+ * object's key, and the document state of a collaborative file, whose latest text is kept as a
+ * version. Null when the file, the copy row, its staged object, or the permission is gone.
+ */
 export const get_data_for_pending_replacement_accept = internalQuery({
 	args: {
 		organizationId: v.id("organizations"),
@@ -6345,6 +6378,7 @@ export const get_data_for_pending_replacement_accept = internalQuery({
 			fileNode: doc(app_convex_schema, "files_nodes"),
 			pendingUpdate: doc(app_convex_schema, "files_pending_updates"),
 			stagedAssetR2Key: v.string(),
+			materializationState: v.union(file_content_materialization_state_validator, v.null()),
 		}),
 		v.null(),
 	),
@@ -6390,7 +6424,14 @@ export const get_data_for_pending_replacement_accept = internalQuery({
 			return null;
 		}
 
-		return { fileNode, pendingUpdate, stagedAssetR2Key: stagedAsset.r2Key };
+		// Null for a file with no document: stored bytes, or collaboration turned off.
+		const materializationState = await db_get_file_content_materialization_db_state(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			nodeId: args.nodeId,
+		});
+
+		return { fileNode, pendingUpdate, stagedAssetR2Key: stagedAsset.r2Key, materializationState };
 	},
 });
 
@@ -6403,6 +6444,10 @@ type get_data_for_pending_replacement_accept_Result =
 		? Awaited<ReturnValue>
 		: never;
 
+/**
+ * The result of `finalize_file_pending_replacement` in files_nodes_content.ts, written by hand.
+ * That module imports this one, so importing its type back would make a cycle.
+ */
 type finalize_file_pending_replacement_Result =
 	| { _yay: null; _nay?: undefined }
 	| { _yay?: undefined; _nay: { name?: string; message: string } };
@@ -6431,17 +6476,21 @@ async function action_accept_file_pending_replacement(
 	if (!data) {
 		return Result({ _nay: { message: "Not found" } });
 	}
+
 	const replacement = data.pendingUpdate.pendingReplacement;
 	if (!replacement) {
 		return Result({ _nay: { message: "Not found" } });
 	}
+
 	const writable = files_node_require_writable(data.fileNode);
 	if (writable._nay) {
 		return writable;
 	}
+
 	if (data.fileNode.assetId !== replacement.baseAssetId) {
 		return Result({ _nay: { message: files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE } });
 	}
+
 	const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
 		userId: args.userId,
 		organizationId: args.organizationId,
@@ -6556,6 +6605,46 @@ async function action_accept_file_pending_replacement(
 		};
 	}
 
+	// The latest text of a collaborative file may still live only in its document. Keep it as a
+	// version, so the edits the copy replaces stay in history. When the document has no edit past
+	// its snapshot, the current asset already is the newest version row, and a backup would only
+	// repeat it.
+	const yjsState = data.materializationState;
+	let backup: { assetId: Id<"files_r2_assets">; size: number } | undefined;
+	if (yjsState && yjsState.yjsLastSequenceDoc.lastSequence > yjsState.yjsSnapshotDoc.sequence) {
+		const currentContent = await files_nodes_reconstruct_latest_file_content_from_materialization_state({
+			state: yjsState,
+		});
+		// Unlike the restore path, refuse instead of throwing: the copy stays pending, so the user
+		// can discard it and the file keeps its current content.
+		if (currentContent._nay) {
+			console.error("Failed to reconstruct the current file content before accepting a copy", {
+				error: currentContent._nay,
+				nodeId: args.nodeId,
+				pendingUpdateId: args.pendingUpdateId,
+			});
+			await cleanup_uploads();
+			return Result({ _nay: { message: currentContent._nay.message } });
+		}
+		const text = currentContent._yay.text;
+		const size = files_get_utf8_byte_size(text);
+		backup = {
+			assetId: await upload_asset({
+				kind: "content_snapshot",
+				body: text,
+				size,
+				contentType: files_editable_text_content_type_of(data.fileNode.contentType) ?? "application/octet-stream",
+			}),
+			size,
+		};
+	}
+
+	// The document's last-sequence token the query read. The final mutation refuses when an edit
+	// moved it, because that edit would be in neither the backup nor the history.
+	const expectedYjsLastSequence = yjsState
+		? { id: yjsState.yjsLastSequenceDoc._id, lastSequence: yjsState.yjsLastSequenceDoc.lastSequence }
+		: undefined;
+
 	const finalized = (await ctx.runMutation(internal.files_nodes_content.finalize_file_pending_replacement, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
@@ -6564,6 +6653,8 @@ async function action_accept_file_pending_replacement(
 		pendingUpdateId: args.pendingUpdateId,
 		expectedUpdatedAt: data.pendingUpdate.updatedAt,
 		stagedAssetId: replacement.assetId,
+		...(expectedYjsLastSequence ? { expectedYjsLastSequence } : {}),
+		...(backup ? { backup } : {}),
 		contentType: replacement.contentType,
 		...content,
 	})) as finalize_file_pending_replacement_Result;

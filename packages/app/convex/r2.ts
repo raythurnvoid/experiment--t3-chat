@@ -994,7 +994,7 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 }
 
 // Renamed from `finalize_markdown_file_node_from_r2_assets` when the upload conversion
-// generalized to every editable text class.
+// generalized to every editable text type.
 export const finalize_text_file_node_from_r2_assets = internalMutation({
 	args: {
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
@@ -1149,8 +1149,8 @@ export const finalize_uploaded_text_file = internalAction({
 		// the gate's. A non-text type stays a stored blob, which must dispatch the plugin event
 		// like any other stored upload.
 		const rootKind = files_yjs_root_kind_of_content_type(fileNode.contentType);
-		const classifierContentType = files_editable_text_content_type_of(fileNode.contentType);
-		if (rootKind === null || classifierContentType === null) {
+		const editableTextContentType = files_editable_text_content_type_of(fileNode.contentType);
+		if (rootKind === null || editableTextContentType === null) {
 			await ctx.runMutation(internal.r2.settle_upload_conversion_fallback, {
 				assetId: asset._id,
 				eventId: args.eventId,
@@ -1289,7 +1289,7 @@ export const finalize_uploaded_text_file = internalAction({
 			r2_put_object(ctx, {
 				key: versionSnapshotR2Key,
 				body: text,
-				contentType: classifierContentType,
+				contentType: editableTextContentType,
 			}),
 		]);
 
@@ -1299,7 +1299,7 @@ export const finalize_uploaded_text_file = internalAction({
 			fileNodeId: fileNode._id,
 			userId: r2_require_real_author(fileNode.createdBy),
 			rootKind,
-			contentType: classifierContentType,
+			contentType: editableTextContentType,
 			yjsSnapshot:
 				yjsSnapshotAssetId === null ? null : { assetId: yjsSnapshotAssetId, size: snapshotUpdate._yay.byteLength },
 			versionSnapshotAssetId,

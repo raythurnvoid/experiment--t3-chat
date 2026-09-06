@@ -1198,10 +1198,10 @@ describe("FileEditorSidebarPending", () => {
 		expect(container.querySelector("details")).toBeTruthy();
 	});
 
-	test("replace-copy row shows the Replaced caption without the green path", () => {
+	test("copy row shows the Replaced caption without the green path", () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({
-				id: "pu_replace_copy",
+				id: "pu_copy",
 				fileNodeId: "node_a",
 				staged: "s",
 				unstaged: "u",

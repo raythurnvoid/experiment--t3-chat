@@ -4592,7 +4592,7 @@ describe("save_file_pending_update", () => {
 			}),
 		);
 		if (!secondRowBefore) {
-			throw new Error("Missing replace row before the stale save lands");
+			throw new Error("Missing copy row before the stale save lands");
 		}
 
 		// Tab A's Save click still carries proposal one's id: acting on the copy row would publish
@@ -6608,51 +6608,51 @@ describe("upsert_file_pending_move_in_db", () => {
 
 		// Direct mutation calls stand in for any future caller that skips the bash command's own
 		// checks: the proposal mutation itself must not judge the name against the type.
-		const richSeeded = await t.run(async (ctx) =>
+		const markdownSeeded = await t.run(async (ctx) =>
 			seed_file_with_markdown({
 				ctx,
-				path: "/class-rich.md",
-				name: "class-rich.md",
-				markdown: "# Class rich",
+				path: "/typed-rich.md",
+				name: "typed-rich.md",
+				markdown: "# Typed rich",
 			}),
 		);
-		const richCrossing = await upsert_file_pending_move_for_test({
+		const renamedToJson = await upsert_file_pending_move_for_test({
 			t,
-			organizationId: richSeeded.organizationId,
-			workspaceId: richSeeded.workspaceId,
-			userId: richSeeded.userId,
-			nodeId: richSeeded.nodeId,
+			organizationId: markdownSeeded.organizationId,
+			workspaceId: markdownSeeded.workspaceId,
+			userId: markdownSeeded.userId,
+			nodeId: markdownSeeded.nodeId,
 			destParentId: files_ROOT_ID,
-			destName: "class-rich.json",
+			destName: "typed-rich.json",
 		});
-		expect(richCrossing._nay).toBeUndefined();
+		expect(renamedToJson._nay).toBeUndefined();
 
 		// A stored file follows the same rule: the name is free, the type stays.
 		const uploadNodeId = await t.run(async (ctx) =>
 			ctx.db.insert("files_nodes", {
-				organizationId: richSeeded.organizationId,
-				workspaceId: richSeeded.workspaceId,
-				path: "/class-photo.png",
-				treePath: "/class-photo.png",
+				organizationId: markdownSeeded.organizationId,
+				workspaceId: markdownSeeded.workspaceId,
+				path: "/typed-photo.png",
+				treePath: "/typed-photo.png",
 				pathDepth: 1,
-				name: "class-photo.png",
+				name: "typed-photo.png",
 				kind: "file",
 				lowercaseExtension: "png",
 				contentType: "image/png",
 				parentId: files_ROOT_ID,
-				createdBy: richSeeded.userId,
-				updatedBy: richSeeded.userId,
+				createdBy: markdownSeeded.userId,
+				updatedBy: markdownSeeded.userId,
 				updatedAt: Date.now(),
 			}),
 		);
 		const relabeled = await upsert_file_pending_move_for_test({
 			t,
-			organizationId: richSeeded.organizationId,
-			workspaceId: richSeeded.workspaceId,
-			userId: richSeeded.userId,
+			organizationId: markdownSeeded.organizationId,
+			workspaceId: markdownSeeded.workspaceId,
+			userId: markdownSeeded.userId,
 			nodeId: uploadNodeId,
 			destParentId: files_ROOT_ID,
-			destName: "class-movie.mp4",
+			destName: "typed-movie.mp4",
 		});
 		expect(relabeled._nay).toBeUndefined();
 	});
@@ -12330,23 +12330,23 @@ describe("discard_file_pending_structural", () => {
 		});
 	});
 
-	test("keeps the node when discarding a replace-copy row", async () => {
+	test("keeps the destination node when discarding a copy row", async () => {
 		const t = test_convex();
 
 		const source = await t.run(async (ctx) =>
 			seed_file_with_markdown({
 				ctx,
-				path: "/discard-replace-copy-source.md",
-				name: "discard-replace-copy-source.md",
-				markdown: "# Replace copy source",
+				path: "/discard-copy-source.md",
+				name: "discard-copy-source.md",
+				markdown: "# Copy source",
 			}),
 		);
 		const dest = await t.run(async (ctx) =>
 			seed_file_with_markdown({
 				ctx,
-				path: "/discard-replace-copy-dest.md",
-				name: "discard-replace-copy-dest.md",
-				markdown: "# Replace copy dest base",
+				path: "/discard-copy-dest.md",
+				name: "discard-copy-dest.md",
+				markdown: "# Copy dest base",
 				membership: {
 					userId: source.userId,
 					organizationId: source.organizationId,
@@ -12363,7 +12363,7 @@ describe("discard_file_pending_structural", () => {
 			userId: dest.userId,
 			nodeId: dest.nodeId,
 			unstagedMarkdown: `${source.baseMarkdown}\n\nReplacement content`,
-			copiedFrom: { nodeId: source.nodeId, path: "/discard-replace-copy-source.md" },
+			copiedFrom: { nodeId: source.nodeId, path: "/discard-copy-source.md" },
 		});
 		if (upserted._nay) {
 			throw new Error(upserted._nay.message);
@@ -12385,7 +12385,7 @@ describe("discard_file_pending_structural", () => {
 		await t.run(async (ctx) => {
 			// Only the proposal row is dropped; the pre-existing node keeps its committed content.
 			const node = await ctx.db.get("files_nodes", dest.nodeId);
-			expect(node?.path).toBe("/discard-replace-copy-dest.md");
+			expect(node?.path).toBe("/discard-copy-dest.md");
 			const row = await read_pending_update_row({
 				ctx,
 				organizationId: dest.organizationId,
@@ -12397,23 +12397,23 @@ describe("discard_file_pending_structural", () => {
 		});
 	});
 
-	test("discarding a copy row keeps both files", async () => {
+	test("keeps both the source and the destination when discarding a copy row", async () => {
 		const t = test_convex();
 
 		const source = await t.run(async (ctx) =>
 			seed_file_with_markdown({
 				ctx,
-				path: "/discard-replace-move-source.md",
-				name: "discard-replace-move-source.md",
-				markdown: "# Replace move source",
+				path: "/discard-copy-keep-source.md",
+				name: "discard-copy-keep-source.md",
+				markdown: "# Copy keep source",
 			}),
 		);
 		const dest = await t.run(async (ctx) =>
 			seed_file_with_markdown({
 				ctx,
-				path: "/discard-replace-move-dest.md",
-				name: "discard-replace-move-dest.md",
-				markdown: "# Replace move dest base",
+				path: "/discard-copy-keep-dest.md",
+				name: "discard-copy-keep-dest.md",
+				markdown: "# Copy keep dest base",
 				membership: {
 					userId: source.userId,
 					organizationId: source.organizationId,
@@ -12430,7 +12430,7 @@ describe("discard_file_pending_structural", () => {
 			userId: dest.userId,
 			nodeId: dest.nodeId,
 			unstagedMarkdown: `${source.baseMarkdown}\n\nReplacement content`,
-			copiedFrom: { nodeId: source.nodeId, path: "/discard-replace-move-source.md" },
+			copiedFrom: { nodeId: source.nodeId, path: "/discard-copy-keep-source.md" },
 		});
 		if (upserted._nay) {
 			throw new Error(upserted._nay.message);
@@ -13311,7 +13311,7 @@ describe("structural rows on content collapse", () => {
 		expect(files_pending_update_has_yjs_content(row)).toBe(true);
 	});
 
-	test("content collapse degrades a replace-copy row with a move to a pure move", async () => {
+	test("content collapse degrades a copy row with a move to a pure move", async () => {
 		const t = test_convex();
 
 		const source = await t.run(async (ctx) =>
@@ -13920,23 +13920,23 @@ describe("remove_file_pending_update_if_expired structural rows", () => {
 		});
 	});
 
-	test("expiry deletes a replace-copy row but keeps the node", async () => {
+	test("expiry deletes a copy row but keeps the node", async () => {
 		const t = test_convex();
 
 		const source = await t.run(async (ctx) =>
 			seed_file_with_markdown({
 				ctx,
-				path: "/expire-replace-copy-source.md",
-				name: "expire-replace-copy-source.md",
-				markdown: "# Expire replace copy source",
+				path: "/expire-copy-source.md",
+				name: "expire-copy-source.md",
+				markdown: "# Expire copy source",
 			}),
 		);
 		const dest = await t.run(async (ctx) =>
 			seed_file_with_markdown({
 				ctx,
-				path: "/expire-replace-copy-dest.md",
-				name: "expire-replace-copy-dest.md",
-				markdown: "# Expire replace copy dest base",
+				path: "/expire-copy-dest.md",
+				name: "expire-copy-dest.md",
+				markdown: "# Expire copy dest base",
 				membership: {
 					userId: source.userId,
 					organizationId: source.organizationId,
@@ -13952,7 +13952,7 @@ describe("remove_file_pending_update_if_expired structural rows", () => {
 			userId: dest.userId,
 			nodeId: dest.nodeId,
 			unstagedMarkdown: `${source.baseMarkdown}\n\nReplacement content`,
-			copiedFrom: { nodeId: source.nodeId, path: "/expire-replace-copy-source.md" },
+			copiedFrom: { nodeId: source.nodeId, path: "/expire-copy-source.md" },
 		});
 		if (upserted._nay) {
 			throw new Error(upserted._nay.message);
@@ -13966,7 +13966,7 @@ describe("remove_file_pending_update_if_expired structural rows", () => {
 				nodeId: dest.nodeId,
 			});
 			if (!pendingRow) {
-				throw new Error("Missing replace-copy row before expiry");
+				throw new Error("Missing copy row before expiry");
 			}
 			const cleanupTasks = await list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id });
 			const cleanupTask = cleanupTasks[0];
@@ -13985,7 +13985,7 @@ describe("remove_file_pending_update_if_expired structural rows", () => {
 			// The row expires like a plain content row; the pre-existing node is never hard-deleted.
 			expect(await ctx.db.get("files_pending_updates", pendingRow._id)).toBeNull();
 			const node = await ctx.db.get("files_nodes", dest.nodeId);
-			expect(node?.path).toBe("/expire-replace-copy-dest.md");
+			expect(node?.path).toBe("/expire-copy-dest.md");
 		});
 	});
 
@@ -15102,6 +15102,7 @@ describe("pending update read-only checks", () => {
 				userId: seeded.userId,
 				nodeId: seeded.nodeId,
 				operationBatchId: batch._yay.operationBatchId,
+				expectedUpdatedAt: null,
 			},
 		);
 		expect(settled._nay).toBeUndefined();
@@ -15110,6 +15111,63 @@ describe("pending update read-only checks", () => {
 				await t.run((ctx) => ctx.db.get("files_pending_update_operation_batches", batch._yay.operationBatchId))
 			)?.expiresAt,
 		).toBe(0);
+	});
+
+	test("a no-change settle that read no doc leaves a doc that appeared since then", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			seed_signed_in_file_with_markdown({
+				ctx,
+				path: "/pending-no-change-late-doc.md",
+				name: "pending-no-change-late-doc.md",
+				markdown: "# Base",
+			}),
+		);
+
+		// The action read no doc. A concurrent write made one before the settle ran.
+		const lateDoc = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			unstagedMarkdown: "# Base\n\nLate doc",
+		});
+		if (lateDoc._nay) {
+			throw new Error(lateDoc._nay.message);
+		}
+		const lateRow = await t.run(async (ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		if (!lateRow) {
+			throw new Error("expected the late doc to exist");
+		}
+
+		const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		});
+		if (batch._nay) {
+			throw new Error(batch._nay.message);
+		}
+		const settled = await t.mutation(internal.files_pending_updates.settle_file_pending_update_no_change_in_db, {
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			operationBatchId: batch._yay.operationBatchId,
+			expectedUpdatedAt: null,
+		});
+		expect(settled._nay).toBeUndefined();
+		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", lateRow._id))).not.toBeNull();
 	});
 
 	test("a lock before the no-change final mutation refuses and retires the batch", async () => {

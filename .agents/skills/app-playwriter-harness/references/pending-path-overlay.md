@@ -129,7 +129,7 @@ Expected result: moving a pending file back to its source cancels the proposal i
 
 1. Create committed `/pwl-f.md` ("alpha"), `/pwl-g.md` ("beta"), `/pwl-h.md` ("gamma") — e.g. via chat `edit_file` + Accept all.
 2. Chat, one turn: `mv -f pwl-f.md pwl-g.md && mv -f pwl-g.md pwl-h.md`.
-3. Expect exit 0 with TWO stdout lines `pending replace created: /pwl-f.md -> /pwl-g.md ...` and `... /pwl-g.md -> /pwl-h.md ...`; panel shows two rows caption `Replaced` (`/pwl-f.md → /pwl-g.md`, `/pwl-g.md → /pwl-h.md`); replace-move rows use `Accept changes to <destPath>` labels.
+3. Expect exit 0 with TWO stdout lines `pending move created: /pwl-f.md -> /pwl-g.md — replaces the existing file when accepted; review in Files` and `... /pwl-g.md -> /pwl-h.md ...`; panel shows two rows caption `Replaced` (`/pwl-f.md → /pwl-g.md`, `/pwl-g.md → /pwl-h.md`); replace-move rows use `Accept changes to <destPath>` labels.
 4. Accept the SECOND link FIRST (`Accept changes to /pwl-h.md`).
 5. Expect: status fires `Accepted changes to /pwl-h.md`, then BOTH rows clear (poll — clearance can lag the status by a few seconds), zero toasts; `pwl-h.md` content is "alpha" (the chain result); `pwl-f.md` AND `pwl-g.md` both leave the active tree and both show under `Show N items archived` with aria-label `<name> archived`. The Versions entry for the new content may lag ~30s (async materialization) — do not wait for it.
 

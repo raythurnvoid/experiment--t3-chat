@@ -72,8 +72,8 @@ import {
 	files_nodes_db_fill_text_node_content,
 	files_nodes_db_finalize_editable_text_node_creation,
 	files_nodes_db_insert_file_content_docs,
-	files_nodes_reconstruct_latest_file_content_from_materialization_state,
 } from "./files_nodes_content.ts";
+import { files_nodes_reconstruct_latest_file_content_from_materialization_state } from "./files_nodes_reconstruct_content.ts";
 import type { r2_get_data_for_public_download_url_Result } from "./r2.ts";
 import {
 	r2_create_asset_key,

@@ -10,7 +10,7 @@ Every editable text file has a Yjs document in one of two shapes (`files_YjsRoot
 - `rich_text`: the ProseMirror document Markdown files use. Root name: `default`.
 - `plain_text`: a flat `Y.Text` document every other editable text file uses. Root name: `plain_text`.
 
-The root names live in `files_YJS_DOC_KEYS` (`packages/app/shared/files.ts`). Markdown keeps the rich text editor. The other 19 extensions open in the Monaco "Code" editor.
+The root names live in `files_YJS_DOC_KEYS` (`packages/app/shared/files.ts`). Markdown keeps the rich text editor. Every other editable text type opens in the Monaco "Code" editor.
 
 Rich text documents support GFM tables. The shared extension set in `packages/app/shared/files-tiptap.ts` (`#region tables`) registers the four table nodes for both the browser and the server, so the two schemas stay identical. The serializer writes GFM pipe tables: no column padding, alignment colons read from the first row, `\|` escaping with the backslash run in front of a pipe doubled, `<br>` for newlines inside a cell, and an empty header row when the document's first row holds body cells. Merged cells, column widths, and multiple blocks inside a cell are not representable in GFM: they are flattened once on the first save and are stable afterwards. One special spelling: a code span in a cell that holds a backslash right before a pipe is written as an HTML `<code>` element with numeric character references (`&#92;`, `&#124;`), because the backtick form would grow its backslash run on every save. Cells accept `paragraph+` only, so members cannot create lists, headings, or code blocks inside a cell.
 
@@ -18,7 +18,7 @@ Rich text documents support GFM tables. The shared extension set in `packages/ap
 
 `files_nodes.contentType` decides how a file opens, how it is edited, and how it is served. The name is only a hint, used once, when a file is created without an explicit type. All in `packages/app/shared/files.ts`:
 
-- `files_parse_content_type` / `files_normalize_content_type`: parse and normalize a media type string; a bad one is refused with `files_INVALID_CONTENT_TYPE_MESSAGE`.
+- `files_parse_content_type` / `files_normalize_content_type`: parse and normalize a content type string; a bad one is refused with `files_INVALID_CONTENT_TYPE_MESSAGE`.
 - `files_editable_text_content_type_of(contentType)`: the stored editable text type, or `null` when the type is not editable text. Editable text is Markdown, plain text, JSON, YAML, TOML, CSV, TSV, CSS, JavaScript, TypeScript, shell, SQL, and the other text types the app edits.
 - `files_yjs_root_kind_of_content_type(contentType)`: `rich_text` for Markdown, `plain_text` for every other editable text type, `null` otherwise. `files_editable_text_shape_of` returns the shape and the normalized type together.
 - `files_default_text_shape_for_name(name)`: the shape a create path uses when the caller gives no type: the name's hint (`.md` is Markdown, a known text extension is that type), else plain text. An unknown extension and an extensionless name make a plain text file. Nothing appends `.md`, and no name is refused for its extension.
@@ -33,7 +33,7 @@ Rich text documents support GFM tables. The shared extension set in `packages/ap
 
 Reads never re-derive the shape from the name. Every read, write, chunker dispatch, and guard passes `node.yjsRootKind` through directly, narrowed by the `files_node_has_editable_text_content` type guard. There is no accessor helper wrapping the field, so do not look for one.
 
-The stored type and shape are set once, when the node is created. The create paths, upload conversion in `r2.ts`, the sidebar's own create and upload prepare, the agent's shell writes, and the public write routes all resolve them there, from the caller's explicit type or the name's hint (`files_default_text_shape_for_name`). After that the stored fields are the answer. A rename keeps the content and the type: `notes.md` renamed to `notes.txt` is still a Markdown file that opens in the rich text editor, and `data.json` renamed to `data.yaml` still opens as JSON. There is no rename class rule and no name classifier for a stored node.
+The stored type and shape are set once, when the node is created. The agent's create and shell write doors, the public write routes, upload conversion in `r2.ts`, and the sidebar's upload prepare all resolve them there, from the caller's explicit type or the name's hint (`files_default_text_shape_for_name`, `files_guess_content_type_from_name`). The sidebar's New file button is the one door that picks no type: it creates a Markdown file with a default name (`create_text_node`), and the user renames it afterwards. After creation the stored fields are the answer. A rename keeps the content and the type: `notes.md` renamed to `notes.txt` is still a Markdown file that opens in the rich text editor, and `data.json` renamed to `data.yaml` still opens as JSON. There is no rename class rule and no name classifier for a stored node.
 
 # Read-Side Shape Guards
 
@@ -106,16 +106,16 @@ There are exactly four sources. Nothing else sets the flag.
 
 - `POST /api/v1/files/write` and `/write-many` accept an optional `nonCollaborative` boolean in the body. It is read only when the write CREATES the file; a write over a file that already exists keeps the mode that file has. See the `public-api` skill.
 - The Collaboration checkbox in the Properties dialog (`packages/app/src/components/files/files-properties-modal.tsx`). Either direction remounts the editor, so the dialog confirms that only last-saved text is used and warns the user to save open editor changes first. The OFF confirmation also names the deleted history, comments, and pending proposal text.
-- A sealed service `create-target` request with required `nonCollaborative: true`. The filename must
-  pass the normal editable-text classifier. The choice stays on the service target while the empty
-  placeholder is a blob, then successful conversion publishes the flag.
+- A sealed service `create-target` request with required `nonCollaborative: true`. The declared
+  `contentType` must be an editable text type, or the request is refused. The choice stays on the
+  service target while the empty placeholder is a blob, then successful conversion publishes the flag.
 - A `nonCollaborative: true` create on the public `/api/v1/files/write` door. It inserts a
   non-collaborative Markdown file with a content/version R2 object (same as other non-collab creates).
   This is how a plugin backend creates its owned files. `create_file_by_path` is unchanged and still creates a collaborative file.
 
 Member uploads never create a non-collaborative file. A service upload and the public write door's
 `nonCollaborative` flag are the narrow exceptions. After
-classifier, UTF-8, NUL, size, document-build, and frontmatter handling succeeds, a service upload publishes chunks,
+the content type check, UTF-8, NUL, size, document-build, and frontmatter handling succeeds, a service upload publishes chunks,
 one content/version snapshot and one file snapshot, with no Yjs asset, snapshot, sequence, or update
 docs. A deterministic fallback stays a blob, preserves any service lock provenance, and leaves the
 node flag unset. There is still no lazy Yjs creation: a collaborative file gets its document eagerly.
@@ -181,17 +181,18 @@ Operator repair (`repair_file_yjs_state_from_visible_text` plus its staleness-ga
 
 # How Plain-Text Files Are Created
 
-Only two paths create a `plain_text` node:
+Three doors create a `plain_text` node:
 
-- Upload conversion: `finalize_uploaded_text_file` (`packages/app/convex/r2.ts`) classifies from the node NAME and converts every editable text upload (`.md` to rich, the other 19 to `Y.Text`). Deterministic failures (unrecognized name, over-cap, invalid UTF-8, NUL bytes, refused document build) fall back to a stored blob through `settle_upload_conversion_fallback`, which dispatches the upload plugin event — only a successful conversion suppresses it. Service uploads (`/api/v1/files/service-uploads/*`) feed the same conversion: their create-target leaves `processingWorkId` unset for editable-text names, but their fallback blob dispatches no plugin upload event (see the `public-api` skill). Over-cap FRONTMATTER is not a fallback: the markdown itself is valid, so the upload still converts — the finalize mutation mirrors the materializer's preflight, commits the chunks without the metadata index, and publishes with the frontmatter marker pair set, so the insert backstop can never throw inside the infinite-retry conversion workpool.
-- Agent write: `create_file_by_path` (agent route only) derives shape and media type from the classifier and refuses unknown extensions with `files_editable_text_refusal_message`.
+- Upload conversion: `finalize_uploaded_text_file` (`packages/app/convex/r2.ts`) reads the node's stored content type and converts every editable text upload (Markdown to rich text, every other editable text type to `Y.Text`). Deterministic failures (a type that is not editable text, over-cap, invalid UTF-8, NUL bytes, refused document build) fall back to a stored blob through `settle_upload_conversion_fallback`, which dispatches the upload plugin event — only a successful conversion suppresses it. Service uploads (`/api/v1/files/service-uploads/*`) feed the same conversion: their create-target leaves `processingWorkId` unset for editable text types, but their fallback blob dispatches no plugin upload event (see the `public-api` skill). Over-cap FRONTMATTER is not a fallback: the markdown itself is valid, so the upload still converts — the finalize mutation mirrors the materializer's preflight, commits the chunks without the metadata index, and publishes with the frontmatter marker pair set, so the insert backstop can never throw inside the infinite-retry conversion workpool.
+- Agent write: `create_file_by_path` (agent route only) takes the type from the caller's `contentType`, else the name's hint, else plain text (`files_default_text_shape_for_name`). It refuses only a type that is not editable text (`Content type '...' is not an editable text type`).
+- Public write routes: `/files/write`, `/files/write-many`, and `/files/touch` take the caller's `contentType`, else the name's hint, else plain text (`files_default_text_shape_for_name` in `public_api.ts`).
 
 A committed collaborative service upload is a normal editable file after conversion. A committed
 non-collaborative service upload has the same chunks and version history but no Yjs docs. The service
 `delete` route archives either form and keeps its content, snapshots, metadata, and R2 asset. Only an
 unfinished service placeholder may use `files_nodes_db_hard_delete_node`.
 
-There is deliberately NO in-app create path: the sidebar New-file flow creates Markdown only, and the rename rule (`files_validate_file_rename_class` in `packages/app/shared/files.ts`, enforced by `rename_node`, pending-move proposal, and accept) never lets a name cross the Markdown/plain class. That strictness is why no in-app path is needed — a `.md` file can never be renamed into a `.json` file, so the UI has nothing to route. Renames inside the plain class (`json` → `yaml`) are allowed and patch the classifier `contentType` with the name. An extensionless destination claims no class, which keeps mixed file/folder swap cycles working.
+The sidebar New-file flow creates a Markdown file with a default name, and a rename (`rename_node`, the pending-move proposal, and accept) keeps the stored content type, so no name can move a file to another type. Files of other types enter the workspace through uploads, the agent's write doors, and the public write routes. An extensionless destination is a valid rename target, which keeps mixed file/folder swap cycles working.
 
 `data_import.create_upload_targets` (`packages/app/convex/data_import.ts`) is not a third path, by decision: it mints its assets with `processingWorkId: null`, so the R2 event finalizer records the object and never starts the editable-text conversion. An operator import stays a stored blob whatever its name.
 
@@ -208,12 +209,12 @@ These six Convex functions serve both rich Markdown and plain-text files. Their 
 - `finalize_uploaded_text_file` (`r2.ts`)
 - `match_text_file_lines` (`files_nodes.ts`)
 
-Exact content uses `files_text_chunks.textChunk` for both document classes. Search rows link to those chunks through `files_plain_text_chunks.textChunkId`.
+Exact content uses `files_text_chunks.textChunk` for both document shapes. Search rows link to those chunks through `files_plain_text_chunks.textChunkId`.
 
 # Related Skills
 
 - `../files-agent-pending-updates/SKILL.md` — the paged pending-state pipeline that door 2 protects.
 - `../convex-admin-ops/SKILL.md` — the operator runbook for the markers and the repair action.
-- `../ai-chat-agent/SKILL.md` — the agent tools that read and write both classes.
+- `../ai-chat-agent/SKILL.md` — the agent tools that read and write both shapes.
 - `../file-metadata/SKILL.md` — the flat key-value map stored next to a file. It is not part of the document, so neither write door sees it, but it shares the read-only lock and the `content.write` permission.
 - `../public-api/SKILL.md` — the public routes; `/files/write` accepts every editable text type.

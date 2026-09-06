@@ -2709,7 +2709,8 @@ describe("files upload-urls", () => {
 		expect(created._nay).toBeUndefined();
 		const credential = created._yay!.credential;
 
-		// The client media type is deliberately generic: the classifier over the name decides.
+		// The client sends a generic plain text type on purpose: the stored type is the caller's, and
+		// the .yaml name is only a hint when no type is sent.
 		const content = "key: value\nother: 2\n";
 		const minted = await t.fetch("/api/v1/files/upload-urls", {
 			method: "POST",

@@ -67,7 +67,7 @@ import {
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import { files_chunk_plain_text } from "../server/files-plain-text-chunking.ts";
 import { Result, Result_all } from "common/errors-as-values-utils.ts";
-import { encodeStateVector, encodeStateAsUpdate, mergeUpdates } from "yjs";
+import { encodeStateVector, encodeStateAsUpdate } from "yjs";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
 import {
@@ -99,11 +99,13 @@ import {
 } from "../shared/files-metadata.ts";
 import {
 	files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE,
+	files_PENDING_REPLACEMENT_EDITED_DURING_ACCEPT_MESSAGE,
 	files_pending_update_db_delete_chunks,
 	files_pending_update_db_release_replacement_asset,
 	files_pending_updates_db_drop_content_for_node,
 	type files_pending_updates_stage_trusted_yjs_update_Result,
 } from "./files_pending_updates.ts";
+import { files_nodes_reconstruct_latest_file_content_from_materialization_state } from "./files_nodes_reconstruct_content.ts";
 import {
 	r2_PUT_MAY_ARRIVE_MARGIN_MS,
 	r2_copy_object_to_immutable_key,
@@ -254,7 +256,7 @@ export async function db_insert_file_text_content(
 		/**
 		 * The chunker shape for this content. This argument REPLACES the old `contentType`
 		 * derivation — the branch below is exhaustive on the closed union and on nothing else, so
-		 * an unrecognised media type can never reach a throw inside the infinite-retry workpool.
+		 * an unrecognized content type can never reach a throw inside the infinite-retry workpool.
 		 * Editable nodes read it from `files_nodes.yjsRootKind`; read-only mounts pass the
 		 * `"plain_text"` literal because a mount has no Yjs document to have a shape.
 		 */
@@ -1437,7 +1439,7 @@ async function action_create_file_node(
 		parentId: Doc<"files_nodes">["parentId"];
 		path: string;
 		textContent: string;
-		/** The stored media type and document shape; callers derive both from the same name. */
+		/** The stored content type and its document shape; the caller resolved both together. */
 		contentType: files_ContentType;
 		rootKind: files_YjsRootKind;
 		archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
@@ -1612,8 +1614,8 @@ export const create_text_node = action({
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
-		// The public create action stays Markdown-only by product rule. Plain text
-		// files enter the workspace by upload or by an agent write only.
+		// The public create action stays Markdown-only by product rule. Files of other text types
+		// enter by upload, by an agent write, or through the public write routes.
 		const created = await action_create_file_node(ctx, {
 			userId: userAuth.id,
 			organizationId: membership.organizationId,
@@ -1998,7 +2000,7 @@ export const get_file_last_available_text_content_by_path = internalAction({
 					});
 				}
 
-				return reconstructed._yay.markdown;
+				return reconstructed._yay.text;
 			});
 		} else {
 			const asset = contentState.asset;
@@ -2103,9 +2105,9 @@ async function files_resolve_readable_content_or_window(
 		}
 		return {
 			nodeId: state.nodeId,
-			text: reconstructed._yay.markdown,
+			text: reconstructed._yay.text,
 			fetchedAllBytes: true,
-			totalBytes: files_get_utf8_byte_size(reconstructed._yay.markdown),
+			totalBytes: files_get_utf8_byte_size(reconstructed._yay.text),
 		};
 	}
 	// Committed and up to date: bounded byte-range read of the content object (leading window).
@@ -2269,7 +2271,7 @@ export const read_file_tail_lines = internalAction({
 			if (reconstructed._nay) {
 				throw convex_error({ message: "Failed to reconstruct latest file content", cause: reconstructed._nay });
 			}
-			const tail = files_tail_lines_from_text(reconstructed._yay.markdown, maxLines);
+			const tail = files_tail_lines_from_text(reconstructed._yay.text, maxLines);
 			return { nodeId: state.nodeId, content: tail.content, moreLines: tail.moreAbove, scanTruncated: false };
 		}
 
@@ -2423,7 +2425,7 @@ export const create_file_by_path = internalAction({
 				? files_editable_text_shape_of(args.contentType)
 				: files_default_text_shape_for_name(path_name_of(args.path));
 		if (shape === null) {
-			return Result({ _nay: { message: `Cannot create a text file with content type '${args.contentType}'` } });
+			return Result({ _nay: { message: `Content type '${args.contentType}' is not an editable text type` } });
 		}
 
 		const created = await action_create_file_node(ctx, {
@@ -2516,10 +2518,6 @@ const store_version_snapshot_args_schema = v.object({
 	nonCollaborative: v.optional(v.boolean()),
 });
 
-function yjs_merge_updates_to_array_buffer(updates: Uint8Array[]) {
-	return files_u8_to_array_buffer(mergeUpdates(updates));
-}
-
 async function db_insert_snapshot_restore_update(
 	ctx: MutationCtx,
 	args: {
@@ -2587,52 +2585,6 @@ async function store_version_snapshot(ctx: MutationCtx, args: Infer<typeof store
 	});
 
 	return snapshotId;
-}
-
-export async function files_nodes_reconstruct_latest_file_content_from_materialization_state(args: {
-	state: NonNullable<get_file_content_materialization_state_Result>;
-}) {
-	if (!args.state.yjsSnapshotAsset.r2Key) {
-		const errorMessage = "yjsSnapshotAsset.r2Key is not set";
-		const errorData = {
-			nodeId: args.state.fileNode._id,
-			assetId: args.state.yjsSnapshotAsset._id,
-		};
-		console.error(errorMessage, errorData);
-		throw should_never_happen(errorMessage, errorData);
-	}
-
-	const baseSnapshotUpdate = await r2_fetch_object_from_bucket({ key: args.state.yjsSnapshotAsset.r2Key }).then(
-		(response) => response.arrayBuffer(),
-	);
-	const updatesAfterSnapshot = args.state.yjsUpdatesDocs.filter(
-		(update) => update.sequence > args.state.yjsSnapshotDoc.sequence,
-	);
-	const snapshotUpdate = yjs_merge_updates_to_array_buffer([
-		new Uint8Array(baseSnapshotUpdate),
-		...updatesAfterSnapshot.map((update) => new Uint8Array(update.update)),
-	]);
-
-	const yjsDoc = files_yjs_doc_create_from_array_buffer_update(snapshotUpdate);
-	// Read text under the node's stored shape. The getter's first-statement
-	// guard refuses a document whose text is not addressable under that shape.
-	const markdown = files_yjs_doc_get_text({
-		yjsDoc,
-		rootKind: args.state.fileNode.yjsRootKind,
-	});
-
-	if (markdown._nay) {
-		return markdown;
-	}
-
-	return Result({
-		_yay: {
-			yjsDoc,
-			markdown: markdown._yay,
-			snapshotUpdate,
-			sequence: args.state.yjsLastSequenceDoc.lastSequence,
-		},
-	});
 }
 
 /**
@@ -4161,6 +4113,8 @@ async function db_install_file_content_replacement(
 	const { membership, user, billedUser, fileNode } = args;
 	const nodeId = fileNode._id;
 
+	// Guard the argument contract. A text result always brings its text. A collaborative text
+	// result also brings its new document. Stored bytes bring neither.
 	const collaborativeResult = args.yjsRootKind !== undefined && args.nonCollaborative !== true;
 	if (
 		(args.yjsRootKind !== undefined) !== (args.text !== undefined) ||
@@ -4244,6 +4198,9 @@ async function db_install_file_content_replacement(
 			nonCollaborative: fileNode.nonCollaborative,
 		});
 	} else {
+		// A stored file has no version row for its current asset yet. An editable file already has
+		// one from its last save. Add the row only when it is missing, so the old bytes stay in
+		// history without a duplicate row.
 		const versionRows = await ctx.db
 			.query("files_snapshots")
 			.withIndex("by_organization_workspace_fileNode_archivedAt", (q) =>
@@ -4279,6 +4236,8 @@ async function db_install_file_content_replacement(
 		nonCollaborativeCleanupYjsLastSequenceId?: Id<"files_yjs_docs_last_sequences">;
 	} | null = null;
 	if (files_node_has_editable_yjs_state(fileNode)) {
+		// Stop the queued materialization of the old document. It would work on content that is
+		// gone after this write.
 		await cancel_file_content_materialization(ctx, { nodeId });
 		const [yjsSnapshotDoc, yjsLastSequenceDoc] = await Promise.all([
 			ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId),
@@ -4374,8 +4333,9 @@ async function db_install_file_content_replacement(
 		yjsSequenceForChunks = 0;
 	}
 
-	// Mirror the materializer's frontmatter preflight: over-cap frontmatter commits the chunks
-	// without the index and keeps the marker pair set, so the write never rolls back on it.
+	// Do what the materializer does with frontmatter. When the frontmatter is too big for the
+	// index, the chunks are still saved, the index is skipped, and the marker pair stays set.
+	// So a big frontmatter never makes this write fail.
 	const frontmatter =
 		args.yjsRootKind === "rich_text" && args.text !== undefined ? files_metadata_preflight_frontmatter(args.text) : null;
 	if (frontmatter?._nay) {
@@ -4390,8 +4350,9 @@ async function db_install_file_content_replacement(
 			: null;
 	const skipFrontmatterIndex = frontmatterOverCapCounts !== null || frontmatter?._nay != null;
 
-	// Everything that describes the content changes in one patch. The text markers go: the
-	// caller proved the text fits, and the frontmatter counts come from this same text.
+	// One patch changes everything that describes the content. The text markers are cleared
+	// because the caller already checked that the text fits. The frontmatter counts come from
+	// this same text.
 	await ctx.db.patch("files_nodes", nodeId, {
 		assetId: args.contentAssetId,
 		contentType: args.contentType,
@@ -4509,6 +4470,12 @@ export const finalize_file_pending_replacement = internalMutation({
 		pendingUpdateId: v.id("files_pending_updates"),
 		expectedUpdatedAt: v.number(),
 		stagedAssetId: v.id("files_r2_assets"),
+		/** The document's last-sequence token the action read. Present for a collaborative file. */
+		expectedYjsLastSequence: v.optional(
+			v.object({ id: v.id("files_yjs_docs_last_sequences"), lastSequence: v.number() }),
+		),
+		/** The latest text of a collaborative file, kept as a version. See `db_install_file_content_replacement`. */
+		backup: v.optional(v.object({ assetId: v.id("files_r2_assets"), size: v.number() })),
 		contentAssetId: v.id("files_r2_assets"),
 		contentSize: v.number(),
 		contentType: v.string(),
@@ -4526,6 +4493,7 @@ export const finalize_file_pending_replacement = internalMutation({
 		if (!user) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
+
 		// Ask again in the transaction that writes. The action checked the same things, but a
 		// membership can end or a grant can be taken away while the text was uploading.
 		const membership = await db_get_active_membership_in_workspace(ctx, {
@@ -4536,6 +4504,7 @@ export const finalize_file_pending_replacement = internalMutation({
 		if (!membership) {
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
+
 		const authorized = await access_control_db_authorize_node(ctx, {
 			userAuth: { id: user._id },
 			membership,
@@ -4555,6 +4524,7 @@ export const finalize_file_pending_replacement = internalMutation({
 		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
+
 		// Check the lock after access and before the first write, like every other write door.
 		const writable = files_node_require_writable(fileNode);
 		if (writable._nay) {
@@ -4580,11 +4550,25 @@ export const finalize_file_pending_replacement = internalMutation({
 		) {
 			return Result({ _nay: { message: "Stale save" } });
 		}
+
 		// Another save landed after the copy was proposed. Refuse instead of overwriting content
 		// the reviewer never saw.
 		if (fileNode.assetId !== replacement.baseAssetId) {
 			return Result({ _nay: { message: files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE } });
 		}
+
+		// An edit that reached the document while the action ran is in neither the backup nor the
+		// history. Refuse, so the next accept reads the document again.
+		if (args.expectedYjsLastSequence) {
+			const yjsLastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", args.expectedYjsLastSequence.id);
+			if (
+				fileNode.yjsLastSequenceId !== args.expectedYjsLastSequence.id ||
+				yjsLastSequenceDoc?.lastSequence !== args.expectedYjsLastSequence.lastSequence
+			) {
+				return Result({ _nay: { message: files_PENDING_REPLACEMENT_EDITED_DURING_ACCEPT_MESSAGE } });
+			}
+		}
+
 		const previousAssetId = replacement.baseAssetId;
 
 		const organization = await ctx.db.get("organizations", membership.organizationId);
@@ -4607,6 +4591,7 @@ export const finalize_file_pending_replacement = internalMutation({
 			console.error(errorMessage, errorData);
 			throw should_never_happen(errorMessage, errorData);
 		}
+
 		// Accepting a copy saves a version, and a save costs the same here as through the other doors.
 		const check = await billing_db_check_credits(ctx, { userId: billedUser._id, minimumRequiredCents: 1 });
 		if (!check.hasCredits) {
@@ -4619,6 +4604,7 @@ export const finalize_file_pending_replacement = internalMutation({
 			billedUser,
 			fileNode,
 			previousAssetId,
+			backup: args.backup,
 			contentAssetId: args.contentAssetId,
 			contentSize: args.contentSize,
 			// The staged object is already published. A normalized text got its own object.
@@ -5096,11 +5082,13 @@ export const finalize_snapshot_restore_replacement = internalMutation({
 		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
+
 		// Check the lock after access and before the first write, like every other write door.
 		const writable = files_node_require_writable(fileNode);
 		if (writable._nay) {
 			return writable;
 		}
+
 		// Saves may land while the source stays non-collaborative. A mode change invalidates that path.
 		// Other sources keep the asset check; the action cleans its uploads up on refusal.
 		if (
@@ -5136,6 +5124,7 @@ export const finalize_snapshot_restore_replacement = internalMutation({
 			console.error(errorMessage, errorData);
 			throw should_never_happen(errorMessage, errorData);
 		}
+
 		const check = await billing_db_check_credits(ctx, { userId: billedUser._id, minimumRequiredCents: 1 });
 		if (!check.hasCredits) {
 			return Result({ _nay: { message: "Insufficient funds" } });
@@ -5254,14 +5243,16 @@ async function action_restore_snapshot_as_replacement(
 		materializationState: NonNullable<get_file_content_materialization_state_Result> | null;
 	},
 ): Promise<restore_snapshot_r2_Result> {
+	const { membership } = args;
+
 	if (!args.versionAsset.r2Key) {
 		const errorMessage = "snapshot.assetId points to an asset without r2Key";
 		const errorData = { nodeId: args.nodeId, snapshotId: args.snapshotId, assetId: args.versionAsset._id };
 		console.error(errorMessage, errorData);
 		throw should_never_happen(errorMessage, errorData);
 	}
-	const { membership } = args;
 
+	// Same upload helpers as `action_accept_file_pending_replacement` in files_pending_updates.ts.
 	// Assets made here stay unfinalized until the final mutation publishes them. A refusal below
 	// hands them to the deletion ledger right away.
 	const uploadedAssets: Array<{ assetId: Id<"files_r2_assets">; r2Key: string }> = [];
@@ -5316,12 +5307,12 @@ async function action_restore_snapshot_as_replacement(
 			console.error(errorMessage, errorData);
 			throw should_never_happen(errorMessage, errorData);
 		}
-		const markdown = currentContent._yay.markdown;
-		const size = files_get_utf8_byte_size(markdown);
+		const text = currentContent._yay.text;
+		const size = files_get_utf8_byte_size(text);
 		backup = {
 			assetId: await upload_asset({
 				kind: "content_snapshot",
-				body: markdown,
+				body: text,
 				size,
 				contentType:
 					files_editable_text_content_type_of(args.fileNode.contentType) ??
@@ -5348,7 +5339,7 @@ async function action_restore_snapshot_as_replacement(
 		});
 		if (copied.outcome !== "ready") {
 			await cleanup_uploads();
-			return Result({ _nay: { message: "The version's content is not available" } });
+			return Result({ _nay: { message: "The snapshot's content is not available" } });
 		}
 		content = { contentAssetId: assetId, contentSize: copied.size };
 	} else {
@@ -5600,7 +5591,7 @@ export const restore_snapshot_r2 = action({
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				kind: "content_snapshot",
-				size: files_get_utf8_byte_size(currentContent._yay.markdown),
+				size: files_get_utf8_byte_size(currentContent._yay.text),
 				createdBy: userAuth.id,
 			}),
 			ctx.runMutation(internal.r2.insert_asset, {
@@ -5630,7 +5621,7 @@ export const restore_snapshot_r2 = action({
 		await Promise.all([
 			r2_put_object(ctx, {
 				key: currentSnapshotR2Key,
-				body: currentContent._yay.markdown,
+				body: currentContent._yay.text,
 				contentType:
 					files_editable_text_content_type_of(materializationState.fileNode.contentType) ??
 					("application/octet-stream" satisfies files_ContentType),
@@ -5639,8 +5630,9 @@ export const restore_snapshot_r2 = action({
 				key: restoredSnapshotR2Key,
 				body: snapshotMarkdownContent,
 				contentType:
-					files_editable_text_content_type_of(snapshotContent.contentType ?? materializationState.fileNode.contentType) ??
-					("application/octet-stream" satisfies files_ContentType),
+					files_editable_text_content_type_of(
+						snapshotContent.contentType ?? materializationState.fileNode.contentType,
+					) ?? ("application/octet-stream" satisfies files_ContentType),
 			}),
 		]);
 
@@ -5654,7 +5646,7 @@ export const restore_snapshot_r2 = action({
 			expectedYjsSnapshotId: materializationState.yjsSnapshotDoc._id,
 			expectedYjsLastSequenceId: materializationState.yjsLastSequenceDoc._id,
 			currentSnapshotAssetId,
-			currentSnapshotSize: files_get_utf8_byte_size(currentContent._yay.markdown),
+			currentSnapshotSize: files_get_utf8_byte_size(currentContent._yay.text),
 			restoredSnapshotAssetId,
 			restoredSnapshotSize: files_get_utf8_byte_size(snapshotMarkdownContent),
 			skipRateLimit: true,

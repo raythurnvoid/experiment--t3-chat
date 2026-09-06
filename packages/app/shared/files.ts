@@ -247,7 +247,7 @@ export const files_MAX_YJS_REPAIR_RECONSTRUCTED_STATE_BYTES = 16 * 1024 * 1024;
 // a file when no type is known yet. A rename never changes the stored type.
 
 /**
- * Canonical media type for each supported editable text type, keyed by the lowercase
+ * Canonical content type for each supported editable text type, keyed by the lowercase
  * `type/subtype` essence. Common aliases that browsers and tools send map to the same canonical
  * value, so `text/x-yaml` and `application/yaml` become one stored type.
  */
@@ -275,7 +275,7 @@ const FILES_EDITABLE_TEXT_CONTENT_TYPE_BY_ESSENCE = new Map<string, files_Conten
 ]);
 
 /**
- * The media type a file name hints at. Only file creation reads this, and only when the caller
+ * The content type a file name hints at. Only file creation reads this, and only when the caller
  * supplied no type of its own.
  */
 const FILES_CONTENT_TYPE_HINT_BY_EXTENSION = new Map<string, files_ContentType>([
@@ -314,7 +314,7 @@ const FILES_MONACO_LANGUAGE_ID_BY_CONTENT_TYPE = new Map<files_ContentType, stri
 ]);
 
 /**
- * Media types a signed download may serve inline. Everything else, `image/svg+xml` and
+ * Content types a signed download may serve inline. Everything else, `image/svg+xml` and
  * `text/html` included, must download as an attachment so hostile bytes cannot run on the R2
  * origin.
  */
@@ -327,7 +327,15 @@ const FILES_INLINE_SERVED_MEDIA_CONTENT_TYPES = new Set([
 	"video/webm",
 ]);
 
+/**
+ * A `type/subtype` essence: RFC 7231 token characters, lowercase, no spaces.
+ */
 const FILES_CONTENT_TYPE_ESSENCE_REGEX = /^[a-z0-9][a-z0-9!#$&^_.+-]*\/[a-z0-9][a-z0-9!#$&^_.+-]*$/;
+
+/**
+ * Keep a stored type short enough for one header value. It also refuses junk that only looks
+ * like a type.
+ */
 const FILES_CONTENT_TYPE_MAX_LENGTH = 255;
 
 /**
@@ -344,8 +352,8 @@ function files_extension_of(fileName: string) {
 }
 
 /**
- * Parse a media type. Return the lowercase `type/subtype` essence and the charset parameter
- * when one is present, or `null` when the value is not a media type. Every parameter must
+ * Parse a content type. Return the lowercase `type/subtype` essence and the charset parameter
+ * when one is present, or `null` when the value is not a valid `type/subtype`. Every parameter must
  * have the `name=value` form, so a broken value is refused instead of stored.
  */
 export function files_parse_content_type(value: string) {
@@ -369,6 +377,7 @@ export function files_parse_content_type(value: string) {
 		const parameterValue = rawParameter
 			.slice(separatorIndex + 1)
 			.trim()
+			// A parameter value may be quoted (`charset="utf-8"`). Store it without the quotes.
 			.replace(/^"(.*)"$/, "$1")
 			.toLowerCase();
 		if (!name || !parameterValue) {
@@ -383,7 +392,7 @@ export function files_parse_content_type(value: string) {
 }
 
 /**
- * Normalize a media type before storing it: a supported editable text type becomes its
+ * Normalize a content type before storing it: a supported editable text type becomes its
  * canonical value, any other type keeps its lowercase essence plus the charset parameter when
  * one was given. Return `null` for invalid syntax.
  */
@@ -428,7 +437,7 @@ export function files_yjs_root_kind_of_content_type(contentType: string | undefi
 }
 
 /**
- * The canonical type and the document shape a text file gets for a content type. `null` when
+ * The canonical content type and its document shape (root kind) for a content type. `null` when
  * the type is not editable text, so a stored-bytes type can never become a text document.
  */
 export function files_editable_text_shape_of(
@@ -445,8 +454,9 @@ export function files_editable_text_shape_of(
 }
 
 /**
- * The type and shape a new text file gets when the caller named no type: the name's hint, else
- * plain text. Always a text shape, so there is no file name a text write refuses.
+ * The content type and its document shape (root kind) a new text file gets when the caller named
+ * no type: the name's hint, else plain text. Always a text shape, so there is no file name a text
+ * write refuses.
  */
 export function files_default_text_shape_for_name(fileName: string): {
 	contentType: files_ContentType;
@@ -471,7 +481,7 @@ export function files_monaco_language_id_of_content_type(contentType: string | u
 }
 
 /**
- * Guess a media type from a file name. Use it only when a file is created and the caller
+ * Guess a content type from a file name. Use it only when a file is created and the caller
  * supplied no type. Return `null` for an unknown or missing extension.
  */
 export function files_guess_content_type_from_name(fileName: string) {
@@ -483,14 +493,8 @@ export function files_guess_content_type_from_name(fileName: string) {
 }
 
 /**
- * The type a new text file gets when nothing better is known: the name hint when the name has
- * a supported extension, otherwise plain text. A new text file always has a text type, so it
- * can never be born as stored bytes.
+ * The message every write door returns for a content type that does not parse.
  */
-export function files_default_text_content_type_for_name(fileName: string): files_ContentType {
-	return files_default_text_shape_for_name(fileName).contentType;
-}
-
 export const files_INVALID_CONTENT_TYPE_MESSAGE = "Invalid content type";
 
 /**
@@ -785,7 +789,7 @@ export function files_pending_update_has_yjs_content<
 //
 // Sealed rules (see the tests in files.test.ts):
 // - A pending update doc is inert when the node it moves, its destination parent, or a
-//   replace-copy source is missing from `nodesById`; the overlay simply drops it on the next
+//   copy source (`copiedFrom`) is missing from `nodesById`; the overlay simply drops it on the next
 //   build. A missing `replacesNodeId` node only degrades the replace to a plain move,
 //   matching what accept does.
 // - Visible destination paths resolve through moved ancestors (including committed subfolders of

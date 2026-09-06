@@ -29,6 +29,7 @@ import type * as files_nodes from "../files_nodes.js";
 import type * as files_nodes_ai from "../files_nodes_ai.js";
 import type * as files_nodes_ai_http_routes from "../files_nodes_ai_http_routes.js";
 import type * as files_nodes_content from "../files_nodes_content.js";
+import type * as files_nodes_reconstruct_content from "../files_nodes_reconstruct_content.js";
 import type * as files_pending_updates from "../files_pending_updates.js";
 import type * as files_sharing from "../files_sharing.js";
 import type * as github_mounts from "../github_mounts.js";
@@ -95,6 +96,7 @@ declare const fullApi: ApiFromModules<{
   files_nodes_ai: typeof files_nodes_ai;
   files_nodes_ai_http_routes: typeof files_nodes_ai_http_routes;
   files_nodes_content: typeof files_nodes_content;
+  files_nodes_reconstruct_content: typeof files_nodes_reconstruct_content;
   files_pending_updates: typeof files_pending_updates;
   files_sharing: typeof files_sharing;
   github_mounts: typeof github_mounts;

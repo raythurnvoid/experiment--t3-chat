@@ -1541,8 +1541,72 @@ describe("files chunk search backfills", () => {
 			archiveOperationId: "archive-files-backfill",
 		});
 	});
+});
 
-	test("backfills version rows with the file's content state and leaves recorded rows alone", async () => {
+describe("backfill_files_nodes_lowercase_extension", () => {
+	test("backfills lowercase extension for file nodes", async () => {
+		const t = convexTest(migrations_test_schema, migrations_test_modules);
+		component.register(t);
+		const legacy = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-user-files-extension-backfill" });
+			const [markdownFileId, folderId, extensionlessFileId] = await Promise.all([
+				ctx.db.insert("files_nodes", {
+					organizationId: "organization-files-extension-backfill",
+					workspaceId: "workspace-files-extension-backfill",
+					path: "/docs/README.MD",
+					name: "README.MD",
+					kind: "file",
+					parentId: "root",
+					createdBy: userId,
+					updatedBy: userId,
+					updatedAt: 100,
+				}),
+				ctx.db.insert("files_nodes", {
+					organizationId: "organization-files-extension-backfill",
+					workspaceId: "workspace-files-extension-backfill",
+					path: "/docs",
+					name: "docs",
+					kind: "folder",
+					parentId: "root",
+					createdBy: userId,
+					updatedBy: userId,
+					updatedAt: 100,
+				}),
+				ctx.db.insert("files_nodes", {
+					organizationId: "organization-files-extension-backfill",
+					workspaceId: "workspace-files-extension-backfill",
+					path: "/LICENSE",
+					name: "LICENSE",
+					kind: "file",
+					parentId: "root",
+					createdBy: userId,
+					updatedBy: userId,
+					updatedAt: 100,
+				}),
+			]);
+
+			return { markdownFileId, folderId, extensionlessFileId };
+		});
+
+		const result = await t.run(async (ctx) => {
+			await runToCompletion(ctx, components.migrations, internal.migrations.backfill_files_nodes_lowercase_extension);
+
+			const [markdownFile, folder, extensionlessFile] = await Promise.all([
+				ctx.db.get("files_nodes", legacy.markdownFileId),
+				ctx.db.get("files_nodes", legacy.folderId),
+				ctx.db.get("files_nodes", legacy.extensionlessFileId),
+			]);
+			return { markdownFile, folder, extensionlessFile };
+		});
+
+		expect(result.markdownFile).toMatchObject({ lowercaseExtension: "md" });
+		expect(result.folder).toMatchObject({ lowercaseExtension: null });
+		expect(result.extensionlessFile).toMatchObject({ lowercaseExtension: null });
+	});
+});
+
+describe("backfill_files_snapshots_content_state", () => {
+	test("fills empty rows from the file and leaves recorded rows alone", async () => {
 		const t = convexTest(migrations_test_schema, migrations_test_modules);
 		component.register(t);
 		const seeded = await t.run(async (ctx) => {
@@ -1602,66 +1666,6 @@ describe("files chunk search backfills", () => {
 		// A row that recorded a different shape keeps it: the file changed shape after that version.
 		expect(result.recordedRow).toMatchObject({ contentType: "text/markdown;charset=utf-8", yjsRootKind: "rich_text" });
 		expect(result.recordedRow?.nonCollaborative).toBeUndefined();
-	});
-
-	test("backfills lowercase extension for file nodes", async () => {
-		const t = convexTest(migrations_test_schema, migrations_test_modules);
-		component.register(t);
-		const legacy = await t.run(async (ctx) => {
-			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-user-files-extension-backfill" });
-			const [markdownFileId, folderId, extensionlessFileId] = await Promise.all([
-				ctx.db.insert("files_nodes", {
-					organizationId: "organization-files-extension-backfill",
-					workspaceId: "workspace-files-extension-backfill",
-					path: "/docs/README.MD",
-					name: "README.MD",
-					kind: "file",
-					parentId: "root",
-					createdBy: userId,
-					updatedBy: userId,
-					updatedAt: 100,
-				}),
-				ctx.db.insert("files_nodes", {
-					organizationId: "organization-files-extension-backfill",
-					workspaceId: "workspace-files-extension-backfill",
-					path: "/docs",
-					name: "docs",
-					kind: "folder",
-					parentId: "root",
-					createdBy: userId,
-					updatedBy: userId,
-					updatedAt: 100,
-				}),
-				ctx.db.insert("files_nodes", {
-					organizationId: "organization-files-extension-backfill",
-					workspaceId: "workspace-files-extension-backfill",
-					path: "/LICENSE",
-					name: "LICENSE",
-					kind: "file",
-					parentId: "root",
-					createdBy: userId,
-					updatedBy: userId,
-					updatedAt: 100,
-				}),
-			]);
-
-			return { markdownFileId, folderId, extensionlessFileId };
-		});
-
-		const result = await t.run(async (ctx) => {
-			await runToCompletion(ctx, components.migrations, internal.migrations.backfill_files_nodes_lowercase_extension);
-
-			const [markdownFile, folder, extensionlessFile] = await Promise.all([
-				ctx.db.get("files_nodes", legacy.markdownFileId),
-				ctx.db.get("files_nodes", legacy.folderId),
-				ctx.db.get("files_nodes", legacy.extensionlessFileId),
-			]);
-			return { markdownFile, folder, extensionlessFile };
-		});
-
-		expect(result.markdownFile).toMatchObject({ lowercaseExtension: "md" });
-		expect(result.folder).toMatchObject({ lowercaseExtension: null });
-		expect(result.extensionlessFile).toMatchObject({ lowercaseExtension: null });
 	});
 });
 

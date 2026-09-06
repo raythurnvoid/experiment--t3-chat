@@ -136,7 +136,7 @@ class MediaNodeView implements NodeView {
 	private captionInput: HTMLInputElement;
 	private altButton: HTMLButtonElement | null = null;
 	private altInput: HTMLInputElement | null = null;
-	private assetWatchUnsubscribe: (() => void) | null = null;
+	private watchUnsubscribe: (() => void) | null = null;
 	private localUploadUnsubscribe: (() => void) | null = null;
 	private expiryTimer: ReturnType<typeof setTimeout> | null = null;
 	private isDestroyed = false;
@@ -581,8 +581,8 @@ class MediaNodeView implements NodeView {
 	destroy() {
 		this.isDestroyed = true;
 		this.nodeViews.delete(this);
-		this.assetWatchUnsubscribe?.();
-		this.assetWatchUnsubscribe = null;
+		this.watchUnsubscribe?.();
+		this.watchUnsubscribe = null;
 		this.localUploadUnsubscribe?.();
 		this.localUploadUnsubscribe = null;
 		this.clearExpiryTimer();
@@ -659,8 +659,8 @@ class MediaNodeView implements NodeView {
 	}
 
 	private resolve() {
-		this.assetWatchUnsubscribe?.();
-		this.assetWatchUnsubscribe = null;
+		this.watchUnsubscribe?.();
+		this.watchUnsubscribe = null;
 		this.localUploadUnsubscribe?.();
 		this.localUploadUnsubscribe = null;
 		this.clearExpiryTimer();
@@ -773,8 +773,9 @@ class MediaNodeView implements NodeView {
 
 			this.clearExpiryTimer();
 
-			// A gone node reads as missing below, through its gone asset.
 			const requiredTypePrefix = this.media instanceof HTMLVideoElement ? "video/" : "image/";
+			// Skip this check for a deleted node. It has no asset either, so the asset check below
+			// already reports it as missing.
 			if (fileNode !== null && !fileNode.contentType?.startsWith(requiredTypePrefix)) {
 				this.renderState("incompatible");
 				return;
@@ -821,7 +822,7 @@ class MediaNodeView implements NodeView {
 
 		const assetUnsubscribe = assetWatch.onUpdate(apply);
 		const nodeUnsubscribe = nodeWatch.onUpdate(apply);
-		this.assetWatchUnsubscribe = () => {
+		this.watchUnsubscribe = () => {
 			assetUnsubscribe();
 			nodeUnsubscribe();
 		};

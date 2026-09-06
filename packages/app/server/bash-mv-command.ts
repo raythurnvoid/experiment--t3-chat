@@ -384,9 +384,11 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 		}
 
 		// `mv -f` onto a file is always a structural move: the source keeps its identity, type, and
-		// history, and accepting archives the occupant. A folder source always sends `replace`: folder replacement never needs -f (rename()
-		// replaces an empty folder silently) and the mutation still rejects every unsafe case,
-		// so an occupant created between the reads above and the mutation cannot fail a move
+		// history, and accepting archives the occupant.
+		//
+		// A folder source always sends `replace`. Folder replacement never needs -f, because
+		// rename() replaces an empty folder silently. The mutation still rejects every unsafe case.
+		// So an occupant that appears between the reads above and the mutation cannot fail a move
 		// that real mv would allow.
 		const proposed = (await ctx.runMutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
 			organizationId,

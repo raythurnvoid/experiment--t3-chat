@@ -490,9 +490,12 @@ export const backfill_files_plain_text_chunk_scope = app_migrations.define({
 });
 
 /**
- * Version rows from before versions recorded their content state. Restore reads the type, shape,
- * and collaboration mode from the row, so fill them from the file, which is what those versions
- * had at the time: before this field existed a file could not change its type or shape.
+ * Old version rows have no content state. Restore reads the type, shape, and collaboration mode
+ * from the row, so fill them from the file. This is close but not exact. Before the rows
+ * recorded the content state, a file could not change its shape. A rename could still change
+ * its type, and the collaboration mode could be turned on and off. So an old row may carry a
+ * newer type or mode than its bytes had. The shape is always right, and restore needs the shape
+ * to rebuild the document.
  */
 export const backfill_files_snapshots_content_state = app_migrations.define({
 	table: "files_snapshots",
@@ -501,6 +504,7 @@ export const backfill_files_snapshots_content_state = app_migrations.define({
 			return;
 		}
 		const fileNode = await ctx.db.get("files_nodes", snapshot.fileNodeId);
+		// Leave the row alone when its file is gone or has no type yet. There is nothing to copy.
 		if (
 			!fileNode ||
 			fileNode.organizationId !== snapshot.organizationId ||

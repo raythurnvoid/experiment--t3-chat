@@ -47,14 +47,14 @@ The Files sidebar is implemented in `files-sidebar.tsx` on top of `@headless-tre
 - Folder nodes can have children, expand/collapse, and receive drops.
 - File nodes are leaves. Editable text files open in an editor: Markdown (including plugin outputs created through `files/write` or `files/touch`) in the rich text editor, the plain-text extensions in the Monaco "Code" editor. Uploaded non-editable source files open stored-file/status metadata.
 - Clicking a folder opens its folder screen. `FileNodeView` decides whether the selected node renders the folder explorer or the file editor, and folder screens embed an editable child `README.md` when present.
-- Editable file nodes have `assetId`, the classifier's media type (`text/markdown` for `.md`, e.g. `application/json` for `.json`), a `yjsRootKind`, Yjs snapshot and update docs, exact text chunks, plain-text search chunks, and snapshots. `assetId` points at the newest content snapshot asset (each materialization/restore re-points it), while committed current reads use the chunks. If an editable node came from an upload, R2 also retains the original upload object.
+- Editable file nodes have `assetId`, the stored content type (`text/markdown` for a Markdown file, `application/json` for a JSON file, whatever their names), a `yjsRootKind`, Yjs snapshot and update docs, exact text chunks, plain-text search chunks, and snapshots. `assetId` points at the newest content snapshot asset (each materialization/restore re-points it), while committed current reads use the chunks. If an editable node came from an upload, R2 also retains the original upload object.
 - User-created Markdown files and the auto-created home `README.md` are seeded by the Convex create action with `files_INITIAL_CONTENT`; the rich-text editor must not bootstrap initial Yjs content on the client.
 - Uploaded source file nodes create an upload asset immediately. The signed PUT writes to
   `uploadStagingR2Key`. The R2 event finalizer verifies that staging file, copies it once to the
-  immutable live key, and then stores the live `r2Key`. A recognized text extension stores the
-  classifier's media type on the node. Other uploads keep the client-declared source `contentType`.
-- After publication, the finalizer classifies the file from its NAME. It converts editable text
-  uploads into the normal editable shape: a Yjs snapshot in the name's `yjsRootKind`, chunks, and the
+  immutable live key, and then stores the live `r2Key`. The node keeps the content type it was
+  created with: the caller's valid type, else the name's hint, else `application/octet-stream`.
+- After publication, the finalizer reads that stored type. It converts editable text
+  uploads into the normal editable shape: a Yjs snapshot in the type's `yjsRootKind`, chunks, and the
   first version snapshot. It then points the node at that version snapshot. The upload asset stays as
   the original upload record. Before conversion, it drops one leading BOM and changes CRLF or lone CR
   to LF.
@@ -68,7 +68,7 @@ The Files sidebar is implemented in `files-sidebar.tsx` on top of `@headless-tre
 # Uploaded Source And Plugin-Generated Files
 
 - Upload creates a visible source file node immediately.
-- R2 completion classifies from the node NAME and finalizes editable text uploads (all 20 extensions, never the client MIME) into editable Yjs, chunk, and snapshot state on the source node.
+- R2 completion reads the node's stored content type (the caller's valid type, else the name's hint, never the browser MIME on its own) and finalizes editable text uploads into editable Yjs, chunk, and snapshot state on the source node.
 - Other uploads — and editable-text uploads whose conversion fell back to the stored blob — become terminal stored files, and the host emits `files.upload.completed` to each eligible enabled plugin installation subscribed to the exact content type.
 - Plugin runs track their own queued, running, failed, and terminal state. They do not use the source asset's `processingWorkId`, and they do not create output placeholders before calling the host files API.
 - The first-party PDF plugin writes `<source-name>.md`; the image plugin writes `<source-name>.description.md`; the video/audio plugin writes a transcript and, for video, a summary. Outputs exist only when the matching plugin is installed, enabled, configured with required secrets, and completes the relevant write.
@@ -187,14 +187,14 @@ Tree-item components:
 - File create/rename input canonicalizes path segments in the frontend. Backend recursive creation trusts callers to pass a non-empty normalized path; do not claim it returns a normal empty-path validation result.
 - Rename input filters draft typing/paste/composition through shared live-name normalization: files and folders allow lowercase letters, digits, `/`, `.`, `-`, `_`; adjacent separators are blocked while typing; special file-name casing remains submit-time only.
 - File and folder create/rename reject double-dot names; file names with a non-empty basename and a trailing dot are treated as missing the extension, while invalid extension text such as separators inside the final extension is rejected.
-- Sidebar file CREATE makes a text file of the type the name hints (`.md` is Markdown, a known text extension is that type), and any other name, an unknown extension or none, becomes a plain text file (`create_text_node` resolves it with `files_default_text_shape_for_name`). Nothing appends `.md` and no extension is refused. See `../files-editable-text/SKILL.md`.
+- Sidebar file CREATE makes a Markdown file with a default name (`create_text_node` stamps `text/markdown;charset=utf-8` and `rich_text`). The user renames it afterwards, and a rename never changes the type. Files of other text types enter through uploads, the agent's shell writes, and the public write routes, which take the type from the caller or the name's hint. Nothing appends `.md` and no extension is refused. See `../files-editable-text/SKILL.md`.
 - File RENAME keeps the stored type: `rename_node` changes the name only, so `data.json` → `data.yaml` still opens as JSON and `notes.md` → `notes.txt` still opens in the rich text editor. Names follow `files_normalize_file_rename_name`; a stored upload still needs a real extension.
 - R2 source file upload requires a real extension and uses the normal tree node as the visible processing/finalized item instead of a dedicated upload list.
 - Uploading is closed to `Free`. `files_nodes.create_upload_node` (one file) and `files_nodes.create_upload_nodes` (a folder import) both call `billing_db_check_paid_plan` on the workspace payer right after the permission check, and refuse with `This workspace's plan does not include file uploads`. The payer is `billing_pick_billed_user_id`, so an owner-billed organization answers with the owner's plan, not the acting member's. The sidebar shows that message directly in its error toast, and the rich-text media upload returns it to its caller, so there is no separate UI copy to keep in sync. Creating and saving text files is NOT gated by plan — they answer to the credit gate instead. The same gate guards `/api/v1/files/upload-urls` and the plugin service route; see `../public-api/SKILL.md`.
-- Uploaded names that do not classify as Markdown are normalized with `files_normalize_upload_file_name`, which preserves the uploaded extension and uses only the last browser path segment. Names the extension classifier routes to `rich_text` follow normal Markdown file normalization.
+- Uploaded names whose type hint is not Markdown are normalized with `files_normalize_upload_file_name`, which preserves the uploaded extension and uses only the last browser path segment. Names whose hint is Markdown follow normal Markdown file normalization.
 - Uploaded source file names must have a real extension: the dot cannot be the first or last character.
 - Missing upload extensions open the rename upload modal.
-- Upload path conflicts open the conflict modal; file conflicts support replace or renamed upload, while folder conflicts block replacement. The draft carries its `textClass` (rich, plain, or stored) for the modal's copy; its stored type was decided when the file was picked, so the rename field accepts any valid name and only refuses a stored upload without an extension.
+- Upload path conflicts open the conflict modal; file conflicts support replace or renamed upload, while folder conflicts block replacement. The draft carries its `rootKind` (rich, plain, or null for a stored upload) for the modal's copy; its stored type was decided when the file was picked, so the rename field accepts any valid name and only refuses a stored upload without an extension.
 - File create/rename applies special file-name casing after normalization: `readme`, `readme.md`, and `README.md` store as `README.md`.
 - File rename selects the basename by default so `.md` is not included in the initial edit selection.
 - Rename uses `files_nodes.rename_node` with Convex `optimisticUpdate` for immediate title feedback.
@@ -202,10 +202,10 @@ Tree-item components:
 - Archive/unarchive uses `files_nodes.archive_nodes` / `files_nodes.unarchive_nodes`.
 - The row menu's Restore gate mirrors the backend restore plan (`can_unarchive_item`): a node whose parent is missing or still archived restores to root, so Restore also needs workspace write at root plus scope manage when the node would leave its restricted scope. A node that carries its own restriction only needs its own write answer. An in-place restore only needs the node's write answer.
 
-## Content Type And Class Checks
+## Content Type Checks
 
 - Trust app-owned content-type strings to be lowercase.
-- Classify files by NAME with the shared extension classifier (`files_get_editable_text_yjs_root_kind` / `files_get_editable_text_content_type` in `shared/files.ts`), never by the browser MIME — the sidebar's own upload prepare does this.
+- Take the upload's type from the file NAME first (`files_guess_content_type_from_name` in `shared/files.ts`); the browser MIME is only the fallback when the name has no hint — the sidebar's own upload prepare does this. The shape follows the type (`files_yjs_root_kind_of_content_type`).
 - Use `"text/markdown;charset=utf-8" satisfies files_ContentType` when writing the canonical Markdown content type at an md-by-definition site.
 
 ## Read-Only Files And Folders
@@ -241,20 +241,20 @@ Tree-item components:
 - Foreign file and node drops use the same destination write, source write, and cross-scope manage checks as in-tree drops.
 - The folder table uses the same source write, destination write, and cross-scope manage checks for its row drag/drop.
 - External drops over file rows resolve to the file's containing folder. Root, folder rows, empty-folder placeholders, and file-row parent resolution are accepted targets.
-- A single bare-file drop keeps the per-file flow: `files_nodes.create_upload_node`, PUT to the signed R2 URL, then the R2 event flow, with the rename/conflict modals. Frontend classification uses the extension classifier on the file name (after the `.markdown` → `.md` alias), never the browser MIME.
+- A single bare-file drop keeps the per-file flow: `files_nodes.create_upload_node`, PUT to the signed R2 URL, then the R2 event flow, with the rename/conflict modals. The frontend takes the type from the file name's hint (after the `.markdown` → `.md` alias); the browser MIME is only the fallback for a name with no hint.
 - Multi-file and folder drops run the folder import flow (see "Folder Import" below). The "Import folder" menu action feeds the same flow through a hidden `webkitdirectory` input.
 - Keep external upload acceptance file-type neutral. Do not add MIME or extension allowlists beyond the existing non-Markdown uploaded-source requirement that a filename has a real extension. `.DS_Store` and `Thumbs.db` are the only always-filtered junk names.
 
 ## Upload Lifecycle
 
 1. The Upload file menu action and a single bare-file drop receive one file. Folder drops, multi-file drops, and the Import folder picker run the folder import flow, which ends in the same per-file lifecycle below.
-2. The client prepares static images, classifies the file from its name with the extension classifier, normalizes the path, and opens the draft/conflict modal when needed (single file) or the import conflict modal once for the whole batch (folder import).
+2. The client prepares static images, takes each file's type from its name's hint (or the browser type when the name has none), normalizes the path, and opens the draft/conflict modal when needed (single file) or the import conflict modal once for the whole batch (folder import).
 3. `files_nodes.create_upload_node` (single) or `files_nodes.create_upload_nodes` (batch) validates the request and creates the upload asset plus visible source node. After batch validation, per-item problems are reported as skips, never whole-call failures. `create_upload_node` takes `onConflict: "replace" | "fail"`: `"replace"` (the sidebar's choice after the conflict modal) archives the existing file, `"fail"` answers `_nay` with the path-taken message so the caller can pick another name — the rich-text editor always uses `"fail"` because the existing file may be another document's embed.
 4. The browser uploads the binary to `uploadStagingR2Key` through the signed R2 PUT URL.
 5. The R2 event verifies the staging file, copies it once to the immutable live key, and publishes the
    live key, size, and optional ETag. If the node became read-only after step 3, this accepted upload
    still finishes and the node keeps its lock.
-6. Editable text uploads (classified from the node NAME) run the host conversion, which creates the Yjs document in the name's shape, chunks, and a content snapshot on the uploaded node. Oversized or undecodable text stays a stored file.
+6. Editable text uploads (decided by the node's stored content type) run the host conversion, which creates the Yjs document in the type's shape, chunks, and a content snapshot on the uploaded node. Oversized or undecodable text stays a stored file.
 7. Uploads that stay stored blobs — non-editable types and fallback-settled text — become terminal source files and dispatch eligible `files.upload.completed` plugin runs.
 8. Installed first-party plugins own PDF, image, video, and audio-derived outputs plus their external provider calls.
 9. Plugin-created outputs are ordinary Markdown files. No host-owned output placeholder exists before the plugin writes or touches the path.
@@ -265,7 +265,7 @@ Tree-item components:
 - Entry points: dropping multiple files or a folder onto root or a folder row, and the "Import folder" menu action (hidden `<input webkitdirectory>`; the attribute is spread raw because React's input typings omit it).
 - The import runs in `run_folder_import` (`files-sidebar.tsx`) with progress in the module-level `useFilesImportStore`, so a sidebar remount re-attaches to a running import. Only one import runs at a time, and a workspace switch mid-import requests a cancel.
 - While an import runs, the upload/import entry points and external file drops are disabled, but moving existing nodes in the tree stays enabled — an import can take minutes and node moves conflict with nothing in it. Only the short single-file upload blocks node moves.
-- Client-side prepare: junk filter, image compression, segment normalization with the shared name normalizers (the `.markdown` → `.md` alias runs first, then the extension classifier picks the name rule), and first-wins dedupe of fully normalized target paths. Client skip reasons: `invalid_name`, `missing_extension`, `too_large`, `too_deep`, `duplicate_after_normalization`.
+- Client-side prepare: junk filter, image compression, segment normalization with the shared name normalizers (the `.markdown` → `.md` alias runs first, then the name's type hint picks the name rule), and first-wins dedupe of fully normalized target paths. Client skip reasons: `invalid_name`, `missing_extension`, `too_large`, `too_deep`, `duplicate_after_normalization`.
 - Caps: 1,000 files per import; 50 items and 1 GiB declared bytes per `create_upload_nodes` call; path depth 32; path length 1,024 characters.
 - `create_upload_nodes` charges `files_tree_write` once per call and the `files_bulk_import` bucket once per item; the client waits `_nay.data.retryAfterMs` and retries the chunk on "Rate limit exceeded".
 - Server-side per-item skip reasons are only `conflict` (an existing file was kept, or a permission check refused — deliberately indistinguishable so the payload does not reveal restricted paths) and `path_blocked` (a folder holds the target path, a file holds an ancestor segment, or another batch item collided). `path_blocked` names the blocking node's kind, so it is only used when the caller can `content.read` that node; a hidden blocker answers `conflict` instead.

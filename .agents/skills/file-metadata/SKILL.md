@@ -214,12 +214,12 @@ commit sha, so that root is cut off before the value is stored.
   `action_create_file_node` with the eager path, and a user creating a file in the app already knows
   where it came from.
 
-## Size and media type are not metadata
+## Size and content type are not metadata
 
-The file's size lives on its `files_r2_assets` doc and its media type on `files_nodes.contentType`.
+The file's size lives on its `files_r2_assets` doc and its content type on `files_nodes.contentType`.
 Both are real columns the app already reads, and the Properties dialog shows them as facts above the
 map. So do not copy them into the map. A copy would go stale the moment the upload conversion
-replaces the bytes or the classifier picks a different type, and the user could delete or edit it,
+replaces the bytes or a `cp` gives the file another type, and the user could delete or edit it,
 because everything in the map is the user's to change.
 
 The map is for what only the creating flow knows: where the file came from, and under what name.

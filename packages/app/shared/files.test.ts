@@ -4,7 +4,6 @@ import {
 	files_find_file_stem_end_index,
 	files_get_read_only_capabilities,
 	files_get_read_only_row_labels,
-	files_default_text_content_type_for_name,
 	files_default_text_shape_for_name,
 	files_editable_text_content_type_of,
 	files_editable_text_shape_of,
@@ -437,7 +436,7 @@ describe("files_parse_content_type", () => {
 		});
 	});
 
-	test("refuses values that are not a media type", () => {
+	test("refuses values that are not a valid type/subtype", () => {
 		expect(files_parse_content_type("")).toBeNull();
 		expect(files_parse_content_type("markdown")).toBeNull();
 		expect(files_parse_content_type("text/markdown; broken")).toBeNull();
@@ -467,6 +466,8 @@ describe("files_normalize_content_type", () => {
 });
 
 describe("files_editable_text_shape_of", () => {
+	// One table for the three sister helpers below: the shape, its root kind, and its canonical
+	// type must agree on every content type.
 	test.each([
 		// Markdown keeps the rich text document. Every other editable text type is plain text.
 		["text/markdown;charset=utf-8", { contentType: "text/markdown;charset=utf-8", rootKind: "rich_text" }],
@@ -574,7 +575,7 @@ describe("files_default_text_shape_for_name", () => {
 			contentType: "text/plain;charset=utf-8",
 			rootKind: "plain_text",
 		});
-		expect(files_default_text_content_type_for_name("notes.txt")).toBe("text/plain;charset=utf-8");
+		expect(files_default_text_shape_for_name("notes.txt").contentType).toBe("text/plain;charset=utf-8");
 	});
 });
 
