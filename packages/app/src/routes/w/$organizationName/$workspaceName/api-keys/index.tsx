@@ -92,7 +92,7 @@ const API_KEY_SCOPE_ROWS = [
 	{ scope: "files:list", description: "View file and folder names, paths, and metadata." },
 	{ scope: "files:read", description: "Read the committed content of editable text files by path." },
 	{ scope: "files:download", description: "Get temporary download links for files." },
-	{ scope: "files:write", description: "Create and update Markdown files by path, and upload other files." },
+	{ scope: "files:write", description: "Create and update editable text files by path, and upload other files." },
 	{ scope: "plugin_data:read", description: "Read the documents an installed plugin stores in this workspace." },
 	{ scope: "plugin_data:write", description: "Create, change, and delete those plugin documents." },
 ] as const satisfies ReadonlyArray<{ scope: RouteApiKeys_Scope; description: string }>;

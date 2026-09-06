@@ -391,6 +391,17 @@ Use this after changing the AI bash tool, tool rendering, or agent file-access c
 - Ask it to make one real Markdown edit; verify the new turn uses `edit_file`, not a bash write under the workspace mount.
 - Inspect the latest assistant tool parts and verify new turns do not show legacy `Read file`, `List files`, `Glob files`, `Grep files`, or `Search files` disclosures unless they came from older transcript history.
 
+### Pending Copy Onto A Collaborative File
+
+Use this after changing bash `cp`, `pendingReplacement` accept, or the version rows a replacement writes. Verified 2026-09-06.
+
+- Fixture: create an `aaa-pw-qa-*` folder with `files_nodes.create_folder_node` from page context, open it, and upload `qa-plain.json` (the source) and `r2-upload-markdown-sample.md` (a collaborative Markdown target) through `.FilesSidebar input[type=file]:not([webkitdirectory])`. For a second Markdown target call `files_nodes_content.create_text_node({ membershipId, parentId: <folderId>, path: "/target-b.md" })` — the `path` is relative to `parentId` (see the hazard in `known-hazards.md`).
+- Copy through the Agent chat with the "Run exactly these Bash commands" prompt and one `cp /home/cloud-usr/w/personal/home/<folder>/qa-plain.json /home/cloud-usr/w/personal/home/<folder>/<target>.md`. The Bash output must end with `replaces the existing file's content and type when accepted; review in Files`; a line that ends with only `review in Files` means the destination did not exist and the copy created a new file.
+- Write refusal: a following `echo edited > <same target>` must exit 1 with `This file has a pending copy. Accept or discard the copy in Files before writing to the file.`, and the Pending tab row keeps `Replaced`.
+- Versions: read `files_nodes.get_file_snapshots_list({ membershipId, nodeId, showArchived: false })` before and after; `snapshots` is newest first with `contentType` and `yjsRootKind` per row. Accepting the copy on a file with no unsaved edit adds exactly one row (the copy); with an unsaved edit it adds two (a Markdown row for the edit, then the copy). `files_nodes.create_file_snapshot_content_url({ membershipId, nodeId, snapshotId })` returns a URL that `fetch` reads from page context, which is how to prove the backup row holds the typed text.
+- Unsaved-edit timing: `cp` first, then type in `.FileEditorRichText-editor-content`, wait about 3 s for the push, and click `Accept changes to <path>` in the Pending tab within 30 s of the last keystroke. The materializer runs 30 s after the last update and moves the file's asset, after which the accept refuses with `The file changed after this copy was proposed. Discard the copy and copy again.` — discard, `cp` again, type again.
+- Break on purpose: an early `return Result({ _nay: { name: "nay", message: "PROBE-<runid>" } })` at the top of `files_nodes_reconstruct_latest_file_content_from_materialization_state` (`convex/files_nodes_reconstruct_content.ts`) makes the unsaved-edit accept fail with that toast and leaves the row pending. Read the toast from `[data-sonner-toast]` in the same call. Revert, wait for the watcher push, and repeat the accept with a fresh copy.
+
 ### File Agent Corpus Generation
 
 Use this when creating many QA files through the app agent.

@@ -1073,6 +1073,25 @@ against the deployment and read the durable state, instead of reusing the depth 
 test. Reading `convex data files_nodes` for the marker fields separated the two outcomes here; the
 `convex logs` warning line named the exact code path.
 
+## `create_text_node` takes a path relative to `parentId`, so a full path nests a copy of the folder
+
+Hit 2026-09-06. `files_nodes_content.create_text_node({ membershipId, parentId: <folderId>, path: "/<folder>/target-b.md" })`
+does not create `/<folder>/target-b.md`. It creates the missing folder chain under the parent and the
+file lands at `/<folder>/<folder>/target-b.md`. Nothing fails, so a later bash `cp` onto the path you
+meant creates a new file (`pending copy created … — review in Files`, Pending row `Added`) instead of a
+replacement, and every readback on the id you hold answers for the nested file. Pass only the name
+(`path: "/target-b.md"`) and read the created node's `path` back from `files_nodes:list_tree` before you
+build on it.
+
+## A pending copy on a collaborative file cannot be accepted once the materializer has run
+
+The accept checks the destination's asset against the one the copy was proposed on. The materializer
+runs 30 s after the last document update and moves that asset, so an accept after that answers `The
+file changed after this copy was proposed. Discard the copy and copy again.` — even though nobody
+saved and the editor shows the same text. Measured 2026-09-06. For an unsaved-edit check: `cp`, type,
+wait about 3 s, accept, all inside 30 s. For a saved-file check: let the editor go quiet for more than
+30 s BEFORE the `cp`, then accept whenever.
+
 ## A modal popover is the wrong home for hoisted Monaco widgets
 
 `MyModalPopover` is an Ariakit dialog with `modal` and `portal`, and it sets `contain: content`. Two

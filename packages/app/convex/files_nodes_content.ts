@@ -4657,6 +4657,12 @@ export const finalize_file_pending_replacement = internalMutation({
 	},
 });
 
+/**
+ * Both restore doors refuse with this message when the file moved under the running action.
+ * The remedy is the same in every case: run the restore again.
+ */
+const SNAPSHOT_RESTORE_FILE_CHANGED_MESSAGE = "This file changed while the snapshot was being restored. Try again.";
+
 export const restore_snapshot = internalMutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
@@ -4748,7 +4754,7 @@ export const restore_snapshot = internalMutation({
 				assetIds: [args.currentSnapshotAssetId, args.restoredSnapshotAssetId],
 				reason: "failed_create",
 			});
-			return Result({ _nay: { message: "This file changed while the snapshot was being restored. Try again." } });
+			return Result({ _nay: { message: SNAPSHOT_RESTORE_FILE_CHANGED_MESSAGE } });
 		}
 
 		// Check read-only after access and before every write.
@@ -5034,6 +5040,10 @@ export const finalize_snapshot_restore_replacement = internalMutation({
 		snapshotId: v.id("files_snapshots"),
 		/** Omitted when the source has collaboration off. Other sources keep their asset check. */
 		expectedAssetId: v.optional(v.id("files_r2_assets")),
+		/** The document's last-sequence token the action read. Present for a collaborative file. */
+		expectedYjsLastSequence: v.optional(
+			v.object({ id: v.id("files_yjs_docs_last_sequences"), lastSequence: v.number() }),
+		),
 		/** A fresh copy of the current text, made for a collaborative file. See `db_install_file_content_replacement`. */
 		backup: v.optional(v.object({ assetId: v.id("files_r2_assets"), size: v.number() })),
 		contentAssetId: v.id("files_r2_assets"),
@@ -5096,7 +5106,19 @@ export const finalize_snapshot_restore_replacement = internalMutation({
 				? fileNode.nonCollaborative !== true
 				: fileNode.assetId !== args.expectedAssetId
 		) {
-			return Result({ _nay: { message: "This file changed while the snapshot was being restored. Try again." } });
+			return Result({ _nay: { message: SNAPSHOT_RESTORE_FILE_CHANGED_MESSAGE } });
+		}
+
+		// An edit that reached the document while the action ran is in neither the backup nor the
+		// history. Refuse, so the next restore reads the document again.
+		if (args.expectedYjsLastSequence) {
+			const yjsLastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", args.expectedYjsLastSequence.id);
+			if (
+				fileNode.yjsLastSequenceId !== args.expectedYjsLastSequence.id ||
+				yjsLastSequenceDoc?.lastSequence !== args.expectedYjsLastSequence.lastSequence
+			) {
+				return Result({ _nay: { message: SNAPSHOT_RESTORE_FILE_CHANGED_MESSAGE } });
+			}
 		}
 
 		const user = await ctx.db.get("users", userAuth.id);
@@ -5225,8 +5247,8 @@ type get_data_for_restore_snapshot_Result =
 /**
  * Restore a version as a whole-file replacement (see `finalize_snapshot_restore_replacement`).
  * The version's bytes are copied to a new content asset, so the version row keeps its own
- * object. A collaborative file gets a backup of its latest text first, because edits not
- * materialized yet live only in its document.
+ * object. A collaborative file whose document is ahead of its content asset gets a backup of
+ * its latest text first, because those edits live only in its document.
  */
 async function action_restore_snapshot_as_replacement(
 	ctx: ActionCtx,
@@ -5293,11 +5315,14 @@ async function action_restore_snapshot_as_replacement(
 		});
 	};
 
-	// The latest text of a collaborative file may not be in its content asset yet.
+	// The latest text of a collaborative file may not be in its content asset yet. When the
+	// document has no edit past its snapshot, the current asset already is the newest version
+	// row, and a backup would only repeat it.
+	const yjsState = args.materializationState;
 	let backup: { assetId: Id<"files_r2_assets">; size: number } | undefined;
-	if (args.materializationState) {
+	if (yjsState && yjsState.yjsLastSequenceDoc.lastSequence > yjsState.yjsSnapshotDoc.sequence) {
 		const currentContent = await files_nodes_reconstruct_latest_file_content_from_materialization_state({
-			state: args.materializationState,
+			state: yjsState,
 		});
 		// Same reason as in `restore_snapshot_r2`: the file's own content will not rebuild, and
 		// retrying does the same thing again.
@@ -5400,11 +5425,18 @@ async function action_restore_snapshot_as_replacement(
 		};
 	}
 
+	// The document's last-sequence token the query read. The final mutation refuses when an edit
+	// moved it, because that edit would be in neither the backup nor the history.
+	const expectedYjsLastSequence = yjsState
+		? { id: yjsState.yjsLastSequenceDoc._id, lastSequence: yjsState.yjsLastSequenceDoc.lastSequence }
+		: undefined;
+
 	const finalized = (await ctx.runMutation(internal.files_nodes_content.finalize_snapshot_restore_replacement, {
 		membershipId: args.membershipId,
 		nodeId: args.nodeId,
 		snapshotId: args.snapshotId,
 		expectedAssetId: args.expectedAssetId,
+		...(expectedYjsLastSequence ? { expectedYjsLastSequence } : {}),
 		...(backup ? { backup } : {}),
 		contentType: args.version.contentType,
 		...content,

@@ -11351,6 +11351,31 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 		});
 	}
 
+	// Push a fresh document built from `text` as one more update, and leave it unmaterialized.
+	async function push_unsaved_edit(
+		t: ReturnType<typeof test_convex>,
+		asUser: ReturnType<ReturnType<typeof test_convex>["withIdentity"]>,
+		db: Awaited<ReturnType<typeof test_mocks_fill_db_with.membership>>,
+		nodeId: Id<"files_nodes">,
+		text: string,
+	) {
+		const yjsDoc = files_yjs_doc_create_from_text({ rootKind: "rich_text", text });
+		if ("_nay" in yjsDoc) {
+			throw new Error(yjsDoc._nay.message);
+		}
+		const pushResult = await asUser.mutation(api.files_nodes.yjs_push_update, {
+			membershipId: db.membershipId,
+			nodeId,
+			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId,
+			update: files_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc)),
+			sessionId: "restore-unsaved-edit",
+		});
+		yjsDoc.destroy();
+		if (pushResult._nay) {
+			throw new Error(pushResult._nay.message);
+		}
+	}
+
 	test("a plain text version of a Markdown file comes back as plain text, and the current text stays a version", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -11459,18 +11484,134 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 		});
 		expect(readResult?.content).toBe(versionText);
 
-		// History keeps both sides with their own type: a fresh copy of the Markdown that was
-		// current, and the restored content as the newest row.
+		// History keeps both sides with their own type. The Markdown that was current already is
+		// the row its materialization stored, so the restore adds no second row with the same text.
 		const versions = await read_versions(t, nodeId);
-		const backup = versions.find(
-			(row) =>
-				row.assetId !== before.assetId && row.r2Key !== undefined && r2Objects.get(row.r2Key) === currentMarkdown,
+		const markdownRows = versions.filter(
+			(row) => row.r2Key !== undefined && r2Objects.get(row.r2Key) === currentMarkdown,
 		);
-		expect(backup).toMatchObject({ contentType: "text/markdown;charset=utf-8", yjsRootKind: "rich_text" });
+		expect(markdownRows).toHaveLength(1);
+		expect(markdownRows[0]).toMatchObject({
+			assetId: before.assetId,
+			contentType: "text/markdown;charset=utf-8",
+			yjsRootKind: "rich_text",
+		});
 		expect(versions.find((row) => row.assetId === after.assetId)).toMatchObject({
 			contentType: "text/plain;charset=utf-8",
 			yjsRootKind: "plain_text",
 		});
+	});
+
+	test("an edit the materializer has not saved yet becomes a version before the restore", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Restore Unsaved User",
+			email: "restore-unsaved-user@example.com",
+		});
+		const r2Objects = test_setup_r2_capture();
+		const nodeId = await test_materialize_markdown_file(t, asUser, db, "/notes.md", "# Saved\n");
+		await push_unsaved_edit(t, asUser, db, nodeId, "# Unsaved edit");
+		const version = await seed_version(t, r2Objects, db, {
+			nodeId,
+			body: "plain version\n",
+			kind: "content_snapshot",
+			contentType: "text/plain;charset=utf-8",
+			yjsRootKind: "plain_text",
+		});
+
+		const restored = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
+			membershipId: db.membershipId,
+			nodeId,
+			snapshotId: version.snapshotId,
+			sessionId: "restore-unsaved-session",
+		});
+		expect(restored._nay).toBeUndefined();
+
+		// The edit lived only in the document. It is a Markdown version now, under the restored text.
+		const versions = await read_versions(t, nodeId);
+		const backup = versions.find(
+			(row) => row.r2Key !== undefined && String(r2Objects.get(row.r2Key)).includes("Unsaved edit"),
+		);
+		expect(backup).toMatchObject({ contentType: "text/markdown;charset=utf-8", yjsRootKind: "rich_text" });
+		const readResult = await asUser.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/notes.md",
+		});
+		expect(readResult?.content).toBe("plain version\n");
+	});
+
+	test("an edit that lands while a version is being restored refuses that restore and survives the next one", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: db.userId,
+			name: "Restore Race User",
+			email: "restore-race-user@example.com",
+		});
+		const r2Objects = test_setup_r2_capture();
+		const nodeId = await test_materialize_markdown_file(t, asUser, db, "/notes.md", "# Saved\n");
+		const version = await seed_version(t, r2Objects, db, {
+			nodeId,
+			body: "plain version\n",
+			kind: "content_snapshot",
+			contentType: "text/plain;charset=utf-8",
+			yjsRootKind: "plain_text",
+		});
+
+		// The restore action reads the document state first and writes last. Its read of the
+		// version's bytes sits between the two, so an edit pushed there is one the action never saw.
+		const fetchMock = vi.mocked(globalThis.fetch);
+		const baseFetch = fetchMock.getMockImplementation();
+		if (baseFetch == null) {
+			throw new Error("expected the fetch stub to have an implementation");
+		}
+		let raced = false;
+		fetchMock.mockImplementation(async (input, init) => {
+			const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+			if (!raced && href.startsWith("https://r2.test/object?key=")) {
+				raced = true;
+				await push_unsaved_edit(t, asUser, db, nodeId, "# Edit during restore");
+			}
+			return await baseFetch(input, init);
+		});
+		const refused = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
+			membershipId: db.membershipId,
+			nodeId,
+			snapshotId: version.snapshotId,
+			sessionId: "restore-race-session",
+		});
+		fetchMock.mockImplementation(baseFetch);
+		expect(raced).toBe(true);
+		expect(refused._nay?.message).toBe("This file changed while the snapshot was being restored. Try again.");
+
+		// The next restore reads the document again, so the edit becomes a version.
+		const restored = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
+			membershipId: db.membershipId,
+			nodeId,
+			snapshotId: version.snapshotId,
+			sessionId: "restore-race-session-2",
+		});
+		expect(restored._nay).toBeUndefined();
+		const versions = await read_versions(t, nodeId);
+		const backup = versions.find(
+			(row) => row.r2Key !== undefined && String(r2Objects.get(row.r2Key)).includes("Edit during restore"),
+		);
+		expect(backup).toMatchObject({ contentType: "text/markdown;charset=utf-8", yjsRootKind: "rich_text" });
+		const readResult = await asUser.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			path: "/notes.md",
+		});
+		expect(readResult?.content).toBe("plain version\n");
 	});
 
 	test("a stored version of a stored file comes back as a byte copy with its own type", async () => {
