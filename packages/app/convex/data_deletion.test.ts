@@ -3210,8 +3210,7 @@ describe("process_workspace_deletion_request", () => {
 				archivedAt: 0,
 				updatedAt: now,
 			});
-			// An unpublished staged write: its asset docs have no r2Key, so only the stage purge
-			// block can reach the R2 objects.
+			// Stage cleanup must enqueue the derived object keys before removing these unpublished assets.
 			const stagedYjsSnapshotAssetId = await ctx.db.insert("files_r2_assets", {
 				organizationId: user.defaultOrganizationId,
 				workspaceId: user.defaultWorkspaceId,

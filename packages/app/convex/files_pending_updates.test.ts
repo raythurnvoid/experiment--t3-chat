@@ -11746,9 +11746,9 @@ describe("discard_file_pending_structural", () => {
 			const cleanupTasks = await list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id });
 			expect(cleanupTasks).toHaveLength(0);
 		});
-		for (const r2Key of r2Keys) {
-			expect(deleteObjectSpy).toHaveBeenCalledWith(expect.anything(), r2Key);
-		}
+		const deletionJobs = await t.run((ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect());
+		expect(deletionJobs.map((job) => job.r2Key)).toEqual(expect.arrayContaining(r2Keys));
+		expect(deleteObjectSpy).not.toHaveBeenCalled();
 
 		// The source file is untouched.
 		const sourceNode = await t.run((ctx) => ctx.db.get("files_nodes", source.nodeId));

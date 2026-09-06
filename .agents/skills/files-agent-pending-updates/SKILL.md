@@ -309,6 +309,8 @@ Read-only protects both proposal creation and proposal commit. The full contract
 
 # Cleanup And Expiry Model
 
+- Eager-file hard deletion ensures durable exact-key jobs for all owned assets, including a staged whole-file copy, before removing their docs. It preserves upload jobs and arrival guards already queued by the caller. A resolved vendor retry enqueue is not proof that the object was deleted.
+
 - Every write that leaves a pending update doc alive refreshes its four-hour cleanup task. This includes content upserts, move upserts, rebases, partial saves, and structural accept/discard paths that preserve part of a content-plus-move doc.
 - If an operation deletes or fully resolves the doc, it removes the cleanup task instead.
 - A new presence session reschedules cleanup for four hours from that session without changing the doc's `updatedAt`. Disconnect does not shorten the lifetime, so unreviewed proposals survive the user closing the app.

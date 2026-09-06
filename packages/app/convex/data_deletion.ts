@@ -28,6 +28,7 @@ import { plugins_db_delete_anonymized_review_if_unlinked } from "./plugins.ts";
 import { files_nodes_db_hard_delete_node, files_nodes_db_is_eager_node_safe_to_hard_delete } from "./files_nodes.ts";
 import { files_pending_update_db_release_replacement_asset } from "./files_pending_updates.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
+import { users_db_delete_auth_and_billing_state } from "./users.ts";
 import { r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_create_asset_key, r2_enqueue_object_deletion_job } from "./r2_client.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -446,9 +447,8 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: publicApiGrants.length };
 	}
 
-	// Unpublished write stages own R2 objects whose asset docs have no r2Key yet, so the stage
-	// cleanup (which derives the object keys itself) must run before the assets purge below —
-	// the assets pass only deletes objects for docs with an r2Key set.
+	// Stage cleanup hands its object keys and upload windows to the deletion ledger before
+	// the later asset pass removes the remaining asset docs.
 	const fileWriteStages = await ctx.db
 		.query("public_api_file_write_stages")
 		.withIndex("by_organization_workspace", (q) =>
@@ -1707,45 +1707,27 @@ async function db_finalize_deleted_user(
 		return;
 	}
 
-	const [anonymousAuthToken, billingUsageSnapshot] = await Promise.all([
-		args.deleteUserAuth
-			? ctx.db
-					.query("users_anon_tokens")
-					.withIndex("by_user", (q) => q.eq("userId", user._id))
-					.first()
-			: Promise.resolve(null),
-		args.deleteBillingState
-			? ctx.db
-					.query("billing_usage_snapshots")
-					.withIndex("by_user", (q) => q.eq("userId", user._id))
-					.first()
-			: Promise.resolve(null),
-	]);
-
-	const dependentDeletes = [
-		...(anonymousAuthToken ? [ctx.db.delete("users_anon_tokens", anonymousAuthToken._id)] : []),
-		...(billingUsageSnapshot ? [ctx.db.delete("billing_usage_snapshots", billingUsageSnapshot._id)] : []),
-	];
+	await users_db_delete_auth_and_billing_state(ctx, {
+		userId: user._id,
+		deleteUserAuth: args.deleteUserAuth,
+		deleteBillingState: args.deleteBillingState,
+	});
 
 	if (args.deleteUserRecord) {
 		await Promise.all([
-			...dependentDeletes,
 			...(user.anagraphic ? [ctx.db.delete("users_anagraphics", user.anagraphic)] : []),
 			ctx.db.delete("users", user._id),
 		]);
 		return;
 	}
 
-	await Promise.all([
-		...dependentDeletes,
-		ctx.db.patch("users", user._id, {
-			...(args.deleteUserAuth ? { clerkUserId: null, anonymousAuthToken: undefined } : {}),
-			defaultOrganizationId: undefined,
-			defaultWorkspaceId: undefined,
-			deletedAt: user.deletedAt ?? args.now,
-			deletionFinalizationStartedAt: undefined,
-		}),
-	]);
+	await ctx.db.patch("users", user._id, {
+		...(args.deleteUserAuth ? { clerkUserId: null, anonymousAuthToken: undefined } : {}),
+		defaultOrganizationId: undefined,
+		defaultWorkspaceId: undefined,
+		deletedAt: user.deletedAt ?? args.now,
+		deletionFinalizationStartedAt: undefined,
+	});
 }
 
 /**
@@ -1957,6 +1939,12 @@ export const process_user_deletion_request = internalMutation({
 				return { done: false, deletedCount: drainedFinalizationDocs };
 			}
 
+			// Older tombstone purges could leave these docs after removing the user.
+			await users_db_delete_auth_and_billing_state(ctx, {
+				userId: request.userId,
+				deleteUserAuth: true,
+				deleteBillingState: true,
+			});
 			await ctx.db.delete("data_deletion_requests", request._id);
 			return { done: true, deletedCount: 1 };
 		}
@@ -2748,8 +2736,7 @@ export const prepare_user_for_hard_deletion = internalMutation({
 			userId: args.userId,
 			batchSize,
 		});
-		// Not the session-style `>= batchSize` guard: the publisher drain walks several classes and
-		// can return a short count while later classes still hold docs.
+		// Repeat every nonempty publisher phase: a short batch may leave later families untouched.
 		if (deletedPublisherDocCount > 0) {
 			return false;
 		}

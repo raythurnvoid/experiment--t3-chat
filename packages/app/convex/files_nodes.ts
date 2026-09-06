@@ -2139,9 +2139,20 @@ export async function files_nodes_db_hard_delete_node(
 		if (!asset) {
 			continue;
 		}
-		if (asset.r2Key) {
-			await r2_delete_object(ctx, asset.r2Key);
-		}
+		// Keep cleanup retryable after the asset doc is gone. Upload callers already own their guards.
+		await r2_enqueue_object_deletion_job(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			r2Key:
+				asset.r2Key ??
+				r2_create_asset_key({
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					assetId: asset._id,
+				}),
+			reason: "untracked_asset_event",
+			mode: "ensure",
+		});
 		await ctx.db.delete("files_r2_assets", asset._id);
 	}
 

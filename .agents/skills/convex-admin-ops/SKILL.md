@@ -85,7 +85,7 @@ Arguments:
 - `"data_and_auth"`: finalize user-scoped data and auth state, queue cleanup for tenants that become empty, preserve shared tenant content, attempt Clerk deletion, remove anonymous auth tokens, keep the final tombstoned `users` doc, and schedule period-end subscription cancellation when applicable. This is true cleanup cancellation, not the normal billing-panel cancellation flow that downgrades a live user to `Free`.
 - `"data_auth_and_user_record"`: finalize user-scoped data and auth state, queue cleanup for tenants that become empty, preserve shared tenant content, revoke/delete billing state immediately, and purge the final local `users` doc. This is the only routine admin path that should immediately revoke/delete billing instead of preserving or downgrading the account.
 
-Current cleanup can still leave tenant `activities` and notifications whose recipient was deleted. Read [data-deletion](../data-deletion/SKILL.md#workspace-content-purge-coverage) before treating any mode as complete cleanup.
+Tenant purge drains workspace `activities`, and account finalization drains notifications addressed to the deleted user. Notifications in another recipient's inbox that only name the deleted actor remain by design. See [data-deletion](../data-deletion/SKILL.md#workspace-content-purge-coverage) for the full cleanup scope.
 
 Use `"data"` when the user wants to wipe app data while keeping the account usable. Use `"data_and_auth"` for account deletion that keeps the final tombstone. Use `"data_auth_and_user_record"` only when the user explicitly wants the final user record purged too.
 

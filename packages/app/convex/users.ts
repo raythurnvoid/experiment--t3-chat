@@ -462,9 +462,8 @@ export const get_with_anagraphic_and_anonymous_auth_token = internalQuery({
 		}
 
 		const user = await ctx.db.get("users", userId);
-		// Deleting an anonymous account only sets `deletedAt` on the user. The token doc stays until
-		// the retention job removes it much later. Without the `deletedAt` check here, the deleted
-		// account could keep getting new JWTs during all that time.
+		// Tombstoning keeps the token doc until explicit auth removal or user-record purge.
+		// Without the `deletedAt` check, the deleted account could keep getting new JWTs.
 		// This only stops new JWTs. A JWT that was already given out keeps working until it expires,
 		// because `server_convex_get_user_fallback_to_anonymous` trusts the JWT and never loads the
 		// user doc.
@@ -1380,6 +1379,34 @@ declare module "convex/server" {
 }
 
 // #region admin
+/**
+ * Remove the one-per-user auth and billing docs when their owner is permanently deleted.
+ * Retained tombstones remove only the docs requested by the caller.
+ */
+export async function users_db_delete_auth_and_billing_state(
+	ctx: MutationCtx,
+	args: { userId: Id<"users">; deleteUserAuth?: boolean; deleteBillingState?: boolean },
+) {
+	const [anonymousAuthToken, billingUsageSnapshot] = await Promise.all([
+		args.deleteUserAuth
+			? ctx.db
+					.query("users_anon_tokens")
+					.withIndex("by_user", (q) => q.eq("userId", args.userId))
+					.first()
+			: Promise.resolve(null),
+		args.deleteBillingState
+			? ctx.db
+					.query("billing_usage_snapshots")
+					.withIndex("by_user", (q) => q.eq("userId", args.userId))
+					.first()
+			: Promise.resolve(null),
+	]);
+	await Promise.all([
+		...(anonymousAuthToken ? [ctx.db.delete("users_anon_tokens", anonymousAuthToken._id)] : []),
+		...(billingUsageSnapshot ? [ctx.db.delete("billing_usage_snapshots", billingUsageSnapshot._id)] : []),
+	]);
+}
+
 export const purge_deleted_user_tombstone = internalMutation({
 	args: {
 		userId: v.id("users"),
@@ -1395,6 +1422,11 @@ export const purge_deleted_user_tombstone = internalMutation({
 			throw convex_error({ message: "Cannot purge tombstone for a non-deleted user" });
 		}
 
+		await users_db_delete_auth_and_billing_state(ctx, {
+			userId: user._id,
+			deleteUserAuth: true,
+			deleteBillingState: true,
+		});
 		if (user.anagraphic) {
 			await ctx.db.delete("users_anagraphics", user.anagraphic);
 		}
