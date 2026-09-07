@@ -388,9 +388,9 @@ Use tab indentation for `.ts`, `.tsx` and `.css` files.
 
 ## Comments that explain code
 
-Many AI models under-comment by default; in this repo, lean the other way. Leave a short comment whenever the next reader will ask "why this?" and the answer is not visible in the surrounding code. Aim for comments that describe intent, not syntax.
+Before finishing a code change, you MUST evaluate whether comments would help the next reader. Use short comments to explain requirements, edge cases, constraints, or design choices that are hard to infer from the code. A change may need no new comments. Make this judgment without waiting for the user to ask, and update stale comments in the changed code.
 
-Write a comment when the code:
+A comment is often useful when the code:
 
 - Encodes a **product/business rule** not obvious from names (precedence, ordering, lifecycle, plan/role gating, quotas, tenancy).
 - Has a **non-obvious "why"** — a trade-off, a deliberate choice over the obvious alternative, or a constraint from an external system (Convex, Clerk, Polar, Liveblocks, Yjs, browser).
