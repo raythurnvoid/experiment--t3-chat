@@ -174,7 +174,10 @@ async function caller_can_hand_out_level(
 	return null;
 }
 
-/** A manual sharing change takes over the reader list without removing its grants. */
+/**
+ * A manual sharing change takes over the reader list without removing its grants.
+ * Call only after a real change; saving the same sharing must keep plugin reader sync.
+ */
 async function db_detach_file_access_binding(ctx: MutationCtx, nodeId: Id<"files_nodes">) {
 	const binding = await ctx.db
 		.query("plugins_file_access_bindings")

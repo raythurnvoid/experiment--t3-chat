@@ -1161,6 +1161,7 @@ export async function bash_run_plugin_review_command(
 		fs,
 		cwd,
 		dbFilesRoots: {
+			// Unscoped search/meta from /tmp uses this root, so it must stay inside this review.
 			app: { currentWorkspacePath, fs: sourceFs },
 			externalMounts: { currentWorkspacePath: bash_EXTERNAL_MOUNTS_ROOT, mounts: new Map() },
 			plugins: {

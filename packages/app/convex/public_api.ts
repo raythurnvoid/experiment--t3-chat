@@ -2225,7 +2225,8 @@ async function db_preflight_file_write_target(
 }
 
 /**
- * Check the immediate parent after the caller's normal target access checks.
+ * Pin the folder ID: a private folder can be replaced at the same path during a write.
+ * Run after normal target access checks so a refusal cannot reveal a hidden parent.
  */
 async function db_require_file_write_parent(
 	ctx: MutationCtx,

@@ -941,6 +941,7 @@ function review_find_source_quote(source: string, quote: string) {
 	let start = 0;
 	let end = 0;
 	let displayIndex = 0;
+	// Map displayed string positions back to the original text before counting UTF-8 bytes.
 	while (end < source.length && displayIndex < at + normalizedQuote.length) {
 		if (displayIndex === at) start = end;
 		end += source[end] === "\r" && source[end + 1] === "\n" ? 2 : 1;
@@ -1916,6 +1917,8 @@ export const run_version_review = internalAction({
 				},
 				onStepFinish: ({ response, toolCalls }) => {
 					tokenRateLimits = review_read_token_rate_limits(response.headers);
+					// The SDK response omits the initial prompt. Skip it and the completed compaction
+					// exchange together, so the next history cannot contain an orphaned tool result.
 					if (pendingSummary !== null && toolCalls.length === 1) {
 						summary = pendingSummary;
 						historyStart = response.messages.length + 1;
@@ -1966,6 +1969,7 @@ export const run_version_review = internalAction({
 		}
 		const verdict = completedReview.verdict;
 		const aiFindings = completedReview.aiFindings;
+		// An incomplete assessment describes review limits, not plugin harm; keep it uncached.
 		if (verdict.verdict === "incomplete") {
 			return Result({ _nay: { message: `Plugin review could not finish its assessment: ${aiFindings.join("; ")}` } });
 		}

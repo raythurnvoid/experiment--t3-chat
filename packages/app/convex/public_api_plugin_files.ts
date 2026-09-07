@@ -304,6 +304,8 @@ export const ensure_plugin_folder = internalMutation({
 
 		let nodeId: Id<"files_nodes">;
 		let created = false;
+		// Existing folders keep the member's metadata, locks, and sharing. A missing reader
+		// binding may be a manual sharing choice; ensure must not recreate it.
 		if (firstMissingIndex === null) {
 			if (!deepest) {
 				// The route refuses "/", so the walk always saw at least one segment.
