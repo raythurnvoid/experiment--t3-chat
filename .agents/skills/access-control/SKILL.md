@@ -626,13 +626,15 @@ Cleanup belongs to the lifecycle mutation that removes the user, workspace, or o
 
 - `organizations.remove_user_from_organization` — that user's assignments and direct grants in the
   organization.
-- `organizations.delete_workspace` — memberships, assignments, and grants scoped to the workspace. It
+- `organizations.delete_workspace` — memberships and assignments scoped to the workspace. It
   requires `workspace.delete`, and it refuses the **default** workspace. That refusal is what protects
   the every-member-needs-an-organization-role invariant: deleting the default workspace would delete
   every member's organization-wide assignment at once. It keys off `organization.defaultWorkspaceId`,
   not the workspace's own `default` flag.
-- `organizations.delete_organization` — all access-control docs for the organization, plus the quota
-  release.
+- `organizations.delete_organization` — memberships, assignments, and custom roles for the organization,
+  plus the quota release. It also fences retained workspaces against plugin authority.
+- Both public tenant delete mutations leave permission grant docs to the worker's bounded purge.
+  Missing memberships block user access. A deleted workspace or its plugin fence blocks plugin access.
 - `data_deletion.init_user_deletion`, `process_organization_deletion_request`,
   `process_user_deletion_request` — the remaining docs. Idempotent with the immediate cleanup above.
 

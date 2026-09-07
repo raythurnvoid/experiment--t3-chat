@@ -129,7 +129,7 @@ Deleted-account recovery is handled in `users.resolve_user`.
 - Rejects default workspaces.
 - Queues a workspace-scope request.
 - Releases one `extra_workspaces` quota unit.
-- Removes workspace invite notifications, memberships, active API credential quota docs, role assignments, permission grants, then deletes the workspace doc. It keeps the workspace upload budgets during retention so late accepted R2 events can still settle.
+- Removes workspace invite notifications, memberships, active API credential quota docs, role assignments, then deletes the workspace doc. The worker drains permission grants in bounded batches. The missing workspace and memberships block access while those grant docs remain. It keeps the workspace upload budgets during retention so late accepted R2 events can still settle.
 - The queued workspace request later purges heavy content for the deleted workspace id, even though the workspace doc is already gone.
 
 `process_workspace_deletion_request`:
@@ -138,7 +138,7 @@ Deleted-account recovery is handled in `users.resolve_user`.
 - Requires both `organizationId` and `workspaceId`; invalid docs are removed.
 - Calls `db_purge_organization_workspace_content_batch`. After service targets, assets, and files are gone, that content purge deletes `public_api_upload_bytes` and `plugin_service_storage_bytes`. This ordering keeps service settlement valid during retention and resets a preserved admin-data-reset workspace to fresh upload budgets.
 - Keeps the queue doc while content remains.
-- Does not delete the remaining workspace structure. The UI-facing `organizations.delete_workspace` path already removed memberships, access docs, active API credential quota docs, released one `extra_workspaces` usage unit, and deleted the workspace doc during phase 1. The content purge itself removes the two workspace upload-budget docs last. Use `db_delete_workspace_batch` only from flows that still need full content-plus-structure workspace deletion.
+- Does not delete the remaining workspace structure. The UI-facing `organizations.delete_workspace` path already removed memberships, role assignments, active API credential quota docs, released one `extra_workspaces` usage unit, and deleted the workspace doc during phase 1. The content purge itself removes the two workspace upload-budget docs last. Use `db_delete_workspace_batch` only from flows that still need full content-plus-structure workspace deletion.
 
 ## Organization Delete
 
@@ -148,7 +148,8 @@ Deleted-account recovery is handled in `users.resolve_user`.
 - Queues one organization-scope request.
 - Sets `pluginDataPurgeStartedAt` on every retained workspace doc before returning, so plugin
   sessions, services, runs, and store calls stop during retention.
-- Removes organization notifications, access-control docs, and all workspace memberships.
+- Removes organization notifications, role assignments, custom roles, and all workspace memberships.
+- Leaves permission grant docs for the worker's bounded purge. Missing memberships and the workspace plugin fence revoke access during retention.
 - Releases one owner `extra_organizations` quota unit.
 - Ensures affected users still have a default tenant.
 - Defers organization/workspace docs, quota docs, and heavy content to the worker.

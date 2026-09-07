@@ -2008,7 +2008,9 @@ export const delete_organization = mutation({
 			return Result({ _nay: { message: rateLimit.message } });
 		}
 
-		const [, , , , userIdsPerWorkspace] = await Promise.all([
+		// Remove memberships to revoke access now.
+		// Grant counts grow with file shares, so the worker drains them in batches.
+		const [, , , userIdsPerWorkspace] = await Promise.all([
 			// Queue one delayed organization purge doc while you remove workspace memberships in parallel.
 			data_deletion_db_request(ctx, {
 				userId: userAuth.id,
@@ -2028,13 +2030,6 @@ export const delete_organization = mutation({
 				.withIndex("by_organization_workspace_user", (q) => q.eq("organizationId", organization._id))
 				.collect()
 				.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)))),
-			ctx.db
-				.query("access_control_permission_grants")
-				.withIndex("by_organization_workspace_resource_user_permission", (q) =>
-					q.eq("organizationId", organization._id),
-				)
-				.collect()
-				.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)))),
 			ctx.db
 				.query("organizations_workspaces")
 				.withIndex("by_organization_default", (q) => q.eq("organizationId", organization._id))
@@ -2245,15 +2240,10 @@ export const delete_workspace = mutation({
 				)
 				.collect()
 				.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)))),
-			ctx.db
-				.query("access_control_permission_grants")
-				.withIndex("by_organization_workspace_resource_user_permission", (q) =>
-					q.eq("organizationId", organization._id).eq("workspaceId", workspace._id),
-				)
-				.collect()
-				.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_permission_grants", doc._id)))),
 		]);
 
+		// The missing workspace and memberships revoke access now.
+		// Grant counts grow with file shares, so the worker drains them in batches.
 		await ctx.db.delete("organizations_workspaces", workspace._id);
 		for (const userId of affectedUserIds) {
 			await organizations_db_ensure_default_organization_and_workspace_for_user(ctx, {

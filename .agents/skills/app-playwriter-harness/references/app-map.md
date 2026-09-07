@@ -39,6 +39,12 @@ Use this file for stable app browser facts that are worth reusing across Playwri
 - Several Ariakit dialogs stay mounted while closed, so `locator('[role="dialog"]').last()` picks a hidden one and snapshots empty. Target `.MainAppHeaderOrganizationSwitcherModal`, or filter on `!el.hidden && getComputedStyle(el).display !== "none"`.
 - Deleting an organization from the row menu applies immediately with no confirmation step, and leaves `document.activeElement` on `<body>`. Escape then does not close the switcher (Ariakit needs focus inside the dialog) — click `Cancel` (`exact: true`) instead.
 
+### Tenant deletion from the browser client
+
+For a backend deletion check, use the app client from `page.evaluate`: import `/src/lib/app-convex-client.ts` and call its public `organizations` and `files_sharing` doors. Create a disposable non-default organization and a secondary workspace. Invite a second browser's anonymous user. Create a restricted folder in each workspace and give that member a direct `manage` share. Read both share states from the member browser before deletion. Delete the secondary workspace, then the organization, as the owner. Both calls must return `{ _yay: null }`. The member must then lose both memberships and share access. Check that the organization also disappears from the switcher. The normal retention queue owns the remaining fixture content.
+
+Use the Clerk fixture recipe when the signed-in account has no organization quota left. Do not delete an existing organization to make room. Keep the large-grant transaction-limit and full worker-drain checks in Convex tests; a small browser fixture only proves the app reaches the deployed code and revokes access.
+
 ## Users Route
 
 - Route: `/w/:organizationName/:workspaceName/users`.

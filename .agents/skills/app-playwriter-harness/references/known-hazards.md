@@ -20,6 +20,7 @@ Before the first attempt at a new interaction type (upload, download, screenshot
 
 ## Playwriter Availability
 
+- **Assertions in runners:** Playwriter 0.5.0 allows `require("assert")` but refuses the `node:assert/strict` subpath. Also, `deepStrictEqual` can reject equal arrays returned by `page.evaluate` because the sandbox and browser results have different prototypes. For a fixed JSON result, compare `JSON.stringify` values with `strictEqual`, or assert each scalar field. Neither harness failure counts as a failed product assertion. Fix the assertion and rerun the check.
 - The global `playwriter` command may not exist on this machine. Run it through Vite Plus: `vp env exec pnpx playwriter`.
 - Create sessions from the repo root so the scoped Playwriter filesystem can read harness files and resolve repo-relative paths. Propose documentation memories through the harness, then edit them outside Playwriter with the agent's targeted edit tool.
 - In this repo, run Playwriter through Vite Plus, for example `vp env exec pnpx playwriter browser list`.
