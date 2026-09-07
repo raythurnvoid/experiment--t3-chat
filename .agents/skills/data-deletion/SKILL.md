@@ -177,7 +177,7 @@ Current purge coverage includes:
 - `public_api_grants`
 - `public_api_file_write_stages` via `public_api_db_cleanup_file_write_stage`, before the calls/runs/assets passes: stage cleanup derives the R2 keys and durably enqueues deletion jobs before removing the asset docs
 - Before the first bounded content step, the purge sets `organizations_workspaces.pluginDataPurgeStartedAt`. Before `plugins_event_run_calls`, it changes enabled plugin installations to `disabled` in bounded indexed passes. Then it drains `plugins_event_run_calls`, `plugins_event_runs` with `plugins_runtime_workpool` run cancellation (plugin event runs execute on that dedicated component; R2 asset `processingWorkId` jobs stay on `files_upload_conversion_workpool`), `plugins_workspace_event_handlers`, `plugins_workspace_installation_secrets`, the plugin document store, and finally `plugins_workspace_installations` one installation per pass: its `plugins_ui_sessions` (via `by_installation`) drain one bounded batch per transaction, and the installation doc is deleted only once no sessions remain
-- The plugin document store goes through `plugins_data_db_drain_batch` with `installationId: null`, which covers every installation in the workspace. The durable workspace fence makes `plugins.install_version` refuse new installs and re-enables. Every central plugin UI, store, service, and runtime gate also requires the workspace doc to exist with no fence. The later disabled status is a second guard while live scope rows and released fences drain. Both guards stay until the later session and installation passes remove the records. A data-only reset clears the fence only when the full reset finishes; a deleted workspace removes it with the workspace doc, and the missing doc itself keeps the gates closed. The store drain order is: reservations, deleted-append replay receipts, revision tombstones, documents, service grants, `plugins_file_access_bindings` rows, `plugin_scope` grants, live scope rows, then scope lifecycle rows (identity markers plus real released-range fences). Grants go before scope docs so a partial drain fails closed, and released fences go last so stale writers stay refused until both the documents and their live scope docs are gone. The binding drain deletes only the binding rows and leaves the mirrored file `content.read` grants: the bound files belong to the workspace and outlive the plugin, and member removal and workspace purge find those grants through their own tenant indexes. It then drains service destination fences and `plugin_service_storage_targets` only in workspace mode, member usage, and the accounting doc. The accounting doc goes last so it is never the survivor. It runs before the installation pass, so no row points at a deleted installation. An installation-scoped drain writes to no `files_nodes` row and deletes no service destination fence, storage target, or mirrored private-folder `file` grant: files a plugin created belong to the workspace and stay, uploaded and plugin-door-written alike. A `plugin_scope` grant whose `resourceId` is `"<installationId>:<scopeId>"` does leave with its live store row; a `file` grant naming a bound folder stays because the file stays. A placeholder whose upload never finished stays as an empty file a member can delete.
+- The plugin document store goes through `plugins_data_db_drain_batch` with `installationId: null`, which covers every installation in the workspace. The durable workspace fence makes `plugins.install_version` refuse new installs and re-enables. Every central plugin UI, store, service, and runtime gate also requires the workspace doc to exist with no fence. The later disabled status is a second guard while live scope rows and released fences drain. Both guards stay until the later session and installation passes remove the records. A data-only reset clears the fence only when the full reset finishes; a deleted workspace removes it with the workspace doc, and the missing doc itself keeps the gates closed. The store drain order is: reservations, deleted-append replay receipts, revision tombstones, documents, service grants, `plugins_file_access_bindings` rows, `plugin_scope` grants, live scope rows, then scope lifecycle rows (identity markers plus real released-range fences). Grants go before scope docs so a partial drain fails closed, and released fences go last so stale writers stay refused until both the documents and their live scope docs are gone. The binding drain deletes only the binding rows and leaves the mirrored file `content.read` grants: the bound files belong to the workspace and outlive the plugin, and member removal and workspace purge find those grants through their own tenant indexes. It then drains member usage and the accounting doc. The accounting doc goes last so it is never the survivor. Plugin store rows go before the installation pass; service upload records stay until the later file purge finishes. An installation-scoped drain writes to no `files_nodes` row and deletes no service destination fence, storage target, attempt receipt, or mirrored private-folder `file` grant: files a plugin created belong to the workspace and stay, uploaded and plugin-door-written alike. A `plugin_scope` grant whose `resourceId` is `"<installationId>:<scopeId>"` does leave with its live store row; a `file` grant naming a bound folder stays because the file stays. A placeholder whose upload never finished stays as an empty file a member can delete.
 - `activities` after the plugin passes. The run-retention path normally deletes an activity together with its plugin run, but this purge deletes run docs directly, so it drains the leftover activities by the workspace index. Every activity producer needs a live run doc, so no new rows can appear once the run pass is empty.
 - `chat_messages`
 - `files_metadata_docs`
@@ -191,18 +191,25 @@ Current purge coverage includes:
   asset docs in the workspace and this pass deletes them with the rest. A picture whose message was
   never stored keeps its `unfinalizedExpiresAt` deadline and `cleanup_expired_unfinalized_assets`
   deletes it a day later. A referenced upload retries for at most eight days after its latest signed
-  URL. The terminal pass for an ordinary upload removes its placeholder and hands both possible keys
-  to the deletion ledger. A pending plugin service upload keeps its empty placeholder, asset doc, and
-  target. It hands only its stale staging key to the ledger. Remint and an exact pending create replay
-  wait until that job settles, then reuse the same asset and staging key: there is no resume, so the
-  service sends the whole file again. If the placeholder is read-only, cleanup defers that handoff and both
+  URL. The terminal action checks the object once more before removing an ordinary failed
+  placeholder and handing its canonical key to the deletion ledger. A pending plugin service upload
+  keeps its empty placeholder, asset doc, and
+  target. It sets `uploadRetiredAt` and hands its canonical key to the ledger in one transaction.
+  A late event cannot publish that retired attempt. Pending remint and create replay mint a fresh
+  asset and switch both owner pointers together; the same transaction queues the previous key before
+  deleting the old asset. They do not wait for cleanup. If the placeholder is read-only, cleanup defers that handoff and both
   retry doors stay open so the accepted upload can still finish.
   Before deleting an asset doc, create a deletion job for the stored live key or its deterministic live key.
-  Also create one for `uploadStagingR2Key` when present. The staging job keeps
-  `putMayArriveUntil` through `uploadUrlExpiresAt` plus the normal margin. An older upload without a
-  staging key uses the same tombstone on its live key because its signed URL wrote there directly.
+  Every external upload uses a signed create-only PUT to its canonical key. Its job keeps
+  `putMayArriveUntil` through `uploadUrlExpiresAt` plus the normal margin. An early delete makes
+  the signed URL usable again, so this guard remains necessary.
 - `access_control_permission_grants` before their file scope nodes. This purge step also runs for data-only reset, where the preserved home workspace never reaches structure deletion.
-- `files_nodes` last
+- `files_nodes` after their assets and grants
+- Service destinations, `plugin_service_storage_attempts`, and targets after files and assets, through
+  `public_api_service_uploads_db_drain_batch`. Keep receipts while any upload asset exists, so a late
+  service event cannot become an ordinary upload after its attribution was removed. Upload budget
+  docs are removed after these service records. This drain belongs to workspace content cleanup,
+  not `plugins_data_db_drain_batch`; uninstall leaves service records and files alone.
 
 The exact-key jobs are the durable handoff. The purge deletes the asset docs after it writes the
 jobs; the scheduled job action then retries R2 independently. An R2 outage must not roll the Convex
@@ -212,25 +219,26 @@ purge back or keep tenant data alive.
 declare typed component environment values with `defineComponent(..., { env })`, and a parent can
 bind them with `app.use(..., { env })`. The current R2 component does not declare that environment,
 so its client passes R2 credentials as retrier arguments and the retrier stores them for about one
-week. This workspace purge no longer uses that client path. Other `r2_delete_object` call sites still
+week. This workspace purge no longer uses that client path. Other `r2.deleteObject` call sites still
 do, so moving the component to declared environment values is separate follow-up work.
 
 Keep existing job docs and advance them through the normal exact-key helper. The processor does not need
 tenant or asset docs. Each job stays until its processor confirms the R2 file is absent after the
 signed URL can no longer be used. The job's final confirm (`settle_object_deletion_job`) is also where a
-plugin service upload target is retired: a canonical `assets/<assetId>` key with a committed
-`plugin_service_storage_targets` doc consumes that doc. Nothing is refunded — the
+plugin service upload target is retired: deleting its current canonical `assets/<assetId>` object
+marks a committed target released. The target and its attempt receipts remain for replay and accounting
+until workspace purge. Deleting an older losing attempt cannot release the current target. Nothing is refunded — the
 `plugin_service_storage_bytes` quota only grows.
 
-An R2 staging event can arrive after the service cancels a pending target, or after the member
-discards its failed placeholder. In the same transaction,
-`record_untracked_asset_event` hands both the staging key and deterministic live key to the deletion
-ledger. This covers a staging-to-live copy that was already running when the asset was deleted. It
-charges those stored bytes to the released target. `actualBytes` is both the recorded size and the
-amount already charged, so a bigger object charges only the difference. Member discard already releases the service target and keeps the deterministic live-key
-job through a fresh upload window in the same transaction that deletes the asset. A target that
-committed before deletion keeps its canonical size when later staging events arrive. Duplicate and
-smaller events do not charge twice. The target stays released, and the quota is never refunded.
+An R2 event can arrive after an attempt was superseded, cancelled, or discarded. In the same
+transaction, `record_untracked_asset_event` queues its exact canonical key and charges known service
+attempts through their retained receipts. The target's `chargedBytes` is the largest observed attempt
+size; only an increase is charged. `actualBytes` remains the exact winning size. An old event cannot
+change the current pointers, publish a file, or emit another file-save event. Duplicate and smaller
+events add no charge. Missing-asset events refresh a conservative upload window on the cleanup job.
+After workspace purge removes receipts and targets, such events may create cleanup jobs but never
+recreate accounting or tenant docs. Queue failures still need dead-letter inspection; the arrival
+margin is an operational bound, not a promise of infallible event delivery.
 
 During the retention window, tombstoning an anonymous user also does not revoke every anonymous access path. See the current security gap in [auth-system](../auth-system/SKILL.md#anonymous-deletion-closed-and-remaining-gaps).
 
@@ -300,7 +308,7 @@ For data-only reset, treat missing or inconsistent default tenant state as an in
 - Do not mask broken invariants with fallback repair code unless the relevant producer path is identified and the product rule explicitly wants repair.
 - Preserve child-before-parent deletion ordering.
 - Cancel Workpool jobs before deleting their tracking docs when a purge owns that job lifecycle.
-- Hand every possible R2 key to the durable deletion ledger before deleting `files_r2_assets`. Use `r2Key` when set; otherwise derive the deterministic live key. Include the upload staging key and its signed-URL arrival window when present.
+- Hand every possible R2 key to the durable deletion ledger before deleting `files_r2_assets`. Use `r2Key` when set; otherwise derive the deterministic canonical key. External uploads keep their signed-URL arrival window on this job.
 - Never delete a `files_r2_object_deletion_jobs` doc during purge. Only its processor may remove it.
   The processor first confirms deletion after the signed URL expires.
 - Do not add read-only checks to tenant, workspace, or account purge. These deletion lifecycles are

@@ -104,13 +104,10 @@ import {
 	files_pending_update_content_is_stale,
 } from "../shared/files.ts";
 import { files_metadata_db_patch_file_scope, files_metadata_db_write_entries } from "./files_metadata.ts";
+import { public_api_service_uploads_db_get_target_by_asset } from "./public_api_service_uploads.ts";
 import {
-	r2_get_download_url,
-	r2_generate_upload_url,
-	r2_get_bucket,
+	r2,
 	r2_create_asset_key,
-	r2_create_upload_staging_key,
-	r2_delete_object,
 	r2_enqueue_object_deletion_job,
 	r2_PUT_MAY_ARRIVE_MARGIN_MS,
 	r2_UNFINALIZED_ASSET_TTL_MS,
@@ -1804,7 +1801,7 @@ export async function files_nodes_db_delete_subtree_batch(
 					break;
 				}
 				if (asset.r2Key) {
-					await r2_delete_object(ctx, asset.r2Key);
+					await r2.deleteObject(ctx, asset.r2Key);
 				}
 				await ctx.db.delete("files_r2_assets", asset._id);
 				await ctx.db.delete("files_nodes", node._id);
@@ -2550,13 +2547,13 @@ export const create_upload_node = mutation({
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			kind: "upload",
-			r2Bucket: r2_get_bucket(),
+			r2Bucket: r2.config.bucket,
 			size: args.size,
 			createdBy: membership.userId,
 			unfinalizedExpiresAt: now + r2_UNFINALIZED_ASSET_TTL_MS,
 			updatedAt: now,
 		});
-		const uploadStagingR2Key = r2_create_upload_staging_key({
+		const uploadR2Key = r2_create_asset_key({
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			assetId,
@@ -2583,14 +2580,16 @@ export const create_upload_node = mutation({
 			return Result({ _nay: nodeIdResult._nay });
 		}
 
-		// Save the temporary key and URL end time before returning the URL.
+		// Keep the URL end time so cleanup can remove a late PUT.
 		// A later lock does not stop this accepted upload.
 		await ctx.db.patch("files_r2_assets", assetId, {
 			uploadUrlExpiresAt: now + files_UPLOAD_URL_TTL_MS,
-			uploadStagingR2Key,
 		});
-		const signedUpload = await r2_generate_upload_url(uploadStagingR2Key);
-		const headers: Record<string, string> = { "Content-Type": storedContentType };
+		const signedUpload = await r2.generateUploadUrl(uploadR2Key, {
+			createOnly: true,
+			expiresIn: files_UPLOAD_URL_TTL_MS / 1000,
+		});
+		const headers: Record<string, string> = { "Content-Type": storedContentType, "If-None-Match": "*" };
 
 		return Result({
 			_yay: {
@@ -2995,7 +2994,7 @@ export const create_upload_nodes = mutation({
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				kind: "upload",
-				r2Bucket: r2_get_bucket(),
+				r2Bucket: r2.config.bucket,
 				size: item.size,
 				createdBy: membership.userId,
 				unfinalizedExpiresAt: now + r2_UNFINALIZED_ASSET_TTL_MS,
@@ -3035,26 +3034,28 @@ export const create_upload_nodes = mutation({
 				continue;
 			}
 
-			const uploadStagingR2Key = r2_create_upload_staging_key({
+			const uploadR2Key = r2_create_asset_key({
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				assetId,
 			});
 
-			// Save the temporary key and URL end time before returning the URL.
+			// Keep the URL end time so cleanup can remove a late PUT.
 			// A later lock does not stop this accepted upload.
 			await ctx.db.patch("files_r2_assets", assetId, {
 				uploadUrlExpiresAt: now + files_UPLOAD_URL_TTL_MS,
-				uploadStagingR2Key,
 			});
-			const signedUpload = await r2_generate_upload_url(uploadStagingR2Key);
+			const signedUpload = await r2.generateUploadUrl(uploadR2Key, {
+				createOnly: true,
+				expiresIn: files_UPLOAD_URL_TTL_MS / 1000,
+			});
 
 			created.push({
 				relativePath: item.relativePath,
 				assetId,
 				nodeId: nodeIdResult._yay,
 				url: signedUpload.url,
-				headers: item.contentType ? { "Content-Type": item.contentType } : {},
+				headers: { ...(item.contentType ? { "Content-Type": item.contentType } : {}), "If-None-Match": "*" },
 			});
 		}
 
@@ -3226,10 +3227,7 @@ export const discard_failed_upload_node = mutation({
 		if (asset.kind !== "upload" || asset.r2Key !== undefined) {
 			return Result({ _yay: { removed: false } });
 		}
-		const serviceTarget = await ctx.db
-			.query("plugin_service_storage_targets")
-			.withIndex("by_asset", (q) => q.eq("assetId", asset._id))
-			.first();
+		const serviceTarget = await public_api_service_uploads_db_get_target_by_asset(ctx, asset._id);
 
 		// Keep the failed upload node while it is read-only.
 		// This cleanup deletes the node, so the lock must also block it.
@@ -3244,40 +3242,25 @@ export const discard_failed_upload_node = mutation({
 			workspaceId: membership.workspaceId,
 			assetId: asset._id,
 		});
-		const uploadStagingR2Key = asset.uploadStagingR2Key ?? liveR2Key;
 		await r2_enqueue_object_deletion_job(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
-			r2Key: uploadStagingR2Key,
-			reason: "upload_staging",
+			r2Key: liveR2Key,
+			reason: "untracked_asset_event",
 			putMayArriveUntil: (asset.uploadUrlExpiresAt ?? asset.unfinalizedExpiresAt ?? now) + r2_PUT_MAY_ARRIVE_MARGIN_MS,
 		});
-		if (liveR2Key !== uploadStagingR2Key) {
-			// The copy may reach the final key before the event saves `r2Key`.
-			// Add a deletion job for that key before deleting the asset doc.
-			await r2_enqueue_object_deletion_job(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				r2Key: liveR2Key,
-				reason: "untracked_asset_event",
-				// A service event may already be copying staging bytes here. Keep the job until that
-				// accepted work has enough time to finish.
-				putMayArriveUntil:
-					serviceTarget?.state === "pending" ? now + files_UPLOAD_URL_TTL_MS + r2_PUT_MAY_ARRIVE_MARGIN_MS : undefined,
-			});
-		}
 
 		// This member action ends a service upload too. Release its replay state in the same transaction
 		// that removes the asset, so a late R2 event can settle any extra stored bytes exactly once.
-		if (serviceTarget?.state === "pending") {
+		if (serviceTarget?.state === "pending" && serviceTarget.assetId === asset._id) {
 			await ctx.db.patch("plugin_service_storage_targets", serviceTarget._id, {
 				state: "released",
 				updatedAt: now,
 			});
 		}
 
-		// The jobs now cover both R2 keys. The node and asset docs can be deleted.
-		// If the URL writes the temporary file again, its job will delete it later.
+		// The job owns the exact key before its node and asset docs disappear.
+		// If the URL creates the object again, its job will delete it later.
 		await files_nodes_db_hard_delete_node(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -8438,13 +8421,10 @@ export const create_file_snapshot_content_url = action({
 		// authorized node name the query returned, never a caller-supplied name.
 		const serving = files_get_signed_download_serving({ contentType: data.contentType, fileName: data.fileName });
 		return {
-			url: await r2_get_download_url({
-				key: data.asset.r2Key,
-				options: {
-					expiresIn: 15 * 60,
-					responseContentType: serving.responseContentType,
-					responseContentDisposition: serving.responseContentDisposition,
-				},
+			url: await r2.getUrl(data.asset.r2Key, {
+				expiresIn: 15 * 60,
+				responseContentType: serving.responseContentType,
+				responseContentDisposition: serving.responseContentDisposition,
 			}),
 			snapshotId: data.snapshotId,
 			_creationTime: data._creationTime,
@@ -8660,11 +8640,8 @@ export const yjs_prepare_doc_last_snapshot = action({
 
 		return {
 			snapshot: data.yjsSnapshotDoc,
-			snapshotUrl: await r2_get_download_url({
-				key: data.yjsSnapshotAsset.r2Key,
-				options: {
-					expiresIn: 15 * 60,
-				},
+			snapshotUrl: await r2.getUrl(data.yjsSnapshotAsset.r2Key, {
+				expiresIn: 15 * 60,
 			}),
 			yjsLastSequenceId: data.yjsLastSequenceDoc._id,
 			yjsRootKind: data.fileNode.yjsRootKind,
@@ -9257,7 +9234,7 @@ export const cleanup_old_snapshots = internalMutation({
 			});
 		}
 
-		await Promise.all(snapshotsToDelete.map((snapshot) => r2_delete_object(ctx, snapshot.r2Key)));
+		await Promise.all(snapshotsToDelete.map((snapshot) => r2.deleteObject(ctx, snapshot.r2Key)));
 		await Promise.all(snapshotsToDelete.map((snapshot) => ctx.db.delete("files_snapshots", snapshot.snapshotId)));
 		await Promise.all(snapshotsToDelete.map((snapshot) => ctx.db.delete("files_r2_assets", snapshot.assetId)));
 

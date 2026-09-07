@@ -79,11 +79,15 @@ function test_convex() {
 			if (
 				body.event?.action === "PutObject" &&
 				typeof object?.key === "string" &&
-				object.key.includes("/upload-staging/") &&
+				object.key.includes("/assets/") &&
 				typeof object.size === "number" &&
 				typeof object.eTag === "string" &&
 				!preserveR2EventMetadataKeys.delete(object.key)
 			) {
+				// Most event tests omit PUT bodies. Keep explicit object fixtures when supplied.
+				if (!r2Objects.has(object.key)) {
+					r2Objects.set(object.key, new Uint8Array(object.size));
+				}
 				r2ObjectMetadata.set(object.key, { size: object.size, etag: object.eTag });
 			}
 		}
@@ -106,14 +110,6 @@ function expected_asset_key(args: {
 	assetId: string;
 }) {
 	return `organizations/${args.organizationId}/workspaces/${args.workspaceId}/assets/${args.assetId}`;
-}
-
-function expected_upload_staging_key(args: {
-	organizationId: Id<"organizations">;
-	workspaceId: Id<"organizations_workspaces">;
-	assetId: string;
-}) {
-	return `organizations/${args.organizationId}/workspaces/${args.workspaceId}/upload-staging/${args.assetId}`;
 }
 
 async function body_to_bytes(body: BodyInit | null | undefined) {
@@ -222,9 +218,7 @@ function stub_r2_and_modal_fetch(
 							status: 200,
 							headers: responseHeaders ?? { "Content-Length": String(bytes.byteLength) },
 						})
-					: key.includes("/upload-staging/")
-						? new Response(new Uint8Array(), { status: 200, headers: responseHeaders })
-						: new Response(null, { status: 404 });
+					: new Response(null, { status: 404 });
 			}
 
 			if (url === process.env.MODAL_FILE_CONVERTER_URL) {
@@ -426,29 +420,9 @@ async function post_r2_put_event(
 		authorization?: string | null;
 	},
 ) {
-	const parsedAssetId = args.key.split("/").at(-1);
-	const eventKey = await t.run(async (ctx) => {
-		const assetId = parsedAssetId ? ctx.db.normalizeId("files_r2_assets", parsedAssetId) : null;
-		const asset = assetId ? await ctx.db.get("files_r2_assets", assetId) : null;
-		return asset?.uploadStagingR2Key ?? args.key;
-	});
-	if (eventKey !== args.key) {
-		const bytes = r2Objects.get(args.key);
-		if (bytes) {
-			r2Objects.delete(args.key);
-			r2Objects.set(eventKey, bytes);
-		}
-		const metadata = r2ObjectMetadata.get(args.key);
-		if (metadata) {
-			r2ObjectMetadata.delete(args.key);
-			r2ObjectMetadata.set(eventKey, metadata);
-		}
-	}
 	const eventEtag = args.etag ?? `etag_${args.messageId}`;
-	if (!args.preserveObjectMetadata) {
-		r2ObjectMetadata.set(eventKey, { size: args.size, etag: eventEtag });
-	} else {
-		preserveR2EventMetadataKeys.add(eventKey);
+	if (args.preserveObjectMetadata) {
+		preserveR2EventMetadataKeys.add(args.key);
 	}
 	const authorization =
 		args.authorization === undefined ? `Bearer ${process.env.CLOUDFLARE_EVENTS_SECRET}` : args.authorization;
@@ -465,7 +439,7 @@ async function post_r2_put_event(
 				action: "PutObject",
 				bucket: args.bucket,
 				object: {
-					key: eventKey,
+					key: args.key,
 					size: args.size,
 					eTag: eventEtag,
 				},
@@ -526,16 +500,12 @@ async function create_upload_fixture(
 		throw new Error(created._nay.message);
 	}
 
-	const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", created._yay.assetId));
-	if (!asset?.uploadStagingR2Key) {
-		throw new Error("Expected upload staging key");
-	}
-
 	return {
 		nodeId: created._yay.nodeId,
 		assetId: created._yay.assetId,
-		key: asset.uploadStagingR2Key,
-		liveKey: expected_asset_key({
+		url: created._yay.url,
+		headers: created._yay.headers,
+		key: expected_asset_key({
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			assetId: created._yay.assetId,
@@ -1105,9 +1075,10 @@ describe("r2 asset content", () => {
 		expect(docs.node?.contentType).toBe("application/pdf");
 		expect(docs.asset?.kind).toBe("upload");
 		expect(docs.asset?.r2Key).toBeUndefined();
+		expect(created._yay.headers).toMatchObject({ "If-None-Match": "*" });
 		expect(created._yay.url).toContain(
 			encodeURIComponent(
-				expected_upload_staging_key({
+				expected_asset_key({
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
 					assetId: created._yay.assetId,
@@ -1222,7 +1193,7 @@ describe("r2 asset content", () => {
 					action: "PutObject",
 					bucket: asset.r2Bucket,
 					object: {
-						key: asset.uploadStagingR2Key ?? assetR2Key,
+						key: assetR2Key,
 						size: 4096,
 						eTag: "etag_1",
 					},
@@ -1331,7 +1302,7 @@ describe("r2 asset content", () => {
 					action: "PutObject",
 					bucket: asset.r2Bucket,
 					object: {
-						key: asset.uploadStagingR2Key ?? assetR2Key,
+						key: assetR2Key,
 						size: 4096,
 						eTag: "etag_2",
 					},
@@ -1430,7 +1401,7 @@ describe("r2 asset content", () => {
 					action: "PutObject",
 					bucket: asset.r2Bucket,
 					object: {
-						key: asset.uploadStagingR2Key ?? assetR2Key,
+						key: assetR2Key,
 						size: 4096,
 						eTag: "etag_image",
 					},
@@ -1579,7 +1550,7 @@ describe("r2 asset content", () => {
 					action: "PutObject",
 					bucket: asset.r2Bucket,
 					object: {
-						key: asset.uploadStagingR2Key ?? assetR2Key,
+						key: assetR2Key,
 						size: 4096,
 						eTag: "etag_video",
 					},
@@ -1692,7 +1663,7 @@ describe("r2 asset content", () => {
 					action: "PutObject",
 					bucket: audioAsset.r2Bucket,
 					object: {
-						key: audioAsset.uploadStagingR2Key ?? audioAssetR2Key,
+						key: audioAssetR2Key,
 						size: 4096,
 						eTag: "etag_audio",
 					},
@@ -1772,7 +1743,7 @@ describe("r2 asset content", () => {
 			assetId: asset._id,
 		});
 		const markdownContent = "# Uploaded\n\nMarkdown body";
-		r2Objects.set(asset.uploadStagingR2Key ?? assetR2Key, new TextEncoder().encode(markdownContent));
+		r2Objects.set(assetR2Key, new TextEncoder().encode(markdownContent));
 
 		const response = await t.fetch("/api/r2/event", {
 			method: "POST",
@@ -1787,7 +1758,7 @@ describe("r2 asset content", () => {
 					action: "PutObject",
 					bucket: asset.r2Bucket,
 					object: {
-						key: asset.uploadStagingR2Key ?? assetR2Key,
+						key: assetR2Key,
 						size: 1024,
 						eTag: "etag_markdown",
 					},
@@ -1876,7 +1847,7 @@ describe("r2 asset content", () => {
 			assetId: asset._id,
 		});
 		// BOM + CRLF in the uploaded bytes: the producer boundary must store LF text without a BOM.
-		r2Objects.set(asset.uploadStagingR2Key ?? assetR2Key, new TextEncoder().encode("\uFEFFkey: value\r\nother: 2\r\n"));
+		r2Objects.set(assetR2Key, new TextEncoder().encode("\uFEFFkey: value\r\nother: 2\r\n"));
 
 		const response = await t.fetch("/api/r2/event", {
 			method: "POST",
@@ -1891,7 +1862,7 @@ describe("r2 asset content", () => {
 					action: "PutObject",
 					bucket: asset.r2Bucket,
 					object: {
-						key: asset.uploadStagingR2Key ?? assetR2Key,
+						key: assetR2Key,
 						size: 1024,
 						eTag: "etag_yaml",
 					},
@@ -1993,7 +1964,7 @@ describe("r2 asset content", () => {
 		// so the conversion must publish an editable node instead of throwing the insert
 		// backstop inside the infinite-retry workpool.
 		const overCapMarkdown = `---\n${Array.from({ length: files_metadata_MAX_FRONTMATTER_FIELDS + 1 }, (_, index) => `field_${index}: ${index}`).join("\n")}\n---\n\n# Body\n`;
-		r2Objects.set(asset.uploadStagingR2Key ?? assetR2Key, new TextEncoder().encode(overCapMarkdown));
+		r2Objects.set(assetR2Key, new TextEncoder().encode(overCapMarkdown));
 
 		const response = await t.fetch("/api/r2/event", {
 			method: "POST",
@@ -2008,7 +1979,7 @@ describe("r2 asset content", () => {
 					action: "PutObject",
 					bucket: asset.r2Bucket,
 					object: {
-						key: asset.uploadStagingR2Key ?? assetR2Key,
+						key: assetR2Key,
 						size: 4096,
 						eTag: "etag_frontmatter_overcap",
 					},
@@ -2106,7 +2077,7 @@ describe("r2 asset content", () => {
 		// fixture: the field count stays under its cap while the index-document count (1 field +
 		// 600 values) crosses 512.
 		const valuesOverCapMarkdown = `---\ntags:\n${Array.from({ length: 600 }, (_, index) => `  - tag_${index}`).join("\n")}\n---\n\n# Body\n`;
-		r2Objects.set(asset.uploadStagingR2Key ?? assetR2Key, new TextEncoder().encode(valuesOverCapMarkdown));
+		r2Objects.set(assetR2Key, new TextEncoder().encode(valuesOverCapMarkdown));
 
 		const response = await t.fetch("/api/r2/event", {
 			method: "POST",
@@ -2121,7 +2092,7 @@ describe("r2 asset content", () => {
 					action: "PutObject",
 					bucket: asset.r2Bucket,
 					object: {
-						key: asset.uploadStagingR2Key ?? assetR2Key,
+						key: assetR2Key,
 						size: 8192,
 						eTag: "etag_frontmatter_values_overcap",
 					},
@@ -2207,7 +2178,7 @@ describe("r2 asset content", () => {
 		});
 		// 0xff can never appear in UTF-8, so the fatal decode refuses on every retry: the upload
 		// must stay a stored blob instead of storing replacement characters as editable text.
-		r2Objects.set(asset.uploadStagingR2Key ?? assetR2Key, new Uint8Array([0x48, 0xff, 0xfe]));
+		r2Objects.set(assetR2Key, new Uint8Array([0x48, 0xff, 0xfe]));
 
 		const response = await t.fetch("/api/r2/event", {
 			method: "POST",
@@ -2222,7 +2193,7 @@ describe("r2 asset content", () => {
 					action: "PutObject",
 					bucket: asset.r2Bucket,
 					object: {
-						key: asset.uploadStagingR2Key ?? assetR2Key,
+						key: assetR2Key,
 						size: 16,
 						eTag: "etag_invalid_utf8",
 					},
@@ -2317,7 +2288,7 @@ describe("r2 asset content", () => {
 					action: "PutObject",
 					bucket: asset.r2Bucket,
 					object: {
-						key: asset.uploadStagingR2Key ?? assetR2Key,
+						key: assetR2Key,
 						size: overCapSize,
 						eTag: "etag_over_cap",
 					},
@@ -2389,7 +2360,7 @@ describe("r2 asset content", () => {
 					action: "PutObject",
 					bucket: asset.r2Bucket,
 					object: {
-						key: asset.uploadStagingR2Key ?? assetR2Key,
+						key: assetR2Key,
 						size: 1024,
 						eTag: "etag_not_pdf",
 					},
@@ -2504,7 +2475,7 @@ describe("r2 asset content", () => {
 					action: "PutObject",
 					bucket: asset.r2Bucket,
 					object: {
-						key: asset.uploadStagingR2Key ?? assetR2Key,
+						key: assetR2Key,
 						size: 4096,
 						eTag: "etag_collision",
 					},
@@ -2693,6 +2664,7 @@ describe("cleanup_expired_unfinalized_assets", () => {
 		const yjsSnapshotAssetId = await seed_unfinalized_asset(t, { ...db, unfinalizedExpiresAt: now - 1 });
 		const versionSnapshotAssetId = await seed_unfinalized_asset(t, { ...db, unfinalizedExpiresAt: now - 1 });
 		await t.run(async (ctx) => {
+			await ctx.db.patch("files_r2_assets", nodeAssetId, { kind: "content" });
 			const nodeId = await ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId: db.organizationId,
@@ -2745,48 +2717,48 @@ describe("cleanup_expired_unfinalized_assets", () => {
 		expect(deleteObjectSpy).not.toHaveBeenCalled();
 	});
 
-	test("recovers a referenced upload after event retries were exhausted", async () => {
-		const t = test_convex();
-		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "sweeper-recovery.png");
-		const liveBytes = new TextEncoder().encode("copied-before-crash");
-		r2Objects.set(upload.liveKey, liveBytes);
-		r2ObjectMetadata.set(upload.liveKey, { size: liveBytes.byteLength, etag: "etag_copied_before_crash" });
-		const now = Date.now();
-		await t.run(async (ctx) =>
-			ctx.db.patch("files_r2_assets", upload.assetId, {
-				unfinalizedExpiresAt: now - 1,
-			}),
-		);
+	test.each([1, 8 * DAY_MS + 16 * 60 * 1000])(
+		"recovers a lost upload event after %i ms, including terminal expiry",
+		async (elapsed) => {
+			const t = test_convex();
+			const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+			const upload = await create_upload_fixture(t, db, "sweeper-recovery.png");
+			const liveBytes = new TextEncoder().encode("stored-before-event-loss");
+			r2Objects.set(upload.key, liveBytes);
+			r2ObjectMetadata.set(upload.key, { size: liveBytes.byteLength, etag: "etag_stored" });
+			const now = Date.now() + elapsed;
+			await t.run(async (ctx) =>
+				ctx.db.patch("files_r2_assets", upload.assetId, {
+					unfinalizedExpiresAt: now - 1,
+				}),
+			);
 
-		const swept = await t.mutation(internal.r2.cleanup_expired_unfinalized_assets, {
-			_test_now: now,
-			_test_disableReschedule: true,
-		});
-		expect(swept).toEqual({ deletedCount: 0, done: true });
-		await flush_scheduled(t);
+			const swept = await t.mutation(internal.r2.cleanup_expired_unfinalized_assets, {
+				_test_now: now,
+				_test_disableReschedule: true,
+			});
+			expect(swept).toEqual({ deletedCount: 0, done: true });
+			await flush_scheduled(t);
 
-		expect(r2_text(upload.liveKey)).toBe("copied-before-crash");
-		const recoveredAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId));
-		expect(recoveredAsset).toMatchObject({
-			r2Key: upload.liveKey,
-			size: liveBytes.byteLength,
-			etag: "etag_copied_before_crash",
-			processingWorkId: null,
-		});
-		expect(recoveredAsset?.unfinalizedExpiresAt).toBeUndefined();
-		expect(await get_deletion_job_by_key(t, upload.key)).toMatchObject({
-			reason: "upload_staging",
-			lastR2EventId: `upload_recovery_${upload.assetId}`,
-		});
-	});
+			expect(r2_text(upload.key)).toBe("stored-before-event-loss");
+			const recoveredAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId));
+			expect(recoveredAsset).toMatchObject({
+				r2Key: upload.key,
+				size: liveBytes.byteLength,
+				etag: "etag_stored",
+				processingWorkId: null,
+			});
+			expect(recoveredAsset?.unfinalizedExpiresAt).toBeUndefined();
+			expect(await get_deletion_job_by_key(t, upload.key)).toBeNull();
+			expect(await t.run(async (ctx) => ctx.db.get("files_nodes", upload.nodeId))).not.toBeNull();
+		},
+	);
 
 	test("retries an incomplete upload every hour while it is still young", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const upload = await create_upload_fixture(t, db, "sweeper-young.png");
-		// No staging object exists, so the recovery finds nothing to copy and leaves the deadline the
-		// sweep just wrote. That deadline is what this test is about.
+		// A missing object keeps the next retry deadline while the upload is young.
 		const now = Date.now();
 		await t.run(async (ctx) =>
 			ctx.db.patch("files_r2_assets", upload.assetId, {
@@ -2816,7 +2788,7 @@ describe("cleanup_expired_unfinalized_assets", () => {
 				unfinalizedExpiresAt: now - 1,
 			}),
 		);
-		vi.mocked(r2_server_side_copy.copy_object).mockClear();
+		vi.mocked(fetch).mockClear();
 
 		const swept = await t.mutation(internal.r2.cleanup_expired_unfinalized_assets, {
 			_test_now: now,
@@ -2827,10 +2799,10 @@ describe("cleanup_expired_unfinalized_assets", () => {
 		expect(swept).toEqual({ deletedCount: 0, done: true });
 		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId));
 		expect(asset?.unfinalizedExpiresAt).toBe(now + 7 * DAY_MS);
-		expect(vi.mocked(r2_server_side_copy.copy_object)).toHaveBeenCalled();
+		expect(fetch).toHaveBeenCalledWith(r2_url("object", upload.key));
 	});
 
-	test("a remint restarts the fast recovery window", async () => {
+	test("uses the signed URL issue time for the fast recovery window", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const upload = await create_upload_fixture(t, db, "sweeper-reminted.png");
@@ -2846,12 +2818,13 @@ describe("cleanup_expired_unfinalized_assets", () => {
 			_test_now: now,
 			_test_disableReschedule: true,
 		});
+		await flush_scheduled(t);
 
 		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId));
 		expect(asset?.unfinalizedExpiresAt).toBe(now + 60 * 60 * 1000);
 	});
 
-	test("stops recovery after eight days and hands both keys to the deletion ledger", async () => {
+	test("retires a missing upload after eight days and deletes its object key", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const upload = await create_upload_fixture(t, db, "sweeper-terminal.png");
@@ -2867,11 +2840,11 @@ describe("cleanup_expired_unfinalized_assets", () => {
 			_test_disableReschedule: true,
 		});
 
-		expect(swept).toEqual({ deletedCount: 1, done: true });
+		expect(swept).toEqual({ deletedCount: 0, done: true });
+		await flush_scheduled(t);
 		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", upload.nodeId))).toBeNull();
 		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId))).toBeNull();
-		expect(await get_deletion_job_by_key(t, upload.key)).toMatchObject({ reason: "upload_staging" });
-		expect(await get_deletion_job_by_key(t, upload.liveKey)).toMatchObject({ reason: "untracked_asset_event" });
+		expect(await get_deletion_job_by_key(t, upload.key)).toMatchObject({ reason: "untracked_asset_event" });
 	});
 
 	test("keeps an expired upload placeholder while the file is read-only", async () => {
@@ -2892,13 +2865,13 @@ describe("cleanup_expired_unfinalized_assets", () => {
 			_test_now: now,
 			_test_disableReschedule: true,
 		});
+		await flush_scheduled(t);
 
 		expect(swept).toEqual({ deletedCount: 0, done: true });
 		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", upload.nodeId))).not.toBeNull();
 		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId));
 		expect(asset?.unfinalizedExpiresAt).toBe(now + 7 * DAY_MS);
 		expect(await get_deletion_job_by_key(t, upload.key)).toBeNull();
-		expect(await get_deletion_job_by_key(t, upload.liveKey)).toBeNull();
 	});
 
 	test("deletes the kept placeholder on the next sweep once the lock is gone", async () => {
@@ -2920,10 +2893,11 @@ describe("cleanup_expired_unfinalized_assets", () => {
 			_test_disableReschedule: true,
 		});
 		expect(keptSweep).toEqual({ deletedCount: 0, done: true });
+		await flush_scheduled(t);
 
 		// The lock only delays the cleanup, it does not cancel it. After a manager unlocks the file,
 		// the recheck the sweep scheduled finishes the abandoned upload. Otherwise one lock would keep
-		// a failed placeholder and its two R2 keys alive forever.
+		// a failed placeholder and its R2 object alive forever.
 		await t.run(async (ctx) =>
 			ctx.db.patch("files_nodes", upload.nodeId, {
 				readOnlyScopeNodeId: undefined,
@@ -2934,35 +2908,23 @@ describe("cleanup_expired_unfinalized_assets", () => {
 			_test_disableReschedule: true,
 		});
 
-		expect(swept).toEqual({ deletedCount: 1, done: true });
+		expect(swept).toEqual({ deletedCount: 0, done: true });
+		await flush_scheduled(t);
 		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", upload.nodeId))).toBeNull();
 		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId))).toBeNull();
-		expect(await get_deletion_job_by_key(t, upload.key)).toMatchObject({ reason: "upload_staging" });
-		expect(await get_deletion_job_by_key(t, upload.liveKey)).toMatchObject({ reason: "untracked_asset_event" });
+		expect(await get_deletion_job_by_key(t, upload.key)).toMatchObject({ reason: "untracked_asset_event" });
 	});
 
-	test("recovers a text upload whose compressed head answer hides the object size", async () => {
+	test("recovers a text upload whose compressed response hides the object size", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const upload = await create_upload_fixture(t, db, "sweeper-compressed.md", "text/markdown");
-		const stagedBytes = new TextEncoder().encode("# staged markdown");
-		r2Objects.set(upload.key, stagedBytes);
-		r2ObjectMetadata.set(upload.key, { size: stagedBytes.byteLength, etag: "etag_compressed_staged" });
-		// Mirror the real action against a compressed head answer: the copy succeeds but
-		// cannot report the object size, and the copied object's own responses are
-		// compressed too.
-		vi.spyOn(r2_server_side_copy, "copy_object").mockImplementation(async (_ctx, args) => {
-			const bytes = r2Objects.get(args.sourceKey);
-			if (bytes === undefined) {
-				return { outcome: "source_missing" as const };
-			}
-			r2Objects.set(args.destinationKey, bytes);
-			r2ObjectMetadata.set(args.destinationKey, {
-				size: bytes.byteLength,
-				etag: "etag_compressed_staged",
-				compressed: true,
-			});
-			return { outcome: "copied" as const, size: undefined, etag: "etag_compressed_staged" };
+		const bytes = new TextEncoder().encode("# stored markdown");
+		r2Objects.set(upload.key, bytes);
+		r2ObjectMetadata.set(upload.key, {
+			size: bytes.byteLength,
+			etag: "etag_compressed",
+			compressed: true,
 		});
 		const now = Date.now();
 		await t.run(async (ctx) =>
@@ -2978,11 +2940,11 @@ describe("cleanup_expired_unfinalized_assets", () => {
 		expect(swept).toEqual({ deletedCount: 0, done: true });
 		await flush_scheduled(t);
 
-		expect(r2_text(upload.liveKey)).toBe("# staged markdown");
+		expect(r2_text(upload.key)).toBe("# stored markdown");
 		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId))).toMatchObject({
-			r2Key: upload.liveKey,
-			size: stagedBytes.byteLength,
-			etag: "etag_compressed_staged",
+			r2Key: upload.key,
+			size: bytes.byteLength,
+			etag: "etag_compressed",
 		});
 	});
 
@@ -3046,74 +3008,61 @@ describe("cleanup_expired_unfinalized_assets", () => {
 		expect(await get_deletion_job_by_key(t, "test/confirmed-orphan")).toBeNull();
 	});
 
-	test("keeps the deadline when the event confirms bytes for a node-less upload and later hands them to the ledger", async () => {
+	test("retires a node-less upload as soon as its event confirms bytes", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const upload = await create_upload_fixture(t, db, "node-less.png");
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
-		// The node is hard-deleted before the PUT's event arrives.
 		await t.run(async (ctx) => ctx.db.delete("files_nodes", upload.nodeId));
 		r2Objects.set(upload.key, new TextEncoder().encode("node-less-bytes"));
 
 		const response = await post_r2_put_event(t, {
 			bucket,
 			key: upload.key,
-			size: 16,
+			size: 15,
 			messageId: "message_node_less_put",
 		});
 		expect(response.status).toBe(204);
-
-		// Event confirmation records the key but must NOT clear the deadline: there is no durable
-		// live reference, so the asset is not published.
-		const confirmedAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId));
-		expect(confirmedAsset?.r2Key).toBe(upload.liveKey);
-		expect(confirmedAsset?.unfinalizedExpiresAt).toEqual(expect.any(Number));
-
-		// The expired sweep hands the exact key to the durable ledger and deletes the asset doc.
-		const swept = await t.mutation(internal.r2.cleanup_expired_unfinalized_assets, {
-			_test_now: (confirmedAsset?.unfinalizedExpiresAt ?? 0) + 1,
-		});
-		expect(swept.deletedCount).toBe(1);
 		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId))).toBeNull();
-		expect(await get_deletion_job_by_key(t, upload.key)).toMatchObject({ reason: "upload_staging" });
-		expect(await get_deletion_job_by_key(t, upload.liveKey)).toMatchObject({ reason: "untracked_asset_event" });
+		expect(await get_deletion_job_by_key(t, upload.key)).toMatchObject({ reason: "untracked_asset_event" });
 		await flush_scheduled(t);
 		expect(r2Objects.has(upload.key)).toBe(false);
-		expect(r2Objects.has(upload.liveKey)).toBe(false);
 	});
 
-	test("staging cleanup never clears the orphan deadline for a node-less published upload", async () => {
+	test("keeps a published asset that only history still references", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "node-less-cleanup.png");
+		const upload = await create_upload_fixture(t, db, "history.png");
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
-		await t.run(async (ctx) => ctx.db.delete("files_nodes", upload.nodeId));
-		r2Objects.set(upload.key, new TextEncoder().encode("orphan-bytes"));
 		expect(
 			(
 				await post_r2_put_event(t, {
 					bucket,
 					key: upload.key,
 					size: 12,
-					messageId: "message_node_less_cleanup",
+					messageId: "message_history",
 				})
 			).status,
 		).toBe(204);
-
-		const beforeCleanup = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId));
-		const stagingJob = await get_deletion_job_by_key(t, upload.key);
-		if (!stagingJob?.putMayArriveUntil) {
-			throw new Error("Expected staging cleanup tombstone");
-		}
-		await t.mutation(internal.r2_client.settle_object_deletion_job, {
-			jobId: stagingJob._id,
-			generation: stagingJob.generation,
-			deletedAt: stagingJob.putMayArriveUntil + 1,
+		await t.run(async (ctx) => {
+			await ctx.db.insert("files_snapshots", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				fileNodeId: upload.nodeId,
+				assetId: upload.assetId,
+				createdBy: db.userId,
+				archivedAt: -1,
+			});
+			await ctx.db.delete("files_nodes", upload.nodeId);
+			// A stale cleanup deadline must not erase bytes kept by history.
+			await ctx.db.patch("files_r2_assets", upload.assetId, { unfinalizedExpiresAt: Date.now() - 1 });
 		});
-
-		const afterCleanup = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId));
-		expect(afterCleanup?.r2Key).toBe(upload.liveKey);
-		expect(afterCleanup?.unfinalizedExpiresAt).toBe(beforeCleanup?.unfinalizedExpiresAt);
+		await t.mutation(internal.r2.cleanup_expired_unfinalized_assets, {
+			_test_now: Date.now() + 365 * DAY_MS,
+		});
+		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId))).not.toBeNull();
+		expect(r2Objects.has(upload.key)).toBe(true);
+		expect(await get_deletion_job_by_key(t, upload.key)).toBeNull();
 	});
 
 	test("keeps the finite delete path for reserved-scope assets", async () => {
@@ -3205,13 +3154,11 @@ describe("cleanup_expired_unfinalized_assets", () => {
 					action: "PutObject",
 					bucket: pending?.r2Bucket,
 					object: {
-						key:
-							pending?.uploadStagingR2Key ??
-							expected_asset_key({
-								organizationId: db.organizationId,
-								workspaceId: db.workspaceId,
-								assetId: upload._yay.assetId,
-							}),
+						key: expected_asset_key({
+							organizationId: db.organizationId,
+							workspaceId: db.workspaceId,
+							assetId: upload._yay.assetId,
+						}),
 						size: 2048,
 						eTag: "etag_sweep_check",
 					},
@@ -3610,118 +3557,86 @@ describe("content pipeline crash orphans", () => {
 });
 
 describe("process_uploaded_asset_event accepted upload", () => {
-	test("ignores an old event after the signed staging key was overwritten", async () => {
+	test("keeps a pending upload unpublished when its object is missing", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "stale-event.png");
+		const upload = await create_upload_fixture(t, db, "missing-event.png");
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
-		const currentBytes = new TextEncoder().encode("current-version");
-		r2Objects.set(upload.key, currentBytes);
-		r2ObjectMetadata.set(upload.key, { size: currentBytes.byteLength, etag: "etag_current" });
 
-		const staleResponse = await post_r2_put_event(t, {
+		const response = await post_r2_put_event(t, {
 			bucket,
 			key: upload.key,
 			size: 11,
-			messageId: "message_stale",
-			etag: "etag_stale",
+			messageId: "message_missing",
 			preserveObjectMetadata: true,
 		});
-		expect(staleResponse.status).toBe(204);
-		expect(r2Objects.has(upload.liveKey)).toBe(false);
+		expect(response.status).toBe(204);
 		expect((await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId)))?.r2Key).toBeUndefined();
-
-		const currentResponse = await post_r2_put_event(t, {
-			bucket,
-			key: upload.key,
-			size: currentBytes.byteLength,
-			messageId: "message_current",
-			etag: "etag_current",
-			preserveObjectMetadata: true,
-		});
-		expect(currentResponse.status).toBe(204);
-		expect(r2_text(upload.liveKey)).toBe("current-version");
-		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId))).toMatchObject({
-			r2Key: upload.liveKey,
-			size: currentBytes.byteLength,
-			etag: "etag_current",
-		});
+		expect(enqueueActionSpy).not.toHaveBeenCalled();
+		expect(await get_deletion_job_by_key(t, upload.key)).toBeNull();
 	});
 
-	test("publishes existing immutable bytes with their own metadata after a copy crash", async () => {
+	test("publishes the stored object's metadata instead of the event's metadata", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "copy-crash.png");
+		const upload = await create_upload_fixture(t, db, "stored-metadata.png");
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
-		const liveBytes = new TextEncoder().encode("immutable-first");
-		const laterBytes = new TextEncoder().encode("later-staging-version");
-		r2Objects.set(upload.liveKey, liveBytes);
-		r2ObjectMetadata.set(upload.liveKey, { size: liveBytes.byteLength, etag: "etag_immutable_first" });
-		r2Objects.set(upload.key, laterBytes);
-		r2ObjectMetadata.set(upload.key, { size: laterBytes.byteLength, etag: "etag_later_staging" });
+		const bytes = new TextEncoder().encode("immutable-first");
+		r2Objects.set(upload.key, bytes);
+		r2ObjectMetadata.set(upload.key, { size: bytes.byteLength, etag: "etag_immutable_first" });
 
 		const response = await post_r2_put_event(t, {
 			bucket,
 			key: upload.key,
-			size: laterBytes.byteLength,
-			messageId: "message_after_copy_crash",
-			etag: "etag_later_staging",
+			size: 999,
+			messageId: "message_wrong_metadata",
+			etag: "etag_wrong",
 			preserveObjectMetadata: true,
 		});
 		expect(response.status).toBe(204);
-
-		expect(r2_text(upload.liveKey)).toBe("immutable-first");
+		expect(r2_text(upload.key)).toBe("immutable-first");
 		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId))).toMatchObject({
-			r2Key: upload.liveKey,
-			size: liveBytes.byteLength,
+			r2Key: upload.key,
+			size: bytes.byteLength,
 			etag: "etag_immutable_first",
 		});
+		expect(r2_server_side_copy.copy_object).not.toHaveBeenCalled();
 	});
 
-	test("publishes an existing immutable text object whose response the edge compresses", async () => {
+	test("publishes a text object whose response the edge compresses", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const upload = await create_upload_fixture(t, db, "copy-crash-compressed.md", "text/markdown");
+		const upload = await create_upload_fixture(t, db, "compressed.md", "text/markdown");
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
-		// The immutable object and the staged object differ, so the assertions can tell the
-		// destination-replay path from a fresh copy.
-		const liveBytes = new TextEncoder().encode("# immutable markdown");
-		const laterBytes = new TextEncoder().encode("# later staged markdown");
-		r2Objects.set(upload.liveKey, liveBytes);
-		r2ObjectMetadata.set(upload.liveKey, {
-			size: liveBytes.byteLength,
-			etag: "etag_compressed_live",
-			compressed: true,
-		});
-		r2Objects.set(upload.key, laterBytes);
-		r2ObjectMetadata.set(upload.key, { size: laterBytes.byteLength, etag: "etag_compressed_staging" });
+		const bytes = new TextEncoder().encode("# immutable markdown");
+		r2Objects.set(upload.key, bytes);
+		r2ObjectMetadata.set(upload.key, { size: bytes.byteLength, etag: "etag_compressed", compressed: true });
 
 		const response = await post_r2_put_event(t, {
 			bucket,
 			key: upload.key,
-			size: laterBytes.byteLength,
-			messageId: "message_compressed_replay",
-			etag: "etag_compressed_staging",
+			size: 999,
+			messageId: "message_compressed",
+			etag: "etag_wrong",
 			preserveObjectMetadata: true,
 		});
 		expect(response.status).toBe(204);
-
-		expect(r2_text(upload.liveKey)).toBe("# immutable markdown");
+		expect(r2_text(upload.key)).toBe("# immutable markdown");
 		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId))).toMatchObject({
-			r2Key: upload.liveKey,
-			size: liveBytes.byteLength,
-			// The compressed response answers a weak quoted `W/"..."` ETag; the asset stores the bare form.
-			etag: "etag_compressed_live",
+			r2Key: upload.key,
+			size: bytes.byteLength,
+			etag: "etag_compressed",
 		});
 	});
 
-	test("keeps published bytes immutable after lock and a second PUT to the signed staging URL", async () => {
+	test("rejects a second PUT and keeps published bytes after a lock and duplicate event", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const upload = await create_upload_fixture(t, db, "immutable.png");
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
-
-		r2Objects.set(upload.key, new TextEncoder().encode("first-version"));
+		expect((await fetch(upload.url, { method: "PUT", headers: upload.headers, body: "first-version" })).status).toBe(
+			200,
+		);
 		expect(
 			(
 				await post_r2_put_event(t, {
@@ -3729,66 +3644,36 @@ describe("process_uploaded_asset_event accepted upload", () => {
 					key: upload.key,
 					size: 13,
 					messageId: "message_first_publish",
+					preserveObjectMetadata: true,
 				})
 			).status,
 		).toBe(204);
-		expect(r2_text(upload.liveKey)).toBe("first-version");
 
-		await t.run(async (ctx) =>
-			ctx.db.patch("files_nodes", upload.nodeId, {
-				readOnlyScopeNodeId: upload.nodeId,
-			}),
+		await t.run(async (ctx) => ctx.db.patch("files_nodes", upload.nodeId, { readOnlyScopeNodeId: upload.nodeId }));
+		expect((await fetch(upload.url, { method: "PUT", headers: upload.headers, body: "late-version" })).status).toBe(
+			412,
 		);
-		r2Objects.set(upload.key, new TextEncoder().encode("late-version"));
 		expect(
 			(
 				await post_r2_put_event(t, {
 					bucket,
 					key: upload.key,
-					size: 12,
-					messageId: "message_late_put",
+					size: 13,
+					messageId: "message_first_publish",
+					preserveObjectMetadata: true,
 				})
 			).status,
 		).toBe(204);
-
-		// A CopyObject notification for the live key is derived output. It must be ignored too.
-		const liveEventResponse = await t.fetch("/api/r2/event", {
-			method: "POST",
-			headers: {
-				Authorization: `Bearer ${process.env.CLOUDFLARE_EVENTS_SECRET}`,
-				"Content-Type": "application/json",
-			},
-			body: JSON.stringify({
-				cloudflareMessageId: "message_live_copy",
-				attempts: 1,
-				event: {
-					action: "PutObject",
-					bucket,
-					object: { key: upload.liveKey, size: 13, eTag: "etag_live_copy" },
-					eventTime: "2026-05-11T00:02:00.000Z",
-				},
-			}),
-		});
-		expect(liveEventResponse.status).toBe(204);
-
-		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId));
-		expect(asset).toMatchObject({
-			r2Key: upload.liveKey,
-			etag: "etag_message_first_publish",
-		});
-		expect(r2_text(upload.liveKey)).toBe("first-version");
-		expect(await get_deletion_job_by_key(t, upload.key)).toMatchObject({
-			reason: "upload_staging",
-			lastR2EventId: "message_late_put",
-		});
-		expect(await get_deletion_job_by_key(t, upload.liveKey)).toBeNull();
-
-		// The ledger owns the staging key from here, so whether its job already deleted those bytes
-		// depends on how many event-loop turns the last request happened to take. Drain the ledger
-		// and assert the end state instead: the late bytes go away and never reach the live key.
 		await flush_scheduled(t);
-		expect(r2Objects.has(upload.key)).toBe(false);
-		expect(r2_text(upload.liveKey)).toBe("first-version");
+
+		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId))).toMatchObject({
+			r2Key: upload.key,
+			size: 13,
+			etag: "etag_bytes_13",
+		});
+		expect(r2_text(upload.key)).toBe("first-version");
+		expect(await get_deletion_job_by_key(t, upload.key)).toBeNull();
+		expect(r2_server_side_copy.copy_object).not.toHaveBeenCalled();
 	});
 
 	test("finishes an accepted upload after the node becomes read-only", async () => {
@@ -3835,28 +3720,19 @@ describe("process_uploaded_asset_event accepted upload", () => {
 			]),
 		);
 		// The node was already created, so the accepted upload publishes like its unlocked sibling.
-		expect(lockedAsset?.r2Key).toBe(locked.liveKey);
+		expect(lockedAsset?.r2Key).toBe(locked.key);
 		expect(lockedAsset?.processingWorkId).toBeNull();
 		expect(lockedAsset?.unfinalizedExpiresAt).toBeUndefined();
 		// Publication does not change the lock or replace the node.
 		expect(lockedNode?.archiveOperationId).toBeUndefined();
 		expect(lockedNode?.assetId).toBe(locked.assetId);
 		expect(lockedNode?.readOnlyScopeNodeId).toBe(locked.nodeId);
-		expect(controlAsset?.r2Key).toBe(control.liveKey);
+		expect(controlAsset?.r2Key).toBe(control.key);
 		expect(controlAsset?.unfinalizedExpiresAt).toBeUndefined();
 
-		// Only the mutable staging key is cleaned. The immutable live key stays published.
-		const job = await get_deletion_job_by_key(t, locked.key);
-		expect(job).toMatchObject({
-			reason: "upload_staging",
-			generation: 1,
-			lastR2EventId: "message_locked_put",
-		});
-		expect(job?.putMayArriveUntil).toBe((lockedAsset?.uploadUrlExpiresAt ?? 0) + r2_PUT_MAY_ARRIVE_MARGIN_MS);
-		expect(job?.nextAttemptAt).toBe(job?.putMayArriveUntil);
-		expect(r2Objects.has(locked.key)).toBe(false);
-		expect(r2Objects.has(locked.liveKey)).toBe(true);
-		expect(r2Objects.has(control.liveKey)).toBe(true);
+		expect(await get_deletion_job_by_key(t, locked.key)).toBeNull();
+		expect(r2Objects.has(locked.key)).toBe(true);
+		expect(r2Objects.has(control.key)).toBe(true);
 
 		// Upload-completed plugins are part of finishing the accepted upload. Their own output
 		// writes still pass the normal destination lock checks.
@@ -3899,11 +3775,10 @@ describe("process_uploaded_asset_event accepted upload", () => {
 		await flush_scheduled(t);
 
 		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId));
-		expect(asset?.r2Key).toBe(upload.liveKey);
+		expect(asset?.r2Key).toBe(upload.key);
 		expect(asset?.unfinalizedExpiresAt).toBeUndefined();
-		expect(await get_deletion_job_by_key(t, upload.key)).toMatchObject({ reason: "upload_staging", generation: 1 });
-		expect(r2Objects.has(upload.key)).toBe(false);
-		expect(r2Objects.has(upload.liveKey)).toBe(true);
+		expect(await get_deletion_job_by_key(t, upload.key)).toBeNull();
+		expect(r2Objects.has(upload.key)).toBe(true);
 	});
 
 	test("advances the job generation per distinct event and recreates a settled job", async () => {
@@ -3911,6 +3786,11 @@ describe("process_uploaded_asset_event accepted upload", () => {
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const upload = await create_upload_fixture(t, db, "redelivered.png");
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
+		// The node and asset were removed before a delayed PUT reached R2.
+		await t.run(async (ctx) => {
+			await ctx.db.delete("files_nodes", upload.nodeId);
+			await ctx.db.delete("files_r2_assets", upload.assetId);
+		});
 		const post_event = async (messageId: string) => {
 			r2Objects.set(upload.key, new TextEncoder().encode(`bytes-${messageId}`));
 			const response = await post_r2_put_event(t, { bucket, key: upload.key, size: 10, messageId });
@@ -3939,7 +3819,7 @@ describe("process_uploaded_asset_event accepted upload", () => {
 			lastR2EventId: "message_d_2",
 		});
 
-		// After the staging job fully settles, a third PUT recreates it.
+		// After deletion settles, a delayed PUT can recreate the object and its job.
 		await t.run(async (ctx) => {
 			const job = await ctx.db
 				.query("files_r2_object_deletion_jobs")
@@ -4009,11 +3889,18 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 				contentType: "text/markdown;charset=utf-8",
 				declaredBytes: 1024,
 				actualBytes: null,
+				chargedBytes: 0,
 				nodeId: upload.nodeId,
 				assetId: upload.assetId,
 				state: "pending",
 				createdBy: db.userId,
 				updatedAt: now,
+			});
+			await ctx.db.insert("plugin_service_storage_attempts", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				targetId,
+				assetId: upload.assetId,
 			});
 			await ctx.db.patch("files_nodes", upload.nodeId, {
 				readOnlyScopeNodeId: upload.nodeId,
@@ -4031,7 +3918,12 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 	) {
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
 		r2Objects.set(upload.key, new TextEncoder().encode(content));
-		const response = await post_r2_put_event(t, { bucket, key: upload.key, size: 1024, messageId });
+		const response = await post_r2_put_event(t, {
+			bucket,
+			key: upload.key,
+			size: new TextEncoder().encode(content).byteLength,
+			messageId,
+		});
 		expect(response.status).toBe(204);
 	}
 
@@ -4089,11 +3981,9 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		expect(docs.node?.yjsRootKind).toBe("rich_text");
 		expect(docs.node?.readOnlyScopeNodeId).toBe(locked.nodeId);
 		expect(docs.asset?.processingWorkId).toBeNull();
-		expect(docs.asset?.r2Key).toBe(locked.liveKey);
-		expect(r2Objects.has(locked.liveKey)).toBe(true);
-		// Only normal staging cleanup remains.
-		expect(docs.jobs).toHaveLength(1);
-		expect(docs.jobs.find((job) => job.r2Key === locked.key)).toMatchObject({ reason: "upload_staging" });
+		expect(docs.asset?.r2Key).toBe(locked.key);
+		expect(r2Objects.has(locked.key)).toBe(true);
+		expect(docs.jobs).toHaveLength(0);
 	});
 
 	test("publishes a service non-collaborative text file without any Yjs docs or asset", async () => {
@@ -4211,7 +4101,7 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		let lockApplied = false;
 		fetchMock.mockImplementation(async (input, init) => {
 			const response = await fetchImplementation(input, init);
-			if (!lockApplied && String(input) === r2_url("object", upload.liveKey)) {
+			if (!lockApplied && String(input) === r2_url("object", upload.key)) {
 				lockApplied = true;
 				await t.run(async (ctx) =>
 					ctx.db.patch("files_nodes", upload.nodeId, {
@@ -4246,6 +4136,93 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		expect(settled.pluginRuns).toHaveLength(1);
 	});
 
+	test.each(["replaced", "deleted"] as const)("discards conversion output when its node is %s", async (change) => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const upload = await create_upload_fixture(t, db, "stale.md", "text/markdown;charset=utf-8");
+		await confirm_upload_put(t, upload, "# Stale conversion", "message_stale_conversion");
+		const newer = await create_upload_fixture(t, db, "newer.md", "text/markdown;charset=utf-8");
+
+		await run_conversion_with_mid_put_change(t, db, upload, async () => {
+			await t.run(async (ctx) => {
+				if (change === "deleted") {
+					await ctx.db.delete("files_nodes", upload.nodeId);
+				} else {
+					await ctx.db.patch("files_nodes", upload.nodeId, { assetId: newer.assetId });
+					await ctx.db.delete("files_nodes", newer.nodeId);
+				}
+			});
+		});
+		const docs = await t.run(async (ctx) => ({
+			node: await ctx.db.get("files_nodes", upload.nodeId),
+			assets: await ctx.db.query("files_r2_assets").collect(),
+			snapshots: await ctx.db.query("files_snapshots").collect(),
+			yjsSnapshots: await ctx.db.query("files_yjs_snapshots").collect(),
+			jobs: await ctx.db.query("files_r2_object_deletion_jobs").collect(),
+		}));
+		if (change === "deleted") {
+			expect(docs.node).toBeNull();
+		} else {
+			expect(docs.node?.assetId).toBe(newer.assetId);
+		}
+		expect(docs.assets.map((asset) => asset._id).sort()).toEqual([upload.assetId, newer.assetId].sort());
+		expect(docs.snapshots).toEqual([]);
+		expect(docs.yjsSnapshots).toEqual([]);
+		expect(docs.jobs).toHaveLength(2);
+		expect(docs.jobs.every((job) => job.reason === "failed_create")).toBe(true);
+		await flush_scheduled(t);
+		for (const job of docs.jobs) {
+			expect(r2Objects.has(job.r2Key)).toBe(false);
+		}
+	});
+
+	test("replaying conversion publication keeps the published snapshots", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const upload = await create_upload_fixture(t, db, "replayed.md", "text/markdown;charset=utf-8");
+		const text = "# Replayed conversion";
+		await confirm_upload_put(t, upload, text, "message_replayed_conversion");
+		await t.action(internal.r2.finalize_uploaded_text_file, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			assetId: upload.assetId,
+			eventId: "event_replayed_conversion",
+		});
+		const published = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", upload.nodeId);
+			const yjsSnapshot = node?.yjsSnapshotId ? await ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId) : null;
+			const yjsAsset = yjsSnapshot ? await ctx.db.get("files_r2_assets", yjsSnapshot.assetId) : null;
+			const versionAsset = node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
+			return { node, yjsAsset, versionAsset };
+		});
+		if (!published.yjsAsset || !published.versionAsset) throw new Error("Expected published snapshots");
+
+		await t.mutation(internal.r2.finalize_text_file_node_from_r2_assets, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			fileNodeId: upload.nodeId,
+			expectedUploadAssetId: upload.assetId,
+			userId: db.userId,
+			rootKind: "rich_text",
+			contentType: "text/markdown;charset=utf-8",
+			yjsSnapshot: { assetId: published.yjsAsset._id, size: published.yjsAsset.size },
+			versionSnapshotAssetId: published.versionAsset._id,
+			versionSnapshotSize: published.versionAsset.size,
+			text,
+			processingWorkAssetIds: [upload.assetId],
+		});
+		const replayed = await t.run(async (ctx) => ({
+			node: await ctx.db.get("files_nodes", upload.nodeId),
+			snapshots: await ctx.db.query("files_snapshots").collect(),
+			yjsSnapshots: await ctx.db.query("files_yjs_snapshots").collect(),
+			jobs: await ctx.db.query("files_r2_object_deletion_jobs").collect(),
+		}));
+		expect(replayed.node).toEqual(published.node);
+		expect(replayed.snapshots).toHaveLength(1);
+		expect(replayed.yjsSnapshots).toHaveLength(1);
+		expect(replayed.jobs).toEqual([]);
+	});
+
 	test("finishes when the node locks during conversion", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -4275,12 +4252,12 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		expect(published.node?.yjsRootKind).toBe("rich_text");
 		expect(published.node?.readOnlyScopeNodeId).toBe(upload.nodeId);
 		expect(published.sourceAsset?.processingWorkId).toBeNull();
-		expect(published.sourceAsset?.r2Key).toBe(upload.liveKey);
+		expect(published.sourceAsset?.r2Key).toBe(upload.key);
 		expect(published.assets).toHaveLength(3);
 		expect(published.yjsSnapshots).toHaveLength(1);
 		expect(published.snapshots).toHaveLength(1);
 		expect(published.chunks.length).toBeGreaterThan(0);
-		expect(published.jobs).toEqual([expect.objectContaining({ r2Key: upload.key, reason: "upload_staging" })]);
+		expect(published.jobs).toEqual([]);
 	});
 
 	test("stamps chunks with the live archive state when the node is archived during conversion", async () => {
@@ -4347,7 +4324,7 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		expect(published.node?.yjsSnapshotId).toEqual(expect.any(String));
 		expect(published.node?.yjsRootKind).toBe("rich_text");
 		expect(published.sourceAsset?.processingWorkId).toBeNull();
-		expect(published.jobs).toEqual([expect.objectContaining({ r2Key: upload.key, reason: "upload_staging" })]);
+		expect(published.jobs).toEqual([]);
 	});
 });
 
@@ -4601,6 +4578,10 @@ describe("process_object_deletion_job", () => {
 			const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 			const upload = await create_upload_fixture(t, db, "raced.png");
 			const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
+			const uploadUrlExpiresAt = await t.run(
+				async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.uploadUrlExpiresAt ?? 0,
+			);
+			await t.run(async (ctx) => ctx.db.delete("files_nodes", upload.nodeId));
 			r2Objects.set(upload.key, new TextEncoder().encode("first-bytes"));
 			const response = await post_r2_put_event(t, { bucket, key: upload.key, size: 11, messageId: "message_race_1" });
 			expect(response.status).toBe(204);
@@ -4634,10 +4615,10 @@ describe("process_object_deletion_job", () => {
 			const job = await get_deletion_job_by_key(t, upload.key);
 			expect(raced).toBe(true);
 			expect(job).toMatchObject({ generation: 2, lastR2EventId: "message_race_2" });
-			expect(job?.putMayArriveUntil).toBe((asset?.uploadUrlExpiresAt ?? 0) + r2_PUT_MAY_ARRIVE_MARGIN_MS);
+			expect(job?.putMayArriveUntil).toBeGreaterThanOrEqual(uploadUrlExpiresAt + r2_PUT_MAY_ARRIVE_MARGIN_MS);
 			expect(job?.nextAttemptAt).toBe(job?.putMayArriveUntil);
 			expect(r2Objects.has(upload.key)).toBe(false);
-			expect(asset?.unfinalizedExpiresAt).toBeUndefined();
+			expect(asset).toBeNull();
 		} finally {
 			vi.useRealTimers();
 		}
@@ -4653,9 +4634,10 @@ describe("process_object_deletion_job", () => {
 			// Stamp the mint-time signed-url expiry the create door will provide; the window derives
 			// from it.
 			const mintedNow = Date.now();
-			await t.run(async (ctx) =>
-				ctx.db.patch("files_r2_assets", upload.assetId, { uploadUrlExpiresAt: mintedNow + 60_000 }),
-			);
+			await t.run(async (ctx) => {
+				await ctx.db.patch("files_r2_assets", upload.assetId, { uploadUrlExpiresAt: mintedNow + 60_000 });
+				await ctx.db.delete("files_nodes", upload.nodeId);
+			});
 			r2Objects.set(upload.key, new TextEncoder().encode("tombstone-bytes"));
 			const response = await post_r2_put_event(t, {
 				bucket,
@@ -4695,7 +4677,7 @@ describe("process_object_deletion_job", () => {
 			expect(r2Objects.has(upload.key)).toBe(false);
 			expect(await get_deletion_job_by_key(t, upload.key)).toBeNull();
 			const settledAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId));
-			expect(settledAsset?.unfinalizedExpiresAt).toBeUndefined();
+			expect(settledAsset).toBeNull();
 		} finally {
 			vi.useRealTimers();
 		}
@@ -4817,8 +4799,7 @@ describe("r2_http_event authentication", () => {
 			expect(await get_deletion_job_by_key(t, upload.key), attempt.label).toBeNull();
 		}
 
-		// Prove the header alone caused those refusals. The same body with the real secret publishes
-		// the asset and hands the staging key to the deletion ledger.
+		// The same body with the real secret publishes the asset.
 		const accepted = await post_r2_put_event(t, {
 			bucket,
 			key: upload.key,
@@ -4826,8 +4807,8 @@ describe("r2_http_event authentication", () => {
 			messageId: "message_accepted",
 		});
 		expect(accepted.status).toBe(204);
-		expect((await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId)))?.r2Key).toBe(upload.liveKey);
-		expect(await get_deletion_job_by_key(t, upload.key)).toMatchObject({ reason: "upload_staging" });
+		expect((await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId)))?.r2Key).toBe(upload.key);
+		expect(await get_deletion_job_by_key(t, upload.key)).toBeNull();
 	});
 });
 
@@ -4880,8 +4861,8 @@ describe("record_untracked_asset_event", () => {
 			messageId: "message_tracked_put",
 		});
 		expect(trackedResponse.status).toBe(204);
-		expect((await t.run(async (ctx) => ctx.db.get("files_r2_assets", tracked.assetId)))?.r2Key).toBe(tracked.liveKey);
-		expect(await get_deletion_job_by_key(t, tracked.key)).toMatchObject({ reason: "upload_staging" });
+		expect((await t.run(async (ctx) => ctx.db.get("files_r2_assets", tracked.assetId)))?.r2Key).toBe(tracked.key);
+		expect(await get_deletion_job_by_key(t, tracked.key)).toBeNull();
 
 		// A key that is not a tenant asset key keeps answering 404.
 		const garbageResponse = await post_r2_put_event(t, {
@@ -4917,7 +4898,7 @@ describe("get_asset", () => {
 			asUser.query(api.r2.get_asset_by_file_node_id, { membershipId: db.membershipId, fileNodeId: upload.nodeId }),
 			t.run(async (ctx) => ctx.db.get("files_nodes", upload.nodeId)),
 		]);
-		expect(asset?.r2Key).toBe(upload.liveKey);
+		expect(asset?.r2Key).toBe(upload.key);
 		expect(asset?.unfinalizedExpiresAt).toBeUndefined();
 		expect(node?.readOnlyScopeNodeId).toBe(upload.nodeId);
 	});

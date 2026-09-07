@@ -21,6 +21,11 @@ import {
 import app_convex_schema from "./schema.ts";
 import { convex_error } from "../server/convex-utils.ts";
 
+const ETAG_WEAK_PREFIX_REGEX = /^W\//;
+const ETAG_QUOTES_REGEX = /^"|"$/g;
+const CONTENT_RANGE_TOTAL_REGEX = /\/(\d+)$/;
+const ASSET_KEY_REGEX = /^organizations\/[^/]+\/workspaces\/[^/]+\/assets\/([^/]+)$/;
+
 if (!process.env.R2_BUCKET_FILES) {
 	throw convex_error({ message: "R2_BUCKET_FILES is not set in Convex env" });
 }
@@ -45,29 +50,12 @@ if (!process.env.R2_SECRET_ACCESS_KEY) {
 
 const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
 
-const r2 = new R2(components.r2, {
+export const r2 = new R2(components.r2, {
 	bucket: R2_BUCKET_FILES,
 	endpoint: R2_ENDPOINT,
 	accessKeyId: R2_ACCESS_KEY_ID,
 	secretAccessKey: R2_SECRET_ACCESS_KEY,
 });
-
-export async function r2_get_download_url(args: {
-	key: Parameters<typeof r2.getUrl>[0];
-	options?: Parameters<typeof r2.getUrl>[1];
-}) {
-	return await r2.getUrl(args.key, {
-		...args.options,
-	});
-}
-
-export function r2_get_bucket() {
-	return r2.config.bucket;
-}
-
-export async function r2_generate_upload_url(key: Parameters<typeof r2.generateUploadUrl>[0]) {
-	return await r2.generateUploadUrl(key);
-}
 
 export function r2_create_asset_key(args: {
 	organizationId: string;
@@ -75,18 +63,6 @@ export function r2_create_asset_key(args: {
 	assetId: Id<"files_r2_assets">;
 }) {
 	return `organizations/${args.organizationId}/workspaces/${args.workspaceId}/assets/${args.assetId}`;
-}
-
-/**
- * Build the temporary R2 key used by a signed upload URL. The backend later copies this object to
- * the final key. Reusing the URL can change only the temporary object.
- */
-export function r2_create_upload_staging_key(args: {
-	organizationId: string;
-	workspaceId: string;
-	assetId: Id<"files_r2_assets">;
-}) {
-	return `organizations/${args.organizationId}/workspaces/${args.workspaceId}/upload-staging/${args.assetId}`;
 }
 
 /**
@@ -104,7 +80,7 @@ export async function r2_put_object(
 	},
 ) {
 	// Use signed PUT instead of r2.store() so deterministic content keys remain idempotent across Workpool retries.
-	const upload = await r2_generate_upload_url(args.key);
+	const upload = await r2.generateUploadUrl(args.key);
 	const response = await fetch(upload.url, {
 		method: "PUT",
 		headers: args.contentType ? { "Content-Type": args.contentType } : undefined,
@@ -124,12 +100,7 @@ export async function r2_put_object(
 }
 
 export async function r2_fetch_object_from_bucket(args: { key: string }) {
-	const url = await r2_get_download_url({
-		key: args.key,
-		options: {
-			expiresIn: 60,
-		},
-	});
+	const url = await r2.getUrl(args.key, { expiresIn: 60 });
 	const response = await fetch(url);
 	if (!response.ok) {
 		throw convex_error({
@@ -151,17 +122,12 @@ export async function r2_fetch_object_from_bucket(args: { key: string }) {
  * than requested at end-of-object.
  */
 export async function r2_fetch_object_range_from_bucket(args: { key: string; start: number; endInclusive: number }) {
-	const url = await r2_get_download_url({
-		key: args.key,
-		options: {
-			expiresIn: 60,
-		},
-	});
+	const url = await r2.getUrl(args.key, { expiresIn: 60 });
 	const response = await fetch(url, {
 		headers: { Range: `bytes=${args.start}-${args.endInclusive}` },
 	});
 	// 206 = partial content (range honored); 200 = full object (range ignored by store) — both usable.
-	if (!response.ok && response.status !== 206) {
+	if (!response.ok) {
 		throw convex_error({
 			message: "Failed to read R2 object range",
 			cause: {
@@ -173,6 +139,56 @@ export async function r2_fetch_object_range_from_bucket(args: { key: string; sta
 	}
 
 	return response;
+}
+
+/**
+ * Cloudflare can return weak, quoted ETags. Store the bare value used by R2 events.
+ */
+function normalize_etag(etag: string | null) {
+	return etag?.replace(ETAG_WEAK_PREFIX_REGEX, "").replace(ETAG_QUOTES_REGEX, "") ?? undefined;
+}
+
+/**
+ * Cloudflare can omit Content-Length on compressed responses. A one-byte range reports the full
+ * object size in Content-Range, such as `bytes 0-0/1234`.
+ */
+async function read_size_with_range(key: string) {
+	const response = await r2_fetch_object_range_from_bucket({ key, start: 0, endInclusive: 0 });
+	await response.body?.cancel();
+
+	const total = CONTENT_RANGE_TOTAL_REGEX.exec(response.headers.get("Content-Range") ?? "")?.[1];
+	return total === undefined ? undefined : Number(total);
+}
+
+/**
+ * Read the current object before publishing an upload event, which may have arrived late.
+ */
+export async function r2_get_object_metadata(ctx: ActionCtx, key: string) {
+	const url = await r2.getUrl(key, { expiresIn: 60 });
+	const response = await fetch(url);
+	await response.body?.cancel();
+
+	if (response.status === 404) {
+		return null;
+	}
+	if (!response.ok) {
+		throw convex_error({ message: "Failed to check R2 object", cause: { key, status: response.status } });
+	}
+
+	const etag = normalize_etag(response.headers.get("ETag"));
+	const contentLength = response.headers.get("Content-Length");
+	let size = contentLength === null ? undefined : Number(contentLength);
+	if (size === undefined || response.headers.has("Content-Encoding")) {
+		size = await read_size_with_range(key);
+	}
+
+	if (size === undefined || !Number.isSafeInteger(size) || size < 0 || contentLength === "") {
+		throw convex_error({ message: "R2 object has an invalid size", cause: { key, contentLength } });
+	}
+
+	await r2.syncMetadata(ctx, key);
+
+	return { size, etag };
 }
 
 // Keep this object so tests can replace the copy function. The real call asks the R2 component to
@@ -202,7 +218,7 @@ export const r2_server_side_copy = {
 };
 
 /**
- * Copy a temporary R2 object to its final key. Never replace an object already at the final key.
+ * Copy a saved file or version to a new content key. Reuse an existing destination.
  */
 export async function r2_copy_object_to_immutable_key(
 	ctx: ActionCtx,
@@ -224,36 +240,27 @@ export async function r2_copy_object_to_immutable_key(
 				cause: { key, contentLength },
 			});
 		}
+
 		return {
 			size,
-			// Cloudflare downgrades the ETag of a compressed response to a weak `W/"..."` form,
-			// and header etags carry quotes while event etags do not. Store one consistent bare
-			// shape across every publish path.
-			etag: response.headers.get("ETag")?.replace(/^W\//, "").replace(/^"|"$/g, "") ?? undefined,
+			etag: normalize_etag(response.headers.get("ETag")),
 		};
-	};
-
-	// Cloudflare's edge compresses text responses and drops their Content-Length. A ranged
-	// request is never compressed, and its Content-Range reports the full object size after
-	// the slash.
-	const readSizeWithRange = async (key: string) => {
-		const response = await r2_fetch_object_range_from_bucket({ key, start: 0, endInclusive: 0 });
-		await response.body?.cancel();
-		const total = /\/(\d+)$/.exec(response.headers.get("Content-Range") ?? "")?.[1];
-		return total === undefined ? undefined : Number(total);
 	};
 
 	const getDestinationMetadata = async (response: Response) => {
 		const metadata = readMetadata(response, args.destinationKey);
 		await response.body?.cancel();
-		const size = metadata.size ?? (await readSizeWithRange(args.destinationKey));
+
+		const size = metadata.size ?? (await read_size_with_range(args.destinationKey));
 		if (size === undefined) {
 			throw convex_error({
 				message: "Immutable R2 object is missing Content-Length",
 				cause: { key: args.destinationKey },
 			});
 		}
+
 		await r2.syncMetadata(ctx, args.destinationKey);
+
 		return {
 			outcome: "ready" as const,
 			size,
@@ -261,14 +268,11 @@ export async function r2_copy_object_to_immutable_key(
 		};
 	};
 
-	const destinationUrl = await r2_get_download_url({
-		key: args.destinationKey,
-		options: { expiresIn: 60 },
-	});
+	const destinationUrl = await r2.getUrl(args.destinationKey, { expiresIn: 60 });
 	const existingDestination = await fetch(destinationUrl);
 	if (existingDestination.ok) {
 		// A previous attempt may have copied the object before it crashed. Trust the final object's
-		// metadata because the temporary object may have changed.
+		// metadata because the source object may have changed.
 		return await getDestinationMetadata(existingDestination);
 	}
 	if (existingDestination.status !== 404) {
@@ -281,19 +285,17 @@ export async function r2_copy_object_to_immutable_key(
 		});
 	}
 
-	// The signed URL may have replaced the temporary object after R2 created this event. The event
-	// carries the object's eTag; without it the staged object cannot be verified, so treat the event
-	// as stale and let a later event or the recovery pass publish the object.
+	// A caller that pins the source must supply its ETag. Size alone cannot identify the expected bytes.
 	if (args.expectedSource !== undefined && args.expectedSource.etag === undefined) {
 		return { outcome: "stale_source" as const };
 	}
 
-	// Copy on the R2 server side. Streaming the staged body through a signed PUT sends it chunked
+	// Copy on the R2 server side. Streaming the source body through a signed PUT sends it chunked
 	// without Content-Length, and R2 refuses that with 411 for bodies the runtime does not buffer
 	// (observed live 2026-08-16 on a 2MB upload).
 	//
-	// The component action heads the staged object, refuses when it no longer matches the event, and
-	// copies with the head's own eTag as the precondition, so it never copies bytes it did not verify.
+	// The component checks the source metadata against any expected size and ETag. The copy uses
+	// that ETag as a condition, so it fails if the source changes after the check.
 	const copied = await r2_server_side_copy.copy_object(ctx, {
 		sourceKey: args.sourceKey,
 		destinationKey: args.destinationKey,
@@ -309,23 +311,21 @@ export async function r2_copy_object_to_immutable_key(
 
 	// A compressed head answer hides the copied object's size. The copy above put the
 	// object at the destination, so the ranged read can report it.
-	const size = copied.size ?? args.expectedSource?.size ?? (await readSizeWithRange(args.destinationKey));
+	const size = copied.size ?? args.expectedSource?.size ?? (await read_size_with_range(args.destinationKey));
 	if (size === undefined) {
 		throw convex_error({
-			message: "Staged R2 object is missing Content-Length",
+			message: "Source R2 object is missing Content-Length",
 			cause: { key: args.sourceKey },
 		});
 	}
+
 	await r2.syncMetadata(ctx, args.destinationKey);
+
 	return {
 		outcome: "ready" as const,
 		size,
 		etag: copied.etag,
 	};
-}
-
-export async function r2_delete_object(ctx: MutationCtx, key: string) {
-	await r2.deleteObject(ctx, key);
 }
 
 /**
@@ -594,11 +594,9 @@ export const settle_object_deletion_job = internalMutation({
 		await ctx.runMutation(components.r2.lib.deleteMetadata, { bucket: R2_BUCKET_FILES, key: job.r2Key });
 		await ctx.db.delete("files_r2_object_deletion_jobs", job._id);
 
-		// A plugin service upload keeps a target doc next to its canonical object. This confirmed
-		// delete is the one moment the object is provably gone, so the doc is retired here. The
-		// charged quota bytes are not given back: `plugin_service_storage_bytes` only counts up, the
-		// same way the normal upload quota does.
-		const canonicalMatch = /^organizations\/[^/]+\/workspaces\/[^/]+\/assets\/([^/]+)$/.exec(job.r2Key);
+		// Keep the target and its attempt receipts for late events and replayed service calls.
+		// Deleting a superseded attempt must not release the current target.
+		const canonicalMatch = ASSET_KEY_REGEX.exec(job.r2Key);
 		const deletedAssetId = canonicalMatch ? ctx.db.normalizeId("files_r2_assets", canonicalMatch[1]) : null;
 		if (deletedAssetId) {
 			const serviceTarget = await ctx.db
@@ -606,7 +604,10 @@ export const settle_object_deletion_job = internalMutation({
 				.withIndex("by_asset", (q) => q.eq("assetId", deletedAssetId))
 				.first();
 			if (serviceTarget && serviceTarget.state === "committed") {
-				await ctx.db.delete("plugin_service_storage_targets", serviceTarget._id);
+				await ctx.db.patch("plugin_service_storage_targets", serviceTarget._id, {
+					state: "released",
+					updatedAt: Date.now(),
+				});
 			}
 		}
 

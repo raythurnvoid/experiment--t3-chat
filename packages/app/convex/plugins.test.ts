@@ -1447,7 +1447,7 @@ describe("plugins Phase 0", () => {
 		await drain_scheduled_work(t);
 	});
 
-	test("an upload owned by a service storage target never dispatches upload runs", async () => {
+	test("an upload with a service attempt receipt never dispatches upload runs", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin(t, membership.userId, { contentTypes: ["image/png"] });
@@ -1472,7 +1472,7 @@ describe("plugins Phase 0", () => {
 		}
 		await t.run((ctx) => ctx.db.patch("files_r2_assets", upload._yay.assetId, { r2Key: "uploads/service.png" }));
 
-		// A plugin service stored this file: the target row is what marks the asset.
+		// The receipt keeps this file's service origin separate from the target's current pointer.
 		const targetId = await t.run(async (ctx) => {
 			const now = Date.now();
 			const destination = await ctx.db
@@ -1488,7 +1488,7 @@ describe("plugins Phase 0", () => {
 			if (!destination) {
 				throw new Error("Expected the service target destination folder");
 			}
-			return await ctx.db.insert("plugin_service_storage_targets", {
+			const targetId = await ctx.db.insert("plugin_service_storage_targets", {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				installationId: installed._yay.installationId,
@@ -1501,12 +1501,20 @@ describe("plugins Phase 0", () => {
 				contentType: "image/png",
 				declaredBytes: 1024,
 				actualBytes: null,
+				chargedBytes: 0,
 				nodeId: upload._yay.nodeId,
 				assetId: upload._yay.assetId,
 				state: "pending",
 				createdBy: membership.userId,
 				updatedAt: now,
 			});
+			await ctx.db.insert("plugin_service_storage_attempts", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				targetId,
+				assetId: upload._yay.assetId,
+			});
+			return targetId;
 		});
 
 		const gated = await t.run(async (ctx) => {
@@ -1524,9 +1532,14 @@ describe("plugins Phase 0", () => {
 		expect(gated).toEqual({ enqueued: 0 });
 		expect(await t.run((ctx) => ctx.db.query("plugins_event_runs").collect())).toHaveLength(0);
 
-		// Positive control: the same asset dispatches once the service target row is gone, so the
+		// Positive control: the same asset dispatches once its service ownership docs are gone, so the
 		// refusal above came from the gate and not from some other eligibility check.
-		await t.run((ctx) => ctx.db.delete("plugin_service_storage_targets", targetId));
+		await t.run(async (ctx) => {
+			const receipt = await ctx.db.query("plugin_service_storage_attempts")
+				.withIndex("by_asset", (q) => q.eq("assetId", upload._yay.assetId)).first();
+			await ctx.db.delete("plugin_service_storage_attempts", receipt!._id);
+			await ctx.db.delete("plugin_service_storage_targets", targetId);
+		});
 		const ungated = await t.run(async (ctx) => {
 			const asset = await ctx.db.get("files_r2_assets", upload._yay.assetId);
 			const fileNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
@@ -1670,7 +1683,11 @@ describe("plugins Phase 0", () => {
 			await t.run((ctx) => ctx.db.patch("files_nodes", upload._yay.nodeId, { path, treePath: path }));
 			const processed = await t.mutation(internal.r2.process_uploaded_asset_event, {
 				assetId: upload._yay.assetId,
-				r2Key: `uploads/${filename}`,
+				r2Key: r2_create_asset_key({
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					assetId: upload._yay.assetId,
+				}),
 				size: 1024,
 				eventId,
 			});
@@ -1727,7 +1744,11 @@ describe("plugins Phase 0", () => {
 
 		const processed = await t.mutation(internal.r2.process_uploaded_asset_event, {
 			assetId: upload._yay.assetId,
-			r2Key: "uploads/notes.dat",
+			r2Key: r2_create_asset_key({
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				assetId: upload._yay.assetId,
+			}),
 			size: 1024,
 			eventId: "r2:notes",
 		});
@@ -1754,7 +1775,11 @@ describe("plugins Phase 0", () => {
 		}
 		const processedUnsubscribed = await t.mutation(internal.r2.process_uploaded_asset_event, {
 			assetId: unsubscribed._yay.assetId,
-			r2Key: "uploads/archive.zip",
+			r2Key: r2_create_asset_key({
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				assetId: unsubscribed._yay.assetId,
+			}),
 			size: 1024,
 			eventId: "r2:archive",
 		});

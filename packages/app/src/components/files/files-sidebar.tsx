@@ -316,6 +316,8 @@ type FilesImportStoreState = {
 	total: number;
 	/** How many files finished uploading. */
 	done: number;
+	/** Existing upload objects still waiting for server confirmation. */
+	pendingConfirmation: number;
 	/** Client-side and server-side skips, merged for the final report. */
 	skipped: Array<{ relativePath: string; reason: FilesImportSkipReason }>;
 	failed: Array<{ relativePath: string }>;
@@ -332,6 +334,7 @@ const FILES_IMPORT_INITIAL_STATE: FilesImportStoreState = {
 	membershipId: null,
 	total: 0,
 	done: 0,
+	pendingConfirmation: 0,
 	skipped: [],
 	failed: [],
 	conflicts: [],
@@ -498,7 +501,7 @@ function show_import_progress_toast() {
 			? "Preparing files to import..."
 			: state.phase === "confirming"
 				? "Waiting for a choice about existing files..."
-				: `Uploading ${Math.min(state.done + 1, state.total)} of ${state.total} files...`;
+				: `Uploading ${Math.min(state.done + state.pendingConfirmation + 1, state.total)} of ${state.total} files...`;
 
 	toast(message, {
 		id: FILES_IMPORT_PROGRESS_TOAST_ID,
@@ -526,6 +529,9 @@ function finish_import_run() {
 	}
 
 	const summaryParts = [`${state.done} imported`];
+	if (state.pendingConfirmation > 0) {
+		summaryParts.push(`${state.pendingConfirmation} awaiting confirmation`);
+	}
 	if (state.skipped.length > 0) {
 		summaryParts.push(`${state.skipped.length} skipped`);
 	}
@@ -538,6 +544,8 @@ function finish_import_run() {
 		toast.info(`Import cancelled: ${summary}.`);
 	} else if (state.failed.length > 0) {
 		toast.error(`Import finished: ${summary}.`);
+	} else if (state.pendingConfirmation > 0) {
+		toast.info(`Import finished: ${summary}.`);
 	} else {
 		toast.success(`Import finished: ${summary}.`);
 	}
@@ -738,6 +746,12 @@ async function run_folder_import(args: {
 
 				try {
 					const response = await fetch(created.url, { method: "PUT", headers: created.headers, body: item.file });
+					// This attempt already has an object. Keep its node while the R2 event confirms it.
+					if (response.status === 412) {
+						useFilesImportStore.setState((state) => ({ pendingConfirmation: state.pendingConfirmation + 1 }));
+						show_import_progress_toast();
+						return;
+					}
 					if (!response.ok) {
 						throw new Error(`R2 upload failed with status ${response.status}`);
 					}
@@ -4194,6 +4208,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 						headers: created._yay.headers,
 						body: args.file,
 					});
+					// Another PUT already stored this attempt. The file status waits for the R2 event.
+					if (uploadResponse.status === 412) {
+						toast.info("Waiting for upload confirmation.");
+						return null;
+					}
 					if (!uploadResponse.ok) {
 						console.error("[FilesSidebar.uploadFile] R2 upload failed", {
 							status: uploadResponse.status,
@@ -6424,6 +6443,49 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(createCalls).toBe(2);
 			expect(maxDone).toBe(1);
+			expect(maxFailed).toBe(0);
+			expect(useFilesImportStore.getState().phase).toBe("idle");
+		});
+
+		test("run_folder_import keeps an existing upload pending after a 412", async () => {
+			const headers = { "Content-Type": "application/pdf", "If-None-Match": "*" };
+			const mutation = vi.fn(async () => ({
+				_yay: {
+					created: [{ relativePath: "a.pdf", nodeId: "node1", url: "https://r2.test/a", headers }],
+					skipped: [],
+				},
+			}));
+			const convexStub = { query: async () => [], mutation } as unknown as ConvexReactClient;
+			const fetchMock = vi.fn(async () => new Response(null, { status: 412 }));
+			vi.stubGlobal("fetch", fetchMock);
+			let maxPending = 0;
+			let maxDone = 0;
+			let maxFailed = 0;
+			const unsubscribe = useFilesImportStore.subscribe((state) => {
+				maxPending = Math.max(maxPending, state.pendingConfirmation);
+				maxDone = Math.max(maxDone, state.done);
+				maxFailed = Math.max(maxFailed, state.failed.length);
+			});
+			try {
+				await run_folder_import({
+					convex: convexStub,
+					membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+					parentId: files_ROOT_ID,
+					entries: get_import_file_entries([test_file_with_path("a.pdf", "./a.pdf")]),
+				});
+			} finally {
+				unsubscribe();
+				vi.unstubAllGlobals();
+			}
+
+			expect(mutation).toHaveBeenCalledTimes(1);
+			expect(fetchMock).toHaveBeenCalledWith("https://r2.test/a", {
+				method: "PUT",
+				headers,
+				body: expect.any(File),
+			});
+			expect(maxPending).toBe(1);
+			expect(maxDone).toBe(0);
 			expect(maxFailed).toBe(0);
 			expect(useFilesImportStore.getState().phase).toBe("idle");
 		});

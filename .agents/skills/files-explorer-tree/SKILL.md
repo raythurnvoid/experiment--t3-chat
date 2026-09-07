@@ -49,9 +49,10 @@ The Files sidebar is implemented in `files-sidebar.tsx` on top of `@headless-tre
 - Clicking a folder opens its folder screen. `FileNodeView` decides whether the selected node renders the folder explorer or the file editor, and folder screens embed an editable child `README.md` when present.
 - Editable file nodes have `assetId`, the stored content type (`text/markdown` for a Markdown file, `application/json` for a JSON file, whatever their names), a `yjsRootKind`, Yjs snapshot and update docs, exact text chunks, plain-text search chunks, and snapshots. `assetId` points at the newest content snapshot asset (each materialization/restore re-points it), while committed current reads use the chunks. If an editable node came from an upload, R2 also retains the original upload object.
 - User-created Markdown files and the auto-created home `README.md` are seeded by the Convex create action with `files_INITIAL_CONTENT`; the rich-text editor must not bootstrap initial Yjs content on the client.
-- Uploaded source file nodes create an upload asset immediately. The signed PUT writes to
-  `uploadStagingR2Key`. The R2 event finalizer verifies that staging file, copies it once to the
-  immutable live key, and then stores the live `r2Key`. The node keeps the content type it was
+- Uploaded source file nodes create an upload asset immediately. The signed PUT writes directly to
+  its canonical asset key with signed `If-None-Match: *`, so a repeated PUT cannot overwrite it.
+  The R2 event finalizer checks the stored object before publishing `r2Key`, size, and etag.
+  The node keeps the content type it was
   created with: the caller's valid type, else the name's hint, else `application/octet-stream`.
 - After publication, the finalizer reads that stored type. It converts editable text
   uploads into the normal editable shape: a Yjs snapshot in the type's `yjsRootKind`, chunks, and the
@@ -251,10 +252,11 @@ Tree-item components:
 1. The Upload file menu action and a single bare-file drop receive one file. Folder drops, multi-file drops, and the Import folder picker run the folder import flow, which ends in the same per-file lifecycle below.
 2. The client prepares static images, takes each file's type from its name's hint (or the browser type when the name has none), normalizes the path, and opens the draft/conflict modal when needed (single file) or the import conflict modal once for the whole batch (folder import).
 3. `files_nodes.create_upload_node` (single) or `files_nodes.create_upload_nodes` (batch) validates the request and creates the upload asset plus visible source node. After batch validation, per-item problems are reported as skips, never whole-call failures. `create_upload_node` takes `onConflict: "replace" | "fail"`: `"replace"` (the sidebar's choice after the conflict modal) archives the existing file, `"fail"` answers `_nay` with the path-taken message so the caller can pick another name — the rich-text editor always uses `"fail"` because the existing file may be another document's embed.
-4. The browser uploads the binary to `uploadStagingR2Key` through the signed R2 PUT URL.
-5. The R2 event verifies the staging file, copies it once to the immutable live key, and publishes the
-   live key, size, and optional ETag. If the node became read-only after step 3, this accepted upload
-   still finishes and the node keeps its lock.
+4. The browser uploads directly to the fresh asset's canonical key through the signed R2 PUT URL.
+   Send every returned header, including `If-None-Match: *`. A 412 means the attempt already has an
+   object, not that this PUT's body matches it. Keep the node and wait for its normal server status.
+5. The R2 event verifies the stored object and publishes its key, size, and optional ETag. If the
+   node became read-only after step 3, this accepted upload still finishes and the node keeps its lock.
 6. Editable text uploads (decided by the node's stored content type) run the host conversion, which creates the Yjs document in the type's shape, chunks, and a content snapshot on the uploaded node. Oversized or undecodable text stays a stored file.
 7. Uploads that stay stored blobs — non-editable types and fallback-settled text — become terminal source files and dispatch eligible `files.upload.completed` plugin runs.
 8. Installed first-party plugins own PDF, image, video, and audio-derived outputs plus their external provider calls.
@@ -273,6 +275,8 @@ Tree-item components:
 - Before any write, the client asks `files_nodes.get_upload_conflicts` which target paths already exist and confirms replace/skip once in `FilesSidebarImportConflictModal`. The query filters by per-node `content.read`, so it reveals nothing `list_tree` would not show.
 - Replace mode archives an existing file only after every existing folder on the item's path passed `content.write` (the pre-walk), so a refused item can never archive a file without importing its replacement.
 - A failed or cancelled PUT calls `files_nodes.discard_failed_upload_node`, which removes the placeholder node and deletes the R2 object. `removed: false` means the R2 event recorded the object first, and the client counts the file as imported.
+- A PUT 412 never calls discard. The import summary counts it as awaiting confirmation, and the
+  normal file status updates when the R2 event arrives. It does not count that response as an imported file.
 - Import assets keep `processingWorkId` unset, so the standard R2 event finalizer runs text conversion and plugin dispatch exactly like single-file uploads. `data_import` differs: it suppresses processing with `processingWorkId: null`.
 
 # Headless-Tree Configuration Highlights

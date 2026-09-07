@@ -18,7 +18,7 @@ import { billing_PRODUCTS } from "../shared/billing.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import { files_create_room_id, files_get_utf8_byte_size } from "../shared/files.ts";
 import { app_presence_GLOBAL_ROOM_ID } from "../shared/shared-presence-constants.ts";
-import { r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_create_asset_key, r2_create_upload_staging_key } from "./r2_client.ts";
+import { r2, r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_create_asset_key } from "./r2_client.ts";
 
 const RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -2835,7 +2835,7 @@ describe("process_workspace_deletion_request", () => {
 		expect(remaining.pendingUpdates).toHaveLength(0);
 	});
 
-	test("durably deletes live and staging keys for an upload asset without r2Key", async () => {
+	test("durably deletes the direct upload key before deleting an unpublished asset", async () => {
 		const t = test_convex();
 		const user = await t.run((ctx) =>
 			data_deletion_test_bootstrap_user(ctx, {
@@ -2844,7 +2844,7 @@ describe("process_workspace_deletion_request", () => {
 			}),
 		);
 
-		const { assetId, requestId, stagingKey, uploadUrlExpiresAt } = await t.run(async (ctx) => {
+		const { assetId, requestId, uploadUrlExpiresAt } = await t.run(async (ctx) => {
 			const now = Date.now();
 			const uploadUrlExpiresAt = now + 60_000;
 			const assetId = await ctx.db.insert("files_r2_assets", {
@@ -2858,12 +2858,6 @@ describe("process_workspace_deletion_request", () => {
 				uploadUrlExpiresAt,
 				updatedAt: now,
 			});
-			const stagingKey = r2_create_upload_staging_key({
-				organizationId: user.defaultOrganizationId,
-				workspaceId: user.defaultWorkspaceId,
-				assetId,
-			});
-			await ctx.db.patch("files_r2_assets", assetId, { uploadStagingR2Key: stagingKey });
 			await ctx.db.insert("files_nodes", {
 				organizationId: user.defaultOrganizationId,
 				workspaceId: user.defaultWorkspaceId,
@@ -2887,7 +2881,7 @@ describe("process_workspace_deletion_request", () => {
 				scope: "workspace",
 			});
 
-			return { assetId, requestId, stagingKey, uploadUrlExpiresAt };
+			return { assetId, requestId, uploadUrlExpiresAt };
 		});
 		await data_deletion_test_process_workspace_request_until_done(t, {
 			requestId,
@@ -2903,24 +2897,134 @@ describe("process_workspace_deletion_request", () => {
 			async (ctx) =>
 				await ctx.db
 					.query("files_r2_object_deletion_jobs")
-					.filter((q) => q.or(q.eq(q.field("r2Key"), liveKey), q.eq(q.field("r2Key"), stagingKey)))
+					.withIndex("by_r2_key", (q) => q.eq("r2Key", liveKey))
 					.collect(),
 		);
-		expect(jobs).toHaveLength(2);
-		expect(jobs.find((job) => job.r2Key === liveKey)).toMatchObject({
+		expect(jobs).toHaveLength(1);
+		expect(jobs[0]).toMatchObject({
 			r2Key: liveKey,
 			reason: "untracked_asset_event",
-		});
-		expect(jobs.find((job) => job.r2Key === liveKey)).not.toHaveProperty("putMayArriveUntil");
-		expect(jobs.find((job) => job.r2Key === stagingKey)).toMatchObject({
-			r2Key: stagingKey,
-			reason: "upload_staging",
 			putMayArriveUntil: uploadUrlExpiresAt + r2_PUT_MAY_ARRIVE_MARGIN_MS,
 		});
 		expect(await t.run((ctx) => ctx.db.get("files_r2_assets", assetId))).toBeNull();
 	});
 
-	test("keeps a legacy upload target tombstoned through its signed URL lifetime", async () => {
+	test("keeps service attribution until its files are gone and never recreates it for a late event", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-service-purge-order",
+				displayName: "Service Purge Order",
+			}),
+		);
+		const seeded = await t.run(async (ctx) => {
+			const scope = {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+			};
+			const { installationId } = await data_deletion_test_seed_plugin_ui_sessions(ctx, {
+				...scope,
+				userId: user.userId,
+				sessionCount: 0,
+			});
+			const { nodeId } = await data_deletion_test_seed_page(ctx, {
+				...scope,
+				userId: user.userId,
+				tag: "service-upload",
+			});
+			const node = await ctx.db.get("files_nodes", nodeId);
+			if (!node?.assetId) throw new Error("Missing upload asset");
+			await ctx.db.patch("files_r2_assets", node.assetId, {
+				kind: "upload",
+				r2Key: undefined,
+				uploadUrlExpiresAt: Date.now() + 15 * 60 * 1000,
+			});
+			const targetId = await ctx.db.insert("plugin_service_storage_targets", {
+				...scope,
+				installationId,
+				idempotencyKey: "purge-order",
+				targetKey: "upload",
+				requestFingerprint: "purge-order",
+				destinationPath: "/",
+				destinationNodeId: nodeId,
+				path: node.path,
+				contentType: "text/plain",
+				declaredBytes: 12,
+				actualBytes: null,
+				chargedBytes: 0,
+				nodeId,
+				assetId: node.assetId,
+				state: "pending",
+				createdBy: user.userId,
+				updatedAt: Date.now(),
+			});
+			const receiptId = await ctx.db.insert("plugin_service_storage_attempts", {
+				...scope,
+				targetId,
+				assetId: node.assetId,
+			});
+			const quotaId = await quotas_db_ensure(ctx, {
+				...scope,
+				quotaName: "plugin_service_storage_bytes",
+				now: Date.now(),
+			});
+			const requestId = await data_deletion_db_request(ctx, {
+				...scope,
+				userId: user.userId,
+				scope: "workspace",
+			});
+			return { nodeId, assetId: node.assetId, targetId, receiptId, quotaId, requestId };
+		});
+
+		let done = false;
+		for (let step = 0; step < 30 && !done; step++) {
+			const result = await t.mutation(internal.data_deletion.process_workspace_deletion_request, {
+				requestId: seeded.requestId,
+				_test_batchSize: 1,
+			});
+			done = result.done;
+			const state = await t.run(async (ctx) => ({
+				asset: await ctx.db.get("files_r2_assets", seeded.assetId),
+				node: await ctx.db.get("files_nodes", seeded.nodeId),
+				target: await ctx.db.get("plugin_service_storage_targets", seeded.targetId),
+				receipt: await ctx.db.get("plugin_service_storage_attempts", seeded.receiptId),
+				quota: await ctx.db.get("quotas", seeded.quotaId),
+			}));
+			if (state.asset || state.node) {
+				expect(state.target).not.toBeNull();
+				expect(state.receipt).not.toBeNull();
+			}
+			if (state.target || state.receipt) expect(state.quota).not.toBeNull();
+		}
+		expect(done).toBe(true);
+
+		const key = r2_create_asset_key({
+			organizationId: user.defaultOrganizationId,
+			workspaceId: user.defaultWorkspaceId,
+			assetId: seeded.assetId,
+		});
+		await t.mutation(internal.r2.record_untracked_asset_event, {
+			bucket: r2.config.bucket,
+			key,
+			size: 1000,
+			eventId: "service-purge-late-event",
+		});
+		const final = await t.run(async (ctx) => ({
+			targets: await ctx.db.query("plugin_service_storage_targets").collect(),
+			receipts: await ctx.db.query("plugin_service_storage_attempts").collect(),
+			quota: await ctx.db.get("quotas", seeded.quotaId),
+			job: await ctx.db
+				.query("files_r2_object_deletion_jobs")
+				.withIndex("by_r2_key", (q) => q.eq("r2Key", key))
+				.first(),
+		}));
+		expect(final.targets).toHaveLength(0);
+		expect(final.receipts).toHaveLength(0);
+		expect(final.quota).toBeNull();
+		expect(final.job).not.toBeNull();
+	});
+
+	test("keeps a direct upload target tombstoned through its signed URL lifetime", async () => {
 		const t = test_convex();
 		const user = await t.run((ctx) =>
 			data_deletion_test_bootstrap_user(ctx, {

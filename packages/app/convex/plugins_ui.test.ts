@@ -7,7 +7,7 @@ import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_db_yjs_push_update, files_nodes_db_create_node_recursively_at_path } from "./files_nodes.ts";
-import { r2_get_bucket } from "./r2_client.ts";
+import { r2 } from "./r2_client.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { files_u8_to_array_buffer } from "../server/files.ts";
@@ -371,7 +371,7 @@ async function seed_upload_node(
 			organizationId: fixture.membership.organizationId,
 			workspaceId: fixture.membership.workspaceId,
 			kind: "upload",
-			r2Bucket: r2_get_bucket(),
+			r2Bucket: r2.config.bucket,
 			size: 1024,
 			createdBy: fixture.membership.userId,
 			updatedAt: now,

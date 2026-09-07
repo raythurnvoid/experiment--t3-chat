@@ -21,13 +21,11 @@ import {
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { crypto_sha256_hex, crypto_timing_safe_equal } from "../server/crypto-utils.ts";
 import {
+	r2,
 	r2_create_asset_key,
-	r2_copy_object_to_immutable_key,
-	r2_delete_object,
+	r2_get_object_metadata,
 	r2_enqueue_object_deletion_job,
 	r2_fetch_object_from_bucket,
-	r2_get_bucket,
-	r2_get_download_url,
 	r2_put_object,
 	r2_PUT_MAY_ARRIVE_MARGIN_MS,
 	r2_UNFINALIZED_ASSET_TTL_MS,
@@ -49,6 +47,7 @@ import {
 } from "./access_control.ts";
 import { plugins_runtime_db_enqueue_upload_completed_runs } from "./plugins_runtime.ts";
 import {
+	public_api_service_uploads_db_get_target_by_asset,
 	public_api_service_uploads_db_record_untracked_asset_bytes,
 	public_api_service_uploads_db_settle_canonicalized_asset,
 } from "./public_api_service_uploads.ts";
@@ -89,6 +88,7 @@ if (!process.env.CLOUDFLARE_EVENTS_SECRET) {
 }
 
 const CLOUDFLARE_EVENTS_SECRET = process.env.CLOUDFLARE_EVENTS_SECRET;
+const ASSET_KEY_REGEX = /^organizations\/([^/]+)\/workspaces\/([^/]+)\/assets\/([^/]+)$/;
 
 /**
  * Narrow file content-storage scope to a real organization/workspace at a sink that cannot accept the
@@ -145,7 +145,7 @@ export const insert_asset = internalMutation({
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			kind: args.kind,
-			r2Bucket: r2_get_bucket(),
+			r2Bucket: r2.config.bucket,
 			size: args.size,
 			createdBy: args.createdBy,
 			unfinalizedExpiresAt: now + r2_UNFINALIZED_ASSET_TTL_MS,
@@ -184,10 +184,7 @@ export const get_asset_by_r2_event_key = internalQuery({
 		key: v.string(),
 	},
 	returns: v_result({
-		_yay: v.object({
-			asset: doc(app_convex_schema, "files_r2_assets"),
-			keyKind: v.union(v.literal("upload_staging"), v.literal("legacy_upload"), v.literal("live")),
-		}),
+		_yay: doc(app_convex_schema, "files_r2_assets"),
 	}),
 	handler: async (ctx, args) => {
 		const parsedAssetId = extract_asset_id_from_r2_key(args.key);
@@ -202,25 +199,18 @@ export const get_asset_by_r2_event_key = internalQuery({
 			});
 		}
 
-		if (asset.uploadStagingR2Key !== undefined) {
-			if (args.key === asset.uploadStagingR2Key) {
-				return Result({ _yay: { asset, keyKind: "upload_staging" as const } });
-			}
-			if (
-				args.key ===
-				r2_create_asset_key({
-					organizationId: asset.organizationId,
-					workspaceId: asset.workspaceId,
-					assetId: asset._id,
-				})
-			) {
-				return Result({ _yay: { asset, keyKind: "live" as const } });
-			}
+		if (
+			args.key !==
+			r2_create_asset_key({
+				organizationId: asset.organizationId,
+				workspaceId: asset.workspaceId,
+				assetId: asset._id,
+			})
+		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
 
-		// Old upload URLs wrote directly to the final key because they had no temporary key.
-		return Result({ _yay: { asset, keyKind: "legacy_upload" as const } });
+		return Result({ _yay: asset });
 	},
 });
 
@@ -571,14 +561,11 @@ export const create_signed_download_url = action({
 		// serves inline (the app's <img>/<video> sources go through here), everything else
 		// downloads as an attachment.
 		const serving = files_get_signed_download_serving({ contentType: fileNode.contentType, fileName: fileNode.name });
-		const url = await r2_get_download_url({
-			key: asset.r2Key,
-			options: {
-				// 15 minutes.
-				expiresIn: 15 * 60,
-				responseContentType: serving.responseContentType,
-				responseContentDisposition: serving.responseContentDisposition,
-			},
+		const url = await r2.getUrl(asset.r2Key, {
+			// 15 minutes.
+			expiresIn: 15 * 60,
+			responseContentType: serving.responseContentType,
+			responseContentDisposition: serving.responseContentDisposition,
 		});
 
 		return Result({ _yay: { url } });
@@ -745,14 +732,11 @@ export const create_signed_chat_image_url = action({
 			contentType: `image/${ai_chat_GENERATED_IMAGE_FORMAT}`,
 			fileName: `generated-image-${asset._id}.${ai_chat_GENERATED_IMAGE_FORMAT}`,
 		});
-		const url = await r2_get_download_url({
-			key: r2Key,
-			options: {
-				// 15 minutes.
-				expiresIn: 15 * 60,
-				responseContentType: serving.responseContentType,
-				responseContentDisposition: serving.responseContentDisposition,
-			},
+		const url = await r2.getUrl(r2Key, {
+			// 15 minutes.
+			expiresIn: 15 * 60,
+			responseContentType: serving.responseContentType,
+			responseContentDisposition: serving.responseContentDisposition,
 		});
 
 		return Result({ _yay: { url } });
@@ -789,10 +773,7 @@ export const get_service_upload_target_by_asset_id = internalQuery({
 	},
 	returns: v.union(doc(app_convex_schema, "plugin_service_storage_targets"), v.null()),
 	handler: async (ctx, args) => {
-		const target = await ctx.db
-			.query("plugin_service_storage_targets")
-			.withIndex("by_asset", (q) => q.eq("assetId", args.assetId))
-			.first();
+		const target = await public_api_service_uploads_db_get_target_by_asset(ctx, args.assetId);
 		return target?.organizationId === args.organizationId && target.workspaceId === args.workspaceId ? target : null;
 	},
 });
@@ -1000,6 +981,7 @@ export const finalize_text_file_node_from_r2_assets = internalMutation({
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		fileNodeId: v.id("files_nodes"),
+		expectedUploadAssetId: v.id("files_r2_assets"),
 		userId: v.id("users"),
 		rootKind: v.union(v.literal("rich_text"), v.literal("plain_text")),
 		contentType: v.string(),
@@ -1019,13 +1001,24 @@ export const finalize_text_file_node_from_r2_assets = internalMutation({
 		// mutation is atomic, so the chunks below are born with the same path and archive state the
 		// node has when they commit.
 		const fileNode = await ctx.db.get("files_nodes", args.fileNodeId);
-		// A hard delete in the same window removes the node. Throw so the workpool retries the
-		// action, whose next run finds no node for the asset and settles the upload.
-		if (!fileNode) {
-			throw convex_error({
-				message: "File node disappeared before upload conversion finalized",
-				data: { fileNodeId: args.fileNodeId },
-			});
+		if (fileNode?.assetId === args.versionSnapshotAssetId) {
+			return null;
+		}
+		if (!fileNode || fileNode.assetId !== args.expectedUploadAssetId) {
+			// The action lost its node while writing R2. Delete only its unpublished output.
+			for (const assetId of [args.versionSnapshotAssetId, ...(args.yjsSnapshot ? [args.yjsSnapshot.assetId] : [])]) {
+				const asset = await ctx.db.get("files_r2_assets", assetId);
+				if (!asset || asset.r2Key !== undefined) {
+					continue;
+				}
+				await r2_enqueue_object_deletion_job(ctx, {
+					...finalizeScope,
+					r2Key: r2_create_asset_key({ ...finalizeScope, assetId }),
+					reason: "failed_create",
+				});
+				await ctx.db.delete("files_r2_assets", assetId);
+			}
+			return null;
 		}
 
 		// Creating the node and upload URL accepted this upload. Finish it even if the node becomes
@@ -1294,6 +1287,7 @@ export const finalize_uploaded_text_file = internalAction({
 		]);
 
 		await ctx.runMutation(internal.r2.finalize_text_file_node_from_r2_assets, {
+			expectedUploadAssetId: asset._id,
 			organizationId: fileNode.organizationId,
 			workspaceId: fileNode.workspaceId,
 			fileNodeId: fileNode._id,
@@ -1326,7 +1320,6 @@ export const process_uploaded_asset_event = internalMutation({
 	args: {
 		assetId: v.id("files_r2_assets"),
 		r2Key: v.string(),
-		uploadStagingR2Key: v.optional(v.string()),
 		size: v.number(),
 		etag: v.optional(v.string()),
 		eventId: v.string(),
@@ -1334,13 +1327,28 @@ export const process_uploaded_asset_event = internalMutation({
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const asset = await ctx.db.get("files_r2_assets", args.assetId);
-		if (!asset) {
-			const errorMessage = "args.assetId points to a missing files_r2_assets doc";
-			const errorData = {
-				assetId: args.assetId,
-			};
-			console.error(errorMessage, errorData);
-			throw should_never_happen(errorMessage, errorData);
+		if (!asset || asset.uploadRetiredAt !== undefined) {
+			await db_record_untracked_asset_event(ctx, {
+				bucket: r2.config.bucket,
+				key: args.r2Key,
+				size: args.size,
+				eventId: args.eventId,
+			});
+			return Result({ _yay: null });
+		}
+		if (
+			args.r2Key !==
+			r2_create_asset_key({
+				organizationId: asset.organizationId,
+				workspaceId: asset.workspaceId,
+				assetId: asset._id,
+			})
+		) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		// A converted text node now points at its snapshot, so check publication before its owner.
+		if (asset.r2Key !== undefined) {
+			return Result({ _yay: null });
 		}
 
 		const fileNode = await ctx.db
@@ -1351,52 +1359,41 @@ export const process_uploaded_asset_event = internalMutation({
 			.first();
 
 		const now = Date.now();
-		const putMayArriveUntil =
-			(asset.uploadUrlExpiresAt ?? asset.unfinalizedExpiresAt ?? now) + r2_PUT_MAY_ARRIVE_MARGIN_MS;
-		await public_api_service_uploads_db_settle_canonicalized_asset(ctx, {
-			assetId: asset._id,
-			// Once the live object exists, later staging events cannot change its confirmed size.
-			actualBytes: asset.r2Key === undefined ? args.size : asset.size,
-			nodePath: fileNode?.path ?? null,
-			now,
-		});
-
-		// The final object already exists. A later event can only describe the temporary object. Update
-		// only its cleanup job.
-		if (asset.kind === "upload" && asset.r2Key !== undefined && args.uploadStagingR2Key !== undefined) {
-			const publishedScope = r2_require_real_scope(asset.organizationId, asset.workspaceId);
+		const serviceTarget = await public_api_service_uploads_db_get_target_by_asset(ctx, asset._id);
+		if (!fileNode || (serviceTarget && (serviceTarget.assetId !== asset._id || serviceTarget.state !== "pending"))) {
+			const scope = r2_require_real_scope(asset.organizationId, asset.workspaceId);
+			await public_api_service_uploads_db_record_untracked_asset_bytes(ctx, {
+				...scope,
+				assetId: asset._id,
+				observedBytes: args.size,
+				now,
+			});
 			await r2_enqueue_object_deletion_job(ctx, {
-				organizationId: publishedScope.organizationId,
-				workspaceId: publishedScope.workspaceId,
-				r2Key: args.uploadStagingR2Key,
-				reason: "upload_staging",
-				putMayArriveUntil,
+				...scope,
+				r2Key: args.r2Key,
+				reason: "untracked_asset_event",
+				putMayArriveUntil: (asset.uploadUrlExpiresAt ?? now) + r2_PUT_MAY_ARRIVE_MARGIN_MS,
 				r2EventId: args.eventId,
 			});
+			await ctx.db.delete("files_r2_assets", asset._id);
 			return Result({ _yay: null });
 		}
+
+		await public_api_service_uploads_db_settle_canonicalized_asset(ctx, {
+			assetId: asset._id,
+			actualBytes: args.size,
+			nodePath: fileNode.path,
+			now,
+		});
 
 		// Creating the node and URL accepted this upload. A later lock does not stop it from finishing.
 		await ctx.db.patch("files_r2_assets", asset._id, {
 			r2Key: args.r2Key,
 			size: args.size,
 			...(args.etag === undefined ? {} : { etag: args.etag }),
-			// Clear the deadline only when a node still uses this object. If the node is gone, cleanup
-			// must still remove the unused R2 object.
-			...(fileNode ? { unfinalizedExpiresAt: undefined } : {}),
+			unfinalizedExpiresAt: undefined,
 			updatedAt: now,
 		});
-		if (args.uploadStagingR2Key !== undefined) {
-			const publishedScope = r2_require_real_scope(asset.organizationId, asset.workspaceId);
-			await r2_enqueue_object_deletion_job(ctx, {
-				organizationId: publishedScope.organizationId,
-				workspaceId: publishedScope.workspaceId,
-				r2Key: args.uploadStagingR2Key,
-				reason: "upload_staging",
-				putMayArriveUntil,
-				r2EventId: args.eventId,
-			});
-		}
 
 		if (asset.kind !== "upload") {
 			return Result({ _yay: null });
@@ -1406,7 +1403,8 @@ export const process_uploaded_asset_event = internalMutation({
 		if (!shouldStartProcessing) {
 			return Result({ _yay: null });
 		}
-		if (!fileNode || fileNode.archiveOperationId !== undefined || files_node_has_editable_text_content(fileNode)) {
+
+		if (fileNode.archiveOperationId !== undefined || files_node_has_editable_text_content(fileNode)) {
 			await ctx.db.patch("files_r2_assets", asset._id, {
 				processingWorkId: null,
 				updatedAt: now,
@@ -1467,27 +1465,35 @@ type process_uploaded_asset_event_Result =
 		: never;
 
 /**
- * Finish an upload after a crash. The object may already be at the final key, or it may still be at
- * the temporary key. The hourly cleanup retries until the node uses the final object.
+ * Finish an upload whose event was lost. Check R2 before retiring an expired attempt.
  */
 export const recover_unfinalized_upload_publication = internalAction({
 	args: {
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		assetId: v.id("files_r2_assets"),
+		_test_now: v.optional(v.number()),
 	},
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const [asset, fileNode] = (await Promise.all([
-			ctx.runQuery(internal.r2.get_asset_by_id, args),
-			ctx.runQuery(internal.r2.get_file_node_by_asset_id, args),
+			ctx.runQuery(internal.r2.get_asset_by_id, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				assetId: args.assetId,
+			}),
+			ctx.runQuery(internal.r2.get_file_node_by_asset_id, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				assetId: args.assetId,
+			}),
 		])) as [get_asset_by_id_Result, get_file_node_by_asset_id_Result];
 		if (
 			!asset ||
 			!fileNode ||
 			asset.kind !== "upload" ||
 			asset.r2Key !== undefined ||
-			asset.uploadStagingR2Key === undefined
+			asset.uploadRetiredAt !== undefined
 		) {
 			return null;
 		}
@@ -1497,20 +1503,20 @@ export const recover_unfinalized_upload_publication = internalAction({
 			workspaceId: args.workspaceId,
 			assetId: args.assetId,
 		});
-		const copied = await r2_copy_object_to_immutable_key(ctx, {
-			sourceKey: asset.uploadStagingR2Key,
-			destinationKey: liveR2Key,
-		});
-		if (copied.outcome !== "ready") {
+		const metadata = await r2_get_object_metadata(ctx, liveR2Key);
+		if (!metadata) {
+			await ctx.runMutation(internal.r2.retire_missing_upload, {
+				assetId: asset._id,
+				_test_now: args._test_now,
+			});
 			return null;
 		}
 
 		(await ctx.runMutation(internal.r2.process_uploaded_asset_event, {
 			assetId: asset._id,
 			r2Key: liveR2Key,
-			uploadStagingR2Key: asset.uploadStagingR2Key,
-			size: copied.size,
-			etag: copied.etag,
+			size: metadata.size,
+			etag: metadata.etag,
 			eventId: `upload_recovery_${asset._id}`,
 		})) as process_uploaded_asset_event_Result;
 		return null;
@@ -1526,6 +1532,64 @@ const UPLOAD_SIGNED_URL_TTL_MS = 15 * 60 * 1000;
  * Handle an R2 event that arrives after its asset doc was deleted. Create a job to delete the R2
  * object that arrived late. Ignore keys from another app or bucket.
  */
+async function db_record_untracked_asset_event(
+	ctx: MutationCtx,
+	args: {
+		bucket: string;
+		key: string;
+		size: number;
+		eventId: string;
+	},
+) {
+	if (args.bucket !== r2.config.bucket) {
+		return "ignored" as const;
+	}
+
+	const match = ASSET_KEY_REGEX.exec(args.key);
+	const [, organizationIdRaw, workspaceIdRaw, assetIdRaw] = match ?? [];
+	if (!organizationIdRaw || !workspaceIdRaw || !assetIdRaw) {
+		return "ignored";
+	}
+	const organizationId = ctx.db.normalizeId("organizations", organizationIdRaw);
+	const workspaceId = ctx.db.normalizeId("organizations_workspaces", workspaceIdRaw);
+	const assetId = ctx.db.normalizeId("files_r2_assets", assetIdRaw);
+	if (!organizationId || !workspaceId || !assetId) {
+		return "ignored";
+	}
+
+	// A retained service placeholder can no longer publish once cleanup retires its attempt.
+	const asset = await ctx.db.get("files_r2_assets", assetId);
+	if (
+		asset &&
+		(asset.uploadRetiredAt === undefined ||
+			asset.organizationId !== organizationId ||
+			asset.workspaceId !== workspaceId)
+	) {
+		return "ignored";
+	}
+
+	const now = Date.now();
+	// The deleted asset may have held the URL expiry. Keep a full window when it is unknown.
+	const putMayArriveUntil = (asset?.uploadUrlExpiresAt ?? now + UPLOAD_SIGNED_URL_TTL_MS) + r2_PUT_MAY_ARRIVE_MARGIN_MS;
+	await public_api_service_uploads_db_record_untracked_asset_bytes(ctx, {
+		organizationId,
+		workspaceId,
+		assetId,
+		observedBytes: args.size,
+		now,
+	});
+	await r2_enqueue_object_deletion_job(ctx, {
+		organizationId,
+		workspaceId,
+		r2Key: args.key,
+		reason: "untracked_asset_event",
+		assetId: asset?._id,
+		putMayArriveUntil,
+		r2EventId: args.eventId,
+	});
+	return "recorded";
+}
+
 export const record_untracked_asset_event = internalMutation({
 	args: {
 		bucket: v.string(),
@@ -1534,62 +1598,7 @@ export const record_untracked_asset_event = internalMutation({
 		eventId: v.string(),
 	},
 	returns: v.union(v.literal("recorded"), v.literal("ignored")),
-	handler: async (ctx, args) => {
-		if (args.bucket !== r2_get_bucket()) {
-			return "ignored";
-		}
-
-		const match = /^organizations\/([^/]+)\/workspaces\/([^/]+)\/(assets|upload-staging)\/([^/]+)$/.exec(args.key);
-		const [, organizationIdRaw, workspaceIdRaw, keyKind, assetIdRaw] = match ?? [];
-		if (!organizationIdRaw || !workspaceIdRaw || !assetIdRaw) {
-			return "ignored";
-		}
-		const organizationId = ctx.db.normalizeId("organizations", organizationIdRaw);
-		const workspaceId = ctx.db.normalizeId("organizations_workspaces", workspaceIdRaw);
-		const assetId = ctx.db.normalizeId("files_r2_assets", assetIdRaw);
-		if (!organizationId || !workspaceId || !assetId) {
-			return "ignored";
-		}
-
-		// Create a cleanup job only when the asset doc is gone.
-		const asset = await ctx.db.get("files_r2_assets", assetId);
-		if (asset) {
-			return "ignored";
-		}
-
-		const now = Date.now();
-		const putMayArriveUntil =
-			keyKind === "upload-staging" ? now + UPLOAD_SIGNED_URL_TTL_MS + r2_PUT_MAY_ARRIVE_MARGIN_MS : undefined;
-		await public_api_service_uploads_db_record_untracked_asset_bytes(ctx, {
-			organizationId,
-			workspaceId,
-			assetId,
-			observedBytes: args.size,
-			now,
-		});
-		// An event action may have copied these staging bytes after the first canonical delete. Refresh
-		// that deterministic job so an older delete cannot settle while the copy is still arriving.
-		if (keyKind === "upload-staging") {
-			await r2_enqueue_object_deletion_job(ctx, {
-				organizationId,
-				workspaceId,
-				r2Key: r2_create_asset_key({ organizationId, workspaceId, assetId }),
-				reason: "untracked_asset_event",
-				putMayArriveUntil,
-				r2EventId: args.eventId,
-			});
-		}
-		await r2_enqueue_object_deletion_job(ctx, {
-			organizationId,
-			workspaceId,
-			r2Key: args.key,
-			reason: "untracked_asset_event",
-			// A signed URL can upload the temporary object again. Wait for the URL to expire.
-			putMayArriveUntil,
-			r2EventId: args.eventId,
-		});
-		return "recorded";
-	},
+	handler: db_record_untracked_asset_event,
 });
 
 type record_untracked_asset_event_Result =
@@ -1616,6 +1625,61 @@ const UNFINALIZED_UPLOAD_RECOVERY_FAST_WINDOW_MS = 30 * 60 * 60 * 1000;
  * Stop automatic recovery eight days after the latest signed upload URL was issued.
  */
 const UNFINALIZED_UPLOAD_RECOVERY_MAX_WINDOW_MS = 8 * 24 * 60 * 60 * 1000;
+
+/**
+ * Retire only after the recovery action found no object. Publication and remint win atomically.
+ */
+export const retire_missing_upload = internalMutation({
+	args: {
+		assetId: v.id("files_r2_assets"),
+		_test_now: v.optional(v.number()),
+	},
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const asset = await ctx.db.get("files_r2_assets", args.assetId);
+		if (!asset || asset.kind !== "upload" || asset.r2Key !== undefined || asset.uploadRetiredAt !== undefined) {
+			return null;
+		}
+		const now = args._test_now ?? Date.now();
+		const startedAt =
+			(asset.uploadUrlExpiresAt ?? asset._creationTime + UPLOAD_SIGNED_URL_TTL_MS) - UPLOAD_SIGNED_URL_TTL_MS;
+		if (now - startedAt < UNFINALIZED_UPLOAD_RECOVERY_MAX_WINDOW_MS) {
+			return null;
+		}
+		const scope = r2_require_real_scope(asset.organizationId, asset.workspaceId);
+		const node = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_organization_workspace_asset", (q) =>
+				q.eq("organizationId", asset.organizationId).eq("workspaceId", asset.workspaceId).eq("assetId", asset._id),
+			)
+			.first();
+		if (!node) {
+			return null;
+		}
+		if (files_node_require_writable(node)._nay) {
+			await ctx.db.patch("files_r2_assets", asset._id, {
+				unfinalizedExpiresAt: now + UNFINALIZED_ASSET_RECHECK_DELAY_MS,
+			});
+			return null;
+		}
+		const target = await public_api_service_uploads_db_get_target_by_asset(ctx, asset._id);
+		const keepPlaceholder = target?.state === "pending" && target.assetId === asset._id;
+		await r2_enqueue_object_deletion_job(ctx, {
+			...scope,
+			r2Key: r2_create_asset_key({ ...scope, assetId: asset._id }),
+			reason: "untracked_asset_event",
+			assetId: keepPlaceholder ? asset._id : undefined,
+			putMayArriveUntil: (asset.uploadUrlExpiresAt ?? now) + r2_PUT_MAY_ARRIVE_MARGIN_MS,
+			mode: "ensure",
+		});
+		if (keepPlaceholder) {
+			await ctx.db.patch("files_r2_assets", asset._id, { uploadRetiredAt: now, updatedAt: now });
+		} else {
+			await files_nodes_db_hard_delete_node(ctx, { ...scope, nodeId: node._id });
+		}
+		return null;
+	},
+});
 
 /**
  * Check unfinished assets after their deadline. Retry an upload when a node still uses the asset.
@@ -1648,7 +1712,7 @@ export const cleanup_expired_unfinalized_assets = internalMutation({
 				workspaceId: asset.workspaceId,
 				assetId: asset._id,
 			});
-			const [referencingNode, referencingYjsSnapshot, referencingSnapshot, serviceTarget] = await Promise.all([
+			const [referencingNode, referencingYjsSnapshot, referencingSnapshot] = await Promise.all([
 				ctx.db
 					.query("files_nodes")
 					.withIndex("by_organization_workspace_asset", (q) =>
@@ -1663,10 +1727,6 @@ export const cleanup_expired_unfinalized_assets = internalMutation({
 					.query("files_snapshots")
 					.withIndex("by_asset", (q) => q.eq("assetId", asset._id))
 					.first(),
-				ctx.db
-					.query("plugin_service_storage_targets")
-					.withIndex("by_asset", (q) => q.eq("assetId", asset._id))
-					.first(),
 			]);
 			if (referencingNode || referencingYjsSnapshot || referencingSnapshot) {
 				// Another doc uses this asset. If its R2 object exists, clear the old deadline. Never
@@ -1679,85 +1739,21 @@ export const cleanup_expired_unfinalized_assets = internalMutation({
 					continue;
 				}
 
-				if (referencingNode && asset.kind === "upload" && asset.uploadStagingR2Key !== undefined) {
-					// Remint moves uploadUrlExpiresAt, so both retry windows start from the latest URL,
-					// not from the asset's first creation.
-					const recoveryStartedAt =
-						asset.uploadUrlExpiresAt === undefined
-							? asset._creationTime
-							: asset.uploadUrlExpiresAt - UPLOAD_SIGNED_URL_TTL_MS;
-					const recoveryScope = r2_require_real_scope(asset.organizationId, asset.workspaceId);
-					if (now - recoveryStartedAt >= UNFINALIZED_UPLOAD_RECOVERY_MAX_WINDOW_MS) {
-						// Keep a failed upload placeholder while the user has locked it. Recheck after the
-						// lock may have changed instead of bypassing the file's current read-only state.
-						if (files_node_require_writable(referencingNode)._nay) {
-							await ctx.db.patch("files_r2_assets", asset._id, {
-								unfinalizedExpiresAt: now + UNFINALIZED_ASSET_RECHECK_DELAY_MS,
-								updatedAt: now,
-							});
-							continue;
-						}
-						// Keep the service placeholder. It is a real workspace file even when the service did
-						// not finish the upload. Delete only the staging bytes and retry that exact cleanup.
-						if (serviceTarget?.state === "pending") {
-							await r2_enqueue_object_deletion_job(ctx, {
-								organizationId: recoveryScope.organizationId,
-								workspaceId: recoveryScope.workspaceId,
-								r2Key: asset.uploadStagingR2Key,
-								reason: "upload_staging",
-								assetId: asset._id,
-								putMayArriveUntil:
-									(asset.uploadUrlExpiresAt ?? recoveryStartedAt + UPLOAD_SIGNED_URL_TTL_MS) +
-									r2_PUT_MAY_ARRIVE_MARGIN_MS,
-								mode: "ensure",
-							});
-							await ctx.db.patch("files_r2_assets", asset._id, {
-								unfinalizedExpiresAt: now + UNFINALIZED_ASSET_RECHECK_DELAY_MS,
-								updatedAt: now,
-							});
-							continue;
-						}
-
-						const liveR2Key = r2_create_asset_key({
-							organizationId: asset.organizationId,
-							workspaceId: asset.workspaceId,
-							assetId: asset._id,
+				if (referencingNode && asset.kind === "upload") {
+					if (asset.uploadRetiredAt !== undefined) {
+						await ctx.db.patch("files_r2_assets", asset._id, {
+							unfinalizedExpiresAt: now + UNFINALIZED_ASSET_RECHECK_DELAY_MS,
 						});
-						await r2_enqueue_object_deletion_job(ctx, {
-							organizationId: recoveryScope.organizationId,
-							workspaceId: recoveryScope.workspaceId,
-							r2Key: liveR2Key,
-							reason: "untracked_asset_event",
-						});
-						await r2_enqueue_object_deletion_job(ctx, {
-							organizationId: recoveryScope.organizationId,
-							workspaceId: recoveryScope.workspaceId,
-							r2Key: asset.uploadStagingR2Key,
-							reason: "upload_staging",
-							putMayArriveUntil:
-								(asset.uploadUrlExpiresAt ?? recoveryStartedAt + UPLOAD_SIGNED_URL_TTL_MS) +
-								r2_PUT_MAY_ARRIVE_MARGIN_MS,
-						});
-						await files_nodes_db_hard_delete_node(ctx, {
-							organizationId: recoveryScope.organizationId,
-							workspaceId: recoveryScope.workspaceId,
-							nodeId: referencingNode._id,
-						});
-						// The hard-delete owns this file's asset. Keep this guard for a concurrent no-op.
-						const assetAfter = await ctx.db.get("files_r2_assets", asset._id);
-						if (assetAfter) {
-							await ctx.db.delete("files_r2_assets", assetAfter._id);
-						}
-						deletedCount += 1;
 						continue;
 					}
+					const recoveryStartedAt =
+						(asset.uploadUrlExpiresAt ?? asset._creationTime + UPLOAD_SIGNED_URL_TTL_MS) - UPLOAD_SIGNED_URL_TTL_MS;
+					const recoveryScope = r2_require_real_scope(asset.organizationId, asset.workspaceId);
 					await ctx.scheduler.runAfter(0, internal.r2.recover_unfinalized_upload_publication, {
-						organizationId: recoveryScope.organizationId,
-						workspaceId: recoveryScope.workspaceId,
+						...recoveryScope,
 						assetId: asset._id,
+						_test_now: args._test_now,
 					});
-					// Slow old retries down. The terminal window above later removes an ordinary upload
-					// placeholder. Service uploads keep their file and delete only the staging bytes.
 					const recoveryDelay =
 						now - recoveryStartedAt < UNFINALIZED_UPLOAD_RECOVERY_FAST_WINDOW_MS
 							? UNFINALIZED_UPLOAD_RECOVERY_RECHECK_DELAY_MS
@@ -1768,7 +1764,6 @@ export const cleanup_expired_unfinalized_assets = internalMutation({
 					});
 					continue;
 				}
-
 				console.warn("Expired unfinalized asset is still referenced, skipping delete", {
 					assetId: asset._id,
 					kind: asset.kind,
@@ -1789,32 +1784,18 @@ export const cleanup_expired_unfinalized_assets = internalMutation({
 				asset.organizationId === organizations_GLOBAL_ORGANIZATION_ID ||
 				organizations_is_reserved_workspace_id(asset.workspaceId)
 			) {
-				await r2_delete_object(ctx, asset.r2Key ?? deterministicKey);
-				if (asset.uploadStagingR2Key !== undefined) {
-					await r2_delete_object(ctx, asset.uploadStagingR2Key);
-				}
+				await r2.deleteObject(ctx, asset.r2Key ?? deterministicKey);
 			} else {
-				const cleanupKeys = new Set<string>([
-					asset.r2Key ?? deterministicKey,
-					...(asset.uploadStagingR2Key === undefined ? [] : [asset.uploadStagingR2Key]),
-				]);
-				for (const cleanupKey of cleanupKeys) {
-					await r2_enqueue_object_deletion_job(ctx, {
-						organizationId: asset.organizationId,
-						workspaceId: asset.workspaceId,
-						r2Key: cleanupKey,
-						// A late R2 event updates this same job after the asset doc is gone.
-						reason: "untracked_asset_event",
-						// Wait only when a signed URL can still upload to this key. The final key can finish
-						// cleanup after its first confirmed delete.
-						putMayArriveUntil:
-							cleanupKey === asset.uploadStagingR2Key
-								? (asset.uploadUrlExpiresAt ?? asset.unfinalizedExpiresAt ?? now) + r2_PUT_MAY_ARRIVE_MARGIN_MS
-								: asset.kind === "upload" && asset.uploadStagingR2Key === undefined
-									? (asset.uploadUrlExpiresAt ?? asset.unfinalizedExpiresAt ?? now) + r2_PUT_MAY_ARRIVE_MARGIN_MS
-									: undefined,
-					});
-				}
+				await r2_enqueue_object_deletion_job(ctx, {
+					organizationId: asset.organizationId,
+					workspaceId: asset.workspaceId,
+					r2Key: asset.r2Key ?? deterministicKey,
+					reason: "untracked_asset_event",
+					putMayArriveUntil:
+						asset.kind === "upload"
+							? (asset.uploadUrlExpiresAt ?? asset.unfinalizedExpiresAt ?? now) + r2_PUT_MAY_ARRIVE_MARGIN_MS
+							: undefined,
+				});
 			}
 			await ctx.db.delete("files_r2_assets", asset._id);
 			deletedCount += 1;
@@ -1972,63 +1953,29 @@ export async function r2_http_event(ctx: ActionCtx, request: Request) {
 			} as const;
 		}
 
-		if (asset._yay.asset.kind !== "upload" || asset._yay.keyKind === "live") {
-			// Ignore generated objects and events for a final upload key. Start work only for a user's
-			// temporary upload object.
-			return {
-				status: 204,
-				body: {},
-			} as const;
+		if (asset._yay.kind !== "upload" || asset._yay.r2Key !== undefined) {
+			return { status: 204, body: {} } as const;
+		}
+		if (asset._yay.uploadRetiredAt !== undefined) {
+			await ctx.runMutation(internal.r2.record_untracked_asset_event, {
+				bucket: body._yay.event.bucket,
+				key: body._yay.event.object.key,
+				size: body._yay.event.object.size,
+				eventId: body._yay.cloudflareMessageId,
+			});
+			return { status: 204, body: {} } as const;
 		}
 
-		const liveR2Key =
-			asset._yay.keyKind === "upload_staging"
-				? r2_create_asset_key({
-						organizationId: asset._yay.asset.organizationId,
-						workspaceId: asset._yay.asset.workspaceId,
-						assetId: asset._yay.asset._id,
-					})
-				: body._yay.event.object.key;
-		let publicationMetadata = {
-			size: body._yay.event.object.size,
-			etag: body._yay.event.object.eTag,
-		};
-		if (asset._yay.keyKind === "upload_staging" && asset._yay.asset.r2Key === undefined) {
-			const copied = await r2_copy_object_to_immutable_key(ctx, {
-				sourceKey: body._yay.event.object.key,
-				destinationKey: liveR2Key,
-				expectedSource: {
-					size: body._yay.event.object.size,
-					etag: body._yay.event.object.eTag,
-				},
-			});
-			// The temporary object may change before an old event arrives. Publish only if the event still
-			// describes the current object. Log the drop: this branch acks the queue message, so a
-			// wrong non-ready outcome here silently loses the upload until the recovery pass.
-			if (copied.outcome !== "ready") {
-				console.warn("R2 staged copy did not publish", {
-					outcome: copied.outcome,
-					key: body._yay.event.object.key,
-					size: body._yay.event.object.size,
-					eTagPresent: body._yay.event.object.eTag !== undefined,
-				});
-				return {
-					status: 204,
-					body: {},
-				} as const;
-			}
-			publicationMetadata = {
-				size: copied.size,
-				etag: copied.etag,
-			};
+		const metadata = await r2_get_object_metadata(ctx, body._yay.event.object.key);
+		if (!metadata) {
+			return { status: 204, body: {} } as const;
 		}
 
 		await ctx.runMutation(internal.r2.process_uploaded_asset_event, {
-			assetId: asset._yay.asset._id,
-			r2Key: liveR2Key,
-			uploadStagingR2Key: asset._yay.keyKind === "upload_staging" ? body._yay.event.object.key : undefined,
-			size: publicationMetadata.size,
-			etag: publicationMetadata.etag,
+			assetId: asset._yay._id,
+			r2Key: body._yay.event.object.key,
+			size: metadata.size,
+			etag: metadata.etag,
 			eventId: body._yay.cloudflareMessageId,
 		});
 

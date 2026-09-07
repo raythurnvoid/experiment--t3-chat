@@ -23,16 +23,18 @@ Prefer a slightly less elegant implementation that matches the module over a cle
 # Workflow
 
 1. Read the current diff first.
-2. Read the target file around the changed area.
-3. Read at least two nearby or similar implementations before editing.
+2. Read each changed function in full, with its nearby code. Diff hunks can hide existing helpers and repeated logic.
+3. Search the owning file and direct peers for the same fields, formats, and operations, including unchanged code. Read at least two nearby or similar implementations before editing.
 4. Write down the local pattern in concrete terms, then edit to that pattern.
 5. Split the review lens when the diff is broad: organization first, comments second, naming third.
-6. Re-read the final diff as a style review, not only a correctness review. Check JSDoc layout and the empty lines between logical chunks.
+6. Re-read the final diff and full changed functions as a style review, not only a correctness review. Use the [reuse and abstraction checks](references/style-review-checklist.md#reuse-and-abstraction). Check JSDoc layout and the empty lines between logical chunks.
 7. Remove changes that are merely personal taste.
 8. Run the vocabulary audit for broad changes.
 9. Run the smallest focused verification that covers the touched surface.
 
 Do not start from broad repository-wide style. Start from the file and its nearest neighbors.
+
+When the user corrects a pattern, search the current changed scope for the same issue and apply the correction wherever the same reasoning holds. Finish that pass before reporting completion; keep unrelated code outside the task.
 
 # References
 
@@ -157,7 +159,7 @@ Give each sub-agent:
 
 For broad uniformity requests, use separate auditors for:
 
-- organization, regions, helper placement, and test ownership
+- organization, regions, helper placement, repeated logic, regex placement, whole-function readability, and test ownership
 - comments, logs, docs, and durable skill wording
 - names of variables, helpers, exported APIs, fields, indexes, and tests
 
@@ -166,7 +168,7 @@ After they finish:
 1. Read their actual diffs.
 2. Keep only changes that improve local fit.
 3. Reject or adjust patches that are merely different taste.
-4. Verify cross-file references, generated names, and schema/index call sites yourself.
+4. Cross-check the changed functions and matching existing code yourself for missed duplication and forwarding helpers. Verify cross-file references, generated names, and schema/index call sites too.
 5. Record important rejected recommendations in the final answer so future work does not repeat the same debate.
 
 Do not accept sub-agent output because it sounds confident. Accept it because the diff matches the local evidence.

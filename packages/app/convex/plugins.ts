@@ -57,7 +57,7 @@ import {
 import { organizations_db_get_membership } from "./organizations.ts";
 import { access_control_db_filter_readable_file_nodes, access_control_db_has_permission } from "./access_control.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
-import { r2_delete_object, r2_fetch_object_from_bucket, r2_put_object } from "./r2_client.ts";
+import { r2, r2_fetch_object_from_bucket, r2_put_object } from "./r2_client.ts";
 import { files_nodes_db_delete_subtree_batch } from "./files_nodes.ts";
 import type { files_nodes_create_file_node_internal_Result } from "./files_nodes_content.ts";
 import { plugins_runtime_db_enqueue_manual_run } from "./plugins_runtime.ts";
@@ -2131,7 +2131,7 @@ export const run_publish_artifact_cleanup_attempt = internalMutation({
 		const batch = unownedKeys.slice(0, PUBLISH_CLEANUP_KEYS_PER_RUN);
 		try {
 			for (const r2Key of batch) {
-				await r2_delete_object(ctx, r2Key);
+				await r2.deleteObject(ctx, r2Key);
 			}
 		} catch {
 			// Keep the whole batch and retry later; deleting an already-deleted key again is harmless.
@@ -5574,7 +5574,7 @@ export const hard_delete_plugin_from_registry = internalMutation({
 
 			// A failed object delete aborts this mutation, so the version and repository
 			// remain durable owners of every exact key until an idempotent retry succeeds.
-			for (const r2Key of version_r2_keys(version)) await r2_delete_object(ctx, r2Key);
+			for (const r2Key of version_r2_keys(version)) await r2.deleteObject(ctx, r2Key);
 
 			if (!otherVersion && !activeSharedPublish) {
 				if (claim?.ownerUserId === version.createdBy) {
@@ -5615,7 +5615,7 @@ export const hard_delete_plugin_from_registry = internalMutation({
 			.first();
 		if (cleanupAttempt) {
 			const keys = cleanupAttempt.r2Keys.slice(0, budget);
-			for (const r2Key of keys) await r2_delete_object(ctx, r2Key);
+			for (const r2Key of keys) await r2.deleteObject(ctx, r2Key);
 			const remainingKeys = cleanupAttempt.r2Keys.slice(keys.length);
 			if (remainingKeys.length > 0) {
 				await ctx.db.patch("plugins_publish_artifact_cleanup_attempts", cleanupAttempt._id, {

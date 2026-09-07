@@ -14,7 +14,7 @@ import {
 } from "./organizations.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import { files_get_utf8_byte_size } from "../shared/files.ts";
-import { r2_confirmed_object_delete, r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_create_upload_staging_key } from "./r2_client.ts";
+import { r2_confirmed_object_delete, r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_create_asset_key } from "./r2_client.ts";
 
 const test = baseTest.sequential;
 
@@ -599,6 +599,7 @@ const review_workspace_tables = [
 	"plugins_data_released_scope_ranges",
 	"plugin_service_storage_destinations",
 	"plugin_service_storage_targets",
+	"plugin_service_storage_attempts",
 	"plugins_data_member_usage",
 	"plugins_data_usage",
 	"plugins_ui_sessions",
@@ -1007,7 +1008,7 @@ async function review_seed_all_workspace_content(
 			closedEpoch: 0,
 			updatedAt: now,
 		});
-		await ctx.db.insert("plugin_service_storage_targets", {
+		const uploadTargetId = await ctx.db.insert("plugin_service_storage_targets", {
 			...tenant,
 			installationId,
 			idempotencyKey: "upload",
@@ -1022,11 +1023,17 @@ async function review_seed_all_workspace_content(
 			contentType: "image/png",
 			declaredBytes: 10,
 			actualBytes: null,
+			chargedBytes: 0,
 			nodeId: uploadNodeId,
 			assetId: uploadAssetId,
 			state: "pending",
 			createdBy: args.userId,
 			updatedAt: now,
+		});
+		await ctx.db.insert("plugin_service_storage_attempts", {
+			...tenant,
+			targetId: uploadTargetId,
+			assetId: uploadAssetId,
 		});
 		const yjsSnapshotAssetId = await ctx.db.insert("files_r2_assets", {
 			...tenant,
@@ -2222,7 +2229,6 @@ describe("ordering review controls", () => {
 // Proposed additions to data_deletion.review.test.ts. Root owns that file.
 // These are cleared-item probes. No assertion is expected to fail on current code.
 // Use the original file's beforeEach/afterEach fake timers and imported helpers.
-// Add import: r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_create_upload_staging_key from ./r2_client.ts.
 
 describe("review: notification producer during account deletion", () => {
 	test("refuses a new invite after the recipient notification drain", async () => {
@@ -2423,12 +2429,11 @@ describe("review: upload guard survives workspace purge", () => {
 				unfinalizedExpiresAt: now + 24 * 60 * 60 * 1000,
 				updatedAt: now,
 			});
-			const r2Key = r2_create_upload_staging_key({
+			const r2Key = r2_create_asset_key({
 				organizationId: user.defaultOrganizationId,
 				workspaceId: user.defaultWorkspaceId,
 				assetId,
 			});
-			await ctx.db.patch("files_r2_assets", assetId, { uploadStagingR2Key: r2Key });
 			const requestId = await data_deletion_db_request(ctx, {
 				userId: user.userId,
 				organizationId: user.defaultOrganizationId,
@@ -2456,7 +2461,7 @@ describe("review: upload guard survives workspace purge", () => {
 				generation: job.generation,
 			});
 		}
-		expect(await t.run((ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect())).toHaveLength(2);
+		expect(await t.run((ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect())).toHaveLength(1);
 		expect(await t.run((ctx) => ctx.db.get("files_r2_object_deletion_jobs", job._id))).toMatchObject({
 			attempts: 12,
 			putMayArriveUntil: guard,

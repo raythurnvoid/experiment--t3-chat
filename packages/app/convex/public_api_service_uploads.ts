@@ -11,7 +11,7 @@
  *
  * Accounting: creating a target charges nothing. The size in the request is only the service's
  * guess, and a signed PUT does not bind how many bytes actually arrive. The workspace is charged
- * once, for the size R2 confirms for the stored object. Creating a target only refuses a workspace
+ * for the largest stored size R2 confirms across its attempts. Creating a target refuses a workspace
  * whose `plugin_service_storage_bytes` quota is already full, which stops the next file rather than
  * the current one. That counter only grows: deleting a stored file gives nothing back, exactly like
  * `public_api_upload_bytes` on the normal upload path.
@@ -22,7 +22,7 @@
 import { v } from "convex/values";
 import type { RegisteredMutation } from "convex/server";
 
-import { internalMutation, type MutationCtx } from "./_generated/server.js";
+import { internalMutation, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import { access_control_db_can_act_on_file_node, access_control_db_has_permission } from "./access_control.ts";
 import { billing_db_check_paid_plan, billing_db_emit_file_save, billing_pick_billed_user_id } from "./billing_db.ts";
@@ -38,10 +38,8 @@ import {
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import {
 	r2_create_asset_key,
-	r2_create_upload_staging_key,
 	r2_enqueue_object_deletion_job,
-	r2_generate_upload_url,
-	r2_get_bucket,
+	r2,
 	r2_PUT_MAY_ARRIVE_MARGIN_MS,
 	r2_UNFINALIZED_ASSET_TTL_MS,
 } from "./r2_client.ts";
@@ -562,6 +560,10 @@ async function db_authorize_live_target_node(
 		return Result({ _nay: { message: "Permission denied" } });
 	}
 
+	if (args.target.state === "pending" && node.assetId !== args.target.assetId) {
+		return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This file's content changed" } });
+	}
+
 	// Do not check the file lock here. Creating the target accepted the upload, so a later lock does
 	// not cancel its R2 completion or the retry URL needed to finish it.
 	return Result({ _yay: node });
@@ -625,20 +627,20 @@ async function db_get_live_delete_group_targets(
 	return attachedTargets.length > MAX_LIVE_TARGETS_PER_DELETE_GROUP ? null : attachedTargets;
 }
 
-async function db_get_target_by_asset(ctx: MutationCtx, assetId: Id<"files_r2_assets">) {
-	return await ctx.db
-		.query("plugin_service_storage_targets")
+export async function public_api_service_uploads_db_get_target_by_asset(
+	ctx: QueryCtx | MutationCtx,
+	assetId: Id<"files_r2_assets">,
+) {
+	const attempt = await ctx.db
+		.query("plugin_service_storage_attempts")
 		.withIndex("by_asset", (q) => q.eq("assetId", assetId))
 		.first();
+	return attempt ? await ctx.db.get("plugin_service_storage_targets", attempt.targetId) : null;
 }
 
 /**
- * Charge the real stored size of one target, once.
- *
- * Nothing is charged when a target is created, so `actualBytes` is both the size we recorded and
- * the amount this target has already been billed for. A redelivered event for the same object
- * reports the same size and adds nothing. If a bigger object later replaces it under the same
- * target, only the difference is charged, so the counter never bills the same bytes twice.
+ * Charge the largest stored size confirmed across this target's attempts. A retry or late event
+ * only adds the increase. The winning file's size stays separate in `actualBytes`.
  */
 async function db_charge_observed_bytes(
 	ctx: MutationCtx,
@@ -648,7 +650,7 @@ async function db_charge_observed_bytes(
 		now: number;
 	},
 ) {
-	const alreadyChargedBytes = args.target.actualBytes ?? 0;
+	const alreadyChargedBytes = args.target.chargedBytes;
 	if (args.observedBytes <= alreadyChargedBytes) {
 		return alreadyChargedBytes;
 	}
@@ -665,7 +667,7 @@ async function db_charge_observed_bytes(
 		updatedAt: args.now,
 	});
 	await ctx.db.patch("plugin_service_storage_targets", args.target._id, {
-		actualBytes: args.observedBytes,
+		chargedBytes: args.observedBytes,
 		updatedAt: args.now,
 	});
 
@@ -691,6 +693,7 @@ async function db_settle_canonicalized_target(
 
 	await ctx.db.patch("plugin_service_storage_targets", args.target._id, {
 		state: "committed",
+		actualBytes: args.actualBytes,
 		updatedAt: args.now,
 	});
 
@@ -741,8 +744,8 @@ export async function public_api_service_uploads_db_settle_canonicalized_asset(
 	ctx: MutationCtx,
 	args: { assetId: Id<"files_r2_assets">; actualBytes: number; nodePath: string | null; now: number },
 ) {
-	const target = await db_get_target_by_asset(ctx, args.assetId);
-	if (!target) {
+	const target = await public_api_service_uploads_db_get_target_by_asset(ctx, args.assetId);
+	if (!target || target.assetId !== args.assetId) {
 		return;
 	}
 	if (
@@ -763,7 +766,7 @@ export async function public_api_service_uploads_db_settle_canonicalized_asset(
 }
 
 /**
- * Charge a late object event for a target whose upload nobody finished.
+ * Charge stored bytes from an old attempt without giving it publication authority.
  */
 export async function public_api_service_uploads_db_record_untracked_asset_bytes(
 	ctx: MutationCtx,
@@ -775,16 +778,12 @@ export async function public_api_service_uploads_db_record_untracked_asset_bytes
 		now: number;
 	},
 ) {
-	const target = await db_get_target_by_asset(ctx, args.assetId);
+	const target = await public_api_service_uploads_db_get_target_by_asset(ctx, args.assetId);
 	if (!target || target.organizationId !== args.organizationId || target.workspaceId !== args.workspaceId) {
 		return;
 	}
-	// A committed target already recorded its size, and a delete the service asked for is finished
-	// work. What is left is an upload that was cancelled or discarded after the bytes reached R2.
-	// They are stored, so they are charged.
-	if (target.state !== "released" || target.deleteRequestedAt !== undefined) {
-		return;
-	}
+	// Receipts survive asset deletion. A late old PUT still uses this target's budget, but cannot
+	// change its winning file, state, or one-time file-save charge.
 	await db_charge_observed_bytes(ctx, {
 		target,
 		observedBytes: args.observedBytes,
@@ -793,8 +792,8 @@ export async function public_api_service_uploads_db_record_untracked_asset_bytes
 }
 
 /**
- * If a pending target has lost its asset doc, remove its unusable placeholder so the service can
- * retry under a new target key. Nothing was charged for it, because no object ever reached R2.
+ * If a pending target has lost its current asset doc, remove its unusable placeholder. Receipts
+ * keep any earlier attempt's charge attached to the released target.
  */
 async function db_release_expired_target(
 	ctx: MutationCtx,
@@ -1155,7 +1154,7 @@ export const create_upload_target = internalMutation({
 			organizationId: args.principal.organizationId,
 			workspaceId: args.principal.workspaceId,
 			kind: "upload",
-			r2Bucket: r2_get_bucket(),
+			r2Bucket: r2.config.bucket,
 			size: args.size,
 			...(files_editable_text_content_type_of(contentType) === null ? { processingWorkId: null } : {}),
 			createdBy: args.principal.actorUserId,
@@ -1200,17 +1199,19 @@ export const create_upload_target = internalMutation({
 			throw should_never_happen(errorMessage, errorData);
 		}
 
-		const uploadStagingR2Key = r2_create_upload_staging_key({
+		const uploadKey = r2_create_asset_key({
 			organizationId: args.principal.organizationId,
 			workspaceId: args.principal.workspaceId,
 			assetId,
 		});
 		const uploadUrlExpiresAt = now + UPLOAD_URL_TTL_MS;
 		await ctx.db.patch("files_r2_assets", assetId, {
-			uploadStagingR2Key,
 			uploadUrlExpiresAt,
 		});
-		const signedUpload = await r2_generate_upload_url(uploadStagingR2Key);
+		const signedUpload = await r2.generateUploadUrl(uploadKey, {
+			createOnly: true,
+			expiresIn: UPLOAD_URL_TTL_MS / 1000,
+		});
 		const destinationEpoch = await db_open_destination_epoch(ctx, {
 			organizationId: args.principal.organizationId,
 			workspaceId: args.principal.workspaceId,
@@ -1235,11 +1236,18 @@ export const create_upload_target = internalMutation({
 			contentType,
 			declaredBytes: args.size,
 			actualBytes: null,
+			chargedBytes: 0,
 			nodeId: nodeIdResult._yay,
 			assetId,
 			state: "pending",
 			createdBy: args.principal.actorUserId,
 			updatedAt: now,
+		});
+		await ctx.db.insert("plugin_service_storage_attempts", {
+			organizationId: args.principal.organizationId,
+			workspaceId: args.principal.workspaceId,
+			targetId,
+			assetId,
 		});
 		if (args.readOnly) {
 			// Bind the cleanup exception to this target. Member lock changes always clear this pointer.
@@ -1255,7 +1263,7 @@ export const create_upload_target = internalMutation({
 				path: args.path,
 				nodeId: String(nodeIdResult._yay),
 				uploadUrl: signedUpload.url,
-				headers: { "Content-Type": contentType },
+				headers: { "Content-Type": contentType, "If-None-Match": "*" },
 				uploadUrlExpiresAt,
 			},
 		});
@@ -1268,44 +1276,58 @@ export type public_api_service_uploads_create_upload_target_Result =
 		: never;
 
 /**
- * Reissue an upload URL for a pending target. Nothing is charged here. There is no resume, so the
- * caller sends the whole file again to the same staging key.
+ * Start a fresh attempt for this pending file. Nothing is charged here. The caller sends the whole
+ * file again; the old URL can only create an object that cleanup already owns.
  */
 async function db_remint_pending_target(
 	ctx: MutationCtx,
 	args: { target: Doc<"plugin_service_storage_targets">; asset: Doc<"files_r2_assets">; now: number },
 ) {
-	const uploadStagingR2Key = args.asset.uploadStagingR2Key;
-	if (uploadStagingR2Key === undefined) {
-		// The create patched the staging key in the same transaction that inserted the target doc.
-		throw should_never_happen("Pending service upload target without a staging key", {
-			targetId: args.target._id,
-		});
-	}
-
-	const cleanupJob = await ctx.db
-		.query("files_r2_object_deletion_jobs")
-		.withIndex("by_r2_key", (q) => q.eq("r2Key", uploadStagingR2Key))
-		.first();
-	// Wait for the old delete to finish. An in-flight R2 delete can remove bytes uploaded with a
-	// newly minted URL before its generation check runs.
-	if (cleanupJob) {
-		return Result({
-			_nay: { name: REFUSAL_CONFLICT, message: "This target's previous upload is still being cleaned up" },
-		});
-	}
-
 	const uploadUrlExpiresAt = args.now + UPLOAD_URL_TTL_MS;
-	// Hand back the same staging key. The gate above already refused while a cleanup job for these
-	// bytes is still open, so nothing is queued to delete what this retry is about to write. When a
-	// finished cleanup cleared the unfinalized marker, re-arm it so the asset is a normal pending
-	// upload again.
-	await ctx.db.patch("files_r2_assets", args.asset._id, {
+	const assetId = await ctx.db.insert("files_r2_assets", {
+		organizationId: args.target.organizationId,
+		workspaceId: args.target.workspaceId,
+		kind: "upload",
+		r2Bucket: r2.config.bucket,
+		size: args.target.declaredBytes,
+		...(files_editable_text_content_type_of(args.target.contentType) === null ? { processingWorkId: null } : {}),
+		createdBy: args.target.createdBy,
 		uploadUrlExpiresAt,
 		unfinalizedExpiresAt: args.now + r2_UNFINALIZED_ASSET_TTL_MS,
 		updatedAt: args.now,
 	});
-	const signedUpload = await r2_generate_upload_url(uploadStagingR2Key);
+	await ctx.db.insert("plugin_service_storage_attempts", {
+		organizationId: args.target.organizationId,
+		workspaceId: args.target.workspaceId,
+		targetId: args.target._id,
+		assetId,
+	});
+
+	await ctx.db.patch("plugin_service_storage_targets", args.target._id, { assetId, updatedAt: args.now });
+	await ctx.db.patch("files_nodes", args.target.nodeId, { assetId, updatedAt: args.now });
+
+	await r2_enqueue_object_deletion_job(ctx, {
+		organizationId: args.target.organizationId,
+		workspaceId: args.target.workspaceId,
+		r2Key: r2_create_asset_key({
+			organizationId: args.target.organizationId,
+			workspaceId: args.target.workspaceId,
+			assetId: args.asset._id,
+		}),
+		reason: "untracked_asset_event",
+		putMayArriveUntil: (args.asset.uploadUrlExpiresAt ?? args.now) + r2_PUT_MAY_ARRIVE_MARGIN_MS,
+	});
+	await ctx.db.delete("files_r2_assets", args.asset._id);
+
+	const uploadKey = r2_create_asset_key({
+		organizationId: args.target.organizationId,
+		workspaceId: args.target.workspaceId,
+		assetId,
+	});
+	const signedUpload = await r2.generateUploadUrl(uploadKey, {
+		createOnly: true,
+		expiresIn: UPLOAD_URL_TTL_MS / 1000,
+	});
 
 	return Result({
 		_yay: {
@@ -1313,7 +1335,7 @@ async function db_remint_pending_target(
 			path: args.target.path,
 			nodeId: String(args.target.nodeId),
 			uploadUrl: signedUpload.url,
-			headers: { "Content-Type": args.target.contentType },
+			headers: { "Content-Type": args.target.contentType, "If-None-Match": "*" },
 			uploadUrlExpiresAt,
 		},
 	});
@@ -1470,8 +1492,7 @@ export const finalize_upload_target = internalMutation({
 
 		const now = Date.now();
 		const asset = await ctx.db.get("files_r2_assets", target.assetId);
-		// A missing asset cannot finish. Release the target so the service can retry under a new key.
-		// It charged nothing, because no object ever reached R2.
+		// A missing current asset cannot finish. Keep the released target and any earlier charges.
 		if (!asset) {
 			await db_release_expired_target(ctx, { target, now });
 			return Result({
@@ -1531,8 +1552,8 @@ export type public_api_service_uploads_finalize_upload_target_Result =
  * instead of refusing while it is still pending.
  *
  * Deleting never gives quota bytes back. The counter only grows, so the bytes this run charged stay
- * charged. `deleteRequestedAt` marks an archived committed target so a late staging event keeps the
- * immutable canonical size. The released target is also what makes a replayed delete keep answering.
+ * charged. `deleteRequestedAt` marks an archived committed target. Late attempts can only raise its
+ * charged maximum, never change its winning size. The released target also answers delete replays.
  */
 export const delete_upload_target = internalMutation({
 	args: {
@@ -1683,9 +1704,8 @@ export const delete_upload_target = internalMutation({
 				continue;
 			}
 
-			// Enqueue the cleanup jobs before deleting the docs, so a crash between the two still leaves
-			// every key a job. A pending event may already be copying staging bytes to the canonical key.
-			// Keep that job through a fresh upload window so the copy cannot arrive after its final delete.
+			// The signed URL can recreate this object after an early delete. Keep its exact-key job
+			// through the write window before removing the placeholder and asset.
 			const asset = await ctx.db.get("files_r2_assets", target.assetId);
 			const liveR2Key =
 				asset?.r2Key ??
@@ -1699,18 +1719,8 @@ export const delete_upload_target = internalMutation({
 				workspaceId: target.workspaceId,
 				r2Key: liveR2Key,
 				reason: "untracked_asset_event",
-				putMayArriveUntil: now + UPLOAD_URL_TTL_MS + r2_PUT_MAY_ARRIVE_MARGIN_MS,
+				putMayArriveUntil: (asset?.uploadUrlExpiresAt ?? now + UPLOAD_URL_TTL_MS) + r2_PUT_MAY_ARRIVE_MARGIN_MS,
 			});
-			if (asset?.uploadStagingR2Key !== undefined && asset.uploadStagingR2Key !== liveR2Key) {
-				await r2_enqueue_object_deletion_job(ctx, {
-					organizationId: target.organizationId,
-					workspaceId: target.workspaceId,
-					r2Key: asset.uploadStagingR2Key,
-					reason: "upload_staging",
-					putMayArriveUntil:
-						(asset.uploadUrlExpiresAt ?? asset.unfinalizedExpiresAt ?? now) + r2_PUT_MAY_ARRIVE_MARGIN_MS,
-				});
-			}
 
 			// Deletes the file node and its asset doc. If the node is already gone, delete the asset doc
 			// directly so nothing keeps pointing at the doomed object.
@@ -2040,48 +2050,55 @@ export type public_api_service_uploads_archive_destination_Result =
 // #region deletion
 
 /**
- * One bounded drain pass for an uninstall or a workspace teardown, called from
- * `plugins_data_db_drain_batch` beside the other plugin tables.
+ * One bounded workspace drain pass, called from `data_deletion.ts` after files and assets
+ * are gone and before upload quotas are removed.
  *
  * An uninstall touches no files at all. The uploaded files belong to the workspace, not to the
  * plugin that put them there, so removing the plugin must leave every one of them alone — including
  * a placeholder whose upload never finished, which is just an empty file a member can delete.
- * Only a workspace-wide drain (null installation) deletes the destination and target docs, because
- * the workspace's files and quota docs are being deleted with them.
+ * This workspace drain deletes the attempt receipts, destinations, and targets in that order.
  */
 export async function public_api_service_uploads_db_drain_batch(
 	ctx: MutationCtx,
 	args: {
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
-		installationId: Id<"plugins_workspace_installations"> | null;
 		batchSize: number;
 	},
 ) {
-	if (args.installationId === null) {
-		const destinations = await ctx.db
-			.query("plugin_service_storage_destinations")
-			.withIndex("by_organization_workspace", (q) =>
-				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
-			)
-			.take(args.batchSize);
-		if (destinations.length > 0) {
-			await Promise.all(
-				destinations.map((destination) => ctx.db.delete("plugin_service_storage_destinations", destination._id)),
-			);
-			return { done: false, deletedCount: destinations.length };
-		}
+	const attempts = await ctx.db
+		.query("plugin_service_storage_attempts")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
+		)
+		.take(args.batchSize);
+	if (attempts.length > 0) {
+		await Promise.all(attempts.map((attempt) => ctx.db.delete("plugin_service_storage_attempts", attempt._id)));
+		return { done: false, deletedCount: attempts.length };
+	}
 
-		const targets = await ctx.db
-			.query("plugin_service_storage_targets")
-			.withIndex("by_organization_workspace_installation_targetKey", (q) =>
-				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
-			)
-			.take(args.batchSize);
-		if (targets.length > 0) {
-			await Promise.all(targets.map((target) => ctx.db.delete("plugin_service_storage_targets", target._id)));
-			return { done: false, deletedCount: targets.length };
-		}
+	const destinations = await ctx.db
+		.query("plugin_service_storage_destinations")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
+		)
+		.take(args.batchSize);
+	if (destinations.length > 0) {
+		await Promise.all(
+			destinations.map((destination) => ctx.db.delete("plugin_service_storage_destinations", destination._id)),
+		);
+		return { done: false, deletedCount: destinations.length };
+	}
+
+	const targets = await ctx.db
+		.query("plugin_service_storage_targets")
+		.withIndex("by_organization_workspace_installation_targetKey", (q) =>
+			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId),
+		)
+		.take(args.batchSize);
+	if (targets.length > 0) {
+		await Promise.all(targets.map((target) => ctx.db.delete("plugin_service_storage_targets", target._id)));
+		return { done: false, deletedCount: targets.length };
 	}
 
 	return { done: true, deletedCount: 0 };

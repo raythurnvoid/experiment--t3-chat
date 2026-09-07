@@ -3,7 +3,6 @@ import { R2 } from "@convex-dev/r2";
 import { afterEach, beforeEach, describe, expect, test, vi, type MockInstance } from "vitest";
 import { internal } from "./_generated/api.js";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes.ts";
-import { r2_server_side_copy } from "./r2_client.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import { files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
 
@@ -52,7 +51,7 @@ describe("data_import.create_upload_targets", () => {
 		expect(created._yay[0]).toMatchObject({
 			path: "/meetings/team-sync/video.mp4",
 			uploadUrl: "https://r2.test/upload",
-			headers: { "Content-Type": "video/mp4" },
+			headers: { "Content-Type": "video/mp4", "If-None-Match": "*" },
 		});
 
 		const docs = await t.run(async (ctx) => {
@@ -88,7 +87,8 @@ describe("data_import.create_upload_targets", () => {
 		});
 		expect(docs.videoAsset?.r2Key).toBeUndefined();
 		expect(generateUploadUrlSpy).toHaveBeenCalledWith(
-			`organizations/${db.organizationId}/workspaces/${db.workspaceId}/upload-staging/${created._yay[0]!.assetId}`,
+			`organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${created._yay[0]!.assetId}`,
+			{ createOnly: true, expiresIn: 15 * 60 },
 		);
 	});
 
@@ -140,30 +140,18 @@ describe("data_import.create_upload_targets", () => {
 		const assetId = created._yay[0]!.assetId;
 		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", assetId));
 		const assetR2Key = `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${assetId}`;
-		const uploadStagingR2Key =
-			asset?.uploadStagingR2Key ??
-			`organizations/${db.organizationId}/workspaces/${db.workspaceId}/upload-staging/${assetId}`;
 		vi.spyOn(R2.prototype, "getUrl").mockImplementation(
 			async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
 		);
-		// The staged object exists only in this stub: report it copied so the event can finalize.
-		// Enforce the expected-identity contract like the real action, so a garbled expectedSource
-		// from the event route fails here instead of staying green.
-		vi.spyOn(r2_server_side_copy, "copy_object").mockImplementation(async (_ctx, copyArgs) => {
-			if (copyArgs.sourceKey !== uploadStagingR2Key) {
-				return { outcome: "source_missing" as const };
-			}
-			if (copyArgs.expectedSize !== 64 || copyArgs.expectedEtag !== "etag_data_import_1") {
-				return { outcome: "source_changed" as const };
-			}
-			return { outcome: "copied" as const, size: 64, etag: "etag_data_import_1" };
-		});
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 				const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-				if (url === "https://r2.test/upload" && init?.method === "PUT") {
-					return new Response(null, { status: 200 });
+				if (new URL(url).searchParams.get("key") === assetR2Key && init?.method !== "PUT") {
+					return new Response(null, {
+						status: 200,
+						headers: { "Content-Length": "64", ETag: '"etag_data_import_1"' },
+					});
 				}
 				return new Response(null, { status: 404 });
 			}),
@@ -183,7 +171,7 @@ describe("data_import.create_upload_targets", () => {
 					action: "PutObject",
 					bucket: asset!.r2Bucket,
 					object: {
-						key: uploadStagingR2Key,
+						key: assetR2Key,
 						size: 64,
 						eTag: "etag_data_import_1",
 					},

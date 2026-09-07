@@ -79,11 +79,8 @@ import { files_nodes_reconstruct_latest_file_content_from_materialization_state 
 import type { r2_get_data_for_public_download_url_Result } from "./r2.ts";
 import {
 	r2_create_asset_key,
-	r2_create_upload_staging_key,
 	r2_enqueue_object_deletion_job,
-	r2_generate_upload_url,
-	r2_get_bucket,
-	r2_get_download_url,
+	r2,
 	r2_put_object,
 	r2_PUT_MAY_ARRIVE_MARGIN_MS,
 	r2_UNFINALIZED_ASSET_TTL_MS,
@@ -2387,7 +2384,7 @@ export const prepare_file_write = internalMutation({
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				kind,
-				r2Bucket: r2_get_bucket(),
+				r2Bucket: r2.config.bucket,
 				size,
 				createdBy: args.userId,
 				unfinalizedExpiresAt: now + r2_UNFINALIZED_ASSET_TTL_MS,
@@ -3840,7 +3837,7 @@ export const create_file_upload_targets = internalMutation({
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				kind: "upload",
-				r2Bucket: r2_get_bucket(),
+				r2Bucket: r2.config.bucket,
 				size: item.size,
 				...(args.skipProcessing ? { processingWorkId: null } : {}),
 				createdBy: args.userId,
@@ -3870,19 +3867,21 @@ export const create_file_upload_targets = internalMutation({
 				throw should_never_happen(errorMessage, errorData);
 			}
 
-			// Save the temporary key and URL expiry before returning the URL. This accepts the upload, so
+			// Save the URL expiry before returning the URL. This accepts the upload, so
 			// a later read-only lock does not stop it from finishing.
-			const uploadStagingR2Key = r2_create_upload_staging_key({
+			const uploadR2Key = r2_create_asset_key({
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				assetId,
 			});
 			await ctx.db.patch("files_r2_assets", assetId, {
-				uploadStagingR2Key,
 				uploadUrlExpiresAt: now + FILES_UPLOAD_URL_TTL_MS,
 			});
 
-			const signedUpload = await r2_generate_upload_url(uploadStagingR2Key);
+			const signedUpload = await r2.generateUploadUrl(uploadR2Key, {
+				createOnly: true,
+				expiresIn: FILES_UPLOAD_URL_TTL_MS / 1000,
+			});
 
 			// The header map is the exact set the client must send with the PUT. Content-Type is a
 			// convention, not signature-enforced: it keeps the stored object's metadata matching the
@@ -3891,7 +3890,7 @@ export const create_file_upload_targets = internalMutation({
 				path: item.path,
 				nodeId: nodeIdResult._yay,
 				uploadUrl: signedUpload.url,
-				headers: { "Content-Type": item.contentType },
+				headers: { "Content-Type": item.contentType, "If-None-Match": "*" },
 			});
 		}
 
@@ -6056,13 +6055,10 @@ export async function public_api_http_download_urls(
 			});
 			return {
 				fileNodeId,
-				url: await r2_get_download_url({
-					key: signKey,
-					options: {
-						expiresIn,
-						responseContentType: serving.responseContentType,
-						responseContentDisposition: serving.responseContentDisposition,
-					},
+				url: await r2.getUrl(signKey, {
+					expiresIn,
+					responseContentType: serving.responseContentType,
+					responseContentDisposition: serving.responseContentDisposition,
 				}),
 			};
 		}),

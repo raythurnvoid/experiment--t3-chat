@@ -19,6 +19,7 @@ import {
 } from "../shared/organizations.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { public_api_db_cleanup_file_write_stage } from "./public_api.ts";
+import { public_api_service_uploads_db_drain_batch } from "./public_api_service_uploads.ts";
 import {
 	plugins_data_db_delete_append_replay_receipt,
 	plugins_data_db_drain_batch,
@@ -713,7 +714,7 @@ async function db_purge_organization_workspace_content_batch(
 		);
 		const now = Date.now();
 		await Promise.all(
-			assets.flatMap((asset) => {
+			assets.map((asset) => {
 				const liveR2Key =
 					asset.r2Key ??
 					r2_create_asset_key({
@@ -723,30 +724,14 @@ async function db_purge_organization_workspace_content_batch(
 					});
 				const uploadPutMayArriveUntil =
 					(asset.uploadUrlExpiresAt ?? asset.unfinalizedExpiresAt ?? now) + r2_PUT_MAY_ARRIVE_MARGIN_MS;
-				const jobs = [
-					r2_enqueue_object_deletion_job(ctx, {
-						organizationId,
-						workspaceId,
-						r2Key: liveR2Key,
-						reason: "untracked_asset_event",
-						// An old upload URL writes directly to this key. Keep the deletion job until the URL
-						// expires because the URL can create the object again.
-						putMayArriveUntil:
-							asset.kind === "upload" && asset.uploadStagingR2Key === undefined ? uploadPutMayArriveUntil : undefined,
-					}),
-				];
-				if (asset.uploadStagingR2Key !== undefined && asset.uploadStagingR2Key !== liveR2Key) {
-					jobs.push(
-						r2_enqueue_object_deletion_job(ctx, {
-							organizationId,
-							workspaceId,
-							r2Key: asset.uploadStagingR2Key,
-							reason: "upload_staging",
-							putMayArriveUntil: uploadPutMayArriveUntil,
-						}),
-					);
-				}
-				return jobs;
+				return r2_enqueue_object_deletion_job(ctx, {
+					organizationId,
+					workspaceId,
+					r2Key: liveR2Key,
+					reason: "untracked_asset_event",
+					// A signed URL can create the object again after an early delete.
+					putMayArriveUntil: asset.kind === "upload" ? uploadPutMayArriveUntil : undefined,
+				});
 			}),
 		);
 		// The exact-key jobs are the durable handoff. Their scheduled action retries R2 after this
@@ -779,6 +764,16 @@ async function db_purge_organization_workspace_content_batch(
 	if (fileNodes.length > 0) {
 		await Promise.all(fileNodes.map((doc) => ctx.db.delete("files_nodes", doc._id)));
 		return { done: false, deletedCount: fileNodes.length };
+	}
+
+	// Keep service attribution until no remaining upload can be mistaken for an ordinary upload.
+	const serviceUploads = await public_api_service_uploads_db_drain_batch(ctx, {
+		organizationId,
+		workspaceId,
+		batchSize,
+	});
+	if (!serviceUploads.done) {
+		return { done: false, deletedCount: serviceUploads.deletedCount };
 	}
 
 	// Keep monotonic upload budgets until every service target and asset is gone. An R2 event may

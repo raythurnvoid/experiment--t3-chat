@@ -25,12 +25,7 @@ import {
 	files_nodes_db_archive_nodes,
 	files_nodes_db_create_node_recursively_at_path,
 } from "./files_nodes.ts";
-import {
-	r2_create_upload_staging_key,
-	r2_generate_upload_url,
-	r2_get_bucket,
-	r2_UNFINALIZED_ASSET_TTL_MS,
-} from "./r2_client.ts";
+import { r2, r2_create_asset_key, r2_UNFINALIZED_ASSET_TTL_MS } from "./r2_client.ts";
 
 /**
  * Create upload nodes and presigned R2 PUT urls for a batch of binary files.
@@ -220,7 +215,7 @@ export const create_upload_targets = internalMutation({
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				kind: "upload",
-				r2Bucket: r2_get_bucket(),
+				r2Bucket: r2.config.bucket,
 				size: item.size,
 				// Settle processing up front: the finalizer must record the R2 object without
 				// starting conversion or plugin runs for imported content.
@@ -257,26 +252,24 @@ export const create_upload_targets = internalMutation({
 				throw should_never_happen(errorMessage, errorData);
 			}
 
-			const uploadStagingR2Key = r2_create_upload_staging_key({
+			const uploadR2Key = r2_create_asset_key({
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
 				assetId,
 			});
 
-			// Save the temporary key and URL expiry before returning the signed URL. The backend later
-			// copies the uploaded object to its final key.
+			// Keep the URL expiry so cleanup can remove a late PUT.
 			await ctx.db.patch("files_r2_assets", assetId, {
-				uploadStagingR2Key,
 				uploadUrlExpiresAt: now + 15 * 60 * 1000,
 			});
 
-			const signedUpload = await r2_generate_upload_url(uploadStagingR2Key);
+			const signedUpload = await r2.generateUploadUrl(uploadR2Key, { createOnly: true, expiresIn: 15 * 60 });
 			targets.push({
 				path: item.path,
 				assetId,
 				nodeId: nodeIdResult._yay,
 				uploadUrl: signedUpload.url,
-				headers: { "Content-Type": item.contentType },
+				headers: { "Content-Type": item.contentType, "If-None-Match": "*" },
 			});
 		}
 

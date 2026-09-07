@@ -1160,14 +1160,13 @@ const app_convex_schema = defineSchema({
 		unfinalizedExpiresAt: v.optional(v.number()),
 		/**
 		 * When the signed upload URL stops working. Cleanup uses this time because the URL can
-		 * create the temporary R2 file again until it expires.
+		 * create the R2 object again after a delete until the URL expires.
 		 */
 		uploadUrlExpiresAt: v.optional(v.number()),
 		/**
-		 * The temporary R2 key used by the signed upload URL. After the upload, the backend copies
-		 * this file to the final `r2Key`. Reusing the URL can only change this temporary file.
+		 * Cleanup has retired this pending attempt. A late event cannot publish it.
 		 */
-		uploadStagingR2Key: v.optional(v.string()),
+		uploadRetiredAt: v.optional(v.number()),
 		/** Created by user ID. SYSTEM is the pseudo user ID for reserved global-organization content. */
 		createdBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
 		updatedAt: v.number(),
@@ -1187,7 +1186,6 @@ const app_convex_schema = defineSchema({
 		reason: v.union(
 			v.literal("failed_create"),
 			v.literal("read_only_create"),
-			v.literal("upload_staging"),
 			v.literal("read_only_stage"),
 			v.literal("read_only_snapshot_restore"),
 			v.literal("read_only_yjs_repair"),
@@ -2354,10 +2352,13 @@ const app_convex_schema = defineSchema({
 		 */
 		declaredBytes: v.number(),
 		/**
-		 * The stored size R2 confirmed, and the amount already charged for this target. `null` until an
-		 * object event arrives. Nothing is charged before that, so this one number is both.
+		 * The exact size of the winning upload. `null` until it is published.
 		 */
 		actualBytes: v.union(v.number(), v.null()),
+		/**
+		 * Largest observed attempt size. Superseded attempts can still increase this charge.
+		 */
+		chargedBytes: v.number(),
 		nodeId: v.id("files_nodes"),
 		assetId: v.id("files_r2_assets"),
 		/**
@@ -2432,6 +2433,19 @@ const app_convex_schema = defineSchema({
 			"installationId",
 			"targetKey",
 		]),
+
+	/**
+	 * Attribute late R2 events even after a superseded upload asset has been deleted.
+	 */
+	plugin_service_storage_attempts: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		targetId: v.id("plugin_service_storage_targets"),
+		assetId: v.id("files_r2_assets"),
+	})
+		.index("by_asset", ["assetId"])
+		.index("by_target", ["targetId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
 
 	/**
 	 * Close every older target generation when the service archives one sealed destination.

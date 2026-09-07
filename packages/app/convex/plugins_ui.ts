@@ -50,7 +50,7 @@ import {
 import { access_control_db_authorize_membership } from "./access_control.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
-import { r2_fetch_object_from_bucket, r2_get_bucket } from "./r2_client.ts";
+import { r2, r2_fetch_object_from_bucket } from "./r2_client.ts";
 import { users_ANONYMOUS_JWT_DEFAULT_KID, users_get_anonymous_jwt_private_key } from "./users.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
@@ -97,7 +97,7 @@ if (!process.env.R2_ENDPOINT) {
 // URL path or in the hostname — so allow exactly those two origins. Allowing all of https:
 // instead would let a page leak data to any server through img/media loads.
 const R2_ENDPOINT_URL = new URL(process.env.R2_ENDPOINT);
-const R2_MEDIA_ORIGINS = `${R2_ENDPOINT_URL.origin} ${R2_ENDPOINT_URL.protocol}//${r2_get_bucket()}.${R2_ENDPOINT_URL.host}`;
+const R2_MEDIA_ORIGINS = `${R2_ENDPOINT_URL.origin} ${R2_ENDPOINT_URL.protocol}//${r2.config.bucket}.${R2_ENDPOINT_URL.host}`;
 
 if (!process.env.VITE_CONVEX_HTTP_URL) {
 	throw new Error("VITE_CONVEX_HTTP_URL is not set in Convex env");

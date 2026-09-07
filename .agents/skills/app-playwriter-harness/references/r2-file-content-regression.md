@@ -65,20 +65,84 @@ Expected result: the Markdown node opens as an editable file, the server-owned i
 
 Expected result: path operations update the tree and routing without losing editor content, comments, or R2-backed snapshots. If unarchive UI is not reachable in the current tab, record the blocker and rely on backend coverage for that branch.
 
-## Uploads And Source-To-Shadow Conversion
+## Uploads And Generated Markdown Siblings
 
 1. Select the run folder before uploading.
-2. Upload `.agents/skills/app-playwriter-harness/assets/files/r2-upload-sample.pdf`.
+2. Upload `.agents/skills/app-playwriter-harness/assets/files/r2-upload-sample.pdf`. For the direct PUT checks below, capture this first upload before selecting the file.
 3. Verify a normal source file node appears immediately.
-4. Open it and verify the stored-file panel shows waiting/processing until the source asset has `uploadedAt` and conversion work starts.
-5. Wait for conversion when the local environment has R2/Modal/finalizer configured.
-6. Verify the generated shadow Markdown opens through the source node once available.
+4. Open it and verify the stored-file panel shows waiting/processing. The asset's `r2Key` confirms stored bytes; `processingWorkId` tracks host processing. Neither alone proves the PDF plugin finished.
+5. Wait for conversion when R2 events, the finalizer, and the PDF plugin are configured. The workspace must have the PDF plugin installed, its upload trigger must include this folder, and its Modal settings must be ready.
+6. Verify `r2-upload-sample.pdf.md` appears as an ordinary sibling and opens in the rich text editor. The PDF node keeps its stored-file panel.
 7. Upload the same PDF again in the same folder.
 8. Rename in the conflict modal's `Filename` input and submit `Upload` (the destructive alternative is `Replace`); verify the renamed source node appears.
 9. Test `Replace` and verify the active source node is replaced while the previous active source is archived.
 10. Upload `.agents/skills/app-playwriter-harness/assets/files/r2-upload-markdown-sample.md` and verify it becomes a normal editable Markdown node, not a source conversion panel. Since 2026-08-10 the other 19 editable text extensions convert the same way: upload `qa-plain.yaml` (pinned fixture, see `files.md`) and verify it becomes an editable plain-text document in Monaco, not a stored card.
 
-Expected result: source uploads use asset-id R2 keys, event handling creates shadows only for source assets, editable text uploads (Markdown plus the 19 plain-text extensions) route to editable nodes, and duplicate PDF paths follow the collision UI.
+Expected result: each upload attempt uses a fresh asset-id R2 key and a direct, signed create-only PUT. PDF plugin output is a regular Markdown sibling. Editable text uploads (Markdown plus the 19 plain-text extensions) become editable nodes, and duplicate PDF paths follow the collision UI.
+
+### Direct PUT, Repeated URL, And Signed Headers
+
+Keep signed URLs in Playwriter `state` memory only. Never print or save raw requests, URLs, or error bodies. Run these snippets from personal `+ai` runner files with `-f`. This recipe needs the current backend and R2 CORS rules deployed.
+
+1. Select the run folder. Inspect the sidebar inputs and confirm `.FilesSidebar input[type=file]:not([webkitdirectory])` matches the single-file input. Under a Windows relay, use `setInputFiles` first; use the fallback in `known-hazards.md` only after an actual failure.
+2. Capture the native PUT while uploading the PDF fixture. Do not call a finalize mutation from the probe:
+
+```js
+state.r2Put = state.page.waitForRequest((request) => {
+  const url = new URL(request.url());
+  return request.method() === "PUT" && url.pathname.includes("/assets/") && url.searchParams.has("X-Amz-Signature");
+});
+await state.page.locator(".FilesSidebar input[type=file]:not([webkitdirectory])").setInputFiles("C:/Users/rt0/Documents/workspace/rt0/t3-chat/.agents/skills/app-playwriter-harness/assets/files/r2-upload-sample.pdf");
+state.r2Request = await state.r2Put;
+state.r2Upload = {
+  url: state.r2Request.url(),
+  headers: Object.fromEntries(["content-type", "if-none-match"].map((name) => [name, state.r2Request.headers()[name]])),
+};
+console.log({ status: (await state.r2Request.response())?.status(), createOnly: state.r2Upload.headers["if-none-match"] === "*", conditionSigned: new URL(state.r2Upload.url).searchParams.get("X-Amz-SignedHeaders")?.split(";").includes("if-none-match") });
+```
+
+3. Require a successful native PUT and both header checks to be true. Record the node id and asset id through read-only app readback. Wait for the normal R2 event to publish `r2Key` and for the PDF to be downloadable. Save its byte hash for comparison.
+4. Before the URL expires, run this browser probe once for each mode: `repeat`, `omit`, and `change`. Browser `fetch` exercises R2 CORS; a server-side fetch does not.
+
+```js
+console.log(await state.page.evaluate(async ({ upload, mode }) => {
+  const headers = { ...upload.headers };
+  if (mode === "omit") delete headers["if-none-match"];
+  if (mode === "change") headers["if-none-match"] = '"different-etag"';
+  try {
+    const response = await fetch(upload.url, { method: "PUT", headers, body: "different upload bytes" });
+    const error = new DOMParser().parseFromString(await response.text(), "application/xml");
+    return { status: response.status, code: error.querySelector("Code")?.textContent ?? null };
+  } catch {
+    return { status: null, error: "browser_fetch_failed" };
+  }
+}, { upload: state.r2Upload, mode: "repeat" }));
+```
+
+5. `repeat` must return 412. `omit` and `change` must fail signature/auth checks (403). Verified on 2026-09-07: the valid repeated PUT returned 412 in the browser, but the two signature-error responses lacked `Access-Control-Allow-Origin`, so browser `fetch` threw. Playwriter sandbox `fetch` confirmed 403 for both, and the original content stayed unchanged. A CORS error alone does not prove signature enforcement. If the browser probe throws, confirm the statuses outside `page.evaluate`, using the same memory-only URL:
+
+```js
+const statuses = [];
+for (const mode of ["omit", "change"]) {
+  const headers = { ...state.r2Upload.headers };
+  if (mode === "omit") delete headers["if-none-match"];
+  if (mode === "change") headers["if-none-match"] = '"different-etag"';
+  try {
+    const response = await fetch(state.r2Upload.url, { method: "PUT", headers, body: "different upload bytes" });
+    await response.body?.cancel();
+    statuses.push({ mode, status: response.status });
+  } catch {
+    statuses.push({ mode, status: null });
+  }
+}
+console.log(statuses);
+if (statuses.some(({ status }) => status !== 403)) throw new Error("Signature rejection was not confirmed");
+```
+
+This fallback confirms R2 rejection; it does not test browser CORS. A 412 from an invalid-header probe is not a pass. Keep only status/error codes in the report, and record a blocker if no 403 can be confirmed before the URL expires.
+
+6. Verify the same node and asset remain, then download again and compare the bytes with the first download and fixture. A 412 means an object already exists; it does not prove the new body matches it. This manual probe checks R2 and node persistence. Focused client tests check that the sidebar/embed 412 branch preserves the node and waits for normal readiness.
+7. Repeat the upload through the native input and choose `Replace`. Verify a new active node and asset at the path, the old node has `archiveOperationId`, and its old bytes remain readable. Delete the signed URL/request fields from `state` after the checks.
 
 ## Comments
 
@@ -87,7 +151,7 @@ Expected result: source uploads use asset-id R2 keys, event handling creates sha
 3. Submit a root comment containing `comment-r2-<timestamp>`.
 4. Open the comments sidebar and verify the thread appears.
 5. Add a reply, reload, reopen the thread, and verify both messages remain.
-6. If the Markdown file came from a converted source, verify comments attach to the active editor/shadow node, not the stored source node.
+6. If the Markdown file came from the PDF plugin, verify comments attach to that Markdown sibling's node.
 
 Expected result: comments remain visible after reload and route changes.
 
@@ -107,14 +171,20 @@ Expected result: agent search/read/edit use the R2-aware Markdown helpers and pe
 2. Preview a snapshot and verify content is read from R2.
 3. Restore a snapshot and verify the editor reloads to restored content.
 4. Download the Markdown file and verify the browser receives a signed URL-backed download.
-5. Download the uploaded PDF source after `uploadedAt` is available.
+5. Download the uploaded PDF source after its asset has `r2Key`.
 
 Expected result: snapshot preview/restore and downloads use asset-backed R2 URLs and materialize stale Markdown before download.
 
 ## Cleanup
 
 1. Archive `aaa-pw-r2-<timestamp>` and any renamed upload/source artifacts created during the run.
-2. Capture `state.appPlaywriterHarness.latestLogs()` or equivalent console/page error output.
+2. Failed PUT probes can add signed URLs to browser logs. Use `getLatestLogs` directly and sanitize its URL text before printing or saving it. The harness `latestLogs()` wrapper logs the raw result:
+
+```js
+const logs = await getLatestLogs({ page: state.page, search: /error|warn|fail|cors/i });
+console.log(logs.map((line) => line.replace(/https?:\/\/[^\s"'<>]+/g, "[redacted URL]")));
+```
+
 3. Record skipped steps with the real blocker, not as pass.
 
 ## Failure Triage

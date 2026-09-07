@@ -4,7 +4,7 @@ Use this file for reusable problems that affect app browser QA.
 
 Before the first attempt at a new interaction type (upload, download, screenshot, toast, tooltip, hovercard, dialog, navigation, sign-in), search this file for that word — the recipe often already exists, and finding it before the attempt is much cheaper than after the failure. Routing hints:
 
-- **File upload / folder import** — extension mode blocks `DOM.setFileInputFiles`; use the constructed-`File` recipe under Playwriter Availability.
+- **File upload / folder import** — try `setInputFiles` under a Windows relay first; use the fallback under Playwriter Availability only after an actual failure.
 - **Screenshots / downloads** — the sandbox never writes where you point it; use the Buffer + temp-dir recipe under Playwriter Availability.
 - **Toasts** — bottom-edge action buttons need an offset click, and a toast must be read in the same execute call as the click that causes it (Playwriter Availability, Interaction Discipline).
 - **Tooltips / hovercards** — they need a real pointer position change; see the Ariakit entries under Interaction Discipline.
@@ -212,6 +212,10 @@ Hit 2026-08-24 while swapping a plugin bundle. Two separate failures, one recove
   again. Do not refetch an out-of-process frame's request through the extension bridge. Fetch the
   bytes you want to serve yourself (a plain `fetch` inside the runner to a local static server is
   fine) and `route.fulfill` from memory, so the handler touches no browser network path.
+  The same relay loss happened during an R2 PUT replay using `route.fetch()` on Playwriter 0.5.0
+  (2026-09-07). Avoid this method for upload probes too. A separate signed PUT can check storage
+  behavior; focused client tests cover 412 handling. After reconnecting, read the database before
+  repeating a write: both folder replacements had completed despite the lost session.
 - **`page.route` itself fails once the plugin OOPIF is attached**, with
   `Protocol error (Network.setCacheDisabled): No tab found for method Network.setCacheDisabled
   sessionId: <hex>`. Playwright turns the cache off on every attached session and the extension

@@ -211,6 +211,11 @@ The sidebar New-file flow creates a Markdown file with a default name, and a ren
 
 `data_import.create_upload_targets` (`packages/app/convex/data_import.ts`) is not a third path, by decision: it mints its assets with `processingWorkId: null`, so the R2 event finalizer records the object and never starts the editable-text conversion. An operator import stays a stored blob whatever its name.
 
+Upload conversion keeps the original upload asset id until its final mutation. That mutation first
+accepts an exact repeated publish, then checks that the node still uses the original upload. If the
+node was deleted or replaced while R2 writes ran, it removes only that action's unpublished output.
+It leaves saved snapshots alone. A later read-only lock still allows the accepted upload to finish.
+
 # Generic Text Function Names
 
 Editable create publishes the node, Yjs pointers, both live asset references, and the first version snapshot in one `create_file_node` mutation. The action waits for both initial R2 PUTs before failure cleanup, then hands every possibly written exact key to the durable deletion ledger. There is no second creation-finalizer mutation and no committed half-published editable file.

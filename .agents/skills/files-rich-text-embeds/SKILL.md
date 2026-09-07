@@ -100,9 +100,12 @@ items keep an http(s)-only gate as the required second gate at insertion time.
    query and retries — mutations are capped (~10) because each one charges the shared
    `files_tree_write` bucket (50/min).
 7. `Rate limit exceeded` from the create stops the rest of the batch with one toast.
-8. On a failed PUT, call `discard_failed_upload_node` FIRST and branch: `removed: true` →
-   remove the embed and toast; `removed: false` → the R2 event recorded the object first, so
-   the file and the embed both stay. The discard is metered on the `files_bulk_import` bucket
+8. Send every returned header on the direct asset PUT, including the signed `If-None-Match: *`.
+   A 412 means the attempt already has an object. Keep the file reference, clear local transfer
+   state, and let the asset watch confirm it. Do not discard or assume this PUT's body matches.
+   On another failed PUT, call `discard_failed_upload_node` FIRST: `removed: true` keeps a local
+   retry placeholder with no file reference; `removed: false` means the R2 event recorded the object
+   first, so the file and embed stay. The discard is metered on the `files_bulk_import` bucket
    and can answer `Rate limit exceeded` with `retryAfterMs` — wait it out in a loop.
 9. If the node is gone from the doc mid-flight (undo, collaborator delete): stop; if the
    create already ran, still run the discard branching. `uploadId` is cleared once the PUT

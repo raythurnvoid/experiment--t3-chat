@@ -2821,7 +2821,8 @@ describe("files_nodes.create_upload_node", () => {
 		expect(docs.textChunks).toEqual([]);
 		expect(docs.plainTextChunks).toEqual([]);
 		expect(generateUploadUrlSpy).toHaveBeenCalledWith(
-			`organizations/${db.organizationId}/workspaces/${db.workspaceId}/upload-staging/${upload._yay.assetId}`,
+			`organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${upload._yay.assetId}`,
+			{ createOnly: true, expiresIn: 15 * 60 },
 		);
 	});
 
@@ -2995,7 +2996,8 @@ describe("files_nodes.create_upload_node", () => {
 			size: 2048,
 		});
 		expect(generateUploadUrlSpy).toHaveBeenCalledWith(
-			`organizations/${db.organizationId}/workspaces/${db.workspaceId}/upload-staging/${replacement._yay.assetId}`,
+			`organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${replacement._yay.assetId}`,
+			{ createOnly: true, expiresIn: 15 * 60 },
 		);
 	});
 
@@ -3083,7 +3085,7 @@ describe("files_nodes.create_upload_nodes", () => {
 			headers: { "Content-Type": "application/pdf" },
 		});
 		// No declared type: the file is stored as plain bytes, and the signed PUT pins that type.
-		expect(imported._yay.created[2]!.headers).toEqual({ "Content-Type": "application/octet-stream" });
+		expect(imported._yay.created[2]!.headers).toEqual({ "Content-Type": "application/octet-stream", "If-None-Match": "*" });
 
 		const docs = await t.run(async (ctx) => {
 			const report = await ctx.db.get("files_nodes", imported._yay.created[0]!.nodeId);
@@ -3130,7 +3132,8 @@ describe("files_nodes.create_upload_nodes", () => {
 		expect(docs.docsFolder).toMatchObject({ kind: "folder" });
 		expect(docs.imgFolder).toMatchObject({ kind: "folder" });
 		expect(generateUploadUrlSpy).toHaveBeenCalledWith(
-			`organizations/${db.organizationId}/workspaces/${db.workspaceId}/upload-staging/${imported._yay.created[0]!.assetId}`,
+			`organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${imported._yay.created[0]!.assetId}`,
+			{ createOnly: true, expiresIn: 15 * 60 },
 		);
 
 		const second = await asUser.mutation(api.files_nodes.create_upload_nodes, {
@@ -3679,30 +3682,18 @@ describe("files_nodes.create_upload_nodes", () => {
 		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", assetId));
 		expect(asset?.processingWorkId).toBeUndefined();
 		const assetR2Key = `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${assetId}`;
-		const uploadStagingR2Key =
-			asset?.uploadStagingR2Key ??
-			`organizations/${db.organizationId}/workspaces/${db.workspaceId}/upload-staging/${assetId}`;
 		vi.spyOn(R2.prototype, "getUrl").mockImplementation(
 			async (key: string) => `https://r2.test/object?key=${encodeURIComponent(key)}`,
 		);
-		// The staged object exists only in this stub: report it copied so the event can finalize.
-		// Enforce the expected-identity contract like the real action, so a garbled expectedSource
-		// from the event route fails here instead of staying green.
-		vi.spyOn(r2_server_side_copy, "copy_object").mockImplementation(async (_ctx, copyArgs) => {
-			if (copyArgs.sourceKey !== uploadStagingR2Key) {
-				return { outcome: "source_missing" as const };
-			}
-			if (copyArgs.expectedSize !== 64 || copyArgs.expectedEtag !== "etag_browser_import_1") {
-				return { outcome: "source_changed" as const };
-			}
-			return { outcome: "copied" as const, size: 64, etag: "etag_browser_import_1" };
-		});
 		vi.stubGlobal(
 			"fetch",
 			vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 				const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
-				if (url === "https://r2.test/upload" && init?.method === "PUT") {
-					return new Response(null, { status: 200 });
+				if (new URL(url).searchParams.get("key") === assetR2Key && init?.method !== "PUT") {
+					return new Response(null, {
+						status: 200,
+						headers: { "Content-Length": "64", ETag: '"etag_browser_import_1"' },
+					});
 				}
 				return new Response(null, { status: 404 });
 			}),
@@ -3722,7 +3713,7 @@ describe("files_nodes.create_upload_nodes", () => {
 					action: "PutObject",
 					bucket: asset!.r2Bucket,
 					object: {
-						key: uploadStagingR2Key,
+						key: assetR2Key,
 						size: 64,
 						eTag: "etag_browser_import_1",
 					},
@@ -3955,7 +3946,7 @@ describe("files_nodes.get_upload_conflicts", () => {
 });
 
 describe("files_nodes.discard_failed_upload_node", () => {
-	test("removes an unfinalized upload after a copy crash and ledgers both possible objects", async () => {
+	test("removes an unfinalized upload and keeps its exact-key job through URL expiry", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({
@@ -3976,11 +3967,9 @@ describe("files_nodes.discard_failed_upload_node", () => {
 		}
 		const nodeId = imported._yay.created[0]!.nodeId;
 		const assetId = imported._yay.created[0]!.assetId;
-		const stagingKey = `organizations/${db.organizationId}/workspaces/${db.workspaceId}/upload-staging/${assetId}`;
 		const liveKey = `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${assetId}`;
 
-		// Simulate a crash after staging was copied to the immutable key but before the event
-		// mutation stored `r2Key`. The database still looks like an unfinished upload.
+		// The object may exist even when its event has not stored `r2Key` yet.
 		const discarded = await asUser.mutation(api.files_nodes.discard_failed_upload_node, {
 			membershipId: db.membershipId,
 			nodeId,
@@ -3997,17 +3986,12 @@ describe("files_nodes.discard_failed_upload_node", () => {
 		expect(docs.node).toBeNull();
 		expect(docs.asset).toBeNull();
 		const cleanupJobs = await t.run(async (ctx) => await ctx.db.query("files_r2_object_deletion_jobs").collect());
-		expect(cleanupJobs).toHaveLength(2);
-		expect(cleanupJobs.find((job) => job.r2Key === stagingKey)).toMatchObject({
-			reason: "upload_staging",
-			generation: 1,
-			putMayArriveUntil: expect.any(Number),
-		});
+		expect(cleanupJobs).toHaveLength(1);
 		expect(cleanupJobs.find((job) => job.r2Key === liveKey)).toMatchObject({
 			reason: "untracked_asset_event",
 			generation: 1,
+			putMayArriveUntil: expect.any(Number),
 		});
-		expect(cleanupJobs.find((job) => job.r2Key === liveKey)?.putMayArriveUntil).toBeUndefined();
 		expect(deleteObjectSpy).not.toHaveBeenCalled();
 	});
 
@@ -11294,11 +11278,6 @@ describe("create-time metadata", () => {
 		});
 		if (upload._nay) throw new Error(upload._nay.message);
 
-		const stagingKey = await t.run(
-			async (ctx) => (await ctx.db.get("files_r2_assets", upload._yay.assetId))?.uploadStagingR2Key,
-		);
-		if (!stagingKey) throw new Error("Expected a staged upload asset");
-
 		await t.mutation(internal.r2.process_uploaded_asset_event, {
 			assetId: upload._yay.assetId,
 			r2Key: r2_create_asset_key({
@@ -11306,7 +11285,6 @@ describe("create-time metadata", () => {
 				workspaceId: db.workspaceId,
 				assetId: upload._yay.assetId,
 			}),
-			uploadStagingR2Key: stagingKey,
 			size: 2048,
 			etag: "etag-upload-properties",
 			eventId: "upload-properties-event",
@@ -16879,7 +16857,7 @@ describe("files_nodes.create_upload_node read-only gates", () => {
 		}
 		// The accepted upload stores its temporary R2 key and the upload URL expiry time.
 		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
-		expect(asset?.uploadStagingR2Key).toContain(`/upload-staging/${upload._yay.assetId}`);
+		expect(upload._yay.headers["If-None-Match"]).toBe("*");
 		expect(asset?.uploadUrlExpiresAt).toEqual(expect.any(Number));
 	});
 
@@ -16949,7 +16927,7 @@ describe("files_nodes.create_upload_node read-only gates", () => {
 			newAsset: await ctx.db.get("files_r2_assets", replaced._yay.assetId),
 		}));
 		expect(docs.oldNode?.archiveOperationId).toBeDefined();
-		expect(docs.newAsset?.uploadStagingR2Key).toContain(`/upload-staging/${replaced._yay.assetId}`);
+		expect(replaced._yay.headers["If-None-Match"]).toBe("*");
 	});
 });
 
@@ -17017,7 +16995,7 @@ describe("files_nodes.create_upload_nodes read-only gates", () => {
 		}));
 		// The locked occupant was skipped, not archived.
 		expect(docs.occupantNode?.archiveOperationId).toBeUndefined();
-		expect(docs.freshAsset?.uploadStagingR2Key).toContain(`/upload-staging/${imported._yay.created[0]!.assetId}`);
+		expect(imported._yay.created[0]!.headers["If-None-Match"]).toBe("*");
 		expect(docs.freshAsset?.uploadUrlExpiresAt).toEqual(expect.any(Number));
 	});
 });

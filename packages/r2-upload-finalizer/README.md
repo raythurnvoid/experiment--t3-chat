@@ -21,7 +21,7 @@ The Worker posts this body to Convex:
 		"action": "object-create",
 		"bucket": "bucket-name",
 		"object": {
-			"key": "organizations/<organizationId>/workspaces/<workspaceId>/upload-staging/<assetId>",
+			"key": "organizations/<organizationId>/workspaces/<workspaceId>/assets/<assetId>",
 			"size": 123,
 			"eTag": "etag"
 		},
@@ -50,11 +50,16 @@ becomes read-only later, Convex still publishes the upload. It also finishes tex
 needed and starts upload-completed plugins. The finished node keeps its lock. New changes stay
 blocked.
 
-User-facing signed PUTs use `organizations/.../upload-staging/<assetId>`. Convex verifies the staging
-event. It then copies the bytes once to the immutable live key at
-`organizations/.../assets/<assetId>` and publishes the upload. The event for the new live key is
-acknowledged without starting upload finalization again. Generated Markdown, Yjs snapshots, and
-content snapshots also use `/assets/<assetId>`. Their events are acknowledged without upload work.
+Signed uploads write directly to `organizations/.../assets/<assetId>` with a signed
+`If-None-Match: *` header. The first PUT creates the object; another PUT to that key returns 412.
+A new service attempt gets a fresh asset and key. Convex reads the current object's size and ETag,
+then publishes only if the node still uses that attempt. Older attempts get exact-key deletion jobs.
+Duplicate published events are acknowledged. Generated Markdown, Yjs snapshots, and content
+snapshots also use `/assets/<assetId>`; their events do not start upload work.
+
+The hourly recovery checks R2 before retiring an expired upload. Cleanup keeps each deletion job
+through the known URL lifetime plus five minutes. Late events restart cleanup. This margin is an
+operational buffer, not a provider guarantee; inspect the DLQ when events keep failing.
 
 ## Configuration
 
@@ -134,7 +139,7 @@ bucket: the Files sidebar and the rich text media upload put files, and the File
 Yjs snapshots and media. Convex `ALLOWED_ORIGINS` only covers Convex routes. The bucket has
 its own CORS policy, and it must list the same app origins, or those `fetch()` calls fail with
 a CORS error on `https://raythurnvoid.github.io`. Apply [r2-files-cors.json](r2-files-cors.json)
-after changing origins. Do not drop localhost.
+after changing origins or allowed headers. Keep `Content-Type`, `If-None-Match`, and localhost.
 
 Nothing reads that file automatically. `wrangler.jsonc` does not reference it, `wrangler deploy`
 ignores it, and no script or CI step applies it. Wrangler reads it only as the `--file` argument

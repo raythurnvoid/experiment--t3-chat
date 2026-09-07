@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { Workpool } from "@convex-dev/workpool";
 
 import { api, internal } from "./_generated/api.js";
@@ -25,6 +25,10 @@ const ARCHIVE_PATH = "/api/v1/files/service-uploads/archive-destination";
 const EXCHANGE_SECRET = "SERVICE_EXCHANGE_SECRET_TEST";
 
 const MIB = 1024 * 1024;
+
+// These tests settle deletion jobs explicitly; do not let their scheduled R2 requests run.
+beforeEach(() => vi.useFakeTimers());
+afterEach(() => vi.useRealTimers());
 
 const SERVICE_CAPABILITIES: plugins_Capability[] = [
 	"plugin.service.connect",
@@ -263,8 +267,7 @@ async function read_meter(t: ReturnType<typeof test_convex>, fixture: Awaited<Re
 }
 
 /**
- * Play the R2 finalizer: the staged object was copied to the canonical `assets/<assetId>` key and
- * Convex records it, exactly like `/api/r2/event` does after a real PUT.
+ * Play the R2 finalizer after it confirmed the direct object's metadata.
  */
 async function simulate_finalizer(
 	t: ReturnType<typeof test_convex>,
@@ -272,15 +275,10 @@ async function simulate_finalizer(
 	target: Doc<"plugin_service_storage_targets">,
 	args: { size: number },
 ) {
-	const asset = await t.run(async (ctx) => await ctx.db.get("files_r2_assets", target.assetId));
-	if (!asset?.uploadStagingR2Key) {
-		throw new Error("Expected a staged upload asset for the target");
-	}
 	const canonicalKey = `organizations/${fixture.organizationId}/workspaces/${fixture.workspaceId}/assets/${target.assetId}`;
 	await t.mutation(internal.r2.process_uploaded_asset_event, {
 		assetId: target.assetId,
 		r2Key: canonicalKey,
-		uploadStagingR2Key: asset.uploadStagingR2Key,
 		size: args.size,
 		etag: "etag-service-upload",
 		eventId: `service-upload-test-${String(target._id)}`,
@@ -682,7 +680,6 @@ describe("service upload plan gate", () => {
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
-		const target = (await read_targets(t))[0]!;
 
 		// Creating the target accepted the upload. A later downgrade must not strand a half-written
 		// file, the same way a later read-only lock does not cancel it.
@@ -690,6 +687,7 @@ describe("service upload plan gate", () => {
 		expect((await call(t, REMINT_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" })).status).toBe(
 			200,
 		);
+		const target = (await read_targets(t))[0]!;
 		await simulate_finalizer(t, fixture, target, { size: 3 * MIB });
 		const finalized = await call(t, FINALIZE_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" });
 		expect(finalized.status).toBe(200);
@@ -783,8 +781,7 @@ describe("service upload quota", () => {
 		const meterSettled = await read_meter(t, fixture);
 		expect(meterSettled.balance).toBe(meterBefore.balance - 1);
 
-		// A later event can only describe the mutable staging object. It must not change the immutable
-		// canonical size or charge the target again, in bytes or in money.
+		// A repeated finalization cannot change an already published object's metadata or charges.
 		await simulate_finalizer(t, fixture, target, { size: 9 * MIB });
 		expect((await read_targets(t))[0]).toMatchObject({ state: "committed", actualBytes: 6 * MIB });
 		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId))).toMatchObject({
@@ -834,8 +831,7 @@ describe("service upload drain", () => {
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", locked.nodeId, { readOnlyScopeNodeId: locked.nodeId });
 		});
-		// Canonicalizing the committed upload already queued its staging key for deletion. Count the
-		// jobs now so the check below measures only what the drain adds.
+		// Count jobs now so the check below measures only what the drain adds.
 		const jobsBefore = await t.run(async (ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect());
 
 		let passes = 0;
@@ -1005,12 +1001,13 @@ describe("service upload targets", () => {
 		expect((await call(t, REMINT_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" })).status).toBe(
 			200,
 		);
-		await simulate_finalizer(t, fixture, target, { size: 2 * MIB });
+		const newest = (await read_targets(t))[0]!;
+		await simulate_finalizer(t, fixture, newest, { size: 2 * MIB });
 		const finalized = await call(t, FINALIZE_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" });
 		expect(finalized.status).toBe(200);
 		expect((await read_targets(t))[0]).toMatchObject({ state: "committed", actualBytes: 2 * MIB });
 		const node = await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId));
-		expect(node?.assetId).toBe(target.assetId);
+		expect(node?.assetId).toBe(newest.assetId);
 		expect(node?.readOnlyScopeNodeId).toBe(target.nodeId);
 		expect(node?.readOnlyPluginName).toBeUndefined();
 		expect(node?.readOnlyPluginServiceTargetId).toBeUndefined();
@@ -1157,8 +1154,8 @@ describe("service upload targets", () => {
 			headers: Record<string, string>;
 		};
 		expect(firstBody.state).toBe("pending");
-		expect(firstBody.uploadUrl).toContain("upload-staging");
-		expect(firstBody.headers).toEqual({ "Content-Type": "video/mp4" });
+		expect(firstBody.uploadUrl).toContain("/assets/");
+		expect(firstBody.headers).toEqual({ "Content-Type": "video/mp4", "If-None-Match": "*" });
 
 		// The conversion/plugin pipeline is suppressed at the asset itself, not by a caller flag.
 		const targets = await read_targets(t);
@@ -1261,7 +1258,7 @@ describe("service upload targets", () => {
 		expect(await finalized.json()).toMatchObject({ state: "committed", actualBytes: 1024 });
 	});
 
-	test("remint reissues a URL for the same staging key without new nodes, assets, or charges", async () => {
+	test("remint keeps the file and target but creates a new attempt before retiring the old key", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
@@ -1274,15 +1271,95 @@ describe("service upload targets", () => {
 		const body = (await response.json()) as { state: string; nodeId: string; uploadUrl: string };
 		expect(body.state).toBe("pending");
 		expect(body.nodeId).toBe(String(targetBefore.nodeId));
-		expect(body.uploadUrl).toContain(assetBefore!.uploadStagingR2Key!);
+		const targetAfter = (await read_targets(t))[0]!;
+		expect(targetAfter._id).toBe(targetBefore._id);
+		expect(targetAfter.assetId).not.toBe(targetBefore.assetId);
+		expect(body.uploadUrl).toContain(targetAfter.assetId);
+		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", targetBefore.nodeId))).toMatchObject({
+			assetId: targetAfter.assetId,
+		});
 
-		// Nothing new was created, and creating a target never charges.
+		// Only the newest asset stays live. The old receipt and deletion job outlive its asset doc.
 		expect(await read_targets(t)).toHaveLength(1);
 		const assets = await t.run(async (ctx) => await ctx.db.query("files_r2_assets").collect());
 		expect(assets).toHaveLength(1);
+		expect(assets[0]!._id).toBe(targetAfter.assetId);
+		expect(await t.run(async (ctx) => ctx.db.query("plugin_service_storage_attempts").collect())).toHaveLength(2);
+		expect(await t.run(async (ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect())).toEqual([
+			expect.objectContaining({
+				r2Key: `organizations/${fixture.organizationId}/workspaces/${fixture.workspaceId}/assets/${targetBefore.assetId}`,
+				putMayArriveUntil: assetBefore!.uploadUrlExpiresAt! + 5 * 60 * 1000,
+			}),
+		]);
 		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
 		// The URL window moved forward so the next PUT fits inside it.
 		expect(assets[0]!.uploadUrlExpiresAt).toBeGreaterThanOrEqual(assetBefore!.uploadUrlExpiresAt!);
+	});
+
+	test.each(["before", "after"] as const)("keeps the newer file when the larger old attempt arrives %s it", async (order) => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture);
+		const body = target_body();
+		expect((await call(t, CREATE_TARGET_PATH, sealed, body)).status).toBe(200);
+		const first = (await read_targets(t))[0]!;
+		const firstAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", first.assetId));
+		const meterBefore = await read_meter(t, fixture);
+
+		expect((await call(t, CREATE_TARGET_PATH, sealed, body)).status).toBe(200);
+		const newest = (await read_targets(t))[0]!;
+		expect(newest.assetId).not.toBe(first.assetId);
+		const lateEvent = {
+			bucket: firstAsset!.r2Bucket,
+			key: `organizations/${fixture.organizationId}/workspaces/${fixture.workspaceId}/assets/${first.assetId}`,
+			size: 12 * MIB,
+			eventId: "older-service-attempt",
+		};
+		if (order === "before") {
+			await t.mutation(internal.r2.record_untracked_asset_event, lateEvent);
+			expect((await read_targets(t))[0]).toMatchObject({
+				state: "pending",
+				assetId: newest.assetId,
+				actualBytes: null,
+				chargedBytes: 12 * MIB,
+			});
+		}
+		await simulate_finalizer(t, fixture, newest, { size: 5 * MIB });
+		if (order === "after") {
+			await t.mutation(internal.r2.record_untracked_asset_event, lateEvent);
+		}
+		await t.mutation(internal.r2.record_untracked_asset_event, lateEvent);
+
+		expect((await read_targets(t))[0]).toMatchObject({
+			_id: first._id,
+			nodeId: first.nodeId,
+			assetId: newest.assetId,
+			state: "committed",
+			actualBytes: 5 * MIB,
+			chargedBytes: 12 * MIB,
+		});
+		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", first.nodeId))).toMatchObject({
+			assetId: newest.assetId,
+		});
+		expect((await read_quota(t, fixture))?.usedCount).toBe(12 * MIB);
+		expect((await read_meter(t, fixture)).balance).toBe(meterBefore.balance - 1);
+		const finalized = await call(t, FINALIZE_PATH, sealed, {
+			idempotencyKey: body.idempotencyKey,
+			targetKey: body.targetKey,
+		});
+		expect(await finalized.json()).toMatchObject({ state: "committed", actualBytes: 5 * MIB });
+
+		// Deleting the older object cannot retire the target that now owns the newer file.
+		const oldJob = await t.run(async (ctx) =>
+			ctx.db.query("files_r2_object_deletion_jobs").withIndex("by_r2_key", (q) => q.eq("r2Key", lateEvent.key)).first(),
+		);
+		await t.mutation(internal.r2_client.settle_object_deletion_job, {
+			jobId: oldJob!._id,
+			generation: oldJob!.generation,
+			deletedAt: oldJob!.putMayArriveUntil!,
+		});
+		expect((await read_targets(t))[0]).toMatchObject({ state: "committed", assetId: newest.assetId });
+		expect(await t.run(async (ctx) => ctx.db.query("plugin_service_storage_attempts").collect())).toHaveLength(2);
 	});
 
 	test("finalize reports the R2 event settlement and replays it without another charge", async () => {
@@ -1361,8 +1438,7 @@ describe("service upload targets", () => {
 		);
 		expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
 
-		// R2 confirms the canonical object is physically gone. The target doc is consumed, but the
-		// bytes it charged stay charged.
+		// R2 confirms the canonical object is gone. Its receipt and target keep the charged history.
 		const jobId = await t.run(async (ctx) => {
 			return await ctx.db.insert("files_r2_object_deletion_jobs", {
 				organizationId: fixture.organizationId,
@@ -1381,9 +1457,8 @@ describe("service upload targets", () => {
 		});
 
 		expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
-		// Nothing asked for this delete, so the settlement consumes the doc instead of keeping a
-		// tombstone.
-		expect(await read_targets(t)).toHaveLength(0);
+		expect((await read_targets(t))[0]).toMatchObject({ state: "released", chargedBytes: 3 * MIB });
+		expect(await t.run(async (ctx) => ctx.db.query("plugin_service_storage_attempts").collect())).toHaveLength(1);
 	});
 
 	test("a pending target whose asset is missing is released and charges nothing", async () => {
@@ -1407,27 +1482,26 @@ describe("service upload targets", () => {
 		expect(reminted.status).toBe(409);
 	});
 
-	test("keeps an abandoned service placeholder after staging cleanup and remints only after cleanup settles", async () => {
+	test("keeps a retired placeholder and remints while its old object is being deleted", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		const assetBefore = await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId));
-		if (!assetBefore?.uploadStagingR2Key || assetBefore.uploadUrlExpiresAt === undefined) {
-			throw new Error("Expected a staged service upload asset");
+		if (assetBefore?.uploadUrlExpiresAt === undefined) {
+			throw new Error("Expected a service upload URL deadline");
 		}
 		const recoveryStartedAt = assetBefore.uploadUrlExpiresAt - 15 * 60 * 1000;
 		const cleanupNow = recoveryStartedAt + 8 * 24 * 60 * 60 * 1000;
 
-		const swept = await t.mutation(internal.r2.cleanup_expired_unfinalized_assets, {
+		await t.mutation(internal.r2.retire_missing_upload, {
+			assetId: target.assetId,
 			_test_now: cleanupNow,
-			_test_disableReschedule: true,
 		});
-		expect(swept).toEqual({ deletedCount: 0, done: true });
 		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", target.nodeId))).not.toBeNull();
 		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId))).toMatchObject({
-			unfinalizedExpiresAt: expect.any(Number),
+			uploadRetiredAt: cleanupNow,
 		});
 		expect((await read_targets(t))[0]).toMatchObject({ state: "pending" });
 		// No bytes ever reached R2, so this target never charged anything.
@@ -1436,65 +1510,49 @@ describe("service upload targets", () => {
 		const jobs = await t.run(async (ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect());
 		expect(jobs).toHaveLength(1);
 		expect(jobs[0]).toMatchObject({
-			r2Key: assetBefore.uploadStagingR2Key,
-			reason: "upload_staging",
+			r2Key: `organizations/${fixture.organizationId}/workspaces/${fixture.workspaceId}/assets/${target.assetId}`,
+			reason: "untracked_asset_event",
 			assetId: target.assetId,
 		});
 
-		const blockedReplay = await call(t, CREATE_TARGET_PATH, sealed, target_body());
-		expect(blockedReplay.status).toBe(409);
-		expect(await blockedReplay.json()).toEqual({ message: "This target's previous upload is still being cleaned up" });
-
-		const blockedRemint = await call(t, REMINT_PATH, sealed, {
-			idempotencyKey: "meeting-1",
-			targetKey: "recording",
-		});
-		expect(blockedRemint.status).toBe(409);
-		expect(await blockedRemint.json()).toEqual({ message: "This target's previous upload is still being cleaned up" });
-
-		await t.mutation(internal.r2_client.settle_object_deletion_job, {
-			jobId: jobs[0]!._id,
-			generation: jobs[0]!.generation,
-			deletedAt: Math.max(cleanupNow, jobs[0]!.putMayArriveUntil ?? 0),
-		});
-		expect(
-			(await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId)))?.unfinalizedExpiresAt,
-		).toBeUndefined();
 		const reminted = await call(t, REMINT_PATH, sealed, {
 			idempotencyKey: "meeting-1",
 			targetKey: "recording",
 		});
 		expect(reminted.status).toBe(200);
-		const assetAfterRemint = await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId));
 		const targetAfterRemint = (await read_targets(t))[0]!;
-		// There is no resume, so the retry sends the whole file again to the same staging key. The
-		// finished cleanup had cleared the unfinalized marker, and the remint arms it again.
-		expect(targetAfterRemint.assetId).toBe(target.assetId);
+		const assetAfterRemint = await t.run(async (ctx) => ctx.db.get("files_r2_assets", targetAfterRemint.assetId));
+		expect(targetAfterRemint.assetId).not.toBe(target.assetId);
 		expect(assetAfterRemint).toMatchObject({
-			uploadStagingR2Key: assetBefore.uploadStagingR2Key,
 			unfinalizedExpiresAt: expect.any(Number),
 		});
+		expect(assetAfterRemint?.uploadRetiredAt).toBeUndefined();
 		expect(targetAfterRemint).toMatchObject({ state: "pending", actualBytes: null });
 		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", target.nodeId))).toMatchObject({
-			assetId: target.assetId,
+			assetId: targetAfterRemint.assetId,
 		});
-		// The settled cleanup left no deletion job, so nothing is queued to delete what the retry writes.
-		expect(await t.run(async (ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect())).toEqual([]);
+		const oldJob = await t.run(async (ctx) => ctx.db.get("files_r2_object_deletion_jobs", jobs[0]!._id));
+		expect(oldJob).not.toBeNull();
+		await t.mutation(internal.r2_client.settle_object_deletion_job, {
+			jobId: oldJob!._id,
+			generation: oldJob!.generation,
+			deletedAt: Math.max(cleanupNow, oldJob!.putMayArriveUntil ?? 0),
+		});
+		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", targetAfterRemint.assetId))).toEqual(assetAfterRemint);
 
 		// The retry finishes. The stored size R2 confirmed is charged once, here.
 		await simulate_finalizer(t, fixture, targetAfterRemint, { size: 6 * MIB });
 		expect((await read_targets(t))[0]).toMatchObject({ state: "committed", actualBytes: 6 * MIB });
 		expect((await read_quota(t, fixture))?.usedCount).toBe(6 * MIB);
 
-		// Workspace deletion removes destination fences before targets, in bounded passes.
+		// Workspace deletion drains both attempt receipts before destination and target docs.
 		const drainResults = [];
-		for (let pass = 0; pass < 3; pass += 1) {
+		for (let pass = 0; pass < 5; pass += 1) {
 			drainResults.push(
 				await t.run(async (ctx) =>
 					public_api_service_uploads_db_drain_batch(ctx, {
 						organizationId: fixture.organizationId,
 						workspaceId: fixture.workspaceId,
-						installationId: null,
 						batchSize: 1,
 					}),
 				),
@@ -1503,13 +1561,16 @@ describe("service upload targets", () => {
 		expect(drainResults).toEqual([
 			{ done: false, deletedCount: 1 },
 			{ done: false, deletedCount: 1 },
+			{ done: false, deletedCount: 1 },
+			{ done: false, deletedCount: 1 },
 			{ done: true, deletedCount: 0 },
 		]);
 		expect(await t.run(async (ctx) => ctx.db.query("plugin_service_storage_destinations").collect())).toEqual([]);
+		expect(await t.run(async (ctx) => ctx.db.query("plugin_service_storage_attempts").collect())).toEqual([]);
 		expect(await read_targets(t)).toEqual([]);
 	});
 
-	test("defers stale staging cleanup while a service placeholder is read-only", async () => {
+	test("defers terminal cleanup while a service placeholder is read-only", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
@@ -1517,18 +1578,17 @@ describe("service upload targets", () => {
 		const target = (await read_targets(t))[0]!;
 		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId));
 		if (asset?.uploadUrlExpiresAt === undefined) {
-			throw new Error("Expected a staged service upload asset");
+			throw new Error("Expected a service upload URL deadline");
 		}
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", target.nodeId, { readOnlyScopeNodeId: target.nodeId });
 		});
 
 		const recoveryStartedAt = asset.uploadUrlExpiresAt - 15 * 60 * 1000;
-		const swept = await t.mutation(internal.r2.cleanup_expired_unfinalized_assets, {
+		await t.mutation(internal.r2.retire_missing_upload, {
+			assetId: target.assetId,
 			_test_now: recoveryStartedAt + 8 * 24 * 60 * 60 * 1000,
-			_test_disableReschedule: true,
 		});
-		expect(swept).toEqual({ deletedCount: 0, done: true });
 		expect(await t.run(async (ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect())).toHaveLength(0);
 		expect((await read_targets(t))[0]).toMatchObject({ state: "pending" });
 
@@ -1542,9 +1602,12 @@ describe("service upload targets", () => {
 				})
 			).status,
 		).toBe(200);
-		expect((await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId)))?.uploadStagingR2Key).toBe(
-			asset.uploadStagingR2Key,
-		);
+		const newest = (await read_targets(t))[0]!;
+		expect(newest.assetId).not.toBe(target.assetId);
+		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", target.nodeId))).toMatchObject({
+			assetId: newest.assetId,
+			readOnlyScopeNodeId: target.nodeId,
+		});
 	});
 });
 
@@ -1612,6 +1675,7 @@ describe("service upload delete", () => {
 				contentType: first.contentType,
 				declaredBytes: first.declaredBytes,
 				actualBytes: null,
+				chargedBytes: 0,
 				nodeId: first.nodeId,
 				assetId: first.assetId,
 				state: "pending",
@@ -1717,10 +1781,6 @@ describe("service upload delete", () => {
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		const canonicalKey = await simulate_finalizer(t, fixture, target, { size: 3 * MIB });
-		const finalizedAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId));
-		if (!finalizedAsset?.uploadStagingR2Key) {
-			throw new Error("Expected the committed target's staging key");
-		}
 		expect((await call(t, FINALIZE_PATH, sealed, { idempotencyKey: "meeting-1", targetKey: "recording" })).status).toBe(
 			200,
 		);
@@ -1784,15 +1844,13 @@ describe("service upload delete", () => {
 		expect(finalizeDuringDelete.status).toBe(200);
 		expect(await finalizeDuringDelete.json()).toMatchObject({ state: "released", actualBytes: 3 * MIB });
 
-		// An R2 action that resolved the old staging event before archive may still finish. It cleans
-		// only the staging key and cannot replace or rebill the immutable committed object.
+		// A repeated R2 finalization cannot replace or rebill the archived committed object.
 		await t.mutation(internal.r2.process_uploaded_asset_event, {
 			assetId: target.assetId,
 			r2Key: canonicalKey,
-			uploadStagingR2Key: finalizedAsset.uploadStagingR2Key,
 			size: 8 * MIB,
-			etag: "late-staging-after-archive",
-			eventId: "late_staging_after_committed_delete",
+			etag: "late-event-after-archive",
+			eventId: "late_event_after_committed_delete",
 		});
 		expect((await read_targets(t))[0]).toMatchObject({ state: "released", actualBytes: 3 * MIB });
 		expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
@@ -1928,7 +1986,7 @@ describe("service upload delete", () => {
 		expect((await read_targets(t))[0]).toMatchObject({ state: "released" });
 		// The upload never finished, so there are no stored bytes to charge.
 		expect((await read_quota(t, fixture))?.usedCount).toBe(0);
-		// The staging key the signed URL could still write to has a deletion job.
+		// The direct key the signed URL could still create has a deletion job.
 		expect(
 			(await t.run(async (ctx) => await ctx.db.query("files_r2_object_deletion_jobs").collect())).length,
 		).toBeGreaterThanOrEqual(1);
@@ -2001,8 +2059,8 @@ describe("service upload delete", () => {
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId));
-		if (!asset?.uploadStagingR2Key) {
-			throw new Error("Expected a staged service upload asset");
+		if (!asset) {
+			throw new Error("Expected a service upload asset");
 		}
 
 		expect((await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete-1", targetKey: "recording" })).status).toBe(
@@ -2023,7 +2081,7 @@ describe("service upload delete", () => {
 			throw new Error("Expected the pending cancel's canonical cleanup window");
 		}
 		expect(firstCanonicalJob.putMayArriveUntil).toBeGreaterThan(Date.now());
-		// Model the race where the first delete sees no canonical object, then an in-flight copy lands.
+		// An early delete can see no object before the signed PUT finishes.
 		await t.mutation(internal.r2_client.settle_object_deletion_job, {
 			jobId: firstCanonicalJob._id,
 			generation: firstCanonicalJob.generation,
@@ -2044,11 +2102,11 @@ describe("service upload delete", () => {
 		const meterBefore = await read_meter(t, fixture);
 		await t.mutation(internal.r2.record_untracked_asset_event, {
 			bucket: asset.r2Bucket,
-			key: asset.uploadStagingR2Key,
+			key: canonicalKey,
 			size: 6 * MIB,
 			eventId: "late_service_upload_1",
 		});
-		expect((await read_targets(t))[0]).toMatchObject({ state: "released", actualBytes: 6 * MIB });
+		expect((await read_targets(t))[0]).toMatchObject({ state: "released", actualBytes: null, chargedBytes: 6 * MIB });
 		expect((await read_quota(t, fixture))?.usedCount).toBe(6 * MIB);
 		const refreshedCanonicalJob = await t.run(async (ctx) =>
 			ctx.db
@@ -2066,17 +2124,17 @@ describe("service upload delete", () => {
 		// A duplicate does not charge twice. A later larger PUT charges only its new excess.
 		await t.mutation(internal.r2.record_untracked_asset_event, {
 			bucket: asset.r2Bucket,
-			key: asset.uploadStagingR2Key,
+			key: canonicalKey,
 			size: 6 * MIB,
 			eventId: "late_service_upload_1",
 		});
 		await t.mutation(internal.r2.record_untracked_asset_event, {
 			bucket: asset.r2Bucket,
-			key: asset.uploadStagingR2Key,
+			key: canonicalKey,
 			size: 8 * MIB,
 			eventId: "late_service_upload_2",
 		});
-		expect((await read_targets(t))[0]).toMatchObject({ state: "released", actualBytes: 8 * MIB });
+		expect((await read_targets(t))[0]).toMatchObject({ state: "released", actualBytes: null, chargedBytes: 8 * MIB });
 		expect((await read_quota(t, fixture))?.usedCount).toBe(8 * MIB);
 
 		// Late bytes on a released target never became a saved file, so no charge lands on the meter.
@@ -2090,8 +2148,8 @@ describe("service upload delete", () => {
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", target.assetId));
-		if (!asset?.uploadStagingR2Key) {
-			throw new Error("Expected a staged service upload asset");
+		if (!asset) {
+			throw new Error("Expected a service upload asset");
 		}
 
 		const asUser = t.withIdentity({
@@ -2118,11 +2176,11 @@ describe("service upload delete", () => {
 		const meterBefore = await read_meter(t, fixture);
 		await t.mutation(internal.r2.record_untracked_asset_event, {
 			bucket: asset.r2Bucket,
-			key: asset.uploadStagingR2Key,
+			key: canonicalKey,
 			size: 6 * MIB,
 			eventId: "late_after_member_discard",
 		});
-		expect((await read_targets(t))[0]).toMatchObject({ state: "released", actualBytes: 6 * MIB });
+		expect((await read_targets(t))[0]).toMatchObject({ state: "released", actualBytes: null, chargedBytes: 6 * MIB });
 		expect((await read_quota(t, fixture))?.usedCount).toBe(6 * MIB);
 
 		// Late bytes on a released target never became a saved file, so no charge lands on the meter.

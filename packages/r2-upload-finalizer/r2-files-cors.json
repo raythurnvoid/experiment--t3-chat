@@ -8,7 +8,7 @@
 					"https://raythurnvoid.github.io"
 				],
 				"methods": ["GET", "PUT", "HEAD"],
-				"headers": ["Content-Type"]
+				"headers": ["Content-Type", "If-None-Match"]
 			},
 			"exposeHeaders": ["ETag"],
 			"maxAgeSeconds": 3600

@@ -202,11 +202,11 @@ export async function plugins_runtime_db_enqueue_upload_completed_runs(
 	// A file a plugin service stored is not a member upload: it must not fan out into other
 	// plugins' backends. Editable-text service uploads reach here only when their conversion fell
 	// back to a stored blob, and non-text ones only after a rename raced the R2 event.
-	const serviceTarget = await ctx.db
-		.query("plugin_service_storage_targets")
+	const serviceAttempt = await ctx.db
+		.query("plugin_service_storage_attempts")
 		.withIndex("by_asset", (q) => q.eq("assetId", args.asset._id))
 		.first();
-	if (serviceTarget) {
+	if (serviceAttempt) {
 		return { enqueued: 0 };
 	}
 

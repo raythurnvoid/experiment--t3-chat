@@ -10,7 +10,6 @@ import { files_yjs_doc_create_from_array_buffer_update } from "../shared/files-y
 import { files_yjs_doc_get_text, files_yjs_doc_update_from_text } from "../shared/files-tiptap.ts";
 import {
 	r2_create_asset_key,
-	r2_create_upload_staging_key,
 	r2_confirmed_object_delete,
 	r2_PUT_MAY_ARRIVE_MARGIN_MS,
 	r2_server_side_copy,
@@ -2639,19 +2638,10 @@ describe("files upload-urls", () => {
 			workspaceId: args.workspaceId,
 			assetId: args.assetId,
 		});
-		const stagingKey = r2_create_upload_staging_key({
-			organizationId: args.organizationId,
-			workspaceId: args.workspaceId,
-			assetId: args.assetId,
-		});
-		const seededBytes = r2Objects.get(liveKey);
-		if (seededBytes !== undefined) {
-			r2Objects.delete(liveKey);
-			r2Objects.set(stagingKey, seededBytes);
-		} else if (!r2Objects.has(stagingKey)) {
-			r2Objects.set(stagingKey, "");
+		if (!r2Objects.has(liveKey)) {
+			r2Objects.set(liveKey, "");
 		}
-		r2ObjectMetadata.set(stagingKey, { size: args.size, etag: `etag_${args.assetId}` });
+		r2ObjectMetadata.set(liveKey, { size: args.size, etag: `etag_${args.assetId}` });
 		return await args.t.fetch("/api/r2/event", {
 			method: "POST",
 			headers: {
@@ -2665,7 +2655,7 @@ describe("files upload-urls", () => {
 					action: "PutObject",
 					bucket: args.bucket,
 					object: {
-						key: stagingKey,
+						key: liveKey,
 						size: args.size,
 						eTag: `etag_${args.assetId}`,
 					},
@@ -2704,13 +2694,13 @@ describe("files upload-urls", () => {
 				path: "/imports/call-001.md",
 				nodeId: expect.any(String),
 				uploadUrl: expect.stringContaining("https://r2.test/upload"),
-				headers: { "Content-Type": "text/markdown;charset=utf-8" },
+				headers: { "Content-Type": "text/markdown;charset=utf-8", "If-None-Match": "*" },
 			},
 			{
 				path: "/imports/media/call-001.mp3",
 				nodeId: expect.any(String),
 				uploadUrl: expect.stringContaining("https://r2.test/upload"),
-				headers: { "Content-Type": "audio/mpeg" },
+				headers: { "Content-Type": "audio/mpeg", "If-None-Match": "*" },
 			},
 		]);
 
@@ -4651,8 +4641,7 @@ describe("files read-only locks", () => {
 		);
 		expect(quota?.usedCount ?? 0).toBe(0);
 
-		// Unlock the folder and prove a new upload URL can be created. The asset stores the staging
-		// key and URL deadline that the accepted upload needs.
+		// Unlock the folder and prove a create-only upload can be accepted.
 		await set_lock({ writer, nodeId: folder!._id, locked: false });
 		const allowed = await t.fetch("/api/v1/files/upload-urls", {
 			method: "POST",
@@ -4662,12 +4651,15 @@ describe("files read-only locks", () => {
 			}),
 		});
 		expect(allowed.status).toBe(200);
-		const allowedBody = (await allowed.json()) as { files: Array<{ path: string; nodeId: string }> };
+		const allowedBody = (await allowed.json()) as {
+			files: Array<{ path: string; nodeId: string; headers: Record<string, string> }>;
+		};
 		const mintedAsset = await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", allowedBody.files[0]!.nodeId as Id<"files_nodes">);
 			return node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
 		});
-		expect(mintedAsset?.uploadStagingR2Key).toContain(`/upload-staging/${mintedAsset?._id}`);
+		expect(allowedBody.files[0]!.headers["If-None-Match"]).toBe("*");
+		expect(mintedAsset?.r2Key).toBeUndefined();
 		expect(mintedAsset?.uploadUrlExpiresAt).toBeGreaterThan(Date.now());
 	});
 
@@ -6155,11 +6147,9 @@ describe("service file writes", () => {
 		});
 		expect(createdTarget.status).toBe(200);
 		const target = await t.run(async (ctx) => (await ctx.db.query("plugin_service_storage_targets").collect())[0]!);
-		const asset = await t.run(async (ctx) => await ctx.db.get("files_r2_assets", target.assetId));
 		await t.mutation(internal.r2.process_uploaded_asset_event, {
 			assetId: target.assetId,
 			r2Key: `organizations/${db.organizationId}/workspaces/${db.workspaceId}/assets/${target.assetId}`,
-			uploadStagingR2Key: asset!.uploadStagingR2Key!,
 			size: 16,
 			etag: "etag-service-write-target",
 			eventId: "service-write-target-event",

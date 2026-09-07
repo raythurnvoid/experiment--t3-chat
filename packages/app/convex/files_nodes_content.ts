@@ -109,10 +109,10 @@ import {
 } from "./files_pending_updates.ts";
 import { files_nodes_reconstruct_latest_file_content_from_materialization_state } from "./files_nodes_reconstruct_content.ts";
 import {
+	r2,
 	r2_PUT_MAY_ARRIVE_MARGIN_MS,
 	r2_copy_object_to_immutable_key,
 	r2_create_asset_key,
-	r2_delete_object,
 	r2_enqueue_object_deletion_job,
 	r2_fetch_object_from_bucket,
 	r2_fetch_object_range_from_bucket,
@@ -1229,7 +1229,7 @@ export const cleanup_file_node_creation_assets = internalMutation({
 
 		// Reserved mount assets cannot use deletion jobs that need a tenant.
 		for (const r2Key of args.r2Keys) {
-			await r2_delete_object(ctx, r2Key);
+			await r2.deleteObject(ctx, r2Key);
 		}
 
 		for (const assetId of args.assetIds) {
@@ -6305,7 +6305,7 @@ export const cleanup_file_yjs_covered_rows = internalMutation({
 						organizations_is_global_organization_id(supersededAsset.organizationId) ||
 						organizations_is_reserved_workspace_id(supersededAsset.workspaceId)
 					) {
-						await r2_delete_object(ctx, supersededAsset.r2Key);
+						await r2.deleteObject(ctx, supersededAsset.r2Key);
 					} else {
 						// Add a deletion job before deleting the last doc that tracks this exact key.
 						// The component retry cannot confirm that the old R2 file is gone.
@@ -6359,7 +6359,7 @@ export const delete_unfinalized_repair_assets = internalMutation({
 						organizations_is_global_organization_id(asset.organizationId) ||
 						organizations_is_reserved_workspace_id(asset.workspaceId)
 					) {
-						await r2_delete_object(ctx, r2Key);
+						await r2.deleteObject(ctx, r2Key);
 					} else {
 						await r2_enqueue_object_deletion_job(ctx, {
 							organizationId: asset.organizationId,

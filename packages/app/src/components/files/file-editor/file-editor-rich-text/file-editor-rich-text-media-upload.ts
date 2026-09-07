@@ -503,10 +503,11 @@ async function upload_one(args: {
 		return "done";
 	}
 
-	const putOk = await fetch(created.url, { method: "PUT", headers: created.headers, body: file })
-		.then((response) => response.ok)
-		.catch(() => false);
-	if (!putOk) {
+	const uploadResponse = await fetch(created.url, { method: "PUT", headers: created.headers, body: file }).catch(
+		() => null,
+	);
+	// A 412 means this attempt already has an object. Keep the embed and let its asset watch confirm it.
+	if (!uploadResponse?.ok && uploadResponse?.status !== 412) {
 		const discarded = await discard_upload_node({ membershipId, nodeId: created.nodeId });
 		// `removed: false` means the R2 event recorded the object first: the bytes landed
 		// despite the browser-side failure, so the file and the embed both stay.
@@ -659,7 +660,67 @@ async function discard_upload_node(args: {
 
 // #region tests
 if (process.env.NODE_ENV === "test" && import.meta.vitest) {
-	const { describe, expect, test } = import.meta.vitest;
+	const { describe, expect, test, vi } = import.meta.vitest;
+
+	describe("upload_one", () => {
+		test.each([200, 412])("keeps the video embed for server confirmation after PUT %i", async (status) => {
+			const { Schema } = await import("@tiptap/pm/model");
+			const { EditorState } = await import("@tiptap/pm/state");
+			const { EditorView } = await import("@tiptap/pm/view");
+			const schema = new Schema({
+				nodes: {
+					doc: { content: "video*" },
+					text: {},
+					video: {
+						attrs: { src: { default: "" }, uploadId: { default: null } },
+						toDOM: () => ["video"],
+					},
+				},
+			});
+			const view = new EditorView(document.createElement("div"), {
+				state: EditorState.create({
+					schema,
+					doc: schema.node("doc", null, [schema.node("video", { uploadId: "upload" })]),
+				}),
+			});
+			const headers = { "Content-Type": "video/mp4", "If-None-Match": "*" };
+			const mutation = vi.spyOn(app_convex, "mutation").mockResolvedValue({
+				_yay: { assetId: "asset", nodeId: "node", url: "https://r2.test/video", headers },
+			});
+			const fetchMock = vi.fn(async () => new Response(null, { status }));
+			vi.stubGlobal("fetch", fetchMock);
+			try {
+				const result = await upload_one({
+					view,
+					membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+					target: {
+						parentId: "folder" as app_convex_Id<"files_nodes">,
+						parentPath: "/assets",
+						fallbackParentId: "folder" as app_convex_Id<"files_nodes">,
+						fallbackParentPath: "/assets",
+					},
+					item: {
+						uploadId: "upload",
+						file: new File(["video"], "video.mp4", { type: "video/mp4" }),
+						isVideo: true,
+						requestedName: "video.mp4",
+					},
+				});
+				expect(result).toBe("done");
+				expect(mutation).toHaveBeenCalledTimes(1);
+				expect(view.state.doc.firstChild?.attrs).toMatchObject({ src: "bonobo-file://node", uploadId: null });
+				expect(fetchMock).toHaveBeenCalledWith("https://r2.test/video", {
+					method: "PUT",
+					headers,
+					body: expect.any(File),
+				});
+			} finally {
+				view.destroy();
+				mutation.mockRestore();
+				vi.unstubAllGlobals();
+			}
+		});
+	});
 
 	describe("with_name_suffix", () => {
 		test("puts the suffix before the extension", () => {

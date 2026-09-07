@@ -20,6 +20,7 @@ Before a live Convex operation, load the domain skill that owns the behavior bei
 3. State the function, deployment, and destructive mode before the write.
 4. Run the smallest targeted command.
 5. Verify durable state with a readback command after the write.
+   - Truncated CLI output is not a complete audit, even when its remaining JSON parses. Use bounded pages or a read-only inline query that returns counts and selected ids. Check the final page before claiming a table-wide count.
 
 # Windows CLI Invocation
 
@@ -171,7 +172,7 @@ This idempotent mutation deletes that claim and its publisher secrets only. Do n
 - `data_import:list_unfinalized` (query): for each unfinalized asset, lists the active/archived node paths and snapshot references that point at it. Use it to prove an asset has zero references before deleting it with `files_nodes_content:cleanup_file_node_creation_assets` (args need the computed R2 keys `organizations/<org>/workspaces/<ws>/assets/<assetId>`).
 - `data_import:verify_metadata` (query): for each given path, counts committed frontmatter metadata docs (`null` when no active node exists). Use it to prove frontmatter indexing after a text import.
 
-Two operational gotchas from the first real run (2026-08-01): R2 events can arrive several minutes late through Cloudflare queue retries, so wait on `unfinalizedActive`, not on raw `unfinalized`; and a crashed create attempt leaves unfinalized asset rows behind. The hourly `cleanup expired unfinalized assets` cron (`r2.ts`) now deletes unreferenced ones about 24 hours after creation; rows still referenced by an archived node are only logged, so use the manual `list_unfinalized` → `cleanup_file_node_creation_assets` flow above for those or when you cannot wait a day.
+R2 events can arrive several minutes late through Cloudflare queue retries, so wait on `unfinalizedActive`, not raw `unfinalized`. A crashed create attempt can leave an unfinished asset. The hourly cleanup checks unreferenced assets after 24 hours. For a pending upload with a node, recovery checks the actual R2 object before retirement. After eight days, a missing ordinary upload can lose its unlocked placeholder; a service upload keeps a retired placeholder for a fresh attempt. A saved or archived file with confirmed content stays. Never remove an asset alone while a node or snapshot still uses it.
 
 The import CLI that drives this module lives in the separate private repo `raythurnvoid/bonobo-senate-press-cli`.
 

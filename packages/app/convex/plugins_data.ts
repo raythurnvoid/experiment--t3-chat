@@ -23,7 +23,6 @@ import {
 } from "./files_nodes.ts";
 import type { access_control_Permission } from "../shared/access-control.ts";
 import type { billing_PRODUCTS } from "../shared/billing.ts";
-import { public_api_service_uploads_db_drain_batch } from "./public_api_service_uploads.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
@@ -6494,14 +6493,6 @@ export async function plugins_data_db_drain_batch(
 	if (releasedScopeRanges.length > 0) {
 		await Promise.all(releasedScopeRanges.map((doc) => ctx.db.delete("plugins_data_released_scope_ranges", doc._id)));
 		return { done: false, deletedCount: releasedScopeRanges.length };
-	}
-
-	// The service upload targets live in their own module because they charge a workspace quota,
-	// not the plugin-data counters. An uninstall leaves them alone: only a workspace teardown
-	// deletes them, so this pass does nothing for an installation-scoped drain.
-	const serviceUploads = await public_api_service_uploads_db_drain_batch(ctx, args);
-	if (!serviceUploads.done) {
-		return { done: false, deletedCount: serviceUploads.deletedCount };
 	}
 
 	// Before the accounting doc, because these rows name members: a drain that left them for last
