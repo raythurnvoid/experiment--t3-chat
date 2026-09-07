@@ -760,7 +760,7 @@ async function db_resolve_live_restricted_scope(
  * the workspace exactly what they are not allowed to open.
  */
 export async function access_control_db_filter_readable_file_nodes<
-	T extends { restrictedScopeNodeId?: Id<"files_nodes"> },
+	T extends { restrictedScopeNodeId: Id<"files_nodes"> | null },
 >(
 	ctx: QueryCtx | MutationCtx,
 	args: {
@@ -873,7 +873,7 @@ export async function access_control_db_can_act_on_file_node(
 		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
 		userId: Id<"users">;
-		fileNode: { restrictedScopeNodeId?: Id<"files_nodes"> };
+		fileNode: { restrictedScopeNodeId: Id<"files_nodes"> | null };
 		permission: access_control_Permission;
 	},
 ) {

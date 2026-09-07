@@ -1311,7 +1311,7 @@ export function plugins_validate_manifest(input: unknown) {
  */
 export function plugins_list_file_view_matches<
 	Plugin extends { installationCreatedAt: number; fileViews: { contentTypes: string[] }[] },
->(plugins: Plugin[] | undefined, contentType: string | undefined) {
+>(plugins: Plugin[] | undefined, contentType: string | null | undefined) {
 	if (!plugins || !contentType) {
 		return [];
 	}

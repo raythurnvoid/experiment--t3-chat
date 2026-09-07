@@ -42,10 +42,10 @@ export const files_metadata_MAX_FRONTMATTER_FIELDS = 128;
 export const files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS = 512;
 
 export type files_metadata_Value =
-	| { qualifiedField: string; valueKind: "string"; value: string }
-	| { qualifiedField: string; valueKind: "number"; value: number }
-	| { qualifiedField: string; valueKind: "boolean"; value: boolean }
-	| { qualifiedField: string; valueKind: "maybe_date"; value: number };
+	| { fieldPath: string; valueKind: "string"; value: string }
+	| { fieldPath: string; valueKind: "number"; value: number }
+	| { fieldPath: string; valueKind: "boolean"; value: boolean }
+	| { fieldPath: string; valueKind: "maybe_date"; value: number };
 
 type ExtractedMetadata = {
 	fields: string[];
@@ -53,12 +53,12 @@ type ExtractedMetadata = {
 };
 
 export type files_metadata_SearchPlan =
-	| { op: "exists"; qualifiedField: string }
-	| { op: "eq"; qualifiedField: string; value: string | number | boolean }
-	| { op: "prefix"; qualifiedField: string; value: string }
+	| { op: "exists"; fieldPath: string }
+	| { op: "eq"; fieldPath: string; value: string | number | boolean }
+	| { op: "prefix"; fieldPath: string; value: string }
 	| {
 			op: "range";
-			qualifiedField: string;
+			fieldPath: string;
 			/**
 			 * Which value docs the range scans: plain numbers, or maybe_date timestamps. Bounds are
 			 * always epoch milliseconds for maybe_date; date strings are parsed before the plan is built.
@@ -204,25 +204,25 @@ function scalar_key_segment(node: YamlNode | null) {
 	return node.value;
 }
 
-function scalar_metadata_value(qualifiedField: string, node: YamlNode | null): files_metadata_Value | null {
+function scalar_metadata_value(fieldPath: string, node: YamlNode | null): files_metadata_Value | null {
 	if (!isScalar(node) || node.tag != null) {
 		return null;
 	}
 	const value = node.value;
 	if (typeof value === "string") {
-		return { qualifiedField, valueKind: "string", value };
+		return { fieldPath, valueKind: "string", value };
 	}
 	if (typeof value === "number" && Number.isFinite(value)) {
-		return { qualifiedField, valueKind: "number", value };
+		return { fieldPath, valueKind: "number", value };
 	}
 	if (typeof value === "boolean") {
-		return { qualifiedField, valueKind: "boolean", value };
+		return { fieldPath, valueKind: "boolean", value };
 	}
 	return null;
 }
 
 function primitive_value_key(value: files_metadata_Value) {
-	return `${value.qualifiedField}\u0000${value.valueKind}\u0000${String(value.value)}`;
+	return `${value.fieldPath}\u0000${value.valueKind}\u0000${String(value.value)}`;
 }
 
 // Keep the string value searchable as before, and add one maybe_date companion value when the
@@ -239,7 +239,7 @@ function add_value_with_maybe_date(mut_values: Map<string, files_metadata_Value>
 		return;
 	}
 	const dateValue: files_metadata_Value = {
-		qualifiedField: value.qualifiedField,
+		fieldPath: value.fieldPath,
 		valueKind: "maybe_date",
 		value: timestamp,
 	};
@@ -248,18 +248,18 @@ function add_value_with_maybe_date(mut_values: Map<string, files_metadata_Value>
 
 function collect_metadata_from_node(args: {
 	node: YamlNode | null;
-	qualifiedField: string;
+	fieldPath: string;
 	mut_fields: Set<string>;
 	mut_values: Map<string, files_metadata_Value>;
 }) {
 	// Every visited field is searchable by presence; only plain scalars and scalar array items add value indexes.
-	args.mut_fields.add(args.qualifiedField);
+	args.mut_fields.add(args.fieldPath);
 
 	if (args.node === null || isAlias(args.node) || args.node.tag != null) {
 		return;
 	}
 
-	const scalarValue = scalar_metadata_value(args.qualifiedField, args.node);
+	const scalarValue = scalar_metadata_value(args.fieldPath, args.node);
 	if (scalarValue) {
 		add_value_with_maybe_date(args.mut_values, scalarValue);
 		return;
@@ -268,7 +268,7 @@ function collect_metadata_from_node(args: {
 	if (isSeq(args.node)) {
 		for (const item of args.node.items) {
 			const itemNode = node_or_null(item);
-			const itemValue = scalar_metadata_value(args.qualifiedField, itemNode);
+			const itemValue = scalar_metadata_value(args.fieldPath, itemNode);
 			if (itemValue) {
 				add_value_with_maybe_date(args.mut_values, itemValue);
 			}
@@ -284,7 +284,7 @@ function collect_metadata_from_node(args: {
 			}
 			collect_metadata_from_node({
 				node: node_or_null(pair.value),
-				qualifiedField: `${args.qualifiedField}.${segment}`,
+				fieldPath: `${args.fieldPath}.${segment}`,
 				mut_fields: args.mut_fields,
 				mut_values: args.mut_values,
 			});
@@ -344,7 +344,7 @@ export function files_metadata_extract_frontmatter(markdown: string) {
 		}
 		collect_metadata_from_node({
 			node: node_or_null(pair.value),
-			qualifiedField: `${files_metadata_FRONTMATTER_FIELD_PREFIX}${segment}`,
+			fieldPath: `${files_metadata_FRONTMATTER_FIELD_PREFIX}${segment}`,
 			mut_fields: fields,
 			mut_values: values,
 		});
@@ -406,7 +406,7 @@ export function files_metadata_frontmatter_exceeds_index_caps(preflight: {
 const MAX_METADATA_KEYS = 128;
 
 /**
- * The key becomes part of `qualifiedField`, which is an equality field in every `meta search`
+ * The key becomes part of `fieldPath`, which is an equality field in every `meta search`
  * index, and a string value becomes `stringValue`, which is an indexed field too. Keep both short
  * so one index entry stays small.
  */
@@ -683,15 +683,15 @@ export function files_metadata_stringify_entries_yaml(entries: files_metadata_En
 	return doc.toString({ lineWidth: 0 });
 }
 
-function metadata_index_value(qualifiedField: string, value: files_metadata_Entry["value"]): files_metadata_Value {
+function metadata_index_value(fieldPath: string, value: files_metadata_Entry["value"]): files_metadata_Value {
 	if (typeof value === "string") {
-		return { qualifiedField, valueKind: "string", value };
+		return { fieldPath, valueKind: "string", value };
 	}
 	if (typeof value === "number") {
-		return { qualifiedField, valueKind: "number", value };
+		return { fieldPath, valueKind: "number", value };
 	}
 
-	return { qualifiedField, valueKind: "boolean", value };
+	return { fieldPath, valueKind: "boolean", value };
 }
 
 /**
@@ -703,9 +703,9 @@ export function files_metadata_extract_entries(entries: files_metadata_Entry[]) 
 	const fields: string[] = [];
 	const values = new Map<string, files_metadata_Value>();
 	for (const entry of entries) {
-		const qualifiedField = `${files_metadata_METADATA_FIELD_PREFIX}${entry.key}`;
-		fields.push(qualifiedField);
-		add_value_with_maybe_date(values, metadata_index_value(qualifiedField, entry.value));
+		const fieldPath = `${files_metadata_METADATA_FIELD_PREFIX}${entry.key}`;
+		fields.push(fieldPath);
+		add_value_with_maybe_date(values, metadata_index_value(fieldPath, entry.value));
 	}
 
 	return { fields, values: [...values.values()] };

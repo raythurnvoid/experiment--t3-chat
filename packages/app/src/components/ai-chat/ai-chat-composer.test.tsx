@@ -12,8 +12,8 @@ import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 // mock per test (for example to render the loading state).
 const { mentionTreeNodes, useQueryMock } = vi.hoisted(() => {
 	const mentionTreeNodes = [
-		{ name: "docs", path: "/docs", kind: "folder", archiveOperationId: undefined },
-		{ name: "api.md", path: "/docs/api.md", kind: "file", archiveOperationId: undefined },
+		{ name: "docs", path: "/docs", kind: "folder", archiveOperationId: null },
+		{ name: "api.md", path: "/docs/api.md", kind: "file", archiveOperationId: null },
 	];
 	return { mentionTreeNodes, useQueryMock: vi.fn((): typeof mentionTreeNodes | undefined => mentionTreeNodes) };
 });

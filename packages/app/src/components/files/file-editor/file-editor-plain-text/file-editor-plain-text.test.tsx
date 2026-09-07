@@ -152,7 +152,7 @@ function resolveFetchWithPlainTextDoc(text: string, yjsLastSequenceId = LAST_SEQ
 		text: { _yay: text },
 		yjsDoc,
 		yjsSequence: 3,
-		yjsRootKind: "plain_text",
+		textKind: "plain_text",
 		yjsLastSequenceId,
 	});
 }
@@ -162,7 +162,7 @@ function resolveFetchWithPlainTextDoc(text: string, yjsLastSequenceId = LAST_SEQ
  */
 function resolveQueryWithNonCollaborativeContent(text: string) {
 	convexQueryMock.mockResolvedValue({
-		_yay: { text, yjsRootKind: "plain_text" },
+		_yay: { text, textKind: "plain_text" },
 	});
 }
 

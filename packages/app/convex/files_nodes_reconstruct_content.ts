@@ -48,7 +48,7 @@ export async function files_nodes_reconstruct_latest_file_content_from_materiali
 	// document whose text is not addressable under that shape.
 	const text = files_yjs_doc_get_text({
 		yjsDoc,
-		rootKind: args.state.fileNode.yjsRootKind,
+		rootKind: args.state.fileNode.textKind,
 	});
 
 	if (text._nay) {

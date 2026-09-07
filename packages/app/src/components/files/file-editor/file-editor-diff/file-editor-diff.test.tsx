@@ -218,7 +218,7 @@ const presenceStore = { localSessionId: "session_1" } as unknown as files_Presen
  * Answer the committed-content query the way the server does for a file with collaboration off.
  */
 function resolveQueryWithNonCollaborativeContent(text: string) {
-	convexQueryMock.mockResolvedValue({ _yay: { text, yjsRootKind: "rich_text" } });
+	convexQueryMock.mockResolvedValue({ _yay: { text, textKind: "rich_text" } });
 }
 
 function renderNonCollabDiffEditor(args?: { editable?: boolean }) {
@@ -782,7 +782,7 @@ describe("FileEditorDiff draft versions", () => {
 				text: Result({ _yay: "base\n" }),
 				yjsDoc: files_yjs_doc_create_plain_text_from_text({ text: "base\n" }),
 				yjsSequence: 0,
-				yjsRootKind: "plain_text",
+				textKind: "plain_text",
 				yjsLastSequenceId: "sequence_live" as app_convex_Id<"files_yjs_docs_last_sequences">,
 			});
 			const { rerenderWith } = renderNonCollabProposalReview({
@@ -983,7 +983,7 @@ describe("FileEditorDiff draft versions", () => {
 					text: Result({ _yay: "base\n" }),
 					yjsDoc: baseDoc,
 					yjsSequence: 0,
-					yjsRootKind: "plain_text",
+					textKind: "plain_text",
 					yjsLastSequenceId: "sequence_live" as app_convex_Id<"files_yjs_docs_last_sequences">,
 				});
 				useStableQueryMock.mockReturnValue(null);
@@ -1131,7 +1131,7 @@ describe("FileEditorDiff draft versions", () => {
 				text: Result({ _yay: "base\n" }),
 				yjsDoc: files_yjs_doc_create_plain_text_from_text({ text: "base\n" }),
 				yjsSequence: 0,
-				yjsRootKind: "plain_text",
+				textKind: "plain_text",
 				yjsLastSequenceId: "sequence_live" as app_convex_Id<"files_yjs_docs_last_sequences">,
 			});
 			const { rerenderWith } = renderNonCollabProposalReview({
@@ -1194,7 +1194,7 @@ describe("FileEditorDiff draft versions", () => {
 					text: Result({ _yay: committedText }),
 					yjsDoc: files_yjs_doc_create_plain_text_from_text({ text: committedText }),
 					yjsSequence: committedSequence,
-					yjsRootKind: "plain_text",
+					textKind: "plain_text",
 					yjsLastSequenceId: "sequence_live" as app_convex_Id<"files_yjs_docs_last_sequences">,
 				}));
 				convexMutationMock.mockImplementation(async (reference: string, args: { role?: string; text?: string }) => {
@@ -1360,7 +1360,7 @@ describe("FileEditorDiff draft versions", () => {
 				text: Result({ _yay: "base\n" }),
 				yjsDoc: baseDoc,
 				yjsSequence: 0,
-				yjsRootKind: "plain_text",
+				textKind: "plain_text",
 				yjsLastSequenceId: "sequence_live" as app_convex_Id<"files_yjs_docs_last_sequences">,
 			});
 			useStableQueryMock.mockReturnValue(null);
@@ -1442,7 +1442,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 			text: Result({ _yay: "Budget: 120\n" }),
 			yjsDoc: files_yjs_doc_create_plain_text_from_text({ text: "Budget: 120\n" }),
 			yjsSequence: 1,
-			yjsRootKind: "plain_text",
+			textKind: "plain_text",
 			yjsLastSequenceId: "sequence_live" as app_convex_Id<"files_yjs_docs_last_sequences">,
 		});
 		vi.mocked(files_persist_file_pending_update_rebased_state).mockResolvedValue(
@@ -1507,7 +1507,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 			text: Result({ _yay: "restored\n" }),
 			yjsDoc: files_yjs_doc_create_plain_text_from_text({ text: "restored\n" }),
 			yjsSequence: 1,
-			yjsRootKind: "plain_text",
+			textKind: "plain_text",
 			yjsLastSequenceId: "sequence_old" as app_convex_Id<"files_yjs_docs_last_sequences">,
 		});
 
@@ -1605,7 +1605,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 				text: Result({ _yay: "old\n" }),
 				yjsDoc: files_yjs_doc_create_plain_text_from_text({ text: "old\n" }),
 				yjsSequence: 10,
-				yjsRootKind: "plain_text",
+				textKind: "plain_text",
 				yjsLastSequenceId: "sequence_old" as app_convex_Id<"files_yjs_docs_last_sequences">,
 			});
 			const { rerenderWith } = renderNonCollabProposalReview({
@@ -1623,7 +1623,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 				text: Result({ _yay: "new\n" }),
 				yjsDoc: files_yjs_doc_create_plain_text_from_text({ text: "new\n" }),
 				yjsSequence: 0,
-				yjsRootKind: "plain_text" as const,
+				textKind: "plain_text" as const,
 				yjsLastSequenceId: "sequence_new" as app_convex_Id<"files_yjs_docs_last_sequences">,
 			};
 			const fetchFinished = Promise.withResolvers<typeof nextContent>();
@@ -1670,7 +1670,7 @@ describe("FileEditorDiff after a collaboration change", () => {
 			text: Result({ _yay: "new document\n" }),
 			yjsDoc: files_yjs_doc_create_plain_text_from_text({ text: "new document\n" }),
 			yjsSequence: 1,
-			yjsRootKind: "plain_text",
+			textKind: "plain_text",
 			yjsLastSequenceId: "sequence_new" as app_convex_Id<"files_yjs_docs_last_sequences">,
 		});
 		fireEvent.click(screen.getByRole("button", { name: "Sync with live file" }));
@@ -1696,14 +1696,14 @@ describe("FileEditorDiff after a collaboration change", () => {
 				text: Result({ _yay: "old saved\n" }),
 				yjsDoc: files_yjs_doc_create_plain_text_from_text({ text: "old saved\n" }),
 				yjsSequence: 10,
-				yjsRootKind: "plain_text" as const,
+				textKind: "plain_text" as const,
 				yjsLastSequenceId: "sequence_old" as app_convex_Id<"files_yjs_docs_last_sequences">,
 			};
 			const newContent = {
 				text: Result({ _yay: "new document\n" }),
 				yjsDoc: files_yjs_doc_create_plain_text_from_text({ text: "new document\n" }),
 				yjsSequence: 0,
-				yjsRootKind: "plain_text" as const,
+				textKind: "plain_text" as const,
 				yjsLastSequenceId: "sequence_new" as app_convex_Id<"files_yjs_docs_last_sequences">,
 			};
 			const { rerenderWith } = renderNonCollabProposalReview({

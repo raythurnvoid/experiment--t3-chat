@@ -133,7 +133,7 @@ export const create_upload_targets = internalMutation({
 						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
 						.eq("path", item.path)
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first();
 			if (existingNode) {
@@ -175,7 +175,7 @@ export const create_upload_targets = internalMutation({
 							.eq("organizationId", args.organizationId)
 							.eq("workspaceId", args.workspaceId)
 							.eq("path", ancestorPath)
-							.eq("archiveOperationId", undefined),
+							.eq("archiveOperationId", null),
 					)
 					.first();
 				if (ancestor && ancestor.kind !== "folder") {
@@ -325,7 +325,7 @@ export const verify_run = internalQuery({
 				.collect(),
 		]);
 
-		const activeNodes = nodes.filter((node) => node.archiveOperationId === undefined);
+		const activeNodes = nodes.filter((node) => node.archiveOperationId === null);
 		const unfinalized = assets.filter((asset) => asset.r2Key === undefined);
 		// Assets an active file still depends on. Crashed write attempts and archive-and-replace
 		// leave unfinalized rows behind that no active file references; those are workspace debris,
@@ -420,8 +420,8 @@ export const list_unfinalized = internalQuery({
 				assetId: asset._id,
 				kind: asset.kind,
 				createdAt: asset._creationTime,
-				activePaths: nodes.filter((node) => node.archiveOperationId === undefined).map((node) => node.path),
-				archivedPaths: nodes.filter((node) => node.archiveOperationId !== undefined).map((node) => node.path),
+				activePaths: nodes.filter((node) => node.archiveOperationId === null).map((node) => node.path),
+				archivedPaths: nodes.filter((node) => node.archiveOperationId !== null).map((node) => node.path),
 				yjsSnapshotRefs: yjsSnapshots.filter((snapshot) => snapshot.assetId === asset._id).length,
 				fileSnapshotRefs: fileSnapshots.filter((snapshot) => snapshot.assetId === asset._id).length,
 			});
@@ -458,7 +458,7 @@ export const verify_metadata = internalQuery({
 						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
 						.eq("path", path)
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first();
 			if (!node) {
@@ -468,7 +468,7 @@ export const verify_metadata = internalQuery({
 
 			const metadataDocs = await ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_source_fileNode_qualifiedField", (q) =>
+				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
 					q
 						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
@@ -478,8 +478,8 @@ export const verify_metadata = internalQuery({
 						// agent wrote next to the file, and counting those too would let this check pass for a
 						// file whose frontmatter never indexed. The bound stops at `frontmatter/` because `/`
 						// is the next character after `.`.
-						.gte("qualifiedField", files_metadata_FRONTMATTER_FIELD_PREFIX)
-						.lt("qualifiedField", "frontmatter/"),
+						.gte("fieldPath", files_metadata_FRONTMATTER_FIELD_PREFIX)
+						.lt("fieldPath", "frontmatter/"),
 				)
 				.collect();
 			results.push({ path, metadataDocs: metadataDocs.length });

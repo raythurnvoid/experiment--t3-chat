@@ -3759,7 +3759,21 @@ describe("file sharing", () => {
 				treePath: args.path,
 				pathDepth: args.path.split("/").length - 1,
 				lowercaseExtension: "md",
-				...(args.restrictedScopeNodeId ? { restrictedScopeNodeId: args.restrictedScopeNodeId } : {}),
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: args.restrictedScopeNodeId ?? null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 			const textChunkIds = await Promise.all(
 				chunks._yay.map((chunk) =>
@@ -3888,7 +3902,7 @@ describe("file sharing", () => {
 						.eq("organizationId", fixture.organizationId)
 						.eq("workspaceId", fixture.defaultWorkspaceId)
 						.eq("path", "/newtop")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first(),
 		]);
@@ -3977,7 +3991,7 @@ describe("file sharing", () => {
 		);
 
 		const folderNode = await t.run(async (ctx) => await ctx.db.get("files_nodes", folderId));
-		expect(folderNode?.restrictedScopeNodeId).toBeUndefined();
+		expect(folderNode?.restrictedScopeNodeId).toBeNull();
 
 		const grants = await t.run(async (ctx) => await ctx.db.query("access_control_permission_grants").collect());
 		expect(grants).toEqual([]);
@@ -5728,7 +5742,7 @@ describe("file sharing", () => {
 		expect(crossWorkspace._nay?.message).toBe("Not found");
 
 		const stillOpen = await t.run((ctx) => ctx.db.get("files_nodes", folder._yay!.nodeId));
-		expect(stillOpen?.restrictedScopeNodeId).toBeUndefined();
+		expect(stillOpen?.restrictedScopeNodeId).toBeNull();
 
 		// The same call with the membership of the node's own workspace works, so the refusal was about
 		// the workspace and not about the node or the caller.
@@ -5881,6 +5895,20 @@ describe("file sharing", () => {
 				createdBy: fixture.ownerId,
 				updatedBy: fixture.ownerId,
 				updatedAt: now,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 			const yjsSnapshotId = await ctx.db.insert("files_yjs_snapshots", {
 				organizationId: fixture.organizationId,
@@ -5904,7 +5932,7 @@ describe("file sharing", () => {
 			await ctx.db.patch("files_nodes", fileNodeId, {
 				yjsSnapshotId,
 				yjsLastSequenceId,
-				yjsRootKind: "rich_text",
+				textKind: "rich_text",
 			});
 			return fileNodeId;
 		});
@@ -6417,6 +6445,20 @@ describe("file sharing", () => {
 				pathDepth: 2,
 				lowercaseExtension: "md",
 				restrictedScopeNodeId: folderId,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 			const yjsSnapshotId = await ctx.db.insert("files_yjs_snapshots", {
 				organizationId: fixture.organizationId,
@@ -6440,7 +6482,7 @@ describe("file sharing", () => {
 			await ctx.db.patch("files_nodes", fileNodeId, {
 				yjsSnapshotId,
 				yjsLastSequenceId,
-				yjsRootKind: "rich_text",
+				textKind: "rich_text",
 			});
 
 			const textChunkIds = await Promise.all(
@@ -6698,7 +6740,7 @@ describe("file sharing", () => {
 		expect(archived._nay?.message).toBe("Permission denied");
 
 		const outerNode = await t.run(async (ctx) => await ctx.db.get("files_nodes", outer._yay!.nodeId));
-		expect(outerNode?.archiveOperationId).toBeUndefined();
+		expect(outerNode?.archiveOperationId).toBeNull();
 	});
 
 	test("the owner can take the last manager off a folder they restricted", async () => {
@@ -6970,7 +7012,7 @@ describe("file sharing", () => {
 
 		const afterMove = await t.run(async (ctx) => await ctx.db.get("files_nodes", childId));
 		expect(afterMove?.parentId).toBe(files_ROOT_ID);
-		expect(afterMove?.restrictedScopeNodeId).toBeUndefined();
+		expect(afterMove?.restrictedScopeNodeId).toBeNull();
 	});
 
 	test("creating a path through a hidden folder is refused", async () => {
@@ -7111,7 +7153,7 @@ describe("file sharing", () => {
 
 		const childNode = await t.run(async (ctx) => await ctx.db.get("files_nodes", childId));
 		expect(childNode?.parentId).toBe(files_ROOT_ID);
-		expect(childNode?.restrictedScopeNodeId).toBeUndefined();
+		expect(childNode?.restrictedScopeNodeId).toBeNull();
 
 		const visible = await fixture.asMember.query(api.files_nodes.get_file_node_for_membership, {
 			membershipId: fixture.memberMembershipId,
@@ -7216,7 +7258,7 @@ describe("file sharing", () => {
 							.eq("organizationId", fixture.organizationId)
 							.eq("workspaceId", fixture.defaultWorkspaceId)
 							.eq("path", "/fresh")
-							.eq("archiveOperationId", undefined),
+							.eq("archiveOperationId", null),
 					)
 					.first(),
 		);
@@ -7942,7 +7984,22 @@ describe("file sharing", () => {
 				pathDepth: 2,
 				lowercaseExtension: "md",
 				restrictedScopeNodeId: folderId,
-				archiveOperationId: undefined,
+				archiveOperationId: null,
+				contentType: null,
+				assetId: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
 			});
 		});
 
@@ -7972,7 +8029,7 @@ describe("file sharing", () => {
 		// Uploading over a name archives whatever holds it. The refusal has to come first, or asking for
 		// something they are not allowed to do is how the member deletes the file.
 		const note = await t.run(async (ctx) => await ctx.db.get("files_nodes", noteId));
-		expect(note?.archiveOperationId).toBeUndefined();
+		expect(note?.archiveOperationId).toBeNull();
 	});
 
 	test("an upload that walks through a file writes nothing", async () => {
@@ -7997,8 +8054,23 @@ describe("file sharing", () => {
 				treePath: "/ancestor.pdf",
 				pathDepth: 1,
 				lowercaseExtension: "pdf",
-				restrictedScopeNodeId: undefined,
-				archiveOperationId: undefined,
+				restrictedScopeNodeId: null,
+				archiveOperationId: null,
+				contentType: null,
+				assetId: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
 			});
 		});
 
@@ -8093,7 +8165,22 @@ describe("file sharing", () => {
 				pathDepth: 2,
 				lowercaseExtension: "md",
 				restrictedScopeNodeId: folderId,
-				archiveOperationId: undefined,
+				archiveOperationId: null,
+				contentType: null,
+				assetId: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
 			});
 		});
 
@@ -8127,7 +8214,7 @@ describe("file sharing", () => {
 		expect(imported._yay.skipped).toEqual([{ relativePath: "closed/note.md", reason: "conflict" }]);
 
 		const note = await t.run(async (ctx) => await ctx.db.get("files_nodes", noteId));
-		expect(note?.archiveOperationId).toBeUndefined();
+		expect(note?.archiveOperationId).toBeNull();
 	});
 
 	test("the upload conflict pre-check hides nodes the caller cannot read", async () => {

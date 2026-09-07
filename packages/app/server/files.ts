@@ -242,7 +242,7 @@ export async function files_db_get_pending_path_overlay_data(
 			node != null &&
 			node.organizationId === args.organizationId &&
 			node.workspaceId === args.workspaceId &&
-			node.archiveOperationId === undefined,
+			node.archiveOperationId === null,
 	);
 
 	return { pendingUpdates, referencedNodes };
@@ -298,7 +298,7 @@ export async function files_db_get_visible_node_by_path(
 					.eq("organizationId", args.organizationId)
 					.eq("workspaceId", args.workspaceId)
 					.eq("path", path)
-					.eq("archiveOperationId", undefined),
+					.eq("archiveOperationId", null),
 			)
 			.first();
 

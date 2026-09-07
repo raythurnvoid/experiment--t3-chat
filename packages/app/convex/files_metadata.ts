@@ -35,7 +35,7 @@ import {
 	type files_metadata_SearchPlan,
 	type files_metadata_Value,
 } from "../shared/files-metadata.ts";
-import { files_search_query_qualified_field_is_valid } from "../shared/files-search-query.ts";
+import { files_search_query_field_path_is_valid } from "../shared/files-search-query.ts";
 import {
 	organizations_is_reserved_workspace_id,
 	organizations_is_global_organization_id,
@@ -95,14 +95,14 @@ export async function files_metadata_db_delete_committed_frontmatter(
 ) {
 	const docs = await ctx.db
 		.query("files_metadata_docs")
-		.withIndex("by_organization_workspace_source_fileNode_qualifiedField", (q) =>
+		.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
 			q
 				.eq("organizationId", args.organizationId)
 				.eq("workspaceId", args.workspaceId)
 				.eq("sourceKind", "committed")
 				.eq("fileNodeId", args.nodeId)
-				.gte("qualifiedField", files_metadata_FRONTMATTER_FIELD_PREFIX)
-				.lt("qualifiedField", "frontmatter/"),
+				.gte("fieldPath", files_metadata_FRONTMATTER_FIELD_PREFIX)
+				.lt("fieldPath", "frontmatter/"),
 		)
 		.collect();
 	await Promise.all(docs.map((doc) => ctx.db.delete("files_metadata_docs", doc._id)));
@@ -114,7 +114,7 @@ export async function files_metadata_db_delete_pending(
 ) {
 	const docs = await ctx.db
 		.query("files_metadata_docs")
-		.withIndex("by_pendingUpdate_qualifiedField", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
+		.withIndex("by_pendingUpdate_fieldPath", (q) => q.eq("pendingUpdateId", args.pendingUpdateId))
 		.collect();
 	await Promise.all(docs.map((doc) => ctx.db.delete("files_metadata_docs", doc._id)));
 }
@@ -176,20 +176,20 @@ export async function files_metadata_db_insert_committed(
 		...(args.yjsSequence === undefined ? {} : { yjsSequence: args.yjsSequence }),
 		path: fileNode.path,
 		treePath: fileNode.treePath,
-		archiveOperationId: fileNode.archiveOperationId,
+		archiveOperationId: fileNode.archiveOperationId ?? undefined,
 	};
 	await Promise.all([
-		...metadata.fields.map((qualifiedField) =>
+		...metadata.fields.map((fieldPath) =>
 			ctx.db.insert("files_metadata_docs", {
 				...scope,
-				qualifiedField,
+				fieldPath,
 				docKind: "field" as const,
 			}),
 		),
 		...metadata.values.map((value) =>
 			ctx.db.insert("files_metadata_docs", {
 				...scope,
-				qualifiedField: value.qualifiedField,
+				fieldPath: value.fieldPath,
 				...value_doc_payload(value),
 			}),
 		),
@@ -252,20 +252,20 @@ export async function files_metadata_db_replace_pending(
 		pendingUpdateId: args.pendingUpdateId,
 		path: fileNode.path,
 		treePath: fileNode.treePath,
-		archiveOperationId: fileNode.archiveOperationId,
+		archiveOperationId: fileNode.archiveOperationId ?? undefined,
 	};
 	await Promise.all([
-		...metadata.fields.map((qualifiedField) =>
+		...metadata.fields.map((fieldPath) =>
 			ctx.db.insert("files_metadata_docs", {
 				...scope,
-				qualifiedField,
+				fieldPath,
 				docKind: "field" as const,
 			}),
 		),
 		...metadata.values.map((value) =>
 			ctx.db.insert("files_metadata_docs", {
 				...scope,
-				qualifiedField: value.qualifiedField,
+				fieldPath: value.fieldPath,
 				...value_doc_payload(value),
 			}),
 		),
@@ -295,7 +295,7 @@ export async function files_metadata_db_patch_file_scope(
 	}
 	const docs = await ctx.db
 		.query("files_metadata_docs")
-		.withIndex("by_organization_workspace_fileNode_qualifiedField", (q) =>
+		.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
 			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.nodeId),
 		)
 		.collect();
@@ -310,8 +310,8 @@ function tree_path_from_path(path: string) {
 	return path === "/" ? "/" : `${path.replace(/\/+$/u, "")}/`;
 }
 
-function metadata_kind_from_qualified_field(qualifiedField: string) {
-	return qualifiedField.slice(0, qualifiedField.indexOf("."));
+function metadata_kind_from_field_path(fieldPath: string) {
+	return fieldPath.slice(0, fieldPath.indexOf("."));
 }
 
 async function db_list_pending_file_node_ids(
@@ -352,8 +352,8 @@ function format_search_result(doc: Doc<"files_metadata_docs">) {
 	const base = {
 		path: doc.path,
 		nodeId: doc.fileNodeId,
-		qualifiedField: doc.qualifiedField,
-		metadataKind: metadata_kind_from_qualified_field(doc.qualifiedField),
+		fieldPath: doc.fieldPath,
+		metadataKind: metadata_kind_from_field_path(doc.fieldPath),
 		sourceKind: doc.sourceKind,
 	};
 	if (doc.docKind === "field") {
@@ -393,7 +393,7 @@ function format_search_result(doc: Doc<"files_metadata_docs">) {
 			const errorData = {
 				metadataDocId: doc._id,
 				fileNodeId: doc.fileNodeId,
-				qualifiedField: doc.qualifiedField,
+				fieldPath: doc.fieldPath,
 				docKind: doc.docKind,
 			};
 			console.error(errorMessage, errorData);
@@ -421,13 +421,13 @@ function search_index_query(
 		case "exists":
 			return ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_org_workspace_archive_docKind_qualifiedField_tree", (q) => {
+				.withIndex("by_org_workspace_archive_docKind_fieldPath_tree", (q) => {
 					const base = q
 						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
 						.eq("archiveOperationId", undefined)
 						.eq("docKind", "field")
-						.eq("qualifiedField", plan.qualifiedField);
+						.eq("fieldPath", plan.fieldPath);
 					return args.treePathPrefix
 						? base.gte("treePath", args.treePathPrefix).lt("treePath", path_tree_prefix_upper_bound(args.treePathPrefix))
 						: base;
@@ -437,13 +437,13 @@ function search_index_query(
 				const value = plan.value;
 				return ctx.db
 					.query("files_metadata_docs")
-					.withIndex("by_org_workspace_archive_docKind_qualifiedField_string_tree", (q) => {
+					.withIndex("by_org_workspace_archive_docKind_fieldPath_string_tree", (q) => {
 						const base = q
 							.eq("organizationId", args.organizationId)
 							.eq("workspaceId", args.workspaceId)
 							.eq("archiveOperationId", undefined)
 							.eq("docKind", "value")
-							.eq("qualifiedField", plan.qualifiedField)
+							.eq("fieldPath", plan.fieldPath)
 							.eq("valueKind", "string")
 							.eq("stringValue", value);
 						return args.treePathPrefix
@@ -455,13 +455,13 @@ function search_index_query(
 				const value = plan.value;
 				return ctx.db
 					.query("files_metadata_docs")
-					.withIndex("by_org_workspace_archive_docKind_qualifiedField_number_tree", (q) => {
+					.withIndex("by_org_workspace_archive_docKind_fieldPath_number_tree", (q) => {
 						const base = q
 							.eq("organizationId", args.organizationId)
 							.eq("workspaceId", args.workspaceId)
 							.eq("archiveOperationId", undefined)
 							.eq("docKind", "value")
-							.eq("qualifiedField", plan.qualifiedField)
+							.eq("fieldPath", plan.fieldPath)
 							.eq("valueKind", "number")
 							.eq("numberValue", value);
 						return args.treePathPrefix
@@ -473,13 +473,13 @@ function search_index_query(
 				const value = plan.value;
 				return ctx.db
 					.query("files_metadata_docs")
-					.withIndex("by_org_workspace_archive_docKind_qualifiedField_boolean_tree", (q) => {
+					.withIndex("by_org_workspace_archive_docKind_fieldPath_boolean_tree", (q) => {
 						const base = q
 							.eq("organizationId", args.organizationId)
 							.eq("workspaceId", args.workspaceId)
 							.eq("archiveOperationId", undefined)
 							.eq("docKind", "value")
-							.eq("qualifiedField", plan.qualifiedField)
+							.eq("fieldPath", plan.fieldPath)
 							.eq("valueKind", "boolean")
 							.eq("booleanValue", value);
 						return args.treePathPrefix
@@ -490,13 +490,13 @@ function search_index_query(
 		case "prefix":
 			return ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_org_workspace_archive_docKind_qualifiedField_string_tree", (q) => {
+				.withIndex("by_org_workspace_archive_docKind_fieldPath_string_tree", (q) => {
 					const base = q
 						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
 						.eq("archiveOperationId", undefined)
 						.eq("docKind", "value")
-						.eq("qualifiedField", plan.qualifiedField)
+						.eq("fieldPath", plan.fieldPath)
 						.eq("valueKind", "string")
 						.gte("stringValue", plan.value);
 					const upperBound = string_prefix_upper_bound(plan.value);
@@ -507,13 +507,13 @@ function search_index_query(
 			// numberValue, and use valueKind to keep them separate from plain number docs.
 			return ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_org_workspace_archive_docKind_qualifiedField_number_tree", (q) => {
+				.withIndex("by_org_workspace_archive_docKind_fieldPath_number_tree", (q) => {
 					const base = q
 						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
 						.eq("archiveOperationId", undefined)
 						.eq("docKind", "value")
-						.eq("qualifiedField", plan.qualifiedField)
+						.eq("fieldPath", plan.fieldPath)
 						.eq("valueKind", plan.valueKind);
 					if (plan.gte != null) {
 						const lower = base.gte("numberValue", plan.gte);
@@ -609,16 +609,16 @@ function search_query(
  * `search` and the search box's `search_nodes` accept the same shape.
  */
 const search_plan_validator = v.union(
-	v.object({ op: v.literal("exists"), qualifiedField: v.string() }),
+	v.object({ op: v.literal("exists"), fieldPath: v.string() }),
 	v.object({
 		op: v.literal("eq"),
-		qualifiedField: v.string(),
+		fieldPath: v.string(),
 		value: v.union(v.string(), v.number(), v.boolean()),
 	}),
-	v.object({ op: v.literal("prefix"), qualifiedField: v.string(), value: v.string() }),
+	v.object({ op: v.literal("prefix"), fieldPath: v.string(), value: v.string() }),
 	v.object({
 		op: v.literal("range"),
-		qualifiedField: v.string(),
+		fieldPath: v.string(),
 		valueKind: v.union(v.literal("number"), v.literal("maybe_date")),
 		gte: v.optional(v.number()),
 		gt: v.optional(v.number()),
@@ -643,7 +643,7 @@ export const search = internalQuery({
 			v.object({
 				path: v.string(),
 				nodeId: v.id("files_nodes"),
-				qualifiedField: v.string(),
+				fieldPath: v.string(),
 				metadataKind: v.string(),
 				sourceKind: v.union(v.literal("committed"), v.literal("pending")),
 				valueKind: v.union(
@@ -668,7 +668,7 @@ export const search = internalQuery({
 		// File metadata is not derived from content, so a pending content edit must not hide it. Every
 		// plan targets one qualified field. So the field prefix alone decides this for the whole query,
 		// and a metadata search never collects the pending overlay.
-		const isMetadataPlan = args.plan.qualifiedField.startsWith(files_metadata_METADATA_FIELD_PREFIX);
+		const isMetadataPlan = args.plan.fieldPath.startsWith(files_metadata_METADATA_FIELD_PREFIX);
 		if (
 			!isMetadataPlan &&
 			!organizations_is_global_organization_id(organizationId) &&
@@ -741,7 +741,7 @@ const SEARCH_NODES_DOCS_PER_PLAN = 1000;
 const SEARCH_NODES_MAX_CANDIDATES = 1000;
 const SEARCH_NODES_MAX_SCOPES = 250;
 const SEARCH_PATH_PREFIX_MAX_LENGTH = 1024;
-const SEARCH_QUALIFIED_FIELD_MAX_LENGTH = 160;
+const SEARCH_FIELD_PATH_MAX_LENGTH = 160;
 
 /**
  * Catalog caps. A key, kind, or value is listed only when one of its first few docs in index
@@ -765,10 +765,10 @@ const SEARCH_VALUE_KINDS = ["string", "number", "boolean", "maybe_date"] as cons
  * The key grammar `shared/files-search-query.ts` produces. Anything else did not come from the
  * app, and the doors answer it with their empty shape.
  */
-function search_qualified_field_is_valid(qualifiedField: string) {
+function search_field_path_is_valid(fieldPath: string) {
 	return (
-		qualifiedField.length <= SEARCH_QUALIFIED_FIELD_MAX_LENGTH &&
-		files_search_query_qualified_field_is_valid(qualifiedField)
+		fieldPath.length <= SEARCH_FIELD_PATH_MAX_LENGTH &&
+		files_search_query_field_path_is_valid(fieldPath)
 	);
 }
 
@@ -889,7 +889,7 @@ export const search_nodes = query({
 		if (
 			args.plans.length === 0 ||
 			args.plans.length > SEARCH_NODES_MAX_PLANS ||
-			args.plans.some((plan) => !search_qualified_field_is_valid(plan.qualifiedField)) ||
+			args.plans.some((plan) => !search_field_path_is_valid(plan.fieldPath)) ||
 			(args.pathPrefix !== undefined &&
 				(!args.pathPrefix.startsWith("/") || args.pathPrefix.length > SEARCH_PATH_PREFIX_MAX_LENGTH))
 		) {
@@ -902,7 +902,7 @@ export const search_nodes = query({
 		// A pending content edit changes frontmatter, not the metadata map, so only frontmatter plans
 		// use the pending overlay. See `search` for the rule.
 		const hasFrontmatterPlan = args.plans.some((plan) =>
-			plan.qualifiedField.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX),
+			plan.fieldPath.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX),
 		);
 		const pendingNodeIds = hasFrontmatterPlan
 			? await db_list_pending_file_node_ids(ctx, { organizationId, workspaceId, userId })
@@ -921,7 +921,7 @@ export const search_nodes = query({
 			const metadataDocs = await search_index_query(ctx, { organizationId, workspaceId, plan, treePathPrefix }).take(
 				SEARCH_NODES_DOCS_PER_PLAN,
 			);
-			const planPendingNodeIds = plan.qualifiedField.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX)
+			const planPendingNodeIds = plan.fieldPath.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX)
 				? pendingNodeIds
 				: [];
 			for (const metadataDoc of metadataDocs) {
@@ -974,7 +974,7 @@ export const list_search_fields = query({
 	},
 	returns: v.array(
 		v.object({
-			qualifiedField: v.string(),
+			fieldPath: v.string(),
 			valueKinds: v.array(
 				v.union(v.literal("string"), v.literal("number"), v.literal("boolean"), v.literal("maybe_date")),
 			),
@@ -989,33 +989,33 @@ export const list_search_fields = query({
 		const { organizationId, workspaceId } = caller.membership;
 		const userId = caller.userAuth.id;
 		const mut_cache: SearchSampleCache = { readableByNodeId: new Map(), readableByScopeId: new Map(), reads: 0 };
-		const fields: Array<{ qualifiedField: string; valueKinds: Array<(typeof SEARCH_VALUE_KINDS)[number]> }> = [];
-		let lastQualifiedField = "";
+		const fields: Array<{ fieldPath: string; valueKinds: Array<(typeof SEARCH_VALUE_KINDS)[number]> }> = [];
+		let lastFieldPath = "";
 
 		// Walk the distinct qualified fields with one index read per field: the first field doc above
 		// the last one seen. Each field then reads a few docs per kind to decide whether the caller
 		// may see it.
 		while (fields.length < SEARCH_FIELDS_MAX_FIELDS && mut_cache.reads < SEARCH_FIELDS_READ_BUDGET) {
-			const after = lastQualifiedField;
+			const after = lastFieldPath;
 			const nextFieldDoc = await ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_org_workspace_archive_docKind_qualifiedField_tree", (q) =>
+				.withIndex("by_org_workspace_archive_docKind_fieldPath_tree", (q) =>
 					q
 						.eq("organizationId", organizationId)
 						.eq("workspaceId", workspaceId)
 						.eq("archiveOperationId", undefined)
 						.eq("docKind", "field")
-						.gt("qualifiedField", after),
+						.gt("fieldPath", after),
 				)
 				.first();
 			mut_cache.reads += 1;
 			if (!nextFieldDoc) {
 				break;
 			}
-			const qualifiedField = nextFieldDoc.qualifiedField;
-			lastQualifiedField = qualifiedField;
+			const fieldPath = nextFieldDoc.fieldPath;
+			lastFieldPath = fieldPath;
 			// The other doors refuse a field this long, so the catalog must not offer it.
-			if (!search_qualified_field_is_valid(qualifiedField)) {
+			if (!search_field_path_is_valid(fieldPath)) {
 				continue;
 			}
 
@@ -1024,13 +1024,13 @@ export const list_search_fields = query({
 			const fieldDocs = (
 				await ctx.db
 					.query("files_metadata_docs")
-					.withIndex("by_org_workspace_archive_docKind_qualifiedField_tree", (q) =>
+					.withIndex("by_org_workspace_archive_docKind_fieldPath_tree", (q) =>
 						q
 							.eq("organizationId", organizationId)
 							.eq("workspaceId", workspaceId)
 							.eq("archiveOperationId", undefined)
 							.eq("docKind", "field")
-							.eq("qualifiedField", qualifiedField),
+							.eq("fieldPath", fieldPath),
 					)
 					.take(SEARCH_CATALOG_SAMPLE_DOCS)
 			).filter((metadataDoc) => metadataDoc.sourceKind === "committed" || metadataDoc.userId === userId);
@@ -1044,13 +1044,13 @@ export const list_search_fields = query({
 				const valueDocs = (
 					await ctx.db
 						.query("files_metadata_docs")
-						.withIndex("by_org_workspace_archive_docKind_qualifiedField_string_tree", (q) =>
+						.withIndex("by_org_workspace_archive_docKind_fieldPath_string_tree", (q) =>
 							q
 								.eq("organizationId", organizationId)
 								.eq("workspaceId", workspaceId)
 								.eq("archiveOperationId", undefined)
 								.eq("docKind", "value")
-								.eq("qualifiedField", qualifiedField)
+								.eq("fieldPath", fieldPath)
 								.eq("valueKind", valueKind),
 						)
 						.take(SEARCH_CATALOG_SAMPLE_DOCS)
@@ -1063,7 +1063,7 @@ export const list_search_fields = query({
 			}
 
 			if (readable) {
-				fields.push({ qualifiedField, valueKinds });
+				fields.push({ fieldPath, valueKinds });
 			}
 		}
 
@@ -1077,7 +1077,7 @@ export const list_search_fields = query({
 export const list_search_values = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
-		qualifiedField: v.string(),
+		fieldPath: v.string(),
 		prefix: v.string(),
 	},
 	returns: v.array(v.string()),
@@ -1086,7 +1086,7 @@ export const list_search_values = query({
 		if (!caller) {
 			return [];
 		}
-		if (!search_qualified_field_is_valid(args.qualifiedField) || args.prefix.length > SEARCH_VALUE_PREFIX_MAX_LENGTH) {
+		if (!search_field_path_is_valid(args.fieldPath) || args.prefix.length > SEARCH_VALUE_PREFIX_MAX_LENGTH) {
 			return [];
 		}
 
@@ -1104,13 +1104,13 @@ export const list_search_values = query({
 				lastValue === null ? { gte: args.prefix } : { gt: lastValue };
 			const nextValueDoc = await ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_org_workspace_archive_docKind_qualifiedField_string_tree", (q) => {
+				.withIndex("by_org_workspace_archive_docKind_fieldPath_string_tree", (q) => {
 					const base = q
 						.eq("organizationId", organizationId)
 						.eq("workspaceId", workspaceId)
 						.eq("archiveOperationId", undefined)
 						.eq("docKind", "value")
-						.eq("qualifiedField", args.qualifiedField)
+						.eq("fieldPath", args.fieldPath)
 						.eq("valueKind", "string");
 					return "gte" in lowerBound ? base.gte("stringValue", lowerBound.gte) : base.gt("stringValue", lowerBound.gt);
 				})
@@ -1131,13 +1131,13 @@ export const list_search_values = query({
 			const valueDocs = (
 				await ctx.db
 					.query("files_metadata_docs")
-					.withIndex("by_org_workspace_archive_docKind_qualifiedField_string_tree", (q) =>
+					.withIndex("by_org_workspace_archive_docKind_fieldPath_string_tree", (q) =>
 						q
 							.eq("organizationId", organizationId)
 							.eq("workspaceId", workspaceId)
 							.eq("archiveOperationId", undefined)
 							.eq("docKind", "value")
-							.eq("qualifiedField", args.qualifiedField)
+							.eq("fieldPath", args.fieldPath)
 							.eq("valueKind", "string")
 							.eq("stringValue", value),
 					)
@@ -1161,25 +1161,25 @@ function format_get_by_path_value(doc: Doc<"files_metadata_docs">) {
 	switch (doc.valueKind) {
 		case "string":
 			return {
-				qualifiedField: doc.qualifiedField,
+				fieldPath: doc.fieldPath,
 				valueKind: "string" as const,
 				stringValue: doc.stringValue,
 			};
 		case "number":
 			return {
-				qualifiedField: doc.qualifiedField,
+				fieldPath: doc.fieldPath,
 				valueKind: "number" as const,
 				numberValue: doc.numberValue,
 			};
 		case "boolean":
 			return {
-				qualifiedField: doc.qualifiedField,
+				fieldPath: doc.fieldPath,
 				valueKind: "boolean" as const,
 				booleanValue: doc.booleanValue,
 			};
 		case "maybe_date":
 			return {
-				qualifiedField: doc.qualifiedField,
+				fieldPath: doc.fieldPath,
 				valueKind: "maybe_date" as const,
 				numberValue: doc.numberValue,
 			};
@@ -1188,7 +1188,7 @@ function format_get_by_path_value(doc: Doc<"files_metadata_docs">) {
 			const errorData = {
 				metadataDocId: doc._id,
 				fileNodeId: doc.fileNodeId,
-				qualifiedField: doc.qualifiedField,
+				fieldPath: doc.fieldPath,
 				docKind: doc.docKind,
 			};
 			console.error(errorMessage, errorData);
@@ -1215,7 +1215,7 @@ export const get_by_path = internalQuery({
 			fields: v.array(v.string()),
 			values: v.array(
 				v.object({
-					qualifiedField: v.string(),
+					fieldPath: v.string(),
 					valueKind: v.union(v.literal("string"), v.literal("number"), v.literal("boolean"), v.literal("maybe_date")),
 					stringValue: v.optional(v.string()),
 					numberValue: v.optional(v.number()),
@@ -1280,7 +1280,7 @@ export const get_by_path = internalQuery({
 		const sourceKind = pendingUpdate ? ("pending" as const) : ("committed" as const);
 		const committedDocs = await ctx.db
 			.query("files_metadata_docs")
-			.withIndex("by_organization_workspace_source_fileNode_qualifiedField", (q) =>
+			.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
 				q
 					.eq("organizationId", args.organizationId)
 					.eq("workspaceId", args.workspaceId)
@@ -1290,10 +1290,10 @@ export const get_by_path = internalQuery({
 			.collect();
 		const docs = pendingUpdate
 			? [
-					...committedDocs.filter((doc) => doc.qualifiedField.startsWith(files_metadata_METADATA_FIELD_PREFIX)),
+					...committedDocs.filter((doc) => doc.fieldPath.startsWith(files_metadata_METADATA_FIELD_PREFIX)),
 					...(await ctx.db
 						.query("files_metadata_docs")
-						.withIndex("by_pendingUpdate_qualifiedField", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
+						.withIndex("by_pendingUpdate_fieldPath", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
 						.collect()),
 				]
 			: committedDocs;
@@ -1304,7 +1304,7 @@ export const get_by_path = internalQuery({
 			path: args.path,
 			nodeId: fileNode._id,
 			sourceKind,
-			fields: docs.filter((doc) => doc.docKind === "field").map((doc) => doc.qualifiedField),
+			fields: docs.filter((doc) => doc.docKind === "field").map((doc) => doc.fieldPath),
 			values: docs.filter((doc) => doc.docKind === "value").map(format_get_by_path_value),
 		};
 	},
@@ -1345,7 +1345,7 @@ function read_entry_value(doc: Doc<"files_metadata_docs">) {
 	const errorData = {
 		metadataDocId: doc._id,
 		fileNodeId: doc.fileNodeId,
-		qualifiedField: doc.qualifiedField,
+		fieldPath: doc.fieldPath,
 		valueKind: doc.valueKind,
 	};
 	console.error(errorMessage, errorData);
@@ -1366,14 +1366,14 @@ async function db_query_metadata_docs(
 ) {
 	return await ctx.db
 		.query("files_metadata_docs")
-		.withIndex("by_organization_workspace_source_fileNode_qualifiedField", (q) =>
+		.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
 			q
 				.eq("organizationId", args.organizationId)
 				.eq("workspaceId", args.workspaceId)
 				.eq("sourceKind", "committed")
 				.eq("fileNodeId", args.fileNodeId)
-				.gte("qualifiedField", files_metadata_METADATA_FIELD_PREFIX)
-				.lt("qualifiedField", "metadata/"),
+				.gte("fieldPath", files_metadata_METADATA_FIELD_PREFIX)
+				.lt("fieldPath", "metadata/"),
 		)
 		.collect();
 }
@@ -1400,7 +1400,7 @@ async function db_read_metadata(
 		.filter((doc) => doc.docKind === "value" && doc.valueKind !== "maybe_date")
 		.sort((left, right) => (left.entryIndex ?? 0) - (right.entryIndex ?? 0))
 		.map((doc) => ({
-			key: doc.qualifiedField.slice(files_metadata_METADATA_FIELD_PREFIX.length),
+			key: doc.fieldPath.slice(files_metadata_METADATA_FIELD_PREFIX.length),
 			value: read_entry_value(doc),
 		}));
 }
@@ -1416,13 +1416,13 @@ export async function files_metadata_db_read_entry(
 ) {
 	const docs = await ctx.db
 		.query("files_metadata_docs")
-		.withIndex("by_organization_workspace_source_fileNode_qualifiedField", (q) =>
+		.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
 			q
 				.eq("organizationId", args.organizationId)
 				.eq("workspaceId", args.workspaceId)
 				.eq("sourceKind", "committed")
 				.eq("fileNodeId", args.fileNodeId)
-				.eq("qualifiedField", `${files_metadata_METADATA_FIELD_PREFIX}${args.key}`),
+				.eq("fieldPath", `${files_metadata_METADATA_FIELD_PREFIX}${args.key}`),
 		)
 		.collect();
 	// A scalar has an existence doc and a value doc, plus a date index when applicable.
@@ -1465,7 +1465,7 @@ export async function files_metadata_db_write_entries(
 	const extracted = files_metadata_extract_entries(args.entries);
 	// `fields` is built in entry order, so a field's position in it is the entry's position in the
 	// map the user typed.
-	const entryIndexByField = new Map(extracted.fields.map((qualifiedField, index) => [qualifiedField, index]));
+	const entryIndexByField = new Map(extracted.fields.map((fieldPath, index) => [fieldPath, index]));
 
 	const scope = {
 		organizationId: args.fileNode.organizationId,
@@ -1474,21 +1474,21 @@ export async function files_metadata_db_write_entries(
 		sourceKind: "committed" as const,
 		path: args.fileNode.path,
 		treePath: args.fileNode.treePath,
-		archiveOperationId: args.fileNode.archiveOperationId,
+		archiveOperationId: args.fileNode.archiveOperationId ?? undefined,
 	};
 	await Promise.all([
-		...extracted.fields.map((qualifiedField) =>
+		...extracted.fields.map((fieldPath) =>
 			ctx.db.insert("files_metadata_docs", {
 				...scope,
-				qualifiedField,
+				fieldPath,
 				docKind: "field" as const,
 			}),
 		),
 		...extracted.values.map((value) =>
 			ctx.db.insert("files_metadata_docs", {
 				...scope,
-				qualifiedField: value.qualifiedField,
-				entryIndex: entryIndexByField.get(value.qualifiedField),
+				fieldPath: value.fieldPath,
+				entryIndex: entryIndexByField.get(value.fieldPath),
 				...value_doc_payload(value),
 			}),
 		),

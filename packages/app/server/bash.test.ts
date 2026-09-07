@@ -179,7 +179,7 @@ describe("bash_run_command", () => {
 						.eq("organizationId", scope.organizationId)
 						.eq("workspaceId", scope.workspaceId)
 						.eq("path", ancestorPath)
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first();
 			if (existing) {
@@ -244,7 +244,8 @@ describe("bash_run_command", () => {
 			pathDepth: segments.length,
 			lowercaseExtension: dotIndex <= 0 || dotIndex === name.length - 1 ? null : name.slice(dotIndex + 1).toLowerCase(),
 			contentType: seedContentType,
-			...(spec.withoutYjsState ? {} : { yjsRootKind: seedRootKind }),
+			textKind: spec.withoutYjsState ? null : seedRootKind,
+			collaborationEnabled: spec.withoutYjsState ? null : !spec.nonCollaborative,
 			updatedAt,
 		});
 		const r2Key = `bash-test${spec.path}`;
@@ -266,7 +267,7 @@ describe("bash_run_command", () => {
 		// Collaboration off: the committed chunks are the whole file, so there is no Yjs asset,
 		// no snapshot doc, no sequence doc, and the chunks carry no sequence.
 		if (spec.nonCollaborative) {
-			await ctx.db.patch("files_nodes", fileId, { assetId, nonCollaborative: true });
+			await ctx.db.patch("files_nodes", fileId, { assetId, collaborationEnabled: false });
 			const committed = await db_insert_file_text_content(ctx, {
 				organizationId: scope.organizationId,
 				workspaceId: scope.workspaceId,
@@ -327,7 +328,7 @@ describe("bash_run_command", () => {
 			assetId,
 			yjsSnapshotId,
 			yjsLastSequenceId,
-			yjsRootKind: seedRootKind,
+			textKind: seedRootKind,
 		});
 		if (spec.materialized === false) {
 			return;
@@ -509,7 +510,7 @@ describe("bash_run_command", () => {
 						.eq("organizationId", runner.seeded.organizationId)
 						.eq("workspaceId", runner.seeded.workspaceId)
 						.eq("path", path)
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first(),
 		);
@@ -1064,9 +1065,9 @@ describe("bash_run_command", () => {
 		// Prove the seed really is non-collaborative, so the reads below cannot pass through a
 		// Yjs document that should not exist.
 		const seededNode = await get_seeded_node(runner, "/plain.md");
-		expect(seededNode.nonCollaborative).toBe(true);
-		expect(seededNode.yjsSnapshotId).toBeUndefined();
-		expect(seededNode.yjsLastSequenceId).toBeUndefined();
+		expect(seededNode.collaborationEnabled).toBe(false);
+		expect(seededNode.yjsSnapshotId).toBeNull();
+		expect(seededNode.yjsLastSequenceId).toBeNull();
 
 		const printed = await runner.run(`cat ${test_db_files_mount}/plain.md`);
 		expect(printed.stderr).toBe("");
@@ -5293,7 +5294,7 @@ describe("bash_run_command", () => {
 		expect(pendingRows[0]!.eagerCreated).toBeDefined();
 		expect(pendingRows[0]!.threadIds).toEqual([runner.threadId]);
 		// The .md path keeps its rich text shape on the eager-created node.
-		expect(destNode.yjsRootKind).toBe("rich_text");
+		expect(destNode.textKind).toBe("rich_text");
 	});
 
 	test("redirect overwrite and append on an existing file stay pending proposals", async () => {
@@ -5349,8 +5350,8 @@ describe("bash_run_command", () => {
 		expect(pendingRows[0]!.eagerCreated).toBeUndefined();
 		const nodeAfter = await get_seeded_node(runner, "/docs/off.md");
 		expect(nodeAfter.assetId).toBe(nodeBefore.assetId);
-		expect(nodeAfter.nonCollaborative).toBe(true);
-		expect(nodeAfter.yjsSnapshotId).toBeUndefined();
+		expect(nodeAfter.collaborationEnabled).toBe(false);
+		expect(nodeAfter.yjsSnapshotId).toBeNull();
 		expect(await read_committed_text(runner, nodeBefore._id)).toBe("committed body\n");
 
 		// A second write builds on the agent's own proposal and keeps the same doc.
@@ -5990,7 +5991,7 @@ describe("bash_run_command", () => {
 		// Read-back before byte equality: with the fix off, no file exists at this path.
 		const destNode = await get_seeded_node(runner, "/data.json");
 		expect(destNode.contentType).toBe("application/json");
-		expect(destNode.yjsRootKind).toBe("plain_text");
+		expect(destNode.textKind).toBe("plain_text");
 		const pendingRows = await list_pending_updates(runner);
 		expect(pendingRows).toHaveLength(1);
 		expect(pendingRows[0]!.fileNodeId).toBe(destNode._id);
@@ -6027,10 +6028,10 @@ describe("bash_run_command", () => {
 
 		const yamlNode = await get_seeded_node(runner, "/config.yaml");
 		expect(yamlNode.contentType).toBe("application/yaml");
-		expect(yamlNode.yjsRootKind).toBe("plain_text");
+		expect(yamlNode.textKind).toBe("plain_text");
 		const csvNode = await get_seeded_node(runner, "/table.csv");
 		expect(csvNode.contentType).toBe("text/csv");
-		expect(csvNode.yjsRootKind).toBe("plain_text");
+		expect(csvNode.textKind).toBe("plain_text");
 	});
 
 	test("an unknown extension and an extensionless name write plain text files", async () => {
@@ -6043,7 +6044,7 @@ describe("bash_run_command", () => {
 		expect(exe.metadata.exitCode).toBe(0);
 		const exeNode = await get_seeded_node(runner, "/tool.exe");
 		expect(exeNode.contentType).toBe("text/plain;charset=utf-8");
-		expect(exeNode.yjsRootKind).toBe("plain_text");
+		expect(exeNode.textKind).toBe("plain_text");
 
 		// No `.md` is added to an extensionless name.
 		const extensionless = await runner.run(`printf x > ${test_db_files_mount}/data`);
@@ -6051,7 +6052,7 @@ describe("bash_run_command", () => {
 		expect(extensionless.metadata.exitCode).toBe(0);
 		const dataNode = await get_seeded_node(runner, "/data");
 		expect(dataNode.contentType).toBe("text/plain;charset=utf-8");
-		expect(dataNode.yjsRootKind).toBe("plain_text");
+		expect(dataNode.textKind).toBe("plain_text");
 	});
 
 	test("cp keeps the source's type at any destination name", async () => {
@@ -6071,7 +6072,7 @@ describe("bash_run_command", () => {
 		);
 		const yamlNode = await get_seeded_node(runner, "/data/config.yaml");
 		expect(yamlNode.contentType).toBe("application/json");
-		expect(yamlNode.yjsRootKind).toBe("plain_text");
+		expect(yamlNode.textKind).toBe("plain_text");
 
 		// Markdown copied to a .json name stays Markdown, text unchanged.
 		const markdownToJson = await runner.run(
@@ -6083,7 +6084,7 @@ describe("bash_run_command", () => {
 			`pending copy created: /docs/readme.md -> /data/copy.json — review in Files\n${readme_seed_content}`,
 		);
 		const jsonNode = await get_seeded_node(runner, "/data/copy.json");
-		expect(jsonNode.yjsRootKind).toBe("rich_text");
+		expect(jsonNode.textKind).toBe("rich_text");
 		expect(jsonNode.contentType).toBe("text/markdown;charset=utf-8");
 		const jsonRows = await list_pending_updates_for_node(runner, jsonNode._id);
 		expect(jsonRows).toHaveLength(1);
@@ -6124,7 +6125,7 @@ describe("bash_run_command", () => {
 		expect(renamed?.path).toBe("/data/notes.yaml");
 		expect(renamed?.lowercaseExtension).toBe("yaml");
 		expect(renamed?.contentType).toBe("application/json");
-		expect(renamed?.yjsRootKind).toBe("plain_text");
+		expect(renamed?.textKind).toBe("plain_text");
 	});
 
 	test("renames keep the stored type for any extension, and mv -f across types proposes a structural replace", async () => {
@@ -6196,7 +6197,7 @@ describe("bash_run_command", () => {
 						.eq("organizationId", runner.seeded.organizationId)
 						.eq("workspaceId", runner.seeded.workspaceId)
 						.eq("path", "/big.md")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first(),
 		);
@@ -6293,7 +6294,7 @@ describe("bash_run_command", () => {
 					(node) =>
 						node.organizationId === runner.seeded.organizationId &&
 						node.workspaceId === runner.seeded.workspaceId &&
-						node.archiveOperationId === undefined,
+						node.archiveOperationId === null,
 				)
 				.map((node) => node.path),
 		);
@@ -6407,9 +6408,9 @@ describe("bash_run_command", () => {
 		expect(await list_pending_updates_for_node(runner, targetBefore._id)).toHaveLength(0);
 		const targetAfter = await get_seeded_node(runner, "/docs/off-target.md");
 		expect(targetAfter._id).toBe(targetBefore._id);
-		expect(targetAfter.nonCollaborative).toBe(true);
-		expect(targetAfter.yjsSnapshotId).toBeUndefined();
-		expect(targetAfter.yjsLastSequenceId).toBeUndefined();
+		expect(targetAfter.collaborationEnabled).toBe(false);
+		expect(targetAfter.yjsSnapshotId).toBeNull();
+		expect(targetAfter.yjsLastSequenceId).toBeNull();
 		const savedRead = await runner.run(`cat ${test_db_files_mount}/docs/off-target.md`);
 		expect(savedRead.stdout).toContain("unique-token");
 		expect(savedRead.stdout).not.toContain("replace me");
@@ -6442,8 +6443,8 @@ describe("bash_run_command", () => {
 		await accept_pending_replacement_for_test(runner, targetBefore._id);
 		const targetAfter = await get_seeded_node(runner, "/data/settings.yaml");
 		expect(targetAfter._id).toBe(targetBefore._id);
-		expect(targetAfter.nonCollaborative).toBe(true);
-		expect(targetAfter.yjsRootKind).toBe("rich_text");
+		expect(targetAfter.collaborationEnabled).toBe(false);
+		expect(targetAfter.textKind).toBe("rich_text");
 		expect(targetAfter.contentType).toBe("text/markdown;charset=utf-8");
 		expect(targetAfter.assetId).not.toBe(targetBefore.assetId);
 		// The old content stays in history next to the new one.
@@ -6531,11 +6532,11 @@ describe("bash_run_command", () => {
 
 		const richAfter = await get_seeded_node(runner, "/docs/rich-target.md");
 		expect(richAfter._id).toBe(richTarget._id);
-		expect(richAfter.yjsRootKind).toBe("plain_text");
+		expect(richAfter.textKind).toBe("plain_text");
 		expect(richAfter.contentType).toBe("application/json");
 		const plainAfter = await get_seeded_node(runner, "/data/plain-target.txt");
 		expect(plainAfter._id).toBe(plainTarget._id);
-		expect(plainAfter.yjsRootKind).toBe("plain_text");
+		expect(plainAfter.textKind).toBe("plain_text");
 		expect(plainAfter.contentType).toBe("text/plain;charset=utf-8");
 	});
 
@@ -6699,7 +6700,7 @@ describe("bash_run_command", () => {
 			"pending copy created: /docs/readme.md -> /data/readme-copy.txt — review in Files\n",
 		);
 		const markdownCopy = await get_seeded_node(runner, "/data/readme-copy.txt");
-		expect(markdownCopy.yjsRootKind).toBe("rich_text");
+		expect(markdownCopy.textKind).toBe("rich_text");
 		expect(markdownCopy.contentType).toBe("text/markdown;charset=utf-8");
 		const markdownRows = await list_pending_updates_for_node(runner, markdownCopy._id);
 		expect(markdownRows).toHaveLength(1);
@@ -6717,7 +6718,7 @@ describe("bash_run_command", () => {
 			"pending copy created: /data/canonical.json -> /docs/canonical-copy.md — review in Files\n",
 		);
 		const jsonCopy = await get_seeded_node(runner, "/docs/canonical-copy.md");
-		expect(jsonCopy.yjsRootKind).toBe("plain_text");
+		expect(jsonCopy.textKind).toBe("plain_text");
 		expect(jsonCopy.contentType).toBe("application/json");
 		const jsonProposed = await runner.run(`cat ${test_db_files_mount}/docs/canonical-copy.md`);
 		expect(jsonProposed.stdout).toBe(plain_copy_canonical);
@@ -6728,7 +6729,7 @@ describe("bash_run_command", () => {
 		expect(await list_pending_updates_for_node(runner, jsonCopy._id)).toHaveLength(0);
 		const jsonCommitted = await runner.run(`cat ${test_db_files_mount}/docs/canonical-copy.md`);
 		expect(jsonCommitted.stdout).toBe(plain_copy_canonical);
-		expect((await get_seeded_node(runner, "/docs/canonical-copy.md")).yjsRootKind).toBe("plain_text");
+		expect((await get_seeded_node(runner, "/docs/canonical-copy.md")).textKind).toBe("plain_text");
 		const discarded = await runner_as_user(runner).mutation(api.files_pending_updates.discard_file_pending_structural, {
 			membershipId: runner.seeded.membershipId,
 			nodeId: markdownCopy._id,
@@ -6762,7 +6763,7 @@ describe("bash_run_command", () => {
 		expect(committed.stdout).toBe(plain_copy_lossy);
 		const target = await get_seeded_node(runner, "/docs/rich-target.md");
 		expect(target.contentType).toBe("text/plain;charset=utf-8");
-		expect(target.yjsRootKind).toBe("plain_text");
+		expect(target.textKind).toBe("plain_text");
 	});
 
 	test("cp of a CRLF plain text file onto a Markdown file with collaboration off stores plain text with LF on accept", async () => {
@@ -6799,7 +6800,7 @@ describe("bash_run_command", () => {
 		expect(versionAssetIds).toContain(targetBefore.assetId);
 		expect(versionAssetIds).toContain(targetAfter.assetId);
 		expect(targetAfter.contentType).toBe("text/plain;charset=utf-8");
-		expect(targetAfter.yjsRootKind).toBe("plain_text");
+		expect(targetAfter.textKind).toBe("plain_text");
 		const saved = await runner.run(`cat ${test_db_files_mount}/docs/off-notes.md`);
 		expect(saved.stdout).toBe(plain_copy_lossy);
 	});
@@ -6878,9 +6879,9 @@ describe("bash_run_command", () => {
 		expect(off._nay).toBeUndefined();
 		await drain_scheduled_continuations(runner);
 		const offNode = await get_seeded_node(runner, "/docs/rich-target.md");
-		expect(offNode.nonCollaborative).toBe(true);
-		expect(offNode.yjsSnapshotId).toBeUndefined();
-		expect(offNode.yjsLastSequenceId).toBeUndefined();
+		expect(offNode.collaborationEnabled).toBe(false);
+		expect(offNode.yjsSnapshotId).toBeNull();
+		expect(offNode.yjsLastSequenceId).toBeNull();
 		const offRead = await runner.run(`cat ${test_db_files_mount}/docs/rich-target.md`);
 		expect(offRead.stdout).toBe(plain_copy_canonical);
 
@@ -6891,9 +6892,9 @@ describe("bash_run_command", () => {
 		});
 		expect(on._nay).toBeUndefined();
 		const onNode = await get_seeded_node(runner, "/docs/rich-target.md");
-		expect(onNode.nonCollaborative).toBeUndefined();
+		expect(onNode.collaborationEnabled).toBe(true);
 		// The copy made the file JSON, so the rebuilt document is plain text.
-		expect(onNode.yjsRootKind).toBe("plain_text");
+		expect(onNode.textKind).toBe("plain_text");
 		expect(onNode.yjsSnapshotId).toBeDefined();
 		expect(onNode.yjsSnapshotId).not.toBe(targetBefore.yjsSnapshotId);
 		expect(onNode.yjsLastSequenceId).toBeDefined();
@@ -7313,7 +7314,7 @@ describe("bash_run_command", () => {
 						.eq("organizationId", runner.seeded.organizationId)
 						.eq("workspaceId", runner.seeded.workspaceId)
 						.eq("path", "/archive")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first(),
 		);
@@ -7374,7 +7375,7 @@ describe("bash_run_command", () => {
 						.eq("organizationId", runner.seeded.organizationId)
 						.eq("workspaceId", runner.seeded.workspaceId)
 						.eq("path", "/archive")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first(),
 		);
@@ -7425,7 +7426,7 @@ describe("bash_run_command", () => {
 						.eq("organizationId", runner.seeded.organizationId)
 						.eq("workspaceId", runner.seeded.workspaceId)
 						.eq("path", "/reports/sub")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first(),
 		);
@@ -7454,7 +7455,7 @@ describe("bash_run_command", () => {
 						.eq("organizationId", runner.seeded.organizationId)
 						.eq("workspaceId", runner.seeded.workspaceId)
 						.eq("path", "/foo.md")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first(),
 		);
@@ -7480,7 +7481,7 @@ describe("bash_run_command", () => {
 						.eq("organizationId", runner.seeded.organizationId)
 						.eq("workspaceId", runner.seeded.workspaceId)
 						.eq("path", "/foo.md")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first(),
 		);
@@ -7504,7 +7505,7 @@ describe("bash_run_command", () => {
 						.eq("organizationId", runner.seeded.organizationId)
 						.eq("workspaceId", runner.seeded.workspaceId)
 						.eq("path", "/docs/readme.md/sub")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first(),
 		);
@@ -7575,8 +7576,8 @@ describe("bash_run_command", () => {
 		await accept_pending_replacement_for_test(runner, destNode._id);
 		const accepted = await get_seeded_node(runner, "/source-copy.pdf");
 		expect(accepted.contentType).toBe("application/pdf");
-		expect(accepted.yjsRootKind).toBeUndefined();
-		expect(accepted.yjsSnapshotId).toBeUndefined();
+		expect(accepted.textKind).toBeNull();
+		expect(accepted.yjsSnapshotId).toBeNull();
 		expect(accepted.assetId).toBe(rows[0].pendingReplacement?.assetId);
 		const unreadable = await runner.run(`cat ${test_db_files_mount}/source-copy.pdf`);
 		expect(unreadable.metadata.exitCode).not.toBe(0);
@@ -7662,7 +7663,7 @@ describe("bash_run_command", () => {
 							.eq("organizationId", runner.seeded.organizationId)
 							.eq("workspaceId", runner.seeded.workspaceId)
 							.eq("path", path)
-							.eq("archiveOperationId", undefined),
+							.eq("archiveOperationId", null),
 					)
 					.first(),
 			);

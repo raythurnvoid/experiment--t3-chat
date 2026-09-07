@@ -249,7 +249,7 @@ function can_unarchive_item(args: {
 		return true;
 	}
 	const parentItem = args.itemById?.get(args.item.parentId);
-	if (parentItem != null && files_is_node(parentItem) && parentItem.archiveOperationId === undefined) {
+	if (parentItem != null && files_is_node(parentItem) && parentItem.archiveOperationId === null) {
 		return true;
 	}
 
@@ -264,7 +264,7 @@ function can_unarchive_item(args: {
 		files_can_move_node_between_restricted_scopes({
 			nodeId: args.item._id,
 			sourceRestrictedScopeNodeId: args.item.restrictedScopeNodeId,
-			targetRestrictedScopeNodeId: undefined,
+			targetRestrictedScopeNodeId: null,
 			canManageRestrictedScope: args.canManageRestrictedScope,
 		})
 	);
@@ -981,7 +981,7 @@ type FilesSidebarTreeItemMenuPopover_ClassNames =
 type FilesSidebarTreeItemMenuPopover_Props = {
 	kind: files_TreeItem["kind"];
 	label: string;
-	archiveOperationId: string | undefined;
+	archiveOperationId: string | null;
 	canCreate: boolean;
 	canRename: boolean;
 	canShare: boolean;
@@ -1030,7 +1030,7 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 		onArchive,
 		onUnarchive,
 	} = props;
-	const isArchived = archiveOperationId !== undefined;
+	const isArchived = archiveOperationId !== null;
 
 	const handleRenameClick = useFn<MyMenuItem_Props["onClick"]>(() => {
 		// Let Ariakit finish closing the menu and restoring focus before Headless Tree enters rename mode.
@@ -1791,7 +1791,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 
 	const renameInputProps = useVal(() => item.getRenameInputProps());
 	const isRenaming = useVal(() => item.isRenaming());
-	const isArchived = itemData.archiveOperationId !== undefined;
+	const isArchived = itemData.archiveOperationId !== null;
 	const isNavigated = selectedNodeId === itemId;
 	const isPending = isBusy || pendingActionNodeIds.has(itemId);
 	const isFocused = useVal(() => item.isFocused());
@@ -2961,7 +2961,7 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 	} = props;
 
 	const archivedCount =
-		treeItemsList?.filter((item) => files_is_node(item) && item.archiveOperationId !== undefined).length ?? 0;
+		treeItemsList?.filter((item) => files_is_node(item) && item.archiveOperationId !== null).length ?? 0;
 
 	return (
 		<div className={cn("FilesSidebarTopSection" satisfies FilesSidebarTopSection_ClassNames)}>
@@ -3470,7 +3470,7 @@ function get_default_node_name(args: { parentId: string; kind: files_TreeItem["k
 		if (!siblingItem || siblingItem._id === files_ROOT_ID) {
 			continue;
 		}
-		if (siblingItem.archiveOperationId !== undefined) {
+		if (siblingItem.archiveOperationId !== null) {
 			continue;
 		}
 
@@ -3536,7 +3536,7 @@ function get_uploaded_file_rename_validation(args: {
 				files_is_node(item) &&
 				item._id !== args.nodeIdToIgnore &&
 				item.parentId === currentParentId &&
-				item.archiveOperationId === undefined &&
+				item.archiveOperationId === null &&
 				item.name.trim().toLowerCase() === normalizedName.toLowerCase()
 			);
 		});
@@ -3697,7 +3697,7 @@ function get_search_matches(args: {
 		}
 
 		// Archived nodes and synthetic folders never match metadata, even under a negated filter.
-		if (hasMetadataFilter && (!files_is_node(item) || item.archiveOperationId !== undefined)) {
+		if (hasMetadataFilter && (!files_is_node(item) || item.archiveOperationId !== null)) {
 			continue;
 		}
 
@@ -3970,14 +3970,14 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 		const shownItemIds = new Set<string>([files_ROOT_ID]);
 		for (const item of treeItemsList) {
-			if (files_is_node(item) && (item.archiveOperationId === undefined || showArchived)) {
+			if (files_is_node(item) && (item.archiveOperationId === null || showArchived)) {
 				shownItemIds.add(item._id);
 			}
 		}
 
 		// Collect all items from the list to the maps
 		for (const item of treeItemsList) {
-			if (!files_is_node(item) || (item.archiveOperationId !== undefined && !showArchived)) {
+			if (!files_is_node(item) || (item.archiveOperationId !== null && !showArchived)) {
 				continue;
 			}
 
@@ -4125,7 +4125,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				!files_can_move_node_between_restricted_scopes({
 					nodeId: itemData._id,
 					sourceRestrictedScopeNodeId: itemData.restrictedScopeNodeId,
-					targetRestrictedScopeNodeId: files_is_node(targetData) ? targetData.restrictedScopeNodeId : undefined,
+					targetRestrictedScopeNodeId: files_is_node(targetData) ? targetData.restrictedScopeNodeId : null,
 					canManageRestrictedScope,
 				})
 			) {
@@ -4418,7 +4418,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					files_can_move_node_between_restricted_scopes({
 						nodeId: sourceNode._id,
 						sourceRestrictedScopeNodeId: sourceNode.restrictedScopeNodeId,
-						targetRestrictedScopeNodeId: files_is_node(targetData) ? targetData.restrictedScopeNodeId : undefined,
+						targetRestrictedScopeNodeId: files_is_node(targetData) ? targetData.restrictedScopeNodeId : null,
 						canManageRestrictedScope,
 					})
 				);
@@ -5448,7 +5448,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		return selectedItem &&
 			selectedItem._id !== files_ROOT_ID &&
 			selectedItem.kind === "folder" &&
-			selectedItem.archiveOperationId === undefined
+			selectedItem.archiveOperationId === null
 			? (selectedItem._id as app_convex_Id<"files_nodes">)
 			: files_ROOT_ID;
 	};
@@ -5811,8 +5811,20 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			name: args.name,
 			kind: args.kind,
 			lowercaseExtension,
-			archiveOperationId: args.archiveOperationId,
-			restrictedScopeNodeId: args.restrictedScopeNodeId as app_convex_Id<"files_nodes"> | undefined,
+			archiveOperationId: args.archiveOperationId ?? null,
+			contentType: null,
+			assetId: null,
+			textKind: null,
+			collaborationEnabled: null,
+			yjsSnapshotId: null,
+			yjsLastSequenceId: null,
+			statsId: null,
+			contentTooLargeByteSize: null,
+			contentShapeMismatchAt: null,
+			contentYjsStateTooLargeByteSize: null,
+			contentFrontmatterTooLargeFieldCount: null,
+			contentFrontmatterTooLargeIndexDocumentCount: null,
+			restrictedScopeNodeId: (args.restrictedScopeNodeId ?? null) as app_convex_Id<"files_nodes"> | null,
 			createdBy: "test-user" as app_convex_Id<"users">,
 			updatedAt: args.updatedAt ?? 1,
 			updatedBy: "test-user" as app_convex_Id<"users">,
@@ -6074,7 +6086,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				files_can_move_node_between_restricted_scopes({
 					nodeId: restrictedChild._id,
 					sourceRestrictedScopeNodeId: restrictedChild.restrictedScopeNodeId,
-					targetRestrictedScopeNodeId: undefined,
+					targetRestrictedScopeNodeId: null,
 					canManageRestrictedScope: () => false,
 				}),
 			).toBe(false);
@@ -6082,7 +6094,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				files_can_move_node_between_restricted_scopes({
 					nodeId: restrictedChild._id,
 					sourceRestrictedScopeNodeId: restrictedChild.restrictedScopeNodeId,
-					targetRestrictedScopeNodeId: undefined,
+					targetRestrictedScopeNodeId: null,
 					canManageRestrictedScope: () => true,
 				}),
 			).toBe(true);
@@ -6090,7 +6102,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				files_can_move_node_between_restricted_scopes({
 					nodeId: "scope" as app_convex_Id<"files_nodes">,
 					sourceRestrictedScopeNodeId: "scope" as app_convex_Id<"files_nodes">,
-					targetRestrictedScopeNodeId: undefined,
+					targetRestrictedScopeNodeId: null,
 					canManageRestrictedScope: () => false,
 				}),
 			).toBe(true);

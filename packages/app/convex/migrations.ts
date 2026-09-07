@@ -478,13 +478,16 @@ export const backfill_files_plain_text_chunk_scope = app_migrations.define({
 		) {
 			return;
 		}
-		if (plainTextChunk.path === fileNode.path && plainTextChunk.archiveOperationId === fileNode.archiveOperationId) {
+		if (
+			plainTextChunk.path === fileNode.path &&
+			plainTextChunk.archiveOperationId === (fileNode.archiveOperationId ?? undefined)
+		) {
 			return;
 		}
 
 		await ctx.db.patch("files_plain_text_chunks", plainTextChunk._id, {
 			path: fileNode.path,
-			archiveOperationId: fileNode.archiveOperationId,
+			archiveOperationId: fileNode.archiveOperationId ?? undefined,
 		});
 	},
 });
@@ -510,15 +513,15 @@ export const backfill_files_snapshots_content_state = app_migrations.define({
 			fileNode.organizationId !== snapshot.organizationId ||
 			fileNode.workspaceId !== snapshot.workspaceId ||
 			fileNode.kind !== "file" ||
-			fileNode.contentType === undefined
+			fileNode.contentType === null
 		) {
 			return;
 		}
 
 		await ctx.db.patch("files_snapshots", snapshot._id, {
 			contentType: fileNode.contentType,
-			yjsRootKind: fileNode.yjsRootKind,
-			nonCollaborative: fileNode.nonCollaborative,
+			yjsRootKind: fileNode.textKind ?? undefined,
+			nonCollaborative: fileNode.collaborationEnabled === false ? true : undefined,
 		});
 	},
 });

@@ -48,7 +48,7 @@ import {
 	files_search_query_format_key,
 	files_search_query_format_value,
 	files_search_query_parse,
-	files_search_query_qualified_fields,
+	files_search_query_field_paths,
 	files_search_query_serialize,
 	files_search_query_typing_token,
 	type files_search_query_Filter,
@@ -262,17 +262,17 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 			{ name: string; metadataKinds: string[]; valueKinds: Set<files_metadata_Value["valueKind"]> }
 		>();
 		for (const field of searchFields ?? []) {
-			const metadataKind = field.qualifiedField.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX)
+			const metadataKind = field.fieldPath.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX)
 				? "frontmatter"
 				: "metadata";
-			const bareName = field.qualifiedField.slice(
+			const bareName = field.fieldPath.slice(
 				metadataKind === "frontmatter"
 					? files_metadata_FRONTMATTER_FIELD_PREFIX.length
 					: files_metadata_METADATA_FIELD_PREFIX.length,
 			);
 			// A key named like a namespace (`file`, `metadata`, `frontmatter.x`) would read as that
 			// namespace when typed bare, so its row keeps its own namespace.
-			const name = /^(?:file|frontmatter|metadata)(?:\.|$)/u.test(bareName) ? field.qualifiedField : bareName;
+			const name = /^(?:file|frontmatter|metadata)(?:\.|$)/u.test(bareName) ? field.fieldPath : bareName;
 
 			const row = byName.get(name) ?? { name, metadataKinds: [], valueKinds: new Set() };
 			row.metadataKinds.push(metadataKind);
@@ -311,7 +311,7 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 	// `react-hooks/preserve-manual-memoization` lint fails.
 	const valueQueryFields =
 		isFocused && typingFilter !== null && typingFilter.match.op !== "range"
-			? `${files_search_query_qualified_fields(typingFilter.key).join("\n")}`
+			? `${files_search_query_field_paths(typingFilter.key).join("\n")}`
 			: "";
 
 	// Keep manual `useMemo` here. Convex `useQueries` re-subscribes with a render-phase setState
@@ -320,11 +320,11 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 	const valueQueries = useMemo(
 		() =>
 			Object.fromEntries(
-				(valueQueryFields === "" ? [] : valueQueryFields.split("\n")).map((qualifiedField) => [
-					qualifiedField,
+				(valueQueryFields === "" ? [] : valueQueryFields.split("\n")).map((fieldPath) => [
+					fieldPath,
 					{
 						query: app_convex_api.files_metadata.list_search_values,
-						args: { membershipId, qualifiedField, prefix: typedValueDebounced },
+						args: { membershipId, fieldPath, prefix: typedValueDebounced },
 					},
 				]),
 			),
@@ -401,8 +401,8 @@ export const FilesSearchInput = memo(function FilesSearchInput(props: FilesSearc
 		}
 
 		const serverValues = new Set<string>();
-		for (const qualifiedField of Object.keys(valueQueries)) {
-			const values = valueResults[qualifiedField];
+		for (const fieldPath of Object.keys(valueQueries)) {
+			const values = valueResults[fieldPath];
 			if (!Array.isArray(values)) {
 				continue;
 			}

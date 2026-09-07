@@ -465,7 +465,7 @@ async function cascade_file_descendants_path(
 
 /**
  * The restricted scope a new or moved child inherits from where it sits: the nearest restricted
- * folder at or above `parentId`, or `undefined` when that chain has none.
+ * folder at or above `parentId`, or `null` when that chain has none.
  *
  * The parent already carries the answer, because every node stores its nearest restricted ancestor.
  * So this is one read and never a walk up the tree.
@@ -477,18 +477,18 @@ export async function files_nodes_db_resolve_parent_restricted_scope(
 	},
 ) {
 	if (args.parentId === files_ROOT_ID) {
-		return undefined;
+		return null;
 	}
 
 	const parent = await ctx.db.get("files_nodes", args.parentId);
-	return parent?.restrictedScopeNodeId;
+	return parent?.restrictedScopeNodeId ?? null;
 }
 
 /**
  * Rewrite `restrictedScopeNodeId` on every descendant of a node whose own scope just changed.
  *
  * `scopeNodeId` is the scope the descendants must inherit, which is the scope the node itself now
- * has. Pass `undefined` to clear it, which is what unrestricting a folder outside any other
+ * has. Pass `null` to clear it, which is what unrestricting a folder outside any other
  * restricted folder does.
  *
  * A descendant that is restricted itself keeps its own scope, and the walk stops there: everything
@@ -506,7 +506,7 @@ export async function files_nodes_db_cascade_restricted_scope(
 		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
 		parentId: Id<"files_nodes">;
-		scopeNodeId: Id<"files_nodes"> | undefined;
+		scopeNodeId: Id<"files_nodes"> | null;
 	},
 ) {
 	const stack: Array<Id<"files_nodes">> = [args.parentId];
@@ -552,11 +552,11 @@ export async function files_nodes_db_resolve_parent_read_only_scope(
 	},
 ) {
 	if (args.parentId === files_ROOT_ID) {
-		return undefined;
+		return null;
 	}
 
 	const parent = await ctx.db.get("files_nodes", args.parentId);
-	return parent?.readOnlyScopeNodeId;
+	return parent?.readOnlyScopeNodeId ?? null;
 }
 
 /**
@@ -571,7 +571,7 @@ export async function files_nodes_db_cascade_read_only_scope(
 		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
 		parentId: Id<"files_nodes">;
-		scopeNodeId: Id<"files_nodes"> | undefined;
+		scopeNodeId: Id<"files_nodes"> | null;
 	},
 ) {
 	const stack: Array<Id<"files_nodes">> = [args.parentId];
@@ -598,8 +598,8 @@ export async function files_nodes_db_cascade_read_only_scope(
 				if (child.readOnlyScopeNodeId !== args.scopeNodeId) {
 					await ctx.db.patch("files_nodes", child._id, {
 						readOnlyScopeNodeId: args.scopeNodeId,
-						readOnlyPluginServiceTargetId: undefined,
-						readOnlyPluginName: undefined,
+						readOnlyPluginServiceTargetId: null,
+						readOnlyPluginName: null,
 					});
 				}
 				stack.push(child._id);
@@ -613,7 +613,7 @@ export async function files_nodes_db_cascade_read_only_scope(
  * Call this after permission checks. Owners and managers must also unlock the node.
  */
 export function files_node_require_writable(node: Pick<Doc<"files_nodes">, "readOnlyScopeNodeId">) {
-	if (node.readOnlyScopeNodeId !== undefined) {
+	if (node.readOnlyScopeNodeId !== null) {
 		return Result({ _nay: { name: "read_only", message: "This item is read-only." } });
 	}
 
@@ -637,7 +637,7 @@ export async function files_nodes_db_can_act_on_swept_nodes(
 		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
 		userId: Id<"users">;
-		rootScopeNodeId: Id<"files_nodes"> | undefined;
+		rootScopeNodeId: Id<"files_nodes"> | null;
 		nodes: readonly Doc<"files_nodes">[];
 		permission: access_control_Permission;
 	},
@@ -716,7 +716,7 @@ export async function files_nodes_db_require_swept_nodes_writable(
 		nodes: readonly Doc<"files_nodes">[];
 	},
 ) {
-	const lockedNodes = args.nodes.filter((node) => node.readOnlyScopeNodeId !== undefined);
+	const lockedNodes = args.nodes.filter((node) => node.readOnlyScopeNodeId !== null);
 	if (lockedNodes.length === 0) {
 		return Result({ _yay: null });
 	}
@@ -935,7 +935,7 @@ export const get_node_read_only_management_state = query({
 		});
 
 		const readOnlyState: "writable" | "self" | "inherited" =
-			node.readOnlyScopeNodeId === undefined
+			node.readOnlyScopeNodeId === null
 				? "writable"
 				: node.readOnlyScopeNodeId === node._id
 					? "self"
@@ -949,7 +949,7 @@ export const get_node_read_only_management_state = query({
 		const sourceNodeId = readOnlyState === "inherited" ? node.readOnlyScopeNodeId : parentScopeNodeId;
 
 		let source: { nodeId: Id<"files_nodes">; path: string } | null = null;
-		if (sourceNodeId !== undefined && readOnlyState !== "writable") {
+		if (sourceNodeId !== null && readOnlyState !== "writable") {
 			const sourceNode = await ctx.db.get("files_nodes", sourceNodeId);
 			// Show the source only when the caller may read it. Keep hidden lock folders hidden.
 			if (
@@ -976,7 +976,7 @@ export const get_node_read_only_management_state = query({
 			nodeId: node._id,
 			canManage,
 			readOnlyState,
-			hasInheritedParentLock: parentScopeNodeId !== undefined,
+			hasInheritedParentLock: parentScopeNodeId !== null,
 			source,
 		};
 	},
@@ -1025,8 +1025,8 @@ export const set_node_read_only = mutation({
 		// is unlocked. Do not change `updatedBy` or `updatedAt` for this setting.
 		await ctx.db.patch("files_nodes", node._id, {
 			readOnlyScopeNodeId: node._id,
-			readOnlyPluginServiceTargetId: undefined,
-			readOnlyPluginName: undefined,
+			readOnlyPluginServiceTargetId: null,
+			readOnlyPluginName: null,
 		});
 		await files_nodes_db_cascade_read_only_scope(ctx, {
 			organizationId: membership.organizationId,
@@ -1067,7 +1067,7 @@ export const set_node_writable = mutation({
 		const { membership, node } = authorized._yay;
 
 		// The node is already writable. Return success for repeated calls.
-		if (node.readOnlyScopeNodeId === undefined) {
+		if (node.readOnlyScopeNodeId === null) {
 			return Result({ _yay: null });
 		}
 
@@ -1091,8 +1091,8 @@ export const set_node_writable = mutation({
 		// A member unlock clears the direct lock's plugin origin.
 		await ctx.db.patch("files_nodes", node._id, {
 			readOnlyScopeNodeId: parentScopeNodeId,
-			readOnlyPluginServiceTargetId: undefined,
-			readOnlyPluginName: undefined,
+			readOnlyPluginServiceTargetId: null,
+			readOnlyPluginName: null,
 		});
 		await files_nodes_db_cascade_read_only_scope(ctx, {
 			organizationId: membership.organizationId,
@@ -1263,23 +1263,35 @@ async function db_insert_node(
 
 	const readOnlyScopeNodeId = args.inheritParentReadOnlyScope
 		? await files_nodes_db_resolve_parent_read_only_scope(ctx, { parentId: args.parentId })
-		: undefined;
+		: null;
 
 	const nodeId = await ctx.db.insert("files_nodes", {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		parentId: args.parentId,
+		kind: args.kind,
+		name: args.name,
 		path: args.path,
-		restrictedScopeNodeId,
-		readOnlyScopeNodeId,
 		treePath: derive_tree_path_for_file_node(args.path, args.kind),
 		pathDepth: files_path_depth(args.path),
 		lowercaseExtension: files_lowercase_extension(args.path, args.kind),
-		name: args.name,
-		kind: args.kind,
-		contentType: args.contentType,
-		assetId: args.assetId,
-		archiveOperationId: args.archiveOperationId,
+		contentType: args.contentType ?? null,
+		assetId: args.assetId ?? null,
+		textKind: null,
+		collaborationEnabled: null,
+		yjsSnapshotId: null,
+		yjsLastSequenceId: null,
+		statsId: null,
+		contentTooLargeByteSize: null,
+		contentShapeMismatchAt: null,
+		contentYjsStateTooLargeByteSize: null,
+		contentFrontmatterTooLargeFieldCount: null,
+		contentFrontmatterTooLargeIndexDocumentCount: null,
+		restrictedScopeNodeId,
+		readOnlyScopeNodeId,
+		readOnlyPluginName: null,
+		readOnlyPluginServiceTargetId: null,
+		archiveOperationId: args.archiveOperationId ?? null,
 		createdBy: args.userId,
 		updatedBy: args.userId,
 		updatedAt: args.now,
@@ -1398,7 +1410,7 @@ export async function files_nodes_db_create_node_recursively_at_path(
 					.eq("workspaceId", args.workspaceId)
 					.eq("parentId", currentParent)
 					.eq("name", name)
-					.eq("archiveOperationId", undefined),
+					.eq("archiveOperationId", null),
 			)
 			.first();
 
@@ -1453,7 +1465,7 @@ export async function files_nodes_db_create_node_recursively_at_path(
 			}
 
 			// Archived generated files may share a path with an active replacement.
-			if (args.archiveOperationId === undefined) {
+			if (args.archiveOperationId == null) {
 				return Result({
 					_nay: {
 						name: "nay",
@@ -1619,7 +1631,7 @@ export const create_folder_node_by_path = internalMutation({
 					.eq("organizationId", args.organizationId)
 					.eq("workspaceId", args.workspaceId)
 					.eq("path", args.path)
-					.eq("archiveOperationId", undefined),
+					.eq("archiveOperationId", null),
 			)
 			.first();
 
@@ -1782,7 +1794,7 @@ export async function files_nodes_db_delete_subtree_batch(
 		const remainingMetadataDocs = args.batchSize - deletedCount;
 		const metadataDocs = await ctx.db
 			.query("files_metadata_docs")
-			.withIndex("by_organization_workspace_fileNode_qualifiedField", (q) =>
+			.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
 				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
 			)
 			.take(remainingMetadataDocs);
@@ -1898,14 +1910,14 @@ export async function files_nodes_db_is_eager_node_safe_to_hard_delete(
 	// after `.`.
 	const metadataDoc = await ctx.db
 		.query("files_metadata_docs")
-		.withIndex("by_organization_workspace_source_fileNode_qualifiedField", (q) =>
+		.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
 			q
 				.eq("organizationId", args.organizationId)
 				.eq("workspaceId", args.workspaceId)
 				.eq("sourceKind", "committed")
 				.eq("fileNodeId", args.nodeId)
-				.gte("qualifiedField", files_metadata_METADATA_FIELD_PREFIX)
-				.lt("qualifiedField", "metadata/"),
+				.gte("fieldPath", files_metadata_METADATA_FIELD_PREFIX)
+				.lt("fieldPath", "metadata/"),
 		)
 		.first();
 	if (metadataDoc) {
@@ -1954,6 +1966,7 @@ export async function files_nodes_db_hard_delete_node(
 		pendingUpdates,
 		lastSequenceSavedDocs,
 		shareGrants,
+		yjsCleanupTasks,
 	] = await Promise.all([
 		// The by-fileNode chunk indexes cover both committed and pending chunk docs.
 		ctx.db
@@ -1976,7 +1989,7 @@ export async function files_nodes_db_hard_delete_node(
 			.collect(),
 		ctx.db
 			.query("files_metadata_docs")
-			.withIndex("by_organization_workspace_fileNode_qualifiedField", (q) =>
+			.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
 				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
 			)
 			.collect(),
@@ -2032,6 +2045,12 @@ export async function files_nodes_db_hard_delete_node(
 					.eq("resourceId", String(node._id)),
 			)
 			.collect(),
+		ctx.db
+			.query("files_yjs_cleanup_tasks")
+			.withIndex("by_organization_workspace_fileNode_historyPending", (q) =>
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", node._id),
+			)
+			.collect(),
 	]);
 
 	// node.assetId points at the newest version snapshot for editable files, so the same asset id
@@ -2045,6 +2064,12 @@ export async function files_nodes_db_hard_delete_node(
 	}
 	for (const snapshot of snapshots) {
 		assetIds.add(snapshot.assetId);
+	}
+	// Transfer the late-PUT deadline before deleting the retired snapshot asset.
+	const { files_nodes_db_handoff_yjs_cleanup_task } = await import("./files_nodes_content.ts");
+	for (const task of yjsCleanupTasks) {
+		assetIds.add(task.supersededYjsAssetId);
+		await files_nodes_db_handoff_yjs_cleanup_task(ctx, task);
 	}
 	// A staged whole-file replacement (`cp` onto this file) owns a published object of its own.
 	for (const pendingUpdate of pendingUpdates) {
@@ -2201,21 +2226,21 @@ export async function files_nodes_db_remove_created_ancestor_folders_if_safe(
 			break;
 		}
 		// Keep a read-only folder. Delete it only after a manager unlocks it.
-		if (ancestor.readOnlyScopeNodeId !== undefined) {
+		if (ancestor.readOnlyScopeNodeId !== null) {
 			ancestorsLeft = args.createdAncestorIds.length - i;
 			break;
 		}
 		// Metadata is a committed member edit, even when the folder is still empty.
 		const metadataDoc = await ctx.db
 			.query("files_metadata_docs")
-			.withIndex("by_organization_workspace_source_fileNode_qualifiedField", (q) =>
+			.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
 				q
 					.eq("organizationId", args.organizationId)
 					.eq("workspaceId", args.workspaceId)
 					.eq("sourceKind", "committed")
 					.eq("fileNodeId", ancestor._id)
-					.gte("qualifiedField", files_metadata_METADATA_FIELD_PREFIX)
-					.lt("qualifiedField", "metadata/"),
+					.gte("fieldPath", files_metadata_METADATA_FIELD_PREFIX)
+					.lt("fieldPath", "metadata/"),
 			)
 			.first();
 		if (metadataDoc) {
@@ -2264,7 +2289,7 @@ export const remove_eager_created_node_if_safe = internalMutation({
 			!node ||
 			node.organizationId !== args.organizationId ||
 			node.workspaceId !== args.workspaceId ||
-			node.archiveOperationId !== undefined ||
+			node.archiveOperationId !== null ||
 			node.kind !== "file"
 		) {
 			return Result({ _yay: { removed: false, ancestorsLeft: createdAncestorIds.length } });
@@ -2419,7 +2444,7 @@ export const create_upload_node = mutation({
 				parent.organizationId !== membership.organizationId ||
 				parent.workspaceId !== membership.workspaceId ||
 				parent.kind !== "folder" ||
-				parent.archiveOperationId !== undefined
+				parent.archiveOperationId !== null
 			) {
 				return Result({ _nay: { message: "Not found" } });
 			}
@@ -2440,7 +2465,7 @@ export const create_upload_node = mutation({
 					.eq("organizationId", membership.organizationId)
 					.eq("workspaceId", membership.workspaceId)
 					.eq("path", path)
-					.eq("archiveOperationId", undefined),
+					.eq("archiveOperationId", null),
 			)
 			.first();
 		const now = Date.now();
@@ -2463,7 +2488,7 @@ export const create_upload_node = mutation({
 						.eq("workspaceId", membership.workspaceId)
 						.eq("parentId", intermediateParentId)
 						.eq("name", name)
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first();
 			if (!intermediate) {
@@ -2745,7 +2770,7 @@ export const create_upload_nodes = mutation({
 				parent.organizationId !== membership.organizationId ||
 				parent.workspaceId !== membership.workspaceId ||
 				parent.kind !== "folder" ||
-				parent.archiveOperationId !== undefined
+				parent.archiveOperationId !== null
 			) {
 				return Result({ _nay: { message: "Not found" } });
 			}
@@ -2874,7 +2899,7 @@ export const create_upload_nodes = mutation({
 							.eq("workspaceId", membership.workspaceId)
 							.eq("parentId", currentWalkParentId)
 							.eq("name", name)
-							.eq("archiveOperationId", undefined),
+							.eq("archiveOperationId", null),
 					)
 					.first();
 				if (!intermediate) {
@@ -2909,7 +2934,7 @@ export const create_upload_nodes = mutation({
 					break;
 				}
 				// Report a general conflict. Do not reveal that a hidden folder is read-only.
-				if (intermediate.readOnlyScopeNodeId !== undefined) {
+				if (intermediate.readOnlyScopeNodeId !== null) {
 					itemSkipReason = "conflict";
 					break;
 				}
@@ -2927,7 +2952,7 @@ export const create_upload_nodes = mutation({
 						.eq("organizationId", membership.organizationId)
 						.eq("workspaceId", membership.workspaceId)
 						.eq("path", item.targetPath)
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first();
 			if (existingNode) {
@@ -2965,7 +2990,7 @@ export const create_upload_nodes = mutation({
 				}
 				// If the file being replaced is locked, skip only this item.
 				// Keep that file active and continue the other imports.
-				if (existingNode.readOnlyScopeNodeId !== undefined) {
+				if (existingNode.readOnlyScopeNodeId !== null) {
 					skipped.push({ relativePath: item.relativePath, reason: "conflict" });
 					continue;
 				}
@@ -3113,7 +3138,7 @@ export const get_upload_conflicts = query({
 				parent.organizationId !== membership.organizationId ||
 				parent.workspaceId !== membership.workspaceId ||
 				parent.kind !== "folder" ||
-				parent.archiveOperationId !== undefined
+				parent.archiveOperationId !== null
 			) {
 				return [];
 			}
@@ -3129,7 +3154,7 @@ export const get_upload_conflicts = query({
 							.eq("organizationId", membership.organizationId)
 							.eq("workspaceId", membership.workspaceId)
 							.eq("path", path_join(parentPath, relativePath))
-							.eq("archiveOperationId", undefined),
+							.eq("archiveOperationId", null),
 					)
 					.first();
 				if (!fileNode) {
@@ -3199,7 +3224,7 @@ export const discard_failed_upload_node = mutation({
 			node.organizationId !== membership.organizationId ||
 			node.workspaceId !== membership.workspaceId ||
 			node.kind !== "file" ||
-			node.archiveOperationId !== undefined
+			node.archiveOperationId !== null
 		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
@@ -3290,7 +3315,7 @@ async function db_folder_occupant_is_empty(
 		.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
 			q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("parentId", args.folderId),
 		)
-		.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
+		.filter((q) => q.eq(q.field("archiveOperationId"), null))
 		.first();
 	if (activeChild) {
 		return false;
@@ -3326,7 +3351,7 @@ async function db_resolve_pending_move_target(
 		!node ||
 		node.organizationId !== args.organizationId ||
 		node.workspaceId !== args.workspaceId ||
-		node.archiveOperationId !== undefined
+		node.archiveOperationId !== null
 	) {
 		return Result({ _nay: { message: "Not found" } });
 	}
@@ -3341,7 +3366,7 @@ async function db_resolve_pending_move_target(
 			destParent.organizationId !== args.organizationId ||
 			destParent.workspaceId !== args.workspaceId ||
 			destParent.kind !== "folder" ||
-			destParent.archiveOperationId !== undefined
+			destParent.archiveOperationId !== null
 		) {
 			return Result({ _nay: { message: "Destination folder is missing" } });
 		}
@@ -3470,7 +3495,7 @@ export async function files_nodes_db_validate_pending_move_target_for_proposal(
 				.eq("workspaceId", args.workspaceId)
 				.eq("parentId", args.destParentId)
 				.eq("name", args.destName)
-				.eq("archiveOperationId", undefined),
+				.eq("archiveOperationId", null),
 		)
 		.first();
 	if (activeSiblingConflict && activeSiblingConflict._id !== args.nodeId) {
@@ -3537,7 +3562,7 @@ export async function files_nodes_db_validate_pending_move_target_for_accept(
 				.eq("workspaceId", args.workspaceId)
 				.eq("parentId", args.destParentId)
 				.eq("name", args.destName)
-				.eq("archiveOperationId", undefined),
+				.eq("archiveOperationId", null),
 		)
 		.first();
 	if (activeSiblingConflict && activeSiblingConflict._id !== args.nodeId) {
@@ -3676,7 +3701,7 @@ export async function files_nodes_db_apply_pending_move(
 		acceptedNode &&
 		acceptedNode.organizationId === args.organizationId &&
 		acceptedNode.workspaceId === args.workspaceId &&
-		acceptedNode.archiveOperationId === undefined &&
+		acceptedNode.archiveOperationId === null &&
 		acceptedNode.parentId === args.destParentId &&
 		acceptedNode.name === args.destName
 	) {
@@ -3759,7 +3784,7 @@ export async function files_nodes_db_apply_pending_move(
 							.eq("workspaceId", args.workspaceId)
 							.eq("parentId", memberPendingMove.destParentId)
 							.eq("name", memberPendingMove.destName)
-							.eq("archiveOperationId", undefined),
+							.eq("archiveOperationId", null),
 					)
 					.first();
 				if (!nextOccupant) {
@@ -4033,7 +4058,7 @@ export const rename_node = mutation({
 							.eq("workspaceId", membership.workspaceId)
 							.eq("parentId", targetParentId)
 							.eq("name", name)
-							.eq("archiveOperationId", undefined),
+							.eq("archiveOperationId", null),
 					)
 					.first();
 
@@ -4163,7 +4188,7 @@ export const rename_node = mutation({
 		const renamedPath = path_join(plannedParentPath, leafName);
 
 		// New folders are empty. Check for a name conflict only in an existing folder.
-		if (fileNode.archiveOperationId === undefined && missingSegmentNames.length === 0) {
+		if (fileNode.archiveOperationId === null && missingSegmentNames.length === 0) {
 			// Check whether an active sibling already owns the target name.
 			const activeSiblingConflict = await ctx.db
 				.query("files_nodes")
@@ -4173,7 +4198,7 @@ export const rename_node = mutation({
 						.eq("workspaceId", membership.workspaceId)
 						.eq("parentId", targetParentId)
 						.eq("name", leafName)
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first();
 			if (activeSiblingConflict && activeSiblingConflict._id !== args.nodeId) {
@@ -4305,7 +4330,7 @@ export const move_nodes = mutation({
 		}
 
 		// Write permission does not bypass read-only. The destination folder must be writable.
-		// The root cannot be locked, so it returns `undefined`.
+		// The root cannot be locked, so it returns `null`.
 		const destinationReadOnlyScopeNodeId = await files_nodes_db_resolve_parent_read_only_scope(ctx, {
 			parentId: args.targetParentId,
 		});
@@ -4384,7 +4409,7 @@ export const move_nodes = mutation({
 		const movingNodeIds = new Set(fileNodesToMove.map((fileNodeToMove) => fileNodeToMove.itemId));
 		const movedPathByNodeId = new Map<string, Id<"files_nodes">>();
 		for (const fileNodeToMove of fileNodesToMove) {
-			if (fileNodeToMove.fileNode.archiveOperationId !== undefined) {
+			if (fileNodeToMove.fileNode.archiveOperationId !== null) {
 				continue;
 			}
 
@@ -4407,7 +4432,7 @@ export const move_nodes = mutation({
 						.eq("organizationId", membership.organizationId)
 						.eq("workspaceId", membership.workspaceId)
 						.eq("path", fileNodeToMove.movedPath)
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first();
 			if (activePathConflict && !movingNodeIds.has(activePathConflict._id)) {
@@ -4606,7 +4631,7 @@ export const archive_nodes = mutation({
 		const nodeIdsToArchive = new Set<Id<"files_nodes">>();
 
 		for (const fileNode of fileNodes._yay) {
-			if (fileNode.archiveOperationId !== undefined) {
+			if (fileNode.archiveOperationId !== null) {
 				continue;
 			}
 
@@ -4626,7 +4651,7 @@ export const archive_nodes = mutation({
 			});
 
 			const activeDescendants = descendantFileNodes.filter(
-				(descendantFileNode) => descendantFileNode.archiveOperationId === undefined,
+				(descendantFileNode) => descendantFileNode.archiveOperationId === null,
 			);
 
 			// A folder can hold a restricted folder the caller was never given, and the check above only
@@ -4658,7 +4683,7 @@ export const archive_nodes = mutation({
 			// child under a newly archived parent. Check only read-only archived children.
 			// Use a general error when the caller cannot see the child.
 			const archivedDescendants = descendantFileNodes.filter(
-				(descendantFileNode) => descendantFileNode.archiveOperationId !== undefined,
+				(descendantFileNode) => descendantFileNode.archiveOperationId !== null,
 			);
 			const archivedProtected = await files_nodes_db_require_swept_nodes_writable(ctx, {
 				organizationId: membership.organizationId,
@@ -4806,7 +4831,7 @@ export const unarchive_nodes = mutation({
 				continue;
 			}
 
-			if (fileNode.archiveOperationId === undefined) {
+			if (fileNode.archiveOperationId === null) {
 				continue;
 			}
 
@@ -4860,7 +4885,7 @@ export const unarchive_nodes = mutation({
 			(function* (/* iife */) {
 				const visitedParentIds = new Set<Id<"files_nodes">>();
 				for (const ancestorFileNode of topMostSharedAncestorsByPath.values()) {
-					if (ancestorFileNode.archiveOperationId === undefined) {
+					if (ancestorFileNode.archiveOperationId === null) {
 						continue;
 					}
 
@@ -4892,7 +4917,7 @@ export const unarchive_nodes = mutation({
 			await Promise.all(
 				(function* (/* iife */) {
 					for (const ancestorFileNode of topMostSharedAncestorsByPath.values()) {
-						if (ancestorFileNode.archiveOperationId === undefined) {
+						if (ancestorFileNode.archiveOperationId === null) {
 							continue;
 						}
 
@@ -4905,7 +4930,7 @@ export const unarchive_nodes = mutation({
 								!parentFileNode ||
 								parentFileNode.organizationId !== membership.organizationId ||
 								parentFileNode.workspaceId !== membership.workspaceId ||
-								parentFileNode.archiveOperationId !== undefined;
+								parentFileNode.archiveOperationId !== null;
 						}
 
 						const ancestorTargetParentId = shouldMoveToRoot ? files_ROOT_ID : ancestorFileNode.parentId;
@@ -4961,7 +4986,7 @@ export const unarchive_nodes = mutation({
 								parentId: ancestorFileNode._id,
 							});
 							for (const descendantFileNode of descendantFileNodes) {
-								if (descendantFileNode.archiveOperationId === undefined) {
+								if (descendantFileNode.archiveOperationId === null) {
 									continue;
 								}
 
@@ -5014,7 +5039,7 @@ export const unarchive_nodes = mutation({
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				userId: userAuth.id,
-				rootScopeNodeId: undefined,
+				rootScopeNodeId: null,
 				nodes: plans.map((plan) => plan.fileNode),
 				permission: "content.write",
 			}))
@@ -5077,7 +5102,7 @@ export const unarchive_nodes = mutation({
 						.eq("organizationId", membership.organizationId)
 						.eq("workspaceId", membership.workspaceId)
 						.eq("path", ancestorTargetPath)
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first();
 
@@ -5107,7 +5132,7 @@ export const unarchive_nodes = mutation({
 		await Promise.all(
 			plans.map(async (plan) => {
 				await ctx.db.patch("files_nodes", plan.fileNode._id, {
-					archiveOperationId: undefined,
+					archiveOperationId: null,
 					updatedBy: userAuth.id,
 					updatedAt: now,
 					pathDepth: files_path_depth(plan.targetPath),
@@ -5198,12 +5223,12 @@ function files_node_project_read_only(
 
 	// Keep these values as exact literals so they match the return validator.
 	const readOnlyState: "writable" | "self" | "inherited" =
-		readOnlyScopeNodeId === undefined ? "writable" : readOnlyScopeNodeId === fileNode._id ? "self" : "inherited";
+		readOnlyScopeNodeId === null ? "writable" : readOnlyScopeNodeId === fileNode._id ? "self" : "inherited";
 
 	return {
 		...rest,
 		readOnlyState,
-		...(readOnlyScopeNodeId !== undefined && readableSource
+		...(readOnlyScopeNodeId !== null && readableSource
 			? { readOnlySourceNodeId: readableSource._id, readOnlySourcePath: readableSource.path }
 			: {}),
 	};
@@ -5308,7 +5333,7 @@ export const get_authorized_by_path = query({
 								.eq("organizationId", membership.organizationId)
 								.eq("workspaceId", membership.workspaceId)
 								.eq("path", args.path)
-								.eq("archiveOperationId", undefined),
+								.eq("archiveOperationId", null),
 						)
 						.first();
 
@@ -5333,7 +5358,7 @@ export const get_authorized_by_path = query({
 			nodeId: fileNode._id,
 			name: fileNode.name,
 			kind: fileNode.kind,
-			...(fileNode.assetId ? { assetId: fileNode.assetId } : {}),
+			assetId: fileNode.assetId,
 		};
 	},
 });
@@ -5463,7 +5488,7 @@ async function db_list_children(
 				q
 					.eq("organizationId", args.organizationId)
 					.eq("workspaceId", args.workspaceId)
-					.eq("archiveOperationId", undefined),
+					.eq("archiveOperationId", null),
 			)
 			.order(args.order ?? "desc")
 			.paginate({
@@ -5507,7 +5532,7 @@ async function db_list_children(
 							.eq("organizationId", args.organizationId)
 							.eq("workspaceId", args.workspaceId)
 							.eq("parentId", parentId)
-							.eq("archiveOperationId", undefined),
+							.eq("archiveOperationId", null),
 					)
 					.order(args.order ?? "asc")
 					.paginate({
@@ -5521,7 +5546,7 @@ async function db_list_children(
 							.eq("organizationId", args.organizationId)
 							.eq("workspaceId", args.workspaceId)
 							.eq("parentId", parentId)
-							.eq("archiveOperationId", undefined),
+							.eq("archiveOperationId", null),
 					)
 					.order(args.order ?? "desc")
 					.paginate({
@@ -5563,7 +5588,7 @@ export const list_children = internalQuery({
 				path: v.string(),
 				updatedAt: v.number(),
 				updatedBy: doc(app_convex_schema, "files_nodes").fields.updatedBy,
-				contentType: v.optional(v.string()),
+				contentType: doc(app_convex_schema, "files_nodes").fields.contentType,
 			}),
 		),
 		continueCursor: v.string(),
@@ -5619,7 +5644,7 @@ export const list_subtree = internalQuery({
 							q
 								.eq("organizationId", args.organizationId)
 								.eq("workspaceId", args.workspaceId)
-								.eq("archiveOperationId", undefined)
+								.eq("archiveOperationId", null)
 								.eq("kind", "file")
 								.eq("lowercaseExtension", lowercaseExtension)
 								.gte("treePath", lowerBound)
@@ -5633,7 +5658,7 @@ export const list_subtree = internalQuery({
 								q
 									.eq("organizationId", args.organizationId)
 									.eq("workspaceId", args.workspaceId)
-									.eq("archiveOperationId", undefined)
+									.eq("archiveOperationId", null)
 									.gte("treePath", lowerBound)
 									.lt("treePath", upperBound),
 							)
@@ -5644,7 +5669,7 @@ export const list_subtree = internalQuery({
 								q
 									.eq("organizationId", args.organizationId)
 									.eq("workspaceId", args.workspaceId)
-									.eq("archiveOperationId", undefined)
+									.eq("archiveOperationId", null)
 									.eq("kind", kind)
 									.gte("treePath", lowerBound)
 									.lt("treePath", upperBound),
@@ -5756,7 +5781,7 @@ export const search_paths = internalQuery({
 				.search("path", args.pathQuery)
 				.eq("organizationId", args.organizationId)
 				.eq("workspaceId", args.workspaceId)
-				.eq("archiveOperationId", undefined);
+				.eq("archiveOperationId", null);
 
 			if (args.kind != null && args.parentId != null) {
 				return base.eq("kind", args.kind).eq("parentId", args.parentId);
@@ -7385,7 +7410,7 @@ export const match_text_file_lines = internalQuery({
 			fileNode == null ||
 			fileNode.organizationId !== args.organizationId ||
 			fileNode.workspaceId !== args.workspaceId ||
-			fileNode.archiveOperationId !== undefined
+			fileNode.archiveOperationId !== null
 		) {
 			return null;
 		}
@@ -7617,7 +7642,7 @@ export const match_plain_text_file_lines = internalQuery({
 			fileNode == null ||
 			fileNode.organizationId !== args.organizationId ||
 			fileNode.workspaceId !== args.workspaceId ||
-			fileNode.archiveOperationId !== undefined
+			fileNode.archiveOperationId !== null
 		) {
 			return null;
 		}
@@ -8606,10 +8631,8 @@ export const yjs_prepare_doc_last_snapshot = action({
 			snapshot: doc(app_convex_schema, "files_yjs_snapshots"),
 			snapshotUrl: v.string(),
 			yjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
-			// The resolved shape, not the optional schema field: stored absence is legal (absent
-			// means rich_text), response absence is not — the client has no node doc to resolve
-			// the default from.
-			yjsRootKind: v.union(v.literal("rich_text"), v.literal("plain_text")),
+			// A live document always has an editable text shape.
+			textKind: v.union(v.literal("rich_text"), v.literal("plain_text")),
 		}),
 		v.null(),
 	),
@@ -8644,7 +8667,7 @@ export const yjs_prepare_doc_last_snapshot = action({
 				expiresIn: 15 * 60,
 			}),
 			yjsLastSequenceId: data.yjsLastSequenceDoc._id,
-			yjsRootKind: data.fileNode.yjsRootKind,
+			textKind: data.fileNode.textKind,
 		};
 	},
 });
@@ -8708,7 +8731,7 @@ export async function yjs_reserve_and_increment_last_sequence(
 	}
 	// A durable refusal marker means materialization already refused this file's state and an
 	// operator repair is the only exit; accepting more updates would only grow the broken log.
-	if (fileNode.contentShapeMismatchAt !== undefined || fileNode.contentYjsStateTooLargeByteSize !== undefined) {
+	if (fileNode.contentShapeMismatchAt !== null || fileNode.contentYjsStateTooLargeByteSize !== null) {
 		return Result({ _nay: { message: files_yjs_NODE_NEEDS_REPAIR_MESSAGE } });
 	}
 
@@ -8743,9 +8766,9 @@ export async function yjs_reserve_and_increment_last_sequence(
 			// only exit in that state, so return the repair message instead of enqueueing a
 			// materialization that would settle again without freeing budget.
 			if (
-				fileNode.contentTooLargeByteSize !== undefined ||
-				fileNode.contentFrontmatterTooLargeFieldCount !== undefined ||
-				fileNode.contentFrontmatterTooLargeIndexDocumentCount !== undefined
+				fileNode.contentTooLargeByteSize !== null ||
+				fileNode.contentFrontmatterTooLargeFieldCount !== null ||
+				fileNode.contentFrontmatterTooLargeIndexDocumentCount !== null
 			) {
 				return Result({ _nay: { message: files_yjs_NODE_NEEDS_REPAIR_MESSAGE } });
 			}
@@ -8788,7 +8811,7 @@ export async function files_db_yjs_push_update(
 		userId: Id<"users">;
 		expectedYjsLastSequenceId: Id<"files_yjs_docs_last_sequences">;
 		/**
-		 * The shape stored on the node (`yjsRootKind`). Both callers already hold the node; this
+		 * The shape stored on the node (`textKind`). Both callers already hold the node; this
 		 * function does not load it, so the scan below needs the value here.
 		 */
 		rootKind: files_YjsRootKind;
@@ -8985,7 +9008,7 @@ export const yjs_push_update = mutation({
 			sessionId: args.sessionId,
 			userId: user._id,
 			expectedYjsLastSequenceId: args.expectedYjsLastSequenceId,
-			rootKind: fileNode.yjsRootKind,
+			rootKind: fileNode.textKind,
 			// Live editor keystream: keep the materialization debounce.
 			materializeImmediately: false,
 		});

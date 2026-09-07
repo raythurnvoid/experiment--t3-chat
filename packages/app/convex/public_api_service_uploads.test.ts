@@ -585,7 +585,7 @@ describe("service upload plan gate", () => {
 							.eq("organizationId", fixture.organizationId)
 							.eq("workspaceId", fixture.workspaceId)
 							.eq("path", "/meetings/meeting-1/recording.mp4")
-							.eq("archiveOperationId", undefined),
+							.eq("archiveOperationId", null),
 					)
 					.first(),
 			),
@@ -952,17 +952,17 @@ describe("service upload targets", () => {
 
 		expect(await asUser.mutation(api.files_nodes.set_node_writable, args)).toEqual({ _yay: null });
 		const unlocked = await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId));
-		expect(unlocked?.readOnlyScopeNodeId).toBeUndefined();
-		expect(unlocked?.readOnlyPluginServiceTargetId).toBeUndefined();
-		expect(unlocked?.readOnlyPluginName).toBeUndefined();
+		expect(unlocked?.readOnlyScopeNodeId).toBeNull();
+		expect(unlocked?.readOnlyPluginServiceTargetId).toBeNull();
+		expect(unlocked?.readOnlyPluginName).toBeNull();
 		expect(await asUser.mutation(api.files_nodes.set_node_writable, args)).toEqual({ _yay: null });
 		expect(await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId))).toEqual(unlocked);
 
 		expect(await asUser.mutation(api.files_nodes.set_node_read_only, args)).toEqual({ _yay: null });
 		const relocked = await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId));
 		expect(relocked?.readOnlyScopeNodeId).toBe(target.nodeId);
-		expect(relocked?.readOnlyPluginServiceTargetId).toBeUndefined();
-		expect(relocked?.readOnlyPluginName).toBeUndefined();
+		expect(relocked?.readOnlyPluginServiceTargetId).toBeNull();
+		expect(relocked?.readOnlyPluginName).toBeNull();
 		expect(await asUser.mutation(api.files_nodes.set_node_read_only, args)).toEqual({ _yay: null });
 		expect(await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId))).toEqual(relocked);
 		expect((await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete", targetKey: "recording" })).status).toBe(409);
@@ -1009,8 +1009,8 @@ describe("service upload targets", () => {
 		const node = await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId));
 		expect(node?.assetId).toBe(newest.assetId);
 		expect(node?.readOnlyScopeNodeId).toBe(target.nodeId);
-		expect(node?.readOnlyPluginName).toBeUndefined();
-		expect(node?.readOnlyPluginServiceTargetId).toBeUndefined();
+		expect(node?.readOnlyPluginName).toBeNull();
+		expect(node?.readOnlyPluginServiceTargetId).toBeNull();
 		expect(
 			await asUser.query(api.files_metadata.get_entries, {
 				membershipId: fixture.membershipId,
@@ -1131,7 +1131,7 @@ describe("service upload targets", () => {
 							.eq("organizationId", fixture.organizationId)
 							.eq("workspaceId", fixture.workspaceId)
 							.eq("path", "/meetings/meeting-1/file-16.bin")
-							.eq("archiveOperationId", undefined),
+							.eq("archiveOperationId", null),
 					)
 					.first(),
 			),
@@ -1192,7 +1192,7 @@ describe("service upload targets", () => {
 		const metadataDocs = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_fileNode_qualifiedField", (q) =>
+				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
 					q
 						.eq("organizationId", fixture.organizationId)
 						.eq("workspaceId", fixture.workspaceId)
@@ -1202,7 +1202,7 @@ describe("service upload targets", () => {
 		);
 		expect(
 			Object.fromEntries(
-				metadataDocs.filter((doc) => doc.docKind === "value").map((doc) => [doc.qualifiedField, doc.stringValue]),
+				metadataDocs.filter((doc) => doc.docKind === "value").map((doc) => [doc.fieldPath, doc.stringValue]),
 			),
 		).toEqual({
 			"metadata.source": "plugin",
@@ -1716,7 +1716,7 @@ describe("service upload delete", () => {
 		});
 		expect(
 			(await t.run(async (ctx) => ctx.db.get("files_nodes", first.nodeId)))?.readOnlyPluginServiceTargetId,
-		).toBeUndefined();
+		).toBeNull();
 		const memberRelock = await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete", targetKey: "first" });
 		expect(memberRelock.status).toBe(409);
 
@@ -1794,7 +1794,7 @@ describe("service upload delete", () => {
 				yjsSequence: 0,
 				path: target.path,
 				treePath: target.path,
-				qualifiedField: "service.recording",
+				fieldPath: "service.recording",
 				docKind: "field",
 			}),
 		);
@@ -1903,9 +1903,9 @@ describe("service upload delete", () => {
 		).toEqual({ _yay: null });
 
 		const restored = await t.run(async (ctx) => await ctx.db.get("files_nodes", target.nodeId));
-		expect(restored?.archiveOperationId).toBeUndefined();
-		expect(restored?.readOnlyScopeNodeId).toBeUndefined();
-		expect(restored?.readOnlyPluginServiceTargetId).toBeUndefined();
+		expect(restored?.archiveOperationId).toBeNull();
+		expect(restored?.readOnlyScopeNodeId).toBeNull();
+		expect(restored?.readOnlyPluginServiceTargetId).toBeNull();
 	});
 
 	test("a member folder lock above the file refuses the whole delete and releases nothing", async () => {
@@ -1948,7 +1948,7 @@ describe("service upload delete", () => {
 		expect(await refused.json()).toEqual({ message: "This item is read-only." });
 
 		const kept = await t.run(async (ctx) => await ctx.db.get("files_nodes", target.nodeId));
-		expect(kept?.archiveOperationId).toBeUndefined();
+		expect(kept?.archiveOperationId).toBeNull();
 		expect(kept?.readOnlyScopeNodeId).toBe(target.nodeId);
 		expect(kept?.readOnlyPluginServiceTargetId).toBe(target._id);
 		expect((await read_targets(t))[0]!.deleteRequestedAt).toBeUndefined();
@@ -2207,7 +2207,7 @@ describe("service upload delete", () => {
 		// Positive control: unlock the placeholder and the same call goes through, so the refusal came
 		// from the lock and not from something else about a pending target.
 		await t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", target.nodeId, { readOnlyScopeNodeId: undefined });
+			await ctx.db.patch("files_nodes", target.nodeId, { readOnlyScopeNodeId: null });
 		});
 		expect((await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete-1", targetKey: "recording" })).status).toBe(
 			200,
@@ -2313,7 +2313,7 @@ describe("service upload delete", () => {
 						.eq("organizationId", fixture.organizationId)
 						.eq("workspaceId", fixture.workspaceId)
 						.eq("path", "/meetings")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first(),
 		);
@@ -2388,7 +2388,7 @@ describe("service upload delete", () => {
 						.eq("organizationId", fixture.organizationId)
 						.eq("workspaceId", fixture.workspaceId)
 						.eq("path", "/meetings")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first(),
 		);
@@ -2442,7 +2442,7 @@ describe("service upload delete", () => {
 						.eq("organizationId", fixture.organizationId)
 						.eq("workspaceId", fixture.workspaceId)
 						.eq("path", "/meetings")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first(),
 		);
@@ -2522,7 +2522,7 @@ describe("service upload delete", () => {
 						.eq("organizationId", fixture.organizationId)
 						.eq("workspaceId", fixture.workspaceId)
 						.eq("path", "/meetings")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first(),
 		);
@@ -2637,10 +2637,10 @@ describe("service upload archive", () => {
 		).toEqual({ _yay: null });
 
 		const restored = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());
-		expect(restored.every((node) => node.archiveOperationId === undefined)).toBe(true);
+		expect(restored.every((node) => node.archiveOperationId === null)).toBe(true);
 		const restoredFile = restored.find((node) => node._id === target.nodeId);
-		expect(restoredFile?.readOnlyScopeNodeId).toBeUndefined();
-		expect(restoredFile?.readOnlyPluginServiceTargetId).toBeUndefined();
+		expect(restoredFile?.readOnlyScopeNodeId).toBeNull();
+		expect(restoredFile?.readOnlyPluginServiceTargetId).toBeNull();
 	});
 
 	test("an inherited lock refuses the whole archive and releases nothing", async () => {
@@ -2678,7 +2678,7 @@ describe("service upload archive", () => {
 		expect(await response.json()).toEqual({ message: "This item is read-only." });
 
 		const nodes = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());
-		expect(nodes.every((node) => node.archiveOperationId === undefined)).toBe(true);
+		expect(nodes.every((node) => node.archiveOperationId === null)).toBe(true);
 		expect(nodes.find((node) => node._id === target.nodeId)).toMatchObject({
 			readOnlyScopeNodeId: target.nodeId,
 			readOnlyPluginServiceTargetId: target._id,
@@ -2719,7 +2719,7 @@ describe("service upload archive", () => {
 		// One operation id covers the folder and everything under it, which is what lets a member
 		// restore the exact set this call took.
 		const nodes = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());
-		const archived = nodes.filter((node) => node.archiveOperationId !== undefined);
+		const archived = nodes.filter((node) => node.archiveOperationId !== null);
 		expect(archived.map((node) => node.path).sort()).toEqual([
 			"/meetings/meeting-1",
 			"/meetings/meeting-1/notes",
@@ -2731,7 +2731,7 @@ describe("service upload archive", () => {
 		// active: a door that deleted it would pass an `undefined` read just as well.
 		const parent = nodes.find((node) => node.path === "/meetings");
 		expect(parent).toBeDefined();
-		expect(parent?.archiveOperationId).toBeUndefined();
+		expect(parent?.archiveOperationId).toBeNull();
 
 		// The files still exist, so the books do not move and no object is deleted.
 		expect((await read_quota(t, fixture))?.usedCount).toBe(3 * MIB);
@@ -2756,7 +2756,7 @@ describe("service upload archive", () => {
 		const afterReplay = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());
 		expect(
 			afterReplay
-				.filter((node) => node.archiveOperationId !== undefined)
+				.filter((node) => node.archiveOperationId !== null)
 				.map((node) => node.path)
 				.sort(),
 		).toEqual(archived.map((node) => node.path).sort());
@@ -2790,7 +2790,7 @@ describe("service upload archive", () => {
 		const nodes = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());
 		expect(
 			nodes
-				.filter((node) => node.archiveOperationId !== undefined)
+				.filter((node) => node.archiveOperationId !== null)
 				.map((node) => node.path)
 				.sort(),
 		).toEqual(["/meetings/meeting-2", "/meetings/meeting-2/recording.mp4"]);
@@ -2871,7 +2871,7 @@ describe("service upload archive", () => {
 		expect(await replay.json()).toEqual({ archivedNodes: 0 });
 		const restoredDestination = await t.run(async (ctx) => ctx.db.get("files_nodes", target.destinationNodeId));
 		expect(restoredDestination).not.toBeNull();
-		expect(restoredDestination?.archiveOperationId).toBeUndefined();
+		expect(restoredDestination?.archiveOperationId).toBeNull();
 	});
 
 	test("archives an older destination generation after a member restores it", async () => {
@@ -3106,6 +3106,22 @@ describe("service upload archive", () => {
 					createdBy: fixture.userId,
 					updatedBy: fixture.userId,
 					updatedAt: now,
+					contentType: null,
+					assetId: null,
+					textKind: null,
+					collaborationEnabled: null,
+					yjsSnapshotId: null,
+					yjsLastSequenceId: null,
+					statsId: null,
+					contentTooLargeByteSize: null,
+					contentShapeMismatchAt: null,
+					contentYjsStateTooLargeByteSize: null,
+					contentFrontmatterTooLargeFieldCount: null,
+					contentFrontmatterTooLargeIndexDocumentCount: null,
+					restrictedScopeNodeId: null,
+					readOnlyScopeNodeId: null,
+					readOnlyPluginName: null,
+					readOnlyPluginServiceTargetId: null,
 				});
 			}
 		});
@@ -3130,7 +3146,7 @@ describe("service upload archive", () => {
 		expect(await response.json()).toEqual({ archivedNodes: 0 });
 
 		const nodes = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());
-		expect(nodes.every((node) => node.archiveOperationId === undefined)).toBe(true);
+		expect(nodes.every((node) => node.archiveOperationId === null)).toBe(true);
 	});
 
 	test("a restricted destination the actor was never granted refuses the archive", async () => {
@@ -3176,7 +3192,7 @@ describe("service upload archive", () => {
 		expect(await response.json()).toEqual({ message: "Permission denied" });
 
 		const nodes = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());
-		expect(nodes.every((node) => node.archiveOperationId === undefined)).toBe(true);
+		expect(nodes.every((node) => node.archiveOperationId === null)).toBe(true);
 	});
 
 	test("a read-only file inside the destination refuses the whole archive", async () => {
@@ -3195,6 +3211,6 @@ describe("service upload archive", () => {
 
 		// All or nothing: the lock keeps the folder above it active too.
 		const nodes = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());
-		expect(nodes.every((node) => node.archiveOperationId === undefined)).toBe(true);
+		expect(nodes.every((node) => node.archiveOperationId === null)).toBe(true);
 	});
 });

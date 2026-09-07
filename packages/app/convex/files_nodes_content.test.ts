@@ -5,13 +5,19 @@ import { applyUpdate, Doc as YjsDoc, encodeStateAsUpdate, encodeStateVector } fr
 import { api, components, internal } from "./_generated/api.js";
 import { test_convex, test_get_file_yjs_pointers, test_mocks_fill_db_with } from "./setup.test.ts";
 import { r2_server_side_copy } from "./r2_client.ts";
-import { files_ROOT_ID, files_u8_to_array_buffer, files_YJS_DOC_KEYS } from "../shared/files.ts";
+import {
+	files_MAX_TEXT_CONTENT_BYTES,
+	files_ROOT_ID,
+	files_u8_to_array_buffer,
+	files_YJS_DOC_KEYS,
+} from "../shared/files.ts";
 import { files_yjs_doc_get_text } from "../shared/files-tiptap.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 
 const objects = new Map<string, BodyInit>();
 
 afterEach(() => {
+	vi.useRealTimers();
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
 });
@@ -116,6 +122,286 @@ async function expect_retired_uploads(t: ReturnType<typeof test_convex>, count: 
 		);
 	});
 }
+
+describe("cleanup_file_yjs_task", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+
+	test("bounded cleanup retires before new history and a late task cannot delete the next OFF history", async () => {
+		const { t, db, asUser, nodeId, pointers } = await create_file_fixture();
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_yjs_snapshots", pointers.yjsSnapshotId, { sequence: 64 });
+			await ctx.db.patch("files_yjs_docs_last_sequences", pointers.yjsLastSequenceId, { lastSequence: 64 });
+			await Promise.all(
+				Array.from({ length: 64 }, (_, index) =>
+					ctx.db.insert("files_yjs_updates", {
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						fileNodeId: nodeId,
+						sequence: index + 1,
+						update: new Uint8Array([0, 0]).buffer,
+						origin: { type: "USER_EDIT", sessionId: "old-history" },
+						createdBy: db.userId,
+						createdAt: Date.now(),
+					}),
+				),
+			);
+		});
+		expect(
+			(
+				await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+					membershipId: db.membershipId,
+					nodeId,
+					acknowledgeDropCollaborativeHistory: true,
+				})
+			)._nay,
+		).toBeUndefined();
+		const task = await t.run(async (ctx) => ctx.db.query("files_yjs_cleanup_tasks").first());
+		if (!task) throw new Error("Missing cleanup task");
+		expect(
+			await asUser.query(api.files_nodes_content.get_file_collaboration_cleanup_state, {
+				membershipId: db.membershipId,
+				nodeId,
+			}),
+		).toBe(true);
+
+		await t.mutation(internal.files_nodes_content.cleanup_file_yjs_task, { taskId: task._id });
+		expect(await t.run(async (ctx) => ctx.db.query("files_yjs_updates").collect())).toHaveLength(32);
+		expect(
+			(
+				await asUser.action(api.files_nodes_content.set_file_collaborative, {
+					membershipId: db.membershipId,
+					nodeId,
+				})
+			)._nay?.message,
+		).toContain("old collaboration history");
+		await t.mutation(internal.files_nodes_content.cleanup_file_yjs_task, { taskId: task._id });
+		expect(await t.run(async (ctx) => ctx.db.query("files_yjs_updates").collect())).toHaveLength(0);
+		expect(
+			await asUser.query(api.files_nodes_content.get_file_collaboration_cleanup_state, {
+				membershipId: db.membershipId,
+				nodeId,
+			}),
+		).toBe(false);
+
+		// The final full batch leaves the task pending. ON retires it without waiting for R2.
+		expect((await t.run((ctx) => ctx.db.get("files_yjs_cleanup_tasks", task._id)))?.historyPending).toBe(true);
+		expect(
+			(
+				await asUser.action(api.files_nodes_content.set_file_collaborative, {
+					membershipId: db.membershipId,
+					nodeId,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect((await t.run((ctx) => ctx.db.get("files_yjs_cleanup_tasks", task._id)))?.historyPending).toBe(false);
+		const fresh = await test_get_file_yjs_pointers(t, nodeId);
+		const editor = new YjsDoc();
+		editor.getText(files_YJS_DOC_KEYS.plainText).insert(0, "New edit\n");
+		expect(
+			(
+				await asUser.mutation(api.files_nodes.yjs_push_update, {
+					membershipId: db.membershipId,
+					nodeId,
+					expectedYjsLastSequenceId: fresh.yjsLastSequenceId,
+					update: files_u8_to_array_buffer(encodeStateAsUpdate(editor)),
+					sessionId: "new-history",
+				})
+			)._nay,
+		).toBeUndefined();
+		editor.destroy();
+		await t.mutation(internal.files_nodes_content.mark_file_content_too_large, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			nodeId,
+			expectedYjsLastSequenceId: fresh.yjsLastSequenceId,
+			sequence: 1,
+			targetSequence: 1,
+			byteSize: files_MAX_TEXT_CONTENT_BYTES + 1,
+		});
+		expect(
+			(
+				await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+					membershipId: db.membershipId,
+					nodeId,
+					acknowledgeDropCollaborativeHistory: true,
+				})
+			)._nay,
+		).toBeUndefined();
+
+		// Both documents are now off. Only the retired task flag protects the newer update.
+		await t.mutation(internal.files_nodes_content.cleanup_file_yjs_task, { taskId: task._id });
+		await t.run(async (ctx) => {
+			expect((await ctx.db.query("files_yjs_updates").collect()).map((update) => update.sequence)).toEqual([1]);
+			expect(await ctx.db.get("files_yjs_cleanup_tasks", task._id)).toBeNull();
+			const deletion = await ctx.db.query("files_r2_object_deletion_jobs").first();
+			expect(deletion?.putMayArriveUntil).toBe(task.putMayArriveUntil);
+		});
+	});
+
+	test("the final ON mutation refuses remaining old history", async () => {
+		const { t, db, asUser, nodeId } = await create_file_fixture();
+		expect(
+			(
+				await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+					membershipId: db.membershipId,
+					nodeId,
+					acknowledgeDropCollaborativeHistory: true,
+				})
+			)._nay,
+		).toBeUndefined();
+		const before = await t.run(async (ctx) => {
+			await ctx.db.insert("files_yjs_updates", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				fileNodeId: nodeId,
+				sequence: 0,
+				update: new Uint8Array([0, 0]).buffer,
+				origin: { type: "USER_EDIT", sessionId: "old-history" },
+				createdBy: db.userId,
+				createdAt: Date.now(),
+			});
+			const node = await ctx.db.get("files_nodes", nodeId);
+			if (!node?.assetId) throw new Error("Missing content asset");
+			return { ...node, assetId: node.assetId };
+		});
+		const [yjsSnapshotAssetId, contentSnapshotAssetId] = await Promise.all(
+			(["yjs_snapshot", "content_snapshot"] as const).map((kind) =>
+				t.mutation(internal.r2.insert_asset, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					createdBy: db.userId,
+					kind,
+					size: 14,
+				}),
+			),
+		);
+		const finalized = await asUser.mutation(internal.files_nodes_content.finalize_file_collaboration_enable, {
+			membershipId: db.membershipId,
+			nodeId,
+			text: "Original text\n",
+			textSize: 14,
+			baseAssetId: before.assetId,
+			yjsSnapshotAssetId,
+			yjsSnapshotSize: 14,
+			contentSnapshotAssetId,
+		});
+		expect(finalized._nay?.message).toContain("old collaboration history");
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toEqual(before);
+	});
+
+	test("restore checks old history before creating a fresh text document", async () => {
+		const { t, db, asUser, nodeId, snapshotId } = await create_file_fixture();
+		expect(
+			(
+				await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+					membershipId: db.membershipId,
+					nodeId,
+					acknowledgeDropCollaborativeHistory: true,
+				})
+			)._nay,
+		).toBeUndefined();
+		const storedVersionId = await t.run(async (ctx) => {
+			const snapshot = await ctx.db.get("files_snapshots", snapshotId);
+			if (!snapshot) throw new Error("Missing snapshot");
+			return await ctx.db.insert("files_snapshots", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				fileNodeId: nodeId,
+				assetId: snapshot.assetId,
+				createdBy: db.userId,
+				archivedAt: 0,
+				contentType: "application/octet-stream",
+			});
+		});
+		vi.spyOn(r2_server_side_copy, "copy_object").mockImplementation(async (_ctx, args) => {
+			const body = objects.get(args.sourceKey);
+			if (body === undefined) throw new Error("Missing source object");
+			objects.set(args.destinationKey, body);
+			return { outcome: "copied", size: (await new Response(body).arrayBuffer()).byteLength, etag: "copied" };
+		});
+		expect(
+			(
+				await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
+					membershipId: db.membershipId,
+					nodeId,
+					snapshotId: storedVersionId,
+					sessionId: "restore-stored",
+				})
+			)._nay,
+		).toBeUndefined();
+		const before = await t.run(async (ctx) => {
+			await ctx.db.insert("files_yjs_updates", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				fileNodeId: nodeId,
+				sequence: 0,
+				update: new Uint8Array([0, 0]).buffer,
+				origin: { type: "USER_EDIT", sessionId: "old-history" },
+				createdBy: db.userId,
+				createdAt: Date.now(),
+			});
+			return await ctx.db.get("files_nodes", nodeId);
+		});
+		const restored = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
+			membershipId: db.membershipId,
+			nodeId,
+			snapshotId,
+			sessionId: "restore-text",
+		});
+		expect(restored._nay?.message).toContain("old collaboration history");
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toEqual(before);
+	});
+
+	test("two ON finalizations publish only one document", async () => {
+		const { t, db, asUser, nodeId } = await create_file_fixture();
+		expect(
+			(
+				await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+					membershipId: db.membershipId,
+					nodeId,
+					acknowledgeDropCollaborativeHistory: true,
+				})
+			)._nay,
+		).toBeUndefined();
+		const results = await Promise.all(
+			[0, 1].map(() =>
+				asUser.action(api.files_nodes_content.set_file_collaborative, { membershipId: db.membershipId, nodeId }),
+			),
+		);
+		expect(results.filter((result) => result._nay === undefined)).toHaveLength(1);
+		expect(results.find((result) => result._nay)?._nay?.message).toContain("already collaborative");
+		await t.run(async (ctx) => {
+			expect(await ctx.db.query("files_yjs_snapshots").collect()).toHaveLength(1);
+			expect(await ctx.db.query("files_yjs_docs_last_sequences").collect()).toHaveLength(1);
+		});
+	});
+
+	test("asset-only cleanup preserves an asset referenced by a live snapshot", async () => {
+		const { t, db, nodeId, pointers } = await create_file_fixture();
+		const task = await t.run(async (ctx) => {
+			const snapshot = await ctx.db.get("files_yjs_snapshots", pointers.yjsSnapshotId);
+			if (!snapshot) throw new Error("Missing snapshot");
+			const taskId = await ctx.db.insert("files_yjs_cleanup_tasks", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				fileNodeId: nodeId,
+				throughSequence: 0,
+				supersededYjsAssetId: snapshot.assetId,
+				putMayArriveUntil: null,
+				historyPending: false,
+			});
+			return { taskId, assetId: snapshot.assetId };
+		});
+		await t.mutation(internal.files_nodes_content.cleanup_file_yjs_task, { taskId: task.taskId });
+		await t.run(async (ctx) => {
+			expect(await ctx.db.get("files_yjs_cleanup_tasks", task.taskId)).toBeNull();
+			expect(await ctx.db.get("files_r2_assets", task.assetId)).not.toBeNull();
+			expect(await ctx.db.query("files_r2_object_deletion_jobs").collect()).toHaveLength(0);
+		});
+	});
+});
 
 describe("materialize_file_content and restore_snapshot_r2", () => {
 	test.each([false, true])(
@@ -499,8 +785,8 @@ describe("restore_snapshot_r2", () => {
 					})),
 				});
 				const node = await t.run((ctx) => ctx.db.get("files_nodes", nodeId));
-				expect(node?.yjsRootKind).toBe(rootKind);
-				expect(node?.nonCollaborative === true).toBe(off);
+				expect(node?.textKind).toBe(rootKind);
+				expect(node?.collaborationEnabled === false).toBe(off);
 				const content = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
 					...fixture.scope,
 					path: sourceRootKind === "rich_text" ? "/restore.md" : "/restore.txt",
@@ -623,7 +909,7 @@ describe("restore_snapshot_r2", () => {
 		expect((await restore())._nay).toBeUndefined();
 		const node = await t.run(async (ctx) => ctx.db.get("files_nodes", nodeId));
 		expect(node?.contentType).toBe("application/octet-stream");
-		expect(node?.yjsSnapshotId).toBeUndefined();
+		expect(node?.yjsSnapshotId).toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", pending._id))).toEqual({
 			...pending,
 			contentNeedsRebase: true,
@@ -679,7 +965,7 @@ describe("restore_snapshot_r2", () => {
 			});
 			expect(restored._nay).toBeUndefined();
 			const after = await t.run(async (ctx) => ctx.db.get("files_nodes", nodeId));
-			expect(after?.nonCollaborative === true).toBe(destinationOff);
+			expect(after?.collaborationEnabled === false).toBe(destinationOff);
 			expect(after?.yjsLastSequenceId).toBe(before?.yjsLastSequenceId);
 			expect(after?.yjsSnapshotId).toBe(before?.yjsSnapshotId);
 			const read = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
@@ -747,7 +1033,7 @@ describe("accept_file_pending_replacement", () => {
 					})
 				)._nay,
 			).toBeUndefined();
-			expect((await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.yjsRootKind).toBeUndefined();
+			expect((await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.textKind).toBeNull();
 			expect(await t.run((ctx) => ctx.db.get("files_pending_updates", pending._id))).toEqual({
 				...pending,
 				contentNeedsRebase: true,
@@ -863,9 +1149,10 @@ describe("accept_file_pending_replacement", () => {
 		const after = await t.run(async (ctx) => ctx.db.get("files_nodes", nodeId));
 		expect(after?.contentType).toBe("application/pdf");
 		expect(after?.assetId).toBe(pending?.pendingReplacement?.assetId);
-		expect(after?.yjsRootKind).toBeUndefined();
-		expect(after?.yjsSnapshotId).toBeUndefined();
-		expect(after?.yjsLastSequenceId).toBeUndefined();
+		expect(after?.textKind).toBeNull();
+		expect(after?.statsId).toBeNull();
+		expect(after?.yjsSnapshotId).toBeNull();
+		expect(after?.yjsLastSequenceId).toBeNull();
 		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", after!.assetId!));
 		expect(new Uint8Array(await new Response(objects.get(asset!.r2Key!)).arrayBuffer())).toEqual(sourceBytes);
 		expect(await t.run(async (ctx) => ctx.db.get("files_pending_updates", staged._yay.pendingUpdateId))).toBeNull();
@@ -927,8 +1214,8 @@ describe("accept_file_pending_replacement", () => {
 			expect(accepted._nay).toBeUndefined();
 			const after = await t.run(async (ctx) => ctx.db.get("files_nodes", nodeId));
 			const expectedOff = eager ? sourceOff : destinationOff;
-			expect(after?.nonCollaborative === true).toBe(expectedOff);
-			expect(after?.yjsLastSequenceId !== undefined).toBe(!expectedOff);
+			expect(after?.collaborationEnabled === false).toBe(expectedOff);
+			expect(after?.yjsLastSequenceId !== null).toBe(!expectedOff);
 			const read = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
 				...scope,
 				path: "/restore.txt",

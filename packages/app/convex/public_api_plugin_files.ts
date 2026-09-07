@@ -66,7 +66,7 @@ async function db_get_active_node_at_path(
 				.eq("organizationId", args.organizationId)
 				.eq("workspaceId", args.workspaceId)
 				.eq("path", args.path)
-				.eq("archiveOperationId", undefined),
+				.eq("archiveOperationId", null),
 		)
 		.first();
 }
@@ -92,9 +92,9 @@ async function db_prepare_plugin_access(
 		let parentScopeNodeId = await files_nodes_db_resolve_parent_read_only_scope(ctx, {
 			parentId: args.parentId,
 		});
-		const hasParentLock = parentScopeNodeId !== undefined;
+		const hasParentLock = parentScopeNodeId !== null;
 		// A nested plugin lock must not hide an outer member lock.
-		while (parentScopeNodeId !== undefined) {
+		while (parentScopeNodeId !== null) {
 			const parentScopeNode = await ctx.db.get("files_nodes", parentScopeNodeId);
 			if (args.readOnly !== true || parentScopeNode?.readOnlyPluginName !== args.installation.pluginName) {
 				return Result({ _nay: { name: "read_only", message: "This item is read-only." } });
@@ -141,11 +141,11 @@ async function db_apply_plugin_access(
 	},
 ) {
 	if (args.prepared.readOnlyChange !== undefined) {
-		const scopeNodeId = args.prepared.readOnlyChange ? args.node._id : undefined;
+		const scopeNodeId = args.prepared.readOnlyChange ? args.node._id : null;
 		await ctx.db.patch("files_nodes", args.node._id, {
 			readOnlyScopeNodeId: scopeNodeId,
-			readOnlyPluginName: args.prepared.readOnlyChange ? args.installation.pluginName : undefined,
-			readOnlyPluginServiceTargetId: undefined,
+			readOnlyPluginName: args.prepared.readOnlyChange ? args.installation.pluginName : null,
+			readOnlyPluginServiceTargetId: null,
 		});
 		await files_nodes_db_cascade_read_only_scope(ctx, {
 			organizationId: args.node.organizationId,
@@ -224,7 +224,7 @@ export const ensure_plugin_folder = internalMutation({
 						.eq("workspaceId", args.workspaceId)
 						.eq("parentId", currentParent)
 						.eq("name", name)
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first();
 			if (!existing) {
@@ -529,7 +529,7 @@ export const archive_plugin_path = internalMutation({
 				}
 			}
 
-			const activeDescendants = descendants.filter((descendant) => descendant.archiveOperationId === undefined);
+			const activeDescendants = descendants.filter((descendant) => descendant.archiveOperationId === null);
 			await public_api_service_uploads_db_release_service_created_locks(ctx, { nodes: directLockedNodes });
 			await files_nodes_db_archive_nodes(ctx, {
 				nodeIds: [node._id, ...activeDescendants.map((descendant) => descendant._id)],

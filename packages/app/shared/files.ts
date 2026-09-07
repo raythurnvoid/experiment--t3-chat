@@ -16,7 +16,13 @@ export const files_ROOT_ID = "root" as const;
 
 export type files_VisibleTreeNode = Omit<
 	app_convex_Doc<"files_nodes">,
-	"organizationId" | "workspaceId" | "createdBy" | "updatedBy" | "readOnlyScopeNodeId"
+	| "organizationId"
+	| "workspaceId"
+	| "createdBy"
+	| "updatedBy"
+	| "readOnlyScopeNodeId"
+	| "readOnlyPluginName"
+	| "readOnlyPluginServiceTargetId"
 > & {
 	organizationId: app_convex_Id<"organizations">;
 	workspaceId: app_convex_Id<"organizations_workspaces">;
@@ -40,12 +46,20 @@ export const files_SYNTHETIC_ROOT_FOLDER = {
 	lowercaseExtension: null,
 	name: "",
 	kind: "folder",
-	contentType: undefined,
-	statsId: undefined,
-	assetId: undefined,
-	archiveOperationId: undefined,
-	yjsLastSequenceId: undefined,
-	yjsSnapshotId: undefined,
+	contentType: null,
+	statsId: null,
+	assetId: null,
+	textKind: null,
+	collaborationEnabled: null,
+	archiveOperationId: null,
+	yjsLastSequenceId: null,
+	yjsSnapshotId: null,
+	contentTooLargeByteSize: null,
+	contentShapeMismatchAt: null,
+	contentYjsStateTooLargeByteSize: null,
+	contentFrontmatterTooLargeFieldCount: null,
+	contentFrontmatterTooLargeIndexDocumentCount: null,
+	restrictedScopeNodeId: null,
 	parentId: "",
 	updatedBy: "",
 	createdBy: "",
@@ -77,8 +91,8 @@ export const files_SYNTHETIC_ROOT_FOLDER = {
  */
 export function files_can_move_node_between_restricted_scopes(args: {
 	nodeId: app_convex_Id<"files_nodes">;
-	sourceRestrictedScopeNodeId: app_convex_Id<"files_nodes"> | undefined;
-	targetRestrictedScopeNodeId: app_convex_Id<"files_nodes"> | undefined;
+	sourceRestrictedScopeNodeId: app_convex_Id<"files_nodes"> | null;
+	targetRestrictedScopeNodeId: app_convex_Id<"files_nodes"> | null;
 	canManageRestrictedScope: (scopeNodeId: app_convex_Id<"files_nodes">) => boolean;
 }) {
 	return (
@@ -415,8 +429,8 @@ export function files_normalize_content_type(value: string) {
  * when that type is not editable text. Only the mapped types are text; other `application/*`
  * types stay stored bytes.
  */
-export function files_editable_text_content_type_of(contentType: string | undefined) {
-	if (contentType === undefined) {
+export function files_editable_text_content_type_of(contentType: string | null | undefined) {
+	if (contentType == null) {
 		return null;
 	}
 
@@ -432,7 +446,7 @@ export function files_editable_text_content_type_of(contentType: string | undefi
  * text. Markdown keeps the rich text editor and its ProseMirror document. Every other editable
  * text type is a plain text document.
  */
-export function files_yjs_root_kind_of_content_type(contentType: string | undefined): files_YjsRootKind | null {
+export function files_yjs_root_kind_of_content_type(contentType: string | null | undefined): files_YjsRootKind | null {
 	return files_editable_text_shape_of(contentType)?.rootKind ?? null;
 }
 
@@ -441,7 +455,7 @@ export function files_yjs_root_kind_of_content_type(contentType: string | undefi
  * the type is not editable text, so a stored-bytes type can never become a text document.
  */
 export function files_editable_text_shape_of(
-	contentType: string | undefined,
+	contentType: string | null | undefined,
 ): { contentType: files_ContentType; rootKind: files_YjsRootKind } | null {
 	const editableTextContentType = files_editable_text_content_type_of(contentType);
 	if (editableTextContentType === null) {
@@ -472,7 +486,7 @@ export function files_default_text_shape_for_name(fileName: string): {
 /**
  * Return the Monaco language id for a content type. Unmapped types render as plain text.
  */
-export function files_monaco_language_id_of_content_type(contentType: string | undefined) {
+export function files_monaco_language_id_of_content_type(contentType: string | null | undefined) {
 	const editableTextContentType = files_editable_text_content_type_of(contentType);
 	if (editableTextContentType === null) {
 		return "plaintext";
@@ -533,8 +547,8 @@ function files_content_disposition(kind: "inline" | "attachment", fileName: stri
  * upload time, and that is fine here: the inline set holds only types a browser never runs as
  * a page, whatever bytes sit behind them.
  */
-export function files_get_signed_download_serving(args: { contentType: string | undefined; fileName: string }) {
-	const essence = args.contentType === undefined ? null : (files_parse_content_type(args.contentType)?.essence ?? null);
+export function files_get_signed_download_serving(args: { contentType: string | null | undefined; fileName: string }) {
+	const essence = args.contentType == null ? null : (files_parse_content_type(args.contentType)?.essence ?? null);
 	if (essence !== null && FILES_INLINE_SERVED_MEDIA_CONTENT_TYPES.has(essence)) {
 		return {
 			responseContentType: essence,
@@ -715,7 +729,7 @@ export function files_get_upload_pipeline_state(
 
 type FileNodeFieldsForEditability = Pick<
 	app_convex_Doc<"files_nodes">,
-	"kind" | "assetId" | "yjsSnapshotId" | "yjsLastSequenceId" | "yjsRootKind"
+	"kind" | "assetId" | "textKind"
 >;
 
 /**
@@ -725,35 +739,38 @@ type FileNodeFieldsForEditability = Pick<
  * choosing the editor, deciding which renames are legal, indexing frontmatter. Use
  * `files_node_has_editable_yjs_state` instead for anything that touches the Yjs document itself.
  *
- * `yjsRootKind` is the marker, not the Yjs pointers. Stored upload blobs and read-only mount files
- * also have an `assetId` but never get a `yjsRootKind`, so they stay out.
+ * `textKind` is the marker, not the Yjs pointers. Stored upload blobs and read-only mount files
+ * also have an `assetId` but keep `textKind` null, so they stay out.
  */
 export function files_node_has_editable_text_content<Node extends FileNodeFieldsForEditability | null | undefined>(
 	node: Node,
 ): node is NonNullable<Node> & {
 	kind: "file";
 	assetId: NonNullable<FileNodeFieldsForEditability["assetId"]>;
-	yjsRootKind: NonNullable<FileNodeFieldsForEditability["yjsRootKind"]>;
+	textKind: NonNullable<FileNodeFieldsForEditability["textKind"]>;
 } {
-	return node?.kind === "file" && node.assetId !== undefined && node.yjsRootKind !== undefined;
+	return node?.kind === "file" && node.assetId !== null && node.textKind !== null;
 }
 
-export function files_node_has_editable_yjs_state<Node extends FileNodeFieldsForEditability | null | undefined>(
-	node: Node,
-): node is NonNullable<Node> & {
+export function files_node_has_editable_yjs_state<
+	Node extends
+		| (FileNodeFieldsForEditability & Pick<app_convex_Doc<"files_nodes">, "yjsSnapshotId" | "yjsLastSequenceId">)
+		| null
+		| undefined,
+>(node: Node): node is NonNullable<Node> & {
 	kind: "file";
 	assetId: NonNullable<FileNodeFieldsForEditability["assetId"]>;
-	yjsSnapshotId: NonNullable<FileNodeFieldsForEditability["yjsSnapshotId"]>;
-	yjsLastSequenceId: NonNullable<FileNodeFieldsForEditability["yjsLastSequenceId"]>;
-	yjsRootKind: NonNullable<FileNodeFieldsForEditability["yjsRootKind"]>;
+	yjsSnapshotId: app_convex_Id<"files_yjs_snapshots">;
+	yjsLastSequenceId: app_convex_Id<"files_yjs_docs_last_sequences">;
+	textKind: NonNullable<FileNodeFieldsForEditability["textKind"]>;
 } {
 	// Treat Yjs pointers as the editor-ready signal instead of inferring readiness from MIME metadata.
 	// A non-collaborative file is editable text but has no Yjs document, so it fails this on purpose
 	// and every Yjs door refuses it.
 	return (
 		files_node_has_editable_text_content(node) &&
-		node.yjsSnapshotId !== undefined &&
-		node.yjsLastSequenceId !== undefined
+		node.yjsSnapshotId !== null &&
+		node.yjsLastSequenceId !== null
 	);
 }
 

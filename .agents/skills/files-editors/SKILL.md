@@ -31,7 +31,7 @@ Read the existing specs when the task touches their rules:
 
 # Keep Editor View And File Mode Separate
 
-`yjsRootKind` chooses the document shape. Markdown uses rich text; other editable text uses `Y.Text`. `nonCollaborative` separately decides whether the file has a live Yjs document. See the editable-text spec for the full mode rules.
+`textKind` chooses the document shape. Markdown uses rich text; other editable text uses `Y.Text`. `collaborationEnabled` separately decides whether the file has a live Yjs document. Both node fields are null for stored blobs and folders. See the editable-text spec for the full mode rules.
 
 The collaborative rich editor sends edits through the provider as the user types. Monaco text edits stay local until Save. Its Sync merges remote changes into the local text while keeping undo history. This prevents incomplete Markdown edits from reaching the rich editor on each keystroke.
 

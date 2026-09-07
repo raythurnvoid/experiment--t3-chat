@@ -109,12 +109,15 @@ type FileEditorSidebarPendingRow = {
  */
 function build_pending_rows(
 	pendingUpdates: readonly app_convex_Doc<"files_pending_updates">[],
-	nodesById: Map<app_convex_Id<"files_nodes">, app_convex_Doc<"files_nodes">>,
+	nodesById: Map<
+		app_convex_Id<"files_nodes">,
+		Omit<app_convex_Doc<"files_nodes">, "readOnlyScopeNodeId" | "readOnlyPluginName" | "readOnlyPluginServiceTargetId">
+	>,
 ): FileEditorSidebarPendingRow[] {
 	// Active nodes keyed by path, to spot the occupant a pending move's accept would replace.
 	const activeNodesByPath = new Map(
 		Array.from(nodesById.values())
-			.filter((node) => node.archiveOperationId === undefined)
+			.filter((node) => node.archiveOperationId === null)
 			.map((node) => [node.path, node] as const),
 	);
 	// Files this user's own pending move will vacate: accept forces their move first,
@@ -128,7 +131,7 @@ function build_pending_rows(
 	// pending destination parent is non-empty too.
 	const parentIdsWithActiveChildren = new Set(
 		Array.from(nodesById.values())
-			.filter((node) => node.archiveOperationId === undefined)
+			.filter((node) => node.archiveOperationId === null)
 			.map((node) => node.parentId),
 	);
 	for (const update of pendingUpdates) {
@@ -211,7 +214,7 @@ function build_pending_rows(
 				isFolder: node?.kind === "folder",
 				isAddedFile: pendingUpdate.eagerCreated != null,
 				// A file with collaboration off keeps its shape too; its branches decode the same way.
-				rootKind: files_node_has_editable_text_content(node) ? node.yjsRootKind : null,
+				rootKind: files_node_has_editable_text_content(node) ? node.textKind : null,
 				// Accepting a delete ignores the content branches, so stale content does not block it.
 				isStale:
 					kind !== "delete" &&
@@ -1768,7 +1771,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		parentId?: string;
 		/** A text file with collaboration off, like `list_tree` returns it, with the asset `asset_<id>`. */
 		nonCollaborative?: boolean;
-		yjsRootKind?: "rich_text" | "plain_text";
+		textKind?: "rich_text" | "plain_text";
 	}) =>
 		({
 			_id: args.id,
@@ -1776,10 +1779,16 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			name: args.path.split("/").pop() ?? args.path,
 			kind: args.kind ?? "file",
 			parentId: args.parentId ?? "root",
+			archiveOperationId: null,
+			assetId: null,
+			contentType: null,
+			textKind: args.textKind ?? null,
+			collaborationEnabled: args.textKind ? !args.nonCollaborative : null,
+			yjsSnapshotId: null,
+			yjsLastSequenceId: null,
 			...(args.nonCollaborative
-				? { nonCollaborative: true, assetId: `asset_${args.id}`, contentType: "text/markdown" }
+				? { assetId: `asset_${args.id}`, contentType: "text/markdown" }
 				: {}),
-			...(args.yjsRootKind ? { yjsRootKind: args.yjsRootKind } : {}),
 		}) as unknown as app_convex_Doc<"files_nodes">;
 
 	const makeNodesById = (nodes: app_convex_Doc<"files_nodes">[]) =>
@@ -1822,7 +1831,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				}),
 			];
 			const nodesById = makeNodesById([
-				makeNode({ id: "node_off", path: "/off.md", nonCollaborative: true, yjsRootKind: "plain_text" }),
+				makeNode({ id: "node_off", path: "/off.md", nonCollaborative: true, textKind: "plain_text" }),
 			]);
 
 			const rows = build_pending_rows(updates, nodesById);
@@ -1850,8 +1859,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				}),
 			];
 			const nodesById = makeNodesById([
-				makeNode({ id: "node_off", path: "/off.md", nonCollaborative: true, yjsRootKind: "rich_text" }),
-				makeNode({ id: "node_off_deleted", path: "/off-deleted.md", nonCollaborative: true, yjsRootKind: "rich_text" }),
+				makeNode({ id: "node_off", path: "/off.md", nonCollaborative: true, textKind: "rich_text" }),
+				makeNode({ id: "node_off_deleted", path: "/off-deleted.md", nonCollaborative: true, textKind: "rich_text" }),
 			]);
 
 			const rows = build_pending_rows(updates, nodesById);

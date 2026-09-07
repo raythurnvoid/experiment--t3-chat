@@ -260,8 +260,8 @@ type DbFilesCacheEntry = {
 	updatedAt: Doc<"files_nodes">["updatedAt"];
 	updatedBy?: Doc<"files_nodes">["updatedBy"] | "";
 	contentType?: Doc<"files_nodes">["contentType"];
-	assetId?: Doc<"files_nodes">["assetId"];
-	yjsRootKind?: Doc<"files_nodes">["yjsRootKind"];
+	assetId: Doc<"files_nodes">["assetId"];
+	textKind: Doc<"files_nodes">["textKind"];
 };
 
 export type bash_DbFilesFsOptions = {
@@ -313,9 +313,9 @@ export class bash_DbFilesContentUnavailableError extends Error {
 	 * The file type, when the app knows it,
 	 * as a MIME type like `text/markdown` or `application/pdf`.
 	 **/
-	readonly contentType: string | undefined;
+	readonly contentType: string | null | undefined;
 
-	constructor(args: { shellPath: string; contentType: string | undefined }) {
+	constructor(args: { shellPath: string; contentType: string | null | undefined }) {
 		super(`unsupported file content type '${args.contentType ?? "unknown"}'`);
 		this.name = "DbFilesContentUnavailableError";
 		this.shellPath = args.shellPath;
@@ -573,6 +573,8 @@ export class bash_DbFilesFs implements IFileSystem {
 				name: path_name_of(dbFilesPath),
 				kind: "file",
 				updatedAt: Date.now(),
+				assetId: null,
+				textKind: null,
 			});
 		}
 		return fileContent.content;
@@ -939,7 +941,9 @@ export class bash_DbFilesFs implements IFileSystem {
 			name: path_name_of(dbFilesPath),
 			kind: "folder",
 			updatedAt: Date.now(),
-			contentType: undefined,
+			contentType: null,
+			assetId: null,
+			textKind: null,
 			updatedBy: this.ctxData.userId,
 		});
 	}
@@ -1104,6 +1108,8 @@ export class bash_DbFilesFs implements IFileSystem {
 					name: segments[index],
 					kind: "folder",
 					updatedAt: cacheEntry.updatedAt,
+					assetId: null,
+					textKind: null,
 				});
 			}
 		}
@@ -1145,7 +1151,7 @@ export class bash_DbFilesFs implements IFileSystem {
 			updatedBy: dbFilesDoc.updatedBy,
 			contentType: dbFilesDoc.contentType,
 			assetId: dbFilesDoc.assetId,
-			yjsRootKind: dbFilesDoc.yjsRootKind,
+			textKind: dbFilesDoc.textKind,
 		} satisfies DbFilesCacheEntry;
 		this.rememberEntry(cacheEntry);
 		return cacheEntry;
@@ -2585,7 +2591,7 @@ export async function bash_get_db_file_byte_size(args: {
 export function bash_build_unreadable_file_advisory(
 	currentWorkspacePath: string,
 	normalizedPath: string,
-	contentType: string | undefined,
+	contentType: string | null | undefined,
 ) {
 	const shellPath = bash_db_files_path_to_current_workspace_path(currentWorkspacePath, normalizedPath);
 	const lastSlashIndex = normalizedPath.lastIndexOf("/");

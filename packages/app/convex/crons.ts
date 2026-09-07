@@ -89,4 +89,12 @@ crons.cron(
 	{},
 );
 
+// Every 15 minutes — resume Yjs cleanup left by a failed scheduled continuation.
+crons.cron(
+	"recover file yjs cleanup tasks",
+	"*/15 * * * *",
+	internal.files_nodes_content.recover_file_yjs_cleanup_tasks,
+	{},
+);
+
 export default crons;

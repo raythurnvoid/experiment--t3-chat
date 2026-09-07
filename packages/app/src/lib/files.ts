@@ -245,7 +245,7 @@ export function files_get_node_path_validation_message(args: {
 				files_is_node(item) &&
 				item._id !== args.nodeIdToIgnore &&
 				item.parentId === currentParentId &&
-				item.archiveOperationId === undefined &&
+				item.archiveOperationId === null &&
 				item.name.trim().toLowerCase() === normalizedName.toLowerCase()
 			);
 		});
@@ -655,15 +655,15 @@ export async function files_fetch_file_yjs_state_and_text(args: {
 			),
 		});
 		// The shape comes from the server call that already loaded the node: there is no node doc on
-		// the client, and the snapshot response's `yjsRootKind` is the resolved required union.
-		const yjsRootKind = yjsSnapshotTarget.yjsRootKind;
-		const text = files_yjs_doc_get_text({ yjsDoc, rootKind: yjsRootKind });
+		// the client, and the snapshot response's `textKind` is the resolved required union.
+		const textKind = yjsSnapshotTarget.textKind;
+		const text = files_yjs_doc_get_text({ yjsDoc, rootKind: textKind });
 
 		return {
 			text,
 			yjsDoc,
 			yjsSequence: yjsLastSequenceDoc.lastSequence,
-			yjsRootKind,
+			textKind,
 			yjsLastSequenceId: yjsSnapshotTarget.yjsLastSequenceId,
 		};
 	}

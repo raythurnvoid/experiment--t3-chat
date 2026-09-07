@@ -181,7 +181,7 @@ function format_item(args: {
 	kind: "folder" | "file";
 	updatedAt: number;
 	updatedBy?: string;
-	contentType?: string;
+	contentType?: string | null;
 	display: string;
 	long: boolean;
 }) {
@@ -247,6 +247,8 @@ async function get_path_entry(args: {
 			updatedAt: dbFilesDoc.updatedAt,
 			updatedBy: dbFilesDoc.updatedBy,
 			contentType: dbFilesDoc.contentType,
+			assetId: dbFilesDoc.assetId,
+			textKind: dbFilesDoc.textKind,
 		});
 	}
 	return dbFilesDoc;

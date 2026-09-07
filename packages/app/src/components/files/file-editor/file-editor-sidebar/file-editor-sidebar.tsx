@@ -30,7 +30,10 @@ export type FileEditorSidebar_ClassNames =
 
 export type FileEditorSidebar_Props = {
 	/** The route-resolved node, or null while nothing (or the root folder) is selected. */
-	node: app_convex_Doc<"files_nodes"> | null;
+	node: Omit<
+		app_convex_Doc<"files_nodes">,
+		"readOnlyScopeNodeId" | "readOnlyPluginName" | "readOnlyPluginServiceTargetId"
+	> | null;
 	commentsContainerRef: Ref<HTMLDivElement>;
 };
 
@@ -45,9 +48,9 @@ export const FileEditorSidebar = memo(function FileEditorSidebar(props: FileEdit
 	// it shows Comments, and it keeps Details next to it, because the stored-file card does not
 	// render for editable nodes and those rows would otherwise have no owner at all.
 	const isEditableTextFile = node !== null && node.kind === "file" && files_node_has_editable_text_content(node);
-	const showsCommentsTab = !isEditableTextFile || node.yjsRootKind !== "plain_text";
+	const showsCommentsTab = !isEditableTextFile || node.textKind !== "plain_text";
 	const showsDetailsTab =
-		isEditableTextFile && (node.yjsRootKind === "plain_text" || !files_node_has_editable_yjs_state(node));
+		isEditableTextFile && (node.textKind === "plain_text" || !files_node_has_editable_yjs_state(node));
 	const availableTabIds: AppElementId[] = (
 		[
 			showsCommentsTab ? FILE_EDITOR_SIDEBAR_TAB_ID_COMMENTS : null,

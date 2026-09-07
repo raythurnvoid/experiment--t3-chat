@@ -334,7 +334,7 @@ async function db_purge_organization_workspace_content_batch(
 
 		const metadataDocs = await ctx.db
 			.query("files_metadata_docs")
-			.withIndex("by_pendingUpdate_qualifiedField", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
+			.withIndex("by_pendingUpdate_fieldPath", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
 			.take(batchSize);
 		if (metadataDocs.length > 0) {
 			await Promise.all(metadataDocs.map((doc) => ctx.db.delete("files_metadata_docs", doc._id)));
@@ -599,7 +599,7 @@ async function db_purge_organization_workspace_content_batch(
 	// and file nodes, which are cleaned up at the end of this helper.
 	const metadataDocs = await ctx.db
 		.query("files_metadata_docs")
-		.withIndex("by_organization_workspace_fileNode_qualifiedField", (q) =>
+		.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
 			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
 		)
 		.take(batchSize);
@@ -696,6 +696,19 @@ async function db_purge_organization_workspace_content_batch(
 		await Promise.all(materializationJobs.map((job) => files_content_materialization_workpool.cancel(ctx, job.jobId)));
 		await Promise.all(materializationJobs.map((doc) => ctx.db.delete("files_content_materialization_jobs", doc._id)));
 		return { done: false, deletedCount: materializationJobs.length };
+	}
+
+	// Preserve cleanup deadlines before the generic asset pass removes their source docs.
+	const yjsCleanupTasks = await ctx.db
+		.query("files_yjs_cleanup_tasks")
+		.withIndex("by_organization_workspace_fileNode_historyPending", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(Math.min(batchSize, 32));
+	if (yjsCleanupTasks.length > 0) {
+		const { files_nodes_db_handoff_yjs_cleanup_task } = await import("./files_nodes_content.ts");
+		await Promise.all(yjsCleanupTasks.map((task) => files_nodes_db_handoff_yjs_cleanup_task(ctx, task)));
+		return { done: false, deletedCount: yjsCleanupTasks.length };
 	}
 
 	// Stop upload conversion. Create a deletion job for each possible R2 key before deleting the
@@ -1478,7 +1491,7 @@ async function db_drain_user_pending_updates_batch(ctx: MutationCtx, args: { use
 
 	const metadataDocs = await ctx.db
 		.query("files_metadata_docs")
-		.withIndex("by_pendingUpdate_qualifiedField", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
+		.withIndex("by_pendingUpdate_fieldPath", (q) => q.eq("pendingUpdateId", pendingUpdate._id))
 		.take(args.batchSize);
 	if (metadataDocs.length > 0) {
 		await Promise.all(metadataDocs.map((doc) => ctx.db.delete("files_metadata_docs", doc._id)));

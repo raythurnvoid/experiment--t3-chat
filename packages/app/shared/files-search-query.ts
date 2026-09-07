@@ -248,12 +248,12 @@ function metadata_name_is_valid(name: string) {
  * True when a stored qualified field (`frontmatter.<path>` or `metadata.<key>`) is one this
  * grammar can name. The search doors refuse any other field, because the app never sends one.
  */
-export function files_search_query_qualified_field_is_valid(qualifiedField: string) {
-	if (qualifiedField.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX)) {
-		return frontmatter_name_is_valid(qualifiedField.slice(files_metadata_FRONTMATTER_FIELD_PREFIX.length));
+export function files_search_query_field_path_is_valid(fieldPath: string) {
+	if (fieldPath.startsWith(files_metadata_FRONTMATTER_FIELD_PREFIX)) {
+		return frontmatter_name_is_valid(fieldPath.slice(files_metadata_FRONTMATTER_FIELD_PREFIX.length));
 	}
-	if (qualifiedField.startsWith(files_metadata_METADATA_FIELD_PREFIX)) {
-		return metadata_name_is_valid(qualifiedField.slice(files_metadata_METADATA_FIELD_PREFIX.length));
+	if (fieldPath.startsWith(files_metadata_METADATA_FIELD_PREFIX)) {
+		return metadata_name_is_valid(fieldPath.slice(files_metadata_METADATA_FIELD_PREFIX.length));
 	}
 	return false;
 }
@@ -624,7 +624,7 @@ export function files_search_query_folder_path(value: string) {
  * but only the kinds whose key grammar accepts the name: `sender.name` cannot be a flat metadata key.
  * `file.*` keys never reach the index.
  */
-export function files_search_query_qualified_fields(key: files_search_query_Key) {
+export function files_search_query_field_paths(key: files_search_query_Key) {
 	switch (key.namespace) {
 		case "file":
 			return [];
@@ -660,14 +660,14 @@ export function files_search_query_to_plans(filter: files_search_query_Filter): 
 		return plans;
 	}
 
-	for (const qualifiedField of files_search_query_qualified_fields(filter.key)) {
+	for (const fieldPath of files_search_query_field_paths(filter.key)) {
 		const match = filter.match;
 		switch (match.op) {
 			case "exists":
-				plans.push({ op: "exists", qualifiedField });
+				plans.push({ op: "exists", fieldPath });
 				break;
 			case "prefix":
-				plans.push({ op: "prefix", qualifiedField, value: match.value });
+				plans.push({ op: "prefix", fieldPath, value: match.value });
 				break;
 			case "range": {
 				const range = range_bound(match);
@@ -675,7 +675,7 @@ export function files_search_query_to_plans(filter: files_search_query_Filter): 
 				if (range !== null) {
 					plans.push({
 						op: "range",
-						qualifiedField,
+						fieldPath,
 						valueKind: NUMBER_LITERAL_REGEX.test(match.value) ? "number" : "maybe_date",
 						[range.comparator]: range.bound,
 					});
@@ -683,21 +683,21 @@ export function files_search_query_to_plans(filter: files_search_query_Filter): 
 				break;
 			}
 			case "eq": {
-				plans.push({ op: "eq", qualifiedField, value: match.value });
+				plans.push({ op: "eq", fieldPath, value: match.value });
 				if (match.quoted) {
 					break;
 				}
 				const booleanValue = BOOLEAN_LITERALS.get(match.value);
 				if (NUMBER_LITERAL_REGEX.test(match.value)) {
-					plans.push({ op: "eq", qualifiedField, value: Number(match.value) });
+					plans.push({ op: "eq", fieldPath, value: Number(match.value) });
 				} else if (booleanValue !== undefined) {
-					plans.push({ op: "eq", qualifiedField, value: booleanValue });
+					plans.push({ op: "eq", fieldPath, value: booleanValue });
 				} else if (DATE_ONLY_LITERAL_REGEX.test(match.value)) {
 					const dayStart = files_metadata_parse_maybe_date(match.value);
 					if (dayStart !== null) {
 						plans.push({
 							op: "range",
-							qualifiedField,
+							fieldPath,
 							valueKind: "maybe_date",
 							gte: dayStart,
 							lt: dayStart + ONE_DAY_MS,
@@ -710,7 +710,7 @@ export function files_search_query_to_plans(filter: files_search_query_Filter): 
 					if (instant !== null) {
 						plans.push({
 							op: "range",
-							qualifiedField,
+							fieldPath,
 							valueKind: "maybe_date",
 							gte: instant,
 							lte: instant,

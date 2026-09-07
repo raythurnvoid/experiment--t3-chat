@@ -42,12 +42,12 @@ describe("files_metadata_extract_frontmatter", () => {
 			"frontmatter.date",
 		]);
 		expect(metadata._yay?.values).toEqual([
-			{ qualifiedField: "frontmatter.from", valueKind: "string", value: "alice@example.com" },
-			{ qualifiedField: "frontmatter.amount", valueKind: "number", value: 120.5 },
-			{ qualifiedField: "frontmatter.hasAttachments", valueKind: "boolean", value: true },
-			{ qualifiedField: "frontmatter.legacyYes", valueKind: "string", value: "yes" },
-			{ qualifiedField: "frontmatter.date", valueKind: "string", value: "2024-01-02" },
-			{ qualifiedField: "frontmatter.date", valueKind: "maybe_date", value: Date.UTC(2024, 0, 2) },
+			{ fieldPath: "frontmatter.from", valueKind: "string", value: "alice@example.com" },
+			{ fieldPath: "frontmatter.amount", valueKind: "number", value: 120.5 },
+			{ fieldPath: "frontmatter.hasAttachments", valueKind: "boolean", value: true },
+			{ fieldPath: "frontmatter.legacyYes", valueKind: "string", value: "yes" },
+			{ fieldPath: "frontmatter.date", valueKind: "string", value: "2024-01-02" },
+			{ fieldPath: "frontmatter.date", valueKind: "maybe_date", value: Date.UTC(2024, 0, 2) },
 		]);
 	});
 
@@ -58,8 +58,8 @@ describe("files_metadata_extract_frontmatter", () => {
 
 		expect(metadata._yay?.fields).toEqual(["frontmatter.cc"]);
 		expect(metadata._yay?.values).toEqual([
-			{ qualifiedField: "frontmatter.cc", valueKind: "string", value: "bob@example.com" },
-			{ qualifiedField: "frontmatter.cc", valueKind: "string", value: "jane@example.com" },
+			{ fieldPath: "frontmatter.cc", valueKind: "string", value: "bob@example.com" },
+			{ fieldPath: "frontmatter.cc", valueKind: "string", value: "jane@example.com" },
 		]);
 	});
 
@@ -72,9 +72,9 @@ describe("files_metadata_extract_frontmatter", () => {
 
 		expect(metadata._yay?.fields).toEqual(["frontmatter.cc", "frontmatter.subject"]);
 		expect(metadata._yay?.values).toEqual([
-			{ qualifiedField: "frontmatter.cc", valueKind: "string", value: "bob@example.com" },
-			{ qualifiedField: "frontmatter.cc", valueKind: "string", value: "jane@example.com" },
-			{ qualifiedField: "frontmatter.subject", valueKind: "string", value: "alpha\u00a0beta" },
+			{ fieldPath: "frontmatter.cc", valueKind: "string", value: "bob@example.com" },
+			{ fieldPath: "frontmatter.cc", valueKind: "string", value: "jane@example.com" },
+			{ fieldPath: "frontmatter.subject", valueKind: "string", value: "alpha\u00a0beta" },
 		]);
 	});
 
@@ -85,8 +85,8 @@ describe("files_metadata_extract_frontmatter", () => {
 
 		expect(metadata._yay?.fields).toEqual(["frontmatter.sender", "frontmatter.sender.name", "frontmatter.sender.team-id"]);
 		expect(metadata._yay?.values).toEqual([
-			{ qualifiedField: "frontmatter.sender.name", valueKind: "string", value: "Alice" },
-			{ qualifiedField: "frontmatter.sender.team-id", valueKind: "string", value: "ops" },
+			{ fieldPath: "frontmatter.sender.name", valueKind: "string", value: "Alice" },
+			{ fieldPath: "frontmatter.sender.team-id", valueKind: "string", value: "ops" },
 		]);
 	});
 
@@ -147,14 +147,14 @@ describe("files_metadata_extract_frontmatter", () => {
 		);
 
 		expect(metadata._yay?.values).toEqual([
-			{ qualifiedField: "frontmatter.realStartTime", valueKind: "string", value: "2026-07-29T14:30:36.264Z" },
-			{ qualifiedField: "frontmatter.realStartTime", valueKind: "maybe_date", value: Date.UTC(2026, 6, 29, 14, 30, 36, 264) },
-			{ qualifiedField: "frontmatter.days", valueKind: "string", value: "2026-07-27" },
-			{ qualifiedField: "frontmatter.days", valueKind: "maybe_date", value: Date.UTC(2026, 6, 27) },
-			{ qualifiedField: "frontmatter.days", valueKind: "string", value: "2026-07-28" },
-			{ qualifiedField: "frontmatter.days", valueKind: "maybe_date", value: Date.UTC(2026, 6, 28) },
-			{ qualifiedField: "frontmatter.meeting.end", valueKind: "string", value: "2026-07-29T15:00:00Z" },
-			{ qualifiedField: "frontmatter.meeting.end", valueKind: "maybe_date", value: Date.UTC(2026, 6, 29, 15, 0, 0) },
+			{ fieldPath: "frontmatter.realStartTime", valueKind: "string", value: "2026-07-29T14:30:36.264Z" },
+			{ fieldPath: "frontmatter.realStartTime", valueKind: "maybe_date", value: Date.UTC(2026, 6, 29, 14, 30, 36, 264) },
+			{ fieldPath: "frontmatter.days", valueKind: "string", value: "2026-07-27" },
+			{ fieldPath: "frontmatter.days", valueKind: "maybe_date", value: Date.UTC(2026, 6, 27) },
+			{ fieldPath: "frontmatter.days", valueKind: "string", value: "2026-07-28" },
+			{ fieldPath: "frontmatter.days", valueKind: "maybe_date", value: Date.UTC(2026, 6, 28) },
+			{ fieldPath: "frontmatter.meeting.end", valueKind: "string", value: "2026-07-29T15:00:00Z" },
+			{ fieldPath: "frontmatter.meeting.end", valueKind: "maybe_date", value: Date.UTC(2026, 6, 29, 15, 0, 0) },
 		]);
 	});
 
@@ -164,9 +164,9 @@ describe("files_metadata_extract_frontmatter", () => {
 		);
 
 		expect(metadata._yay?.values).toEqual([
-			{ qualifiedField: "frontmatter.times", valueKind: "string", value: "2026-07-29T14:30:00Z" },
-			{ qualifiedField: "frontmatter.times", valueKind: "maybe_date", value: Date.UTC(2026, 6, 29, 14, 30) },
-			{ qualifiedField: "frontmatter.times", valueKind: "string", value: "2026-07-29T15:30:00+01:00" },
+			{ fieldPath: "frontmatter.times", valueKind: "string", value: "2026-07-29T14:30:00Z" },
+			{ fieldPath: "frontmatter.times", valueKind: "maybe_date", value: Date.UTC(2026, 6, 29, 14, 30) },
+			{ fieldPath: "frontmatter.times", valueKind: "string", value: "2026-07-29T15:30:00+01:00" },
 		]);
 	});
 
@@ -174,8 +174,8 @@ describe("files_metadata_extract_frontmatter", () => {
 		const metadata = files_metadata_extract_frontmatter(["---", "startedAt: 1970-01-01", "---", ""].join("\n"));
 
 		expect(metadata._yay?.values).toEqual([
-			{ qualifiedField: "frontmatter.startedAt", valueKind: "string", value: "1970-01-01" },
-			{ qualifiedField: "frontmatter.startedAt", valueKind: "maybe_date", value: 0 },
+			{ fieldPath: "frontmatter.startedAt", valueKind: "string", value: "1970-01-01" },
+			{ fieldPath: "frontmatter.startedAt", valueKind: "maybe_date", value: 0 },
 		]);
 	});
 
@@ -188,10 +188,10 @@ describe("files_metadata_extract_frontmatter", () => {
 
 		// Keep the block scalar's trailing newline to prove it is not parsed as a date.
 		expect(metadata._yay?.values).toEqual([
-			{ qualifiedField: "frontmatter.badDay", valueKind: "string", value: "2026-02-31" },
-			{ qualifiedField: "frontmatter.looseDate", valueKind: "string", value: "2026-7-9" },
-			{ qualifiedField: "frontmatter.compact", valueKind: "number", value: 20260729 },
-			{ qualifiedField: "frontmatter.block", valueKind: "string", value: "2026-07-29\n" },
+			{ fieldPath: "frontmatter.badDay", valueKind: "string", value: "2026-02-31" },
+			{ fieldPath: "frontmatter.looseDate", valueKind: "string", value: "2026-7-9" },
+			{ fieldPath: "frontmatter.compact", valueKind: "number", value: 20260729 },
+			{ fieldPath: "frontmatter.block", valueKind: "string", value: "2026-07-29\n" },
 		]);
 	});
 });
@@ -553,11 +553,11 @@ describe("files_metadata_extract_entries", () => {
 			"metadata.archived",
 		]);
 		expect(indexDocs.values).toEqual([
-			{ qualifiedField: "metadata.created-by", valueKind: "string", value: "alice" },
-			{ qualifiedField: "metadata.sent-at", valueKind: "string", value: "2026-08-18" },
-			{ qualifiedField: "metadata.sent-at", valueKind: "maybe_date", value: Date.UTC(2026, 7, 18) },
-			{ qualifiedField: "metadata.count", valueKind: "number", value: 12 },
-			{ qualifiedField: "metadata.archived", valueKind: "boolean", value: true },
+			{ fieldPath: "metadata.created-by", valueKind: "string", value: "alice" },
+			{ fieldPath: "metadata.sent-at", valueKind: "string", value: "2026-08-18" },
+			{ fieldPath: "metadata.sent-at", valueKind: "maybe_date", value: Date.UTC(2026, 7, 18) },
+			{ fieldPath: "metadata.count", valueKind: "number", value: 12 },
+			{ fieldPath: "metadata.archived", valueKind: "boolean", value: true },
 		]);
 	});
 

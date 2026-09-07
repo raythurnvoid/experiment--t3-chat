@@ -1346,7 +1346,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 					(persisted._id !== endedPendingUpdateRef.current?._id ||
 						persisted.updatedAt > endedPendingUpdateRef.current.updatedAt) &&
 					(reviewedPendingUpdateId == null || persisted._id === reviewedPendingUpdateId) &&
-					!files_pending_update_content_is_stale(persisted, { assetId: props.committedAssetId ?? undefined }) &&
+					!files_pending_update_content_is_stale(persisted, { assetId: props.committedAssetId ?? null }) &&
 					canReadSavedDraft(reviewedState) &&
 					currentYjsLastSequenceId() === reviewedState.yjsLastSequenceId &&
 					savedYjsLastSequenceId === reviewedState.yjsLastSequenceId &&
@@ -3798,7 +3798,7 @@ export const FileEditorDiffNonCollab = memo(function FileEditorDiffNonCollab(pro
 
 				return {
 					text: result._yay.text,
-					rootKind: result._yay.yjsRootKind,
+					rootKind: result._yay.textKind,
 				};
 			});
 	}, [membershipId, nodeId]);

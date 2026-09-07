@@ -240,17 +240,24 @@ function makeNode(args: {
 		kind,
 		parentId: args.parentId ?? "root",
 		readOnlyState: args.readOnlyState ?? "writable",
+		archiveOperationId: null,
+		assetId: null,
+		textKind: null,
+		collaborationEnabled: null,
+		yjsSnapshotId: null,
+		yjsLastSequenceId: null,
 		...(kind === "file"
 			? {
 					assetId: `asset_${args.id}`,
 					...(args.hasEditableYjsState === false
 						? {}
 						: args.nonCollaborative
-							? { yjsRootKind: "rich_text", nonCollaborative: true }
+							? { textKind: "rich_text", collaborationEnabled: false }
 							: {
 									yjsSnapshotId: `snapshot_${args.id}`,
 									yjsLastSequenceId: `sequence_${args.id}`,
-									yjsRootKind: "rich_text",
+									textKind: "rich_text",
+									collaborationEnabled: true,
 								}),
 				}
 			: {}),
@@ -1319,7 +1326,7 @@ describe("FileEditorSidebarPending", () => {
 			useStableQueryMock.mockReturnValue([
 				{
 					...makeNode({ id: "node_restored", path: "/restored.txt", hasEditableYjsState: rootKind !== null }),
-					yjsRootKind: rootKind ?? undefined,
+					textKind: rootKind ?? undefined,
 				},
 			]);
 

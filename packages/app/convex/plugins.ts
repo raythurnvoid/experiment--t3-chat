@@ -4945,7 +4945,7 @@ export const run_installation_on_files = internalMutation({
 		const runs: { nodeId: Id<"files_nodes">; runId: Id<"plugins_event_runs"> | null; message: string | null }[] = [];
 		for (const nodeId of args.nodeIds) {
 			const fileNode = await ctx.db.get("files_nodes", nodeId);
-			if (!fileNode || fileNode.archiveOperationId !== undefined) {
+			if (!fileNode || fileNode.archiveOperationId !== null) {
 				runs.push({ nodeId, runId: null, message: "Not found" });
 				continue;
 			}
@@ -4961,7 +4961,7 @@ export const run_installation_on_files = internalMutation({
 			// names the supported input instead of hinting the node is broken.
 			if (
 				fileNode.kind !== "file" ||
-				fileNode.assetId === undefined ||
+				fileNode.assetId === null ||
 				files_node_has_editable_text_content(fileNode)
 			) {
 				runs.push({ nodeId, runId: null, message: "Plugin backfill supports stored upload blobs only" });

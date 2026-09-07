@@ -52,7 +52,7 @@ function filter_mention_items<Item extends FileMentionItem>(nodes: readonly Item
 
 	const items: Item[] = [];
 	for (const node of nodes) {
-		if (node.archiveOperationId !== undefined) {
+		if (node.archiveOperationId !== null) {
 			continue;
 		}
 
@@ -422,9 +422,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	const { describe, expect, test } = import.meta.vitest;
 
 	const nodes = [
-		{ name: "docs", path: "/docs", kind: "folder" as const, archiveOperationId: undefined },
-		{ name: "api.md", path: "/docs/api.md", kind: "file" as const, archiveOperationId: undefined },
-		{ name: "notes.md", path: "/notes.md", kind: "file" as const, archiveOperationId: undefined },
+		{ name: "docs", path: "/docs", kind: "folder" as const, archiveOperationId: null },
+		{ name: "api.md", path: "/docs/api.md", kind: "file" as const, archiveOperationId: null },
+		{ name: "notes.md", path: "/notes.md", kind: "file" as const, archiveOperationId: null },
 	];
 
 	describe("filter_mention_items", () => {
@@ -458,7 +458,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				name: `file-${index}.md`,
 				path: `/file-${index}.md`,
 				kind: "file" as const,
-				archiveOperationId: undefined,
+				archiveOperationId: null,
 			}));
 			expect(filter_mention_items(many, "file").length).toBe(50);
 		});

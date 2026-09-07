@@ -65,6 +65,23 @@ describe("tenant deletion with many direct file grants", () => {
 							createdBy: fixture.userId,
 							updatedBy: fixture.userId,
 							updatedAt: Date.now(),
+							contentType: null,
+							assetId: null,
+							textKind: null,
+							collaborationEnabled: null,
+							yjsSnapshotId: null,
+							yjsLastSequenceId: null,
+							statsId: null,
+							contentTooLargeByteSize: null,
+							contentShapeMismatchAt: null,
+							contentYjsStateTooLargeByteSize: null,
+							contentFrontmatterTooLargeFieldCount: null,
+							contentFrontmatterTooLargeIndexDocumentCount: null,
+							restrictedScopeNodeId: null,
+							readOnlyScopeNodeId: null,
+							readOnlyPluginName: null,
+							readOnlyPluginServiceTargetId: null,
+							archiveOperationId: null,
 						});
 						await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
 						for (const permission of access_control_FILE_SHARE_LEVELS.manage.permissions) {

@@ -55,7 +55,7 @@ async function seed_markdown_file(args: {
 						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
 						.eq("path", parentPath)
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first();
 			if (existingParent) {
@@ -78,6 +78,23 @@ async function seed_markdown_file(args: {
 					createdBy: args.userId,
 					updatedBy: args.userId,
 					updatedAt: now,
+					contentType: null,
+					assetId: null,
+					textKind: null,
+					collaborationEnabled: null,
+					yjsSnapshotId: null,
+					yjsLastSequenceId: null,
+					statsId: null,
+					contentTooLargeByteSize: null,
+					contentShapeMismatchAt: null,
+					contentYjsStateTooLargeByteSize: null,
+					contentFrontmatterTooLargeFieldCount: null,
+					contentFrontmatterTooLargeIndexDocumentCount: null,
+					restrictedScopeNodeId: null,
+					readOnlyScopeNodeId: null,
+					readOnlyPluginName: null,
+					readOnlyPluginServiceTargetId: null,
+					archiveOperationId: null,
 				});
 			}
 		}
@@ -111,11 +128,25 @@ async function seed_markdown_file(args: {
 			kind: "file",
 			contentType: "text/markdown;charset=utf-8",
 			assetId: markdownAssetId,
-			yjsRootKind: "rich_text",
+			textKind: "rich_text",
 			parentId,
 			createdBy: args.userId,
 			updatedBy: args.userId,
 			updatedAt: now,
+			collaborationEnabled: true,
+			yjsSnapshotId: null,
+			yjsLastSequenceId: null,
+			statsId: null,
+			contentTooLargeByteSize: null,
+			contentShapeMismatchAt: null,
+			contentYjsStateTooLargeByteSize: null,
+			contentFrontmatterTooLargeFieldCount: null,
+			contentFrontmatterTooLargeIndexDocumentCount: null,
+			restrictedScopeNodeId: null,
+			readOnlyScopeNodeId: null,
+			readOnlyPluginName: null,
+			readOnlyPluginServiceTargetId: null,
+			archiveOperationId: null,
 		});
 		const yjsSnapshotId = await ctx.db.insert("files_yjs_snapshots", {
 			organizationId: args.organizationId,

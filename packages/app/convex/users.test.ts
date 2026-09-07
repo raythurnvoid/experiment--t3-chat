@@ -215,6 +215,23 @@ async function users_test_seed_page(
 		createdBy: args.userId,
 		updatedBy: args.userId,
 		updatedAt: Date.now(),
+		contentType: null,
+		assetId: null,
+		textKind: null,
+		collaborationEnabled: null,
+		yjsSnapshotId: null,
+		yjsLastSequenceId: null,
+		statsId: null,
+		contentTooLargeByteSize: null,
+		contentShapeMismatchAt: null,
+		contentYjsStateTooLargeByteSize: null,
+		contentFrontmatterTooLargeFieldCount: null,
+		contentFrontmatterTooLargeIndexDocumentCount: null,
+		restrictedScopeNodeId: null,
+		readOnlyScopeNodeId: null,
+		readOnlyPluginName: null,
+		readOnlyPluginServiceTargetId: null,
+		archiveOperationId: null,
 	});
 
 	return {

@@ -32,13 +32,13 @@ part of this lock system.
 
 On `files_nodes`, beside `restrictedScopeNodeId`:
 
-- `readOnlyScopeNodeId`: `undefined` means writable. The node's own `_id` means it has a direct lock.
+- `readOnlyScopeNodeId`: `null` means writable. The node's own `_id` means it has a direct lock.
   Another id means it inherits the nearest folder lock. Folder cascades include archived descendants
   and stop at nested direct locks.
-- `readOnlyPluginServiceTargetId`: internal provenance for the exact service target that created a
+- `readOnlyPluginServiceTargetId`: required nullable provenance for the exact service target that created a
   direct lock. Public node query answers always remove it. Every member lock/unlock transition and
   inherited-pointer cascade clears it. An idempotent call that changes no lock leaves it alone.
-- `readOnlyPluginName`: internal provenance for a direct lock a plugin door created (`access.readOnly`
+- `readOnlyPluginName`: required nullable provenance for a direct lock a plugin door created (`access.readOnly`
   on `/api/v1/files/write`, `plugin-folders/ensure`, or `plugin-access/set` — see
   `../public-api/SKILL.md#plugin-file-doors`). Public node query answers remove it, and member
   lock/unlock transitions clear it the same way as the service target pointer. A member with manage
@@ -46,7 +46,7 @@ On `files_nodes`, beside `restrictedScopeNodeId`:
   preserve both origin fields. Unlocking and locking again creates a member lock the plugin cannot pass.
 
 Plugin selection lives in ordinary editable `plugin-name` metadata. It is separate from these lock
-fields. No schema ownership field or label fallback exists. Metadata edits never change locks or
+fields. Cleared lock and origin fields store null. No schema ownership field or label fallback exists. Metadata edits never change locks or
 reader bindings. A real inherited-pointer rewrite clears both lock-origin fields; nested direct
 locks and their subtrees keep their own origin.
 

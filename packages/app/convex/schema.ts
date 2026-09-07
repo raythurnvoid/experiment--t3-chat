@@ -559,7 +559,7 @@ const app_convex_schema = defineSchema({
 	 * value doc for each primitive item. Date-like strings also insert a maybe_date companion whose
 	 * epoch-millisecond timestamp uses numberValue for range search.
 	 *
-	 * Two field prefixes write here, and `qualifiedField` says which one owns a doc:
+	 * Two field prefixes write here, and `fieldPath` says which one owns a doc:
 	 * - `frontmatter.*` docs are extracted from a Markdown file's own YAML frontmatter, so a content
 	 *   save deletes and rewrites them.
 	 * - `metadata.*` docs are the file metadata a user or an agent wrote next to the file. They work
@@ -584,7 +584,7 @@ const app_convex_schema = defineSchema({
 		path: v.string(),
 		treePath: v.string(),
 		archiveOperationId: v.optional(v.string()),
-		qualifiedField: v.string(),
+		fieldPath: v.string(),
 		/**
 		 * Where this key sits in the file's metadata map, counting from 0. The Properties modal is a
 		 * YAML text editor, so reading the map back in index order would reorder the user's lines on
@@ -599,68 +599,72 @@ const app_convex_schema = defineSchema({
 		numberValue: v.optional(v.number()),
 		booleanValue: v.optional(v.boolean()),
 	})
-		.index("by_organization_workspace_source_fileNode_qualifiedField", [
+		.index("by_organization_workspace_source_fileNode_fieldPath", [
 			"organizationId",
 			"workspaceId",
 			"sourceKind",
 			"fileNodeId",
-			"qualifiedField",
+			"fieldPath",
 		])
-		.index("by_organization_workspace_fileNode_qualifiedField", [
+		.index("by_organization_workspace_fileNode_fieldPath", [
 			"organizationId",
 			"workspaceId",
 			"fileNodeId",
-			"qualifiedField",
+			"fieldPath",
 		])
-		.index("by_pendingUpdate_qualifiedField", ["pendingUpdateId", "qualifiedField"])
-		.index("by_org_workspace_archive_docKind_qualifiedField_tree", [
+		.index("by_pendingUpdate_fieldPath", ["pendingUpdateId", "fieldPath"])
+		.index("by_org_workspace_archive_docKind_fieldPath_tree", [
 			"organizationId",
 			"workspaceId",
 			"archiveOperationId",
 			"docKind",
-			"qualifiedField",
+			"fieldPath",
 			"treePath",
 		])
-		.index("by_org_workspace_archive_docKind_qualifiedField_string_tree", [
+		.index("by_org_workspace_archive_docKind_fieldPath_string_tree", [
 			"organizationId",
 			"workspaceId",
 			"archiveOperationId",
 			"docKind",
-			"qualifiedField",
+			"fieldPath",
 			"valueKind",
 			"stringValue",
 			"treePath",
 		])
-		.index("by_org_workspace_archive_docKind_qualifiedField_number_tree", [
+		.index("by_org_workspace_archive_docKind_fieldPath_number_tree", [
 			"organizationId",
 			"workspaceId",
 			"archiveOperationId",
 			"docKind",
-			"qualifiedField",
+			"fieldPath",
 			"valueKind",
 			"numberValue",
 			"treePath",
 		])
-		.index("by_org_workspace_archive_docKind_qualifiedField_boolean_tree", [
+		.index("by_org_workspace_archive_docKind_fieldPath_boolean_tree", [
 			"organizationId",
 			"workspaceId",
 			"archiveOperationId",
 			"docKind",
-			"qualifiedField",
+			"fieldPath",
 			"valueKind",
 			"booleanValue",
 			"treePath",
 		]),
 
 	files_nodes: defineTable({
-		/** Organization ID extracted from roomId */
+		// Tenant
 		organizationId: v.union(v.id("organizations"), v.literal(organizations_GLOBAL_ORGANIZATION_ID)),
-		/** Workspace ID extracted from roomId */
 		workspaceId: v.union(
 			v.id("organizations_workspaces"),
 			v.literal(organizations_GLOBAL_GITHUB_WORKSPACE_ID),
 			v.literal(organizations_GLOBAL_PLUGINS_WORKSPACE_ID),
 		),
+		// Tree identity
+		/** "root" for root items, otherwise the parent folder id. */
+		parentId: v.union(v.id("files_nodes"), v.literal("root")),
+		kind: v.union(v.literal("folder"), v.literal("file")),
+		name: v.string(),
 		/** Materialized absolute path used for path resolution */
 		path: v.string(),
 		/**
@@ -675,59 +679,41 @@ const app_convex_schema = defineSchema({
 		pathDepth: v.number(),
 		/** Lowercase file extension without the dot; folders and extensionless files use null. */
 		lowercaseExtension: v.union(v.string(), v.null()),
-		/** Display name used in path resolution */
-		name: v.string(),
-		kind: v.union(v.literal("folder"), v.literal("file")),
+		// Content
 		/**
-		 * File content type. Folders leave this unset.
+		 * File content type. Folders store null.
 		 *
 		 * Store lowercase media types with optional semicolon parameters, e.g. `text/markdown;charset=utf-8`.
 		 */
-		contentType: v.optional(v.string()),
-		/**
-		 * Back-reference to this file's `file_stats` row (wc counts), so callers holding the node can
-		 * read stats by id without an index lookup. Optional because a node is created first and the
-		 * stats row is linked back afterwards; folders never have one (files only).
-		 */
-		statsId: v.optional(v.id("file_stats")),
-		/** ID of the last YJS sequence for the file */
-		yjsLastSequenceId: v.optional(v.id("files_yjs_docs_last_sequences")),
-		/** ID of the last YJS sequence for the file */
-		yjsSnapshotId: v.optional(v.id("files_yjs_snapshots")),
+		contentType: v.union(v.string(), v.null()),
+		assetId: v.union(v.id("files_r2_assets"), v.null()),
 		/**
 		 * Shape of this file's text: `rich_text` is the ProseMirror document Markdown files use,
 		 * `plain_text` is a flat text document. Folders, stored blobs, and read-only mounts have no
-		 * editable text and leave this unset.
+		 * editable text and store null.
 		 *
 		 * A collaborative file stores this beside its Yjs pointers, and the two are always written
 		 * together. A non-collaborative file has no Yjs pointers but still stores this field,
 		 * because the shape decides which chunker runs, whether frontmatter is indexed, which
-		 * editor opens, and which renames are legal. So this field, not the Yjs pointers, is what
+		 * editor opens. So this field, not the Yjs pointers, is what
 		 * marks a node as an editable text file.
 		 */
-		yjsRootKind: v.optional(v.union(v.literal("rich_text"), v.literal("plain_text"))),
+		textKind: v.union(v.literal("rich_text"), v.literal("plain_text"), v.null()),
 		/**
-		 * Set to `true` on an editable text file that the user turned collaboration OFF for. Such a
-		 * file has no Yjs document at all: no snapshot, no sequence doc, no update log. Its text
-		 * lives only in the committed chunks, and a save replaces the whole text.
-		 *
-		 * Absent means collaborative, so every file created before this field existed keeps its
-		 * behaviour with no migration. The field and the Yjs pointers always change together in one
-		 * mutation: turning collaboration off sets this and clears both pointers, turning it back on
-		 * removes this and writes both pointers.
-		 *
-		 * Keep this field even though "no Yjs pointers" would be derivable. Several paths decide
-		 * from the file name whether to build a Yjs document — a re-upload onto the file is the main
-		 * one — and without a stored flag they would silently turn collaboration back on.
+		 * True for collaborative text, false for whole-text saves, null for non-text nodes.
+		 * Keep this preference when live Yjs pointers are cleared, so replacing content preserves it.
 		 */
-		nonCollaborative: v.optional(v.boolean()),
+		collaborationEnabled: v.union(v.boolean(), v.null()),
+		/** Current compacted Yjs snapshot, or null without a live document. */
+		yjsSnapshotId: v.union(v.id("files_yjs_snapshots"), v.null()),
+		/** Current Yjs sequence doc, or null without a live document. */
+		yjsLastSequenceId: v.union(v.id("files_yjs_docs_last_sequences"), v.null()),
 		/**
-		 * The old Yjs lineage whose rows are still being deleted after collaboration is turned off.
-		 * Turning collaboration back on waits for this marker to clear. This stops the old cleanup
-		 * from deleting updates that belong to the fresh document, whose sequence starts at zero.
+		 * Content counts are kept separately so materialization does not invalidate node queries.
+		 * Null for folders and until the file's stats are linked in the creation mutation.
 		 */
-		collaborationCleanupYjsLastSequenceId: v.optional(v.id("files_yjs_docs_last_sequences")),
-		assetId: v.optional(v.id("files_r2_assets")),
+		statsId: v.union(v.id("file_stats"), v.null()),
+		// Content status
 		/**
 		 * Byte size of the last materialization that produced text over
 		 * `files_MAX_TEXT_CONTENT_BYTES`. While set, the committed content stays at the last
@@ -735,41 +721,38 @@ const app_convex_schema = defineSchema({
 		 * the newest text from the Yjs log, so they and the committed readers disagree. Cleared by
 		 * the next materialization that fits.
 		 */
-		contentTooLargeByteSize: v.optional(v.number()),
+		contentTooLargeByteSize: v.union(v.number(), v.null()),
 		/**
 		 * Timestamp of the last materialization that refused because the Yjs document's shape did
-		 * not match the node's `yjsRootKind`. While set, readers report a shape mismatch instead
+		 * not match the node's `textKind`. While set, readers report a shape mismatch instead
 		 * of content and the Yjs writers refuse more updates. Cleared by the next materialization
 		 * that succeeds.
 		 */
-		contentShapeMismatchAt: v.optional(v.number()),
+		contentShapeMismatchAt: v.union(v.number(), v.null()),
 		/**
 		 * Byte size of the last reconstructed Yjs state over
 		 * `files_MAX_YJS_RECONSTRUCTED_STATE_BYTES`. While set, materialization does not advance,
 		 * readers report the failure, and the Yjs writers refuse more updates until the operator
 		 * repair rebuilds the state. Cleared by the next materialization that succeeds.
 		 */
-		contentYjsStateTooLargeByteSize: v.optional(v.number()),
+		contentYjsStateTooLargeByteSize: v.union(v.number(), v.null()),
 		/**
 		 * Frontmatter field count of the last materialization that refused because the count was
 		 * over `files_metadata_MAX_FRONTMATTER_FIELDS`. While set, the committed content stays at
 		 * the last sequence that fit. Cleared when the user reduces the metadata and a later
 		 * materialization succeeds.
 		 */
-		contentFrontmatterTooLargeFieldCount: v.optional(v.number()),
+		contentFrontmatterTooLargeFieldCount: v.union(v.number(), v.null()),
 		/**
 		 * Frontmatter index-document count of the last materialization that refused because the
 		 * count was over `files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS`. Same lifecycle as
 		 * `contentFrontmatterTooLargeFieldCount`.
 		 */
-		contentFrontmatterTooLargeIndexDocumentCount: v.optional(v.number()),
-		/** Archive Operation UUID. Undefined means active */
-		archiveOperationId: v.optional(v.string()),
-		/** "root" for root items, otherwise parent folder `_id` */
-		parentId: v.union(v.id("files_nodes"), v.literal("root")),
+		contentFrontmatterTooLargeIndexDocumentCount: v.union(v.number(), v.null()),
+		// Access and protection
 		/**
 		 * The nearest restricted folder above this node, or this node itself when it is the restricted
-		 * one. When it is not set, the node uses normal workspace access.
+		 * one. Null means normal workspace access.
 		 *
 		 * A node is restricted exactly when `restrictedScopeNodeId === _id`. Permission grants are
 		 * stored only on that node, so a restricted folder and everything inside it share one pointer.
@@ -777,23 +760,24 @@ const app_convex_schema = defineSchema({
 		 * `files_sharing.ts` sets and clears it; creates and moves copy it from the new parent, so it
 		 * stays right without walking up the tree. See `files_nodes_db_cascade_restricted_scope`.
 		 */
-		restrictedScopeNodeId: v.optional(v.id("files_nodes")),
+		restrictedScopeNodeId: v.union(v.id("files_nodes"), v.null()),
 		/**
 		 * The lock that makes this node read-only.
 		 *
 		 * Its own id means this node has a direct lock. Another id means a parent folder locked it.
-		 * No value means the node is writable. Permissions are separate from this lock.
+		 * Null means the node is writable. Permissions are separate from this lock.
 		 */
-		readOnlyScopeNodeId: v.optional(v.id("files_nodes")),
-		/**
-		 * The exact service target that created this node's direct lock. Never returned to clients.
-		 */
-		readOnlyPluginServiceTargetId: v.optional(v.id("plugin_service_storage_targets")),
+		readOnlyScopeNodeId: v.union(v.id("files_nodes"), v.null()),
 		/**
 		 * The plugin whose door created this node's direct lock. Member lock changes clear it.
 		 * Never returned to clients.
 		 */
-		readOnlyPluginName: v.optional(v.string()),
+		readOnlyPluginName: v.union(v.string(), v.null()),
+		/** The exact service target that created this node's direct lock. Never returned to clients. */
+		readOnlyPluginServiceTargetId: v.union(v.id("plugin_service_storage_targets"), v.null()),
+		// Lifecycle and authorship
+		/** Archive operation UUID, or null for an active node. */
+		archiveOperationId: v.union(v.string(), v.null()),
 		/** Created by user ID. SYSTEM is the pseudo user ID for reserved global-organization content. */
 		createdBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
 		/** Updated by user ID. SYSTEM is the pseudo user ID for reserved global-organization content. */
@@ -1091,6 +1075,25 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_fileNode", ["fileNodeId"])
 		.index("by_organization_workspace_fileNode", ["organizationId", "workspaceId", "fileNodeId"]),
+
+	/**
+	 * Retired Yjs history and its snapshot asset. Remaining old history blocks a fresh document;
+	 * asset cleanup continues separately after that history is gone.
+	 */
+	files_yjs_cleanup_tasks: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		fileNodeId: v.id("files_nodes"),
+		throughSequence: v.number(),
+		supersededYjsAssetId: v.id("files_r2_assets"),
+		putMayArriveUntil: v.union(v.number(), v.null()),
+		historyPending: v.boolean(),
+	}).index("by_organization_workspace_fileNode_historyPending", [
+		"organizationId",
+		"workspaceId",
+		"fileNodeId",
+		"historyPending",
+	]),
 
 	files_snapshots: defineTable({
 		organizationId: v.id("organizations"),

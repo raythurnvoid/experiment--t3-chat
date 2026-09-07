@@ -248,8 +248,8 @@ async function files_pending_update_action_get_latest_file_yjs_state(
 	// While a durable shape/state marker is set the file is not accepting new edits, and an
 	// oversized snapshot asset must never be downloaded: preflight the size before any GET.
 	if (
-		header.fileNode.contentShapeMismatchAt !== undefined ||
-		header.fileNode.contentYjsStateTooLargeByteSize !== undefined ||
+		header.fileNode.contentShapeMismatchAt !== null ||
+		header.fileNode.contentYjsStateTooLargeByteSize !== null ||
 		header.yjsSnapshotAsset.size > files_MAX_YJS_RECONSTRUCTED_STATE_BYTES
 	) {
 		return Result({ _nay: { message: files_yjs_NODE_NEEDS_REPAIR_MESSAGE } });
@@ -586,10 +586,10 @@ export async function files_pending_updates_db_drop_content_for_node(
  * refusal `_nay` Result, or `null` when the text passes (plain text has no frontmatter at all).
  */
 function files_pending_update_check_frontmatter_caps(args: {
-	fileNode: { yjsRootKind: files_YjsRootKind };
+	fileNode: { textKind: files_YjsRootKind };
 	text: string;
 }) {
-	if (args.fileNode.yjsRootKind !== "rich_text") {
+	if (args.fileNode.textKind !== "rich_text") {
 		return null;
 	}
 
@@ -637,7 +637,7 @@ async function files_pending_update_db_replace_chunks(
 	// replacement is the exception: it is chunked with the shape of the copied file.
 	const rootKind =
 		fileNode && fileNode.organizationId === args.organizationId && fileNode.workspaceId === args.workspaceId
-			? (args.rootKind ?? (files_node_has_editable_text_content(fileNode) ? fileNode.yjsRootKind : undefined))
+			? (args.rootKind ?? (files_node_has_editable_text_content(fileNode) ? fileNode.textKind : undefined))
 			: undefined;
 	if (!fileNode || rootKind === undefined) {
 		console.error(
@@ -692,7 +692,7 @@ async function files_pending_update_db_replace_chunks(
 				pendingUpdateId: args.pendingUpdateId,
 				textChunkId: textChunkIds[index]!,
 				path: fileNode.path,
-				archiveOperationId: fileNode.archiveOperationId,
+				archiveOperationId: fileNode.archiveOperationId ?? undefined,
 				chunkIndex: chunk.chunkIndex,
 				plainTextChunk: chunk.plainTextChunk,
 				textChunk: chunk.textChunk,
@@ -1062,7 +1062,7 @@ async function db_seal_operation_batch_state(
 	) {
 		return Result({ _nay: { message: "Not found" } });
 	}
-	const rootKind = fileNode.yjsRootKind;
+	const rootKind = fileNode.textKind;
 
 	const batchStates = await db_get_operation_batch_states(ctx, { operationBatchId: args.batch._id });
 	const state =
@@ -1133,7 +1133,7 @@ async function db_seal_operation_batch_state(
 	// between seal and commit makes the whole operation visibly stale instead of silently merging.
 	// A file with collaboration off has no Yjs document and no lineage, so its states carry none.
 	let lineageGeneration: number | null = null;
-	if (fileNode.yjsLastSequenceId !== undefined) {
+	if (fileNode.yjsLastSequenceId !== null) {
 		const lastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", fileNode.yjsLastSequenceId);
 		if (!lastSequenceDoc) {
 			return Result({ _nay: { message: "Not found" } });
@@ -2794,7 +2794,7 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 			if (file.assetId !== args.base.expectedAssetId) {
 				return Result({ _nay: { name: "pending_content_changed", message: PENDING_BASE_STALE_MESSAGE } });
 			}
-			if (file.nonCollaborative !== true) {
+			if (file.collaborationEnabled !== false) {
 				return Result({ _nay: { message: "Not found" } });
 			}
 			baseLineageGeneration = null;
@@ -2861,7 +2861,7 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 		// The node can be archived between the action's read and this commit: a new doc on it
 		// could never be saved, so reject before any write. An existing doc must stay editable
 		// and discardable — docs legitimately survive on archived files.
-		if (!existingPendingUpdate && file.archiveOperationId !== undefined) {
+		if (!existingPendingUpdate && file.archiveOperationId !== null) {
 			return Result({ _nay: { message: "Not found" } });
 		}
 
@@ -3125,7 +3125,7 @@ async function action_upsert_file_pending_update(
 		return Result({ _nay: { message: "Pending update text is not staged" } });
 	}
 
-	const rootKind = data.fileNode.yjsRootKind;
+	const rootKind = data.fileNode.textKind;
 
 	// Substrate: the proposal's existing branch family when it is still usable, otherwise a
 	// fresh family. Move-only docs have no family and take the fresh one too.
@@ -3632,7 +3632,7 @@ export const upsert_file_pending_move_in_db = internalMutation({
 			!sourceNode ||
 			sourceNode.organizationId !== args.organizationId ||
 			sourceNode.workspaceId !== args.workspaceId ||
-			sourceNode.archiveOperationId !== undefined
+			sourceNode.archiveOperationId !== null
 		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
@@ -3840,7 +3840,7 @@ export const upsert_file_pending_archive_in_db = internalMutation({
 			!node ||
 			node.organizationId !== args.organizationId ||
 			node.workspaceId !== args.workspaceId ||
-			node.archiveOperationId !== undefined
+			node.archiveOperationId !== null
 		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
@@ -4163,7 +4163,7 @@ export const apply_file_pending_archive = mutation({
 			!node ||
 			node.organizationId !== membership.organizationId ||
 			node.workspaceId !== membership.workspaceId ||
-			node.archiveOperationId !== undefined
+			node.archiveOperationId !== null
 		) {
 			// The node is gone or already archived (e.g. the sidebar Archive action ran first):
 			// nothing left to archive, so the whole proposal doc is dead — drop it.
@@ -4200,7 +4200,7 @@ export const apply_file_pending_archive = mutation({
 				parentId: node._id,
 			});
 			const activeDescendants = descendantFileNodes.filter(
-				(descendantFileNode) => descendantFileNode.archiveOperationId === undefined,
+				(descendantFileNode) => descendantFileNode.archiveOperationId === null,
 			);
 
 			// Same rule as `archive_nodes`: the check above asked about this folder, and the sweep can
@@ -4229,7 +4229,7 @@ export const apply_file_pending_archive = mutation({
 			// Do not hide a read-only archived descendant under this newly archived folder.
 			// The user may not see that node, so return a general error if it blocks the write.
 			const archivedDescendants = descendantFileNodes.filter(
-				(descendantFileNode) => descendantFileNode.archiveOperationId !== undefined,
+				(descendantFileNode) => descendantFileNode.archiveOperationId !== null,
 			);
 			const archivedProtected = await files_nodes_db_require_swept_nodes_writable(ctx, {
 				organizationId: membership.organizationId,
@@ -4526,7 +4526,7 @@ export const discard_file_pending_content = mutation({
 		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
-		const rootKind = fileNode.yjsRootKind;
+		const rootKind = fileNode.textKind;
 		// Collaboration off: a member saved the file after this proposal was made. The proposal can
 		// never be accepted, so Discard removes the whole content proposal below.
 		const stale = files_pending_update_content_is_stale(pendingUpdate, fileNode);
@@ -4832,7 +4832,7 @@ export const commit_file_pending_update_rebase_in_db = internalMutation({
 		}
 		if (
 			args.preparation &&
-			(fileNode.yjsRootKind !== args.preparation.rootKind || fileNode.archiveOperationId !== undefined)
+			(fileNode.textKind !== args.preparation.rootKind || fileNode.archiveOperationId !== null)
 		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
@@ -4859,7 +4859,7 @@ export const commit_file_pending_update_rebase_in_db = internalMutation({
 			) {
 				return Result({ _nay: { message: PENDING_BASE_STALE_MESSAGE } });
 			}
-		} else if (fileNode.nonCollaborative !== true || fileNode.assetId !== args.base.expectedAssetId) {
+		} else if (fileNode.collaborationEnabled !== false || fileNode.assetId !== args.base.expectedAssetId) {
 			return Result({ _nay: { message: PENDING_BASE_STALE_MESSAGE } });
 		}
 
@@ -5011,7 +5011,7 @@ async function prepare_pending_update(
 	if (
 		!data ||
 		(args.pendingUpdateId !== undefined && pendingUpdate?._id !== args.pendingUpdateId) ||
-		data.fileNode.archiveOperationId !== undefined
+		data.fileNode.archiveOperationId !== null
 	) {
 		return Result({ _nay: { message: "Not found" } });
 	}
@@ -5051,7 +5051,7 @@ async function prepare_pending_update(
 				}),
 			),
 		);
-		const rootKind = data.fileNode.yjsRootKind;
+		const rootKind = data.fileNode.textKind;
 		const sourceTexts: string[] = [];
 		for (const bytes of sourceBytes) {
 			if (bytes._nay) return Result({ _nay: { message: bytes._nay.message } });
@@ -5443,7 +5443,7 @@ export const persist_file_pending_update_rebased_state = action({
 			return Result({ _nay: { message: PENDING_BASE_STALE_MESSAGE } });
 		}
 
-		const rootKind = data.fileNode.yjsRootKind;
+		const rootKind = data.fileNode.textKind;
 		const baseYjsDoc = files_yjs_doc_create_from_array_buffer_update(files_u8_to_array_buffer(baseBytes._yay));
 		const stagedBranchYjsDoc = files_yjs_doc_create_from_array_buffer_update(
 			files_u8_to_array_buffer(stagedBytes._yay),
@@ -5831,7 +5831,7 @@ export const save_file_pending_update_in_db = internalMutation({
 			targetNode.organizationId !== membership.organizationId ||
 			targetNode.workspaceId !== membership.workspaceId ||
 			!files_node_has_editable_yjs_state(targetNode) ||
-			targetNode.archiveOperationId !== undefined
+			targetNode.archiveOperationId !== null
 		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
@@ -6025,7 +6025,7 @@ export const save_file_pending_update_in_db = internalMutation({
 				sessionId: `files_pending_update:${user._id}`,
 				userId: user._id,
 				expectedYjsLastSequenceId: args.expectedYjsLastSequenceId,
-				rootKind: targetNode.yjsRootKind,
+				rootKind: targetNode.textKind,
 				// A save is a one-shot commit, not a keystroke stream: materialize now so
 				// committed reads (bash cat, exports) see the accepted content right away.
 				materializeImmediately: true,
@@ -6307,9 +6307,9 @@ export const save_file_pending_update_non_collaborative_in_db = internalMutation
 			!targetNode ||
 			targetNode.organizationId !== membership.organizationId ||
 			targetNode.workspaceId !== membership.workspaceId ||
-			targetNode.nonCollaborative !== true ||
+			targetNode.collaborationEnabled !== false ||
 			!files_node_has_editable_text_content(targetNode) ||
-			targetNode.archiveOperationId !== undefined
+			targetNode.archiveOperationId !== null
 		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
@@ -6625,7 +6625,7 @@ async function action_save_file_pending_update_non_collaborative(
 		return fileWritable;
 	}
 
-	const rootKind = data.fileNode.yjsRootKind;
+	const rootKind = data.fileNode.textKind;
 
 	const [baseBytes, stagedBytes, unstagedBytes] = await Promise.all([
 		action_load_pending_state_bytes(ctx, {
@@ -7001,7 +7001,7 @@ export const save_file_pending_update = action({
 			return fileWritable;
 		}
 
-		const rootKind = data.fileNode.yjsRootKind;
+		const rootKind = data.fileNode.textKind;
 
 		// Page the canonical base/staged/unstaged states and the current live state in memory.
 		const [baseBytes, stagedBytes, unstagedBytes] = await Promise.all([
@@ -7386,7 +7386,7 @@ export const get_data_for_pending_replacement_stage = internalQuery({
 			destNode.organizationId !== args.organizationId ||
 			destNode.workspaceId !== args.workspaceId ||
 			destNode.kind !== "file" ||
-			destNode.archiveOperationId !== undefined ||
+			destNode.archiveOperationId !== null ||
 			!sourceNode ||
 			sourceNode.organizationId !== args.organizationId ||
 			sourceNode.workspaceId !== args.workspaceId ||
@@ -7499,7 +7499,7 @@ export const stage_file_pending_replacement_internal_action = internalAction({
 		if (data.sourceNode.assetId !== args.expectedSourceAssetId) {
 			return Result({ _nay: { message: PENDING_REPLACEMENT_SOURCE_CHANGED_MESSAGE } });
 		}
-		if (data.destNode.assetId === undefined) {
+		if (data.destNode.assetId === null) {
 			return Result({ _nay: { message: "Not found" } });
 		}
 		const baseAssetId = data.destNode.assetId;
@@ -7538,7 +7538,7 @@ export const stage_file_pending_replacement_internal_action = internalAction({
 				size,
 				contentType: sourceShape.contentType,
 				yjsRootKind: sourceShape.rootKind,
-				...(data.sourceNode.nonCollaborative === true ? { nonCollaborative: true } : {}),
+				...(data.sourceNode.collaborationEnabled === false ? { nonCollaborative: true } : {}),
 				baseAssetId,
 			};
 		} else {
@@ -7548,7 +7548,7 @@ export const stage_file_pending_replacement_internal_action = internalAction({
 				sourceAsset.organizationId !== args.organizationId ||
 				sourceAsset.workspaceId !== args.workspaceId ||
 				sourceAsset.r2Key === undefined ||
-				data.sourceNode.contentType === undefined
+				data.sourceNode.contentType === null
 			) {
 				return Result({ _nay: { message: "The source file's content is not available yet" } });
 			}
@@ -7706,7 +7706,7 @@ export const commit_file_pending_replacement_in_db = internalMutation({
 		) {
 			return await refuse("Pending update changed, retry the write");
 		}
-		if (!existingPendingUpdate && file.archiveOperationId !== undefined) {
+		if (!existingPendingUpdate && file.archiveOperationId !== null) {
 			return await refuse("Not found");
 		}
 		// A pending delete wins over every other aspect of the doc, and accepting it would leave
@@ -7999,7 +7999,7 @@ async function action_accept_file_pending_replacement(
 	let content: {
 		contentAssetId: Id<"files_r2_assets">;
 		contentSize: number;
-		yjsRootKind?: app_convex_Doc<"files_nodes">["yjsRootKind"];
+		yjsRootKind?: files_YjsRootKind;
 		nonCollaborative?: boolean;
 		yjsSnapshot?: { assetId: Id<"files_r2_assets">; size: number };
 		text?: string;
@@ -8011,7 +8011,7 @@ async function action_accept_file_pending_replacement(
 		// New copies inherit the source's mode. Existing text files keep their own mode.
 		const nonCollaborative =
 			!data.pendingUpdate.eagerCreated && files_node_has_editable_text_content(data.fileNode)
-				? data.fileNode.nonCollaborative === true
+				? data.fileNode.collaborationEnabled === false
 				: replacement.nonCollaborative === true;
 		const stagedText = await r2_fetch_object_from_bucket({ key: data.stagedAssetR2Key }).then((response) =>
 			response.text(),

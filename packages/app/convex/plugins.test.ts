@@ -1292,6 +1292,22 @@ describe("plugins Phase 0", () => {
 				createdBy: membership.userId,
 				updatedBy: membership.userId,
 				updatedAt: now,
+				assetId: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 		});
 		expect(upload.nodeId).not.toBe(memberFileId);
@@ -1307,7 +1323,7 @@ describe("plugins Phase 0", () => {
 		// The file is still there. Archiving is how a delete looks in this product, so a passing
 		// status alone would not prove the member kept their work.
 		const stillActive = await t.run((ctx) => ctx.db.get("files_nodes", memberFileId));
-		expect(stillActive?.archiveOperationId).toBeUndefined();
+		expect(stillActive?.archiveOperationId).toBeNull();
 	});
 
 	test("stops authenticating a run token after the run reaches a terminal state", async () => {
@@ -1482,7 +1498,7 @@ describe("plugins Phase 0", () => {
 						.eq("organizationId", membership.organizationId)
 						.eq("workspaceId", membership.workspaceId)
 						.eq("path", "/meetings/meeting-1")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first();
 			if (!destination) {
@@ -1923,6 +1939,23 @@ describe("plugins Phase 0", () => {
 				createdBy: membership.userId,
 				updatedBy: membership.userId,
 				updatedAt: now,
+				contentType: null,
+				assetId: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 		});
 		const upload = await asOwner.mutation(api.files_nodes.create_upload_node, {
@@ -2025,7 +2058,7 @@ describe("plugins Phase 0", () => {
 						.eq("organizationId", membership.organizationId)
 						.eq("workspaceId", membership.workspaceId)
 						.eq("path", "/media/locked-note.md")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first(),
 		);
@@ -2071,7 +2104,7 @@ describe("plugins Phase 0", () => {
 						.eq("organizationId", fixture.membership.organizationId)
 						.eq("workspaceId", fixture.membership.workspaceId)
 						.eq("path", "/locked-source-summary.md")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first(),
 		);
@@ -2289,7 +2322,7 @@ describe("plugins Phase 0", () => {
 						.eq("workspaceId", membership.workspaceId)
 						.eq("parentId", "root")
 						.eq("name", "plugin-live-image-20260702t011841z.png.description.md")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.unique(),
 		);
@@ -2811,7 +2844,7 @@ describe("plugins Phase 0", () => {
 						.eq("organizationId", fixture.membership.organizationId)
 						.eq("workspaceId", fixture.membership.workspaceId)
 						.eq("path", "/expired.png.md")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.unique(),
 		);
@@ -2909,7 +2942,7 @@ describe("plugins Phase 0", () => {
 			expect(job.reason).toBe("read_only_stage");
 		}
 		const target = await t.run((ctx) => ctx.db.get("files_nodes", occupant._yay.nodeId));
-		expect(target?.archiveOperationId).toBeUndefined();
+		expect(target?.archiveOperationId).toBeNull();
 	});
 
 	test("refuses to stage a write once the run's actor lost write access", async () => {
@@ -11512,7 +11545,7 @@ describe("plugins metadata file doors", () => {
 						.eq("organizationId", fixture.membership.organizationId)
 						.eq("workspaceId", fixture.membership.workspaceId)
 						.eq("path", path)
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first(),
 		);
@@ -11538,6 +11571,23 @@ describe("plugins metadata file doors", () => {
 				createdBy: fixture.membership.userId,
 				updatedBy: fixture.membership.userId,
 				updatedAt: now,
+				assetId: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
+				contentType: null,
 			});
 		});
 	}
@@ -11779,7 +11829,7 @@ describe("plugins metadata file doors", () => {
 			}),
 		).toEqual({ _yay: null });
 		const relocked = await find_active_node(t, fixture, "/probe");
-		expect(relocked?.readOnlyPluginName).toBeUndefined();
+		expect(relocked?.readOnlyPluginName).toBeNull();
 		expect(
 			(
 				await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
@@ -12221,8 +12271,8 @@ describe("plugins metadata file doors", () => {
 		// The plugin's own lock was released before the archive, so a member restore gets a
 		// writable file back.
 		const afterArchive = await t.run(async (ctx) => ctx.db.get("files_nodes", lockedNode!._id));
-		expect(afterArchive?.readOnlyScopeNodeId).toBeUndefined();
-		expect(afterArchive?.readOnlyPluginName).toBeUndefined();
+		expect(afterArchive?.readOnlyScopeNodeId).toBeNull();
+		expect(afterArchive?.readOnlyPluginName).toBeNull();
 
 		// A member's file inside an open plugin folder refuses the whole subtree archive.
 		expect(
@@ -12245,6 +12295,22 @@ describe("plugins metadata file doors", () => {
 				createdBy: fixture.membership.userId,
 				updatedBy: fixture.membership.userId,
 				updatedAt: now,
+				assetId: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 		});
 		const refused = await door_call(t, "/api/v1/files/plugin-archive", run.apiToken, { path: "/probe" });
@@ -12306,7 +12372,7 @@ describe("plugins metadata file doors", () => {
 			access: { readOnly: false },
 		});
 		expect(unlock.status).toBe(200);
-		expect((await find_active_node(t, fixture, "/probe/report.md"))?.readOnlyScopeNodeId).toBeUndefined();
+		expect((await find_active_node(t, fixture, "/probe/report.md"))?.readOnlyScopeNodeId).toBeNull();
 
 		// Locking the plugin's own folder cascades over the subtree, and the plugin still writes
 		// through its own folder lock — the pattern a plugin uses for machine-managed areas.
@@ -12423,7 +12489,7 @@ describe("plugins metadata file doors", () => {
 			access: { readScopeId: null },
 		});
 		expect(released.status).toBe(200);
-		expect((await find_active_node(t, fixture, "/probe/secret.md"))?.restrictedScopeNodeId).toBeUndefined();
+		expect((await find_active_node(t, fixture, "/probe/secret.md"))?.restrictedScopeNodeId).toBeNull();
 		expect(await read_binding_rows()).toEqual([]);
 
 		// Ensure applies both access fields on the folder it creates, in the same call.
@@ -12494,6 +12560,22 @@ describe("plugins metadata file doors", () => {
 				createdBy: fixture.membership.userId,
 				updatedBy: fixture.membership.userId,
 				updatedAt: now,
+				assetId: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 		});
 		const existing = await door_call(t, "/api/v1/files/touch", run.apiToken, { paths: ["/board-minutes.md"] });
@@ -12539,8 +12621,8 @@ describe("plugins metadata file doors", () => {
 				grants: await ctx.db.query("access_control_permission_grants").collect(),
 				bindings: await ctx.db.query("plugins_file_access_bindings").collect(),
 			}));
-			expect(before.node?.restrictedScopeNodeId).toBeUndefined();
-			expect(before.node?.readOnlyScopeNodeId).toBeUndefined();
+			expect(before.node?.restrictedScopeNodeId).toBeNull();
+			expect(before.node?.readOnlyScopeNodeId).toBeNull();
 			const access = change === "lock" ? { readOnly: true } : { readScopeId: "private" };
 			const refused = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
 				path: "/member-folder",
@@ -12935,6 +13017,22 @@ describe("plugins metadata file doors", () => {
 				createdBy: fixture.membership.userId,
 				updatedBy: fixture.membership.userId,
 				updatedAt: now,
+				assetId: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 		});
 		await t.run((ctx) => ctx.db.patch("plugins_event_runs", run.runId, { fileNodeId: sourceNodeId }));

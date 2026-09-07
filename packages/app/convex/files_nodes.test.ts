@@ -18,6 +18,7 @@ import {
 	files_line_range_from_text,
 	files_node_require_writable,
 	files_nodes_db_apply_pending_move,
+	files_nodes_db_hard_delete_node,
 	files_tail_lines_from_text,
 	yjs_reserve_and_increment_last_sequence,
 } from "./files_nodes.ts";
@@ -1166,6 +1167,22 @@ test("home file can be renamed and moved like any file", async () => {
 
 	const homeNodeId = await t.run(async (ctx) =>
 		ctx.db.insert("files_nodes", {
+			contentType: null,
+			assetId: null,
+			textKind: null,
+			collaborationEnabled: null,
+			yjsSnapshotId: null,
+			yjsLastSequenceId: null,
+			statsId: null,
+			contentTooLargeByteSize: null,
+			contentShapeMismatchAt: null,
+			contentYjsStateTooLargeByteSize: null,
+			contentFrontmatterTooLargeFieldCount: null,
+			contentFrontmatterTooLargeIndexDocumentCount: null,
+			restrictedScopeNodeId: null,
+			readOnlyScopeNodeId: null,
+			readOnlyPluginName: null,
+			readOnlyPluginServiceTargetId: null,
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			createdBy: db.userId,
@@ -1178,7 +1195,7 @@ test("home file can be renamed and moved like any file", async () => {
 			treePath: "/README.md",
 			pathDepth: 1,
 			lowercaseExtension: "md",
-			archiveOperationId: undefined,
+			archiveOperationId: null,
 		}),
 	);
 
@@ -1219,6 +1236,22 @@ test("home file can be archived like any file", async () => {
 
 	const homeNodeId = await t.run(async (ctx) =>
 		ctx.db.insert("files_nodes", {
+			contentType: null,
+			assetId: null,
+			textKind: null,
+			collaborationEnabled: null,
+			yjsSnapshotId: null,
+			yjsLastSequenceId: null,
+			statsId: null,
+			contentTooLargeByteSize: null,
+			contentShapeMismatchAt: null,
+			contentYjsStateTooLargeByteSize: null,
+			contentFrontmatterTooLargeFieldCount: null,
+			contentFrontmatterTooLargeIndexDocumentCount: null,
+			restrictedScopeNodeId: null,
+			readOnlyScopeNodeId: null,
+			readOnlyPluginName: null,
+			readOnlyPluginServiceTargetId: null,
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			createdBy: db.userId,
@@ -1231,7 +1264,7 @@ test("home file can be archived like any file", async () => {
 			treePath: "/README.md",
 			pathDepth: 1,
 			lowercaseExtension: "md",
-			archiveOperationId: undefined,
+			archiveOperationId: null,
 		}),
 	);
 
@@ -1351,7 +1384,7 @@ test("create_folder_node rejects active file at intermediate path without creati
 					.eq("organizationId", db.organizationId)
 					.eq("workspaceId", db.workspaceId)
 					.eq("path", "/notes/child")
-					.eq("archiveOperationId", undefined),
+					.eq("archiveOperationId", null),
 			)
 			.first();
 
@@ -1391,7 +1424,7 @@ test("create_folder_node reuses active intermediate folders", async () => {
 					.eq("workspaceId", db.workspaceId)
 					.eq("parentId", files_ROOT_ID)
 					.eq("name", db.files.file_root_1.name)
-					.eq("archiveOperationId", undefined),
+					.eq("archiveOperationId", null),
 			)
 			.collect()
 			.then((fileNodes) => fileNodes.filter((fileNode) => fileNode.kind === "folder"));
@@ -1748,7 +1781,7 @@ test("create_text_node does not publish a file node when initial R2 writes fail"
 					.eq("organizationId", db.organizationId)
 					.eq("workspaceId", db.workspaceId)
 					.eq("path", "/broken.md")
-					.eq("archiveOperationId", undefined),
+					.eq("archiveOperationId", null),
 			)
 			.first();
 		const assets = await ctx.db.query("files_r2_assets").collect();
@@ -1790,7 +1823,7 @@ test("create_text_node cleans up R2 objects when initial metadata sync fails", a
 					.eq("organizationId", db.organizationId)
 					.eq("workspaceId", db.workspaceId)
 					.eq("path", "/sync-failure.md")
-					.eq("archiveOperationId", undefined),
+					.eq("archiveOperationId", null),
 			)
 			.first();
 		const assets = await ctx.db.query("files_r2_assets").collect();
@@ -1838,7 +1871,7 @@ test("create_text_node refuses a duplicate path at capture, before any upload", 
 							.eq("organizationId", db.organizationId)
 							.eq("workspaceId", db.workspaceId)
 							.eq("path", "/duplicate.md")
-							.eq("archiveOperationId", undefined),
+							.eq("archiveOperationId", null),
 					)
 					.collect()
 			).length,
@@ -1864,7 +1897,7 @@ test("create_text_node refuses a duplicate path at capture, before any upload", 
 							.eq("organizationId", db.organizationId)
 							.eq("workspaceId", db.workspaceId)
 							.eq("path", "/duplicate.md")
-							.eq("archiveOperationId", undefined),
+							.eq("archiveOperationId", null),
 					)
 					.collect()
 			).length,
@@ -1909,7 +1942,7 @@ test("create_folder_node creates missing folders for nested folder paths", async
 			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("path", "/invalid"),
 			)
-			.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
+			.filter((q) => q.eq(q.field("archiveOperationId"), null))
 			.first();
 		expect(parentFolder?.kind).toBe("folder");
 		expect(folderFileNode?.parentId).toBe(parentFolder?._id);
@@ -1946,7 +1979,7 @@ test("create_text_node creates missing folders for nested file paths", async () 
 			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("path", "/notes/workspaces"),
 			)
-			.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
+			.filter((q) => q.eq(q.field("archiveOperationId"), null))
 			.first();
 		expect(parentFolder?.kind).toBe("folder");
 		expect(fileNode?.parentId).toBe(parentFolder?._id);
@@ -1997,8 +2030,8 @@ test("archived nodes can share path with a new active node", async () => {
 			.collect();
 
 		expect(filesAtPath).toHaveLength(2);
-		expect(filesAtPath.filter((fileNode) => fileNode.archiveOperationId !== undefined)).toHaveLength(1);
-		expect(filesAtPath.filter((fileNode) => fileNode.archiveOperationId === undefined)).toHaveLength(1);
+		expect(filesAtPath.filter((fileNode) => fileNode.archiveOperationId !== null)).toHaveLength(1);
+		expect(filesAtPath.filter((fileNode) => fileNode.archiveOperationId === null)).toHaveLength(1);
 	});
 });
 
@@ -2803,7 +2836,7 @@ describe("files_nodes.create_upload_node", () => {
 			contentType: "application/pdf",
 			assetId: upload._yay.assetId,
 		});
-		expect(docs.source?.archiveOperationId).toBeUndefined();
+		expect(docs.source?.archiveOperationId).toBeNull();
 		expect(docs.asset).toMatchObject({
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -2985,12 +3018,12 @@ describe("files_nodes.create_upload_node", () => {
 			name: "replace-me.pdf.md",
 			path: "/replace-me.pdf.md",
 		});
-		expect(docs.generated?.archiveOperationId).toBeUndefined();
+		expect(docs.generated?.archiveOperationId).toBeNull();
 		expect(docs.newSource).toMatchObject({
 			name: "replace-me.pdf",
 			assetId: replacement._yay.assetId,
 		});
-		expect(docs.newSource?.archiveOperationId).toBeUndefined();
+		expect(docs.newSource?.archiveOperationId).toBeNull();
 		expect(docs.newAsset).toMatchObject({
 			kind: "upload",
 			size: 2048,
@@ -3047,7 +3080,7 @@ describe("files_nodes.create_upload_node", () => {
 			return { firstSource, uploadAssets };
 		});
 		// A document embedding the first upload keeps working: refusing must not archive it.
-		expect(docs.firstSource?.archiveOperationId).toBeUndefined();
+		expect(docs.firstSource?.archiveOperationId).toBeNull();
 		expect(docs.uploadAssets).toHaveLength(1);
 		expect(docs.uploadAssets[0]?._id).toBe(firstUpload._yay.assetId);
 	});
@@ -3097,7 +3130,7 @@ describe("files_nodes.create_upload_nodes", () => {
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
 						.eq("path", "/docs")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first();
 			const imgFolder = await ctx.db
@@ -3107,7 +3140,7 @@ describe("files_nodes.create_upload_nodes", () => {
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
 						.eq("path", "/docs/img")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first();
 			return { report, reportAsset, docsFolder, imgFolder };
@@ -3155,7 +3188,7 @@ describe("files_nodes.create_upload_nodes", () => {
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
 						.eq("path", "/docs")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.collect(),
 		);
@@ -3189,7 +3222,7 @@ describe("files_nodes.create_upload_nodes", () => {
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
 						.eq("path", "/dest")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first(),
 		);
@@ -3374,7 +3407,7 @@ describe("files_nodes.create_upload_nodes", () => {
 		expect(again._yay.created[0]).toMatchObject({ relativePath: "fresh.pdf" });
 
 		const original = await t.run(async (ctx) => await ctx.db.get("files_nodes", first._yay.created[0]!.nodeId));
-		expect(original?.archiveOperationId).toBeUndefined();
+		expect(original?.archiveOperationId).toBeNull();
 	});
 
 	test("replace mode archives the existing file and creates a new node", async () => {
@@ -3420,7 +3453,7 @@ describe("files_nodes.create_upload_nodes", () => {
 			path: "/dup.pdf",
 			assetId: replaced._yay.created[0]!.assetId,
 		});
-		expect(docs.newSource?.archiveOperationId).toBeUndefined();
+		expect(docs.newSource?.archiveOperationId).toBeNull();
 	});
 
 	test("skips paths blocked by a folder at the target or a file on the way", async () => {
@@ -4062,6 +4095,70 @@ describe("files_nodes.discard_failed_upload_node", () => {
 	});
 });
 
+describe("files_nodes_db_hard_delete_node", () => {
+	test("keeps the cleanup deadline when deleting a file before its history worker runs", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		test_setup_r2_capture();
+		const nodeId = await test_materialize_markdown_file(
+			t, asUser, db, "/delete-cleanup.md", "# Kept until deletion\n",
+		);
+
+		// Hold the scheduled worker so deletion must take ownership of its asset.
+		vi.useFakeTimers();
+		try {
+			const off = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+				membershipId: db.membershipId,
+				nodeId,
+				acknowledgeDropCollaborativeHistory: true,
+			});
+			expect(off._nay).toBeUndefined();
+			const task = await t.run(async (ctx) =>
+				ctx.db
+					.query("files_yjs_cleanup_tasks")
+					.withIndex("by_organization_workspace_fileNode_historyPending", (q) =>
+						q
+							.eq("organizationId", db.organizationId)
+							.eq("workspaceId", db.workspaceId)
+							.eq("fileNodeId", nodeId)
+							.eq("historyPending", true),
+					)
+					.unique(),
+			);
+			if (!task) throw new Error("Missing cleanup task");
+			expect(task.putMayArriveUntil).toBeGreaterThan(Date.now());
+			const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", task.supersededYjsAssetId));
+			if (!asset?.r2Key) throw new Error("Missing cleanup asset key");
+			const r2Key = asset.r2Key;
+
+			await t.run(async (ctx) =>
+				files_nodes_db_hard_delete_node(ctx, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					nodeId,
+				}),
+			);
+			const deleted = await t.run(async (ctx) => ({
+				node: await ctx.db.get("files_nodes", nodeId),
+				task: await ctx.db.get("files_yjs_cleanup_tasks", task._id),
+				asset: await ctx.db.get("files_r2_assets", task.supersededYjsAssetId),
+				job: await ctx.db
+					.query("files_r2_object_deletion_jobs")
+					.withIndex("by_r2_key", (q) => q.eq("r2Key", r2Key))
+					.unique(),
+			}));
+			expect(deleted.node).toBeNull();
+			expect(deleted.task).toBeNull();
+			expect(deleted.asset).toBeNull();
+			expect(deleted.job).toMatchObject({ r2Key, putMayArriveUntil: task.putMayArriveUntil });
+			await t.mutation(internal.files_nodes_content.cleanup_file_yjs_task, { taskId: task._id });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
 test("rename_node returns conflict and keeps original path", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
@@ -4172,7 +4269,7 @@ test("rename_node creates missing folders for nested file paths", async () => {
 			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("path", "/notes/workspaces"),
 			)
-			.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
+			.filter((q) => q.eq(q.field("archiveOperationId"), null))
 			.first();
 		expect(parentFolder?.kind).toBe("folder");
 		expect(fileNode?.parentId).toBe(parentFolder?._id);
@@ -4257,7 +4354,7 @@ test("rename_node keeps the stored type when the extension changes", async () =>
 	const afterCrossing = await t.run(async (ctx) => ctx.db.get("files_nodes", createdFile._yay.nodeId));
 	expect(afterCrossing?.name).toBe("renamed-source.txt");
 	expect(afterCrossing?.contentType).toBe("text/markdown;charset=utf-8");
-	expect(afterCrossing?.yjsRootKind).toBe("rich_text");
+	expect(afterCrossing?.textKind).toBe("rich_text");
 
 	const renameResult = await asUser.mutation(api.files_nodes.rename_node, {
 		membershipId: db.membershipId,
@@ -4307,7 +4404,7 @@ test("rename_node creates missing folders for nested folder paths", async () => 
 			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("path", "/invalid"),
 			)
-			.filter((q) => q.eq(q.field("archiveOperationId"), undefined))
+			.filter((q) => q.eq(q.field("archiveOperationId"), null))
 			.first();
 		expect(parentFolder?.kind).toBe("folder");
 		expect(folderFileNode?.parentId).toBe(parentFolder?._id);
@@ -4415,7 +4512,7 @@ test("unarchive_nodes returns conflict when active file already has the same pat
 
 	await t.run(async (ctx) => {
 		const fileRoot2 = await ctx.db.get("files_nodes", db.files.file_root_2._id);
-		expect(fileRoot2?.archiveOperationId).not.toBeUndefined();
+		expect(fileRoot2?.archiveOperationId).not.toBeNull();
 	});
 });
 
@@ -4464,7 +4561,7 @@ test("archive_nodes and unarchive_nodes leave root generated siblings independen
 		return { sourceFileNode, generatedFileNode };
 	});
 	expect(archivedDocs.sourceFileNode?.archiveOperationId).toEqual(expect.any(String));
-	expect(archivedDocs.generatedFileNode?.archiveOperationId).toBeUndefined();
+	expect(archivedDocs.generatedFileNode?.archiveOperationId).toBeNull();
 
 	await asUser.mutation(api.files_nodes.unarchive_nodes, {
 		membershipId: db.membershipId,
@@ -4476,8 +4573,8 @@ test("archive_nodes and unarchive_nodes leave root generated siblings independen
 		const generatedFileNode = await ctx.db.get("files_nodes", generatedNodeId);
 		return { sourceFileNode, generatedFileNode };
 	});
-	expect(unarchivedDocs.sourceFileNode?.archiveOperationId).toBeUndefined();
-	expect(unarchivedDocs.generatedFileNode?.archiveOperationId).toBeUndefined();
+	expect(unarchivedDocs.sourceFileNode?.archiveOperationId).toBeNull();
+	expect(unarchivedDocs.generatedFileNode?.archiveOperationId).toBeNull();
 });
 
 test("archive_nodes and unarchive_nodes include generated siblings as normal folder descendants", async () => {
@@ -4552,9 +4649,9 @@ test("archive_nodes and unarchive_nodes include generated siblings as normal fol
 		const generatedFileNode = await ctx.db.get("files_nodes", generatedNodeId);
 		return { folderFileNode, sourceFileNode, generatedFileNode };
 	});
-	expect(unarchivedDocs.folderFileNode?.archiveOperationId).toBeUndefined();
-	expect(unarchivedDocs.sourceFileNode?.archiveOperationId).toBeUndefined();
-	expect(unarchivedDocs.generatedFileNode?.archiveOperationId).toBeUndefined();
+	expect(unarchivedDocs.folderFileNode?.archiveOperationId).toBeNull();
+	expect(unarchivedDocs.sourceFileNode?.archiveOperationId).toBeNull();
+	expect(unarchivedDocs.generatedFileNode?.archiveOperationId).toBeNull();
 });
 
 test("unarchive_nodes excludes unrequested ancestors from Archive Operation", async () => {
@@ -4584,9 +4681,9 @@ test("unarchive_nodes excludes unrequested ancestors from Archive Operation", as
 		const fileRoot1Child1 = await ctx.db.get("files_nodes", db.files.file_root_1_child_1._id);
 		const fileRoot1Child1Deep1 = await ctx.db.get("files_nodes", db.files.file_root_1_child_1_deep_1._id);
 
-		expect(fileRoot1?.archiveOperationId).not.toBeUndefined();
-		expect(fileRoot1Child1?.archiveOperationId).toBeUndefined();
-		expect(fileRoot1Child1Deep1?.archiveOperationId).toBeUndefined();
+		expect(fileRoot1?.archiveOperationId).not.toBeNull();
+		expect(fileRoot1Child1?.archiveOperationId).toBeNull();
+		expect(fileRoot1Child1Deep1?.archiveOperationId).toBeNull();
 		expect(fileRoot1Child1?.parentId).toBe(files_ROOT_ID);
 		expect(fileRoot1Child1?.path).toBe(`/${db.files.file_root_1_child_1.name}`);
 		expect(fileRoot1Child1Deep1?.parentId).toBe(db.files.file_root_1_child_1._id);
@@ -4663,7 +4760,7 @@ test("create_file_by_path creates active ancestors instead of reusing archived n
 			.collect();
 		expect(filesAtRoot2Path).toHaveLength(2);
 
-		const activeRoot2 = filesAtRoot2Path.find((fileNode) => fileNode.archiveOperationId === undefined);
+		const activeRoot2 = filesAtRoot2Path.find((fileNode) => fileNode.archiveOperationId === null);
 		if (!activeRoot2) {
 			throw new Error("Expected active root2 file to exist");
 		}
@@ -4769,7 +4866,7 @@ test("N09 unarchive idempotency", async () => {
 
 	await t.run(async (ctx) => {
 		const p = await ctx.db.get("files_nodes", db.files.file_root_2._id);
-		expect(p?.archiveOperationId).toBeUndefined();
+		expect(p?.archiveOperationId).toBeNull();
 	});
 });
 
@@ -4811,9 +4908,9 @@ test("N02 archive child then parent then unarchive parent restores hierarchy", a
 		const fileRoot1Child1 = await ctx.db.get("files_nodes", db.files.file_root_1_child_1._id);
 		const fileRoot1Child1Deep1 = await ctx.db.get("files_nodes", db.files.file_root_1_child_1_deep_1._id);
 
-		expect(fileRoot1?.archiveOperationId).toBeUndefined();
-		expect(fileRoot1Child1?.archiveOperationId).toBeUndefined();
-		expect(fileRoot1Child1Deep1?.archiveOperationId).toBeUndefined();
+		expect(fileRoot1?.archiveOperationId).toBeNull();
+		expect(fileRoot1Child1?.archiveOperationId).toBeNull();
+		expect(fileRoot1Child1Deep1?.archiveOperationId).toBeNull();
 		expect(fileRoot1Child1?.parentId).toBe(fileRoot1?._id);
 		expect(fileRoot1Child1Deep1?.parentId).toBe(fileRoot1Child1?._id);
 	});
@@ -5711,8 +5808,8 @@ test("materialize_file_content settles over-cap frontmatter with the marker pair
 	});
 	expect(rematerialized._nay).toBeUndefined();
 	const cleared = await t.run(async (ctx) => ctx.db.get("files_nodes", nodeId));
-	expect(cleared?.contentFrontmatterTooLargeFieldCount).toBeUndefined();
-	expect(cleared?.contentFrontmatterTooLargeIndexDocumentCount).toBeUndefined();
+	expect(cleared?.contentFrontmatterTooLargeFieldCount).toBeNull();
+	expect(cleared?.contentFrontmatterTooLargeIndexDocumentCount).toBeNull();
 });
 
 test("materialize_file_content clears the too-large mark once the content fits again", async () => {
@@ -5762,7 +5859,7 @@ test("materialize_file_content clears the too-large mark once the content fits a
 	}
 
 	const fileNode = await t.run(async (ctx) => await ctx.db.get("files_nodes", nodeId));
-	expect(fileNode?.contentTooLargeByteSize).toBeUndefined();
+	expect(fileNode?.contentTooLargeByteSize).toBeNull();
 });
 
 async function test_insert_searchable_markdown_file(
@@ -5777,6 +5874,22 @@ async function test_insert_searchable_markdown_file(
 		const name = path.split("/").filter(Boolean).at(-1);
 		if (!name) throw new Error("Expected a root-level file path");
 		const nodeId = await ctx.db.insert("files_nodes", {
+			assetId: null,
+			textKind: null,
+			collaborationEnabled: null,
+			yjsSnapshotId: null,
+			yjsLastSequenceId: null,
+			statsId: null,
+			contentTooLargeByteSize: null,
+			contentShapeMismatchAt: null,
+			contentYjsStateTooLargeByteSize: null,
+			contentFrontmatterTooLargeFieldCount: null,
+			contentFrontmatterTooLargeIndexDocumentCount: null,
+			restrictedScopeNodeId: null,
+			readOnlyScopeNodeId: null,
+			readOnlyPluginName: null,
+			readOnlyPluginServiceTargetId: null,
+			archiveOperationId: null,
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			parentId: files_ROOT_ID,
@@ -6292,6 +6405,22 @@ async function test_insert_committed_external_markdown(
 		const name = path.split("/").filter(Boolean).at(-1);
 		if (!name) throw new Error("Expected a root-level file path");
 		const nodeId = await ctx.db.insert("files_nodes", {
+			assetId: null,
+			textKind: null,
+			collaborationEnabled: null,
+			yjsSnapshotId: null,
+			yjsLastSequenceId: null,
+			statsId: null,
+			contentTooLargeByteSize: null,
+			contentShapeMismatchAt: null,
+			contentYjsStateTooLargeByteSize: null,
+			contentFrontmatterTooLargeFieldCount: null,
+			contentFrontmatterTooLargeIndexDocumentCount: null,
+			restrictedScopeNodeId: null,
+			readOnlyScopeNodeId: null,
+			readOnlyPluginName: null,
+			readOnlyPluginServiceTargetId: null,
+			archiveOperationId: null,
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
 			parentId: files_ROOT_ID,
@@ -6578,6 +6707,21 @@ describe("non-collaborative files", () => {
 				updatedAt: now,
 			});
 			const nodeId = await ctx.db.insert("files_nodes", {
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				parentId: files_ROOT_ID,
@@ -6621,8 +6765,8 @@ describe("non-collaborative files", () => {
 		const written = await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", nodeId);
 			return {
-				nonCollaborative: node?.nonCollaborative,
-				yjsRootKind: node?.yjsRootKind,
+				collaborationEnabled: node?.collaborationEnabled,
+				textKind: node?.textKind,
 				yjsSnapshotId: node?.yjsSnapshotId,
 				yjsLastSequenceId: node?.yjsLastSequenceId,
 				statsId: node?.statsId,
@@ -6634,15 +6778,15 @@ describe("non-collaborative files", () => {
 				).length,
 				textChunks: (await ctx.db.query("files_text_chunks").collect()).length,
 				metadataFields: (await ctx.db.query("files_metadata_docs").collect())
-					.map((entry) => entry.qualifiedField)
+					.map((entry) => entry.fieldPath)
 					.sort(),
 			};
 		});
 
 		// Objective 1: a non-collaborative file carries no Yjs state of any kind.
-		expect(written.nonCollaborative).toBe(true);
-		expect(written.yjsSnapshotId).toBeUndefined();
-		expect(written.yjsLastSequenceId).toBeUndefined();
+		expect(written.collaborationEnabled).toBe(false);
+		expect(written.yjsSnapshotId).toBeNull();
+		expect(written.yjsLastSequenceId).toBeNull();
 		expect(written.yjsSnapshots).toBe(0);
 		expect(written.yjsLastSequences).toBe(0);
 		expect(written.yjsUpdates).toBe(0);
@@ -6651,7 +6795,7 @@ describe("non-collaborative files", () => {
 		// Objective 2: it keeps every committed representation, including the frontmatter index.
 		// The shape stays `rich_text`, so the Markdown chunker ran and frontmatter was indexed —
 		// this is what the read-only mount branch would have destroyed by forcing plain text.
-		expect(written.yjsRootKind).toBe("rich_text");
+		expect(written.textKind).toBe("rich_text");
 		expect(written.textChunks).toBeGreaterThan(0);
 		expect(written.statsId).toBeDefined();
 		expect(written.metadataFields).toEqual([
@@ -6777,7 +6921,7 @@ describe("non-collaborative files", () => {
 			membershipId: db.membershipId,
 			nodeId,
 		});
-		expect(read._yay).toEqual({ text: markdown, yjsRootKind: "rich_text" });
+		expect(read._yay).toEqual({ text: markdown, textKind: "rich_text" });
 
 		// A collaborative file is loaded from its Yjs document, so this door must not answer for it.
 		const collaborative = await asUser.action(api.files_nodes_content.create_text_node, {
@@ -6828,7 +6972,7 @@ describe("non-collaborative files", () => {
 			const versionAsset = snapshots[0] ? await ctx.db.get("files_r2_assets", snapshots[0].assetId) : null;
 			return {
 				assetId: node?.assetId,
-				nonCollaborative: node?.nonCollaborative,
+				collaborationEnabled: node?.collaborationEnabled,
 				newAssetKind: newAsset?.kind,
 				newAssetKey: newAsset?.r2Key,
 				newAssetSize: newAsset?.size,
@@ -6842,7 +6986,7 @@ describe("non-collaborative files", () => {
 		});
 
 		// Objective 3: the replace landed and the file is still non-collaborative.
-		expect(after.nonCollaborative).toBe(true);
+		expect(after.collaborationEnabled).toBe(false);
 		expect(after.assetId).not.toBe(assetId);
 		expect(saved._yay).toBeNull();
 		expect(after.newAssetKind).toBe("content_snapshot");
@@ -7301,8 +7445,8 @@ describe("non-collaborative files", () => {
 			t.run(async (ctx) => {
 				const node = await ctx.db.get("files_nodes", nodeId);
 				return {
-					nonCollaborative: node?.nonCollaborative,
-					hasPointers: node?.yjsSnapshotId !== undefined && node?.yjsLastSequenceId !== undefined,
+					collaborationEnabled: node?.collaborationEnabled,
+					hasPointers: node?.yjsSnapshotId != null && node?.yjsLastSequenceId != null,
 					snapshots: (await ctx.db.query("files_yjs_snapshots").collect()).length,
 					lastSequences: (await ctx.db.query("files_yjs_docs_last_sequences").collect()).length,
 					updates: (await ctx.db.query("files_yjs_updates").collect()).length,
@@ -7320,7 +7464,7 @@ describe("non-collaborative files", () => {
 
 		// Objective 4, first half: the whole Yjs document is gone and the text survived it.
 		const afterOff = await collaborative_doc_counts();
-		expect(afterOff.nonCollaborative).toBe(true);
+		expect(afterOff.collaborationEnabled).toBe(false);
 		expect(afterOff.hasPointers).toBe(false);
 		expect(afterOff.snapshots).toBe(0);
 		expect(afterOff.lastSequences).toBe(0);
@@ -7345,7 +7489,7 @@ describe("non-collaborative files", () => {
 
 		// Objective 4, second half: one fresh document, and the same visible text again.
 		const afterOn = await collaborative_doc_counts();
-		expect(afterOn.nonCollaborative).toBeUndefined();
+		expect(afterOn.collaborationEnabled).toBe(true);
 		expect(afterOn.hasPointers).toBe(true);
 		expect(afterOn.snapshots).toBe(1);
 		expect(afterOn.lastSequences).toBe(1);
@@ -7451,7 +7595,7 @@ describe("non-collaborative files", () => {
 		);
 	});
 
-	test("turning collaboration on clears a stale cleanup marker after every old Yjs doc is gone", async () => {
+	test("turning collaboration on retires cleanup authority after every old Yjs doc is gone", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
@@ -7463,7 +7607,13 @@ describe("non-collaborative files", () => {
 		});
 		test_setup_r2_capture();
 		const nodeId = await test_materialize_markdown_file(t, asUser, db, "/stale-cleanup.md", "# Kept\n");
-		const oldLineageId = (await test_get_file_yjs_pointers(t, nodeId)).yjsLastSequenceId;
+		const oldSnapshot = await t.run(async (ctx) => {
+			const pointers = await ctx.db.get("files_nodes", nodeId);
+			if (!pointers?.yjsSnapshotId) throw new Error("Missing Yjs snapshot");
+			const snapshot = await ctx.db.get("files_yjs_snapshots", pointers.yjsSnapshotId);
+			if (!snapshot) throw new Error("Missing Yjs snapshot");
+			return snapshot;
+		});
 
 		const off = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
 			membershipId: db.membershipId,
@@ -7474,9 +7624,15 @@ describe("non-collaborative files", () => {
 		await drain_scheduled_continuations(t);
 
 		const remainingDocs = await t.run(async (ctx) => {
-			// Recreate a cleanup that deleted its last doc but failed before the final marker patch.
-			await ctx.db.patch("files_nodes", nodeId, {
-				collaborationCleanupYjsLastSequenceId: oldLineageId,
+			// Recovery may find a task after the last covered doc has already gone.
+			await ctx.db.insert("files_yjs_cleanup_tasks", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				fileNodeId: nodeId,
+				throughSequence: oldSnapshot.sequence,
+				supersededYjsAssetId: oldSnapshot.assetId,
+				putMayArriveUntil: null,
+				historyPending: true,
 			});
 			return {
 				snapshots: await ctx.db
@@ -7502,8 +7658,14 @@ describe("non-collaborative files", () => {
 		});
 		expect(on._nay).toBeUndefined();
 		const enabledNode = await t.run(async (ctx) => ctx.db.get("files_nodes", nodeId));
-		expect(enabledNode?.nonCollaborative).toBeUndefined();
-		expect(enabledNode?.collaborationCleanupYjsLastSequenceId).toBeUndefined();
+		expect(enabledNode?.collaborationEnabled).toBe(true);
+		expect(await t.run(async (ctx) =>
+			ctx.db.query("files_yjs_cleanup_tasks")
+				.withIndex("by_organization_workspace_fileNode_historyPending", (q) =>
+					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId)
+						.eq("fileNodeId", nodeId).eq("historyPending", true),
+				).first(),
+		)).toBeNull();
 		expect(enabledNode?.yjsLastSequenceId).toBeDefined();
 	});
 
@@ -7552,14 +7714,13 @@ describe("non-collaborative files", () => {
 		);
 		expect(r2Writes.size).toBe(writesBeforeBlockedOn);
 
-		await t.mutation(internal.files_nodes_content.cleanup_file_yjs_covered_rows, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			nodeId,
-			throughSequence: oldLineage.throughSequence,
-			supersededYjsAssetId: oldLineage.snapshotAssetId,
-			nonCollaborativeCleanupYjsLastSequenceId: oldLineage.lastSequenceId,
-		});
+		const cleanupTask = await t.run(async (ctx) => ctx.db.query("files_yjs_cleanup_tasks")
+			.withIndex("by_organization_workspace_fileNode_historyPending", (q) =>
+				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId)
+					.eq("fileNodeId", nodeId).eq("historyPending", true),
+			).first());
+		if (!cleanupTask) throw new Error("Missing cleanup task");
+		await t.mutation(internal.files_nodes_content.cleanup_file_yjs_task, { taskId: cleanupTask._id });
 		const on = await asUser.action(api.files_nodes_content.set_file_collaborative, {
 			membershipId: db.membershipId,
 			nodeId,
@@ -7625,14 +7786,7 @@ describe("non-collaborative files", () => {
 			supersededYjsAssetId: oldLineage.snapshotAssetId,
 			expectedActiveYjsLastSequenceId: oldLineage.lastSequenceId,
 		});
-		await t.mutation(internal.files_nodes_content.cleanup_file_yjs_covered_rows, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			nodeId,
-			throughSequence: oldLineage.throughSequence,
-			supersededYjsAssetId: oldLineage.snapshotAssetId,
-			nonCollaborativeCleanupYjsLastSequenceId: oldLineage.lastSequenceId,
-		});
+		await t.mutation(internal.files_nodes_content.cleanup_file_yjs_task, { taskId: cleanupTask._id });
 
 		const afterStaleWork = await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", nodeId);
@@ -7646,7 +7800,7 @@ describe("non-collaborative files", () => {
 			};
 		});
 		expect(afterStaleWork.lastSequenceId).toBe(freshPointers.yjsLastSequenceId);
-		expect(afterStaleWork.tooLargeMarker).toBeUndefined();
+		expect(afterStaleWork.tooLargeMarker).toBeNull();
 		expect(afterStaleWork.updates.map((update) => update.sequence)).toEqual([1]);
 		expect(afterStaleWork.jobs.map((job) => job.targetSequence)).toEqual([1]);
 	});
@@ -7773,9 +7927,9 @@ describe("non-collaborative files", () => {
 			yjsAsset: await ctx.db.get("files_r2_assets", assets.yjsSnapshotAssetId),
 			contentAsset: await ctx.db.get("files_r2_assets", assets.contentSnapshotAssetId),
 		}));
-		expect(after.node).toMatchObject({ nonCollaborative: true, assetId });
-		expect(after.node?.yjsSnapshotId).toBeUndefined();
-		expect(after.node?.yjsLastSequenceId).toBeUndefined();
+		expect(after.node).toMatchObject({ collaborationEnabled: false, assetId });
+		expect(after.node?.yjsSnapshotId).toBeNull();
+		expect(after.node?.yjsLastSequenceId).toBeNull();
 		expect(after.yjsSnapshots).toEqual([]);
 		expect(after.lastSequences).toEqual([]);
 		expect(after.yjsAsset?.r2Key).toBeUndefined();
@@ -7854,12 +8008,12 @@ describe("non-collaborative files", () => {
 
 		// Neither refusal changed a mode or built a document.
 		const modes = await t.run(async (ctx) => ({
-			collaborative: (await ctx.db.get("files_nodes", collaborativeNodeId))?.nonCollaborative,
+			collaborative: (await ctx.db.get("files_nodes", collaborativeNodeId))?.collaborationEnabled,
 			nonCollaborative: (await ctx.db.get("files_nodes", nonCollaborativeNodeId))?.yjsSnapshotId,
 			lastSequences: (await ctx.db.query("files_yjs_docs_last_sequences").collect()).length,
 		}));
-		expect(modes.collaborative).toBeUndefined();
-		expect(modes.nonCollaborative).toBeUndefined();
+		expect(modes.collaborative).toBe(true);
+		expect(modes.nonCollaborative).toBeNull();
 		expect(modes.lastSequences).toBe(1);
 
 		// Positive control: the ONLY thing missing was the permission. Grant it on both files and
@@ -7977,10 +8131,10 @@ describe("non-collaborative files", () => {
 		// The Yjs and frontmatter markers are cleared with the newer document state they describe.
 		// The committed text is the last materialized text, exactly as the dialog promised.
 		const after = await t.run(async (ctx) => await ctx.db.get("files_nodes", nodeId));
-		expect(after?.contentYjsStateTooLargeByteSize).toBeUndefined();
-		expect(after?.contentFrontmatterTooLargeFieldCount).toBeUndefined();
-		expect(after?.contentFrontmatterTooLargeIndexDocumentCount).toBeUndefined();
-		expect(after?.nonCollaborative).toBe(true);
+		expect(after?.contentYjsStateTooLargeByteSize).toBeNull();
+		expect(after?.contentFrontmatterTooLargeFieldCount).toBeNull();
+		expect(after?.contentFrontmatterTooLargeIndexDocumentCount).toBeNull();
+		expect(after?.collaborationEnabled).toBe(false);
 		const readBack = await t.query(internal.files_nodes.read_file_content_from_chunks, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -8049,8 +8203,8 @@ describe("non-collaborative files", () => {
 		// The over-cap text lived only in the dropped document, so the marker goes with it and the
 		// file reopens at the last text that fit.
 		const after = await t.run(async (ctx) => await ctx.db.get("files_nodes", nodeId));
-		expect(after?.contentTooLargeByteSize).toBeUndefined();
-		expect(after?.nonCollaborative).toBe(true);
+		expect(after?.contentTooLargeByteSize).toBeNull();
+		expect(after?.collaborationEnabled).toBe(false);
 		const readBack = await t.query(internal.files_nodes.read_file_content_from_chunks, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -8267,7 +8421,7 @@ describe("non-collaborative files", () => {
 		const crossedNode = await t.run(async (ctx) => ctx.db.get("files_nodes", markdownNodeId));
 		expect(crossedNode?.path).toBe("/notes.json");
 		expect(crossedNode?.contentType).toBe("text/markdown;charset=utf-8");
-		expect(crossedNode?.yjsRootKind).toBe("rich_text");
+		expect(crossedNode?.textKind).toBe("rich_text");
 
 		const subtypeRename = await asUser.mutation(api.files_nodes.rename_node, {
 			membershipId: db.membershipId,
@@ -8461,8 +8615,8 @@ describe("non-collaborative files", () => {
 			return {
 				assetId: node?.assetId,
 				contentType: node?.contentType,
-				yjsRootKind: node?.yjsRootKind,
-				nonCollaborative: node?.nonCollaborative,
+				textKind: node?.textKind,
+				collaborationEnabled: node?.collaborationEnabled,
 				yjsSnapshotId: node?.yjsSnapshotId,
 				yjsLastSequenceId: node?.yjsLastSequenceId,
 				versionAssetIds: versionRows.map((row) => row.assetId),
@@ -8470,11 +8624,11 @@ describe("non-collaborative files", () => {
 		});
 		expect(after).toMatchObject({
 			contentType: "text/plain;charset=utf-8",
-			yjsRootKind: "plain_text",
-			nonCollaborative: true,
+			textKind: "plain_text",
+			collaborationEnabled: false,
 		});
-		expect(after.yjsSnapshotId).toBeUndefined();
-		expect(after.yjsLastSequenceId).toBeUndefined();
+		expect(after.yjsSnapshotId).toBeNull();
+		expect(after.yjsLastSequenceId).toBeNull();
 		expect(after.assetId).not.toBe(assetId);
 		expect(after.assetId).not.toBe(version.assetId);
 		const readResult = await asUser.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
@@ -8965,20 +9119,20 @@ test("metadata search indexes committed frontmatter values and scopes by path", 
 			cursor: null,
 		});
 
-	const fromAlice = await search({ op: "eq", qualifiedField: "frontmatter.from", value: "alice@example.com" });
+	const fromAlice = await search({ op: "eq", fieldPath: "frontmatter.from", value: "alice@example.com" });
 	expect(new Set(fromAlice.items.map((item) => item.path))).toEqual(
 		new Set(["/meta/invoice.md", "/meta-other/outside.md"]),
 	);
 
-	const copiedToBob = await search({ op: "eq", qualifiedField: "frontmatter.cc", value: "bob@example.com" });
+	const copiedToBob = await search({ op: "eq", fieldPath: "frontmatter.cc", value: "bob@example.com" });
 	expect(copiedToBob.items.map((item) => item.path)).toEqual(["/meta/invoice.md"]);
 
-	const invoiceSubject = await search({ op: "prefix", qualifiedField: "frontmatter.subject", value: "Invoice" });
+	const invoiceSubject = await search({ op: "prefix", fieldPath: "frontmatter.subject", value: "Invoice" });
 	expect(invoiceSubject.items.map((item) => item.path)).toEqual(["/meta/invoice.md"]);
 
 	const amountRange = await search({
 		op: "range",
-		qualifiedField: "frontmatter.amount",
+		fieldPath: "frontmatter.amount",
 		valueKind: "number",
 		gte: 100,
 		lt: 200,
@@ -8988,26 +9142,26 @@ test("metadata search indexes committed frontmatter values and scopes by path", 
 	// Use sentAt to prove that maybe_date companion docs make YAML strings range-searchable.
 	const sentInWindow = await search({
 		op: "range",
-		qualifiedField: "frontmatter.sentAt",
+		fieldPath: "frontmatter.sentAt",
 		valueKind: "maybe_date",
 		gte: Date.UTC(2026, 6, 27),
 		lt: Date.UTC(2026, 7, 2),
 	});
 	expect(sentInWindow.items.map((item) => item.path)).toEqual(["/meta/invoice.md"]);
 
-	const amountStringMismatch = await search({ op: "eq", qualifiedField: "frontmatter.amount", value: "120.5" });
+	const amountStringMismatch = await search({ op: "eq", fieldPath: "frontmatter.amount", value: "120.5" });
 	expect(amountStringMismatch.items).toEqual([]);
 
-	const amountString = await search({ op: "eq", qualifiedField: "frontmatter.amountString", value: "120.5" });
+	const amountString = await search({ op: "eq", fieldPath: "frontmatter.amountString", value: "120.5" });
 	expect(amountString.items.map((item) => item.path)).toEqual(["/meta/invoice.md"]);
 
-	const booleanNumberMismatch = await search({ op: "eq", qualifiedField: "frontmatter.hasAttachments", value: 1 });
+	const booleanNumberMismatch = await search({ op: "eq", fieldPath: "frontmatter.hasAttachments", value: 1 });
 	expect(booleanNumberMismatch.items).toEqual([]);
 
-	const hasAttachments = await search({ op: "eq", qualifiedField: "frontmatter.hasAttachments", value: true });
+	const hasAttachments = await search({ op: "eq", fieldPath: "frontmatter.hasAttachments", value: true });
 	expect(hasAttachments.items.map((item) => item.path)).toEqual(["/meta/invoice.md"]);
 
-	const scoped = await search({ op: "exists", qualifiedField: "frontmatter.from" }, "/meta");
+	const scoped = await search({ op: "exists", fieldPath: "frontmatter.from" }, "/meta");
 	expect(scoped.items.map((item) => item.path)).toEqual(["/meta/invoice.md"]);
 
 	const metadata = await asUser.query(internal.files_metadata.get_by_path, {
@@ -9021,19 +9175,19 @@ test("metadata search indexes committed frontmatter values and scopes by path", 
 		sourceKind: "committed",
 		fields: expect.arrayContaining(["frontmatter.cc", "frontmatter.amountString"]),
 		values: expect.arrayContaining([
-			expect.objectContaining({ qualifiedField: "frontmatter.amount", valueKind: "number", numberValue: 120.5 }),
+			expect.objectContaining({ fieldPath: "frontmatter.amount", valueKind: "number", numberValue: 120.5 }),
 			expect.objectContaining({
-				qualifiedField: "frontmatter.amountString",
+				fieldPath: "frontmatter.amountString",
 				valueKind: "string",
 				stringValue: "120.5",
 			}),
 			expect.objectContaining({
-				qualifiedField: "frontmatter.sentAt",
+				fieldPath: "frontmatter.sentAt",
 				valueKind: "string",
 				stringValue: "2026-07-29T14:30:00Z",
 			}),
 			expect.objectContaining({
-				qualifiedField: "frontmatter.sentAt",
+				fieldPath: "frontmatter.sentAt",
 				valueKind: "maybe_date",
 				numberValue: Date.UTC(2026, 6, 29, 14, 30),
 			}),
@@ -9096,7 +9250,7 @@ test("metadata search uses current-user pending frontmatter and hides stale comm
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId,
-			plan: { op: "eq", qualifiedField: "frontmatter.from", value },
+			plan: { op: "eq", fieldPath: "frontmatter.from", value },
 			numItems: 20,
 			cursor: null,
 		});
@@ -9116,7 +9270,7 @@ test("metadata search uses current-user pending frontmatter and hides stale comm
 		fields: expect.arrayContaining(["frontmatter.from", "frontmatter.subject"]),
 		values: expect.arrayContaining([
 			expect.objectContaining({
-				qualifiedField: "frontmatter.from",
+				fieldPath: "frontmatter.from",
 				valueKind: "string",
 				stringValue: "pending@example.com",
 			}),
@@ -9141,7 +9295,7 @@ test("metadata search uses current-user pending frontmatter and hides stale comm
 			userId,
 			plan: {
 				op: "range",
-				qualifiedField: "frontmatter.sentAt",
+				fieldPath: "frontmatter.sentAt",
 				valueKind: "maybe_date",
 				gte: Date.UTC(2026, 5, 1),
 				lt: Date.UTC(2026, 7, 1),
@@ -9194,7 +9348,7 @@ test("a pure-move row keeps committed metadata visible", async () => {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
-			plan: { op: "eq", qualifiedField: "frontmatter.from", value: "committed@example.com" },
+			plan: { op: "eq", fieldPath: "frontmatter.from", value: "committed@example.com" },
 			numItems: 20,
 			cursor: null,
 		});
@@ -9218,7 +9372,7 @@ test("a pure-move row keeps committed metadata visible", async () => {
 		fields: expect.arrayContaining(["frontmatter.from"]),
 		values: expect.arrayContaining([
 			expect.objectContaining({
-				qualifiedField: "frontmatter.from",
+				fieldPath: "frontmatter.from",
 				valueKind: "string",
 				stringValue: "committed@example.com",
 			}),
@@ -9268,6 +9422,23 @@ test("metadata search updates indexed scope when files are renamed and moved", a
 	);
 	const targetFolderId = await t.run(async (ctx) =>
 		ctx.db.insert("files_nodes", {
+			contentType: null,
+			assetId: null,
+			textKind: null,
+			collaborationEnabled: null,
+			yjsSnapshotId: null,
+			yjsLastSequenceId: null,
+			statsId: null,
+			contentTooLargeByteSize: null,
+			contentShapeMismatchAt: null,
+			contentYjsStateTooLargeByteSize: null,
+			contentFrontmatterTooLargeFieldCount: null,
+			contentFrontmatterTooLargeIndexDocumentCount: null,
+			restrictedScopeNodeId: null,
+			readOnlyScopeNodeId: null,
+			readOnlyPluginName: null,
+			readOnlyPluginServiceTargetId: null,
+			archiveOperationId: null,
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			parentId: files_ROOT_ID,
@@ -9288,7 +9459,7 @@ test("metadata search updates indexed scope when files are renamed and moved", a
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
-			plan: { op: "eq", qualifiedField: "frontmatter.scope", value: "metadata-scope-value" },
+			plan: { op: "eq", fieldPath: "frontmatter.scope", value: "metadata-scope-value" },
 			pathPrefix,
 			numItems: 10,
 			cursor: null,
@@ -9340,7 +9511,7 @@ test("metadata search updates indexed scope when files are archived and unarchiv
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			userId: db.userId,
-			plan: { op: "eq", qualifiedField: "frontmatter.scope", value: "metadata-archive-value" },
+			plan: { op: "eq", fieldPath: "frontmatter.scope", value: "metadata-archive-value" },
 			numItems: 10,
 			cursor: null,
 		});
@@ -9421,21 +9592,21 @@ test("file metadata is searchable next to frontmatter and survives a content sav
 		});
 
 	// The same key name on both sources stays two separate fields.
-	expect((await search({ op: "eq", qualifiedField: "metadata.title", value: "From metadata" })).items).toMatchObject([
+	expect((await search({ op: "eq", fieldPath: "metadata.title", value: "From metadata" })).items).toMatchObject([
 		{ path, nodeId },
 	]);
 	expect(
-		(await search({ op: "eq", qualifiedField: "frontmatter.title", value: "From frontmatter" })).items,
+		(await search({ op: "eq", fieldPath: "frontmatter.title", value: "From frontmatter" })).items,
 	).toMatchObject([{ path, nodeId }]);
-	expect((await search({ op: "eq", qualifiedField: "metadata.title", value: "From frontmatter" })).items).toEqual([]);
+	expect((await search({ op: "eq", fieldPath: "metadata.title", value: "From frontmatter" })).items).toEqual([]);
 
-	expect((await search({ op: "exists", qualifiedField: "metadata.slack:message-id" })).items).toMatchObject([
+	expect((await search({ op: "exists", fieldPath: "metadata.slack:message-id" })).items).toMatchObject([
 		{ path, nodeId },
 	]);
 	expect(
-		(await search({ op: "range", qualifiedField: "metadata.priority", valueKind: "number", gte: 1, lt: 5 })).items,
+		(await search({ op: "range", fieldPath: "metadata.priority", valueKind: "number", gte: 1, lt: 5 })).items,
 	).toMatchObject([{ path, nodeId }]);
-	expect((await search({ op: "eq", qualifiedField: "metadata.archived", value: false })).items).toMatchObject([
+	expect((await search({ op: "eq", fieldPath: "metadata.archived", value: false })).items).toMatchObject([
 		{ path, nodeId },
 	]);
 	// A date-like string gets the same maybe_date companion frontmatter gets.
@@ -9443,7 +9614,7 @@ test("file metadata is searchable next to frontmatter and survives a content sav
 		(
 			await search({
 				op: "range",
-				qualifiedField: "metadata.released-on",
+				fieldPath: "metadata.released-on",
 				valueKind: "maybe_date",
 				gte: Date.UTC(2026, 7, 17),
 				lt: Date.UTC(2026, 7, 19),
@@ -9484,22 +9655,22 @@ test("file metadata is searchable next to frontmatter and survives a content sav
 		{ key: "archived", value: false },
 		{ key: "released-on", value: "2026-08-18" },
 	]);
-	expect((await search({ op: "eq", qualifiedField: "metadata.title", value: "From metadata" })).items).toMatchObject([
+	expect((await search({ op: "eq", fieldPath: "metadata.title", value: "From metadata" })).items).toMatchObject([
 		{ path, nodeId },
 	]);
 	// Metadata docs carry their own copy of the file's tree path, so folder-scoped search must find
 	// them in the file's folder and must not find them under another one.
-	expect((await search({ op: "exists", qualifiedField: "metadata.title" }, "/file-metadata")).items).toMatchObject([
+	expect((await search({ op: "exists", fieldPath: "metadata.title" }, "/file-metadata")).items).toMatchObject([
 		{ path, nodeId },
 	]);
-	expect((await search({ op: "exists", qualifiedField: "metadata.title" }, "/elsewhere")).items).toEqual([]);
+	expect((await search({ op: "exists", fieldPath: "metadata.title" }, "/elsewhere")).items).toEqual([]);
 
 	// The save must also still delete the frontmatter docs it replaces. The push above merges a second
 	// Yjs document into the first one, and Yjs orders two concurrent inserts by a random client id, so
 	// which frontmatter block ends up on top is not decided here. Exactly one of the two titles must
 	// match: two matches would mean the narrowed delete stopped deleting.
-	const oldTitle = await search({ op: "eq", qualifiedField: "frontmatter.title", value: "From frontmatter" });
-	const newTitle = await search({ op: "eq", qualifiedField: "frontmatter.title", value: "Rewritten frontmatter" });
+	const oldTitle = await search({ op: "eq", fieldPath: "frontmatter.title", value: "From frontmatter" });
+	const newTitle = await search({ op: "eq", fieldPath: "frontmatter.title", value: "Rewritten frontmatter" });
 	expect(oldTitle.items.length + newTitle.items.length).toBe(1);
 
 	// A second write replaces the whole map: the dropped keys stop being searchable.
@@ -9510,7 +9681,7 @@ test("file metadata is searchable next to frontmatter and survives a content sav
 	});
 	if (replaced._nay) throw new Error(replaced._nay.message);
 	expect(await entries()).toEqual([{ key: "title", value: "Only key left" }]);
-	expect((await search({ op: "exists", qualifiedField: "metadata.priority" })).items).toEqual([]);
+	expect((await search({ op: "exists", fieldPath: "metadata.priority" })).items).toEqual([]);
 });
 
 test("file metadata stays visible while a pending content edit hides committed frontmatter", async () => {
@@ -9561,10 +9732,10 @@ test("file metadata stays visible while a pending content edit hides committed f
 
 	// The pending edit replaces what the file's own frontmatter says.
 	expect(
-		(await search({ op: "eq", qualifiedField: "frontmatter.from", value: "committed@example.com" })).items,
+		(await search({ op: "eq", fieldPath: "frontmatter.from", value: "committed@example.com" })).items,
 	).toEqual([]);
 	// It says nothing about the metadata written next to the file, so that stays findable.
-	expect((await search({ op: "eq", qualifiedField: "metadata.source", value: "slack" })).items).toMatchObject([
+	expect((await search({ op: "eq", fieldPath: "metadata.source", value: "slack" })).items).toMatchObject([
 		{ path, nodeId },
 	]);
 
@@ -9580,7 +9751,7 @@ test("file metadata stays visible while a pending content edit hides committed f
 	// lines, and an arrayContaining assertion would still pass.
 	expect(metadata?.sourceKind).toBe("pending");
 	expect(metadata?.fields).toEqual(["metadata.source", "frontmatter.from"]);
-	expect(metadata?.values.map((value) => [value.qualifiedField, value.stringValue])).toEqual([
+	expect(metadata?.values.map((value) => [value.fieldPath, value.stringValue])).toEqual([
 		["metadata.source", "slack"],
 		["frontmatter.from", "pending@example.com"],
 	]);
@@ -9727,7 +9898,7 @@ test("update_entries_by_path lets the agent set and remove keys on an uploaded f
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: db.userId,
-				plan: { op: "eq", qualifiedField: "metadata.status", value: "signed" },
+				plan: { op: "eq", fieldPath: "metadata.status", value: "signed" },
 				numItems: 10,
 				cursor: null,
 			})
@@ -9904,7 +10075,7 @@ describe("folder metadata", () => {
 		const search = (pathPrefix?: string) =>
 			t.query(internal.files_metadata.search, {
 				...scope,
-				plan: { op: "eq", qualifiedField: "metadata.folder-key", value: "shared" },
+				plan: { op: "eq", fieldPath: "metadata.folder-key", value: "shared" },
 				pathPrefix,
 				numItems: 10,
 				cursor: null,
@@ -9970,7 +10141,7 @@ describe("folder metadata", () => {
 		expect(
 			await asOwner.query(api.files_metadata.list_search_values, {
 				membershipId: db.membershipId,
-				qualifiedField: "metadata.folder-key",
+				fieldPath: "metadata.folder-key",
 				prefix: "",
 			}),
 		).toEqual([]);
@@ -9994,12 +10165,12 @@ describe("folder metadata", () => {
 		await assertScope(["/restored-parent/renamed", "/restored-parent/renamed/inner"], false);
 		expect((await search("/destination")).items).toEqual([]);
 		expect(await asOwner.query(api.files_metadata.list_search_fields, { membershipId: db.membershipId })).toEqual([
-			{ qualifiedField: "metadata.folder-key", valueKinds: ["string"] },
+			{ fieldPath: "metadata.folder-key", valueKinds: ["string"] },
 		]);
 		expect(
 			await asOwner.query(api.files_metadata.list_search_values, {
 				membershipId: db.membershipId,
-				qualifiedField: "metadata.folder-key",
+				fieldPath: "metadata.folder-key",
 				prefix: "",
 			}),
 		).toEqual(["shared"]);
@@ -10068,7 +10239,7 @@ describe("folder metadata", () => {
 			)._nay,
 		).toBeUndefined();
 		expect((await read("/folder-metadata/nested", otherUserId))?.values).toMatchObject([
-			{ qualifiedField: "metadata.status", stringValue: "changed" },
+			{ fieldPath: "metadata.status", stringValue: "changed" },
 		]);
 		expect(
 			await t.mutation(internal.files_metadata.update_entries_by_path, {
@@ -10096,7 +10267,7 @@ describe("folder metadata", () => {
 			expect(docs).toHaveLength(2);
 			for (const doc of docs) expect(doc).toMatchObject({ path, treePath: path + "/", sourceKind: "committed" });
 		}
-		const plans: files_metadata_SearchPlan[] = [{ op: "exists", qualifiedField: "metadata.status" }];
+		const plans: files_metadata_SearchPlan[] = [{ op: "exists", fieldPath: "metadata.status" }];
 		expect(
 			(
 				await asOwner.query(api.files_metadata.search_nodes, {
@@ -10230,8 +10401,8 @@ describe("search box doors", () => {
 	}
 
 	const statusOpenPlans: files_metadata_SearchPlan[] = [
-		{ op: "eq", qualifiedField: "frontmatter.status", value: "open" },
-		{ op: "eq", qualifiedField: "metadata.status", value: "open" },
+		{ op: "eq", fieldPath: "frontmatter.status", value: "open" },
+		{ op: "eq", fieldPath: "metadata.status", value: "open" },
 	];
 
 	test("search_nodes unites metadata kinds and value kinds and scopes by folder path", async () => {
@@ -10253,8 +10424,8 @@ describe("search box doors", () => {
 		// `priority:3` asks the number and the text. Only the number exists.
 		expect(
 			await search([
-				{ op: "eq", qualifiedField: "frontmatter.priority", value: "3" },
-				{ op: "eq", qualifiedField: "frontmatter.priority", value: 3 },
+				{ op: "eq", fieldPath: "frontmatter.priority", value: "3" },
+				{ op: "eq", fieldPath: "frontmatter.priority", value: 3 },
 			]),
 		).toEqual(new Set([seeded.openTaskId]));
 		// The plans the box really sends: a bare number or boolean chip carries one plan per metadata
@@ -10264,23 +10435,23 @@ describe("search box doors", () => {
 		expect(await search(chipPlans("priority:3"))).toEqual(new Set([seeded.openTaskId]));
 		expect(await search(chipPlans("regression:true"))).toEqual(new Set([seeded.openTaskId]));
 		expect(
-			await search([{ op: "range", qualifiedField: "frontmatter.priority", valueKind: "number", gte: 2 }]),
+			await search([{ op: "range", fieldPath: "frontmatter.priority", valueKind: "number", gte: 2 }]),
 		).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId]));
 		// Each bound has its own index line, so every comparator gets a case.
-		expect(await search([{ op: "range", qualifiedField: "frontmatter.priority", valueKind: "number", gt: 2 }])).toEqual(
+		expect(await search([{ op: "range", fieldPath: "frontmatter.priority", valueKind: "number", gt: 2 }])).toEqual(
 			new Set([seeded.openTaskId]),
 		);
 		expect(
-			await search([{ op: "range", qualifiedField: "frontmatter.priority", valueKind: "number", lte: 2 }]),
+			await search([{ op: "range", fieldPath: "frontmatter.priority", valueKind: "number", lte: 2 }]),
 		).toEqual(new Set([seeded.fixedTaskId, seeded.archivedTaskId]));
-		expect(await search([{ op: "range", qualifiedField: "frontmatter.priority", valueKind: "number", lt: 2 }])).toEqual(
+		expect(await search([{ op: "range", fieldPath: "frontmatter.priority", valueKind: "number", lt: 2 }])).toEqual(
 			new Set([seeded.archivedTaskId]),
 		);
 		expect(
 			await search([
 				{
 					op: "range",
-					qualifiedField: "frontmatter.reported",
+					fieldPath: "frontmatter.reported",
 					valueKind: "maybe_date",
 					gte: Date.UTC(2026, 8, 4),
 					lt: Date.UTC(2026, 8, 5),
@@ -10291,21 +10462,21 @@ describe("search box doors", () => {
 		expect(await search(chipPlans("reported:2026-09-04T00:00:00Z"))).toEqual(new Set([seeded.openTaskId]));
 		expect(await search(chipPlans("reported:2026-09-04T00:01:00Z"))).toEqual(new Set());
 		// The folder scope applies to an exists plan too.
-		expect(await search([{ op: "exists", qualifiedField: "frontmatter.legacy" }], "/tasks")).toEqual(new Set());
-		expect(await search([{ op: "exists", qualifiedField: "frontmatter.legacy" }], "/tasks-archive")).toEqual(
+		expect(await search([{ op: "exists", fieldPath: "frontmatter.legacy" }], "/tasks")).toEqual(new Set());
+		expect(await search([{ op: "exists", fieldPath: "frontmatter.legacy" }], "/tasks-archive")).toEqual(
 			new Set([seeded.archivedTaskId]),
 		);
-		expect(await search([{ op: "eq", qualifiedField: "frontmatter.regression", value: true }])).toEqual(
+		expect(await search([{ op: "eq", fieldPath: "frontmatter.regression", value: true }])).toEqual(
 			new Set([seeded.openTaskId]),
 		);
-		expect(await search([{ op: "eq", qualifiedField: "frontmatter.tags", value: "macos" }])).toEqual(
+		expect(await search([{ op: "eq", fieldPath: "frontmatter.tags", value: "macos" }])).toEqual(
 			new Set([seeded.openTaskId]),
 		);
 		// A nested map is a key of its own, without a value.
-		expect(await search([{ op: "exists", qualifiedField: "frontmatter.source" }])).toEqual(
+		expect(await search([{ op: "exists", fieldPath: "frontmatter.source" }])).toEqual(
 			new Set([seeded.openTaskId]),
 		);
-		expect(await search([{ op: "exists", qualifiedField: "metadata.slack:message-id" }])).toEqual(
+		expect(await search([{ op: "exists", fieldPath: "metadata.slack:message-id" }])).toEqual(
 			new Set([seeded.fixedTaskId]),
 		);
 
@@ -10317,9 +10488,9 @@ describe("search box doors", () => {
 		// Input the app never sends gets the empty answer, not an error.
 		expect(await search([])).toEqual(new Set());
 		expect(await search(Array.from({ length: 5 }, () => statusOpenPlans[0]!))).toEqual(new Set());
-		expect(await search([{ op: "exists", qualifiedField: "frontmatter.a..b" }])).toEqual(new Set());
-		expect(await search([{ op: "exists", qualifiedField: "status" }])).toEqual(new Set());
-		expect(await search([{ op: "exists", qualifiedField: `frontmatter.${"a".repeat(160)}` }])).toEqual(new Set());
+		expect(await search([{ op: "exists", fieldPath: "frontmatter.a..b" }])).toEqual(new Set());
+		expect(await search([{ op: "exists", fieldPath: "status" }])).toEqual(new Set());
+		expect(await search([{ op: "exists", fieldPath: `frontmatter.${"a".repeat(160)}` }])).toEqual(new Set());
 		expect(await search(statusOpenPlans, "tasks")).toEqual(new Set());
 		expect(await search(statusOpenPlans, `/${"a".repeat(1024)}`)).toEqual(new Set());
 
@@ -10354,10 +10525,10 @@ describe("search box doors", () => {
 		// The open task now says "triaging" in the owner's draft, so its stale committed "open" is
 		// hidden. The fixed task still matches through its metadata map, which no draft can change.
 		expect(await search(statusOpenPlans)).toEqual(new Set([seeded.fixedTaskId, seeded.archivedTaskId]));
-		expect(await search([{ op: "eq", qualifiedField: "frontmatter.status", value: "triaging" }])).toEqual(
+		expect(await search([{ op: "eq", fieldPath: "frontmatter.status", value: "triaging" }])).toEqual(
 			new Set([seeded.openTaskId]),
 		);
-		expect(await search([{ op: "eq", qualifiedField: "metadata.status", value: "open" }])).toEqual(
+		expect(await search([{ op: "eq", fieldPath: "metadata.status", value: "open" }])).toEqual(
 			new Set([seeded.fixedTaskId]),
 		);
 
@@ -10370,12 +10541,12 @@ describe("search box doors", () => {
 			unstagedMarkdown: ["---", "status: triaging", "---", "Body"].join("\n"),
 		});
 		if (fixedPending._nay) throw new Error(fixedPending._nay.message);
-		expect(await search([{ op: "eq", qualifiedField: "metadata.status", value: "open" }])).toEqual(
+		expect(await search([{ op: "eq", fieldPath: "metadata.status", value: "open" }])).toEqual(
 			new Set([seeded.fixedTaskId]),
 		);
 		// Both kinds in one call: the frontmatter plan's overlay must not hide the map doc next to it.
 		expect(await search(statusOpenPlans)).toEqual(new Set([seeded.fixedTaskId, seeded.archivedTaskId]));
-		expect(await search([{ op: "eq", qualifiedField: "frontmatter.status", value: "fixed" }])).toEqual(new Set());
+		expect(await search([{ op: "eq", fieldPath: "frontmatter.status", value: "fixed" }])).toEqual(new Set());
 	});
 
 	test("search_nodes keeps a folder scope closed at its own path, whatever the characters", async () => {
@@ -10401,7 +10572,7 @@ describe("search box doors", () => {
 		);
 		expect(await search(statusOpenPlans, "/tasks/😀 media")).toEqual(new Set([emojiTaskId]));
 		expect(
-			await search([{ op: "prefix", qualifiedField: "frontmatter.status", value: "op" }], "/tasks/😀 media"),
+			await search([{ op: "prefix", fieldPath: "frontmatter.status", value: "op" }], "/tasks/😀 media"),
 		).toEqual(new Set([emojiTaskId]));
 	});
 
@@ -10412,7 +10583,7 @@ describe("search box doors", () => {
 		// into `String.fromCodePoint` would throw a RangeError instead of the empty answer.
 		const found = await seeded.asOwner.query(api.files_metadata.search_nodes, {
 			membershipId: seeded.db.membershipId,
-			plans: [{ op: "prefix", qualifiedField: "frontmatter.title", value: "a".repeat(300_000) }],
+			plans: [{ op: "prefix", fieldPath: "frontmatter.title", value: "a".repeat(300_000) }],
 		});
 		expect(found.nodeIds).toEqual([]);
 	});
@@ -10434,7 +10605,7 @@ describe("search box doors", () => {
 		expect(
 			await seeded.asOwner.query(api.files_metadata.list_search_values, {
 				membershipId: member.membershipId,
-				qualifiedField: "frontmatter.status",
+				fieldPath: "frontmatter.status",
 				prefix: "",
 			}),
 		).toEqual([]);
@@ -10501,7 +10672,7 @@ describe("search box doors", () => {
 				})
 			)._nay,
 		).toBeUndefined();
-		const plans: files_metadata_SearchPlan[] = [{ op: "exists", qualifiedField: "metadata.folder-secret" }];
+		const plans: files_metadata_SearchPlan[] = [{ op: "exists", fieldPath: "metadata.folder-secret" }];
 		const entries = () =>
 			member.asMember.query(api.files_metadata.get_entries, {
 				membershipId: member.membershipId,
@@ -10522,7 +10693,7 @@ describe("search box doors", () => {
 		const values = () =>
 			member.asMember.query(api.files_metadata.list_search_values, {
 				membershipId: member.membershipId,
-				qualifiedField: "metadata.folder-secret",
+				fieldPath: "metadata.folder-secret",
 				prefix: "",
 			});
 		const set = () =>
@@ -10562,7 +10733,7 @@ describe("search box doors", () => {
 		expect(await entries()).toEqual([{ key: "folder-secret", value: "visible-with-grant" }]);
 		expect(await byPath()).toMatchObject({ nodeId: seeded.tasksFolderId, fields: ["metadata.folder-secret"] });
 		expect((await search()).nodeIds).toEqual([seeded.tasksFolderId]);
-		expect(await fields()).toContainEqual({ qualifiedField: "metadata.folder-secret", valueKinds: ["string"] });
+		expect(await fields()).toContainEqual({ fieldPath: "metadata.folder-secret", valueKinds: ["string"] });
 		expect(await values()).toEqual(["visible-with-grant"]);
 		expect((await set())._nay).toBeDefined();
 		expect((await update())._nay).toBeDefined();
@@ -10592,16 +10763,16 @@ describe("search box doors", () => {
 			membershipId: seeded.db.membershipId,
 		});
 		expect(ownerFields).toEqual([
-			{ qualifiedField: "frontmatter.legacy", valueKinds: ["string"] },
-			{ qualifiedField: "frontmatter.priority", valueKinds: ["number"] },
-			{ qualifiedField: "frontmatter.regression", valueKinds: ["boolean"] },
-			{ qualifiedField: "frontmatter.reported", valueKinds: ["string", "maybe_date"] },
-			{ qualifiedField: "frontmatter.source", valueKinds: [] },
-			{ qualifiedField: "frontmatter.source.channel", valueKinds: ["string"] },
-			{ qualifiedField: "frontmatter.status", valueKinds: ["string"] },
-			{ qualifiedField: "frontmatter.tags", valueKinds: ["string"] },
-			{ qualifiedField: "metadata.slack:message-id", valueKinds: ["string"] },
-			{ qualifiedField: "metadata.status", valueKinds: ["string"] },
+			{ fieldPath: "frontmatter.legacy", valueKinds: ["string"] },
+			{ fieldPath: "frontmatter.priority", valueKinds: ["number"] },
+			{ fieldPath: "frontmatter.regression", valueKinds: ["boolean"] },
+			{ fieldPath: "frontmatter.reported", valueKinds: ["string", "maybe_date"] },
+			{ fieldPath: "frontmatter.source", valueKinds: [] },
+			{ fieldPath: "frontmatter.source.channel", valueKinds: ["string"] },
+			{ fieldPath: "frontmatter.status", valueKinds: ["string"] },
+			{ fieldPath: "frontmatter.tags", valueKinds: ["string"] },
+			{ fieldPath: "metadata.slack:message-id", valueKinds: ["string"] },
+			{ fieldPath: "metadata.status", valueKinds: ["string"] },
 		]);
 
 		// A key that only exists in the owner's draft shows up for the owner.
@@ -10616,7 +10787,7 @@ describe("search box doors", () => {
 		const ownerFieldsWithDraft = await seeded.asOwner.query(api.files_metadata.list_search_fields, {
 			membershipId: seeded.db.membershipId,
 		});
-		expect(ownerFieldsWithDraft.map((field) => field.qualifiedField)).toContain("frontmatter.draft-key");
+		expect(ownerFieldsWithDraft.map((field) => field.fieldPath)).toContain("frontmatter.draft-key");
 
 		// A member who was given `/tasks` sees its keys, not the archive's `legacy` and not the
 		// owner's draft key.
@@ -10643,7 +10814,7 @@ describe("search box doors", () => {
 		const memberFields = await member.asMember.query(api.files_metadata.list_search_fields, {
 			membershipId: member.membershipId,
 		});
-		const memberKeys = memberFields.map((field) => field.qualifiedField);
+		const memberKeys = memberFields.map((field) => field.fieldPath);
 		expect(memberKeys).toContain("frontmatter.status");
 		expect(memberKeys).toContain("metadata.status");
 		expect(memberKeys).not.toContain("frontmatter.legacy");
@@ -10658,11 +10829,11 @@ describe("search box doors", () => {
 		const keys = () =>
 			seeded.asOwner
 				.query(api.files_metadata.list_search_fields, { membershipId: seeded.db.membershipId })
-				.then((fields) => fields.map((field) => field.qualifiedField));
+				.then((fields) => fields.map((field) => field.fieldPath));
 		const legacyValues = () =>
 			seeded.asOwner.query(api.files_metadata.list_search_values, {
 				membershipId: seeded.db.membershipId,
-				qualifiedField: "frontmatter.legacy",
+				fieldPath: "frontmatter.legacy",
 				prefix: "",
 			});
 
@@ -10697,7 +10868,7 @@ describe("search box doors", () => {
 		const controlField = `frontmatter.${"b".repeat(148)}`;
 		await t.run(async (ctx) => {
 			const openTask = (await ctx.db.get("files_nodes", seeded.openTaskId))!;
-			for (const qualifiedField of [longField, badField, controlField]) {
+			for (const fieldPath of [longField, badField, controlField]) {
 				const doc = {
 					organizationId: seeded.db.organizationId,
 					workspaceId: seeded.db.workspaceId,
@@ -10705,7 +10876,7 @@ describe("search box doors", () => {
 					sourceKind: "committed" as const,
 					path: openTask.path,
 					treePath: openTask.treePath,
-					qualifiedField,
+					fieldPath,
 				};
 				await ctx.db.insert("files_metadata_docs", { ...doc, docKind: "field" });
 				await ctx.db.insert("files_metadata_docs", { ...doc, docKind: "value", valueKind: "string", stringValue: "x" });
@@ -10718,7 +10889,7 @@ describe("search box doors", () => {
 				sourceKind: "committed",
 				path: openTask.path,
 				treePath: openTask.treePath,
-				qualifiedField: "frontmatter.status",
+				fieldPath: "frontmatter.status",
 				docKind: "value",
 				valueKind: "string",
 				stringValue: "o".repeat(201),
@@ -10726,18 +10897,18 @@ describe("search box doors", () => {
 		});
 		const keys = await seeded.asOwner
 			.query(api.files_metadata.list_search_fields, { membershipId: seeded.db.membershipId })
-			.then((fields) => fields.map((field) => field.qualifiedField));
-		const nodeIds = (qualifiedField: string) =>
+			.then((fields) => fields.map((field) => field.fieldPath));
+		const nodeIds = (fieldPath: string) =>
 			seeded.asOwner
 				.query(api.files_metadata.search_nodes, {
 					membershipId: seeded.db.membershipId,
-					plans: [{ op: "exists", qualifiedField }],
+					plans: [{ op: "exists", fieldPath }],
 				})
 				.then((found) => found.nodeIds);
-		const values = (qualifiedField: string, prefix: string) =>
+		const values = (fieldPath: string, prefix: string) =>
 			seeded.asOwner.query(api.files_metadata.list_search_values, {
 				membershipId: seeded.db.membershipId,
-				qualifiedField,
+				fieldPath,
 				prefix,
 			});
 
@@ -10758,10 +10929,10 @@ describe("search box doors", () => {
 	test("list_search_values lists distinct readable values that start with the prefix", async () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);
-		const values = (qualifiedField: string, prefix: string) =>
+		const values = (fieldPath: string, prefix: string) =>
 			seeded.asOwner.query(api.files_metadata.list_search_values, {
 				membershipId: seeded.db.membershipId,
-				qualifiedField,
+				fieldPath,
 				prefix,
 			});
 
@@ -10781,7 +10952,7 @@ describe("search box doors", () => {
 		const memberValues = () =>
 			member.asMember.query(api.files_metadata.list_search_values, {
 				membershipId: member.membershipId,
-				qualifiedField: "frontmatter.status",
+				fieldPath: "frontmatter.status",
 				prefix: "",
 			});
 		expect(await memberValues()).toEqual([]);
@@ -10810,7 +10981,7 @@ describe("search box doors", () => {
 				sourceKind: "committed",
 				path: "/tasks-archive/2026-07-01-old.md",
 				treePath: "/tasks-archive/2026-07-01-old.md",
-				qualifiedField: "frontmatter.status",
+				fieldPath: "frontmatter.status",
 				docKind: "value",
 				valueKind: "string",
 				stringValue: "aaa",
@@ -10822,7 +10993,7 @@ describe("search box doors", () => {
 		expect(
 			await member.asMember.query(api.files_metadata.list_search_values, {
 				membershipId: member.membershipId,
-				qualifiedField: "frontmatter.legacy",
+				fieldPath: "frontmatter.legacy",
 				prefix: "",
 			}),
 		).toEqual([]);
@@ -10841,7 +11012,7 @@ describe("search box doors", () => {
 					sourceKind: "committed",
 					path: openTask.path,
 					treePath: openTask.treePath,
-					qualifiedField: "frontmatter.cap",
+					fieldPath: "frontmatter.cap",
 					docKind: "value",
 					valueKind: "string",
 					stringValue: `v${String(index).padStart(2, "0")}`,
@@ -10851,7 +11022,7 @@ describe("search box doors", () => {
 
 		const values = await seeded.asOwner.query(api.files_metadata.list_search_values, {
 			membershipId: seeded.db.membershipId,
-			qualifiedField: "frontmatter.cap",
+			fieldPath: "frontmatter.cap",
 			prefix: "",
 		});
 		expect(values).toHaveLength(25);
@@ -10872,7 +11043,7 @@ describe("search box doors", () => {
 					sourceKind: "committed",
 					path: openTask.path,
 					treePath: openTask.treePath,
-					qualifiedField: `frontmatter.cap-${String(index).padStart(3, "0")}`,
+					fieldPath: `frontmatter.cap-${String(index).padStart(3, "0")}`,
 					docKind: "field",
 				});
 			}
@@ -10917,7 +11088,7 @@ describe("search box doors", () => {
 					sourceKind: "committed",
 					path: `/${name}`,
 					treePath: `/${name}`,
-					qualifiedField: "frontmatter.status",
+					fieldPath: "frontmatter.status",
 					docKind: "value",
 					valueKind: "string",
 					stringValue: "capped",
@@ -10936,7 +11107,7 @@ describe("search box doors", () => {
 
 		const found = await seeded.asOwner.query(api.files_metadata.search_nodes, {
 			membershipId: seeded.db.membershipId,
-			plans: [{ op: "eq", qualifiedField: "frontmatter.status", value: "capped" }],
+			plans: [{ op: "eq", fieldPath: "frontmatter.status", value: "capped" }],
 		});
 		expect(found.nodeIds).toHaveLength(260);
 	});
@@ -10975,14 +11146,14 @@ describe("search box doors", () => {
 			member.asMember
 				.query(api.files_metadata.search_nodes, { membershipId: member.membershipId, plans })
 				.then((found) => new Set(found.nodeIds));
-		expect(await searchAsMember([{ op: "eq", qualifiedField: "frontmatter.status", value: "triaging" }])).toEqual(
+		expect(await searchAsMember([{ op: "eq", fieldPath: "frontmatter.status", value: "triaging" }])).toEqual(
 			new Set(),
 		);
 		expect(await searchAsMember(statusOpenPlans)).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId]));
 		expect(
 			await member.asMember.query(api.files_metadata.list_search_values, {
 				membershipId: member.membershipId,
-				qualifiedField: "frontmatter.status",
+				fieldPath: "frontmatter.status",
 				prefix: "t",
 			}),
 		).toEqual([]);
@@ -11010,14 +11181,14 @@ describe("search box doors", () => {
 
 		const found = await seeded.asOwner.query(api.files_metadata.search_nodes, {
 			membershipId: seeded.db.membershipId,
-			plans: [{ op: "prefix", qualifiedField: "frontmatter.status", value: "op" }],
+			plans: [{ op: "prefix", fieldPath: "frontmatter.status", value: "op" }],
 		});
 		// The archive's task is `open` too.
 		expect(new Set(found.nodeIds)).toEqual(new Set([seeded.openTaskId, seeded.archivedTaskId, emojiTaskId]));
 		expect(
 			await seeded.asOwner.query(api.files_metadata.list_search_values, {
 				membershipId: seeded.db.membershipId,
-				qualifiedField: "frontmatter.status",
+				fieldPath: "frontmatter.status",
 				prefix: "op",
 			}),
 		).toEqual(["open", "op😀"]);
@@ -11050,11 +11221,11 @@ describe("search box doors", () => {
 		const keys = () =>
 			member.asMember
 				.query(api.files_metadata.list_search_fields, { membershipId: member.membershipId })
-				.then((fields) => fields.map((field) => field.qualifiedField));
+				.then((fields) => fields.map((field) => field.fieldPath));
 		const statusValues = () =>
 			member.asMember.query(api.files_metadata.list_search_values, {
 				membershipId: member.membershipId,
-				qualifiedField: "frontmatter.status",
+				fieldPath: "frontmatter.status",
 				prefix: "",
 			});
 
@@ -11087,7 +11258,7 @@ describe("search box doors", () => {
 		const statusValues = (prefix: string) =>
 			seeded.asOwner.query(api.files_metadata.list_search_values, {
 				membershipId: seeded.db.membershipId,
-				qualifiedField: "frontmatter.status",
+				fieldPath: "frontmatter.status",
 				prefix,
 			});
 
@@ -11107,7 +11278,7 @@ describe("search box doors", () => {
 		expect(await statusValues("t")).toEqual(["triaging"]);
 		const found = await seeded.asOwner.query(api.files_metadata.search_nodes, {
 			membershipId: seeded.db.membershipId,
-			plans: [{ op: "eq", qualifiedField: "frontmatter.status", value: "fixed" }],
+			plans: [{ op: "eq", fieldPath: "frontmatter.status", value: "fixed" }],
 		});
 		expect(found.nodeIds).toEqual([]);
 	});
@@ -11117,7 +11288,7 @@ describe("create-time metadata", () => {
 	async function read_metadata_docs(t: ReturnType<typeof test_convex>, nodeId: Id<"files_nodes">) {
 		return await t.run(async (ctx) =>
 			(await ctx.db.query("files_metadata_docs").collect()).filter(
-				(doc) => doc.fileNodeId === nodeId && doc.qualifiedField.startsWith("metadata."),
+				(doc) => doc.fileNodeId === nodeId && doc.fieldPath.startsWith("metadata."),
 			),
 		);
 	}
@@ -11152,7 +11323,7 @@ describe("create-time metadata", () => {
 
 		// The publish owns the size and the media type, so the create must stamp neither. Check the
 		// stored docs, because the entries above are read back through the same writer that made them.
-		expect((await read_metadata_docs(t, upload._yay.nodeId)).map((doc) => doc.qualifiedField).sort()).toEqual([
+		expect((await read_metadata_docs(t, upload._yay.nodeId)).map((doc) => doc.fieldPath).sort()).toEqual([
 			"metadata.original-name",
 			"metadata.original-name",
 			"metadata.source",
@@ -11166,7 +11337,7 @@ describe("create-time metadata", () => {
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
 					userId: db.userId,
-					plan: { op: "eq", qualifiedField: "metadata.source", value: "upload" },
+					plan: { op: "eq", fieldPath: "metadata.source", value: "upload" },
 					numItems: 10,
 					cursor: null,
 				})
@@ -11432,6 +11603,23 @@ test("text_search_files updates unified search scope when files are renamed and 
 	const moveNodeId = await test_materialize_markdown_file(t, asUser, db, "/move-source.md", "# Move\n\nbase content.");
 	const targetFolderId = await t.run(async (ctx) =>
 		ctx.db.insert("files_nodes", {
+			contentType: null,
+			assetId: null,
+			textKind: null,
+			collaborationEnabled: null,
+			yjsSnapshotId: null,
+			yjsLastSequenceId: null,
+			statsId: null,
+			contentTooLargeByteSize: null,
+			contentShapeMismatchAt: null,
+			contentYjsStateTooLargeByteSize: null,
+			contentFrontmatterTooLargeFieldCount: null,
+			contentFrontmatterTooLargeIndexDocumentCount: null,
+			restrictedScopeNodeId: null,
+			readOnlyScopeNodeId: null,
+			readOnlyPluginName: null,
+			readOnlyPluginServiceTargetId: null,
+			archiveOperationId: null,
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			parentId: files_ROOT_ID,
@@ -12128,19 +12316,19 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 			return {
 				assetId: node?.assetId,
 				contentType: node?.contentType,
-				yjsRootKind: node?.yjsRootKind,
-				nonCollaborative: node?.nonCollaborative,
+				textKind: node?.textKind,
+				collaborationEnabled: node?.collaborationEnabled,
 				yjsSnapshotId: node?.yjsSnapshotId,
 				generation: lastSequence?.lineageGeneration,
 			};
 		});
 		expect(after).toMatchObject({
 			contentType: "text/plain;charset=utf-8",
-			yjsRootKind: "plain_text",
+			textKind: "plain_text",
 			yjsSnapshotId: before.yjsSnapshotId,
 			generation: (before.generation ?? 0) + 1,
 		});
-		expect(after.nonCollaborative).toBeUndefined();
+		expect(after.collaborationEnabled).toBe(true);
 		expect(after.assetId).not.toBe(before.assetId);
 		const readResult = await asUser.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
 			organizationId: db.organizationId,
@@ -12346,6 +12534,21 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 			r2Objects.set(r2Key, pdfBytes);
 			await ctx.db.patch("files_r2_assets", assetId, { r2Key });
 			const nodeId = await ctx.db.insert("files_nodes", {
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				parentId: files_ROOT_ID,
@@ -12383,10 +12586,10 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 		const after = await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", nodeId);
 			const asset = node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
-			return { assetId: node?.assetId, contentType: node?.contentType, yjsRootKind: node?.yjsRootKind, asset };
+			return { assetId: node?.assetId, contentType: node?.contentType, textKind: node?.textKind, asset };
 		});
 		expect(after.contentType).toBe("image/png");
-		expect(after.yjsRootKind).toBeUndefined();
+		expect(after.textKind).toBeNull();
 		expect(after.assetId).not.toBe(pdfAssetId);
 		expect(after.assetId).not.toBe(version.assetId);
 		expect(copyCalls).toEqual([{ sourceKey: version.r2Key, destinationKey: after.asset?.r2Key }]);
@@ -13280,7 +13483,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 					.collect(),
 				ctx.db
 					.query("files_metadata_docs")
-					.withIndex("by_organization_workspace_fileNode_qualifiedField", (q) =>
+					.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
 						q
 							.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
 							.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
@@ -13297,7 +13500,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
 						.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
 						.eq("path", "/t3-chat")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first();
 			const docsFolder = await ctx.db
@@ -13307,7 +13510,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
 						.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
 						.eq("path", "/t3-chat/docs")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first();
 			return {
@@ -13330,8 +13533,8 @@ describe("external/system mount text materialization (Phase D)", () => {
 			createdBy: users_SYSTEM_AUTHOR,
 			updatedBy: users_SYSTEM_AUTHOR,
 		});
-		expect(docs.fileNode?.yjsSnapshotId).toBeUndefined();
-		expect(docs.fileNode?.yjsLastSequenceId).toBeUndefined();
+		expect(docs.fileNode?.yjsSnapshotId).toBeNull();
+		expect(docs.fileNode?.yjsLastSequenceId).toBeNull();
 		expect(docs.mountFolder).toMatchObject({
 			kind: "folder",
 			createdBy: users_SYSTEM_AUTHOR,
@@ -13355,7 +13558,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 		expect(docs.plainTextChunks.every((chunk) => chunk.yjsSequence === undefined)).toBe(true);
 		// A mount file indexes no frontmatter. Its only entry is the stamp that records where the
 		// file came from.
-		expect(docs.metadataDocs.map((doc) => doc.qualifiedField)).toEqual(["metadata.source", "metadata.source"]);
+		expect(docs.metadataDocs.map((doc) => doc.fieldPath)).toEqual(["metadata.source", "metadata.source"]);
 		expect(docs.metadataDocs.find((doc) => doc.docKind === "value")?.stringValue).toBe("github-mount");
 		expect(docs.yjsSnapshots).toEqual([]);
 		expect(docs.yjsLastSequences).toEqual([]);
@@ -13381,7 +13584,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 		const metadataDocs = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_fileNode_qualifiedField", (q) =>
+				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
 					q
 						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
 						.eq("workspaceId", organizations_GLOBAL_PLUGINS_WORKSPACE_ID)
@@ -13389,7 +13592,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 				)
 				.collect(),
 		);
-		expect(metadataDocs.map((doc) => doc.qualifiedField)).toEqual(["metadata.source", "metadata.source"]);
+		expect(metadataDocs.map((doc) => doc.fieldPath)).toEqual(["metadata.source", "metadata.source"]);
 		expect(metadataDocs.find((doc) => doc.docKind === "value")?.stringValue).toBe("plugin-source");
 	});
 
@@ -13496,7 +13699,7 @@ describe("external/system mount text materialization (Phase D)", () => {
 						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
 						.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
 						.eq("path", oversizePath)
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first();
 			const assets = await ctx.db
@@ -13576,7 +13779,7 @@ describe("producer shape pairs", () => {
 		// Both sides of the pair: the node names the shape, and the snapshot document's only root
 		// is the rich text one.
 		const node = await t.run(async (ctx) => ctx.db.get("files_nodes", created._yay.nodeId));
-		expect(node?.yjsRootKind).toBe("rich_text");
+		expect(node?.textKind).toBe("rich_text");
 
 		const snapshotDoc = new YjsDoc();
 		applyUpdate(snapshotDoc, new Uint8Array(snapshotUpdate._yay));
@@ -13596,7 +13799,7 @@ describe("producer shape pairs", () => {
 
 		const node = await t.run(async (ctx) => ctx.db.get("files_nodes", created._yay.nodeId));
 		expect(node?.kind).toBe("file");
-		expect(node?.yjsRootKind).toBeUndefined();
+		expect(node?.textKind).toBeNull();
 	});
 
 	test("a read-only mount chunks to the same boundaries as the pre-slice baseline", async () => {
@@ -13751,7 +13954,7 @@ describe("plain text file stats and delete-all", () => {
 			await ctx.db.patch("files_nodes", nodeId, {
 				yjsSnapshotId,
 				yjsLastSequenceId,
-				yjsRootKind: "plain_text",
+				textKind: "plain_text",
 			});
 		});
 
@@ -13905,8 +14108,8 @@ describe("plain text file stats and delete-all", () => {
 		});
 		expect(after.chunks).toEqual([]);
 		expect(after.stats).toMatchObject({ lineCount: 0, wordCount: 0, charCount: 0 });
-		expect(after.node?.contentShapeMismatchAt).toBeUndefined();
-		expect(after.node?.contentTooLargeByteSize).toBeUndefined();
+		expect(after.node?.contentShapeMismatchAt).toBeNull();
+		expect(after.node?.contentTooLargeByteSize).toBeNull();
 	});
 });
 
@@ -14276,8 +14479,8 @@ describe("yjs_reserve_and_increment_last_sequence", () => {
 		// The too-large-text marker takes the same honest branch.
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", nodeId, {
-				contentFrontmatterTooLargeFieldCount: undefined,
-				contentFrontmatterTooLargeIndexDocumentCount: undefined,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
 				contentTooLargeByteSize: files_MAX_TEXT_CONTENT_BYTES + 1,
 			});
 		});
@@ -14921,8 +15124,8 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 				throw new Error("Expected the repaired node to stay editable");
 			}
 			// Markers cleared, author recorded.
-			expect(node.contentShapeMismatchAt).toBeUndefined();
-			expect(node.contentYjsStateTooLargeByteSize).toBeUndefined();
+			expect(node.contentShapeMismatchAt).toBeNull();
+			expect(node.contentYjsStateTooLargeByteSize).toBeNull();
 			expect(node.updatedBy).toBe(db.userId);
 
 			// The lineage generation advanced and the counters were reset.
@@ -15102,7 +15305,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 			expect(chunks.map((chunk) => chunk.plainTextChunk).join("")).toContain("Body");
 			const metadataDocs = await ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_source_fileNode_qualifiedField", (q) =>
+				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
 					q
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
@@ -15170,11 +15373,11 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 			const node = await ctx.db.get("files_nodes", nodeId);
 			// The repaired text's frontmatter fits, so the marker pair clears and the metadata
 			// index is rebuilt.
-			expect(node?.contentFrontmatterTooLargeFieldCount).toBeUndefined();
-			expect(node?.contentFrontmatterTooLargeIndexDocumentCount).toBeUndefined();
+			expect(node?.contentFrontmatterTooLargeFieldCount).toBeNull();
+			expect(node?.contentFrontmatterTooLargeIndexDocumentCount).toBeNull();
 			const metadataDocs = await ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_source_fileNode_qualifiedField", (q) =>
+				.withIndex("by_organization_workspace_source_fileNode_fieldPath", (q) =>
 					q
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
@@ -15182,7 +15385,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 						.eq("fileNodeId", nodeId),
 				)
 				.collect();
-			expect(metadataDocs.some((doc) => doc.qualifiedField.includes("title"))).toBe(true);
+			expect(metadataDocs.some((doc) => doc.fieldPath.includes("title"))).toBe(true);
 
 			const chunks = await ctx.db
 				.query("files_plain_text_chunks")
@@ -15197,7 +15400,7 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 // #endregion yjs repair
 
 describe("files_nodes.yjs_prepare_doc_last_snapshot", () => {
-	test("returns the resolved yjsRootKind beside the snapshot", async () => {
+	test("returns the textKind beside the snapshot", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		vi.spyOn(R2.prototype, "getUrl").mockImplementation(
@@ -15223,9 +15426,8 @@ describe("files_nodes.yjs_prepare_doc_last_snapshot", () => {
 			membershipId: db.membershipId,
 			nodeId: created._yay.nodeId,
 		});
-		// A node written before the field existed resolves to rich_text; the response value is
-		// required, never absent.
-		expect(prepared?.yjsRootKind).toBe("rich_text");
+		// The response carries the stored shape so the client opens the matching editor.
+		expect(prepared?.textKind).toBe("rich_text");
 	});
 });
 
@@ -15465,9 +15667,9 @@ describe("files_nodes.set_node_read_only", () => {
 		expect(outerUnlocked._nay).toBeUndefined();
 
 		const outer = await read_lock_node(t, outerId);
-		expect(outer?.readOnlyScopeNodeId).toBeUndefined();
+		expect(outer?.readOnlyScopeNodeId).toBeNull();
 		const sibling = await read_lock_node(t, siblingId);
-		expect(sibling?.readOnlyScopeNodeId).toBeUndefined();
+		expect(sibling?.readOnlyScopeNodeId).toBeNull();
 
 		// The direct lock survives the outer unlock.
 		const inner = await read_lock_node(t, innerId);
@@ -15599,7 +15801,7 @@ describe("files_nodes.set_node_writable", () => {
 		// Every affected node, including the archived child, is writable again.
 		for (const nodeId of [outerId, innerId, deepId, siblingId, frozenId]) {
 			const node = await read_lock_node(t, nodeId);
-			expect(node?.readOnlyScopeNodeId).toBeUndefined();
+			expect(node?.readOnlyScopeNodeId).toBeNull();
 		}
 	});
 
@@ -15666,7 +15868,7 @@ describe("files_nodes.set_node_writable", () => {
 		expect(unlocked._nay).toBeUndefined();
 
 		const sibling = await read_lock_node(t, siblingId);
-		expect(sibling?.readOnlyScopeNodeId).toBeUndefined();
+		expect(sibling?.readOnlyScopeNodeId).toBeNull();
 	});
 
 	test("locks and unlocks an archived root", async () => {
@@ -15704,7 +15906,7 @@ describe("files_nodes.set_node_writable", () => {
 		expect(unlocked._nay).toBeUndefined();
 
 		const coldNode = await read_lock_node(t, cold._yay.nodeId);
-		expect(coldNode?.readOnlyScopeNodeId).toBeUndefined();
+		expect(coldNode?.readOnlyScopeNodeId).toBeNull();
 	});
 });
 
@@ -15752,7 +15954,7 @@ describe("files_nodes.get_node_read_only_management_state", () => {
 
 describe("files_node_require_writable", () => {
 	test("a node with no pointer is writable", () => {
-		expect(files_node_require_writable({ readOnlyScopeNodeId: undefined })._nay).toBeUndefined();
+		expect(files_node_require_writable({ readOnlyScopeNodeId: null })._nay).toBeUndefined();
 	});
 
 	test("a locked node refuses with the stable read_only classification", () => {
@@ -15786,7 +15988,7 @@ describe("new-node read-only inheritance", () => {
 		// Normal tenant creation starts unlocked: only a named migration/repair caller may opt
 		// into inheriting a lock pointer at insert time.
 		const node = await read_lock_node(t, folder._yay.nodeId);
-		expect(node?.readOnlyScopeNodeId).toBeUndefined();
+		expect(node?.readOnlyScopeNodeId).toBeNull();
 	});
 });
 
@@ -15830,7 +16032,7 @@ function read_active_child(
 					.eq("workspaceId", db.workspaceId)
 					.eq("parentId", parentId)
 					.eq("name", name)
-					.eq("archiveOperationId", undefined),
+					.eq("archiveOperationId", null),
 			)
 			.first(),
 	);
@@ -16040,8 +16242,8 @@ describe("files_nodes destination conflict privacy", () => {
 
 		// Once both conflicting nodes are visible, rename and move return the normal path conflict.
 		await t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", fixture.renameConflictId, { restrictedScopeNodeId: undefined });
-			await ctx.db.patch("files_nodes", fixture.moveConflictId, { restrictedScopeNodeId: undefined });
+			await ctx.db.patch("files_nodes", fixture.renameConflictId, { restrictedScopeNodeId: null });
+			await ctx.db.patch("files_nodes", fixture.moveConflictId, { restrictedScopeNodeId: null });
 		});
 		const visibleRename = await asMember.mutation(api.files_nodes.rename_node, {
 			membershipId: fixture.memberMembershipId,
@@ -16300,7 +16502,7 @@ describe("files_nodes.archive_nodes read-only gates", () => {
 			nodeIds: [siblingId],
 		});
 		expect(refused._nay?.name).toBe("read_only");
-		expect((await read_lock_node(t, siblingId))?.archiveOperationId).toBeUndefined();
+		expect((await read_lock_node(t, siblingId))?.archiveOperationId).toBeNull();
 
 		await set_writable_or_throw(asUser, db.membershipId, siblingId);
 		const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
@@ -16322,7 +16524,7 @@ describe("files_nodes.archive_nodes read-only gates", () => {
 		});
 		expect(refused._nay?.name).toBe("read_only");
 		for (const nodeId of [outerId, innerId, deepId, siblingId]) {
-			expect((await read_lock_node(t, nodeId))?.archiveOperationId).toBeUndefined();
+			expect((await read_lock_node(t, nodeId))?.archiveOperationId).toBeNull();
 		}
 	});
 
@@ -16448,7 +16650,7 @@ describe("files_nodes.archive_nodes read-only gates", () => {
 		});
 		expect(refusedVisible._nay?.name).toBe("read_only");
 		expect(refusedVisible._nay?.message).toBe("This item is read-only.");
-		expect((await read_lock_node(t, arch2Id))?.archiveOperationId).toBeUndefined();
+		expect((await read_lock_node(t, arch2Id))?.archiveOperationId).toBeNull();
 
 		// Hidden and locked: the same generic denial hidden restricted content uses, never naming
 		// the node (RO-10).
@@ -16458,7 +16660,7 @@ describe("files_nodes.archive_nodes read-only gates", () => {
 		});
 		expect(refusedHidden._nay?.message).toBe("Permission denied");
 		expect(refusedHidden._nay?.name).not.toBe("read_only");
-		expect((await read_lock_node(t, arch3Id))?.archiveOperationId).toBeUndefined();
+		expect((await read_lock_node(t, arch3Id))?.archiveOperationId).toBeNull();
 	});
 });
 
@@ -16481,8 +16683,8 @@ describe("files_nodes.unarchive_nodes read-only gates", () => {
 			nodeIds: [activeRootId],
 		});
 		expect(restoredSecondTree._nay).toBeUndefined();
-		expect((await read_lock_node(t, activeRootId))?.archiveOperationId).toBeUndefined();
-		expect((await read_lock_node(t, activeChildId))?.archiveOperationId).toBeUndefined();
+		expect((await read_lock_node(t, activeRootId))?.archiveOperationId).toBeNull();
+		expect((await read_lock_node(t, activeChildId))?.archiveOperationId).toBeNull();
 
 		// The first archived `/docs` tree has different parent ids.
 		// Its lock does not block this restore, and none of its nodes are restored.
@@ -16532,10 +16734,10 @@ describe("files_nodes.unarchive_nodes read-only gates", () => {
 		});
 		expect(restored._nay).toBeUndefined();
 		const inner = await read_lock_node(t, innerId);
-		expect(inner?.archiveOperationId).toBeUndefined();
+		expect(inner?.archiveOperationId).toBeNull();
 		expect(inner?.path).toBe("/outer/inner");
 		const deep = await read_lock_node(t, deepId);
-		expect(deep?.archiveOperationId).toBeUndefined();
+		expect(deep?.archiveOperationId).toBeNull();
 		expect(deep?.path).toBe("/outer/inner/deep");
 	});
 });
@@ -16908,7 +17110,7 @@ describe("files_nodes.create_upload_node read-only gates", () => {
 		expect(refused._nay?.name).toBe("read_only");
 		// The locked occupant kept its path and no second asset doc was written.
 		const occupant = await t.run(async (ctx) => ctx.db.get("files_nodes", first._yay.nodeId));
-		expect(occupant?.archiveOperationId).toBeUndefined();
+		expect(occupant?.archiveOperationId).toBeNull();
 		expect(await read_upload_assets(t, db)).toHaveLength(1);
 
 		await set_writable_or_throw(asUser, db.membershipId, first._yay.nodeId);
@@ -16994,7 +17196,7 @@ describe("files_nodes.create_upload_nodes read-only gates", () => {
 			freshAsset: await ctx.db.get("files_r2_assets", imported._yay.created[0]!.assetId),
 		}));
 		// The locked occupant was skipped, not archived.
-		expect(docs.occupantNode?.archiveOperationId).toBeUndefined();
+		expect(docs.occupantNode?.archiveOperationId).toBeNull();
 		expect(imported._yay.created[0]!.headers["If-None-Match"]).toBe("*");
 		expect(docs.freshAsset?.uploadUrlExpiresAt).toEqual(expect.any(Number));
 	});
@@ -17326,7 +17528,7 @@ describe("files_nodes_db_apply_pending_move read-only gates", () => {
 			occupantNode: await ctx.db.get("files_nodes", occupant._yay.nodeId),
 		}));
 		expect(docs.source?.path).toBe("/pending-src-replace.md");
-		expect(docs.occupantNode?.archiveOperationId).toBeUndefined();
+		expect(docs.occupantNode?.archiveOperationId).toBeNull();
 	});
 });
 
@@ -17744,8 +17946,8 @@ describe("member controls on plugin-labeled nodes", () => {
 		await t.run(async (ctx) => {
 			for (const nodeId of [f.folderId, f.childId, f.leafId]) {
 				const node = await ctx.db.get("files_nodes", nodeId);
-				expect(node?.readOnlyScopeNodeId).toBeUndefined();
-				expect(node?.readOnlyPluginName).toBeUndefined();
+				expect(node?.readOnlyScopeNodeId).toBeNull();
+				expect(node?.readOnlyPluginName).toBeNull();
 			}
 		});
 		expect((await f.asOwner.mutation(api.files_nodes.set_node_read_only, args))._nay).toBeUndefined();
@@ -17753,7 +17955,7 @@ describe("member controls on plugin-labeled nodes", () => {
 			for (const nodeId of [f.folderId, f.childId, f.leafId]) {
 				const node = await ctx.db.get("files_nodes", nodeId);
 				expect(node?.readOnlyScopeNodeId).toBe(f.folderId);
-				expect(node?.readOnlyPluginName).toBeUndefined();
+				expect(node?.readOnlyPluginName).toBeNull();
 			}
 		});
 		expect(
@@ -17789,7 +17991,7 @@ describe("member controls on plugin-labeled nodes", () => {
 			for (const nodeId of [f.childId, f.leafId]) {
 				const node = await ctx.db.get("files_nodes", nodeId);
 				expect(node?.readOnlyScopeNodeId).toBe(f.childId);
-				expect(node?.readOnlyPluginName).toBeUndefined();
+				expect(node?.readOnlyPluginName).toBeNull();
 			}
 		});
 		expect((await f.asOwner.mutation(api.files_nodes.set_node_writable, args))._nay).toBeUndefined();
@@ -17798,7 +18000,7 @@ describe("member controls on plugin-labeled nodes", () => {
 			for (const nodeId of [f.childId, f.leafId]) {
 				const node = await ctx.db.get("files_nodes", nodeId);
 				expect(node?.readOnlyScopeNodeId).toBe(f.folderId);
-				expect(node?.readOnlyPluginName).toBeUndefined();
+				expect(node?.readOnlyPluginName).toBeNull();
 			}
 		});
 	});
@@ -17823,7 +18025,7 @@ describe("member controls on plugin-labeled nodes", () => {
 		expect((await f.asOwner.mutation(api.files_nodes.set_node_read_only, args))._nay).toBeUndefined();
 		expect((await f.asOwner.mutation(api.files_nodes.set_node_writable, args))._nay).toBeUndefined();
 		await t.run(async (ctx) => {
-			expect((await ctx.db.get("files_nodes", f.folderId))?.readOnlyScopeNodeId).toBeUndefined();
+			expect((await ctx.db.get("files_nodes", f.folderId))?.readOnlyScopeNodeId).toBeNull();
 			for (const nodeId of [f.childId, f.leafId]) {
 				expect(await ctx.db.get("files_nodes", nodeId)).toMatchObject({
 					readOnlyScopeNodeId: f.childId,
@@ -19031,7 +19233,7 @@ describe("files_nodes_content.finalize_file_yjs_repair read-only gates", () => {
 			if (!files_node_has_editable_yjs_state(node)) {
 				throw new Error("Expected the repaired node to stay editable");
 			}
-			expect(node.contentShapeMismatchAt).toBeUndefined();
+			expect(node.contentShapeMismatchAt).toBeNull();
 
 			// The repair's published uploads carry keys and no cleanup deadline.
 			const yjsSnapshotDoc = await ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId);

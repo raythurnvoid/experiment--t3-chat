@@ -133,7 +133,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				// The copy freezes the source's content asset. A file whose upload has not finished has
 				// nothing to copy yet.
 				const sourceAssetId = sourceNode.assetId;
-				if (sourceAssetId === undefined) {
+				if (sourceAssetId === null) {
 					return {
 						stdout: "",
 						stderr: `cp: cannot copy '${operands[0]}': the file's content is not available yet\n`,
@@ -308,7 +308,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						// A text copy creates the destination with the source's type, so the new file
 						// opens the right way from the start. A stored copy creates a text placeholder
 						// that accepting turns into the stored file.
-						contentType: sourceIsText ? sourceNode.contentType : undefined,
+						contentType: sourceIsText ? (sourceNode.contentType ?? undefined) : undefined,
 					})) as files_nodes_create_file_by_path_Result;
 					if (created._nay) {
 						return {

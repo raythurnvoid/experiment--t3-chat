@@ -1162,7 +1162,7 @@ export const resolve_principal = internalQuery({
 			if (
 				pluginRun.fileNodeId &&
 				(!sourceFileNode ||
-					sourceFileNode.archiveOperationId !== undefined ||
+					sourceFileNode.archiveOperationId !== null ||
 					sourceFileNode.organizationId !== pluginRun.organizationId ||
 					sourceFileNode.workspaceId !== pluginRun.workspaceId)
 			) {
@@ -1799,7 +1799,7 @@ export async function public_api_db_revalidate_file_write_principal(
 		const sourceFileNode = pluginRun.fileNodeId ? await ctx.db.get("files_nodes", pluginRun.fileNodeId) : null;
 		if (
 			!sourceFileNode ||
-			sourceFileNode.archiveOperationId !== undefined ||
+			sourceFileNode.archiveOperationId !== null ||
 			sourceFileNode.organizationId !== args.organizationId ||
 			sourceFileNode.workspaceId !== args.workspaceId
 		) {
@@ -2053,7 +2053,7 @@ export async function public_api_db_can_pass_read_only_for_plugin(
 	},
 ) {
 	const installation = args.facts.installation;
-	if (!installation || args.node.readOnlyScopeNodeId === undefined) {
+	if (!installation || args.node.readOnlyScopeNodeId === null) {
 		return false;
 	}
 
@@ -2061,8 +2061,8 @@ export async function public_api_db_can_pass_read_only_for_plugin(
 		if (args.facts.pluginRun.event !== "ui.invoke.requested") {
 			return false;
 		}
-		let scopeId: Id<"files_nodes"> | undefined = args.node.readOnlyScopeNodeId;
-		while (scopeId !== undefined) {
+		let scopeId: Id<"files_nodes"> | null = args.node.readOnlyScopeNodeId;
+		while (scopeId !== null) {
 			const scopeNode: Doc<"files_nodes"> | null = await ctx.db.get("files_nodes", scopeId);
 			if (!scopeNode || scopeNode.readOnlyPluginName !== installation.pluginName) {
 				return false;
@@ -2120,7 +2120,7 @@ async function db_get_active_node_at_path(
 				.eq("organizationId", args.organizationId)
 				.eq("workspaceId", args.workspaceId)
 				.eq("path", args.path)
-				.eq("archiveOperationId", undefined),
+				.eq("archiveOperationId", null),
 		)
 		.first();
 }
@@ -2243,7 +2243,7 @@ async function db_require_file_write_parent(
 		parent.organizationId !== args.organizationId ||
 		parent.workspaceId !== args.workspaceId ||
 		parent.kind !== "folder" ||
-		parent.archiveOperationId !== undefined ||
+		parent.archiveOperationId !== null ||
 		parent.path !== server_path_parent_of(args.path)
 	) {
 		return Result({ _nay: { name: "stale_write", message: "The parent folder changed during the write" } });
@@ -2517,7 +2517,7 @@ export const publish_file_write = internalMutation({
 					.eq("organizationId", stage.organizationId)
 					.eq("workspaceId", stage.workspaceId)
 					.eq("path", stage.path)
-					.eq("archiveOperationId", undefined),
+					.eq("archiveOperationId", null),
 			)
 			.first();
 		if (activeNode) {
@@ -3010,10 +3010,10 @@ export const publish_file_fill = internalMutation({
 		// lineage the route built its content projection from.
 		if (
 			fileNode.path !== stage.path ||
-			fileNode.archiveOperationId !== undefined ||
+			fileNode.archiveOperationId !== null ||
 			!files_node_has_editable_text_content(fileNode) ||
-			(fileNode.nonCollaborative === true) !== (args.nonCollaborative === true) ||
-			(fileNode.nonCollaborative !== true && fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId)
+			(fileNode.collaborationEnabled === false) !== (args.nonCollaborative === true) ||
+			(fileNode.collaborationEnabled !== false && fileNode.yjsLastSequenceId !== args.expectedYjsLastSequenceId)
 		) {
 			return Result({ _nay: { message: "The file changed during the write" } });
 		}
@@ -3175,7 +3175,7 @@ export const publish_file_touch = internalMutation({
 					.eq("organizationId", stage.organizationId)
 					.eq("workspaceId", stage.workspaceId)
 					.eq("path", stage.path)
-					.eq("archiveOperationId", undefined),
+					.eq("archiveOperationId", null),
 			)
 			.first();
 		if (activeNode) {
@@ -3519,7 +3519,7 @@ export const start_run_activity = internalMutation({
 			installation.organizationId !== pluginRun.organizationId ||
 			installation.workspaceId !== pluginRun.workspaceId ||
 			!fileNode ||
-			fileNode.archiveOperationId !== undefined ||
+			fileNode.archiveOperationId !== null ||
 			fileNode.organizationId !== pluginRun.organizationId ||
 			fileNode.workspaceId !== pluginRun.workspaceId
 		) {
@@ -3690,7 +3690,7 @@ export const create_file_upload_targets = internalMutation({
 						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
 						.eq("path", item.path)
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first();
 			if (existingNode) {
@@ -3760,7 +3760,7 @@ export const create_file_upload_targets = internalMutation({
 							.eq("organizationId", args.organizationId)
 							.eq("workspaceId", args.workspaceId)
 							.eq("path", ancestorPath)
-							.eq("archiveOperationId", undefined),
+							.eq("archiveOperationId", null),
 					)
 					.first();
 				if (!ancestor) {
@@ -4059,7 +4059,7 @@ export const check_file_node_write_permission = internalQuery({
 			!fileNode ||
 			fileNode.organizationId !== args.organizationId ||
 			fileNode.workspaceId !== args.workspaceId ||
-			fileNode.archiveOperationId !== undefined
+			fileNode.archiveOperationId !== null
 		) {
 			return false;
 		}
@@ -4172,7 +4172,7 @@ async function write_one_text_file(
 	// create path below and archive the file to recreate it, which changes the nodeId on every
 	// re-import.
 	if (
-		activeNode?.nonCollaborative === true &&
+		activeNode?.collaborationEnabled === false &&
 		files_node_has_editable_text_content(activeNode) &&
 		activeNodeContentType !== null
 	) {
@@ -4225,7 +4225,7 @@ async function write_one_text_file(
 			// asset doc.
 			yjsSnapshotSize: 0,
 			contentType: activeNodeContentType,
-			yjsRootKind: activeNode.yjsRootKind,
+			yjsRootKind: activeNode.textKind,
 		});
 		if (prepared._nay) {
 			if (prepared._nay.name === "invalid_input") {
@@ -4365,7 +4365,7 @@ async function write_one_text_file(
 				mut_yjsDoc: currentContent._yay.yjsDoc,
 				text: args.content,
 				// The node in hand owns the shape; it never comes from the request.
-				rootKind: activeNode.yjsRootKind,
+				rootKind: activeNode.textKind,
 			});
 			if (projectedYjsDoc._nay) {
 				console.error("Failed to project public file write content into the Yjs doc", {
@@ -4422,7 +4422,7 @@ async function write_one_text_file(
 				// the staged asset doc.
 				yjsSnapshotSize: 0,
 				contentType: activeNodeContentType,
-				yjsRootKind: activeNode.yjsRootKind,
+				yjsRootKind: activeNode.textKind,
 			});
 			if (prepared._nay) {
 				if (prepared._nay.name === "invalid_input") {

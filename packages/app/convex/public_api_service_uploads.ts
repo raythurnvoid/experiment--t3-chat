@@ -379,7 +379,7 @@ export async function public_api_service_uploads_db_can_clean_up_service_created
 	// lock was made, so ask the installation again instead of trusting the pointer alone.
 	if (
 		args.node.readOnlyScopeNodeId !== args.node._id ||
-		args.node.readOnlyPluginServiceTargetId === undefined ||
+		args.node.readOnlyPluginServiceTargetId === null ||
 		!args.installation.acceptedCapabilities.includes("workspace.files.create-read-only")
 	) {
 		return false;
@@ -474,7 +474,7 @@ export async function public_api_service_uploads_db_can_release_plugin_named_loc
 	// A member can also lock a folder above this node. The read-only cascade stops at the node's
 	// own lock, so that folder lock is invisible here and must still win — the same rule the
 	// service delete door applies.
-	return (await files_nodes_db_resolve_parent_read_only_scope(ctx, { parentId: args.node.parentId })) === undefined;
+	return (await files_nodes_db_resolve_parent_read_only_scope(ctx, { parentId: args.node.parentId })) === null;
 }
 
 /**
@@ -501,8 +501,8 @@ export async function public_api_service_uploads_db_release_service_created_lock
 			});
 			await ctx.db.patch("files_nodes", node._id, {
 				readOnlyScopeNodeId: parentScopeNodeId,
-				readOnlyPluginServiceTargetId: undefined,
-				readOnlyPluginName: undefined,
+				readOnlyPluginServiceTargetId: null,
+				readOnlyPluginName: null,
 			});
 			if (node.kind === "folder") {
 				await files_nodes_db_cascade_read_only_scope(ctx, {
@@ -545,7 +545,7 @@ async function db_authorize_live_target_node(
 		return Result({ _nay: { message: "Not found" } });
 	}
 
-	if (node.archiveOperationId !== undefined) {
+	if (node.archiveOperationId !== null) {
 		return Result({ _nay: { message: "Not found" } });
 	}
 	if (
@@ -989,7 +989,7 @@ export const create_upload_target = internalMutation({
 					.eq("organizationId", args.principal.organizationId)
 					.eq("workspaceId", args.principal.workspaceId)
 					.eq("path", args.path)
-					.eq("archiveOperationId", undefined),
+					.eq("archiveOperationId", null),
 			)
 			.first();
 		if (existingNode) {
@@ -1022,7 +1022,7 @@ export const create_upload_target = internalMutation({
 						.eq("organizationId", args.principal.organizationId)
 						.eq("workspaceId", args.principal.workspaceId)
 						.eq("path", ancestorPath)
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first();
 			if (!ancestor) {
@@ -1667,7 +1667,7 @@ export const delete_upload_target = internalMutation({
 			// service provenance, so a lock above is always a member lock. Refuse the whole call, the
 			// same way `archive_destination` refuses a locked node inside its destination.
 			if (
-				(await files_nodes_db_resolve_parent_read_only_scope(ctx, { parentId: match.node.parentId })) !== undefined
+				(await files_nodes_db_resolve_parent_read_only_scope(ctx, { parentId: match.node.parentId })) !== null
 			) {
 				return writable;
 			}
@@ -1676,7 +1676,7 @@ export const delete_upload_target = internalMutation({
 
 		const now = Date.now();
 		const committedNodes = matches.flatMap((match) =>
-			match.target.state === "committed" && match.node && match.node.archiveOperationId === undefined
+			match.target.state === "committed" && match.node && match.node.archiveOperationId === null
 				? [match.node]
 				: [],
 		);
@@ -1870,7 +1870,7 @@ export const archive_destination = internalMutation({
 		) {
 			return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This destination is no longer a meeting folder" } });
 		}
-		if (destination.archiveOperationId !== undefined) {
+		if (destination.archiveOperationId !== null) {
 			// A member can restore an older generation after a newer folder used the same path. Follow
 			// that active folder only when a target proves this installation created that exact node.
 			const restoredDestination = await ctx.db
@@ -1880,7 +1880,7 @@ export const archive_destination = internalMutation({
 						.eq("organizationId", args.principal.organizationId)
 						.eq("workspaceId", args.principal.workspaceId)
 						.eq("path", args.principal.pathPrefix)
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first();
 			const restoredTarget =
@@ -1942,7 +1942,7 @@ export const archive_destination = internalMutation({
 			});
 		}
 
-		const activeDescendants = descendants.filter((descendant) => descendant.archiveOperationId === undefined);
+		const activeDescendants = descendants.filter((descendant) => descendant.archiveOperationId === null);
 
 		// A member can nest a restricted folder in here, and the seal says nothing about that folder.
 		// Ask what the member archive asks, so the actor cannot archive through the service what they

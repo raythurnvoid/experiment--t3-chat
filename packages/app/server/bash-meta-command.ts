@@ -36,7 +36,7 @@ function is_record(value: unknown): value is Record<string, unknown> {
 	return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function parse_qualified_field(value: unknown) {
+function parse_field_path(value: unknown) {
 	if (typeof value !== "string") {
 		return Result({ _nay: { message: "meta search fields must be strings." } });
 	}
@@ -101,11 +101,11 @@ function parse_binary_args(value: unknown, operator: string) {
 	if (!Array.isArray(value) || value.length !== 2) {
 		return Result({ _nay: { message: `${operator} must be an array like ["frontmatter.field", value].` } });
 	}
-	const qualifiedField = parse_qualified_field(value[0]);
-	if (qualifiedField._nay) {
-		return qualifiedField;
+	const fieldPath = parse_field_path(value[0]);
+	if (fieldPath._nay) {
+		return fieldPath;
 	}
-	return Result({ _yay: { qualifiedField: qualifiedField._yay, value: value[1] } });
+	return Result({ _yay: { fieldPath: fieldPath._yay, value: value[1] } });
 }
 
 function parse_range_bound(value: unknown, key: string) {
@@ -165,11 +165,11 @@ function parse_search_where_json(whereJson: string) {
 	}
 
 	if ("exists" in parsed) {
-		const qualifiedField = parse_qualified_field(parsed.exists);
-		if (qualifiedField._nay) {
-			return qualifiedField;
+		const fieldPath = parse_field_path(parsed.exists);
+		if (fieldPath._nay) {
+			return fieldPath;
 		}
-		return Result({ _yay: { op: "exists", qualifiedField: qualifiedField._yay } satisfies files_metadata_SearchPlan });
+		return Result({ _yay: { op: "exists", fieldPath: fieldPath._yay } satisfies files_metadata_SearchPlan });
 	}
 
 	if ("eq" in parsed) {
@@ -184,7 +184,7 @@ function parse_search_where_json(whereJson: string) {
 		return Result({
 			_yay: {
 				op: "eq",
-				qualifiedField: args._yay.qualifiedField,
+				fieldPath: args._yay.fieldPath,
 				value: value._yay,
 			} satisfies files_metadata_SearchPlan,
 		});
@@ -201,7 +201,7 @@ function parse_search_where_json(whereJson: string) {
 		return Result({
 			_yay: {
 				op: "prefix",
-				qualifiedField: args._yay.qualifiedField,
+				fieldPath: args._yay.fieldPath,
 				value: args._yay.value,
 			} satisfies files_metadata_SearchPlan,
 		});
@@ -242,7 +242,7 @@ function parse_search_where_json(whereJson: string) {
 		return Result({
 			_yay: {
 				op: "range",
-				qualifiedField: args._yay.qualifiedField,
+				fieldPath: args._yay.fieldPath,
 				valueKind,
 				...(gte._yay === undefined ? {} : { gte: gte._yay.value }),
 				...(gt._yay === undefined ? {} : { gt: gt._yay.value }),
@@ -531,7 +531,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 							sourceKind: result.sourceKind,
 							fields: result.fields,
 							values: result.values.map((value) => ({
-								field: value.qualifiedField,
+								field: value.fieldPath,
 								valueKind: value.valueKind,
 								value: get_value(value),
 							})),
@@ -551,7 +551,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 				// Mark the maybe_date line so the agent can distinguish it from the string line and know
 				// the field supports range filters.
 				const valueKindSuffix = value.valueKind === "maybe_date" ? " (maybe_date)" : "";
-				lines.push(`${value.qualifiedField} = ${JSON.stringify(get_value(value))}${valueKindSuffix}`);
+				lines.push(`${value.fieldPath} = ${JSON.stringify(get_value(value))}${valueKindSuffix}`);
 			}
 			return { stdout: `${lines.join("\n")}\n`, stderr: "", exitCode: 0 };
 		}
@@ -718,7 +718,7 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 						results: dedupedItems.map((item) => ({
 							path: scope.renderShellPath(item.path),
 							nodeId: item.nodeId,
-							field: item.qualifiedField,
+							field: item.fieldPath,
 							valueKind: item.valueKind,
 							matchedValue: search_result_value(item),
 							metadataKind: item.metadataKind,

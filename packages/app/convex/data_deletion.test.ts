@@ -105,6 +105,23 @@ async function data_deletion_test_seed_page(
 		createdBy: args.userId,
 		updatedBy: args.userId,
 		updatedAt: Date.now(),
+		contentType: null,
+		assetId: null,
+		textKind: null,
+		collaborationEnabled: null,
+		yjsSnapshotId: null,
+		yjsLastSequenceId: null,
+		statsId: null,
+		contentTooLargeByteSize: null,
+		contentShapeMismatchAt: null,
+		contentYjsStateTooLargeByteSize: null,
+		contentFrontmatterTooLargeFieldCount: null,
+		contentFrontmatterTooLargeIndexDocumentCount: null,
+		restrictedScopeNodeId: null,
+		readOnlyScopeNodeId: null,
+		readOnlyPluginName: null,
+		readOnlyPluginServiceTargetId: null,
+		archiveOperationId: null,
 	});
 
 	const markdown = `# ${args.tag}`;
@@ -230,6 +247,22 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			updatedBy: args.userId,
 			updatedAt: Date.now(),
 			contentType: "text/markdown;charset=utf-8",
+			assetId: null,
+			textKind: null,
+			collaborationEnabled: null,
+			yjsSnapshotId: null,
+			yjsLastSequenceId: null,
+			statsId: null,
+			contentTooLargeByteSize: null,
+			contentShapeMismatchAt: null,
+			contentYjsStateTooLargeByteSize: null,
+			contentFrontmatterTooLargeFieldCount: null,
+			contentFrontmatterTooLargeIndexDocumentCount: null,
+			restrictedScopeNodeId: null,
+			readOnlyScopeNodeId: null,
+			readOnlyPluginName: null,
+			readOnlyPluginServiceTargetId: null,
+			archiveOperationId: null,
 		});
 		const contentR2Key = `content/organizations/${args.organizationId}/workspaces/${args.workspaceId}/nodes/${args.tag}-${i}/markdown`;
 		const yjsR2Key = `content/organizations/${args.organizationId}/workspaces/${args.workspaceId}/nodes/${args.tag}-${i}/yjs`;
@@ -290,7 +323,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			statsId,
 			yjsSnapshotId,
 			yjsLastSequenceId,
-			yjsRootKind: "rich_text",
+			textKind: "rich_text",
 		});
 		const textChunkId = await ctx.db.insert("files_text_chunks", {
 			organizationId: args.organizationId,
@@ -334,7 +367,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				yjsSequence: 1,
 				path: `/${args.tag}-${i}.md`,
 				treePath: `/${args.tag}-${i}.md`,
-				qualifiedField: "frontmatter.cleanup",
+				fieldPath: "frontmatter.cleanup",
 				docKind: "field",
 			}),
 			ctx.db.insert("files_metadata_docs", {
@@ -345,7 +378,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				yjsSequence: 1,
 				path: `/${args.tag}-${i}.md`,
 				treePath: `/${args.tag}-${i}.md`,
-				qualifiedField: "frontmatter.cleanup",
+				fieldPath: "frontmatter.cleanup",
 				docKind: "value",
 				valueKind: "string",
 				stringValue: args.tag,
@@ -424,7 +457,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 					pendingUpdateId,
 					path: `/${args.tag}-${i}.md`,
 					treePath: `/${args.tag}-${i}.md`,
-					qualifiedField: "frontmatter.cleanup",
+					fieldPath: "frontmatter.cleanup",
 					docKind: "field",
 				}),
 				ctx.db.insert("files_metadata_docs", {
@@ -436,7 +469,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 					pendingUpdateId,
 					path: `/${args.tag}-${i}.md`,
 					treePath: `/${args.tag}-${i}.md`,
-					qualifiedField: "frontmatter.cleanup",
+					fieldPath: "frontmatter.cleanup",
 					docKind: "value",
 					valueKind: "string",
 					stringValue: `pending-${args.tag}`,
@@ -2732,6 +2765,23 @@ describe("process_workspace_deletion_request", () => {
 				createdBy: user.userId,
 				updatedBy: user.userId,
 				updatedAt: now,
+				contentType: null,
+				assetId: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 			const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
 				organizationId: user.defaultOrganizationId,
@@ -2873,6 +2923,21 @@ describe("process_workspace_deletion_request", () => {
 				updatedAt: now,
 				contentType: "application/pdf",
 				assetId,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 			const requestId = await data_deletion_db_request(ctx, {
 				userId: user.userId,
@@ -2907,6 +2972,61 @@ describe("process_workspace_deletion_request", () => {
 			putMayArriveUntil: uploadUrlExpiresAt + r2_PUT_MAY_ARRIVE_MARGIN_MS,
 		});
 		expect(await t.run((ctx) => ctx.db.get("files_r2_assets", assetId))).toBeNull();
+	});
+
+	test.each([true, false])("hands off a Yjs cleanup deadline before asset purge when historyPending is %s", async (historyPending) => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) => {
+			const user = await data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-yjs-cleanup-purge",
+				displayName: "Yjs Cleanup Purge",
+			});
+			const scope = { organizationId: user.defaultOrganizationId, workspaceId: user.defaultWorkspaceId };
+			const { nodeId } = await data_deletion_test_seed_page(ctx, { ...scope, userId: user.userId, tag: "cleanup.md" });
+			await ctx.db.patch("files_nodes", nodeId, { textKind: "rich_text", collaborationEnabled: false });
+			const assetId = await ctx.db.insert("files_r2_assets", {
+				...scope,
+				kind: "yjs_snapshot",
+				r2Bucket: "test-bucket",
+				size: 12,
+				createdBy: user.userId,
+				updatedAt: Date.now(),
+			});
+			const putMayArriveUntil = Date.now() + 60 * 60 * 1000;
+			const taskId = await ctx.db.insert("files_yjs_cleanup_tasks", {
+				...scope,
+				fileNodeId: nodeId,
+				throughSequence: 2,
+				supersededYjsAssetId: assetId,
+				putMayArriveUntil,
+				historyPending,
+			});
+			const requestId = await data_deletion_db_request(ctx, { ...scope, userId: user.userId, scope: "workspace" });
+			return { ...scope, taskId, assetId, requestId, putMayArriveUntil };
+		});
+		const r2Key = r2_create_asset_key(seeded);
+		await t.mutation(internal.data_deletion.process_workspace_deletion_request, {
+			requestId: seeded.requestId,
+			_test_batchSize: 1,
+		});
+		const handedOff = await t.run(async (ctx) => ({
+			task: await ctx.db.get("files_yjs_cleanup_tasks", seeded.taskId),
+			asset: await ctx.db.get("files_r2_assets", seeded.assetId),
+			job: await ctx.db.query("files_r2_object_deletion_jobs").withIndex("by_r2_key", (q) => q.eq("r2Key", r2Key)).first(),
+		}));
+		expect(handedOff.task).toBeNull();
+		expect(handedOff.asset).not.toBeNull();
+		expect(handedOff.job).toMatchObject({ r2Key, putMayArriveUntil: seeded.putMayArriveUntil });
+
+		await data_deletion_test_process_workspace_request_until_done(t, { requestId: seeded.requestId, batchSize: 1 });
+		const purged = await t.run(async (ctx) => ({
+			tasks: await ctx.db.query("files_yjs_cleanup_tasks").collect(),
+			asset: await ctx.db.get("files_r2_assets", seeded.assetId),
+			job: await ctx.db.query("files_r2_object_deletion_jobs").withIndex("by_r2_key", (q) => q.eq("r2Key", r2Key)).first(),
+		}));
+		expect(purged.tasks).toHaveLength(0);
+		expect(purged.asset).toBeNull();
+		expect(purged.job).toMatchObject({ r2Key, putMayArriveUntil: seeded.putMayArriveUntil });
 	});
 
 	test("keeps service attribution until its files are gone and never recreates it for a late event", async () => {
@@ -3113,6 +3233,21 @@ describe("process_workspace_deletion_request", () => {
 				updatedAt: now,
 				contentType: "image/png",
 				assetId,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 			const pluginVersionId = await ctx.db.insert("plugins_versions", {
 				name: "media",
@@ -3595,6 +3730,23 @@ describe("process_workspace_deletion_request", () => {
 				createdBy: user.userId,
 				updatedBy: user.userId,
 				updatedAt: Date.now(),
+				contentType: null,
+				assetId: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 			const jobDocId = await ctx.db.insert("files_content_materialization_jobs", {
 				organizationId: user.defaultOrganizationId,
@@ -3674,6 +3826,21 @@ describe("process_workspace_deletion_request", () => {
 				updatedAt: now,
 				contentType: "image/png",
 				assetId,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 			const pluginVersionId = await ctx.db.insert("plugins_versions", {
 				name: "media",
@@ -3801,6 +3968,23 @@ describe("process_workspace_deletion_request", () => {
 				createdBy: user.userId,
 				updatedBy: user.userId,
 				updatedAt: now,
+				contentType: null,
+				assetId: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 			await ctx.db.patch("files_nodes", folderId, {
 				readOnlyScopeNodeId: folderId,
@@ -3831,6 +4015,20 @@ describe("process_workspace_deletion_request", () => {
 				updatedAt: now,
 				contentType: "text/markdown;charset=utf-8",
 				assetId,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 
 			const requestId = await data_deletion_db_request(ctx, {
@@ -5516,6 +5714,23 @@ describe("finalize_user_deletion_data", () => {
 					createdBy: user.userId,
 					updatedBy: user.userId,
 					updatedAt: now,
+					contentType: null,
+					assetId: null,
+					textKind: null,
+					collaborationEnabled: null,
+					yjsSnapshotId: null,
+					yjsLastSequenceId: null,
+					statsId: null,
+					contentTooLargeByteSize: null,
+					contentShapeMismatchAt: null,
+					contentYjsStateTooLargeByteSize: null,
+					contentFrontmatterTooLargeFieldCount: null,
+					contentFrontmatterTooLargeIndexDocumentCount: null,
+					restrictedScopeNodeId: null,
+					readOnlyScopeNodeId: null,
+					readOnlyPluginName: null,
+					readOnlyPluginServiceTargetId: null,
+					archiveOperationId: null,
 				});
 				const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
 					organizationId: user.defaultOrganizationId,

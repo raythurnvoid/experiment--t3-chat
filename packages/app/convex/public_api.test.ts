@@ -226,7 +226,7 @@ async function seed_markdown_file(args: {
 						.eq("organizationId", args.organizationId)
 						.eq("workspaceId", args.workspaceId)
 						.eq("path", parentPath)
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first();
 			if (existingParent) {
@@ -249,6 +249,23 @@ async function seed_markdown_file(args: {
 					createdBy: args.userId,
 					updatedBy: args.userId,
 					updatedAt: now,
+					contentType: null,
+					assetId: null,
+					textKind: null,
+					collaborationEnabled: null,
+					yjsSnapshotId: null,
+					yjsLastSequenceId: null,
+					statsId: null,
+					contentTooLargeByteSize: null,
+					contentShapeMismatchAt: null,
+					contentYjsStateTooLargeByteSize: null,
+					contentFrontmatterTooLargeFieldCount: null,
+					contentFrontmatterTooLargeIndexDocumentCount: null,
+					restrictedScopeNodeId: null,
+					readOnlyScopeNodeId: null,
+					readOnlyPluginName: null,
+					readOnlyPluginServiceTargetId: null,
+					archiveOperationId: null,
 				});
 			}
 		}
@@ -322,11 +339,25 @@ async function seed_markdown_file(args: {
 			kind: "file",
 			contentType: "text/markdown;charset=utf-8",
 			assetId: markdownAssetId,
-			yjsRootKind: "rich_text",
+			textKind: "rich_text",
 			parentId,
 			createdBy: args.userId,
 			updatedBy: args.userId,
 			updatedAt: now,
+			collaborationEnabled: true,
+			yjsSnapshotId: null,
+			yjsLastSequenceId: null,
+			statsId: null,
+			contentTooLargeByteSize: null,
+			contentShapeMismatchAt: null,
+			contentYjsStateTooLargeByteSize: null,
+			contentFrontmatterTooLargeFieldCount: null,
+			contentFrontmatterTooLargeIndexDocumentCount: null,
+			restrictedScopeNodeId: null,
+			readOnlyScopeNodeId: null,
+			readOnlyPluginName: null,
+			readOnlyPluginServiceTargetId: null,
+			archiveOperationId: null,
 		});
 		const yjsSnapshotId = await ctx.db.insert("files_yjs_snapshots", {
 			organizationId: args.organizationId,
@@ -724,15 +755,15 @@ describe("public files API", () => {
 		const stored = await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", writtenBody.nodeId as Id<"files_nodes">);
 			return {
-				nonCollaborative: node?.nonCollaborative,
-				yjsRootKind: node?.yjsRootKind,
-				hasPointers: node?.yjsSnapshotId !== undefined || node?.yjsLastSequenceId !== undefined,
+				collaborationEnabled: node?.collaborationEnabled,
+				textKind: node?.textKind,
+				hasPointers: node?.yjsSnapshotId !== null || node?.yjsLastSequenceId !== null,
 				yjsSnapshots: (await ctx.db.query("files_yjs_snapshots").collect()).length,
 				yjsLastSequences: (await ctx.db.query("files_yjs_docs_last_sequences").collect()).length,
 				yjsUpdates: (await ctx.db.query("files_yjs_updates").collect()).length,
 				assetKinds: (await ctx.db.query("files_r2_assets").collect()).map((asset) => asset.kind),
 				metadataFields: (await ctx.db.query("files_metadata_docs").collect())
-					.map((entry) => entry.qualifiedField)
+					.map((entry) => entry.fieldPath)
 					.sort(),
 				stages: (await ctx.db.query("public_api_file_write_stages").collect()).length,
 			};
@@ -740,8 +771,8 @@ describe("public files API", () => {
 
 		// The file is editable text — it keeps its shape — but it has no collaborative document at
 		// all, and no leftover Yjs snapshot asset from the staging step.
-		expect(stored.nonCollaborative).toBe(true);
-		expect(stored.yjsRootKind).toBe("rich_text");
+		expect(stored.collaborationEnabled).toBe(false);
+		expect(stored.textKind).toBe("rich_text");
 		expect(stored.hasPointers).toBe(false);
 		expect(stored.yjsSnapshots).toBe(0);
 		expect(stored.yjsLastSequences).toBe(0);
@@ -782,11 +813,11 @@ describe("public files API", () => {
 		const collaborativeNode = await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", collaborativeNodeId as Id<"files_nodes">);
 			return {
-				nonCollaborative: node?.nonCollaborative,
-				hasPointers: node?.yjsSnapshotId !== undefined && node?.yjsLastSequenceId !== undefined,
+				collaborationEnabled: node?.collaborationEnabled,
+				hasPointers: node?.yjsSnapshotId !== null && node?.yjsLastSequenceId !== null,
 			};
 		});
-		expect(collaborativeNode.nonCollaborative).toBeUndefined();
+		expect(collaborativeNode.collaborationEnabled).toBe(true);
 		expect(collaborativeNode.hasPointers).toBe(true);
 
 		// The flag is read only when the write creates the file. Sending it over the collaborative
@@ -807,14 +838,14 @@ describe("public files API", () => {
 		const afterFlagOnExisting = await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", collaborativeNodeId as Id<"files_nodes">);
 			return {
-				nonCollaborative: node?.nonCollaborative,
-				hasPointers: node?.yjsSnapshotId !== undefined && node?.yjsLastSequenceId !== undefined,
+				collaborationEnabled: node?.collaborationEnabled,
+				hasPointers: node?.yjsSnapshotId !== null && node?.yjsLastSequenceId !== null,
 				versions: (await ctx.db.query("files_snapshots").collect()).filter(
 					(snapshot) => snapshot.fileNodeId === (collaborativeNodeId as Id<"files_nodes">),
 				).length,
 			};
 		});
-		expect(afterFlagOnExisting.nonCollaborative).toBeUndefined();
+		expect(afterFlagOnExisting.collaborationEnabled).toBe(true);
 		expect(afterFlagOnExisting.hasPointers).toBe(true);
 		expect(afterFlagOnExisting.versions).toBe(2);
 		const readAfterFlag = await t.fetch("/api/v1/files/read", {
@@ -842,8 +873,8 @@ describe("public files API", () => {
 		const afterReplace = await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", writtenBody.nodeId as Id<"files_nodes">);
 			return {
-				nonCollaborative: node?.nonCollaborative,
-				archived: node?.archiveOperationId !== undefined,
+				collaborationEnabled: node?.collaborationEnabled,
+				archived: node?.archiveOperationId !== null,
 				yjsSnapshots: (await ctx.db.query("files_yjs_snapshots").collect()).length,
 				// One version per write on this file, plus the one the collaborative file created.
 				versions: (await ctx.db.query("files_snapshots").collect()).filter(
@@ -851,7 +882,7 @@ describe("public files API", () => {
 				).length,
 			};
 		});
-		expect(afterReplace.nonCollaborative).toBe(true);
+		expect(afterReplace.collaborationEnabled).toBe(false);
 		expect(afterReplace.archived).toBe(false);
 		// The collaborative file made the only Yjs snapshot in the workspace; the replace made none.
 		expect(afterReplace.yjsSnapshots).toBe(1);
@@ -1035,7 +1066,7 @@ describe("public files API", () => {
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
 						.eq("path", "/api-stamped/report.md")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first();
 			if (!node) {
@@ -1043,14 +1074,14 @@ describe("public files API", () => {
 			}
 			return await ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_fileNode_qualifiedField", (q) =>
+				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
 					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", node._id),
 				)
 				.collect();
 		});
 		expect(
 			Object.fromEntries(
-				metadataDocs.filter((doc) => doc.docKind === "value").map((doc) => [doc.qualifiedField, doc.stringValue]),
+				metadataDocs.filter((doc) => doc.docKind === "value").map((doc) => [doc.fieldPath, doc.stringValue]),
 			),
 		).toEqual({ "metadata.source": "api" });
 	});
@@ -1333,6 +1364,23 @@ describe("public files API", () => {
 				createdBy: db.userId,
 				updatedBy: db.userId,
 				updatedAt: now,
+				contentType: null,
+				assetId: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 			const innerId = await ctx.db.insert("files_nodes", {
 				organizationId: db.organizationId,
@@ -1347,6 +1395,23 @@ describe("public files API", () => {
 				createdBy: db.userId,
 				updatedBy: db.userId,
 				updatedAt: now,
+				contentType: null,
+				assetId: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 			await ctx.db.patch("files_nodes", outerId, { restrictedScopeNodeId: outerId });
 			await ctx.db.patch("files_nodes", innerId, { restrictedScopeNodeId: innerId });
@@ -1447,7 +1512,7 @@ describe("public files API", () => {
 		// The point of the fix: the refusal must not leave the caller with no file.
 		await t.run(async (ctx) => {
 			const target = await ctx.db.get("files_nodes", targetNodeId);
-			expect(target?.archiveOperationId).toBeUndefined();
+			expect(target?.archiveOperationId).toBeNull();
 			expect(target?.path).toBe("/outer/inner/report.md");
 		});
 	});
@@ -1475,6 +1540,23 @@ describe("public files API", () => {
 				createdBy: owner.userId,
 				updatedBy: owner.userId,
 				updatedAt: now,
+				contentType: null,
+				assetId: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 			await ctx.db.patch("files_nodes", folderId, { restrictedScopeNodeId: folderId });
 			return folderId;
@@ -1511,6 +1593,22 @@ describe("public files API", () => {
 				createdBy: owner.userId,
 				updatedBy: owner.userId,
 				updatedAt: now,
+				assetId: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
 			return nodeId;
@@ -1665,8 +1763,8 @@ describe("public files API", () => {
 
 		// A refusal must not be a write: both files are untouched and no stage is left behind.
 		await t.run(async (ctx) => {
-			expect(await ctx.db.get("files_nodes", notesId).then((node) => node?.archiveOperationId)).toBeUndefined();
-			expect(await ctx.db.get("files_nodes", legacyId).then((node) => node?.archiveOperationId)).toBeUndefined();
+			expect(await ctx.db.get("files_nodes", notesId).then((node) => node?.archiveOperationId)).toBeNull();
+			expect(await ctx.db.get("files_nodes", legacyId).then((node) => node?.archiveOperationId)).toBeNull();
 			expect(await ctx.db.query("public_api_file_write_stages").collect()).toEqual([]);
 		});
 	});
@@ -1731,7 +1829,7 @@ describe("public files API", () => {
 		const touchedNodeId = touchedBody.files[0]!.nodeId as Id<"files_nodes">;
 		const touchedYjsSnapshotBytes = await t.run(async (ctx) => {
 			const fileNode = await ctx.db.get("files_nodes", touchedNodeId);
-			expect(fileNode?.yjsRootKind).toBe("rich_text");
+			expect(fileNode?.textKind).toBe("rich_text");
 			if (!fileNode?.yjsSnapshotId) {
 				throw new Error("Expected the touched node to hold a Yjs snapshot pointer");
 			}
@@ -3066,6 +3164,23 @@ describe("files upload-urls", () => {
 				createdBy: db.userId,
 				updatedBy: db.userId,
 				updatedAt: now,
+				contentType: null,
+				assetId: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 			await ctx.db.patch("files_nodes", outerId, { restrictedScopeNodeId: outerId });
 			await ctx.db.patch("files_nodes", hiddenFileId, { restrictedScopeNodeId: hiddenFileId });
@@ -3222,7 +3337,7 @@ describe("files upload-urls", () => {
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
 						.eq("path", "/imports/pending.bin")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first();
 			return node?.assetId ? await ctx.db.get("files_r2_assets", node.assetId) : null;
@@ -3281,7 +3396,7 @@ describe("files upload-urls", () => {
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
 						.eq("path", "/imports/big.bin")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first();
 			const quota = await ctx.db
@@ -3322,7 +3437,7 @@ describe("files upload-urls", () => {
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
 						.eq("path", "/imports/paid.bin")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first();
 			const quota = await ctx.db
@@ -3423,7 +3538,7 @@ describe("files write-many", () => {
 						.eq("organizationId", args.db.organizationId)
 						.eq("workspaceId", args.db.workspaceId)
 						.eq("path", args.path)
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first(),
 		);
@@ -3883,7 +3998,7 @@ describe("files write billing", () => {
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
 						.eq("path", "/billing/refused.md")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first(),
 		);
@@ -4017,7 +4132,7 @@ describe("files write billing", () => {
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
 						.eq("path", "/billing/batch-1.md")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.collect();
 			const stages = await ctx.db.query("public_api_file_write_stages").collect();
@@ -4199,7 +4314,7 @@ describe("files read-only locks", () => {
 						.eq("organizationId", args.db.organizationId)
 						.eq("workspaceId", args.db.workspaceId)
 						.eq("path", args.path)
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first(),
 		);
@@ -4280,6 +4395,23 @@ describe("files read-only locks", () => {
 				createdBy: args.db.userId,
 				updatedBy: args.db.userId,
 				updatedAt: now,
+				contentType: null,
+				assetId: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
 			return nodeId;
@@ -4729,7 +4861,7 @@ describe("files read-only locks", () => {
 			expect(await ctx.db.get("files_r2_assets", prepared._yay!.contentSnapshotAssetId)).toBeNull();
 			expect(await ctx.db.query("public_api_file_write_stages").collect()).toEqual([]);
 			const target = await ctx.db.get("files_nodes", occupantNodeId);
-			expect(target?.archiveOperationId).toBeUndefined();
+			expect(target?.archiveOperationId).toBeNull();
 		});
 
 		// Unlock the file and prove the same write now works.
@@ -5010,6 +5142,23 @@ describe("files read-only locks", () => {
 				createdBy: writer.db.userId,
 				updatedBy: writer.db.userId,
 				updatedAt: now,
+				contentType: null,
+				assetId: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 		});
 		await set_lock({ writer, nodeId: midId, locked: true });
@@ -5068,7 +5217,7 @@ describe("files read-only locks", () => {
 		expect(await find_active_node({ t, db: writer.db, path: "/write-hidden/new.md" })).toBeNull();
 		await t.run(async (ctx) => {
 			const hiddenFolder = await ctx.db.get("files_nodes", hiddenFolderId);
-			expect(hiddenFolder?.archiveOperationId).toBeUndefined();
+			expect(hiddenFolder?.archiveOperationId).toBeNull();
 			expect(hiddenFolder?.restrictedScopeNodeId).toBe(hiddenFolderId);
 			expect(await ctx.db.query("public_api_file_write_stages").collect()).toEqual([]);
 			expect(await ctx.db.get("files_r2_assets", stage!.yjsSnapshotAssetId)).toBeNull();
@@ -5111,7 +5260,7 @@ describe("files read-only locks", () => {
 		expect(await find_active_node({ t, db: writer.db, path: "/touch-hidden/new.md" })).toBeNull();
 		await t.run(async (ctx) => {
 			const hiddenFolder = await ctx.db.get("files_nodes", hiddenFolderId);
-			expect(hiddenFolder?.archiveOperationId).toBeUndefined();
+			expect(hiddenFolder?.archiveOperationId).toBeNull();
 			expect(hiddenFolder?.restrictedScopeNodeId).toBe(hiddenFolderId);
 			expect(await ctx.db.query("public_api_file_write_stages").collect()).toEqual([]);
 			expect(await ctx.db.get("files_r2_assets", stage!.yjsSnapshotAssetId)).toBeNull();
@@ -5142,6 +5291,23 @@ describe("files read-only locks", () => {
 				createdBy: writer.db.userId,
 				updatedBy: writer.db.userId,
 				updatedAt: now,
+				contentType: null,
+				assetId: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
 			await ctx.db.insert("access_control_permission_grants", {
@@ -5195,6 +5361,23 @@ describe("files read-only locks", () => {
 				createdBy: writer.db.userId,
 				updatedBy: writer.db.userId,
 				updatedAt: now,
+				contentType: null,
+				assetId: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
 			await ctx.db.insert("access_control_permission_grants", {
@@ -5237,7 +5420,7 @@ describe("files read-only locks", () => {
 			files: [{ path: "/outer/inner/new.md", nodeId: targetId, created: false }],
 		});
 		await t.run(async (ctx) => {
-			expect((await ctx.db.get("files_nodes", targetId))?.archiveOperationId).toBeUndefined();
+			expect((await ctx.db.get("files_nodes", targetId))?.archiveOperationId).toBeNull();
 			expect(await ctx.db.query("public_api_file_write_stages").collect()).toEqual([]);
 			expect(await ctx.db.get("files_r2_assets", stage!.yjsSnapshotAssetId)).toBeNull();
 			expect(await ctx.db.get("files_r2_assets", stage!.contentSnapshotAssetId)).toBeNull();
@@ -5415,7 +5598,7 @@ describe("files read-only locks", () => {
 						.eq("organizationId", writer.db.organizationId)
 						.eq("workspaceId", writer.db.workspaceId)
 						.eq("path", "/appeared-aba.md")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.collect();
 			expect(activeNodes.map((node) => node._id)).toEqual([appearedNodeId]);
@@ -5455,7 +5638,7 @@ describe("files read-only locks", () => {
 		expect(await refused.json()).toEqual({ message: "This item is read-only." });
 		await t.run(async (ctx) => {
 			const target = await ctx.db.get("files_nodes", occupantNodeId);
-			expect(target?.archiveOperationId).toBeUndefined();
+			expect(target?.archiveOperationId).toBeNull();
 		});
 
 		// Unlock the stored file and prove the same replace can archive and recreate it.
@@ -5604,7 +5787,7 @@ describe("service file writes", () => {
 						.eq("organizationId", args.db.organizationId)
 						.eq("workspaceId", args.db.workspaceId)
 						.eq("path", args.path)
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first(),
 		);
@@ -5904,8 +6087,8 @@ describe("service file writes", () => {
 		});
 		expect(unlocked._nay).toBeUndefined();
 		const afterUnlock = await find_active_node({ t, db, path: "/meetings/meeting-1/transcript.md" });
-		expect(afterUnlock?.readOnlyScopeNodeId).toBeUndefined();
-		expect(afterUnlock?.readOnlyPluginName).toBeUndefined();
+		expect(afterUnlock?.readOnlyScopeNodeId).toBeNull();
+		expect(afterUnlock?.readOnlyPluginName).toBeNull();
 		expect(
 			(
 				await service_write({
@@ -5919,7 +6102,7 @@ describe("service file writes", () => {
 		).toBe(200);
 		expect(
 			(await find_active_node({ t, db, path: "/meetings/meeting-1/transcript.md" }))?.readOnlyScopeNodeId,
-		).toBeUndefined();
+		).toBeNull();
 
 		// A member re-lock carries no plugin name, so the service cannot pass it.
 		const relocked = await asUser.mutation(api.files_nodes.set_node_read_only, {
@@ -6250,10 +6433,10 @@ describe("service file writes", () => {
 		});
 		expect(
 			(await t.run(async (ctx) => ctx.db.get("files_nodes", lockedNode!._id)))?.readOnlyScopeNodeId,
-		).toBeUndefined();
+		).toBeNull();
 		expect(
 			(await t.run(async (ctx) => ctx.db.get("files_nodes", lockedNode!._id)))?.readOnlyPluginName,
-		).toBeUndefined();
+		).toBeNull();
 
 		// Archiving an absent path is satisfied by doing nothing.
 		const absent = await archive("/meetings/meeting-1/never-existed.md");
@@ -6363,8 +6546,8 @@ describe("service file writes", () => {
 		// exception that lets the service pass it, so a member restore gets writable files back.
 		const after = await t.run(async (ctx) => ctx.db.get("files_nodes", node!._id));
 		expect(after?.archiveOperationId).toEqual(expect.any(String));
-		expect(after?.readOnlyScopeNodeId).toBeUndefined();
-		expect(after?.readOnlyPluginName).toBeUndefined();
+		expect(after?.readOnlyScopeNodeId).toBeNull();
+		expect(after?.readOnlyPluginName).toBeNull();
 		expect(await find_active_node({ t, db, path: "/meetings" })).toBeNull();
 
 		// A file that kept its lock would make this whole restore refuse, so the restore is the
@@ -6388,7 +6571,7 @@ describe("service file writes", () => {
 		});
 		expect(restored).toEqual({ _yay: null });
 		const restoredFile = await find_active_node({ t, db, path: "/meetings/meeting-1/transcript.md" });
-		expect(restoredFile?.readOnlyScopeNodeId).toBeUndefined();
+		expect(restoredFile?.readOnlyScopeNodeId).toBeNull();
 	});
 
 	test("another plugin's grant cannot archive through the lock this plugin created", async () => {

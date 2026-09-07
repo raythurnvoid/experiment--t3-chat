@@ -104,6 +104,23 @@ async function data_deletion_test_seed_page(
 		createdBy: args.userId,
 		updatedBy: args.userId,
 		updatedAt: Date.now(),
+		contentType: null,
+		assetId: null,
+		textKind: null,
+		collaborationEnabled: null,
+		yjsSnapshotId: null,
+		yjsLastSequenceId: null,
+		statsId: null,
+		contentTooLargeByteSize: null,
+		contentShapeMismatchAt: null,
+		contentYjsStateTooLargeByteSize: null,
+		contentFrontmatterTooLargeFieldCount: null,
+		contentFrontmatterTooLargeIndexDocumentCount: null,
+		restrictedScopeNodeId: null,
+		readOnlyScopeNodeId: null,
+		readOnlyPluginName: null,
+		readOnlyPluginServiceTargetId: null,
+		archiveOperationId: null,
 	});
 
 	const markdown = `# ${args.tag}`;
@@ -229,6 +246,22 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			updatedBy: args.userId,
 			updatedAt: Date.now(),
 			contentType: "text/markdown;charset=utf-8",
+			assetId: null,
+			textKind: null,
+			collaborationEnabled: null,
+			yjsSnapshotId: null,
+			yjsLastSequenceId: null,
+			statsId: null,
+			contentTooLargeByteSize: null,
+			contentShapeMismatchAt: null,
+			contentYjsStateTooLargeByteSize: null,
+			contentFrontmatterTooLargeFieldCount: null,
+			contentFrontmatterTooLargeIndexDocumentCount: null,
+			restrictedScopeNodeId: null,
+			readOnlyScopeNodeId: null,
+			readOnlyPluginName: null,
+			readOnlyPluginServiceTargetId: null,
+			archiveOperationId: null,
 		});
 		const contentR2Key = `content/organizations/${args.organizationId}/workspaces/${args.workspaceId}/nodes/${args.tag}-${i}/markdown`;
 		const yjsR2Key = `content/organizations/${args.organizationId}/workspaces/${args.workspaceId}/nodes/${args.tag}-${i}/yjs`;
@@ -289,7 +322,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			statsId,
 			yjsSnapshotId,
 			yjsLastSequenceId,
-			yjsRootKind: "rich_text",
+			textKind: "rich_text",
 		});
 		const textChunkId = await ctx.db.insert("files_text_chunks", {
 			organizationId: args.organizationId,
@@ -333,7 +366,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				yjsSequence: 1,
 				path: `/${args.tag}-${i}.md`,
 				treePath: `/${args.tag}-${i}.md`,
-				qualifiedField: "frontmatter.cleanup",
+				fieldPath: "frontmatter.cleanup",
 				docKind: "field",
 			}),
 			ctx.db.insert("files_metadata_docs", {
@@ -344,7 +377,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				yjsSequence: 1,
 				path: `/${args.tag}-${i}.md`,
 				treePath: `/${args.tag}-${i}.md`,
-				qualifiedField: "frontmatter.cleanup",
+				fieldPath: "frontmatter.cleanup",
 				docKind: "value",
 				valueKind: "string",
 				stringValue: args.tag,
@@ -423,7 +456,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 					pendingUpdateId,
 					path: `/${args.tag}-${i}.md`,
 					treePath: `/${args.tag}-${i}.md`,
-					qualifiedField: "frontmatter.cleanup",
+					fieldPath: "frontmatter.cleanup",
 					docKind: "field",
 				}),
 				ctx.db.insert("files_metadata_docs", {
@@ -435,7 +468,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 					pendingUpdateId,
 					path: `/${args.tag}-${i}.md`,
 					treePath: `/${args.tag}-${i}.md`,
-					qualifiedField: "frontmatter.cleanup",
+					fieldPath: "frontmatter.cleanup",
 					docKind: "value",
 					valueKind: "string",
 					stringValue: `pending-${args.tag}`,
@@ -975,6 +1008,23 @@ async function review_seed_all_workspace_content(
 			createdBy: args.userId,
 			updatedBy: args.userId,
 			updatedAt: now,
+			contentType: null,
+			assetId: null,
+			textKind: null,
+			collaborationEnabled: null,
+			yjsSnapshotId: null,
+			yjsLastSequenceId: null,
+			statsId: null,
+			contentTooLargeByteSize: null,
+			contentShapeMismatchAt: null,
+			contentYjsStateTooLargeByteSize: null,
+			contentFrontmatterTooLargeFieldCount: null,
+			contentFrontmatterTooLargeIndexDocumentCount: null,
+			restrictedScopeNodeId: null,
+			readOnlyScopeNodeId: null,
+			readOnlyPluginName: null,
+			readOnlyPluginServiceTargetId: null,
+			archiveOperationId: null,
 		});
 		const uploadAssetId = await ctx.db.insert("files_r2_assets", {
 			...tenant,
@@ -999,6 +1049,21 @@ async function review_seed_all_workspace_content(
 			updatedAt: now,
 			assetId: uploadAssetId,
 			contentType: "image/png",
+			textKind: null,
+			collaborationEnabled: null,
+			yjsSnapshotId: null,
+			yjsLastSequenceId: null,
+			statsId: null,
+			contentTooLargeByteSize: null,
+			contentShapeMismatchAt: null,
+			contentYjsStateTooLargeByteSize: null,
+			contentFrontmatterTooLargeFieldCount: null,
+			contentFrontmatterTooLargeIndexDocumentCount: null,
+			restrictedScopeNodeId: null,
+			readOnlyScopeNodeId: null,
+			readOnlyPluginName: null,
+			readOnlyPluginServiceTargetId: null,
+			archiveOperationId: null,
 		});
 		await ctx.db.insert("plugin_service_storage_destinations", {
 			...tenant,
@@ -2688,7 +2753,7 @@ describe("process_user_deletion_request eager copy assets", () => {
 			});
 			await ctx.db.patch("files_nodes", destination.nodeId, {
 				yjsLastSequenceId: sequenceId,
-				yjsRootKind: "rich_text",
+				textKind: "rich_text",
 			});
 			// The stage action has copied the object before calling this real commit mutation.
 			const stagedAssetId = await ctx.db.insert("files_r2_assets", {

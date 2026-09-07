@@ -77,39 +77,39 @@ describe("bash_meta_command_create", () => {
 		const cases = [
 			{
 				where: '{"exists":"frontmatter.cc"}',
-				plan: { op: "exists", qualifiedField: "frontmatter.cc" },
+				plan: { op: "exists", fieldPath: "frontmatter.cc" },
 			},
 			{
 				where: '{"eq":["frontmatter.amount",120.5]}',
-				plan: { op: "eq", qualifiedField: "frontmatter.amount", value: 120.5 },
+				plan: { op: "eq", fieldPath: "frontmatter.amount", value: 120.5 },
 			},
 			{
 				where: '{"exists":"metadata.created-by"}',
-				plan: { op: "exists", qualifiedField: "metadata.created-by" },
+				plan: { op: "exists", fieldPath: "metadata.created-by" },
 			},
 			{
 				// A colon is part of the key, not a separator.
 				where: '{"eq":["metadata.slack:message-id","1755500000.001"]}',
-				plan: { op: "eq", qualifiedField: "metadata.slack:message-id", value: "1755500000.001" },
+				plan: { op: "eq", fieldPath: "metadata.slack:message-id", value: "1755500000.001" },
 			},
 			{
 				// The write door accepts keys that are not written in English, so search must too.
 				where: '{"exists":"metadata.città"}',
-				plan: { op: "exists", qualifiedField: "metadata.città" },
+				plan: { op: "exists", fieldPath: "metadata.città" },
 			},
 			{
 				where: '{"prefix":["frontmatter.subject","Inv"]}',
-				plan: { op: "prefix", qualifiedField: "frontmatter.subject", value: "Inv" },
+				plan: { op: "prefix", fieldPath: "frontmatter.subject", value: "Inv" },
 			},
 			{
 				where: '{"range":["frontmatter.amount",{"gte":100,"lt":500}]}',
-				plan: { op: "range", qualifiedField: "frontmatter.amount", valueKind: "number", gte: 100, lt: 500 },
+				plan: { op: "range", fieldPath: "frontmatter.amount", valueKind: "number", gte: 100, lt: 500 },
 			},
 			{
 				where: '{"range":["frontmatter.realStartTime",{"gte":"2026-07-27","lt":"2026-08-02"}]}',
 				plan: {
 					op: "range",
-					qualifiedField: "frontmatter.realStartTime",
+					fieldPath: "frontmatter.realStartTime",
 					valueKind: "maybe_date",
 					gte: Date.UTC(2026, 6, 27),
 					lt: Date.UTC(2026, 7, 2),
@@ -119,7 +119,7 @@ describe("bash_meta_command_create", () => {
 				where: '{"range":["frontmatter.realStartTime",{"gte":"2026-07-29T14:30:36.264Z"}]}',
 				plan: {
 					op: "range",
-					qualifiedField: "frontmatter.realStartTime",
+					fieldPath: "frontmatter.realStartTime",
 					valueKind: "maybe_date",
 					gte: Date.UTC(2026, 6, 29, 14, 30, 36, 264),
 				},
@@ -129,7 +129,7 @@ describe("bash_meta_command_create", () => {
 				where: '{"range":["frontmatter.realStartTime",{"gte":"1970-01-01"}]}',
 				plan: {
 					op: "range",
-					qualifiedField: "frontmatter.realStartTime",
+					fieldPath: "frontmatter.realStartTime",
 					valueKind: "maybe_date",
 					gte: 0,
 				},

@@ -85,6 +85,7 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			set_node_writable: "set_node_writable",
 		},
 		files_nodes_content: {
+			get_file_collaboration_cleanup_state: "get_file_collaboration_cleanup_state",
 			set_file_collaborative: "set_file_collaborative",
 			set_file_non_collaborative: "set_file_non_collaborative",
 		},
@@ -143,14 +144,19 @@ const NODE = {
 	name: "notes.md",
 	kind: "file",
 	contentType: "text/markdown",
+	assetId: null as string | null,
+	textKind: null as "rich_text" | "plain_text" | null,
+	collaborationEnabled: null as boolean | null,
+	yjsSnapshotId: null,
+	yjsLastSequenceId: null,
 	createdBy: "user_1",
 	updatedBy: "user_1",
 	updatedAt: 1_700_000_000_000,
 };
 
-// A file whose text can be edited. `assetId` plus `yjsRootKind` is what marks one, and the plain
+// A file whose text can be edited. `assetId` plus `textKind` is what marks one, and the plain
 // NODE above deliberately has neither, so an image gets no collaboration section.
-const TEXT_NODE = { ...NODE, assetId: "asset_1", yjsRootKind: "rich_text" as const };
+const TEXT_NODE = { ...NODE, assetId: "asset_1", textKind: "rich_text" as const, collaborationEnabled: true };
 
 type ManagementState = {
 	canManage: boolean;
@@ -161,12 +167,8 @@ type ManagementState = {
 
 function mockQueries(args: {
 	management?: ManagementState;
-	node?: typeof NODE & {
-		assetId?: string;
-		yjsRootKind?: "rich_text" | "plain_text";
-		nonCollaborative?: boolean;
-		collaborationCleanupYjsLastSequenceId?: string;
-	};
+	node?: typeof NODE;
+	cleanupBlocksCollaboration?: boolean | null;
 	asset?: { size: number } | null;
 	entries?: { key: string; value: string | number | boolean }[];
 	canWrite?: boolean;
@@ -182,6 +184,9 @@ function mockQueries(args: {
 		}
 		if (query === "get_file_node_for_membership") {
 			return args.node ?? NODE;
+		}
+		if (query === "get_file_collaboration_cleanup_state") {
+			return args.cleanupBlocksCollaboration ?? false;
 		}
 		if (query === "get_asset_by_file_node_id") {
 			return args.asset === undefined ? { size: 2048 } : args.asset;
@@ -605,7 +610,7 @@ describe("FilesPropertiesModalCollaboration", () => {
 	});
 
 	test("explains last write wins when collaboration is already off", () => {
-		mockQueries({ node: { ...TEXT_NODE, nonCollaborative: true }, entries: [], canWrite: true });
+		mockQueries({ node: { ...TEXT_NODE, collaborationEnabled: false }, entries: [], canWrite: true });
 
 		renderModal();
 
@@ -655,7 +660,7 @@ describe("FilesPropertiesModalCollaboration", () => {
 	});
 
 	test("warns about unsaved editor text before turning collaboration on", () => {
-		mockQueries({ node: { ...TEXT_NODE, nonCollaborative: true }, entries: [], canWrite: true });
+		mockQueries({ node: { ...TEXT_NODE, collaborationEnabled: false }, entries: [], canWrite: true });
 
 		renderModal();
 		fireEvent.click(collaborationCheckbox());
@@ -673,7 +678,7 @@ describe("FilesPropertiesModalCollaboration", () => {
 	});
 
 	test("shows the cleanup refusal and keeps collaboration off", async () => {
-		mockQueries({ node: { ...TEXT_NODE, nonCollaborative: true }, entries: [], canWrite: true });
+		mockQueries({ node: { ...TEXT_NODE, collaborationEnabled: false }, entries: [], canWrite: true });
 		actionMock.mockResolvedValueOnce({
 			_nay: { message: "The old collaboration history is still being removed. Please try again later." },
 		});
@@ -688,15 +693,16 @@ describe("FilesPropertiesModalCollaboration", () => {
 		expect(collaborationCheckbox().checked).toBe(false);
 	});
 
-	test("shows cleanup status until the server removes the marker", async () => {
+	test("shows cleanup status only while old history blocks collaboration", async () => {
 		mockQueries({
-			node: { ...TEXT_NODE, nonCollaborative: true, collaborationCleanupYjsLastSequenceId: "old_history" },
+			node: { ...TEXT_NODE, collaborationEnabled: false },
+			cleanupBlocksCollaboration: true,
 			entries: [],
 			canWrite: true,
 		});
 		renderModal();
 		expect(screen.getByRole("status").textContent).toContain("Old edit history is being removed.");
-		mockQueries({ node: { ...TEXT_NODE, nonCollaborative: true }, entries: [], canWrite: true });
+		mockQueries({ node: { ...TEXT_NODE, collaborationEnabled: false }, entries: [], canWrite: true });
 		await act(async () => {
 			for (const listener of queryPushListeners) {
 				listener();

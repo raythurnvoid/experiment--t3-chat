@@ -95,6 +95,23 @@ describe("ensure_plugin_folder", () => {
 				createdBy: owner.userId,
 				updatedBy: owner.userId,
 				updatedAt: now,
+				contentType: null,
+				assetId: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 			return { owner, userId, membershipId, pluginVersionId, installationId, parentId };
 		});
@@ -143,8 +160,8 @@ describe("ensure_plugin_folder", () => {
 		expect(before.nodes).toEqual([
 			expect.objectContaining({ _id: fixture.parentId, path: "/tagged" }),
 		]);
-		expect(before.nodes[0]!.restrictedScopeNodeId).toBeUndefined();
-		expect(before.nodes[0]!.readOnlyScopeNodeId).toBeUndefined();
+		expect(before.nodes[0]!.restrictedScopeNodeId).toBeNull();
+		expect(before.nodes[0]!.readOnlyScopeNodeId).toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("organizations_workspaces_users", fixture.membershipId))).toMatchObject({
 			active: true,
 		});
@@ -185,7 +202,7 @@ describe("ensure_plugin_folder", () => {
 						.eq("organizationId", fixture.owner.organizationId)
 						.eq("workspaceId", fixture.owner.workspaceId)
 						.eq("path", "/tagged/new")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first(),
 		);

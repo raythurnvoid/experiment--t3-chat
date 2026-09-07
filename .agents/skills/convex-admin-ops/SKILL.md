@@ -137,7 +137,7 @@ Rules the action enforces (do not fight them):
 
 What a successful repair does: replaces the whole Yjs history with one fresh compact document built from the visible text, swaps every committed representation atomically, clears the markers, resets the update counters, and increments `lineageGeneration` — pending proposals built against the old history become visibly stale instead of merging. The OLD content asset stays under normal snapshot retention (its `files_snapshots` history doc still owns it); only the superseded Yjs snapshot asset is removed, by a bounded continuation. If the repair text still carries over-cap frontmatter, the repair keeps the frontmatter marker pair set with fresh counts and skips the metadata index; everything else still repairs.
 
-After the repair, editors that had the file open must CLOSE or RELOAD the file before writes resume — their in-memory document belongs to the replaced lineage. Readback: confirm the marker fields are gone from the node doc and `lineageGeneration` increased on the `files_yjs_docs_last_sequences` doc.
+After the repair, editors that had the file open must CLOSE or RELOAD the file before writes resume — their in-memory document belongs to the replaced lineage. Readback: confirm the repaired marker fields are null on the node doc and `lineageGeneration` increased on the `files_yjs_docs_last_sequences` doc. The frontmatter pair stays set when the repaired text still exceeds its limits.
 
 # Remove A Registered Plugin
 
@@ -194,6 +194,8 @@ The existing user deletion logic deletes an organization only after its last act
 # Data Readback Via `convex data`
 
 `convex data <table> --limit N` can hide ids and long fields when it truncates columns to the terminal width. Prefer `--format jsonArray` for exact values. The command returns at most the requested limit and JSON output does not warn when more docs exist, so increase the limit whenever the returned count equals it. For sensitive tables, prefer a read-only inline query that returns only needed ids, counts, status fields, or redacted data. Never paste PII, decrypted values, or secret material into a report. Pass CLI help through Vite Plus with `vp env exec -- node node_modules/convex/bin/main.js "<command>" --help`; replace the quoted placeholder first. The separator prevents Vite Plus from consuming the child CLI's `--help` flag.
+
+Convex limits returned arrays to 8,192 items. Do not keep increasing `--limit` past that point. Use a paginated audit query for larger tables and require its final `isDone` page before claiming a full count.
 
 # Export And Import Recovery Snapshots
 

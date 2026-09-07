@@ -30,7 +30,7 @@ One entry is `{ key: string; value: string | number | boolean }` (`files_metadat
 `packages/app/shared/files-metadata.ts`). No nesting, no arrays, no null.
 
 Entries are indexed in the same `files_metadata_docs` table that Markdown frontmatter uses. The
-`qualifiedField` prefix is what tells the two sources apart:
+`fieldPath` prefix is what tells the two sources apart:
 
 | Source | Prefix | Written by |
 | --- | --- | --- |
@@ -325,8 +325,8 @@ with a user key: a frontmatter key literally named `file` is written `frontmatte
 key must match `files_metadata_METADATA_KEY_REGEX` and a frontmatter path
 `files_metadata_FIELD_SEGMENT_REGEX`. Both are exported from `shared/files-metadata.ts` and imported
 by the parser and by `meta search`, so a key a user can write stays a key that can be searched for.
-`files_search_query_qualified_field_is_valid` is that grammar as one check on a qualified field.
-The doors use it through `search_qualified_field_is_valid`, which adds the length cap. A key
+`files_search_query_field_path_is_valid` is that grammar as one check on a qualified field.
+The doors use it through `search_field_path_is_valid`, which adds the length cap. A key
 literally named like a namespace (`file`, `file.*`, `metadata`, `frontmatter.*`) keeps its namespace
 in the sidebar's key catalog (`metadata.file`), because typed bare it would read as that namespace.
 
@@ -350,11 +350,11 @@ for a membership that is not the caller's.
   `search` keeps the same rule as query filters in `search_query`. The candidates are also cut at
   `SEARCH_NODES_MAX_SCOPES` (250) distinct restricted folders before the readable-nodes filter,
   because that filter pays one permission check per folder.
-- `list_search_fields({ membershipId })` → `[{ qualifiedField, valueKinds }]`, the key catalog for
+- `list_search_fields({ membershipId })` → `[{ fieldPath, valueKinds }]`, the key catalog for
   the suggestions, in index order. A stored field the other doors refuse (longer than
-  `SEARCH_QUALIFIED_FIELD_MAX_LENGTH`; frontmatter has no cap on a key path) is skipped, so the
+  `SEARCH_FIELD_PATH_MAX_LENGTH`; frontmatter has no cap on a key path) is skipped, so the
   catalog never offers a key that then finds nothing.
-- `list_search_values({ membershipId, qualifiedField, prefix })` → the string values of one key that
+- `list_search_values({ membershipId, fieldPath, prefix })` → the string values of one key that
   start with `prefix`, in exact case: `d` does not list `Denys`. The sidebar filters its rows by
   the same rule.
 - The two catalog doors name a key or a value only when one of its first

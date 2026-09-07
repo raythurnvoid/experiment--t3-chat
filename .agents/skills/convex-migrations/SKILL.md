@@ -65,6 +65,8 @@ Migration Progress:
 1. Verify the backfill, then switch reads and writes to the new representation.
 2. Make the old field optional and run a separate idempotent migration that strips it from stored docs.
 
+Check actions that started before the switch. Their later queries can read the new code and stored shape. Keep those reads valid, and reject stale final writes when old fields could choose the wrong mode or content. Retaining old keys alone is not enough if new writers leave their values stale. After the switch, wait for the old actions to finish before stripping fields they use; the normal [Convex action limit](https://docs.convex.dev/functions/actions#limits) is ten minutes. This wait does not replace the stale-write checks needed during that window.
+
 ## Phase C: Tighten
 
 1. Verify the strip migration completed.
@@ -181,7 +183,7 @@ vp env exec pnpm --dir packages/app exec convex run --component migrations lib:g
 ```
 
 - `convex codegen` refreshes `_generated` after local schema or function changes when the user's existing dev process has not done so.
-- `convex data <table>` is useful for bounded spot checks before and after a migration. Prefer `--format jsonArray` so the terminal does not hide long fields. If the result count equals the limit, increase it before concluding the scan is complete.
+- `convex data <table>` is useful for bounded spot checks before and after a migration. Prefer `--format jsonArray` so the terminal does not hide long fields. If the result count equals the limit, increase it before concluding the scan is complete. Returned arrays cannot exceed 8,192 items; use a paginated audit query for larger tables.
 - `convex run <module:function> [jsonArgs]` accepts a JSON object for args.
 - Dry-run a risky named migration through the admin-ops direct Node path. A dry run executes one batch and rolls it back:
 

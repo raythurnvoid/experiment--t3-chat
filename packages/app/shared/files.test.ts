@@ -17,6 +17,7 @@ import {
 	files_get_upload_pipeline_state,
 	files_get_normalized_node_path_segments,
 	files_get_utf8_byte_size,
+	files_node_has_editable_text_content,
 	files_node_has_editable_yjs_state,
 	files_normalize_markdown_name,
 	files_normalize_upload_file_name,
@@ -655,6 +656,22 @@ describe("files_get_upload_pipeline_state", () => {
 	});
 });
 
+describe("files_node_has_editable_text_content", () => {
+	const assetId = "asset" as NonNullable<app_convex_Doc<"files_nodes">["assetId"]>;
+
+	test.each(["rich_text", "plain_text"] as const)("keeps %s editable without a live document", (textKind) => {
+		const node = { kind: "file" as const, assetId, textKind, yjsSnapshotId: null, yjsLastSequenceId: null };
+		expect(files_node_has_editable_text_content(node)).toBe(true);
+		expect(files_node_has_editable_yjs_state(node)).toBe(false);
+	});
+
+	test("rejects folders, missing content, and stored blobs", () => {
+		expect(files_node_has_editable_text_content({ kind: "folder", assetId, textKind: "rich_text" })).toBe(false);
+		expect(files_node_has_editable_text_content({ kind: "file", assetId: null, textKind: "plain_text" })).toBe(false);
+		expect(files_node_has_editable_text_content({ kind: "file", assetId, textKind: null })).toBe(false);
+	});
+});
+
 describe("files_node_has_editable_yjs_state", () => {
 	const assetId = "asset" as NonNullable<app_convex_Doc<"files_nodes">["assetId"]>;
 	const yjsSnapshotId = "snapshot" as NonNullable<app_convex_Doc<"files_nodes">["yjsSnapshotId"]>;
@@ -667,7 +684,7 @@ describe("files_node_has_editable_yjs_state", () => {
 				assetId,
 				yjsSnapshotId,
 				yjsLastSequenceId,
-				yjsRootKind: "rich_text",
+				textKind: "rich_text",
 			}),
 		).toBe(true);
 
@@ -677,7 +694,7 @@ describe("files_node_has_editable_yjs_state", () => {
 				assetId,
 				yjsSnapshotId,
 				yjsLastSequenceId,
-				yjsRootKind: undefined,
+				textKind: null,
 			}),
 		).toBe(false);
 		expect(
@@ -685,8 +702,8 @@ describe("files_node_has_editable_yjs_state", () => {
 				kind: "file",
 				assetId,
 				yjsSnapshotId,
-				yjsLastSequenceId: undefined,
-				yjsRootKind: "rich_text",
+				yjsLastSequenceId: null,
+				textKind: "rich_text",
 			}),
 		).toBe(false);
 		expect(
@@ -695,7 +712,7 @@ describe("files_node_has_editable_yjs_state", () => {
 				assetId,
 				yjsSnapshotId,
 				yjsLastSequenceId,
-				yjsRootKind: "rich_text",
+				textKind: "rich_text",
 			}),
 		).toBe(false);
 	});

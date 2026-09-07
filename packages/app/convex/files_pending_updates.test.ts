@@ -211,8 +211,21 @@ async function seed_file_with_markdown(args: {
 		createdBy: userId,
 		updatedBy: userId,
 		updatedAt: now,
-		archiveOperationId: undefined,
-		yjsRootKind: rootKind,
+		archiveOperationId: null,
+		textKind: rootKind,
+		collaborationEnabled: true,
+		yjsSnapshotId: null,
+		yjsLastSequenceId: null,
+		statsId: null,
+		contentTooLargeByteSize: null,
+		contentShapeMismatchAt: null,
+		contentYjsStateTooLargeByteSize: null,
+		contentFrontmatterTooLargeFieldCount: null,
+		contentFrontmatterTooLargeIndexDocumentCount: null,
+		restrictedScopeNodeId: null,
+		readOnlyScopeNodeId: null,
+		readOnlyPluginName: null,
+		readOnlyPluginServiceTargetId: null,
 	});
 
 	const snapshotId = await ctx.db.insert("files_yjs_snapshots", {
@@ -274,6 +287,23 @@ async function seed_folder_node(args: {
 		createdBy: args.userId,
 		updatedBy: args.userId,
 		updatedAt: now,
+		contentType: null,
+		assetId: null,
+		textKind: null,
+		collaborationEnabled: null,
+		yjsSnapshotId: null,
+		yjsLastSequenceId: null,
+		statsId: null,
+		contentTooLargeByteSize: null,
+		contentShapeMismatchAt: null,
+		contentYjsStateTooLargeByteSize: null,
+		contentFrontmatterTooLargeFieldCount: null,
+		contentFrontmatterTooLargeIndexDocumentCount: null,
+		restrictedScopeNodeId: null,
+		readOnlyScopeNodeId: null,
+		readOnlyPluginName: null,
+		readOnlyPluginServiceTargetId: null,
+		archiveOperationId: null,
 	});
 }
 
@@ -387,6 +417,21 @@ async function seed_non_collaborative_file(ctx: MutationCtx, path: string, text:
 		createdBy: userId,
 		updatedBy: userId,
 		updatedAt: now,
+		textKind: null,
+		collaborationEnabled: null,
+		yjsSnapshotId: null,
+		yjsLastSequenceId: null,
+		statsId: null,
+		contentTooLargeByteSize: null,
+		contentShapeMismatchAt: null,
+		contentYjsStateTooLargeByteSize: null,
+		contentFrontmatterTooLargeFieldCount: null,
+		contentFrontmatterTooLargeIndexDocumentCount: null,
+		restrictedScopeNodeId: null,
+		readOnlyScopeNodeId: null,
+		readOnlyPluginName: null,
+		readOnlyPluginServiceTargetId: null,
+		archiveOperationId: null,
 	});
 	await files_nodes_db_insert_file_content_docs(ctx, {
 		organizationId,
@@ -458,7 +503,7 @@ async function read_committed_text(args: {
 
 async function read_file_yjs_snapshot_update(args: {
 	ctx: MutationCtx;
-	fileNode: { yjsSnapshotId?: Id<"files_yjs_snapshots"> };
+	fileNode: { yjsSnapshotId: Id<"files_yjs_snapshots"> | null };
 }) {
 	if (!args.fileNode.yjsSnapshotId) {
 		throw new Error("fileNode.yjsSnapshotId is not set while reading Yjs snapshot");
@@ -1680,7 +1725,7 @@ describe("upsert_file_pending_update", () => {
 			}
 			const metadataDocs = await ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_pendingUpdate_qualifiedField", (q) => q.eq("pendingUpdateId", row._id))
+				.withIndex("by_pendingUpdate_fieldPath", (q) => q.eq("pendingUpdateId", row._id))
 				.collect();
 			const plainTextChunks = await list_pending_update_plain_text_chunks({ ctx, pendingUpdateId: row._id });
 			return { metadataDocs, chunkTexts: plainTextChunks.map((chunk) => chunk.plainTextChunk) };
@@ -1733,7 +1778,7 @@ describe("upsert_file_pending_update", () => {
 			}
 			const metadataDocs = await ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_pendingUpdate_qualifiedField", (q) => q.eq("pendingUpdateId", row._id))
+				.withIndex("by_pendingUpdate_fieldPath", (q) => q.eq("pendingUpdateId", row._id))
 				.collect();
 			const plainTextChunks = await list_pending_update_plain_text_chunks({ ctx, pendingUpdateId: row._id });
 			return { metadataDocs, chunkTexts: plainTextChunks.map((chunk) => chunk.plainTextChunk) };
@@ -3562,12 +3607,12 @@ describe("upsert, discard, move, and restore on a file with collaboration off", 
 
 		// The asset check comes before the mode check: with collaboration turned on in the meantime
 		// the agent still reads the stale message, not `Not found`.
-		await t.run((ctx) => ctx.db.patch("files_nodes", seeded.nodeId, { nonCollaborative: undefined }));
+		await t.run((ctx) => ctx.db.patch("files_nodes", seeded.nodeId, { collaborationEnabled: true }));
 		const staleAndCollaborative = await commit(seeded.assetId);
 		expect(staleAndCollaborative._nay?.message).toBe(
 			"Pending update base is stale and must be rebuilt from the latest live file state",
 		);
-		await t.run((ctx) => ctx.db.patch("files_nodes", seeded.nodeId, { nonCollaborative: true }));
+		await t.run((ctx) => ctx.db.patch("files_nodes", seeded.nodeId, { collaborationEnabled: false }));
 
 		// Positive control: the same commit with the node's current asset lands.
 		const fresh = await commit(savedAssetId);
@@ -6896,7 +6941,7 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 
 		// The ON toggle also marks the proposal. Flip the flag alone, so the commit's own check is
 		// the one that refuses.
-		await t.run((ctx) => ctx.db.patch("files_nodes", seeded.nodeId, { nonCollaborative: undefined }));
+		await t.run((ctx) => ctx.db.patch("files_nodes", seeded.nodeId, { collaborationEnabled: true }));
 		const asUser = t.withIdentity({
 			issuer: "https://clerk.test",
 			external_id: seeded.userId,
@@ -7292,7 +7337,7 @@ describe("overlay reads on a file with collaboration off", () => {
 				organizationId: seeded.organizationId,
 				workspaceId: seeded.workspaceId,
 				userId: seeded.userId,
-				plan: { op: "eq", qualifiedField: "frontmatter.title", value },
+				plan: { op: "eq", fieldPath: "frontmatter.title", value },
 				numItems: 20,
 				cursor: null,
 			});
@@ -7332,7 +7377,7 @@ describe("overlay reads on a file with collaboration off", () => {
 		const search_nodes_title = async (value: string) => {
 			const found = await asUser.query(api.files_metadata.search_nodes, {
 				membershipId: seeded.membershipId,
-				plans: [{ op: "eq", qualifiedField: "frontmatter.title", value }],
+				plans: [{ op: "eq", fieldPath: "frontmatter.title", value }],
 			});
 			return found.nodeIds;
 		};
@@ -7343,7 +7388,7 @@ describe("overlay reads on a file with collaboration off", () => {
 				userId: seeded.userId,
 				path,
 			});
-			return found?.values.find((value) => value.qualifiedField === "frontmatter.title")?.stringValue;
+			return found?.values.find((value) => value.fieldPath === "frontmatter.title")?.stringValue;
 		};
 
 		expect(await search_nodes_title("proposal")).toEqual([seeded.nodeId]);
@@ -10223,6 +10268,22 @@ describe("upsert_file_pending_move_in_db", () => {
 				createdBy: markdownSeeded.userId,
 				updatedBy: markdownSeeded.userId,
 				updatedAt: Date.now(),
+				assetId: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			}),
 		);
 		const relabeled = await upsert_file_pending_move_for_test({
@@ -11035,7 +11096,7 @@ describe("apply_file_pending_move", () => {
 				sourceKind: "committed",
 				path: "/apply-src.md",
 				treePath: "/apply-src.md",
-				qualifiedField: "meta.topic",
+				fieldPath: "meta.topic",
 				docKind: "field",
 			}),
 		);
@@ -11141,7 +11202,7 @@ describe("apply_file_pending_move", () => {
 		expect(node?.path).toBe("/subtype-renamed.yaml");
 		expect(node?.lowercaseExtension).toBe("yaml");
 		expect(node?.contentType).toBe("text/plain;charset=utf-8");
-		expect(node?.yjsRootKind).toBe("plain_text");
+		expect(node?.textKind).toBe("plain_text");
 	});
 
 	test("applies a folder move and cascades descendant paths", async () => {
@@ -11407,6 +11468,23 @@ describe("apply_file_pending_move", () => {
 				createdBy: seeded.userId,
 				updatedBy: seeded.userId,
 				updatedAt: Date.now(),
+				contentType: null,
+				assetId: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			}),
 		);
 
@@ -11500,7 +11578,7 @@ describe("apply_file_pending_move", () => {
 
 			const node = await ctx.db.get("files_nodes", seeded.nodeId);
 			expect(node?.path).toBe("/apply-replace-dest.md");
-			expect(node?.archiveOperationId).toBeUndefined();
+			expect(node?.archiveOperationId).toBeNull();
 
 			const row = await read_pending_update_row({
 				ctx,
@@ -11722,7 +11800,7 @@ describe("apply_file_pending_move", () => {
 
 		await t.run(async (ctx) => {
 			const occupant = await ctx.db.get("files_nodes", other.nodeId);
-			expect(occupant?.archiveOperationId).toBeUndefined();
+			expect(occupant?.archiveOperationId).toBeNull();
 			expect(occupant?.path).toBe("/chain-b.md");
 
 			const node = await ctx.db.get("files_nodes", seeded.nodeId);
@@ -11809,11 +11887,11 @@ describe("apply_file_pending_move", () => {
 		await t.run(async (ctx) => {
 			const nodeB = await ctx.db.get("files_nodes", other.nodeId);
 			expect(nodeB?.path).toBe("/chain-order-c.md");
-			expect(nodeB?.archiveOperationId).toBeUndefined();
+			expect(nodeB?.archiveOperationId).toBeNull();
 
 			const nodeA = await ctx.db.get("files_nodes", seeded.nodeId);
 			expect(nodeA?.path).toBe("/chain-order-b.md");
-			expect(nodeA?.archiveOperationId).toBeUndefined();
+			expect(nodeA?.archiveOperationId).toBeNull();
 		});
 	});
 
@@ -11901,12 +11979,12 @@ describe("apply_file_pending_move", () => {
 			const nodeA = await ctx.db.get("files_nodes", seeded.nodeId);
 			expect(nodeA?.path).toBe("/swap-b.md");
 			expect(nodeA?.name).toBe("swap-b.md");
-			expect(nodeA?.archiveOperationId).toBeUndefined();
+			expect(nodeA?.archiveOperationId).toBeNull();
 
 			const nodeB = await ctx.db.get("files_nodes", other.nodeId);
 			expect(nodeB?.path).toBe("/swap-a.md");
 			expect(nodeB?.name).toBe("swap-a.md");
-			expect(nodeB?.archiveOperationId).toBeUndefined();
+			expect(nodeB?.archiveOperationId).toBeNull();
 
 			const rowA = await read_pending_update_row({
 				ctx,
@@ -12267,7 +12345,7 @@ describe("apply_file_pending_move", () => {
 			for (const [index, file] of rotated.entries()) {
 				const node = await ctx.db.get("files_nodes", file.nodeId);
 				expect(node?.path).toBe(index === 0 ? `/rotate-${fileCount}.md` : `/rotate-${index}.md`);
-				expect(node?.archiveOperationId).toBeUndefined();
+				expect(node?.archiveOperationId).toBeNull();
 
 				const row = await read_pending_update_row({
 					ctx,
@@ -12394,12 +12472,12 @@ describe("apply_file_pending_move", () => {
 			const folderA = await ctx.db.get("files_nodes", folderAId);
 			expect(folderA?.path).toBe("/fsc-swap-b");
 			expect(folderA?.treePath).toBe("/fsc-swap-b/");
-			expect(folderA?.archiveOperationId).toBeUndefined();
+			expect(folderA?.archiveOperationId).toBeNull();
 
 			const folderB = await ctx.db.get("files_nodes", folderBId);
 			expect(folderB?.path).toBe("/fsc-swap-a");
 			expect(folderB?.treePath).toBe("/fsc-swap-a/");
-			expect(folderB?.archiveOperationId).toBeUndefined();
+			expect(folderB?.archiveOperationId).toBeNull();
 
 			// Both children cascaded under their folder's swapped path.
 			const movedChildA = await ctx.db.get("files_nodes", childA.nodeId);
@@ -12512,10 +12590,10 @@ describe("apply_file_pending_move", () => {
 		await t.run(async (ctx) => {
 			const fileA = await ctx.db.get("files_nodes", seeded.nodeId);
 			expect(fileA?.path).toBe("/fsc-mix-b");
-			expect(fileA?.archiveOperationId).toBeUndefined();
+			expect(fileA?.archiveOperationId).toBeNull();
 			const folderB = await ctx.db.get("files_nodes", folderBId);
 			expect(folderB?.path).toBe("/fsc-mix-a.md");
-			expect(folderB?.archiveOperationId).toBeUndefined();
+			expect(folderB?.archiveOperationId).toBeNull();
 
 			const rowA = await read_pending_update_row({
 				ctx,
@@ -12917,7 +12995,7 @@ describe("apply_file_pending_move", () => {
 
 			for (const nodeId of [childC.nodeId, folderMId, fileK.nodeId]) {
 				const node = await ctx.db.get("files_nodes", nodeId);
-				expect(node?.archiveOperationId).toBeUndefined();
+				expect(node?.archiveOperationId).toBeNull();
 				const row = await read_pending_update_row({
 					ctx,
 					organizationId: childC.organizationId,
@@ -13035,10 +13113,10 @@ describe("apply_file_pending_move", () => {
 			// Nothing moved or archived, and both rows survive for retry or discard.
 			const folderA = await ctx.db.get("files_nodes", folderAId);
 			expect(folderA?.path).toBe("/fsc-loop-q/a");
-			expect(folderA?.archiveOperationId).toBeUndefined();
+			expect(folderA?.archiveOperationId).toBeNull();
 			const folderB = await ctx.db.get("files_nodes", folderBId);
 			expect(folderB?.path).toBe("/fsc-loop-b");
-			expect(folderB?.archiveOperationId).toBeUndefined();
+			expect(folderB?.archiveOperationId).toBeNull();
 			for (const nodeId of [folderAId, folderBId]) {
 				const row = await read_pending_update_row({
 					ctx,
@@ -13147,10 +13225,10 @@ describe("apply_file_pending_move", () => {
 		await t.run(async (ctx) => {
 			const folderA = await ctx.db.get("files_nodes", folderAId);
 			expect(folderA?.path).toBe("/fsc-empty-b");
-			expect(folderA?.archiveOperationId).toBeUndefined();
+			expect(folderA?.archiveOperationId).toBeNull();
 			const folderB = await ctx.db.get("files_nodes", folderBId);
 			expect(folderB?.path).toBe("/fsc-empty-a");
-			expect(folderB?.archiveOperationId).toBeUndefined();
+			expect(folderB?.archiveOperationId).toBeNull();
 
 			const movedChild = await ctx.db.get("files_nodes", childA.nodeId);
 			expect(movedChild?.path).toBe("/fsc-empty-b/a-child.md");
@@ -13237,7 +13315,7 @@ describe("apply_file_pending_move", () => {
 			expect(occupant?.archiveOperationId).toBeDefined();
 			const folder = await ctx.db.get("files_nodes", folderId);
 			expect(folder?.path).toBe("/edr-dst");
-			expect(folder?.archiveOperationId).toBeUndefined();
+			expect(folder?.archiveOperationId).toBeNull();
 			const movedChild = await ctx.db.get("files_nodes", child.nodeId);
 			expect(movedChild?.path).toBe("/edr-dst/child.md");
 
@@ -13397,7 +13475,7 @@ describe("apply_file_pending_move", () => {
 		await t.run(async (ctx) => {
 			// Nothing moved or archived, and both pending docs survive.
 			const newcomer = await ctx.db.get("files_nodes", newcomerId);
-			expect(newcomer?.archiveOperationId).toBeUndefined();
+			expect(newcomer?.archiveOperationId).toBeNull();
 			const folder = await ctx.db.get("files_nodes", folderId);
 			expect(folder?.path).toBe("/edr-claim-src");
 			for (const nodeId of [folderId, file.nodeId]) {
@@ -13474,7 +13552,7 @@ describe("apply_file_pending_move", () => {
 		await t.run(async (ctx) => {
 			// Nothing moved or archived, and the row survives for retry or discard.
 			const occupant = await ctx.db.get("files_nodes", occupantId);
-			expect(occupant?.archiveOperationId).toBeUndefined();
+			expect(occupant?.archiveOperationId).toBeNull();
 			const folder = await ctx.db.get("files_nodes", folderId);
 			expect(folder?.path).toBe("/edr-full-src");
 			const row = await read_pending_update_row({
@@ -14211,7 +14289,7 @@ describe("apply_file_pending_archive", () => {
 			expect(child?.archiveOperationId).toBe(folder?.archiveOperationId);
 			expect(late?.archiveOperationId).toBe(folder?.archiveOperationId);
 			const outsider = await ctx.db.get("files_nodes", outsiderSeeded.nodeId);
-			expect(outsider?.archiveOperationId).toBeUndefined();
+			expect(outsider?.archiveOperationId).toBeNull();
 
 			const actingFolderRow = await read_pending_update_row({
 				ctx,
@@ -14381,7 +14459,7 @@ describe("apply_file_pending_archive", () => {
 			nodeId: tree.rootId,
 		});
 		expect(refused._nay?.name).toBe("read_only");
-		expect((await t.run((ctx) => ctx.db.get("files_nodes", tree.rootId)))?.archiveOperationId).toBeUndefined();
+		expect((await t.run((ctx) => ctx.db.get("files_nodes", tree.rootId)))?.archiveOperationId).toBeNull();
 		expect(
 			await t.run((ctx) =>
 				read_pending_update_row({
@@ -14557,7 +14635,7 @@ describe("pending delete discard, save, expiry, and overlay reads", () => {
 
 		await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", seeded.nodeId);
-			expect(node?.archiveOperationId).toBeUndefined();
+			expect(node?.archiveOperationId).toBeNull();
 			expect(await ctx.db.get("files_pending_updates", pendingRow._id)).toBeNull();
 			const cleanupTasks = await list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id });
 			expect(cleanupTasks).toHaveLength(0);
@@ -14669,7 +14747,7 @@ describe("pending delete discard, save, expiry, and overlay reads", () => {
 		await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", seeded.nodeId);
 			expect(node).not.toBeNull();
-			expect(node?.archiveOperationId).toBeUndefined();
+			expect(node?.archiveOperationId).toBeNull();
 			expect(await ctx.db.get("files_pending_updates", pendingRow._id)).toBeNull();
 		});
 	});
@@ -15079,7 +15157,7 @@ describe("discard_file_pending_structural", () => {
 			expect(folderB?.archiveOperationId).toBeDefined();
 			const folderA = await ctx.db.get("files_nodes", folderAId);
 			expect(folderA?.path).toBe("/edr-disc-b");
-			expect(folderA?.archiveOperationId).toBeUndefined();
+			expect(folderA?.archiveOperationId).toBeNull();
 			for (const nodeId of [folderAId, folderBId]) {
 				const row = await read_pending_update_row({
 					ctx,
@@ -15246,7 +15324,7 @@ describe("discard_file_pending_structural", () => {
 				sourceKind: "committed",
 				path: "/discard-copy-dest.md",
 				treePath: "/discard-copy-dest.md",
-				qualifiedField: "meta.topic",
+				fieldPath: "meta.topic",
 				docKind: "field",
 			});
 			const assetIds = [destNode.assetId, yjsSnapshot.assetId];
@@ -16031,9 +16109,9 @@ describe("discard_file_pending_structural", () => {
 		await t.run(async (ctx) => {
 			// Nothing moved and nothing was archived: only the proposal row is dropped.
 			const sourceNode = await ctx.db.get("files_nodes", source.nodeId);
-			expect(sourceNode?.archiveOperationId).toBeUndefined();
+			expect(sourceNode?.archiveOperationId).toBeNull();
 			const destNode = await ctx.db.get("files_nodes", dest.nodeId);
-			expect(destNode?.archiveOperationId).toBeUndefined();
+			expect(destNode?.archiveOperationId).toBeNull();
 			const row = await read_pending_update_row({
 				ctx,
 				organizationId: dest.organizationId,
@@ -16425,7 +16503,7 @@ describe("discard_file_pending_structural", () => {
 			// The other user's rename must survive: keep the node, drop only the proposal row.
 			const node = await ctx.db.get("files_nodes", dest.nodeId);
 			expect(node?.path).toBe("/discard-eager-renamed-by-other.md");
-			expect(node?.archiveOperationId).toBeUndefined();
+			expect(node?.archiveOperationId).toBeNull();
 			expect(await ctx.db.get("files_pending_updates", pendingRow._id)).toBeNull();
 			const chunks = await list_pending_update_text_chunks({ ctx, pendingUpdateId: pendingRow._id });
 			expect(chunks).toHaveLength(0);
@@ -16533,7 +16611,7 @@ describe("discard_file_pending_structural", () => {
 			// The other user's move must survive: keep the node, drop only the proposal row.
 			const node = await ctx.db.get("files_nodes", dest.nodeId);
 			expect(node?.path).toBe("/discard-eager-moved-folder/discard-eager-moved-dest.md");
-			expect(node?.archiveOperationId).toBeUndefined();
+			expect(node?.archiveOperationId).toBeNull();
 			expect(await ctx.db.get("files_pending_updates", pendingRow._id)).toBeNull();
 			const cleanupTasks = await list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingRow._id });
 			expect(cleanupTasks).toHaveLength(0);
@@ -16806,7 +16884,7 @@ describe("structural rows on content collapse", () => {
 			const cleanupTasks = await list_pending_update_cleanup_tasks({ ctx, pendingUpdateId: pendingUpdate!._id });
 			expect(cleanupTasks).toHaveLength(1);
 			expect(cleanupTasks[0]?.expectedUpdatedAt).toBe(pendingUpdate?.updatedAt);
-			expect((await ctx.db.get("files_nodes", seeded.nodeId))?.archiveOperationId).toBeUndefined();
+			expect((await ctx.db.get("files_nodes", seeded.nodeId))?.archiveOperationId).toBeNull();
 		});
 	});
 
@@ -17297,7 +17375,7 @@ describe("save with structural rows", () => {
 		await t.run(async (ctx) => {
 			// Nothing was published or archived: the source stays active and the row stays intact.
 			const sourceNode = await ctx.db.get("files_nodes", source.nodeId);
-			expect(sourceNode?.archiveOperationId).toBeUndefined();
+			expect(sourceNode?.archiveOperationId).toBeNull();
 			const row = await read_pending_update_row({
 				ctx,
 				organizationId: dest.organizationId,
@@ -17554,7 +17632,7 @@ describe("remove_file_pending_update_if_expired structural rows", () => {
 			// The other user's rename must survive expiry: keep the node, drop only the row.
 			const node = await ctx.db.get("files_nodes", dest.nodeId);
 			expect(node?.path).toBe("/expire-eager-renamed-by-other.md");
-			expect(node?.archiveOperationId).toBeUndefined();
+			expect(node?.archiveOperationId).toBeNull();
 			expect(await ctx.db.get("files_pending_updates", pendingRow._id)).toBeNull();
 			const chunks = await list_pending_update_text_chunks({ ctx, pendingUpdateId: pendingRow._id });
 			expect(chunks).toHaveLength(0);
@@ -17845,6 +17923,23 @@ describe("pending path overlay reads", () => {
 				createdBy: seeded.userId,
 				updatedBy: seeded.userId,
 				updatedAt: Date.now(),
+				contentType: null,
+				assetId: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 		});
 		const newcomer = await t.query(internal.files_nodes.get_by_path, {
@@ -20098,8 +20193,8 @@ describe("pending update read-only checks", () => {
 		});
 		expect(refusedFolder._nay?.name).toBe("read_only");
 		await t.run(async (ctx) => {
-			expect((await ctx.db.get("files_nodes", seeded.fileNodeId))?.archiveOperationId).toBeUndefined();
-			expect((await ctx.db.get("files_nodes", seeded.folderId))?.archiveOperationId).toBeUndefined();
+			expect((await ctx.db.get("files_nodes", seeded.fileNodeId))?.archiveOperationId).toBeNull();
+			expect((await ctx.db.get("files_nodes", seeded.folderId))?.archiveOperationId).toBeNull();
 		});
 	});
 });

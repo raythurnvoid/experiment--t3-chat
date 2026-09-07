@@ -520,7 +520,7 @@ click provably does nothing, not before.
   3-minute budget. The list always polls every 5 s, including after a D1 `UPDATE` on a settled row —
   see the polling hazards bullet above. Do not reload the host page to pick up that change.
 - Since the 2026-08-16 upload-conversion change, the pipeline's `transcript.md` becomes a normal
-  editable rich text document (`yjsRootKind: "rich_text"`, chunk-readable) and a produced
+  editable rich text document (`textKind: "rich_text"`, chunk-readable) and a produced
   `provider-transcript.json` becomes an editable plain-text document; the recording files stay
   stored blobs. Deleting a meeting archives the whole `/meetings/<meetingId>` folder through the
   service `archive-destination` door and tombstones the D1 row. Check it by reading the file nodes,

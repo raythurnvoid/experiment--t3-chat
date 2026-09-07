@@ -321,7 +321,7 @@ export const get_data_for_create_signed_download_url = internalQuery({
 			!fileNode ||
 			fileNode.organizationId !== membership.organizationId ||
 			fileNode.workspaceId !== membership.workspaceId ||
-			fileNode.archiveOperationId !== undefined ||
+			fileNode.archiveOperationId !== null ||
 			!fileNode.assetId ||
 			!fileNode.contentType
 		) {
@@ -420,7 +420,7 @@ export const get_data_for_public_download_url = internalQuery({
 			!fileNode ||
 			fileNode.organizationId !== args.organizationId ||
 			fileNode.workspaceId !== args.workspaceId ||
-			fileNode.archiveOperationId !== undefined ||
+			fileNode.archiveOperationId !== null ||
 			fileNode.kind !== "file" ||
 			!fileNode.assetId ||
 			!fileNode.contentType
@@ -597,7 +597,7 @@ export const get_asset_by_file_node_id = query({
 			!fileNode ||
 			fileNode.organizationId !== membership.organizationId ||
 			fileNode.workspaceId !== membership.workspaceId ||
-			fileNode.archiveOperationId !== undefined ||
+			fileNode.archiveOperationId !== null ||
 			!fileNode.assetId
 		) {
 			return null;
@@ -797,7 +797,7 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 		archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
 		userId: Id<"users">;
 		/**
-		 * The shape of the Yjs document this node gets. Written as `files_nodes.yjsRootKind` in
+		 * The shape of the Yjs document this node gets. Written as `files_nodes.textKind` in
 		 * the same publish patch as the other Yjs pointers.
 		 */
 		rootKind: files_YjsRootKind;
@@ -858,7 +858,7 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 		workspaceId: args.workspaceId,
 		nodeId: args.fileNodeId,
 		path: args.path,
-		archiveOperationId: args.archiveOperationId,
+		archiveOperationId: args.archiveOperationId ?? undefined,
 		yjsSequence: 0,
 		rootKind: args.rootKind,
 		textContent: args.text,
@@ -868,8 +868,8 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 		throw convex_error({ message: "Failed to chunk file content", cause: chunks._nay });
 	}
 
-	let yjsSnapshotId: Id<"files_yjs_snapshots"> | undefined;
-	let yjsLastSequenceId: Id<"files_yjs_docs_last_sequences"> | undefined;
+	let yjsSnapshotId: Id<"files_yjs_snapshots"> | null = null;
+	let yjsLastSequenceId: Id<"files_yjs_docs_last_sequences"> | null = null;
 	try {
 		if (args.yjsSnapshot !== null) {
 			[yjsSnapshotId, yjsLastSequenceId] = await Promise.all([
@@ -913,10 +913,12 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 		ctx.db.patch("files_nodes", args.fileNodeId, {
 			assetId: args.versionSnapshotAssetId,
 			contentType: args.contentType,
-			...(args.yjsSnapshot === null ? { nonCollaborative: true } : { yjsSnapshotId, yjsLastSequenceId }),
+			collaborationEnabled: args.yjsSnapshot !== null,
+			yjsSnapshotId,
+			yjsLastSequenceId,
 			// Record the shape beside the other Yjs pointers, in the same publish patch, so the
 			// node and its document can never be born disagreeing.
-			yjsRootKind: args.rootKind,
+			textKind: args.rootKind,
 			// A node born with over-cap frontmatter carries the marker pair from its first
 			// publish, exactly like a materialization settle would set it.
 			...(frontmatterOverCapCounts !== null
@@ -1081,7 +1083,7 @@ export const settle_upload_conversion_fallback = internalMutation({
 		});
 		// Do not start plugins when the node is missing, archived, or already editable. This matches
 		// the checks for a new upload.
-		if (!fileNode || fileNode.archiveOperationId !== undefined || files_node_has_editable_text_content(fileNode)) {
+		if (!fileNode || fileNode.archiveOperationId !== null || files_node_has_editable_text_content(fileNode)) {
 			return null;
 		}
 
@@ -1404,7 +1406,7 @@ export const process_uploaded_asset_event = internalMutation({
 			return Result({ _yay: null });
 		}
 
-		if (fileNode.archiveOperationId !== undefined || files_node_has_editable_text_content(fileNode)) {
+		if (fileNode.archiveOperationId !== null || files_node_has_editable_text_content(fileNode)) {
 			await ctx.db.patch("files_r2_assets", asset._id, {
 				processingWorkId: null,
 				updatedAt: now,

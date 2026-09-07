@@ -185,6 +185,7 @@ Current purge coverage includes:
 - `files_yjs_snapshots`, `files_yjs_updates`, `files_yjs_docs_last_sequences`
 - `files_snapshots`, `file_stats`
 - `files_content_materialization_jobs` with Workpool job cancellation
+- `files_yjs_cleanup_tasks` in bounded batches before the generic asset pass. Hand each task to `files_nodes_db_handoff_yjs_cleanup_task`, which preserves its exact asset key and `putMayArriveUntil` in the deletion ledger before removing the task. The asset doc stays for the generic pass. Drain both pending-history and asset-only tasks.
 - `files_r2_assets` with upload-conversion job cancellation and durable exact-key R2 cleanup. This
   also covers `generated_image` assets, the pictures the chat agent drew: they belong to a chat
   message instead of a file node, so nothing in the file tree points at them, but they are ordinary

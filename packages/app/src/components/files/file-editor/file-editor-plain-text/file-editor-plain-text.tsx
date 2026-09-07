@@ -986,7 +986,7 @@ export const FileEditorPlainText = memo(function FileEditorPlainText(props: File
 					return {
 						kind: "non_collaborative",
 						text: result._yay.text,
-						rootKind: result._yay.yjsRootKind,
+						rootKind: result._yay.textKind,
 					};
 				});
 		}
@@ -1009,7 +1009,7 @@ export const FileEditorPlainText = memo(function FileEditorPlainText(props: File
 				return {
 					kind: "collaborative",
 					text: result.text._yay,
-					rootKind: result.yjsRootKind,
+					rootKind: result.textKind,
 					mut_yjsDoc: result.yjsDoc,
 					yjsSequence: result.yjsSequence,
 					yjsLastSequenceId: result.yjsLastSequenceId,

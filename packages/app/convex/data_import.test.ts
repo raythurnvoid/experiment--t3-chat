@@ -64,7 +64,7 @@ describe("data_import.create_upload_targets", () => {
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
 						.eq("path", "/meetings/team-sync")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first();
 			return { video, videoAsset, meetingsFolder };
@@ -109,7 +109,7 @@ describe("data_import.create_upload_targets", () => {
 		const metadataDocs = await t.run(async (ctx) =>
 			ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_fileNode_qualifiedField", (q) =>
+				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
 					q
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
@@ -118,7 +118,7 @@ describe("data_import.create_upload_targets", () => {
 				.collect(),
 		);
 		const stamps = Object.fromEntries(
-			metadataDocs.filter((doc) => doc.docKind === "value").map((doc) => [doc.qualifiedField, doc.stringValue]),
+			metadataDocs.filter((doc) => doc.docKind === "value").map((doc) => [doc.fieldPath, doc.stringValue]),
 		);
 		expect(stamps).toEqual({ "metadata.source": "import", "metadata.original-name": "video.mp4" });
 	});
@@ -223,7 +223,7 @@ describe("data_import.create_upload_targets", () => {
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
 						.eq("path", "/documents/report.pdf")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first();
 			return { oldNode, activeNode };
@@ -277,13 +277,13 @@ describe("data_import.create_upload_targets", () => {
 			return { occupant, assetCount: assets.length };
 		});
 		// The refusal created no node or asset, and the old file stays active.
-		expect(afterRefusal.occupant?.archiveOperationId).toBeUndefined();
+		expect(afterRefusal.occupant?.archiveOperationId).toBeNull();
 		expect(afterRefusal.assetCount).toBe(1);
 
 		// Unlocking allows the same import to replace the old file.
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", occupantNodeId, {
-				readOnlyScopeNodeId: undefined,
+				readOnlyScopeNodeId: null,
 			});
 		});
 		const retried = await t.mutation(internal.data_import.create_upload_targets, {
@@ -345,7 +345,7 @@ describe("data_import.create_upload_targets", () => {
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
 						.eq("path", "/locked-dir/nested")
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first();
 			return { assetCount: assets.length, nested };
@@ -603,7 +603,7 @@ describe("data_import.verify_metadata", () => {
 			}
 
 			const node = await ctx.db.get("files_nodes", created._yay);
-			for (const qualifiedField of ["frontmatter.subject", "frontmatter.provider"]) {
+			for (const fieldPath of ["frontmatter.subject", "frontmatter.provider"]) {
 				await ctx.db.insert("files_metadata_docs", {
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
@@ -611,7 +611,7 @@ describe("data_import.verify_metadata", () => {
 					sourceKind: "committed",
 					path: "/emails/thread/message.md",
 					treePath: node!.treePath,
-					qualifiedField,
+					fieldPath,
 					docKind: "field",
 				});
 			}
@@ -628,7 +628,7 @@ describe("data_import.verify_metadata", () => {
 				sourceKind: "pending",
 				path: "/emails/thread/message.md",
 				treePath: node!.treePath,
-				qualifiedField: "frontmatter.subject",
+				fieldPath: "frontmatter.subject",
 				docKind: "field",
 			});
 		});
@@ -665,7 +665,7 @@ describe("data_import.verify_metadata", () => {
 			}
 
 			const node = await ctx.db.get("files_nodes", created._yay);
-			for (const qualifiedField of ["frontmatter.subject", "metadata.created-by", "metadata.status"]) {
+			for (const fieldPath of ["frontmatter.subject", "metadata.created-by", "metadata.status"]) {
 				await ctx.db.insert("files_metadata_docs", {
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
@@ -673,7 +673,7 @@ describe("data_import.verify_metadata", () => {
 					sourceKind: "committed",
 					path: "/emails/thread/message.md",
 					treePath: node!.treePath,
-					qualifiedField,
+					fieldPath,
 					docKind: "field",
 				});
 			}

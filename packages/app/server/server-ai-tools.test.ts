@@ -731,7 +731,7 @@ test("edit_file tool surfaces the upsert rejection when the file is archived aft
 
 	let runActionCallCount = 0;
 	const { ctx, runQuery, runAction } = makeCtx(
-		async () => ({ _id: nodeId, kind: "file", assetId: "asset_edit", yjsRootKind: "plain_text" }),
+		async () => ({ _id: nodeId, kind: "file", assetId: "asset_edit", textKind: "plain_text" }),
 		{
 			// The upsert flow stages through internal mutations first: batch create, then text input.
 			runMutationImpl: async () => ({ _yay: { operationBatchId: "batch456", expiresAt: Date.now() + 60_000 } }),
@@ -779,7 +779,7 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 	const { ctx, runAction, runMutation } = makeCtx(
 		async (_ref, args) =>
 			args.path
-				? { _id: nodeId, kind: "file", assetId: "asset_edit", yjsRootKind: "plain_text" }
+				? { _id: nodeId, kind: "file", assetId: "asset_edit", textKind: "plain_text" }
 				: { _id: pendingUpdateId },
 		{
 			// The upsert flow stages through internal mutations: batch create, then text input.
@@ -851,7 +851,7 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 describe("ai_chat_tool_create_edit_file", () => {
 	test("refuses before opening a write batch when the file disappears after preparation", async () => {
 		const { ctx, runMutation } = makeCtx(
-			async () => ({ _id: "file_gone", kind: "file", assetId: "asset_edit", yjsRootKind: "plain_text" }),
+			async () => ({ _id: "file_gone", kind: "file", assetId: "asset_edit", textKind: "plain_text" }),
 			{ runActionImpl: async (_ref, args) => (args.path ? null : { _yay: { pendingUpdate: null } }) },
 		);
 		const edit = ai_chat_tool_create_edit_file(ctx, server_ai_tools_test_ctx_data);
@@ -874,7 +874,7 @@ describe("ai_chat_tool_create_edit_file", () => {
 					_id: args.path ? "file_retry" : "pending_retry",
 					kind: "file",
 					assetId: "asset_edit",
-					yjsRootKind: "plain_text",
+					textKind: "plain_text",
 				}),
 				{
 					runMutationImpl: async () => ({ _yay: { operationBatchId: "batch_retry", expiresAt: Date.now() + 60_000 } }),
@@ -1017,7 +1017,7 @@ test("edit_file tool preserves the baseline trailing newline shape", async () =>
 	const { ctx, runAction, runMutation } = makeCtx(
 		async (_ref, args) =>
 			args.path
-				? { _id: nodeId, kind: "file", assetId: "asset_edit", yjsRootKind: "plain_text" }
+				? { _id: nodeId, kind: "file", assetId: "asset_edit", textKind: "plain_text" }
 				: { _id: pendingUpdateId },
 		{
 			// The upsert flow stages through internal mutations: batch create, then text input.
@@ -1079,7 +1079,7 @@ test("edit_file edits a plain text .json file and stages the exact text", async 
 	const { ctx, runMutation } = makeCtx(
 		async (_ref, args) =>
 			args.path
-				? { _id: nodeId, kind: "file", assetId: "asset_edit", yjsRootKind: "plain_text" }
+				? { _id: nodeId, kind: "file", assetId: "asset_edit", textKind: "plain_text" }
 				: { _id: pendingUpdateId },
 		{
 			runMutationImpl: async () => ({ _yay: { operationBatchId: "batch901", expiresAt: Date.now() + 60_000 } }),
@@ -1126,7 +1126,7 @@ test("edit_file describes and preserves a terminal read-only refusal", async () 
 		pendingUpdateId: null,
 	};
 	const { ctx, runAction, runMutation } = makeCtx(
-		async () => ({ _id: currentContent.nodeId, kind: "file", assetId: "asset_edit", yjsRootKind: "plain_text" }),
+		async () => ({ _id: currentContent.nodeId, kind: "file", assetId: "asset_edit", textKind: "plain_text" }),
 		{
 			runActionImpl: async () => ({ _nay: { name: "read_only", message: "This item is read-only." } }),
 		},
@@ -1157,9 +1157,10 @@ test("edit_file describes and preserves a terminal read-only refusal", async () 
 
 test("edit_file's refusal names the stored content type, not the path", async () => {
 	// A stored image has no text. Its node lookup lets the refusal name the stored type.
-	const { ctx, runAction, runQuery } = makeCtx(async () => ({ kind: "file", contentType: "image/png" }), {
-		runActionImpl: async (_ref, args) => (args.path ? null : { _yay: { pendingUpdate: null } }),
-	});
+	const { ctx, runAction, runQuery } = makeCtx(
+		async () => ({ kind: "file", contentType: "image/png", assetId: "asset_image", textKind: null }),
+		{ runActionImpl: async (_ref, args) => (args.path ? null : { _yay: { pendingUpdate: null } }) },
+	);
 	const tool = ai_chat_tool_create_edit_file(
 		ctx,
 		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_edit_file>[1],

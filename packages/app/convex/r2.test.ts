@@ -528,7 +528,7 @@ async function get_active_file_node_by_path(
 				.eq("organizationId", args.organizationId)
 				.eq("workspaceId", args.workspaceId)
 				.eq("path", args.path)
-				.eq("archiveOperationId", undefined),
+				.eq("archiveOperationId", null),
 		)
 		.unique();
 }
@@ -1795,9 +1795,9 @@ describe("r2 asset content", () => {
 		expect(docs.contentAsset?.r2Key ? r2_text(docs.contentAsset.r2Key) : null).toBe(markdownContent);
 		expect(docs.asset?.processingWorkId).toBeNull();
 
-		// Producer shape pair: a node born with a `yjsRootKind` that does not match its first Yjs
+		// Producer shape pair: a node born with a `textKind` that does not match its first Yjs
 		// snapshot is invisible to every later guard, so read both sides of this producer's write.
-		expect(docs.fileNode?.yjsRootKind).toBe("rich_text");
+		expect(docs.fileNode?.textKind).toBe("rich_text");
 		const yjsSnapshotR2Key = await t.run(async (ctx) => {
 			const fileNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
 			if (!fileNode?.yjsSnapshotId) {
@@ -1890,7 +1890,7 @@ describe("r2 asset content", () => {
 			return { fileNode, asset, contentAsset };
 		});
 
-		expect(docs.fileNode?.yjsRootKind).toBe("plain_text");
+		expect(docs.fileNode?.textKind).toBe("plain_text");
 		expect(docs.fileNode?.contentType).toBe("text/plain;charset=utf-8");
 		expect(docs.fileNode?.yjsSnapshotId).toEqual(expect.any(String));
 		expect(docs.fileNode?.yjsLastSequenceId).toEqual(expect.any(String));
@@ -1899,7 +1899,7 @@ describe("r2 asset content", () => {
 		expect(docs.asset?.processingWorkId).toBeNull();
 
 		// Producer shape pair: the first Yjs snapshot must hold the Y.Text root the stamped
-		// `yjsRootKind` promises, and its text must round-trip the normalized upload.
+		// `textKind` promises, and its text must round-trip the normalized upload.
 		const yjsSnapshotR2Key = await t.run(async (ctx) => {
 			const fileNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
 			if (!fileNode?.yjsSnapshotId) {
@@ -2001,7 +2001,7 @@ describe("r2 asset content", () => {
 			const asset = await ctx.db.get("files_r2_assets", upload._yay.assetId);
 			const metadataDocs = await ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_fileNode_qualifiedField", (q) =>
+				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
 					q
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
@@ -2020,7 +2020,7 @@ describe("r2 asset content", () => {
 
 		// The node publishes editable with the marker pair set from its first publish, exactly
 		// like a materialization settle would set it.
-		expect(docs.fileNode?.yjsRootKind).toBe("rich_text");
+		expect(docs.fileNode?.textKind).toBe("rich_text");
 		expect(docs.fileNode?.yjsSnapshotId).toEqual(expect.any(String));
 		expect(docs.fileNode?.contentFrontmatterTooLargeFieldCount).toBe(files_metadata_MAX_FRONTMATTER_FIELDS + 1);
 		expect(docs.fileNode?.contentFrontmatterTooLargeIndexDocumentCount).toBeGreaterThan(
@@ -2028,13 +2028,13 @@ describe("r2 asset content", () => {
 		);
 		expect(docs.asset?.processingWorkId).toBeNull();
 		// The over-cap frontmatter is committed as chunk content but never indexed.
-		expect(docs.metadataDocs.filter((doc) => doc.qualifiedField.startsWith("frontmatter."))).toHaveLength(0);
+		expect(docs.metadataDocs.filter((doc) => doc.fieldPath.startsWith("frontmatter."))).toHaveLength(0);
 		// The publish writes no metadata of its own, so the map is still exactly what the create
 		// stamped. A publish-time write that replaced instead of merging would delete these.
 		const metadataValues = Object.fromEntries(
 			docs.metadataDocs
-				.filter((doc) => doc.docKind === "value" && doc.qualifiedField.startsWith("metadata."))
-				.map((doc) => [doc.qualifiedField, doc.stringValue ?? doc.numberValue]),
+				.filter((doc) => doc.docKind === "value" && doc.fieldPath.startsWith("metadata."))
+				.map((doc) => [doc.fieldPath, doc.stringValue ?? doc.numberValue]),
 		);
 		expect(metadataValues).toEqual({
 			"metadata.source": "upload",
@@ -2114,7 +2114,7 @@ describe("r2 asset content", () => {
 			const asset = await ctx.db.get("files_r2_assets", upload._yay.assetId);
 			const metadataDocs = await ctx.db
 				.query("files_metadata_docs")
-				.withIndex("by_organization_workspace_fileNode_qualifiedField", (q) =>
+				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
 					q
 						.eq("organizationId", db.organizationId)
 						.eq("workspaceId", db.workspaceId)
@@ -2127,7 +2127,7 @@ describe("r2 asset content", () => {
 
 		// The index-document half of the pair is the one this content crosses; the field count is
 		// recorded beside it as the fresh preflight measured it.
-		expect(docs.fileNode?.yjsRootKind).toBe("rich_text");
+		expect(docs.fileNode?.textKind).toBe("rich_text");
 		expect(docs.fileNode?.yjsSnapshotId).toEqual(expect.any(String));
 		expect(docs.fileNode?.contentFrontmatterTooLargeFieldCount).toBe(1);
 		expect(docs.fileNode?.contentFrontmatterTooLargeIndexDocumentCount).toBe(601);
@@ -2135,7 +2135,7 @@ describe("r2 asset content", () => {
 			files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS,
 		);
 		expect(docs.asset?.processingWorkId).toBeNull();
-		expect(docs.metadataDocs.filter((doc) => doc.qualifiedField.startsWith("frontmatter."))).toHaveLength(0);
+		expect(docs.metadataDocs.filter((doc) => doc.fieldPath.startsWith("frontmatter."))).toHaveLength(0);
 	});
 
 	test("falls back to the stored blob on invalid UTF-8 and dispatches the plugin upload event", async () => {
@@ -2236,8 +2236,8 @@ describe("r2 asset content", () => {
 
 		// The node stays a stored blob pointing at the original upload.
 		expect(docs.fileNode?.assetId).toBe(upload._yay.assetId);
-		expect(docs.fileNode?.yjsSnapshotId).toBeUndefined();
-		expect(docs.fileNode?.yjsRootKind).toBeUndefined();
+		expect(docs.fileNode?.yjsSnapshotId).toBeNull();
+		expect(docs.fileNode?.textKind).toBeNull();
 		expect(docs.asset?.processingWorkId).toBeNull();
 		// Every stored-blob fallback exit dispatches the plugin upload event.
 		expect(docs.pluginRun).toMatchObject({ event: "files.upload.completed" });
@@ -2313,7 +2313,7 @@ describe("r2 asset content", () => {
 		});
 
 		expect(docs.fileNode?.assetId).toBe(upload._yay.assetId);
-		expect(docs.fileNode?.yjsSnapshotId).toBeUndefined();
+		expect(docs.fileNode?.yjsSnapshotId).toBeNull();
 		expect(docs.asset?.processingWorkId).toBeNull();
 	});
 
@@ -2424,6 +2424,24 @@ describe("r2 asset content", () => {
 				kind: "file",
 				path: "/collision.pdf.md",
 				treePath: "/collision.pdf.md",
+				lowercaseExtension: null,
+				contentType: null,
+				assetId: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			}),
 		);
 		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
@@ -2523,7 +2541,7 @@ describe("r2 asset content", () => {
 			contentType: "text/markdown;charset=utf-8",
 			yjsSnapshotId: expect.any(String),
 		});
-		expect(docs.activeGeneratedAtPath?.archiveOperationId).toBeUndefined();
+		expect(docs.activeGeneratedAtPath?.archiveOperationId).toBeNull();
 		expect(docs.activeGeneratedAsset?.r2Key ? r2_text(docs.activeGeneratedAsset.r2Key) : null).toContain(
 			"PLUGIN_COLLISION_E2E_2026",
 		);
@@ -2677,6 +2695,23 @@ describe("cleanup_expired_unfinalized_assets", () => {
 				path: "/broken.pdf",
 				treePath: "/broken.pdf",
 				assetId: nodeAssetId,
+				lowercaseExtension: null,
+				contentType: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 			await ctx.db.insert("files_yjs_snapshots", {
 				organizationId: db.organizationId,
@@ -2900,7 +2935,7 @@ describe("cleanup_expired_unfinalized_assets", () => {
 		// a failed placeholder and its R2 object alive forever.
 		await t.run(async (ctx) =>
 			ctx.db.patch("files_nodes", upload.nodeId, {
-				readOnlyScopeNodeId: undefined,
+				readOnlyScopeNodeId: null,
 			}),
 		);
 		const swept = await t.mutation(internal.r2.cleanup_expired_unfinalized_assets, {
@@ -2971,6 +3006,23 @@ describe("cleanup_expired_unfinalized_assets", () => {
 				path: "/drifted.pdf",
 				treePath: "/drifted.pdf",
 				assetId: driftedAssetId,
+				lowercaseExtension: null,
+				contentType: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				restrictedScopeNodeId: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 		});
 
@@ -3294,6 +3346,23 @@ describe("content pipeline crash orphans", () => {
 					path: "/restore-target.md",
 					treePath: "/restore-target.md",
 					assetId: committedAssetId,
+					lowercaseExtension: null,
+					contentType: null,
+					textKind: null,
+					collaborationEnabled: null,
+					yjsSnapshotId: null,
+					yjsLastSequenceId: null,
+					statsId: null,
+					contentTooLargeByteSize: null,
+					contentShapeMismatchAt: null,
+					contentYjsStateTooLargeByteSize: null,
+					contentFrontmatterTooLargeFieldCount: null,
+					contentFrontmatterTooLargeIndexDocumentCount: null,
+					restrictedScopeNodeId: null,
+					readOnlyScopeNodeId: null,
+					readOnlyPluginName: null,
+					readOnlyPluginServiceTargetId: null,
+					archiveOperationId: null,
 				});
 				return { committedAssetId, committedKey: "test/restore-committed" };
 			});
@@ -3402,6 +3471,23 @@ describe("content pipeline crash orphans", () => {
 					path: "/repair-target.md",
 					treePath: "/repair-target.md",
 					assetId: committedAssetId,
+					lowercaseExtension: null,
+					contentType: null,
+					textKind: null,
+					collaborationEnabled: null,
+					yjsSnapshotId: null,
+					yjsLastSequenceId: null,
+					statsId: null,
+					contentTooLargeByteSize: null,
+					contentShapeMismatchAt: null,
+					contentYjsStateTooLargeByteSize: null,
+					contentFrontmatterTooLargeFieldCount: null,
+					contentFrontmatterTooLargeIndexDocumentCount: null,
+					restrictedScopeNodeId: null,
+					readOnlyScopeNodeId: null,
+					readOnlyPluginName: null,
+					readOnlyPluginServiceTargetId: null,
+					archiveOperationId: null,
 				});
 				await ctx.db.insert("files_yjs_snapshots", {
 					organizationId: db.organizationId,
@@ -3724,7 +3810,7 @@ describe("process_uploaded_asset_event accepted upload", () => {
 		expect(lockedAsset?.processingWorkId).toBeNull();
 		expect(lockedAsset?.unfinalizedExpiresAt).toBeUndefined();
 		// Publication does not change the lock or replace the node.
-		expect(lockedNode?.archiveOperationId).toBeUndefined();
+		expect(lockedNode?.archiveOperationId).toBeNull();
 		expect(lockedNode?.assetId).toBe(locked.assetId);
 		expect(lockedNode?.readOnlyScopeNodeId).toBe(locked.nodeId);
 		expect(controlAsset?.r2Key).toBe(control.key);
@@ -3978,7 +4064,7 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		expect(docs.node?.assetId).not.toBe(locked.assetId);
 		expect(docs.node?.yjsSnapshotId).toEqual(expect.any(String));
 		expect(docs.node?.yjsLastSequenceId).toEqual(expect.any(String));
-		expect(docs.node?.yjsRootKind).toBe("rich_text");
+		expect(docs.node?.textKind).toBe("rich_text");
 		expect(docs.node?.readOnlyScopeNodeId).toBe(locked.nodeId);
 		expect(docs.asset?.processingWorkId).toBeNull();
 		expect(docs.asset?.r2Key).toBe(locked.key);
@@ -4011,13 +4097,13 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 			chunks: await ctx.db.query("files_text_chunks").collect(),
 		}));
 		expect(published.node).toMatchObject({
-			nonCollaborative: true,
-			yjsRootKind: "rich_text",
+			collaborationEnabled: false,
+			textKind: "rich_text",
 			readOnlyScopeNodeId: upload.nodeId,
 			readOnlyPluginServiceTargetId: targetId,
 		});
-		expect(published.node?.yjsSnapshotId).toBeUndefined();
-		expect(published.node?.yjsLastSequenceId).toBeUndefined();
+		expect(published.node?.yjsSnapshotId).toBeNull();
+		expect(published.node?.yjsLastSequenceId).toBeNull();
 		expect(published.node?.assetId).not.toBe(upload.assetId);
 		expect(published.sourceAsset?.processingWorkId).toBeNull();
 		expect(published.assets.filter((asset) => asset.kind === "yjs_snapshot")).toHaveLength(0);
@@ -4062,8 +4148,8 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 			readOnlyScopeNodeId: upload.nodeId,
 			readOnlyPluginServiceTargetId: targetId,
 		});
-		expect(settled.node?.nonCollaborative).toBeUndefined();
-		expect(settled.node?.yjsSnapshotId).toBeUndefined();
+		expect(settled.node?.collaborationEnabled).toBeNull();
+		expect(settled.node?.yjsSnapshotId).toBeNull();
 		expect(settled.asset?.processingWorkId).toBeNull();
 		expect(settled.yjsSnapshots).toHaveLength(0);
 	});
@@ -4131,7 +4217,7 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 				.collect();
 			return { node, asset, pluginRuns };
 		});
-		expect(settled.node?.yjsSnapshotId).toBeUndefined();
+		expect(settled.node?.yjsSnapshotId).toBeNull();
 		expect(settled.asset?.processingWorkId).toBeNull();
 		expect(settled.pluginRuns).toHaveLength(1);
 	});
@@ -4249,7 +4335,7 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		expect(published.node?.assetId).not.toBe(upload.assetId);
 		expect(published.node?.yjsSnapshotId).toEqual(expect.any(String));
 		expect(published.node?.yjsLastSequenceId).toEqual(expect.any(String));
-		expect(published.node?.yjsRootKind).toBe("rich_text");
+		expect(published.node?.textKind).toBe("rich_text");
 		expect(published.node?.readOnlyScopeNodeId).toBe(upload.nodeId);
 		expect(published.sourceAsset?.processingWorkId).toBeNull();
 		expect(published.sourceAsset?.r2Key).toBe(upload.key);
@@ -4322,7 +4408,7 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 			jobs: await ctx.db.query("files_r2_object_deletion_jobs").collect(),
 		}));
 		expect(published.node?.yjsSnapshotId).toEqual(expect.any(String));
-		expect(published.node?.yjsRootKind).toBe("rich_text");
+		expect(published.node?.textKind).toBe("rich_text");
 		expect(published.sourceAsset?.processingWorkId).toBeNull();
 		expect(published.jobs).toEqual([]);
 	});

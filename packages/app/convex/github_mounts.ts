@@ -1014,7 +1014,7 @@ export const gc_sweep_mount_roots = internalMutation({
 					.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
 					.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
 					.eq("path", `/${mount.name}`)
-					.eq("archiveOperationId", undefined),
+					.eq("archiveOperationId", null),
 			)
 			.first();
 		if (!mountRoot) {
@@ -1027,7 +1027,7 @@ export const gc_sweep_mount_roots = internalMutation({
 					.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
 					.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
 					.eq("parentId", mountRoot._id)
-					.eq("archiveOperationId", undefined),
+					.eq("archiveOperationId", null),
 			)
 			.collect();
 		const orphan = children.find((child) => child.kind === "folder" && !keepShas.has(child.name));

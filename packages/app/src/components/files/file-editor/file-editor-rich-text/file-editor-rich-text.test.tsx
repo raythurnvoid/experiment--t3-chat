@@ -111,7 +111,7 @@ const presenceStore = { localSessionId: "session_1" } as unknown as files_Presen
  * Answer the committed-content query the way the server does for a file with collaboration off.
  */
 function resolveQueryWithNonCollaborativeContent(text: string) {
-	convexQueryMock.mockResolvedValue({ _yay: { text, yjsRootKind: "rich_text" } });
+	convexQueryMock.mockResolvedValue({ _yay: { text, textKind: "rich_text" } });
 }
 
 function renderNonCollabRichEditor(args?: { editable?: boolean }) {

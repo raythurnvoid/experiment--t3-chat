@@ -80,7 +80,7 @@ const FilesSearchPaletteContent = memo(function FilesSearchPaletteContent(props:
 			(treeItems ?? []).filter(
 				(item) =>
 					files_is_node(item) &&
-					item.archiveOperationId === undefined &&
+					item.archiveOperationId === null &&
 					!hasInvalidFilter &&
 					parsed.filters.every(
 						(filter) => search_filter_matches_item({ filter, item, metadataNodeIds: searchMetadataNodeIds }) === true,

@@ -569,6 +569,23 @@ async function start_plugin_run(
 			treePath: "/photo.png",
 			lowercaseExtension: "png",
 			updatedAt: now,
+			contentType: null,
+			assetId: null,
+			textKind: null,
+			collaborationEnabled: null,
+			yjsSnapshotId: null,
+			yjsLastSequenceId: null,
+			statsId: null,
+			contentTooLargeByteSize: null,
+			contentShapeMismatchAt: null,
+			contentYjsStateTooLargeByteSize: null,
+			contentFrontmatterTooLargeFieldCount: null,
+			contentFrontmatterTooLargeIndexDocumentCount: null,
+			restrictedScopeNodeId: null,
+			readOnlyScopeNodeId: null,
+			readOnlyPluginName: null,
+			readOnlyPluginServiceTargetId: null,
+			archiveOperationId: null,
 		});
 
 		return await ctx.db.insert("plugins_event_runs", {
@@ -1979,7 +1996,7 @@ describe("invoke file write preconditions", () => {
 						ctx.db
 							.query("files_nodes")
 							.filter((q) =>
-								q.and(q.eq(q.field("path"), "/mirror/private/doc.md"), q.eq(q.field("archiveOperationId"), undefined)),
+								q.and(q.eq(q.field("path"), "/mirror/private/doc.md"), q.eq(q.field("archiveOperationId"), null)),
 							)
 							.collect(),
 					),
@@ -8739,8 +8756,24 @@ describe("plugins_data_db_drain_batch", () => {
 				treePath: "/frozen.md",
 				pathDepth: 1,
 				lowercaseExtension: "md",
-				restrictedScopeNodeId: undefined,
+				restrictedScopeNodeId: null,
 				updatedAt: now,
+				contentType: null,
+				assetId: null,
+				textKind: null,
+				collaborationEnabled: null,
+				yjsSnapshotId: null,
+				yjsLastSequenceId: null,
+				statsId: null,
+				contentTooLargeByteSize: null,
+				contentShapeMismatchAt: null,
+				contentYjsStateTooLargeByteSize: null,
+				contentFrontmatterTooLargeFieldCount: null,
+				contentFrontmatterTooLargeIndexDocumentCount: null,
+				readOnlyScopeNodeId: null,
+				readOnlyPluginName: null,
+				readOnlyPluginServiceTargetId: null,
+				archiveOperationId: null,
 			});
 			await ctx.db.insert("plugins_file_access_bindings", {
 				organizationId: fixture.organizationId,
@@ -9342,6 +9375,23 @@ describe("plugins_data_db_count_installation_docs", () => {
 					pathDepth: 1,
 					lowercaseExtension: "md",
 					updatedAt: now,
+					contentType: null,
+					assetId: null,
+					textKind: null,
+					collaborationEnabled: null,
+					yjsSnapshotId: null,
+					yjsLastSequenceId: null,
+					statsId: null,
+					contentTooLargeByteSize: null,
+					contentShapeMismatchAt: null,
+					contentYjsStateTooLargeByteSize: null,
+					contentFrontmatterTooLargeFieldCount: null,
+					contentFrontmatterTooLargeIndexDocumentCount: null,
+					restrictedScopeNodeId: null,
+					readOnlyScopeNodeId: null,
+					readOnlyPluginName: null,
+					readOnlyPluginServiceTargetId: null,
+					archiveOperationId: null,
 				});
 				await ctx.db.insert("plugins_file_access_bindings", {
 					organizationId: fixture.organizationId,
@@ -12074,6 +12124,23 @@ async function insert_binding_node(
 			pathDepth: path.split("/").length - 1,
 			lowercaseExtension: args.kind === "file" ? "md" : null,
 			updatedAt: Date.now(),
+			contentType: null,
+			assetId: null,
+			textKind: null,
+			collaborationEnabled: null,
+			yjsSnapshotId: null,
+			yjsLastSequenceId: null,
+			statsId: null,
+			contentTooLargeByteSize: null,
+			contentShapeMismatchAt: null,
+			contentYjsStateTooLargeByteSize: null,
+			contentFrontmatterTooLargeFieldCount: null,
+			contentFrontmatterTooLargeIndexDocumentCount: null,
+			restrictedScopeNodeId: null,
+			readOnlyScopeNodeId: null,
+			readOnlyPluginName: null,
+			readOnlyPluginServiceTargetId: null,
+			archiveOperationId: null,
 		});
 	});
 }
@@ -12193,8 +12260,8 @@ describe("plugins_data_db_apply_file_access_binding", () => {
 			folder: await ctx.db.get("files_nodes", folderId),
 			child: await ctx.db.get("files_nodes", childId),
 		}));
-		expect(afterRelease.folder?.restrictedScopeNodeId).toBeUndefined();
-		expect(afterRelease.child?.restrictedScopeNodeId).toBeUndefined();
+		expect(afterRelease.folder?.restrictedScopeNodeId).toBeNull();
+		expect(afterRelease.child?.restrictedScopeNodeId).toBeNull();
 	});
 
 	test("refuses a dead scope and caps bound nodes per scope at four", async () => {

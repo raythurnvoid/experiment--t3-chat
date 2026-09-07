@@ -47,7 +47,7 @@ The Files sidebar is implemented in `files-sidebar.tsx` on top of `@headless-tre
 - Folder nodes can have children, expand/collapse, and receive drops.
 - File nodes are leaves. Editable text files open in an editor: Markdown (including plugin outputs created through `files/write` or `files/touch`) in the rich text editor, the plain-text extensions in the Monaco "Code" editor. Uploaded non-editable source files open stored-file/status metadata.
 - Clicking a folder opens its folder screen. `FileNodeView` decides whether the selected node renders the folder explorer or the file editor, and folder screens embed an editable child `README.md` when present.
-- Editable file nodes have `assetId`, the stored content type (`text/markdown` for a Markdown file, `application/json` for a JSON file, whatever their names), a `yjsRootKind`, Yjs snapshot and update docs, exact text chunks, plain-text search chunks, and snapshots. `assetId` points at the newest content snapshot asset (each materialization/restore re-points it), while committed current reads use the chunks. If an editable node came from an upload, R2 also retains the original upload object.
+- Editable file nodes have a non-null `assetId`, stored `contentType`, and `textKind`, plus exact text chunks, plain-text search chunks, and version snapshots. `collaborationEnabled: true` adds a live Yjs document; false keeps the text editable with null Yjs pointers. `assetId` points at the newest content snapshot asset (each materialization/restore re-points it), while committed current reads use the chunks. If an editable node came from an upload, R2 also retains the original upload object.
 - User-created Markdown files and the auto-created home `README.md` are seeded by the Convex create action with `files_INITIAL_CONTENT`; the rich-text editor must not bootstrap initial Yjs content on the client.
 - Uploaded source file nodes create an upload asset immediately. The signed PUT writes directly to
   its canonical asset key with signed `If-None-Match: *`, so a repeated PUT cannot overwrite it.
@@ -55,7 +55,7 @@ The Files sidebar is implemented in `files-sidebar.tsx` on top of `@headless-tre
   The node keeps the content type it was
   created with: the caller's valid type, else the name's hint, else `application/octet-stream`.
 - After publication, the finalizer reads that stored type. It converts editable text
-  uploads into the normal editable shape: a Yjs snapshot in the type's `yjsRootKind`, chunks, and the
+  uploads into the normal editable shape: a Yjs snapshot in the node's `textKind`, chunks, and the
   first version snapshot. It then points the node at that version snapshot. The upload asset stays as
   the original upload record. Before conversion, it drops one leading BOM and changes CRLF or lone CR
   to LF.

@@ -405,7 +405,7 @@ type FilesPropertiesModalCollaboration_Props = {
  *
  * On means the file has a Yjs document: several people type at once, the edits merge, and comments
  * stay attached to the words they were written on. Off means the file is one saved text: an editor
- * replaces the whole file when it saves and refuses if another save changed its base.
+ * replaces the whole file when it saves. The last save wins.
  *
  * Turning it off cannot be undone, so the box does not write straight away. It opens the confirm
  * step below, which names what the file loses.
@@ -437,8 +437,12 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 		membershipId,
 		nodeId,
 	});
+	const cleanupBlocksCollaboration = useQuery(
+		app_convex_api.files_nodes_content.get_file_collaboration_cleanup_state,
+		{ membershipId, nodeId },
+	);
 
-	const isCollaborative = node?.nonCollaborative !== true;
+	const isCollaborative = node?.collaborationEnabled === true;
 	const isLocked = readOnlyManagement != null && readOnlyManagement.readOnlyState !== "writable";
 	// Changing the mode changes how the file is written, so the server asks for the write permission
 	// and refuses a locked file. Ask the same two questions here, in the same order.
@@ -568,7 +572,7 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 				</span>
 			</MyCheckboxButton>
 
-			{node.collaborationCleanupYjsLastSequenceId !== undefined ? (
+			{cleanupBlocksCollaboration === true ? (
 				<p
 					className={"FilesPropertiesModalCollaboration-description" satisfies FilesPropertiesModalCollaboration_ClassNames}
 					role="status"

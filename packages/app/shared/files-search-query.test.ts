@@ -6,8 +6,8 @@ import {
 	files_search_query_format_value,
 	files_search_query_MAX_FILTERS,
 	files_search_query_parse,
-	files_search_query_qualified_field_is_valid,
-	files_search_query_qualified_fields,
+	files_search_query_field_path_is_valid,
+	files_search_query_field_paths,
 	files_search_query_serialize,
 	files_search_query_to_plans,
 	files_search_query_typing_token,
@@ -303,14 +303,14 @@ describe("files_search_query_typing_token", () => {
 	});
 });
 
-describe("files_search_query_qualified_field_is_valid", () => {
+describe("files_search_query_field_path_is_valid", () => {
 	test("accepts the fields the grammar can name and nothing else", () => {
-		expect(files_search_query_qualified_field_is_valid("frontmatter.source.channel")).toBe(true);
-		expect(files_search_query_qualified_field_is_valid("metadata.slack:message-id")).toBe(true);
-		expect(files_search_query_qualified_field_is_valid("frontmatter.a..b")).toBe(false);
-		expect(files_search_query_qualified_field_is_valid("metadata.a.b")).toBe(false);
-		expect(files_search_query_qualified_field_is_valid("status")).toBe(false);
-		expect(files_search_query_qualified_field_is_valid("frontmatter.")).toBe(false);
+		expect(files_search_query_field_path_is_valid("frontmatter.source.channel")).toBe(true);
+		expect(files_search_query_field_path_is_valid("metadata.slack:message-id")).toBe(true);
+		expect(files_search_query_field_path_is_valid("frontmatter.a..b")).toBe(false);
+		expect(files_search_query_field_path_is_valid("metadata.a.b")).toBe(false);
+		expect(files_search_query_field_path_is_valid("status")).toBe(false);
+		expect(files_search_query_field_path_is_valid("frontmatter.")).toBe(false);
 	});
 });
 
@@ -432,123 +432,123 @@ describe("files_search_query_format_value", () => {
 	});
 });
 
-describe("files_search_query_qualified_fields", () => {
+describe("files_search_query_field_paths", () => {
 	test("asks both metadata kinds for a bare key and one for an explicit key", () => {
-		expect(files_search_query_qualified_fields({ namespace: "any", name: "status" })).toEqual([
+		expect(files_search_query_field_paths({ namespace: "any", name: "status" })).toEqual([
 			"frontmatter.status",
 			"metadata.status",
 		]);
-		expect(files_search_query_qualified_fields({ namespace: "any", name: "sender.name" })).toEqual([
+		expect(files_search_query_field_paths({ namespace: "any", name: "sender.name" })).toEqual([
 			"frontmatter.sender.name",
 		]);
-		expect(files_search_query_qualified_fields({ namespace: "any", name: "slack:message-id" })).toEqual([
+		expect(files_search_query_field_paths({ namespace: "any", name: "slack:message-id" })).toEqual([
 			"metadata.slack:message-id",
 		]);
-		expect(files_search_query_qualified_fields({ namespace: "metadata", name: "status" })).toEqual(["metadata.status"]);
-		expect(files_search_query_qualified_fields({ namespace: "file", name: "path" })).toEqual([]);
+		expect(files_search_query_field_paths({ namespace: "metadata", name: "status" })).toEqual(["metadata.status"]);
+		expect(files_search_query_field_paths({ namespace: "file", name: "path" })).toEqual([]);
 	});
 });
 
 describe("files_search_query_to_plans", () => {
 	test("expands an unquoted literal to every kind it could be", () => {
 		expect(files_search_query_to_plans(parse_one("frontmatter.priority:3"))).toEqual([
-			{ op: "eq", qualifiedField: "frontmatter.priority", value: "3" },
-			{ op: "eq", qualifiedField: "frontmatter.priority", value: 3 },
+			{ op: "eq", fieldPath: "frontmatter.priority", value: "3" },
+			{ op: "eq", fieldPath: "frontmatter.priority", value: 3 },
 		]);
 		expect(files_search_query_to_plans(parse_one("frontmatter.regression:true"))).toEqual([
-			{ op: "eq", qualifiedField: "frontmatter.regression", value: "true" },
-			{ op: "eq", qualifiedField: "frontmatter.regression", value: true },
+			{ op: "eq", fieldPath: "frontmatter.regression", value: "true" },
+			{ op: "eq", fieldPath: "frontmatter.regression", value: true },
 		]);
 		expect(files_search_query_to_plans(parse_one("frontmatter.reported:2026-09-04"))).toEqual([
-			{ op: "eq", qualifiedField: "frontmatter.reported", value: "2026-09-04" },
+			{ op: "eq", fieldPath: "frontmatter.reported", value: "2026-09-04" },
 			{
 				op: "range",
-				qualifiedField: "frontmatter.reported",
+				fieldPath: "frontmatter.reported",
 				valueKind: "maybe_date",
 				gte: Date.UTC(2026, 8, 4),
 				lt: Date.UTC(2026, 8, 5),
 			},
 		]);
 		expect(files_search_query_to_plans(parse_one("frontmatter.status:open"))).toEqual([
-			{ op: "eq", qualifiedField: "frontmatter.status", value: "open" },
+			{ op: "eq", fieldPath: "frontmatter.status", value: "open" },
 		]);
 	});
 
 	test("a quoted literal asks the string kind only", () => {
 		expect(files_search_query_to_plans(parse_one('frontmatter.priority:"3"'))).toEqual([
-			{ op: "eq", qualifiedField: "frontmatter.priority", value: "3" },
+			{ op: "eq", fieldPath: "frontmatter.priority", value: "3" },
 		]);
 	});
 
 	test("reads the YAML spellings of numbers and booleans", () => {
 		expect(files_search_query_to_plans(parse_one("frontmatter.done:True"))).toEqual([
-			{ op: "eq", qualifiedField: "frontmatter.done", value: "True" },
-			{ op: "eq", qualifiedField: "frontmatter.done", value: true },
+			{ op: "eq", fieldPath: "frontmatter.done", value: "True" },
+			{ op: "eq", fieldPath: "frontmatter.done", value: true },
 		]);
 		expect(files_search_query_to_plans(parse_one("frontmatter.weight:.5"))).toEqual([
-			{ op: "eq", qualifiedField: "frontmatter.weight", value: ".5" },
-			{ op: "eq", qualifiedField: "frontmatter.weight", value: 0.5 },
+			{ op: "eq", fieldPath: "frontmatter.weight", value: ".5" },
+			{ op: "eq", fieldPath: "frontmatter.weight", value: 0.5 },
 		]);
 		expect(files_search_query_to_plans(parse_one("frontmatter.n:1e3"))).toEqual([
-			{ op: "eq", qualifiedField: "frontmatter.n", value: "1e3" },
-			{ op: "eq", qualifiedField: "frontmatter.n", value: 1000 },
+			{ op: "eq", fieldPath: "frontmatter.n", value: "1e3" },
+			{ op: "eq", fieldPath: "frontmatter.n", value: 1000 },
 		]);
 		// Hex and octal are core-schema integers too. Binary is not, so it stays text.
 		expect(files_search_query_to_plans(parse_one("frontmatter.count:0x10"))).toEqual([
-			{ op: "eq", qualifiedField: "frontmatter.count", value: "0x10" },
-			{ op: "eq", qualifiedField: "frontmatter.count", value: 16 },
+			{ op: "eq", fieldPath: "frontmatter.count", value: "0x10" },
+			{ op: "eq", fieldPath: "frontmatter.count", value: 16 },
 		]);
 		expect(files_search_query_to_plans(parse_one("frontmatter.count:0o17"))).toEqual([
-			{ op: "eq", qualifiedField: "frontmatter.count", value: "0o17" },
-			{ op: "eq", qualifiedField: "frontmatter.count", value: 15 },
+			{ op: "eq", fieldPath: "frontmatter.count", value: "0o17" },
+			{ op: "eq", fieldPath: "frontmatter.count", value: 15 },
 		]);
 		expect(files_search_query_to_plans(parse_one("frontmatter.count:0b101"))).toEqual([
-			{ op: "eq", qualifiedField: "frontmatter.count", value: "0b101" },
+			{ op: "eq", fieldPath: "frontmatter.count", value: "0b101" },
 		]);
 		expect(files_search_query_to_plans(parse_one("frontmatter.count:>0x10"))).toEqual([
-			{ op: "range", qualifiedField: "frontmatter.count", valueKind: "number", gt: 16 },
+			{ op: "range", fieldPath: "frontmatter.count", valueKind: "number", gt: 16 },
 		]);
 		expect(parse_one("weight:>.5").problem).toBeNull();
 	});
 
 	test("a date without a time keeps the whole day inside a range", () => {
 		expect(files_search_query_to_plans(parse_one("frontmatter.due:<=2026-09-30"))).toEqual([
-			{ op: "range", qualifiedField: "frontmatter.due", valueKind: "maybe_date", lt: Date.UTC(2026, 9, 1) },
+			{ op: "range", fieldPath: "frontmatter.due", valueKind: "maybe_date", lt: Date.UTC(2026, 9, 1) },
 		]);
 		expect(files_search_query_to_plans(parse_one("frontmatter.due:>2026-09-04"))).toEqual([
-			{ op: "range", qualifiedField: "frontmatter.due", valueKind: "maybe_date", gte: Date.UTC(2026, 8, 5) },
+			{ op: "range", fieldPath: "frontmatter.due", valueKind: "maybe_date", gte: Date.UTC(2026, 8, 5) },
 		]);
 		// `>=` and `<` need no widening: the day start is already the bound.
 		expect(files_search_query_to_plans(parse_one("frontmatter.due:>=2026-09-04"))).toEqual([
-			{ op: "range", qualifiedField: "frontmatter.due", valueKind: "maybe_date", gte: Date.UTC(2026, 8, 4) },
+			{ op: "range", fieldPath: "frontmatter.due", valueKind: "maybe_date", gte: Date.UTC(2026, 8, 4) },
 		]);
 		expect(files_search_query_to_plans(parse_one("frontmatter.due:<2026-09-04"))).toEqual([
-			{ op: "range", qualifiedField: "frontmatter.due", valueKind: "maybe_date", lt: Date.UTC(2026, 8, 4) },
+			{ op: "range", fieldPath: "frontmatter.due", valueKind: "maybe_date", lt: Date.UTC(2026, 8, 4) },
 		]);
 		expect(files_search_query_to_plans(parse_one("frontmatter.due:>2026-09-04T10:00:00Z"))).toEqual([
-			{ op: "range", qualifiedField: "frontmatter.due", valueKind: "maybe_date", gt: Date.UTC(2026, 8, 4, 10) },
+			{ op: "range", fieldPath: "frontmatter.due", valueKind: "maybe_date", gt: Date.UTC(2026, 8, 4, 10) },
 		]);
 	});
 
 	test("an impossible calendar date is a string only", () => {
 		expect(files_search_query_to_plans(parse_one("frontmatter.reported:2026-02-31"))).toEqual([
-			{ op: "eq", qualifiedField: "frontmatter.reported", value: "2026-02-31" },
+			{ op: "eq", fieldPath: "frontmatter.reported", value: "2026-02-31" },
 		]);
 	});
 
 	test("a date with a time asks for that instant too", () => {
 		expect(files_search_query_to_plans(parse_one("frontmatter.due:2026-09-04T10:00Z"))).toEqual([
-			{ op: "eq", qualifiedField: "frontmatter.due", value: "2026-09-04T10:00Z" },
+			{ op: "eq", fieldPath: "frontmatter.due", value: "2026-09-04T10:00Z" },
 			{
 				op: "range",
-				qualifiedField: "frontmatter.due",
+				fieldPath: "frontmatter.due",
 				valueKind: "maybe_date",
 				gte: Date.UTC(2026, 8, 4, 10),
 				lte: Date.UTC(2026, 8, 4, 10),
 			},
 		]);
 		expect(files_search_query_to_plans(parse_one('frontmatter.due:"2026-09-04T10:00Z"'))).toEqual([
-			{ op: "eq", qualifiedField: "frontmatter.due", value: "2026-09-04T10:00Z" },
+			{ op: "eq", fieldPath: "frontmatter.due", value: "2026-09-04T10:00Z" },
 		]);
 		expect(files_search_query_to_plans(parse_one("due:2026-09-04T10:00Z"))).toHaveLength(4);
 	});
@@ -561,23 +561,23 @@ describe("files_search_query_to_plans", () => {
 
 	test("builds exists, prefix and range plans", () => {
 		expect(files_search_query_to_plans(parse_one("metadata.status:*"))).toEqual([
-			{ op: "exists", qualifiedField: "metadata.status" },
+			{ op: "exists", fieldPath: "metadata.status" },
 		]);
 		expect(files_search_query_to_plans(parse_one("metadata.title:Recall*"))).toEqual([
-			{ op: "prefix", qualifiedField: "metadata.title", value: "Recall" },
+			{ op: "prefix", fieldPath: "metadata.title", value: "Recall" },
 		]);
 		expect(files_search_query_to_plans(parse_one("frontmatter.priority:>=2"))).toEqual([
-			{ op: "range", qualifiedField: "frontmatter.priority", valueKind: "number", gte: 2 },
+			{ op: "range", fieldPath: "frontmatter.priority", valueKind: "number", gte: 2 },
 		]);
 		expect(files_search_query_to_plans(parse_one("frontmatter.due:<2026-10-01"))).toEqual([
-			{ op: "range", qualifiedField: "frontmatter.due", valueKind: "maybe_date", lt: Date.UTC(2026, 9, 1) },
+			{ op: "range", fieldPath: "frontmatter.due", valueKind: "maybe_date", lt: Date.UTC(2026, 9, 1) },
 		]);
 	});
 
 	test("a bare key with a number or date literal gives four plans at most", () => {
 		const plans = files_search_query_to_plans(parse_one("priority:3"));
 		expect(plans).toHaveLength(4);
-		expect(plans.map((plan) => plan.qualifiedField)).toEqual([
+		expect(plans.map((plan) => plan.fieldPath)).toEqual([
 			"frontmatter.priority",
 			"frontmatter.priority",
 			"metadata.priority",

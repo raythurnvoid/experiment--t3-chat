@@ -63,7 +63,7 @@ function makeNode(args: {
 	name: string;
 	path: string;
 	kind?: "file" | "folder";
-	yjsRootKind?: "rich_text" | "plain_text";
+	textKind?: "rich_text" | "plain_text";
 	contentType?: string;
 	hasEditableYjsState?: boolean;
 	createdBy?: string;
@@ -79,13 +79,16 @@ function makeNode(args: {
 		kind: args.kind ?? "file",
 		parentId: "root",
 		assetId: `asset_${args.id}`,
+		yjsSnapshotId: null,
+		yjsLastSequenceId: null,
+		textKind: args.textKind ?? null,
+		collaborationEnabled: args.textKind ? args.hasEditableYjsState !== false : null,
 		...(args.hasEditableYjsState === false
 			? {}
 			: {
 					yjsSnapshotId: `snapshot_${args.id}`,
 					yjsLastSequenceId: `sequence_${args.id}`,
 				}),
-		...(args.yjsRootKind ? { yjsRootKind: args.yjsRootKind } : {}),
 		...(args.contentType ? { contentType: args.contentType } : {}),
 		createdBy: args.createdBy ?? "user_1",
 		updatedBy: args.updatedBy ?? "user_1",
@@ -115,7 +118,7 @@ afterEach(() => {
 
 describe("FileEditorSidebar", () => {
 	test("a plain text node shows Details instead of Comments and selects it by default", () => {
-		const node = makeNode({ id: "node_json", name: "config.json", path: "docs/config.json", yjsRootKind: "plain_text" });
+		const node = makeNode({ id: "node_json", name: "config.json", path: "docs/config.json", textKind: "plain_text" });
 
 		render(<FileEditorSidebar node={node} commentsContainerRef={() => {}} />);
 
@@ -126,7 +129,7 @@ describe("FileEditorSidebar", () => {
 	});
 
 	test("a rich text node keeps the Comments tab", () => {
-		const node = makeNode({ id: "node_md", name: "notes.md", path: "docs/notes.md", yjsRootKind: "rich_text" });
+		const node = makeNode({ id: "node_md", name: "notes.md", path: "docs/notes.md", textKind: "rich_text" });
 
 		render(<FileEditorSidebar node={node} commentsContainerRef={() => {}} />);
 
@@ -139,7 +142,7 @@ describe("FileEditorSidebar", () => {
 			id: "node_md_non_collab",
 			name: "notes.md",
 			path: "docs/notes.md",
-			yjsRootKind: "rich_text",
+			textKind: "rich_text",
 			hasEditableYjsState: false,
 		});
 
@@ -162,7 +165,7 @@ describe("FileEditorSidebar", () => {
 
 	test("a stored Comments selection falls back to Details without being overwritten", () => {
 		app_local_storage_set_value("app_state::files_last_tab", "app_file_editor_sidebar_tabs_comments");
-		const node = makeNode({ id: "node_yaml", name: "deploy.yaml", path: "ops/deploy.yaml", yjsRootKind: "plain_text" });
+		const node = makeNode({ id: "node_yaml", name: "deploy.yaml", path: "ops/deploy.yaml", textKind: "plain_text" });
 
 		render(<FileEditorSidebar node={node} commentsContainerRef={() => {}} />);
 
@@ -174,7 +177,7 @@ describe("FileEditorSidebar", () => {
 
 	test("a stored Agent selection survives the plain-text tab swap", () => {
 		app_local_storage_set_value("app_state::files_last_tab", "app_file_editor_sidebar_tabs_agent");
-		const node = makeNode({ id: "node_json", name: "config.json", path: "docs/config.json", yjsRootKind: "plain_text" });
+		const node = makeNode({ id: "node_json", name: "config.json", path: "docs/config.json", textKind: "plain_text" });
 
 		render(<FileEditorSidebar node={node} commentsContainerRef={() => {}} />);
 
@@ -197,7 +200,7 @@ describe("FileEditorSidebarDetails", () => {
 			id: "node_json",
 			name: "config.json",
 			path: "docs/config.json",
-			yjsRootKind: "plain_text",
+			textKind: "plain_text",
 			contentType: "application/json",
 			createdBy: "user_created",
 			updatedBy: users_SYSTEM_AUTHOR,
@@ -242,7 +245,7 @@ describe("FileEditorSidebarDetails", () => {
 			id: "node_txt",
 			name: "notes.txt",
 			path: "/notes.txt",
-			yjsRootKind: "plain_text",
+			textKind: "plain_text",
 			contentType: "text/plain",
 		});
 
@@ -261,7 +264,7 @@ describe("FileEditorSidebarDetails", () => {
 
 	test("shows skeleton rows while the queries load", () => {
 		useQueryMock.mockReturnValue(undefined);
-		const node = makeNode({ id: "node_json", name: "config.json", path: "docs/config.json", yjsRootKind: "plain_text" });
+		const node = makeNode({ id: "node_json", name: "config.json", path: "docs/config.json", textKind: "plain_text" });
 
 		const { container } = render(<FileEditorSidebarDetails node={node} />);
 

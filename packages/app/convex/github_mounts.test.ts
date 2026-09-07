@@ -699,7 +699,7 @@ describe("sync_mount", () => {
 						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
 						.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID)
 						.eq("path", `/${MOUNT}/${COMMIT_1}/README.md`)
-						.eq("archiveOperationId", undefined),
+						.eq("archiveOperationId", null),
 				)
 				.first(),
 		);

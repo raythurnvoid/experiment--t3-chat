@@ -169,7 +169,7 @@ function get_folder_readme_node_id(
 		return (
 			node.parentId === folderItemId &&
 			node.kind === "file" &&
-			node.archiveOperationId === undefined &&
+			node.archiveOperationId === null &&
 			node.name.toLowerCase() === ("README.md" satisfies files_SpecialFileName).toLowerCase()
 		);
 	});
@@ -184,7 +184,7 @@ function can_move_file_node_to_parent(args: {
 	canManageRestrictedScope: (scopeNodeId: app_convex_Id<"files_nodes">) => boolean;
 }) {
 	const fileNode = args.fileNodesList?.find((candidate) => candidate._id === args.fileNodeId);
-	if (!fileNode || fileNode.archiveOperationId !== undefined) {
+	if (!fileNode || fileNode.archiveOperationId !== null) {
 		return false;
 	}
 	if (fileNode._id === args.targetParentId || fileNode.parentId === args.targetParentId) {
@@ -199,7 +199,7 @@ function can_move_file_node_to_parent(args: {
 		!files_can_move_node_between_restricted_scopes({
 			nodeId: fileNode._id,
 			sourceRestrictedScopeNodeId: fileNode.restrictedScopeNodeId,
-			targetRestrictedScopeNodeId: targetParent?.restrictedScopeNodeId,
+			targetRestrictedScopeNodeId: targetParent?.restrictedScopeNodeId ?? null,
 			canManageRestrictedScope: args.canManageRestrictedScope,
 		})
 	) {
@@ -290,7 +290,7 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 	// nothing restricts it, and the two other values say whether this node is the one carrying the
 	// restriction or is only inside one.
 	const restrictedState =
-		currentNode?.restrictedScopeNodeId === undefined
+		currentNode?.restrictedScopeNodeId == null
 			? null
 			: currentNode.restrictedScopeNodeId === currentNode._id
 				? "self"
@@ -749,7 +749,7 @@ const FileNodeViewFileEditor = memo(function FileNodeViewFileEditor(props: FileN
 });
 
 type FileNodeViewFile_Props = {
-	node: FileNodeViewResolvedNode & { yjsRootKind: files_YjsRootKind };
+	node: FileNodeViewResolvedNode & { textKind: files_YjsRootKind };
 	editorNodeId?: app_convex_Id<"files_nodes">;
 	fileNodesList: FileNodeViewContent_Props["fileNodesList"];
 	readOnlyAncestorIds: FileNodeViewHeader_Props["readOnlyAncestorIds"];
@@ -798,7 +798,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 				fileNodesList={fileNodesList}
 				readOnlyAncestorIds={readOnlyAncestorIds}
 				editorMode={editorMode}
-				rootKind={node.yjsRootKind}
+				rootKind={node.textKind}
 				filesSidebarOpen={filesSidebarOpen}
 				showFileControls={true}
 				onlineUsers={onlineUsers}
@@ -809,9 +809,9 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 				nodeId={editorNodeId ?? node._id}
 				readOnlyState={node.readOnlyState}
 				pendingUpdateId={pendingUpdateId}
-				rootKind={node.yjsRootKind}
+				rootKind={node.textKind}
 				monacoLanguageId={files_monaco_language_id_of_content_type(node.contentType)}
-				nonCollaborative={node.nonCollaborative === true}
+				nonCollaborative={node.collaborationEnabled === false}
 				committedAssetId={committedAssetId}
 				pendingUpdatesLoaded={pendingUpdatesLoaded}
 				serverSequence={serverSequence}
@@ -1179,7 +1179,7 @@ function can_take_focus(region: HTMLElement | null) {
 type FileNodeViewPluginView_ClassNames = "FileNodeViewPluginView";
 
 type FileNodeViewPluginView_Props = {
-	node: app_convex_Doc<"files_nodes">;
+	node: FileNodeViewResolvedNode;
 	/** The file's content type that matched the view's declared list. Sent to the plugin in bonobo:init. */
 	contentType: string;
 	pluginName: string;
@@ -1266,7 +1266,7 @@ type FileNodeViewPluginViewFrame_ClassNames =
 type FileNodeViewPluginViewFrame_Props = {
 	/** The `<section>` the view above renders. The focus move below asks whether focus is still in it. */
 	regionRef: RefObject<HTMLElement | null>;
-	node: app_convex_Doc<"files_nodes">;
+	node: FileNodeViewResolvedNode;
 	/** The file's content type that matched the view's declared list. Sent to the plugin in bonobo:init. */
 	contentType: string;
 	pluginName: string;
@@ -1500,7 +1500,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 	const [pendingActionNodeIds, setPendingActionNodeIds] = useState(() => new Set<string>());
 
 	const childItems = (fileNodesList ?? [])
-		.filter((item) => item.parentId === folderItemId && item.archiveOperationId === undefined)
+		.filter((item) => item.parentId === folderItemId && item.archiveOperationId === null)
 		.sort((a, b) => {
 			if (a.kind !== b.kind) {
 				return a.kind === "folder" ? -1 : 1;
@@ -1696,9 +1696,9 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 			pendingUpdateId={pendingUpdateId}
 			// The README node owns its shape: a README.md created by copying a plain text file is
 			// plain text, and the embed must open it the same way the file view does.
-			rootKind={readmeNode?.yjsRootKind ?? "rich_text"}
+			rootKind={readmeNode?.textKind ?? "rich_text"}
 			monacoLanguageId={files_monaco_language_id_of_content_type(readmeNode?.contentType)}
-			nonCollaborative={readmeNode?.nonCollaborative === true}
+			nonCollaborative={readmeNode?.collaborationEnabled === false}
 			committedAssetId={committedAssetId}
 			pendingUpdatesLoaded={pendingUpdatesLoaded}
 			serverSequence={serverSequence}
@@ -2226,7 +2226,7 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 	const siblingNames =
 		folderItemId && fileNodesList
 			? fileNodesList
-					.filter((item) => item.parentId === folderItemId && item.archiveOperationId === undefined)
+					.filter((item) => item.parentId === folderItemId && item.archiveOperationId === null)
 					.map((child) => child.name)
 			: [];
 
@@ -3140,12 +3140,12 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		activeEditorNode && files_node_has_editable_text_content(activeEditorNode)
 			? files_resolve_effective_editor_view({
 					requestedView,
-					rootKind: activeEditorNode.yjsRootKind,
+					rootKind: activeEditorNode.textKind,
 				})
 			: requestedView;
 	// The editor node can be a folder's README instead of the selected node, so read its mode from
 	// the tree. A file with collaboration turned off has no Yjs sequence to watch.
-	const activeEditorNodeIsCollaborative = activeEditorNode?.nonCollaborative !== true;
+	const activeEditorNodeIsCollaborative = activeEditorNode?.collaborationEnabled === true;
 
 	const allPendingUpdatesResult = useQuery(app_convex_api.files_pending_updates.list_files_pending_updates, {
 		membershipId,
@@ -3289,8 +3289,8 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 			nodeId={resolvedNode?.kind === "file" ? resolvedNode._id : null}
 			contentTooLargeByteSize={resolvedNode?.contentTooLargeByteSize ?? null}
 			frontmatterTooLarge={
-				resolvedNode?.contentFrontmatterTooLargeFieldCount !== undefined &&
-				resolvedNode.contentFrontmatterTooLargeIndexDocumentCount !== undefined
+				resolvedNode?.contentFrontmatterTooLargeFieldCount != null &&
+				resolvedNode.contentFrontmatterTooLargeIndexDocumentCount !== null
 					? {
 							fieldCount: resolvedNode.contentFrontmatterTooLargeFieldCount,
 							indexDocumentCount: resolvedNode.contentFrontmatterTooLargeIndexDocumentCount,
@@ -3447,7 +3447,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				fileNodesList={fileNodesList}
 				readOnlyAncestorIds={readOnlyAncestorIds}
 				pendingUpdateId={currentPendingUpdate?._id}
-				committedAssetId={activeEditorNode?.nonCollaborative === true ? (activeEditorNode.assetId ?? null) : null}
+				committedAssetId={activeEditorNode?.collaborationEnabled === false ? (activeEditorNode.assetId ?? null) : null}
 				pendingUpdatesLoaded={allPendingUpdatesResult !== undefined}
 				serverSequence={activeEditorServerSequenceData?.lastSequence}
 				yjsLastSequenceId={activeEditorServerSequenceData?.yjsLastSequenceId}
