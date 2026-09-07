@@ -839,15 +839,16 @@ export function files_pending_update_has_content<Row extends FilePendingUpdateFi
  * A content proposal on a file with collaboration off is stale when a member saved the file
  * after the proposal was made: the node's content asset is no longer the one the branches were
  * built from. Accept and every client edit refuse a stale proposal, the agent's reads skip it,
- * and Discard deletes it, or keeps only its move or delete. A collaborative proposal is never
- * stale by this rule. A move-only doc is never stale either, because the rule needs the whole
- * asset content group.
+ * and Discard deletes it, or keeps only its move or delete. A collaboration toggle also makes
+ * either kind stale until Review rebuilds its branches on the current file.
  */
 export function files_pending_update_content_is_stale(
-	row: FilePendingUpdateFieldsForContent,
+	row: FilePendingUpdateFieldsForContent & Pick<app_convex_Doc<"files_pending_updates">, "contentNeedsRebase">,
 	node: Pick<app_convex_Doc<"files_nodes">, "assetId">,
 ) {
-	return files_pending_update_has_asset_content(row) && row.baseAssetId !== node.assetId;
+	return (
+		row.contentNeedsRebase === true || (files_pending_update_has_asset_content(row) && row.baseAssetId !== node.assetId)
+	);
 }
 
 // #region pending path overlay

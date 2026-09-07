@@ -485,8 +485,7 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 			return;
 		}
 
-		// Either direction remounts the editor. Ask first because an open editor can still hold text
-		// that has not reached the server.
+		// An open editor can still hold text that has not reached the server.
 		setError(null);
 		setPendingCollaborativeMode(checked);
 	});
@@ -589,8 +588,8 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 						}
 					>
 						{pendingCollaborativeMode
-							? "Turn collaboration on for this file? Only the last saved text is used. Text changes waiting for review are deleted. Save any open editor changes first, or they will be lost."
-							: "Turn collaboration off for this file? The edit history is deleted. Every comment written inside the text loses the words it was attached to, so it disappears from the file for everybody. Text changes waiting for review are deleted. Nobody can bring these back. Only the last saved text and saved versions are kept. Save any open editor changes first, or they will be lost."}
+							? "Turn collaboration on for this file? Text changes waiting for review are kept. Review them again before accepting. Only the last saved text is used. Markdown formatting may change. Save open editor changes first."
+							: "Turn collaboration off for this file? The shared edit history is deleted. Comments attached to text disappear from the file for everyone. Saved versions are kept. Text changes waiting for review are kept. Review them again before accepting. Only the last saved text is used. Save open editor changes first."}
 					</p>
 					<div
 						className={"FilesPropertiesModalCollaboration-actions" satisfies FilesPropertiesModalCollaboration_ClassNames}

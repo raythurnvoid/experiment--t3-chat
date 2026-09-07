@@ -98,6 +98,9 @@ vi.mock("@/lib/files.ts", async (importOriginal) => {
 	const original = await importOriginal<typeof import("@/lib/files.ts")>();
 	return {
 		...original,
+		files_fetch_file_yjs_state_and_text: vi.fn().mockResolvedValue(null),
+		files_yjs_rebase_branch_with_local_text: vi.fn(original.files_yjs_rebase_branch_with_local_text),
+		files_persist_file_pending_update_rebased_state: vi.fn(original.files_persist_file_pending_update_rebased_state),
 		files_monaco_create_editor_model: (text: string, languageId: string) => {
 			const model = original.files_monaco_create_editor_model(text, languageId);
 			monacoHarness.createdModels.push(model as never);
@@ -188,12 +191,19 @@ vi.mock("../file-editor-comments-sidebar.tsx", () => ({
 }));
 
 import { FileEditorDiff, FileEditorDiffNonCollab } from "./file-editor-diff.tsx";
-import type { files_PresenceStore } from "@/lib/files.ts";
+import {
+	files_fetch_file_yjs_state_and_text,
+	files_persist_file_pending_update_rebased_state,
+	files_yjs_rebase_branch_with_local_text,
+	type files_PresenceStore,
+} from "@/lib/files.ts";
 import type { app_convex_Doc } from "@/lib/app-convex-client.ts";
 import { getFunctionName } from "convex/server";
 import { encodeStateAsUpdate } from "yjs";
 import { files_PENDING_UPDATE_STALE_BASE_MESSAGE } from "../../../../../shared/files.ts";
-import { files_yjs_doc_create_plain_text_from_text } from "../../../../../shared/files-yjs.ts";
+import { files_yjs_doc_clone, files_yjs_doc_create_plain_text_from_text } from "../../../../../shared/files-yjs.ts";
+import { files_yjs_doc_update_from_text } from "../../../../../shared/files-tiptap.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 
 const MEMBERSHIP_ID = "membership_1" as app_convex_Id<"organizations_workspaces_users">;
 const NODE_ID = "node_markdown" as app_convex_Id<"files_nodes">;
@@ -271,6 +281,9 @@ beforeEach(() => {
 	useQueryMock.mockReset();
 	convexWatchQueryMock.mockReset();
 	waitNewQueryValueMock.mockReset();
+	vi.mocked(files_fetch_file_yjs_state_and_text).mockReset().mockResolvedValue(null);
+	vi.mocked(files_yjs_rebase_branch_with_local_text).mockClear();
+	vi.mocked(files_persist_file_pending_update_rebased_state).mockReset();
 	monacoHarness.createdModels.length = 0;
 	monacoHarness.changeListeners.length = 0;
 	monacoHarness.updateOptionsCalls.length = 0;
@@ -565,6 +578,7 @@ const nonCollabPendingUpdate = {
 	baseStateId: "state_base",
 	stagedStateId: "state_staged",
 	unstagedStateId: "state_unstaged",
+	currentYjsLastSequenceId: null,
 } as unknown as app_convex_Doc<"files_pending_updates">;
 
 /**
@@ -595,7 +609,14 @@ function resolveStatePages(texts: { base: string; staged: string; unstaged: stri
 	});
 }
 
-function renderNonCollabProposalReview(args: { committedAssetId: string; onExit?: () => void }) {
+function renderNonCollabProposalReview(args: {
+	committedAssetId: string;
+	nonCollaborative?: boolean;
+	yjsLastSequenceId?: string;
+	serverSequence?: number;
+	pendingUpdateId?: string | null;
+	onExit?: () => void;
+}) {
 	const toolbarPortalHost = document.createElement("div");
 	document.body.append(toolbarPortalHost);
 	// The collaborative editor waits for the app's hoisting container before it mounts.
@@ -612,8 +633,18 @@ function renderNonCollabProposalReview(args: { committedAssetId: string; onExit?
 			editable={true}
 			rootKind="plain_text"
 			monacoLanguageId="plaintext"
-			pendingUpdateId={PENDING_UPDATE_ID}
-			nonCollaborative={true}
+			pendingUpdateId={
+				args.pendingUpdateId === null
+					? undefined
+					: ((args.pendingUpdateId ?? PENDING_UPDATE_ID) as app_convex_Id<"files_pending_updates">)
+			}
+			nonCollaborative={overrides.nonCollaborative ?? args.nonCollaborative ?? true}
+			serverSequence={overrides.serverSequence ?? args.serverSequence}
+			yjsLastSequenceId={
+				("yjsLastSequenceId" in overrides ? overrides.yjsLastSequenceId : args.yjsLastSequenceId) as
+					| app_convex_Id<"files_yjs_docs_last_sequences">
+					| undefined
+			}
 			committedAssetId={(overrides.committedAssetId ?? args.committedAssetId) as app_convex_Id<"files_r2_assets">}
 			presenceStore={presenceStore}
 			commentsPortalHost={null}
@@ -653,7 +684,7 @@ function mockSaveDocQuery(args: {
 	convexActionMock.mockImplementation((reference: unknown) =>
 		Promise.resolve(
 			reference === "upsert_file_pending_update"
-				? { _yay: null }
+				? { _yay: { pendingUpdate: nonCollabPendingUpdate, currentYjsLastSequenceId: null } }
 				: { _yay: { newSequence: null, pendingUpdateUpdatedAt: args.pendingUpdateUpdatedAt } },
 		),
 	);
@@ -671,6 +702,1174 @@ function mockSaveDocQuery(args: {
 	);
 	return () => deliverNextValue();
 }
+
+describe("FileEditorDiff draft versions", () => {
+	test("typing during an ordinary page reload stays editable and is saved after the pages arrive", async () => {
+		vi.useFakeTimers();
+		try {
+			const baseDoc = files_yjs_doc_create_plain_text_from_text({ text: "base\n" });
+			let persisted = { ...nonCollabPendingUpdate };
+			let savedText = "base\n";
+			let pausePages = false;
+			const pagesFinished = Promise.withResolvers<void>();
+			useStableQueryMock.mockReturnValue(persisted);
+			convexQueryMock.mockImplementation(async (reference: unknown, args: { stateId?: string }) => {
+				if (reference !== "get_file_pending_update_state_page") return persisted;
+				if (pausePages) await pagesFinished.promise;
+				const doc = files_yjs_doc_clone({ yjsDoc: baseDoc });
+				if (args.stateId === persisted.unstagedStateId)
+					files_yjs_doc_update_from_text({ mut_yjsDoc: doc, text: savedText, rootKind: "plain_text" });
+				const bytes = encodeStateAsUpdate(doc);
+				return {
+					bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+					pageCount: 1,
+					totalBytes: bytes.byteLength,
+				};
+			});
+			convexMutationMock.mockImplementation(async (reference: string, args: { role?: string; text?: string }) => {
+				if (reference === "stage_file_pending_update_text_input" && args.role === "unstaged") savedText = args.text!;
+				return { _yay: { operationBatchId: "batch_1" } };
+			});
+			convexActionMock.mockImplementation(async () => {
+				persisted = { ...persisted, updatedAt: persisted.updatedAt + 1 };
+				return { _yay: { pendingUpdate: persisted, currentYjsLastSequenceId: null } };
+			});
+			const { rerenderWith } = renderNonCollabProposalReview({ committedAssetId: "asset_1" });
+			await flushNonCollabProposalMount();
+			await typeIntoModifiedPane("base A\n");
+			pausePages = true;
+			useStableQueryMock.mockReturnValue(persisted);
+			rerenderWith({});
+			await flushNonCollabProposalMount();
+			expect(monacoHarness.updateOptionsCalls.at(-1)).toMatchObject({ readOnly: false });
+			await typeIntoModifiedPane("base A B\n");
+			expect(convexActionMock).toHaveBeenCalledTimes(1);
+			pausePages = false;
+			await act(async () => {
+				pagesFinished.resolve();
+			});
+			await flushNonCollabProposalMount();
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(250);
+			});
+			expect(convexActionMock).toHaveBeenCalledTimes(2);
+			expect(convexActionMock.mock.calls[1]![1].reviewedUpdatedAt).toBe(2);
+			expect(savedText).toBe("base A B\n");
+			expect(getPanes().modified.getValue()).toBe("base A B\n");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("a proposal id can receive new reviewed content after a content discard kept its move", async () => {
+		vi.useFakeTimers();
+		try {
+			const initial = {
+				...nonCollabPendingUpdate,
+				baseAssetId: undefined,
+				baseYjsSequence: 0,
+				baseLineageGeneration: 0,
+				currentYjsLastSequenceId: "sequence_live",
+				pendingMove: { fromPath: "old.txt", toPath: "new.txt" },
+			};
+			useStableQueryMock.mockReturnValue(initial);
+			resolveStatePages({ base: "base\n", staged: "base\n", unstaged: "proposal\n" });
+			vi.mocked(files_fetch_file_yjs_state_and_text).mockResolvedValue({
+				text: Result({ _yay: "base\n" }),
+				yjsDoc: files_yjs_doc_create_plain_text_from_text({ text: "base\n" }),
+				yjsSequence: 0,
+				yjsRootKind: "plain_text",
+				yjsLastSequenceId: "sequence_live" as app_convex_Id<"files_yjs_docs_last_sequences">,
+			});
+			const { rerenderWith } = renderNonCollabProposalReview({
+				committedAssetId: "asset_1",
+				nonCollaborative: false,
+				yjsLastSequenceId: "sequence_live",
+				pendingUpdateId: null,
+			});
+			await flushNonCollabProposalMount();
+			useStableQueryMock.mockReturnValue({
+				...initial,
+				updatedAt: 2,
+				baseYjsSequence: undefined,
+				baseLineageGeneration: undefined,
+				baseStateId: undefined,
+				stagedStateId: undefined,
+				unstagedStateId: undefined,
+			});
+			rerenderWith({});
+			await flushNonCollabProposalMount();
+			act(() => {
+				monacoHarness.changeListeners.forEach((listener) => listener());
+			});
+			let current = { ...initial, updatedAt: 3 };
+			let savedText = "base\n";
+			convexMutationMock.mockImplementation(async (reference: string, args: { role?: string; text?: string }) => {
+				if (reference === "stage_file_pending_update_text_input" && args.role === "unstaged") savedText = args.text!;
+				return { _yay: { operationBatchId: "batch_1" } };
+			});
+			convexActionMock.mockImplementation(async () => ({
+				_yay: { pendingUpdate: current, currentYjsLastSequenceId: "sequence_live" },
+			}));
+			convexQueryMock.mockImplementation(async (reference: unknown, args: { stateId?: string }) =>
+				reference !== "get_file_pending_update_state_page"
+					? current
+					: statePageOf(args.stateId === initial.unstagedStateId ? savedText : "base\n"),
+			);
+			await typeIntoModifiedPane("fresh content\n");
+			useStableQueryMock.mockReturnValue(current);
+			rerenderWith({});
+			await flushNonCollabProposalMount();
+			current = { ...current, updatedAt: 4 };
+			await typeIntoModifiedPane("fresh content with typing\n");
+			expect(convexActionMock.mock.calls.at(-1)![1].pendingUpdateId).toBe(PENDING_UPDATE_ID);
+			expect(convexActionMock.mock.calls.at(-1)![1].reviewedUpdatedAt).toBe(3);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("an older query cannot replay typing already confirmed by two newer draft writes", async () => {
+		vi.useFakeTimers();
+		try {
+			const baseDoc = files_yjs_doc_create_plain_text_from_text({ text: "base\n" });
+			const unstagedDoc = files_yjs_doc_clone({ yjsDoc: baseDoc });
+			const pages: Record<string, ReturnType<typeof statePageOf>> = {};
+			let persisted = { ...nonCollabPendingUpdate };
+			const savePages = () => {
+				for (const [id, doc] of [
+					[persisted.baseStateId!, baseDoc],
+					[persisted.stagedStateId!, baseDoc],
+					[persisted.unstagedStateId!, unstagedDoc],
+				] as const) {
+					const bytes = encodeStateAsUpdate(doc);
+					pages[id] = {
+						bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+						pageCount: 1,
+						totalBytes: bytes.byteLength,
+					};
+				}
+			};
+			savePages();
+			let submittedText = "base\n";
+			useStableQueryMock.mockReturnValue(persisted);
+			convexQueryMock.mockImplementation(async (reference: unknown, args: { stateId?: string }) =>
+				reference === "get_file_pending_update_state_page" ? pages[args.stateId!] : persisted,
+			);
+			convexMutationMock.mockImplementation(async (reference: string, args: { role?: string; text?: string }) => {
+				if (reference === "stage_file_pending_update_text_input" && args.role === "unstaged")
+					submittedText = args.text!;
+				return { _yay: { operationBatchId: "batch_1" } };
+			});
+			convexActionMock.mockImplementation(async () => {
+				files_yjs_doc_update_from_text({ mut_yjsDoc: unstagedDoc, text: submittedText, rootKind: "plain_text" });
+				persisted = {
+					...persisted,
+					updatedAt: persisted.updatedAt + 1,
+					unstagedStateId: `unstaged_${persisted.updatedAt + 1}` as app_convex_Id<"files_pending_update_yjs_states">,
+				};
+				savePages();
+				return { _yay: { pendingUpdate: persisted, currentYjsLastSequenceId: null } };
+			});
+			const { rerenderWith } = renderNonCollabProposalReview({ committedAssetId: "asset_1" });
+			await flushNonCollabProposalMount();
+			await typeIntoModifiedPane("base\ntyping-one");
+			const firstSaved = persisted;
+			await typeIntoModifiedPane("base\ntyping-one typing-two");
+			expect(convexActionMock).toHaveBeenCalledTimes(2);
+			useStableQueryMock.mockReturnValue(firstSaved);
+			rerenderWith({});
+			await flushNonCollabProposalMount();
+			expect(getPanes().modified.getValue()).toBe("base\ntyping-one typing-two");
+			useStableQueryMock.mockReturnValue(persisted);
+			rerenderWith({});
+			await flushNonCollabProposalMount();
+			expect(getPanes().modified.getValue()).toBe("base\ntyping-one typing-two");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("a cached proposal query after an upsert cannot replay the saved typing", async () => {
+		vi.useFakeTimers();
+		try {
+			const baseDoc = files_yjs_doc_create_plain_text_from_text({ text: "base\n" });
+			const unstagedDoc = files_yjs_doc_clone({ yjsDoc: baseDoc });
+			const pages: Record<string, ReturnType<typeof statePageOf>> = {};
+			let persisted = { ...nonCollabPendingUpdate };
+			let cached = persisted;
+			const savePages = () => {
+				for (const [id, doc] of [
+					[persisted.baseStateId!, baseDoc],
+					[persisted.stagedStateId!, baseDoc],
+					[persisted.unstagedStateId!, unstagedDoc],
+				] as const) {
+					const bytes = encodeStateAsUpdate(doc);
+					pages[id] = {
+						bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+						pageCount: 1,
+						totalBytes: bytes.byteLength,
+					};
+				}
+			};
+			savePages();
+			let submittedText = "base\n";
+			useStableQueryMock.mockReturnValue(cached);
+			convexQueryMock.mockImplementation(async (reference: unknown, args: { stateId?: string }) =>
+				reference === "get_file_pending_update_state_page" ? pages[args.stateId!] : cached,
+			);
+			convexMutationMock.mockImplementation(async (reference: string, args: { role?: string; text?: string }) => {
+				if (reference === "stage_file_pending_update_text_input" && args.role === "unstaged")
+					submittedText = args.text!;
+				return { _yay: { operationBatchId: "batch_1" } };
+			});
+			convexActionMock.mockImplementation(async () => {
+				files_yjs_doc_update_from_text({ mut_yjsDoc: unstagedDoc, text: submittedText, rootKind: "plain_text" });
+				persisted = {
+					...persisted,
+					updatedAt: persisted.updatedAt + 1,
+					unstagedStateId: `unstaged_${persisted.updatedAt + 1}` as app_convex_Id<"files_pending_update_yjs_states">,
+				};
+				savePages();
+				return { _yay: { pendingUpdate: persisted, currentYjsLastSequenceId: null } };
+			});
+			const { rerenderWith } = renderNonCollabProposalReview({ committedAssetId: "asset_1" });
+			await flushNonCollabProposalMount();
+			await typeIntoModifiedPane("base\ntyping-one");
+			expect(convexActionMock).toHaveBeenCalledTimes(1);
+			act(() => {
+				getPanes().modified.setValue("base\ntyping-one typing-two");
+				for (const listener of monacoHarness.changeListeners) listener();
+			});
+			cached = persisted;
+			useStableQueryMock.mockReturnValue(cached);
+			rerenderWith({});
+			await flushNonCollabProposalMount();
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(250);
+			});
+			await flushNonCollabProposalMount();
+			expect(getPanes().modified.getValue()).toBe("base\ntyping-one typing-two");
+			expect(submittedText).toBe("base\ntyping-one typing-two");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test.each([
+		"Not found",
+		"Pending update changed, retry the write",
+		"Pending changes were revised, review the latest version",
+	])(
+		"keeps later typing for copying when a reviewed write is refused with %s before its first query result",
+		async (message) => {
+			vi.useFakeTimers();
+			const writeText = vi.fn().mockResolvedValue(undefined);
+			vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+			try {
+				const baseDoc = files_yjs_doc_create_plain_text_from_text({ text: "base\n" });
+				vi.mocked(files_fetch_file_yjs_state_and_text).mockResolvedValue({
+					text: Result({ _yay: "base\n" }),
+					yjsDoc: baseDoc,
+					yjsSequence: 0,
+					yjsRootKind: "plain_text",
+					yjsLastSequenceId: "sequence_live" as app_convex_Id<"files_yjs_docs_last_sequences">,
+				});
+				useStableQueryMock.mockReturnValue(null);
+				const initial = {
+					...nonCollabPendingUpdate,
+					baseAssetId: undefined,
+					baseYjsSequence: 0,
+					baseLineageGeneration: 0,
+					currentYjsLastSequenceId: "sequence_live",
+				};
+				let persisted: typeof initial | null = null;
+				let savedText = "base\n";
+				let stagedInput = "base\n";
+				convexMutationMock.mockImplementation(async (reference: string, args: { role?: string; text?: string }) => {
+					if (reference === "stage_file_pending_update_text_input" && args.role === "unstaged")
+						stagedInput = args.text!;
+					return { _yay: { operationBatchId: "batch_1" } };
+				});
+				convexActionMock.mockImplementation(async (_reference: unknown, args: { pendingUpdateId?: string }) => {
+					if (!persisted && args.pendingUpdateId) return { _nay: { message } };
+					persisted = { ...initial };
+					savedText = stagedInput;
+					return { _yay: { pendingUpdate: persisted, currentYjsLastSequenceId: "sequence_live" } };
+				});
+				convexQueryMock.mockImplementation(async (reference: unknown, args: { stateId?: string }) => {
+					if (reference !== "get_file_pending_update_state_page") return persisted;
+					const doc = files_yjs_doc_clone({ yjsDoc: baseDoc });
+					if (args.stateId === initial.unstagedStateId)
+						files_yjs_doc_update_from_text({ mut_yjsDoc: doc, text: savedText, rootKind: "plain_text" });
+					const bytes = encodeStateAsUpdate(doc);
+					return {
+						bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+						pageCount: 1,
+						totalBytes: bytes.byteLength,
+					};
+				});
+				renderNonCollabProposalReview({
+					committedAssetId: "asset_1",
+					nonCollaborative: false,
+					yjsLastSequenceId: "sequence_live",
+					pendingUpdateId: null,
+				});
+				await flushNonCollabProposalMount();
+				await typeIntoModifiedPane("base\nsaved proposal\n");
+				// Another tab discards P. Creation and deletion coalesce into the same null query result.
+				persisted = null;
+				await typeIntoModifiedPane("base\nsaved proposal\nlater typing\n");
+				expect(convexActionMock).toHaveBeenCalledTimes(2);
+				expect(convexActionMock.mock.calls[1]![1].reviewedUpdatedAt).toBe(1);
+				expect(
+					convexQueryMock.mock.calls.filter(([reference]) => reference !== "get_file_pending_update_state_page"),
+				).toHaveLength(0);
+				expect(getPanes().modified.getValue()).toBe("base\nsaved proposal\nlater typing\n");
+				expect(monacoHarness.updateOptionsCalls.at(-1)).toMatchObject({ readOnly: true });
+				expect(screen.getByText("This proposal changed. Copy any unsaved text, then reopen Review.")).toBeTruthy();
+				fireEvent.click(screen.getByRole("button", { name: "Copy unsaved proposed text" }));
+				await act(async () => {});
+				expect(writeText).toHaveBeenCalledWith("base\nsaved proposal\nlater typing\n");
+				await typeIntoModifiedPane("base\nnew draft\n");
+				expect(convexActionMock).toHaveBeenCalledTimes(2);
+				expect(savedText).toBe("base\nsaved proposal\n");
+			} finally {
+				vi.useRealTimers();
+				vi.unstubAllGlobals();
+			}
+		},
+	);
+
+	test.each(["missing", "refused"])(
+		"keeps both texts for copying and stops queued writes when saved state pages are %s",
+		async (pageFailure) => {
+			vi.useFakeTimers();
+			const writeText = vi.fn().mockResolvedValue(undefined);
+			vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+			try {
+				useStableQueryMock.mockReturnValue(nonCollabPendingUpdate);
+				resolveStatePages({ base: "base\n", staged: "accepted\n", unstaged: "proposal\n" });
+				const { rerenderWith, unmount } = renderNonCollabProposalReview({ committedAssetId: "asset_1" });
+				await flushNonCollabProposalMount();
+				const saved = { ...nonCollabPendingUpdate, updatedAt: 2, unstagedStateId: "saved_unstaged" };
+				const newer = { ...saved, updatedAt: 3, unstagedStateId: "newer_unstaged" };
+				const savedPage = Promise.withResolvers<null>();
+				convexQueryMock.mockImplementation(async (_reference: unknown, args: { stateId: string }) => {
+					if (args.stateId === "saved_unstaged") return savedPage.promise;
+					return statePageOf(
+						args.stateId === "state_base"
+							? "base\n"
+							: args.stateId === "state_staged"
+								? "accepted\n"
+								: "newer proposal\n",
+					);
+				});
+				convexMutationMock.mockResolvedValue({ _yay: { operationBatchId: "batch_1" } });
+				convexActionMock.mockResolvedValue({ _yay: { pendingUpdate: saved, currentYjsLastSequenceId: null } });
+				await typeIntoModifiedPane("saved typing\n");
+				await typeIntoModifiedPane("saved typing\nlater typing\n");
+				useStableQueryMock.mockReturnValue(newer);
+				rerenderWith({});
+				await flushNonCollabProposalMount();
+				await act(async () => {
+					if (pageFailure === "missing") savedPage.resolve(null);
+					else savedPage.reject(new Error("Unauthenticated"));
+				});
+				await flushNonCollabProposalMount();
+				await act(async () => {
+					await vi.advanceTimersByTimeAsync(500);
+				});
+				expect(convexActionMock).toHaveBeenCalledTimes(1);
+				expect(getPanes().modified.getValue()).toBe("saved typing\nlater typing\n");
+				expect(monacoHarness.updateOptionsCalls.at(-1)).toMatchObject({ readOnly: true });
+				expect((screen.getByRole("button", { name: "Save staged changes" }) as HTMLButtonElement).disabled).toBe(true);
+				expect(screen.getByText("This proposal changed. Copy any unsaved text, then reopen Review.")).toBeTruthy();
+				fireEvent.click(screen.getByRole("button", { name: "Copy unsaved accepted text" }));
+				fireEvent.click(screen.getByRole("button", { name: "Copy unsaved proposed text" }));
+				await act(async () => {});
+				expect(writeText).toHaveBeenCalledWith("accepted\n");
+				expect(writeText).toHaveBeenCalledWith("saved typing\nlater typing\n");
+				unmount();
+				monacoHarness.createdModels.length = 0;
+				monacoHarness.changeListeners.length = 0;
+				renderNonCollabProposalReview({ committedAssetId: "asset_1" });
+				await flushNonCollabProposalMount();
+				expect(getPanes().modified.getValue()).toBe("newer proposal\n");
+				expect(monacoHarness.updateOptionsCalls.at(-1)).toMatchObject({ readOnly: false });
+			} finally {
+				vi.useRealTimers();
+				vi.unstubAllGlobals();
+			}
+		},
+	);
+
+	test("a late saved-state read cannot restore an ended proposal as the typing target", async () => {
+		vi.useFakeTimers();
+		try {
+			const initial = {
+				...nonCollabPendingUpdate,
+				baseAssetId: undefined,
+				baseYjsSequence: 0,
+				baseLineageGeneration: 0,
+				currentYjsLastSequenceId: "sequence_live",
+			};
+			useStableQueryMock.mockReturnValue(initial);
+			resolveStatePages({ base: "base\n", staged: "base\n", unstaged: "proposal\n" });
+			vi.mocked(files_fetch_file_yjs_state_and_text).mockResolvedValue({
+				text: Result({ _yay: "base\n" }),
+				yjsDoc: files_yjs_doc_create_plain_text_from_text({ text: "base\n" }),
+				yjsSequence: 0,
+				yjsRootKind: "plain_text",
+				yjsLastSequenceId: "sequence_live" as app_convex_Id<"files_yjs_docs_last_sequences">,
+			});
+			const { rerenderWith } = renderNonCollabProposalReview({
+				committedAssetId: "asset_1",
+				nonCollaborative: false,
+				yjsLastSequenceId: "sequence_live",
+				pendingUpdateId: null,
+			});
+			await flushNonCollabProposalMount();
+			const pagesFinished = Promise.withResolvers<void>();
+			convexMutationMock.mockResolvedValue({ _yay: { operationBatchId: "batch_1" } });
+			convexActionMock.mockResolvedValue({
+				_yay: { pendingUpdate: { ...initial, updatedAt: 2 }, currentYjsLastSequenceId: "sequence_live" },
+			});
+			convexQueryMock.mockImplementation(async (reference: unknown, args: { stateId?: string }) => {
+				if (reference !== "get_file_pending_update_state_page") return { ...initial, updatedAt: 2 };
+				const page = statePageOf(args.stateId === initial.unstagedStateId ? "saved typing\n" : "base\n");
+				await pagesFinished.promise;
+				return page;
+			});
+			await typeIntoModifiedPane("saved typing\n");
+			useStableQueryMock.mockReturnValue(null);
+			rerenderWith({});
+			await flushNonCollabProposalMount();
+			await act(async () => {
+				pagesFinished.resolve();
+			});
+			await flushNonCollabProposalMount();
+			convexQueryMock.mockResolvedValue(null);
+			act(() => {
+				monacoHarness.changeListeners.forEach((listener) => listener());
+			});
+			await typeIntoModifiedPane("new typing\n");
+			expect(convexActionMock.mock.calls.at(-1)![1].pendingUpdateId).toBeUndefined();
+			expect(convexActionMock.mock.calls.at(-1)![1].reviewedUpdatedAt).toBeUndefined();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test.each(["Save", "Discard", "Save before the proposal query", "Discard before the proposal query"] as const)(
+		"creates a new proposal after %s ends the saved draft",
+		async (ending) => {
+			vi.useFakeTimers();
+			try {
+				let committedText = "base\n";
+				let committedSequence = 0;
+				let stagedText = committedText;
+				let unstagedText = committedText;
+				const pendingTemplate = {
+					...nonCollabPendingUpdate,
+					baseAssetId: undefined,
+					baseYjsSequence: 0,
+					baseLineageGeneration: 0,
+					currentYjsLastSequenceId: "sequence_live",
+				};
+				let persisted: typeof pendingTemplate | null = null;
+				useStableQueryMock.mockReturnValue(null);
+				vi.mocked(files_fetch_file_yjs_state_and_text).mockImplementation(async () => ({
+					text: Result({ _yay: committedText }),
+					yjsDoc: files_yjs_doc_create_plain_text_from_text({ text: committedText }),
+					yjsSequence: committedSequence,
+					yjsRootKind: "plain_text",
+					yjsLastSequenceId: "sequence_live" as app_convex_Id<"files_yjs_docs_last_sequences">,
+				}));
+				convexMutationMock.mockImplementation(async (reference: string, args: { role?: string; text?: string }) => {
+					if (reference === "stage_file_pending_update_text_input") {
+						if (args.role === "staged") stagedText = args.text!;
+						if (args.role === "unstaged") unstagedText = args.text!;
+					}
+					return { _yay: { operationBatchId: "batch_1" } };
+				});
+				convexQueryMock.mockImplementation(async (reference: unknown, args: { stateId?: string }) => {
+					if (reference !== "get_file_pending_update_state_page") return persisted;
+					return statePageOf(
+						args.stateId === pendingTemplate.stagedStateId
+							? stagedText
+							: args.stateId === pendingTemplate.unstagedStateId
+								? unstagedText
+								: committedText,
+					);
+				});
+				convexActionMock.mockImplementation(async (reference: unknown, args: { pendingUpdateId?: string }) => {
+					if (reference === "upsert_file_pending_update") {
+						if (!persisted && args.pendingUpdateId) return { _nay: { message: "Not found" } };
+						persisted =
+							stagedText === committedText && unstagedText === committedText
+								? null
+								: { ...pendingTemplate, updatedAt: (persisted?.updatedAt ?? 0) + 1 };
+						return { _yay: { pendingUpdate: persisted, currentYjsLastSequenceId: "sequence_live" } };
+					}
+					committedText = stagedText;
+					committedSequence += 1;
+					persisted = null;
+					useStableQueryMock.mockReturnValue(null);
+					return { _yay: { newSequence: committedSequence, pendingUpdateUpdatedAt: null } };
+				});
+				const { rerenderWith } = renderNonCollabProposalReview({
+					committedAssetId: "asset_1",
+					nonCollaborative: false,
+					yjsLastSequenceId: "sequence_live",
+					pendingUpdateId: null,
+				});
+				await flushNonCollabProposalMount();
+				await typeIntoModifiedPane("base draft\n");
+				if (!ending.includes("before")) {
+					useStableQueryMock.mockReturnValue(persisted);
+					rerenderWith({});
+					await flushNonCollabProposalMount();
+				}
+				if (ending.startsWith("Save")) {
+					fireEvent.click(screen.getByRole("button", { name: "Accept all pending changes and save" }));
+				} else if (ending.includes("before")) {
+					fireEvent.click(screen.getByRole("button", { name: "Discard all pending changes in this file" }));
+					act(() => {
+						monacoHarness.changeListeners.forEach((listener) => listener());
+					});
+					await act(async () => {
+						await vi.advanceTimersByTimeAsync(250);
+					});
+				} else {
+					// A content discard from the pending sidebar removes this exact proposal.
+					persisted = null;
+					useStableQueryMock.mockReturnValue(null);
+					rerenderWith({});
+				}
+				await flushNonCollabProposalMount();
+				expect(getPanes().modified.getValue()).toBe(committedText);
+				act(() => {
+					monacoHarness.changeListeners.forEach((listener) => listener());
+				});
+				await typeIntoModifiedPane("next draft\n");
+				expect(convexActionMock.mock.calls.at(-1)![0]).toBe("upsert_file_pending_update");
+				expect(convexActionMock.mock.calls.at(-1)![1].pendingUpdateId).toBeUndefined();
+				expect(convexActionMock.mock.calls.at(-1)![1].reviewedUpdatedAt).toBeUndefined();
+				expect(getPanes().modified.getValue()).toBe("next draft\n");
+			} finally {
+				vi.useRealTimers();
+			}
+		},
+	);
+
+	test.each(["before", "after"] as const)(
+		"sends typing queued while the previous draft arrives through the query %s its action finishes",
+		async (queryOrder) => {
+			vi.useFakeTimers();
+			try {
+				const baseDoc = files_yjs_doc_create_plain_text_from_text({ text: "base\n" });
+				let persisted = {
+					...nonCollabPendingUpdate,
+					baseAssetId: undefined,
+					baseYjsSequence: 0,
+					baseLineageGeneration: 0,
+					currentYjsLastSequenceId: "sequence_live",
+				};
+				let savedText = "base\n";
+				useStableQueryMock.mockReturnValue(persisted);
+				convexQueryMock.mockImplementation(async (reference: unknown, args: { stateId?: string }) => {
+					if (reference !== "get_file_pending_update_state_page") return persisted;
+					const doc = files_yjs_doc_clone({ yjsDoc: baseDoc });
+					if (args.stateId === persisted.unstagedStateId) {
+						files_yjs_doc_update_from_text({ mut_yjsDoc: doc, text: savedText, rootKind: "plain_text" });
+					}
+					const bytes = encodeStateAsUpdate(doc);
+					return {
+						bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+						pageCount: 1,
+						totalBytes: bytes.byteLength,
+					};
+				});
+				convexMutationMock.mockResolvedValue({ _yay: { operationBatchId: "batch_1" } });
+				const firstUpsert = Promise.withResolvers<{
+					_yay: { pendingUpdate: typeof persisted; currentYjsLastSequenceId: string };
+				}>();
+				convexActionMock.mockReturnValueOnce(firstUpsert.promise).mockImplementation(async () => ({
+					_yay: { pendingUpdate: persisted, currentYjsLastSequenceId: "sequence_live" },
+				}));
+				const { rerenderWith } = renderNonCollabProposalReview({
+					committedAssetId: "asset_1",
+					nonCollaborative: false,
+					yjsLastSequenceId: "sequence_live",
+				});
+				await flushNonCollabProposalMount();
+				await typeIntoModifiedPane("base A\n");
+				expect(convexActionMock).toHaveBeenCalledTimes(1);
+				act(() => {
+					getPanes().modified.setValue("base A B\n");
+					monacoHarness.changeListeners.forEach((listener) => listener());
+				});
+				savedText = "base A\n";
+				persisted = { ...persisted, updatedAt: 2 };
+				if (queryOrder === "after")
+					await act(async () => {
+						firstUpsert.resolve({ _yay: { pendingUpdate: persisted, currentYjsLastSequenceId: "sequence_live" } });
+					});
+				useStableQueryMock.mockReturnValue(persisted);
+				rerenderWith({});
+				await flushNonCollabProposalMount();
+				if (queryOrder === "before") {
+					await act(async () => {
+						firstUpsert.resolve({ _yay: { pendingUpdate: persisted, currentYjsLastSequenceId: "sequence_live" } });
+					});
+					await flushNonCollabProposalMount();
+				}
+				expect(getPanes().modified.getValue()).toBe("base A B\n");
+				await act(async () => {
+					await vi.advanceTimersByTimeAsync(250);
+				});
+				expect(convexActionMock).toHaveBeenCalledTimes(2);
+				expect(convexActionMock.mock.calls[1]![1].reviewedUpdatedAt).toBe(2);
+				expect(convexMutationMock).toHaveBeenLastCalledWith(
+					"stage_file_pending_update_text_input",
+					expect.objectContaining({ role: "unstaged", text: "base A B\n" }),
+				);
+			} finally {
+				vi.useRealTimers();
+			}
+		},
+	);
+
+	test("keeps normal typing on the live document and advances the review timestamp only after loading its saved draft", async () => {
+		vi.useFakeTimers();
+		try {
+			const baseDoc = files_yjs_doc_create_plain_text_from_text({ text: "base\n" });
+			vi.mocked(files_fetch_file_yjs_state_and_text).mockResolvedValue({
+				text: Result({ _yay: "base\n" }),
+				yjsDoc: baseDoc,
+				yjsSequence: 0,
+				yjsRootKind: "plain_text",
+				yjsLastSequenceId: "sequence_live" as app_convex_Id<"files_yjs_docs_last_sequences">,
+			});
+			useStableQueryMock.mockReturnValue(null);
+			let savedText = "base\n";
+			let persisted = {
+				...nonCollabPendingUpdate,
+				baseAssetId: undefined,
+				baseYjsSequence: 0,
+				baseLineageGeneration: 0,
+				currentYjsLastSequenceId: "sequence_live",
+			};
+			convexMutationMock.mockImplementation(async (reference: string, args: { role?: string; text?: string }) => {
+				if (reference === "stage_file_pending_update_text_input" && args.role === "unstaged") savedText = args.text!;
+				return { _yay: { operationBatchId: "batch_1" } };
+			});
+			convexActionMock.mockImplementation(async () => ({
+				_yay: { pendingUpdate: persisted, currentYjsLastSequenceId: "sequence_live" },
+			}));
+			convexQueryMock.mockImplementation(async (reference: unknown, args: { stateId?: string }) => {
+				if (reference !== "get_file_pending_update_state_page") return persisted;
+				const doc = files_yjs_doc_clone({ yjsDoc: baseDoc });
+				if (args.stateId === persisted.unstagedStateId)
+					files_yjs_doc_update_from_text({ mut_yjsDoc: doc, text: savedText, rootKind: "plain_text" });
+				const bytes = encodeStateAsUpdate(doc);
+				return {
+					bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+					pageCount: 1,
+					totalBytes: bytes.byteLength,
+				};
+			});
+			const { rerenderWith } = renderNonCollabProposalReview({
+				committedAssetId: "asset_1",
+				nonCollaborative: false,
+				yjsLastSequenceId: "sequence_live",
+				pendingUpdateId: null,
+			});
+			await flushNonCollabProposalMount();
+			await typeIntoModifiedPane("first draft\n");
+			expect(convexActionMock.mock.calls[0]![1].reviewedUpdatedAt).toBeUndefined();
+			useStableQueryMock.mockReturnValue(persisted);
+			rerenderWith({});
+			await flushNonCollabProposalMount();
+			expect(screen.queryByText("Your unsaved text was kept here while the proposal changed.")).toBeNull();
+			expect(getPanes().modified.getValue()).toBe("first draft\n");
+			persisted = { ...persisted, updatedAt: 2 };
+			await typeIntoModifiedPane("second draft\n");
+			await flushNonCollabProposalMount();
+			expect(convexActionMock.mock.calls[1]![1].reviewedUpdatedAt).toBe(1);
+			persisted = { ...persisted, updatedAt: 3 };
+			await typeIntoModifiedPane("third draft\n");
+			await flushNonCollabProposalMount();
+			expect(convexActionMock.mock.calls[2]![1].reviewedUpdatedAt).toBe(2);
+			expect(getPanes().modified.getValue()).toBe("third draft\n");
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
+describe("FileEditorDiff after a collaboration change", () => {
+	test("an editor-created draft pauses when its document changes before a proposal doc exists", async () => {
+		vi.useFakeTimers();
+		try {
+			useStableQueryMock.mockReturnValue(null);
+			vi.mocked(files_fetch_file_yjs_state_and_text).mockResolvedValue({
+				text: Result({ _yay: "old\n" }),
+				yjsDoc: files_yjs_doc_create_plain_text_from_text({ text: "old\n" }),
+				yjsSequence: 10,
+				yjsRootKind: "plain_text",
+				yjsLastSequenceId: "sequence_old" as app_convex_Id<"files_yjs_docs_last_sequences">,
+			});
+			const { rerenderWith } = renderNonCollabProposalReview({
+				committedAssetId: "asset_1",
+				nonCollaborative: false,
+				yjsLastSequenceId: "sequence_old",
+				pendingUpdateId: null,
+			});
+			await flushNonCollabProposalMount();
+			act(() => {
+				getPanes().modified.setValue("unsent old draft\n");
+				monacoHarness.changeListeners.forEach((listener) => listener());
+			});
+			const nextContent = {
+				text: Result({ _yay: "new\n" }),
+				yjsDoc: files_yjs_doc_create_plain_text_from_text({ text: "new\n" }),
+				yjsSequence: 0,
+				yjsRootKind: "plain_text" as const,
+				yjsLastSequenceId: "sequence_new" as app_convex_Id<"files_yjs_docs_last_sequences">,
+			};
+			const fetchFinished = Promise.withResolvers<typeof nextContent>();
+			vi.mocked(files_fetch_file_yjs_state_and_text).mockReturnValue(fetchFinished.promise);
+			rerenderWith({ yjsLastSequenceId: "sequence_new" });
+			await flushNonCollabProposalMount();
+			expect(monacoHarness.updateOptionsCalls.at(-1)).toMatchObject({ readOnly: true });
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(250);
+			});
+			expect(convexMutationMock).not.toHaveBeenCalled();
+			await act(async () => {
+				fetchFinished.resolve(nextContent);
+			});
+			await flushNonCollabProposalMount();
+			expect(getPanes().modified.getValue()).toBe("new\n");
+			expect(screen.getByRole("button", { name: "Copy unsaved proposed text" })).toBeTruthy();
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(250);
+			});
+			expect(convexMutationMock).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("Sync does not rebase a fetched document against panes from an older document", async () => {
+		useStableQueryMock.mockReturnValue({
+			...nonCollabPendingUpdate,
+			baseAssetId: undefined,
+			baseYjsSequence: 0,
+			baseLineageGeneration: 0,
+			currentYjsLastSequenceId: "sequence_old",
+		});
+		resolveStatePages({ base: "base\n", staged: "accepted\n", unstaged: "proposed\n" });
+		renderNonCollabProposalReview({
+			committedAssetId: "asset_1",
+			nonCollaborative: false,
+			yjsLastSequenceId: "sequence_old",
+			serverSequence: 1,
+		});
+		await flushNonCollabProposalMount();
+		vi.mocked(files_fetch_file_yjs_state_and_text).mockResolvedValue({
+			text: Result({ _yay: "new document\n" }),
+			yjsDoc: files_yjs_doc_create_plain_text_from_text({ text: "new document\n" }),
+			yjsSequence: 1,
+			yjsRootKind: "plain_text",
+			yjsLastSequenceId: "sequence_new" as app_convex_Id<"files_yjs_docs_last_sequences">,
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Sync with live file" }));
+		await flushNonCollabProposalMount();
+		expect(files_yjs_rebase_branch_with_local_text).not.toHaveBeenCalled();
+		expect(files_persist_file_pending_update_rebased_state).not.toHaveBeenCalled();
+		expect(convexMutationMock).not.toHaveBeenCalled();
+		expect(getPanes().modified.getValue()).toBe("proposed\n");
+	});
+
+	test.each(["Save", "Sync"] as const)(
+		"a late %s refresh cannot replace the document after a mode cycle",
+		async (action) => {
+			useStableQueryMock.mockReturnValue({
+				...nonCollabPendingUpdate,
+				baseAssetId: undefined,
+				baseYjsSequence: 0,
+				baseLineageGeneration: 0,
+				currentYjsLastSequenceId: "sequence_old",
+			});
+			resolveStatePages({ base: "old\n", staged: "old accepted\n", unstaged: "old accepted\n" });
+			const oldRefresh = {
+				text: Result({ _yay: "old saved\n" }),
+				yjsDoc: files_yjs_doc_create_plain_text_from_text({ text: "old saved\n" }),
+				yjsSequence: 10,
+				yjsRootKind: "plain_text" as const,
+				yjsLastSequenceId: "sequence_old" as app_convex_Id<"files_yjs_docs_last_sequences">,
+			};
+			const newContent = {
+				text: Result({ _yay: "new document\n" }),
+				yjsDoc: files_yjs_doc_create_plain_text_from_text({ text: "new document\n" }),
+				yjsSequence: 0,
+				yjsRootKind: "plain_text" as const,
+				yjsLastSequenceId: "sequence_new" as app_convex_Id<"files_yjs_docs_last_sequences">,
+			};
+			const { rerenderWith } = renderNonCollabProposalReview({
+				committedAssetId: "asset_1",
+				nonCollaborative: false,
+				yjsLastSequenceId: "sequence_old",
+				serverSequence: 10,
+			});
+			await flushNonCollabProposalMount();
+			const queryFinished = Promise.withResolvers<null>();
+			const fetchFinished = Promise.withResolvers<typeof oldRefresh>();
+			const readStatePage = convexQueryMock.getMockImplementation()!;
+			convexMutationMock.mockResolvedValue({ _yay: { operationBatchId: "batch_1" } });
+			convexActionMock.mockImplementation(async (reference: unknown) =>
+				reference === "upsert_file_pending_update"
+					? { _yay: { pendingUpdate: null, currentYjsLastSequenceId: "sequence_old" } }
+					: { _yay: { newSequence: 10, pendingUpdateUpdatedAt: null } },
+			);
+			if (action === "Save") {
+				// The query waits for the saved proposal after the draft flush's exact action result.
+				convexQueryMock.mockImplementation((reference: unknown, args: unknown) => {
+					if (reference === "get_file_pending_update_state_page") return readStatePage(reference, args);
+					return queryFinished.promise;
+				});
+				vi.mocked(files_fetch_file_yjs_state_and_text)
+					.mockReturnValueOnce(fetchFinished.promise)
+					.mockResolvedValue(newContent);
+			} else {
+				convexQueryMock.mockImplementation((reference: unknown, args: unknown) =>
+					reference === "get_file_pending_update_state_page" ? readStatePage(reference, args) : queryFinished.promise,
+				);
+				vi.mocked(files_fetch_file_yjs_state_and_text).mockResolvedValueOnce(oldRefresh).mockResolvedValue(newContent);
+				vi.mocked(files_persist_file_pending_update_rebased_state).mockResolvedValue(
+					Result({ _yay: { pendingUpdate: null } }),
+				);
+			}
+			fireEvent.click(
+				screen.getByRole("button", { name: action === "Save" ? "Save staged changes" : "Sync with live file" }),
+			);
+			await flushNonCollabProposalMount();
+			expect(files_fetch_file_yjs_state_and_text).toHaveBeenCalledTimes(2);
+			useStableQueryMock.mockReturnValue(null);
+			rerenderWith({ yjsLastSequenceId: "sequence_new", serverSequence: 0 });
+			await flushNonCollabProposalMount();
+			await act(async () => {
+				fetchFinished.resolve(oldRefresh);
+				queryFinished.resolve(null);
+			});
+			await flushNonCollabProposalMount();
+			expect(getPanes().original.getValue()).toBe("new document\n");
+			expect(getPanes().modified.getValue()).toBe("new document\n");
+		},
+	);
+
+	test("new proposal pages can arrive before the node's new document id", async () => {
+		const initial = {
+			...nonCollabPendingUpdate,
+			baseAssetId: undefined,
+			baseYjsSequence: 0,
+			baseLineageGeneration: 0,
+			currentYjsLastSequenceId: "sequence_old",
+		};
+		useStableQueryMock.mockReturnValue(initial);
+		resolveStatePages({ base: "base\n", staged: "accepted\n", unstaged: "proposed\n" });
+		const { rerenderWith } = renderNonCollabProposalReview({
+			committedAssetId: "asset_1",
+			nonCollaborative: false,
+			yjsLastSequenceId: "sequence_old",
+		});
+		await flushNonCollabProposalMount();
+		const prepared = {
+			...initial,
+			updatedAt: 2,
+			baseStateId: "base_2",
+			stagedStateId: "staged_2",
+			unstagedStateId: "unstaged_2",
+			currentYjsLastSequenceId: "sequence_new",
+		};
+		const texts: Record<string, string> = { base_2: "new\n", staged_2: "new accepted\n", unstaged_2: "new proposed\n" };
+		convexQueryMock.mockImplementation(async (_name: unknown, args: { stateId: string }) =>
+			statePageOf(texts[args.stateId]!),
+		);
+		useStableQueryMock.mockReturnValue(prepared);
+		rerenderWith({});
+		await flushNonCollabProposalMount();
+		expect(monacoHarness.updateOptionsCalls.at(-1)).toMatchObject({ readOnly: true });
+		rerenderWith({ yjsLastSequenceId: "sequence_new" });
+		await flushNonCollabProposalMount();
+		expect(getPanes().original.getValue()).toBe("new accepted\n");
+		expect(getPanes().modified.getValue()).toBe("new proposed\n");
+		expect(monacoHarness.updateOptionsCalls.at(-1)).toMatchObject({ readOnly: false });
+	});
+
+	test.each(["on", "off"] as const)(
+		"new proposal pages stay blocked until collaboration switches %s in the parent",
+		async (mode) => {
+			vi.useFakeTimers();
+			try {
+				const initial =
+					mode === "on"
+						? nonCollabPendingUpdate
+						: {
+								...nonCollabPendingUpdate,
+								baseAssetId: undefined,
+								baseYjsSequence: 0,
+								baseLineageGeneration: 0,
+								currentYjsLastSequenceId: "sequence_old",
+							};
+				useStableQueryMock.mockReturnValue(initial);
+				resolveStatePages({ base: "old\n", staged: "old accepted\n", unstaged: "old proposed\n" });
+				const { rerenderWith } = renderNonCollabProposalReview({
+					committedAssetId: "asset_1",
+					nonCollaborative: mode === "on",
+					yjsLastSequenceId: mode === "off" ? "sequence_old" : undefined,
+				});
+				await flushNonCollabProposalMount();
+				let prepared = {
+					...nonCollabPendingUpdate,
+					updatedAt: 2,
+					baseStateId: "base_2",
+					stagedStateId: "staged_2",
+					unstagedStateId: "unstaged_2",
+					baseAssetId: mode === "on" ? undefined : "asset_2",
+					baseYjsSequence: mode === "on" ? 0 : undefined,
+					baseLineageGeneration: mode === "on" ? 0 : undefined,
+					currentYjsLastSequenceId: mode === "on" ? "sequence_new" : null,
+				};
+				const baseDoc = files_yjs_doc_create_plain_text_from_text({ text: "new\n" });
+				let savedText = "new proposed\n";
+				convexQueryMock.mockImplementation(async (reference: unknown, args: { stateId?: string }) => {
+					if (reference !== "get_file_pending_update_state_page") return prepared;
+					const doc = files_yjs_doc_clone({ yjsDoc: baseDoc });
+					if (args.stateId === prepared.stagedStateId)
+						files_yjs_doc_update_from_text({ mut_yjsDoc: doc, text: "new accepted\n", rootKind: "plain_text" });
+					if (args.stateId === prepared.unstagedStateId)
+						files_yjs_doc_update_from_text({ mut_yjsDoc: doc, text: savedText, rootKind: "plain_text" });
+					const bytes = encodeStateAsUpdate(doc);
+					return {
+						bytes: bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength),
+						pageCount: 1,
+						totalBytes: bytes.byteLength,
+					};
+				});
+				useStableQueryMock.mockReturnValue(prepared);
+				rerenderWith({});
+				await flushNonCollabProposalMount();
+				expect(monacoHarness.updateOptionsCalls.at(-1)).toMatchObject({ readOnly: true });
+				const nextProps = {
+					nonCollaborative: mode === "off",
+					yjsLastSequenceId: mode === "on" ? "sequence_new" : undefined,
+					committedAssetId: mode === "on" ? "asset_1" : "asset_2",
+				};
+				rerenderWith(nextProps);
+				await flushNonCollabProposalMount();
+				expect(monacoHarness.updateOptionsCalls.at(-1)).toMatchObject({ readOnly: false });
+				// Monaco reports the two programmatic pane replacements before the next user edit.
+				act(() => {
+					monacoHarness.changeListeners.forEach((listener) => listener());
+				});
+				convexMutationMock.mockImplementation(async (reference: string, args: { role?: string; text?: string }) => {
+					if (reference === "stage_file_pending_update_text_input" && args.role === "unstaged") savedText = args.text!;
+					return { _yay: { operationBatchId: "batch_1" } };
+				});
+				convexActionMock.mockImplementation(async () => {
+					prepared = { ...prepared, updatedAt: prepared.updatedAt + 1 };
+					return { _yay: { pendingUpdate: prepared, currentYjsLastSequenceId: prepared.currentYjsLastSequenceId } };
+				});
+				await typeIntoModifiedPane("new proposed A\n");
+				useStableQueryMock.mockReturnValue(prepared);
+				rerenderWith(nextProps);
+				await flushNonCollabProposalMount();
+				expect(getPanes().modified.getValue()).toBe("new proposed A\n");
+				await typeIntoModifiedPane("new proposed A B\n");
+				expect(convexActionMock).toHaveBeenCalledTimes(2);
+				expect(convexActionMock.mock.calls[1]![1].reviewedUpdatedAt).toBe(3);
+				expect(getPanes().modified.getValue()).toBe("new proposed A B\n");
+			} finally {
+				vi.useRealTimers();
+			}
+		},
+	);
+
+	test("prepares the proposal once and waits for both the query and the new state pages", async () => {
+		const marked = { ...nonCollabPendingUpdate, contentNeedsRebase: true } as const;
+		const prepared = {
+			...nonCollabPendingUpdate,
+			updatedAt: 2,
+			baseAssetId: "asset_2",
+			baseStateId: "base_2",
+			stagedStateId: "staged_2",
+			unstagedStateId: "unstaged_2",
+		} as unknown as app_convex_Doc<"files_pending_updates">;
+		useStableQueryMock.mockReturnValue(marked);
+		resolveStatePages({ base: "old\n", staged: "old accepted\n", unstaged: "old proposed\n" });
+		const action = Promise.withResolvers<{ _yay: { pendingUpdate: typeof prepared } }>();
+		convexActionMock.mockReturnValue(action.promise);
+		const { rerenderWith } = renderNonCollabProposalReview({ committedAssetId: "asset_2" });
+		await flushNonCollabProposalMount();
+		expect(convexActionMock).toHaveBeenCalledTimes(1);
+		expect(getFunctionName(convexActionMock.mock.calls[0]![0])).toBe(
+			"files_pending_updates:prepare_file_pending_update_after_collaboration_change",
+		);
+		expect(convexActionMock.mock.calls[0]![1]).toEqual({
+			membershipId: MEMBERSHIP_ID,
+			nodeId: NODE_ID,
+			pendingUpdateId: PENDING_UPDATE_ID,
+		});
+		expect(screen.getByRole("status").textContent).toContain("Updating this proposal");
+		expect(monacoHarness.updateOptionsCalls.at(-1)).toMatchObject({ readOnly: true });
+		await act(async () => {
+			action.resolve({ _yay: { pendingUpdate: prepared } });
+		});
+		expect(screen.queryByRole("button", { name: "Save staged changes" })).toBeNull();
+
+		const pages = Promise.withResolvers<void>();
+		const newTexts: Record<string, string> = {
+			base_2: "new\n",
+			staged_2: "new accepted\n",
+			unstaged_2: "new proposed\n",
+		};
+		convexQueryMock.mockImplementation(async (_name: unknown, args: { stateId: string }) => {
+			await pages.promise;
+			return statePageOf(newTexts[args.stateId]!);
+		});
+		useStableQueryMock.mockReturnValue(prepared);
+		rerenderWith({});
+		await act(async () => {});
+		expect((screen.getByRole("button", { name: "Save staged changes" }) as HTMLButtonElement).disabled).toBe(true);
+		expect(getPanes().modified.getValue()).toBe("old proposed\n");
+		await act(async () => {
+			pages.resolve();
+		});
+		await flushNonCollabProposalMount();
+		expect(getPanes().original.getValue()).toBe("new accepted\n");
+		expect(getPanes().modified.getValue()).toBe("new proposed\n");
+		expect(monacoHarness.createdModels).toHaveLength(2);
+		expect(monacoHarness.updateOptionsCalls.at(-1)).toMatchObject({ readOnly: false });
+	});
+
+	test("a conflict keeps both texts readable, can retry, and can discard", async () => {
+		useStableQueryMock.mockReturnValue({ ...nonCollabPendingUpdate, contentNeedsRebase: true });
+		resolveStatePages({ base: "base\n", staged: "accepted\n", unstaged: "proposed\n" });
+		convexActionMock.mockResolvedValue({ _nay: { message: "These changes overlap newer file text." } });
+		convexMutationMock.mockResolvedValue({ _yay: null });
+		const writeText = vi.fn().mockResolvedValue(undefined);
+		vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+		try {
+			renderNonCollabProposalReview({ committedAssetId: "asset_2" });
+			await flushNonCollabProposalMount();
+			expect(convexActionMock).toHaveBeenCalledTimes(1);
+			expect(screen.getByRole("status").textContent).toContain("overlap newer file text");
+			fireEvent.click(screen.getByRole("button", { name: "Copy accepted text" }));
+			fireEvent.click(screen.getByRole("button", { name: "Copy proposed text" }));
+			await act(async () => {});
+			expect(writeText.mock.calls).toEqual([["accepted\n"], ["proposed\n"]]);
+			fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+			await flushNonCollabProposalMount();
+			expect(convexActionMock).toHaveBeenCalledTimes(2);
+			fireEvent.click(screen.getByRole("button", { name: "Discard proposal" }));
+			await act(async () => {});
+			expect(getFunctionName(convexMutationMock.mock.calls[0]![0])).toBe(
+				"files_pending_updates:discard_file_pending_content",
+			);
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+
+	test("a marked proposal cancels a debounce and keeps unsent text for copying after the replacement", async () => {
+		vi.useFakeTimers();
+		const writeText = vi.fn().mockResolvedValue(undefined);
+		vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
+		try {
+			useStableQueryMock.mockReturnValue(nonCollabPendingUpdate);
+			resolveStatePages({ base: "base\n", staged: "base\n", unstaged: "proposed\n" });
+			convexActionMock.mockReturnValue(new Promise(() => {}));
+			const { rerenderWith } = renderNonCollabProposalReview({ committedAssetId: "asset_1" });
+			await flushNonCollabProposalMount();
+			act(() => {
+				getPanes().modified.setValue("unsent typing\n");
+				monacoHarness.changeListeners.forEach((listener) => listener());
+			});
+			useStableQueryMock.mockReturnValue({ ...nonCollabPendingUpdate, contentNeedsRebase: true });
+			rerenderWith({ committedAssetId: "asset_2" });
+			await flushNonCollabProposalMount();
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(250);
+			});
+			expect(convexMutationMock).not.toHaveBeenCalled();
+			const prepared = {
+				...nonCollabPendingUpdate,
+				updatedAt: 2,
+				baseAssetId: "asset_2",
+				baseStateId: "base_2",
+				stagedStateId: "staged_2",
+				unstagedStateId: "unstaged_2",
+			};
+			const texts: Record<string, string> = { base_2: "new\n", staged_2: "new\n", unstaged_2: "new proposed\n" };
+			convexQueryMock.mockImplementation(async (_name: unknown, args: { stateId: string }) =>
+				statePageOf(texts[args.stateId]!),
+			);
+			useStableQueryMock.mockReturnValue(prepared);
+			rerenderWith({});
+			await flushNonCollabProposalMount();
+			expect(getPanes().modified.getValue()).toBe("new proposed\n");
+			fireEvent.click(screen.getByRole("button", { name: "Copy unsaved proposed text" }));
+			await act(async () => {});
+			expect(writeText).toHaveBeenCalledWith("unsent typing\n");
+		} finally {
+			vi.useRealTimers();
+			vi.unstubAllGlobals();
+		}
+	});
+
+	test("a mode cycle with the same counter blocks the old family even when its marker was missed", async () => {
+		const initial = {
+			...nonCollabPendingUpdate,
+			baseAssetId: undefined,
+			baseYjsSequence: 0,
+			baseLineageGeneration: 0,
+			currentYjsLastSequenceId: "sequence_old",
+		};
+		useStableQueryMock.mockReturnValue(initial);
+		resolveStatePages({ base: "base\n", staged: "accepted\n", unstaged: "proposed\n" });
+		const { rerenderWith } = renderNonCollabProposalReview({
+			committedAssetId: "asset_1",
+			nonCollaborative: false,
+			yjsLastSequenceId: "sequence_old",
+		});
+		await flushNonCollabProposalMount();
+		rerenderWith({ yjsLastSequenceId: "sequence_new" });
+		await flushNonCollabProposalMount();
+		expect(monacoHarness.updateOptionsCalls.at(-1)).toMatchObject({ readOnly: true });
+		expect((screen.getByRole("button", { name: "Save staged changes" }) as HTMLButtonElement).disabled).toBe(true);
+		useStableQueryMock.mockReturnValue({
+			...initial,
+			updatedAt: 2,
+			baseStateId: "base_2",
+			stagedStateId: "staged_2",
+			unstagedStateId: "unstaged_2",
+			currentYjsLastSequenceId: "sequence_new",
+		});
+		const texts: Record<string, string> = { base_2: "base\n", staged_2: "accepted\n", unstaged_2: "proposed\n" };
+		convexQueryMock.mockImplementation(async (_name: unknown, args: { stateId: string }) =>
+			statePageOf(texts[args.stateId]!),
+		);
+		rerenderWith({ yjsLastSequenceId: "sequence_new" });
+		await flushNonCollabProposalMount();
+		expect(monacoHarness.createdModels).toHaveLength(2);
+		expect(getPanes().modified.getValue()).toBe("proposed\n");
+		expect(monacoHarness.updateOptionsCalls.at(-1)).toMatchObject({ readOnly: false });
+	});
+});
 
 describe("FileEditorDiff with collaboration off", () => {
 	test("loads the proposal without the live file and hides Sync and versions", async () => {
@@ -808,7 +2007,7 @@ describe("FileEditorDiff with collaboration off", () => {
 			useStableQueryMock.mockReturnValue(nonCollabPendingUpdate);
 			resolveStatePages({ base: "alpha\n", staged: "alpha\n", unstaged: "alpha beta\n" });
 			convexMutationMock.mockResolvedValue({ _yay: { operationBatchId: "batch_1" } });
-			convexActionMock.mockResolvedValue({ _yay: null });
+			convexActionMock.mockResolvedValue({ _yay: { pendingUpdate: null, currentYjsLastSequenceId: null } });
 			renderNonCollabProposalReview({ committedAssetId: "asset_1" });
 			await flushNonCollabProposalMount();
 
@@ -1104,7 +2303,9 @@ describe("FileEditorDiff with collaboration off", () => {
 		convexMutationMock.mockResolvedValue({ _yay: { operationBatchId: "batch_1" } });
 		convexActionMock.mockImplementation((reference: unknown) =>
 			Promise.resolve(
-				reference === "upsert_file_pending_update" ? { _yay: null } : { _nay: { message: "Insufficient funds" } },
+				reference === "upsert_file_pending_update"
+					? { _yay: { pendingUpdate: nonCollabPendingUpdate, currentYjsLastSequenceId: null } }
+					: { _nay: { message: "Insufficient funds" } },
 			),
 		);
 		const { toolbarPortalHost } = renderNonCollabProposalReview({ committedAssetId: "asset_1" });

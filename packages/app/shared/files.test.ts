@@ -748,6 +748,15 @@ describe("files_pending_update_content_is_stale", () => {
 		// A leftover base asset on a move-only doc must never read as stale.
 		expect(files_pending_update_content_is_stale({ baseAssetId }, { assetId: savedAssetId })).toBe(false);
 	});
+
+	test.each([
+		{ baseYjsSequence: 3, baseLineageGeneration: 1, baseStateId, stagedStateId, unstagedStateId },
+		assetContent,
+	])("marked content is stale but still available for review %#", (content) => {
+		const markedContent = { ...content, contentNeedsRebase: true as const };
+		expect(files_pending_update_content_is_stale(markedContent, { assetId: baseAssetId })).toBe(true);
+		expect(files_pending_update_has_content(markedContent)).toBe(true);
+	});
 });
 
 describe("files_get_normalized_node_path_segments", () => {

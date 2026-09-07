@@ -8077,7 +8077,7 @@ describe("non-collaborative files", () => {
 		expect(readBack?.content).toBe(markdown);
 	});
 
-	test("turning collaboration off drops content proposals and keeps move proposals", async () => {
+	test("turning collaboration off keeps content and move proposals for review", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
@@ -8147,6 +8147,8 @@ describe("non-collaborative files", () => {
 			}
 		});
 
+		const pendingBefore = await t.run(async (ctx) => await ctx.db.query("files_pending_updates").collect());
+		const statesBefore = await t.run(async (ctx) => await ctx.db.query("files_pending_update_yjs_states").collect());
 		for (const nodeId of [contentOnlyNodeId, contentAndMoveNodeId]) {
 			const off = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
 				membershipId: db.membershipId,
@@ -8157,33 +8159,23 @@ describe("non-collaborative files", () => {
 		}
 		await drain_scheduled_continuations(t);
 
-		// Objective 18: a content-only proposal is deleted, because every door that could save or
-		// discard it refuses a file with no Yjs document. A proposal that also moves the file keeps
-		// the move and loses only its content.
+		// The toggle marks the proposal without changing its source history or review choices.
 		const pendingAfter = await t.run(async (ctx) => {
 			const docs = await ctx.db.query("files_pending_updates").collect();
 			return {
-				docs: docs.map((doc) => ({
-					fileNodeId: doc.fileNodeId,
-					hasContent: doc.baseStateId !== undefined,
-					destName: doc.pendingMove?.destName,
-				})),
-				// The paged state families are re-owned to a cleanup task, not deleted here: one
-				// family can hold 12 MiB and this runs for every member at once.
-				activeStates: (await ctx.db.query("files_pending_update_yjs_states").collect()).filter(
-					(state) => state.owner.kind === "active",
-				).length,
+				docs,
+				states: await ctx.db.query("files_pending_update_yjs_states").collect(),
 				lastSequenceSaved: (await ctx.db.query("files_pending_updates_last_sequence_saved").collect()).length,
 			};
 		});
-		expect(pendingAfter.docs).toEqual([{ fileNodeId: contentAndMoveNodeId, hasContent: false, destName: "moved.md" }]);
-		expect(pendingAfter.activeStates).toBe(0);
+		expect(pendingAfter.docs).toEqual(pendingBefore.map((doc) => ({ ...doc, contentNeedsRebase: true })));
+		expect(pendingAfter.states).toEqual(statesBefore);
 		// A leftover marker would make the diff editor refetch forever after collaboration is
-		// turned back on, because the fresh document starts counting at 1 again.
+		// turned back on, because the fresh document starts counting at 0 again.
 		expect(pendingAfter.lastSequenceSaved).toBe(0);
 	});
 
-	test("turning collaboration on drops content proposals and keeps move proposals", async () => {
+	test("turning collaboration on keeps content and move proposals for review", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
@@ -8244,6 +8236,8 @@ describe("non-collaborative files", () => {
 			}
 		});
 
+		const pendingBefore = await t.run(async (ctx) => await ctx.db.query("files_pending_updates").collect());
+		const statesBefore = await t.run(async (ctx) => await ctx.db.query("files_pending_update_yjs_states").collect());
 		for (const { nodeId } of [contentOnly, contentAndMove]) {
 			const on = await asUser.action(api.files_nodes_content.set_file_collaborative, {
 				membershipId: db.membershipId,
@@ -8252,26 +8246,16 @@ describe("non-collaborative files", () => {
 			expect(on._nay).toBeUndefined();
 		}
 
-		// The new document replaces the text the proposals were built from, so a content-only
-		// proposal is deleted and a content-plus-move proposal keeps only its move.
+		// Old asset bases stay intact until Review rebuilds the proposal on the new document.
 		const pendingAfter = await t.run(async (ctx) => {
 			const docs = await ctx.db.query("files_pending_updates").collect();
 			return {
-				docs: docs.map((doc) => ({
-					fileNodeId: doc.fileNodeId,
-					hasContent: doc.baseStateId !== undefined,
-					hasAssetBase: doc.baseAssetId !== undefined,
-					destName: doc.pendingMove?.destName,
-				})),
-				activeStates: (await ctx.db.query("files_pending_update_yjs_states").collect()).filter(
-					(state) => state.owner.kind === "active",
-				).length,
+				docs,
+				states: await ctx.db.query("files_pending_update_yjs_states").collect(),
 			};
 		});
-		expect(pendingAfter.docs).toEqual([
-			{ fileNodeId: contentAndMove.nodeId, hasContent: false, hasAssetBase: false, destName: "moved.md" },
-		]);
-		expect(pendingAfter.activeStates).toBe(0);
+		expect(pendingAfter.docs).toEqual(pendingBefore.map((doc) => ({ ...doc, contentNeedsRebase: true })));
+		expect(pendingAfter.states).toEqual(statesBefore);
 	});
 
 	test("renaming a non-collaborative file keeps the stored type", async () => {

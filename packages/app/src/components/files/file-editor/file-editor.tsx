@@ -499,6 +499,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 				pendingUpdateId={pendingUpdateId}
 				nonCollaborative={nonCollaborative}
 				committedAssetId={committedAssetId}
+				yjsLastSequenceId={yjsLastSequenceId}
 				presenceStore={presenceStore}
 				commentsPortalHost={commentsPortalHost}
 				toolbarPortalHost={toolbarPortalHost}

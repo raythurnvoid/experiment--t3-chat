@@ -104,6 +104,7 @@ import {
 	files_pending_update_db_delete_chunks,
 	files_pending_update_db_release_replacement_asset,
 	files_pending_updates_db_drop_content_for_node,
+	files_pending_updates_db_mark_content_for_rebase,
 	type files_pending_updates_stage_trusted_yjs_update_Result,
 } from "./files_pending_updates.ts";
 import { files_nodes_reconstruct_latest_file_content_from_materialization_state } from "./files_nodes_reconstruct_content.ts";
@@ -6523,7 +6524,7 @@ export const set_file_non_collaborative = mutation({
 				updatedBy: userAuth.id,
 				updatedAt: now,
 			}),
-			files_pending_updates_db_drop_content_for_node(ctx, {
+			files_pending_updates_db_mark_content_for_rebase(ctx, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				nodeId: args.nodeId,
@@ -7037,10 +7038,8 @@ export const finalize_file_collaboration_enable = internalMutation({
 			throw convex_error({ message: errorMessage, cause: enableWriteResult._nay });
 		}
 
-		// A proposal on this file was built from the saved text (its `baseAssetId`). The new
-		// document replaces that text, so every content proposal is dropped, like the OFF toggle
-		// does. A doc that also proposes a move or a delete keeps that part.
-		await files_pending_updates_db_drop_content_for_node(ctx, {
+		// Review rebuilds the kept branches on this new document before they can be accepted.
+		await files_pending_updates_db_mark_content_for_rebase(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			nodeId: args.nodeId,

@@ -11,7 +11,10 @@ import { billing_PRODUCTS, billing_get_recurring_credits_cents } from "../shared
 import { billing_db_ensure_anonymous_user_usage_snapshot } from "./billing.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_nodes_db_insert_file_content_docs } from "./files_nodes_content.ts";
-import { files_pending_updates_db_drop_content_for_node } from "./files_pending_updates.ts";
+import {
+	files_pending_updates_db_drop_content_for_node,
+	files_pending_updates_db_mark_content_for_rebase,
+} from "./files_pending_updates.ts";
 
 const test = baseTest;
 import { billing_event } from "../server/billing.ts";
@@ -657,6 +660,7 @@ async function read_pending_row_state_bytes(args: {
 
 async function read_pending_row_markdown_state(args: {
 	ctx: MutationCtx;
+	rootKind?: "plain_text" | "rich_text";
 	pendingUpdate: {
 		baseStateId?: Id<"files_pending_update_yjs_states">;
 		stagedStateId?: Id<"files_pending_update_yjs_states">;
@@ -669,15 +673,10 @@ async function read_pending_row_markdown_state(args: {
 	const stagedBranchYjsDoc = files_yjs_doc_create_from_array_buffer_update(stagedBytes);
 	const unstagedBranchYjsDoc = files_yjs_doc_create_from_array_buffer_update(unstagedBytes);
 
-	const baseMarkdown = files_yjs_doc_get_text({ rootKind: "rich_text",
-		yjsDoc: baseYjsDoc,
-	});
-	const stagedMarkdown = files_yjs_doc_get_text({ rootKind: "rich_text",
-		yjsDoc: stagedBranchYjsDoc,
-	});
-	const unstagedMarkdown = files_yjs_doc_get_text({ rootKind: "rich_text",
-		yjsDoc: unstagedBranchYjsDoc,
-	});
+	const rootKind = args.rootKind ?? "rich_text";
+	const baseMarkdown = files_yjs_doc_get_text({ rootKind, yjsDoc: baseYjsDoc });
+	const stagedMarkdown = files_yjs_doc_get_text({ rootKind, yjsDoc: stagedBranchYjsDoc });
+	const unstagedMarkdown = files_yjs_doc_get_text({ rootKind, yjsDoc: unstagedBranchYjsDoc });
 
 	if (baseMarkdown._nay || stagedMarkdown._nay || unstagedMarkdown._nay) {
 		throw new Error("Failed to reconstruct pending doc markdown");
@@ -1219,6 +1218,133 @@ function file_save_events() {
 }
 
 describe("upsert_file_pending_update", () => {
+	test.each(["refresh", "settle"] as const)("does not acknowledge a newer proposal from a stale %s", async (phase) => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/stale-ack.txt", "base\n"));
+		expect(
+			(await upsert_file_pending_update_internal_for_test({ t, ...seeded, unstagedMarkdown: "newer proposal\n" }))._nay,
+		).toBeUndefined();
+		const pendingUpdate = await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }));
+		if (!pendingUpdate) throw new Error("Expected the newer proposal");
+		const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+		});
+		if (batch._nay) throw new Error(batch._nay.message);
+		const args = {
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			operationBatchId: batch._yay.operationBatchId,
+			pendingUpdateId: pendingUpdate._id,
+			expectedUpdatedAt: pendingUpdate.updatedAt - 1,
+		};
+		const result =
+			phase === "refresh"
+				? await t.mutation(internal.files_pending_updates.refresh_file_pending_update_in_db, args)
+				: await t.mutation(internal.files_pending_updates.settle_file_pending_update_no_change_in_db, args);
+		expect(result._nay?.message).toBe("Pending update changed, retry the write");
+		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", pendingUpdate._id))).toEqual(pendingUpdate);
+		expect(
+			(await t.run((ctx) => ctx.db.get("files_pending_update_operation_batches", args.operationBatchId)))?.expiresAt,
+		).toBe(0);
+	});
+
+	test.each(["plain_text", "rich_text"] as const)(
+		"acknowledges the exact committed %s proposal on every success path",
+		async (rootKind) => {
+			for (const collaborative of [false, true]) {
+				const t = test_convex();
+				const path = rootKind === "rich_text" ? "/ack.md" : "/ack.txt";
+				const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, path, "base\n"));
+				r2Objects.set(`content-snapshot${path}`, "base\n");
+				const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: seeded.userId, name: "Test User" });
+				if (collaborative) {
+					expect(
+						(await asUser.action(api.files_nodes_content.set_file_collaborative, {
+							membershipId: seeded.membershipId,
+							nodeId: seeded.nodeId,
+						}))._nay,
+					).toBeUndefined();
+				}
+				const node = await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId));
+				const currentYjsLastSequenceId = node?.yjsLastSequenceId ?? null;
+				const empty = await upsert_file_pending_update_public_for_test(asUser, {
+					...seeded,
+					unstagedMarkdown: "base\n",
+				});
+				expect(empty).toEqual({ _yay: { pendingUpdate: null, currentYjsLastSequenceId } });
+
+				const created = await upsert_file_pending_update_public_for_test(asUser, {
+					...seeded,
+					unstagedMarkdown: "first\n",
+				});
+				const first = await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }));
+				if (!first) throw new Error("Expected the first committed proposal");
+				expect(created).toEqual({ _yay: { pendingUpdate: first, currentYjsLastSequenceId } });
+				const firstBytes = await t.run((ctx) => read_pending_row_state_bytes({ ctx, pendingUpdate: first }));
+				const refreshed = await upsert_file_pending_update_public_for_test(asUser, {
+					...seeded,
+					pendingUpdateId: first._id,
+					reviewedUpdatedAt: first.updatedAt,
+					unstagedMarkdown: "first\n",
+				});
+				const refreshedDoc = await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }));
+				expect(refreshed).toEqual({ _yay: { pendingUpdate: refreshedDoc, currentYjsLastSequenceId } });
+				expect(refreshedDoc?.unstagedStateId).toBe(first.unstagedStateId);
+
+				const changed = await upsert_file_pending_update_public_for_test(asUser, {
+					...seeded,
+					pendingUpdateId: first._id,
+					reviewedUpdatedAt: refreshedDoc?.updatedAt,
+					unstagedMarkdown: "second\n",
+				});
+				const second = await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }));
+				expect(changed).toEqual({ _yay: { pendingUpdate: second, currentYjsLastSequenceId } });
+				expect(second?.unstagedStateId).not.toBe(first.unstagedStateId);
+				// The old acknowledgment still identifies its own bytes after a later write.
+				const oldPage = await asUser.query(api.files_pending_updates.get_file_pending_update_state_page, {
+					membershipId: seeded.membershipId,
+					nodeId: seeded.nodeId,
+					stateId: first.unstagedStateId!,
+					pageIndex: 0,
+				});
+				expect(oldPage?.bytes).toEqual(firstBytes.unstagedBytes);
+				expect(created._yay?.pendingUpdate).toEqual(first);
+
+				const ended = await upsert_file_pending_update_public_for_test(asUser, {
+					...seeded,
+					pendingUpdateId: first._id,
+					reviewedUpdatedAt: second?.updatedAt,
+					unstagedMarkdown: "base\n",
+				});
+				expect(ended).toEqual({ _yay: { pendingUpdate: null, currentYjsLastSequenceId } });
+				expect(await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }))).toBeNull();
+
+				expect(
+					(await upsert_file_pending_update_public_for_test(asUser, { ...seeded, unstagedMarkdown: "move draft\n" }))._nay,
+				).toBeUndefined();
+				expect(
+					(await upsert_file_pending_move_for_test({ t, ...seeded, destParentId: files_ROOT_ID, destName: "moved.txt" }))._nay,
+				).toBeUndefined();
+				const moved = await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }));
+				const settled = await upsert_file_pending_update_public_for_test(asUser, {
+					...seeded,
+					pendingUpdateId: moved?._id,
+					reviewedUpdatedAt: moved?.updatedAt,
+					unstagedMarkdown: "base\n",
+				});
+				const structural = await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }));
+				expect(structural?.pendingMove).toBeDefined();
+				expect(structural?.baseStateId).toBeUndefined();
+				expect(settled).toEqual({ _yay: { pendingUpdate: structural, currentYjsLastSequenceId } });
+			}
+		},
+	);
+
 	test("upsert_file_pending_update rejects content over the size cap", async () => {
 		const t = test_convex();
 
@@ -1888,7 +2014,7 @@ describe("upsert_file_pending_update", () => {
 		if (unresolved._nay) {
 			throw new Error(unresolved._nay.message);
 		}
-		expect(unresolved._yay).toBeNull();
+		expect(unresolved._yay.pendingUpdate).not.toBeNull();
 
 		const ready = await upsert_file_pending_update_public_for_test(asUser, {
 			membershipId: seeded.membershipId,
@@ -1899,7 +2025,7 @@ describe("upsert_file_pending_update", () => {
 		if (ready._nay) {
 			throw new Error(ready._nay.message);
 		}
-		expect(ready._yay).toBeNull();
+		expect(ready._yay.pendingUpdate).not.toBeNull();
 
 		const firstPendingRow = await t.run(async (ctx) =>
 			ctx.db
@@ -2391,7 +2517,7 @@ describe("upsert_file_pending_update", () => {
 		if (agentUpsertResult._nay) {
 			throw new Error(agentUpsertResult._nay.message);
 		}
-		expect(agentUpsertResult._yay).toBeNull();
+		expect(agentUpsertResult._yay.pendingUpdate).not.toBeNull();
 
 		const pendingRow = await t.run(async (ctx) =>
 			ctx.db
@@ -2455,7 +2581,7 @@ describe("upsert_file_pending_update", () => {
 		if (secondAgentUpsertResult._nay) {
 			throw new Error(secondAgentUpsertResult._nay.message);
 		}
-		expect(secondAgentUpsertResult._yay).toBeNull();
+		expect(secondAgentUpsertResult._yay.pendingUpdate).not.toBeNull();
 
 		const pendingRow = await t.run(async (ctx) =>
 			ctx.db
@@ -2507,7 +2633,7 @@ describe("upsert_file_pending_update", () => {
 		if (upsertResult._nay) {
 			throw new Error(upsertResult._nay.message);
 		}
-		expect(upsertResult._yay).toBeNull();
+		expect(upsertResult._yay.pendingUpdate).not.toBeNull();
 
 		const pendingRow = await t.run(async (ctx) =>
 			ctx.db
@@ -2570,7 +2696,7 @@ describe("upsert_file_pending_update", () => {
 		if (discardAgentUpsertResult._nay) {
 			throw new Error(discardAgentUpsertResult._nay.message);
 		}
-		expect(discardAgentUpsertResult._yay).toBeNull();
+		expect(discardAgentUpsertResult._yay.pendingUpdate).toBeNull();
 
 		const pendingRow = await t.run(async (ctx) =>
 			ctx.db
@@ -7301,6 +7427,720 @@ describe("files_pending_updates_last_sequence_saved", () => {
 	});
 });
 
+describe("files_pending_updates_db_mark_content_for_rebase", () => {
+	test("keeps every owner's content and expiry while leaving structural and copy proposals alone", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/mark.txt", "base\n"));
+		const otherUserId = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk_mark_other" });
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId,
+				active: true,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId,
+				role: "member",
+				now: Date.now(),
+			});
+			return userId;
+		});
+		for (const userId of [seeded.userId, otherUserId]) {
+			expect(
+				(await upsert_file_pending_update_internal_for_test({ t, ...seeded, userId, unstagedMarkdown: `${userId}\n` }))
+					._nay,
+			).toBeUndefined();
+		}
+		expect((await upsert_file_pending_archive_for_test({ t, ...seeded, userId: otherUserId }))._nay).toBeUndefined();
+		const before = await t.run(async (ctx) => {
+			for (const [userId, extra] of [
+				[
+					"move-owner",
+					{ pendingMove: { destParentId: files_ROOT_ID, destName: "renamed.txt", fromPath: "/mark.txt" } },
+				],
+				[
+					"copy-owner",
+					{
+						copiedFrom: { nodeId: seeded.nodeId, path: "/source.txt" },
+						pendingReplacement: {
+							assetId: seeded.assetId,
+							baseAssetId: seeded.assetId,
+							size: 5,
+							contentType: "text/plain",
+							yjsRootKind: "plain_text" as const,
+						},
+					},
+				],
+			] as const) {
+				await ctx.db.insert("files_pending_updates", {
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					userId,
+					fileNodeId: seeded.nodeId,
+					size: 0,
+					updatedAt: 123,
+					...extra,
+				});
+			}
+			for (const userId of [seeded.userId, otherUserId])
+				await ctx.db.insert("files_pending_updates_last_sequence_saved", {
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					userId,
+					fileNodeId: seeded.nodeId,
+					lastSequenceSaved: 9,
+					updatedAt: 123,
+				});
+			return {
+				docs: await ctx.db.query("files_pending_updates").collect(),
+				states: await ctx.db.query("files_pending_update_yjs_states").collect(),
+				pages: await ctx.db.query("files_pending_update_yjs_state_pages").collect(),
+				chunks: await ctx.db.query("files_text_chunks").collect(),
+				cleanup: await ctx.db.query("files_pending_updates_cleanup_tasks").collect(),
+			};
+		});
+		await t.run((ctx) => files_pending_updates_db_mark_content_for_rebase(ctx, seeded));
+		await t.run((ctx) => files_pending_updates_db_mark_content_for_rebase(ctx, seeded));
+		await t.run(async (ctx) => {
+			for (const doc of before.docs) {
+				expect(await ctx.db.get("files_pending_updates", doc._id)).toEqual(
+					doc.baseStateId ? { ...doc, contentNeedsRebase: true } : doc,
+				);
+			}
+			expect(await ctx.db.query("files_pending_update_yjs_states").collect()).toEqual(before.states);
+			expect(await ctx.db.query("files_pending_update_yjs_state_pages").collect()).toEqual(before.pages);
+			expect(await ctx.db.query("files_text_chunks").collect()).toEqual(before.chunks);
+			expect(await ctx.db.query("files_pending_updates_cleanup_tasks").collect()).toEqual(before.cleanup);
+			expect(await ctx.db.query("files_pending_updates_last_sequence_saved").collect()).toEqual([]);
+		});
+	});
+
+	test("removes saved markers even when there is no content proposal", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, "/mark-empty.txt", "base\n"));
+		await t.run(async (ctx) => {
+			await ctx.db.insert("files_pending_updates_last_sequence_saved", {
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				fileNodeId: seeded.nodeId,
+				lastSequenceSaved: 9,
+				updatedAt: 123,
+			});
+			await files_pending_updates_db_mark_content_for_rebase(ctx, seeded);
+			expect(await ctx.db.query("files_pending_updates_last_sequence_saved").collect()).toEqual([]);
+		});
+	});
+});
+
+describe("get_file_pending_update", () => {
+	test.each(["plain_text", "rich_text"] as const)(
+		"returns the current document id with marked and prepared %s content",
+		async (rootKind) => {
+			const t = test_convex();
+			const path = rootKind === "rich_text" ? "/query-current.md" : "/query-current.txt";
+			const seeded = await t.run((ctx) => seed_non_collaborative_file(ctx, path, "base\n"));
+			r2Objects.set(`content-snapshot${path}`, "base\n");
+			const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: seeded.userId, name: "Test User" });
+			expect(
+				(await upsert_file_pending_update_public_for_test(asUser, {
+					...seeded,
+					unstagedMarkdown: "proposed\n",
+				}))._nay,
+			).toBeUndefined();
+			const original = await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }));
+			if (!original) throw new Error("Expected the original proposal");
+			const queryArgs = { membershipId: seeded.membershipId, nodeId: seeded.nodeId, pendingUpdateId: original._id };
+			expect(await asUser.query(api.files_pending_updates.get_file_pending_update, queryArgs)).toEqual({
+				...original,
+				currentYjsLastSequenceId: null,
+			});
+
+			for (const collaborative of [true, false]) {
+				const toggled = collaborative
+					? await asUser.action(api.files_nodes_content.set_file_collaborative, {
+							membershipId: seeded.membershipId,
+							nodeId: seeded.nodeId,
+						})
+					: await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+							membershipId: seeded.membershipId,
+							nodeId: seeded.nodeId,
+							acknowledgeDropCollaborativeHistory: true,
+						});
+				expect(toggled._nay).toBeUndefined();
+				const node = await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId));
+				const currentYjsLastSequenceId = node?.yjsLastSequenceId ?? null;
+				if (collaborative) expect(currentYjsLastSequenceId).not.toBeNull();
+				else expect(currentYjsLastSequenceId).toBeNull();
+				const marked = await t.run((ctx) => ctx.db.get("files_pending_updates", original._id));
+				expect(marked?.contentNeedsRebase).toBe(true);
+				expect(await asUser.query(api.files_pending_updates.get_file_pending_update, queryArgs)).toEqual({
+					...marked,
+					currentYjsLastSequenceId,
+				});
+				const prepared = await asUser.action(
+					api.files_pending_updates.prepare_file_pending_update_after_collaboration_change,
+					queryArgs,
+				);
+				expect(prepared._nay).toBeUndefined();
+				expect(prepared._yay?.pendingUpdate?.contentNeedsRebase).toBeUndefined();
+				expect(await asUser.query(api.files_pending_updates.get_file_pending_update, queryArgs)).toEqual({
+					...prepared._yay?.pendingUpdate,
+					currentYjsLastSequenceId,
+				});
+			}
+
+			const other = await t.run(async (ctx) => {
+				const userId = await ctx.db.insert("users", { clerkUserId: "clerk_query_other" });
+				const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					userId,
+					active: true,
+				});
+				await access_control_db_ensure_role_assignment(ctx, {
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					userId,
+					role: "member",
+					now: Date.now(),
+				});
+				return { userId, membershipId };
+			});
+			const asOther = t.withIdentity({ issuer: "https://clerk.test", external_id: other.userId, name: "Other Member" });
+			expect(
+				await asOther.query(api.files_pending_updates.get_file_pending_update, {
+					...queryArgs,
+					membershipId: other.membershipId,
+				}),
+			).toBeNull();
+		},
+	);
+});
+
+describe("prepare_file_pending_update_after_collaboration_change", () => {
+	async function seed_marked_proposal(args: {
+		base: string;
+		staged: string;
+		unstaged: string;
+		current?: string;
+		rootKind?: "plain_text" | "rich_text";
+		target?: "yjs" | "asset";
+		ordinaryMember?: boolean;
+	}) {
+		const t = test_convex();
+		const rootKind = args.rootKind ?? "plain_text";
+		const path = rootKind === "rich_text" ? "/prepare.md" : "/prepare.txt";
+		const file = await t.run((ctx) => seed_non_collaborative_file(ctx, path, args.base));
+		const member = args.ordinaryMember
+			? await t.run(async (ctx) => {
+					const userId = await ctx.db.insert("users", { clerkUserId: "clerk_preparation_member" });
+					await seed_billing_snapshot_for_user(ctx, userId);
+					const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+						organizationId: file.organizationId,
+						workspaceId: file.workspaceId,
+						userId,
+						active: true,
+					});
+					await access_control_db_ensure_role_assignment(ctx, {
+						organizationId: file.organizationId,
+						workspaceId: file.workspaceId,
+						userId,
+						role: "member",
+						now: Date.now(),
+					});
+					return { userId, membershipId };
+				})
+			: null;
+		const seeded = member ? { ...file, ...member } : file;
+		r2Objects.set(`content-snapshot${path}`, args.base);
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: seeded.userId, name: "Test User" });
+		expect(
+			(
+				await upsert_file_pending_update_public_for_test(asUser, {
+					...seeded,
+					stagedMarkdown: args.staged,
+					unstagedMarkdown: args.unstaged,
+				})
+			)._nay,
+		).toBeUndefined();
+		const original = await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }));
+		if (!original) throw new Error("Expected the original proposal");
+		if (args.current !== undefined) await save_as_member(t, seeded, args.current);
+		expect(
+			(
+				await asUser.action(api.files_nodes_content.set_file_collaborative, {
+					membershipId: seeded.membershipId,
+					nodeId: seeded.nodeId,
+				})
+			)._nay,
+		).toBeUndefined();
+		if (args.target === "asset") {
+			expect(
+				(
+					await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+						membershipId: seeded.membershipId,
+						nodeId: seeded.nodeId,
+						acknowledgeDropCollaborativeHistory: true,
+					})
+				)._nay,
+			).toBeUndefined();
+		}
+		const marked = await t.run((ctx) => ctx.db.get("files_pending_updates", original._id));
+		if (!marked) throw new Error("Expected the proposal after the toggle");
+		expect(marked.contentNeedsRebase).toBe(true);
+		const prepareArgs = { membershipId: seeded.membershipId, nodeId: seeded.nodeId, pendingUpdateId: original._id };
+		return { t, seeded, asUser, original, marked, prepareArgs, rootKind, ownerUserId: file.userId };
+	}
+
+	test.each(["staged", "unstaged"] as const)("keeps the proposal when merged %s text exceeds a cap", async (branch) => {
+		const fields = (prefix: string) =>
+			Array.from({ length: Math.floor(files_metadata_MAX_FRONTMATTER_FIELDS / 2) }, (_, index) =>
+				`${prefix}${index}: value\n`,
+			).join("");
+		const markdownBase = "---\nfirst: base\nmiddle: base\nlast: base\n---\n\nbody\n";
+		for (const fixture of [
+			{
+				rootKind: "plain_text" as const,
+				base: "first\nlast\n",
+				proposed: `${"a".repeat(files_MAX_TEXT_CONTENT_BYTES / 2)}\nfirst\nlast\n`,
+				current: `first\nlast\n${"z".repeat(files_MAX_TEXT_CONTENT_BYTES / 2)}\n`,
+				message: `Text content exceeds ${files_MAX_TEXT_CONTENT_BYTES}-byte limit`,
+			},
+			{
+				rootKind: "rich_text" as const,
+				base: markdownBase,
+				proposed: markdownBase.replace("first: base\n", `first: base\n${fields("proposed")}`),
+				current: markdownBase.replace("last: base\n", `last: base\n${fields("current")}`),
+				message: "Too many frontmatter fields",
+			},
+		]) {
+			const { t, seeded, asUser, marked, prepareArgs } = await seed_marked_proposal({
+				...fixture,
+				staged: branch === "staged" ? fixture.proposed : fixture.base,
+				unstaged: fixture.proposed,
+				target: "asset",
+			});
+			const bytes = await t.run((ctx) => read_pending_row_state_bytes({ ctx, pendingUpdate: marked }));
+			const eventsBefore = file_save_events().length;
+			const result = await asUser.action(
+				api.files_pending_updates.prepare_file_pending_update_after_collaboration_change,
+				prepareArgs,
+			);
+			expect(result._nay?.message).toBe(fixture.message);
+			expect(await t.run((ctx) => ctx.db.get("files_pending_updates", marked._id))).toEqual(marked);
+			expect(await t.run((ctx) => read_pending_row_state_bytes({ ctx, pendingUpdate: marked }))).toEqual(bytes);
+			expect(await t.run((ctx) => read_committed_text({ ctx, ...seeded }))).toBe(fixture.current);
+			expect(file_save_events()).toHaveLength(eventsBefore);
+			const batches = await t.run((ctx) => ctx.db.query("files_pending_update_operation_batches").collect());
+			expect(batches).toHaveLength(1);
+			expect(batches[0]?.expiresAt).toBe(0);
+		}
+	});
+
+	test.each(["plain_text", "rich_text"] as const)(
+		"keeps exact %s text across partial save, live edit, and second save",
+		async (rootKind) => {
+			const base = "title\n\nfirst\n\nsecond\n\nlast\n";
+			const staged = base.replace("first", "FIRST");
+			const unstaged = staged.replace("second", "SECOND");
+			const { t, seeded, asUser, prepareArgs } = await seed_marked_proposal({ base, staged, unstaged, rootKind });
+			const prepared = await asUser.action(
+				api.files_pending_updates.prepare_file_pending_update_after_collaboration_change,
+				prepareArgs,
+			);
+			expect(prepared._nay).toBeUndefined();
+			const pendingUpdate = prepared._yay?.pendingUpdate;
+			if (!pendingUpdate) throw new Error("Expected the prepared proposal");
+			expect(pendingUpdate.baseYjsSequence).toBe(0);
+			expect(pendingUpdate.contentNeedsRebase).toBeUndefined();
+			expect(await t.run((ctx) => read_pending_row_markdown_state({ ctx, pendingUpdate, rootKind }))).toEqual({
+				baseMarkdown: base,
+				stagedMarkdown: staged,
+				unstagedMarkdown: unstaged,
+			});
+			expect(
+				(await asUser.action(api.files_pending_updates.save_file_pending_update, prepareArgs))._nay,
+			).toBeUndefined();
+			expect(await t.run((ctx) => read_file_markdown_from_yjs({ ctx, ...seeded, rootKind }))).toBe(staged);
+			const live = await t.run((ctx) => read_file_yjs_state({ ctx, ...seeded }));
+			const beforeDoc = files_yjs_doc_create_from_array_buffer_update(live.yjsUpdate);
+			const editedDoc = files_yjs_doc_clone({ yjsDoc: beforeDoc });
+			expect(
+				files_yjs_doc_update_from_text({ mut_yjsDoc: editedDoc, text: staged.replace("last", "LAST"), rootKind })._nay,
+			).toBeUndefined();
+			const update = files_yjs_compute_diff_update_from_yjs_doc({ yjsDoc: editedDoc, yjsBeforeDoc: beforeDoc });
+			if (!update) throw new Error("Expected the live edit update");
+			expect(
+				(
+					await asUser.mutation(api.files_nodes.yjs_push_update, {
+						membershipId: seeded.membershipId,
+						nodeId: seeded.nodeId,
+						expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
+						update: files_u8_to_array_buffer(update),
+						sessionId: "preparation-intervening-edit",
+					})
+				)._nay,
+			).toBeUndefined();
+			beforeDoc.destroy();
+			editedDoc.destroy();
+			const remaining = await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }));
+			if (!remaining) throw new Error("Expected the unaccepted second change");
+			expect(
+				(
+					await upsert_file_pending_update_public_for_test(asUser, {
+						...prepareArgs,
+						reviewedUpdatedAt: remaining.updatedAt,
+						stagedMarkdown: unstaged,
+						unstagedMarkdown: unstaged,
+					})
+				)._nay,
+			).toBeUndefined();
+			expect(
+				(await asUser.action(api.files_pending_updates.save_file_pending_update, prepareArgs))._nay,
+			).toBeUndefined();
+			expect(await t.run((ctx) => read_file_markdown_from_yjs({ ctx, ...seeded, rootKind }))).toBe(
+				unstaged.replace("last", "LAST"),
+			);
+			expect(await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }))).toBeNull();
+		},
+	);
+
+	test.each([
+		{
+			name: "disjoint edits",
+			base: "a\nb\nc\n",
+			staged: "A\nb\nc\n",
+			unstaged: "A\nb\nC\n",
+			current: "a\nB\nc\n",
+			mergedStaged: "A\nB\nc\n",
+			mergedUnstaged: "A\nB\nC\n",
+		},
+		{
+			name: "identical overlaps",
+			base: "a\nb\n",
+			staged: "A\nb\n",
+			unstaged: "A\nB\n",
+			current: "A\nb\n",
+			mergedStaged: "A\nb\n",
+			mergedUnstaged: "A\nB\n",
+		},
+		{
+			name: "Unicode edits",
+			base: "😀 old\nlast\n",
+			staged: "😃 old\nlast\n",
+			unstaged: "😃 old\nlast!\n",
+			current: "😀 new\nlast\n",
+			mergedStaged: "😃 new\nlast\n",
+			mergedUnstaged: "😃 new\nlast!\n",
+		},
+	])("merges $name without publishing text", async (fixture) => {
+		const { t, asUser, seeded, prepareArgs } = await seed_marked_proposal({ ...fixture, target: "asset" });
+		const eventsBefore = file_save_events().length;
+		const result = await asUser.action(
+			api.files_pending_updates.prepare_file_pending_update_after_collaboration_change,
+			prepareArgs,
+		);
+		expect(result._nay).toBeUndefined();
+		const pendingUpdate = result._yay?.pendingUpdate;
+		if (!pendingUpdate) throw new Error("Expected the merged proposal");
+		expect(
+			await t.run((ctx) => read_pending_row_markdown_state({ ctx, pendingUpdate, rootKind: "plain_text" })),
+		).toEqual({
+			baseMarkdown: fixture.current,
+			stagedMarkdown: fixture.mergedStaged,
+			unstagedMarkdown: fixture.mergedUnstaged,
+		});
+		expect(await t.run((ctx) => read_committed_text({ ctx, ...seeded }))).toBe(fixture.current);
+		expect(file_save_events()).toHaveLength(eventsBefore);
+	});
+
+	test.each([
+		{ base: "old\n", staged: "proposal\n", unstaged: "proposal\n", current: "other\n" },
+		{ base: "start end\n", staged: "start Aend\n", unstaged: "start Aend\n", current: "start Bend\n" },
+	])("keeps original proposal bytes on an overlap ($base)", async (fixture) => {
+		const { t, seeded, asUser, marked, prepareArgs } = await seed_marked_proposal({ ...fixture, target: "asset" });
+		const bytes = await t.run((ctx) => read_pending_row_state_bytes({ ctx, pendingUpdate: marked }));
+		const eventsBefore = file_save_events().length;
+		const result = await asUser.action(
+			api.files_pending_updates.prepare_file_pending_update_after_collaboration_change,
+			prepareArgs,
+		);
+		expect(result._nay?.message).toContain("overlap newer file text");
+		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", marked._id))).toEqual(marked);
+		expect(await t.run((ctx) => read_pending_row_state_bytes({ ctx, pendingUpdate: marked }))).toEqual(bytes);
+		expect(await t.run((ctx) => read_committed_text({ ctx, ...seeded }))).toBe(fixture.current);
+		const batches = await t.run((ctx) => ctx.db.query("files_pending_update_operation_batches").collect());
+		expect(batches).toHaveLength(1);
+		expect(batches[0]?.expiresAt).toBe(0);
+		expect(file_save_events()).toHaveLength(eventsBefore);
+	});
+
+	test("settles an identical proposal without a file save", async () => {
+		const { t, asUser, prepareArgs } = await seed_marked_proposal({
+			base: "old\n",
+			staged: "new\n",
+			unstaged: "new\n",
+			current: "new\n",
+		});
+		const eventsBefore = file_save_events().length;
+		const result = await asUser.action(
+			api.files_pending_updates.prepare_file_pending_update_after_collaboration_change,
+			prepareArgs,
+		);
+		expect(result).toEqual({ _yay: { pendingUpdate: null } });
+		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", prepareArgs.pendingUpdateId))).toBeNull();
+		expect(file_save_events()).toHaveLength(eventsBefore);
+	});
+
+	test("refuses writes before review and from an old pane after review", async () => {
+		const { t, asUser, marked, prepareArgs } = await seed_marked_proposal({
+			base: "base\n",
+			staged: "base\n",
+			unstaged: "proposed\n",
+		});
+		const oldWrite = {
+			...prepareArgs,
+			reviewedUpdatedAt: marked.updatedAt,
+			stagedMarkdown: "proposed\n",
+			unstagedMarkdown: "proposed\n",
+		};
+		expect((await upsert_file_pending_update_public_for_test(asUser, oldWrite))._nay?.message).toContain(
+			"Review this proposal",
+		);
+		expect(
+			(await asUser.action(api.files_pending_updates.save_file_pending_update, prepareArgs))._nay?.message,
+		).toContain("Review this proposal");
+		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", marked._id))).toEqual(marked);
+		const prepared = await asUser.action(
+			api.files_pending_updates.prepare_file_pending_update_after_collaboration_change,
+			prepareArgs,
+		);
+		expect(prepared._nay).toBeUndefined();
+		expect((await upsert_file_pending_update_public_for_test(asUser, oldWrite))._nay).toBeDefined();
+		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", marked._id))).toEqual(prepared._yay?.pendingUpdate);
+	});
+
+	test.each([
+		"live edit",
+		"no-change live edit",
+		"mode cycle",
+		"discard",
+		"replacement proposal",
+		"lock",
+		"membership loss",
+		"write access loss",
+	] as const)("refuses a %s while preparation is in flight", async (race) => {
+		const noChange = race === "no-change live edit";
+		const { t, asUser, seeded, marked, prepareArgs, ownerUserId } = await seed_marked_proposal({
+			base: "base\n",
+			staged: "proposal\n",
+			unstaged: "proposal\n",
+			current: noChange ? "proposal\n" : undefined,
+			ordinaryMember: race === "write access loss",
+		});
+		const normalFetch = globalThis.fetch;
+		let release: (() => void) | undefined;
+		const paused = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let announce: (() => void) | undefined;
+		const started = new Promise<void>((resolve) => {
+			announce = resolve;
+		});
+		let blocked = false;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+				const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
+				if (!blocked && url.startsWith("https://r2.test/object?key=")) {
+					blocked = true;
+					announce?.();
+					await paused;
+				}
+				return await normalFetch(input, init);
+			}),
+		);
+		const preparing = asUser.action(
+			api.files_pending_updates.prepare_file_pending_update_after_collaboration_change,
+			prepareArgs,
+		);
+		await started;
+		let replacementId: Id<"files_pending_updates"> | undefined;
+		try {
+			if (race === "mode cycle") {
+				const beforePointers = await test_get_file_yjs_pointers(t, seeded.nodeId);
+				expect(
+					(
+						await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+							membershipId: seeded.membershipId,
+							nodeId: seeded.nodeId,
+							acknowledgeDropCollaborativeHistory: true,
+						})
+					)._nay,
+				).toBeUndefined();
+				expect(
+					(
+						await asUser.action(api.files_nodes_content.set_file_collaborative, {
+							membershipId: seeded.membershipId,
+							nodeId: seeded.nodeId,
+						})
+					)._nay,
+				).toBeUndefined();
+				expect((await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId).not.toBe(
+					beforePointers.yjsLastSequenceId,
+				);
+			} else if (race === "discard" || race === "replacement proposal") {
+				expect(
+					(await asUser.mutation(api.files_pending_updates.discard_file_pending_content, prepareArgs))._nay,
+				).toBeUndefined();
+				if (race === "replacement proposal") {
+					// A stalled preparation can lose its batch to the existing idle takeover.
+					vi.spyOn(Date, "now").mockReturnValue(Date.now() + 2 * 60 * 1000 + 1);
+					expect(
+						(
+							await upsert_file_pending_update_public_for_test(asUser, {
+								membershipId: seeded.membershipId,
+								nodeId: seeded.nodeId,
+								unstagedMarkdown: "replacement\n",
+							})
+						)._nay,
+					).toBeUndefined();
+					replacementId = (await t.run((ctx) => read_pending_update_row({ ctx, ...seeded })))?._id;
+					expect(replacementId).not.toBe(marked._id);
+				}
+			} else if (race === "lock") {
+				await set_pending_test_read_only(asUser, seeded.membershipId, seeded.nodeId);
+			} else if (race === "membership loss") {
+				await t.run((ctx) => ctx.db.delete("organizations_workspaces_users", seeded.membershipId));
+			} else if (race === "write access loss") {
+				const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: ownerUserId, name: "Owner" });
+				expect(
+					(
+						await asOwner.mutation(api.access_control.set_user_role, {
+							organizationId: seeded.organizationId,
+							workspaceId: seeded.workspaceId,
+							userId: seeded.userId,
+							role: "viewer",
+						})
+					)._nay,
+				).toBeUndefined();
+			} else {
+				const state = await t.run((ctx) => read_file_yjs_state({ ctx, ...seeded }));
+				const before = files_yjs_doc_create_from_array_buffer_update(state.yjsUpdate);
+				const after = files_yjs_doc_clone({ yjsDoc: before });
+				expect(
+					files_yjs_doc_update_from_text({ mut_yjsDoc: after, rootKind: "plain_text", text: "newer live text\n" })._nay,
+				).toBeUndefined();
+				const update = files_yjs_compute_diff_update_from_yjs_doc({ yjsDoc: after, yjsBeforeDoc: before });
+				if (!update) throw new Error("Expected the intervening live edit");
+				expect(
+					(
+						await asUser.mutation(api.files_nodes.yjs_push_update, {
+							membershipId: seeded.membershipId,
+							nodeId: seeded.nodeId,
+							expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
+							update: files_u8_to_array_buffer(update),
+							sessionId: "preparation-race",
+						})
+					)._nay,
+				).toBeUndefined();
+				before.destroy();
+				after.destroy();
+			}
+		} finally {
+			release?.();
+		}
+		const result = await preparing;
+		expect(result._nay).toBeDefined();
+		if (race === "lock") expect(result._nay?.name).toBe("read_only");
+		if (race === "membership loss") expect(result._nay?.message).toBe("Unauthorized");
+		if (race === "write access loss") expect(result._nay?.message).toBe("Permission denied");
+		if (race === "discard" || race === "replacement proposal") {
+			expect(await t.run((ctx) => ctx.db.get("files_pending_updates", marked._id))).toBeNull();
+			if (replacementId)
+				expect(
+					(await t.run((ctx) => ctx.db.get("files_pending_updates", replacementId)))?.contentNeedsRebase,
+				).toBeUndefined();
+		} else expect(await t.run((ctx) => ctx.db.get("files_pending_updates", marked._id))).toEqual(marked);
+		const batches = await t.run((ctx) => ctx.db.query("files_pending_update_operation_batches").collect());
+		expect(batches).toHaveLength(1);
+		expect(batches[0]?.expiresAt).toBe(0);
+	});
+
+	test.each(["plain_text", "rich_text"] as const)(
+		"keeps and prepares a %s proposal after turning collaboration off",
+		async (rootKind) => {
+			const t = test_convex();
+			const seeded = await t.run(async (ctx) => {
+				const file = await seed_signed_in_file_with_markdown({
+					ctx,
+					path: "/prepare-off",
+					name: "prepare-off",
+					markdown: "base\n",
+					rootKind,
+				});
+				await seed_committed_chunks_for_file({ ctx, ...file, path: "/prepare-off", markdown: file.baseMarkdown });
+				return file;
+			});
+			const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: seeded.userId, name: "Test User" });
+			const proposed = "base\n\nproposed\n";
+			expect(
+				(
+					await upsert_file_pending_update_public_for_test(asUser, {
+						...seeded,
+						stagedMarkdown: proposed,
+						unstagedMarkdown: proposed,
+					})
+				)._nay,
+			).toBeUndefined();
+			const before = await t.run((ctx) => read_pending_update_row({ ctx, ...seeded }));
+			if (!before) throw new Error("Expected the proposal before turning collaboration off");
+			const beforeBytes = await t.run((ctx) => read_pending_row_state_bytes({ ctx, pendingUpdate: before }));
+			expect(
+				(
+					await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+						membershipId: seeded.membershipId,
+						nodeId: seeded.nodeId,
+						acknowledgeDropCollaborativeHistory: true,
+					})
+				)._nay,
+			).toBeUndefined();
+			const marked = await t.run((ctx) => ctx.db.get("files_pending_updates", before._id));
+			expect(marked).toMatchObject({ ...before, contentNeedsRebase: true });
+			if (!marked) throw new Error("Expected the proposal to survive the toggle");
+			expect(await t.run((ctx) => read_pending_row_state_bytes({ ctx, pendingUpdate: marked }))).toEqual(beforeBytes);
+			const prepared = await asUser.action(
+				api.files_pending_updates.prepare_file_pending_update_after_collaboration_change,
+				{
+					membershipId: seeded.membershipId,
+					nodeId: seeded.nodeId,
+					pendingUpdateId: before._id,
+				},
+			);
+			expect(prepared._nay).toBeUndefined();
+			expect(prepared._yay?.pendingUpdate).toMatchObject({ _id: before._id });
+			expect(prepared._yay?.pendingUpdate?.contentNeedsRebase).toBeUndefined();
+			expect(prepared._yay?.pendingUpdate?.baseYjsSequence).toBeUndefined();
+			expect(prepared._yay?.pendingUpdate?.baseAssetId).toBeDefined();
+			expect(
+				(
+					await asUser.action(api.files_pending_updates.save_file_pending_update, {
+						membershipId: seeded.membershipId,
+						nodeId: seeded.nodeId,
+						pendingUpdateId: before._id,
+					})
+				)._nay,
+			).toBeUndefined();
+			expect(await t.run((ctx) => read_committed_text({ ctx, ...seeded }))).toBe(proposed);
+			expect(await t.run((ctx) => ctx.db.get("files_pending_updates", before._id))).toBeNull();
+		},
+	);
+});
+
 describe("persist_file_pending_update_rebased_state", () => {
 	test("persist_file_pending_update_rebased_state stores the rebased doc as the new authoritative pending state", async () => {
 		const t = test_convex();
@@ -8016,12 +8856,15 @@ describe("persist_file_pending_update_rebased_state", () => {
 			{
 				membershipId: seeded.membershipId,
 				nodeId: seeded.nodeId,
-				expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
 				pendingUpdateId: pendingRow._id,
 				operationBatchId: staleFamily.operationBatchId,
 				expectedUpdatedAt: rowAfterSave.updatedAt,
-				baseYjsSequence: originalFileState.yjsSequence,
-				baseLineageGeneration: 0,
+				base: {
+					kind: "yjs",
+					baseYjsSequence: originalFileState.yjsSequence,
+					baseLineageGeneration: 0,
+					expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
+				},
 				baseStateId: staleFamily.base.stateId,
 				stagedStateId: staleFamily.staged.stateId,
 				unstagedStateId: staleFamily.unstaged.stateId,
@@ -8142,12 +8985,15 @@ describe("persist_file_pending_update_rebased_state", () => {
 			{
 				membershipId: seeded.membershipId,
 				nodeId: seeded.nodeId,
-				expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
 				pendingUpdateId: mixedRow._id,
 				operationBatchId: staleFamily.operationBatchId,
 				expectedUpdatedAt: mixedRow.updatedAt,
-				baseYjsSequence: capturedBaseYjsSequence,
-				baseLineageGeneration: 0,
+				base: {
+					kind: "yjs",
+					baseYjsSequence: capturedBaseYjsSequence,
+					baseLineageGeneration: 0,
+					expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
+				},
 				baseStateId: staleFamily.base.stateId,
 				stagedStateId: staleFamily.staged.stateId,
 				unstagedStateId: staleFamily.unstaged.stateId,
@@ -16946,7 +17792,13 @@ describe("cleanup_expired_pending_state_rows", () => {
 		},
 		owner:
 			| { kind: "active"; pendingUpdateId: Id<"files_pending_updates">; role: "base" }
-			| { kind: "temporary"; operationBatchId: Id<"files_pending_update_operation_batches">; phase: "input"; role: "base"; expiresAt: number }
+			| {
+					kind: "temporary";
+					operationBatchId: Id<"files_pending_update_operation_batches">;
+					phase: "input";
+					role: "base";
+					expiresAt: number;
+			  }
 			| { kind: "retired"; cleanupTaskId: Id<"files_pending_update_state_cleanup_tasks"> },
 	) {
 		return await t.run(async (ctx) => {
@@ -17342,8 +18194,8 @@ describe("pending update read-only checks", () => {
 			operationBatchId: batch._yay.operationBatchId,
 			expectedUpdatedAt: null,
 		});
-		expect(settled._nay).toBeUndefined();
-		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", lateRow._id))).not.toBeNull();
+		expect(settled._nay?.message).toBe("Pending update changed, retry the write");
+		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", lateRow._id))).toEqual(lateRow);
 	});
 
 	test("a lock before the no-change final mutation refuses and retires the batch", async () => {
@@ -17664,12 +18516,15 @@ describe("pending update read-only checks", () => {
 		const rebased = await asUser.mutation(internal.files_pending_updates.commit_file_pending_update_rebase_in_db, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
-			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
 			pendingUpdateId: pendingRow._id,
 			operationBatchId: staged.operationBatchId,
 			expectedUpdatedAt: pendingRow.updatedAt,
-			baseYjsSequence: fileState.yjsSequence,
-			baseLineageGeneration: 0,
+			base: {
+				kind: "yjs",
+				baseYjsSequence: fileState.yjsSequence,
+				baseLineageGeneration: 0,
+				expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
+			},
 			baseStateId: staged.base.stateId,
 			stagedStateId: staged.staged.stateId,
 			unstagedStateId: staged.unstaged.stateId,
@@ -18251,12 +19106,15 @@ describe("pending update read-only checks", () => {
 		const rebased = await asUser.mutation(internal.files_pending_updates.commit_file_pending_update_rebase_in_db, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
-			expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
 			pendingUpdateId: pendingRow._id,
 			operationBatchId: staged.operationBatchId,
 			expectedUpdatedAt: pendingRow.updatedAt,
-			baseYjsSequence: fileState.yjsSequence,
-			baseLineageGeneration: 0,
+			base: {
+				kind: "yjs",
+				baseYjsSequence: fileState.yjsSequence,
+				baseLineageGeneration: 0,
+				expectedYjsLastSequenceId: (await test_get_file_yjs_pointers(t, seeded.nodeId)).yjsLastSequenceId,
+			},
 			baseStateId: staged.base.stateId,
 			stagedStateId: staged.staged.stateId,
 			unstagedStateId: staged.unstaged.stateId,

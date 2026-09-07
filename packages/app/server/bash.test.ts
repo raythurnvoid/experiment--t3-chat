@@ -5405,6 +5405,87 @@ describe("bash_run_command", () => {
 		expect(rowsAfter[0]!.baseAssetId).toBe(nodeAfter.assetId);
 	});
 
+	test.each([
+		[false, "txt"],
+		[true, "txt"],
+		[false, "md"],
+		[true, "md"],
+	] as const)(
+		"a mode toggle keeps proposals out of agent reads and writes (OFF %s, %s)",
+		async (nonCollaborative, extension) => {
+			const filePath = `/docs/toggle-pending.${extension}`;
+			const path = `${test_db_files_mount}${filePath}`;
+			const committed = extension === "md" ? "---\nstatus: saved\n---\n\ncommitted needle\n" : "committed needle\n";
+			const proposed = extension === "md" ? "---\nstatus: proposed\n---\n\nproposal needle\n" : "proposal needle\n";
+			const runner = await create_bash_runner({
+				extraFiles: [
+					{
+						path: filePath,
+						content: committed,
+						contentType: extension === "md" ? "text/markdown;charset=utf-8" : "text/plain;charset=utf-8",
+						nonCollaborative,
+						withRealYjsSnapshot: !nonCollaborative,
+					},
+				],
+			});
+			const node = await get_seeded_node(runner, filePath);
+			const write = await runner.run(`cat > ${path} <<'EOF'\n${proposed}EOF`);
+			expect(write.stderr).toBe("");
+			expect(write.metadata.exitCode).toBe(0);
+			expect((await runner.run(`cat ${path}`)).stdout).toBe(proposed);
+			const pendingSearch = await runner.run(`search --path ${test_db_files_mount}/docs proposal`);
+			expect(pendingSearch.metadata.exitCode).toBe(0);
+			expect(pendingSearch.stdout).toContain(path);
+			if (extension === "md") {
+				const pendingMetadata = await runner.run(`meta search --where '{"eq":["frontmatter.status","proposed"]}'`);
+				expect(pendingMetadata.metadata.exitCode).toBe(0);
+				expect(pendingMetadata.stdout).toContain(path);
+			}
+			const [pendingBefore] = await list_pending_updates_for_node(runner, node._id);
+
+			const toggle = nonCollaborative
+				? await runner_as_user(runner).action(api.files_nodes_content.set_file_collaborative, {
+						membershipId: runner.seeded.membershipId,
+						nodeId: node._id,
+					})
+				: await runner_as_user(runner).mutation(api.files_nodes_content.set_file_non_collaborative, {
+						membershipId: runner.seeded.membershipId,
+						nodeId: node._id,
+						acknowledgeDropCollaborativeHistory: true,
+					});
+			expect(toggle._nay).toBeUndefined();
+			await drain_scheduled_continuations(runner);
+
+			const read = await runner.run(`cat ${path} && wc -c ${path} && grep -n needle ${path}`);
+			expect(read.stderr).toBe("");
+			expect(read.stdout).toBe(
+				`${committed}${new TextEncoder().encode(committed).byteLength} ${path}\n${extension === "md" ? 5 : 1}:committed needle\n`,
+			);
+			const hiddenSearch = await runner.run(`search --path ${test_db_files_mount}/docs proposal`);
+			expect(hiddenSearch.metadata.exitCode).toBe(0);
+			expect(hiddenSearch.stdout).not.toContain(path);
+			const committedSearch = await runner.run(`search --path ${test_db_files_mount}/docs committed`);
+			expect(committedSearch.metadata.exitCode).toBe(0);
+			expect(committedSearch.stdout).toContain(path);
+			if (extension === "md") {
+				const hiddenMetadata = await runner.run(`meta search --where '{"eq":["frontmatter.status","proposed"]}'`);
+				expect(hiddenMetadata.metadata.exitCode).toBe(0);
+				expect(hiddenMetadata.stdout).not.toContain(path);
+				const committedMetadata = await runner.run(`meta search --where '{"eq":["frontmatter.status","saved"]}'`);
+				expect(committedMetadata.metadata.exitCode).toBe(0);
+				expect(committedMetadata.stdout).toContain(path);
+			}
+
+			const refused = await runner.run(`printf replacement > ${path}`);
+			expect(refused.metadata.exitCode).not.toBe(0);
+			expect(refused.stderr).toContain("Review this proposal after the collaboration change");
+			expect(await list_pending_updates_for_node(runner, node._id)).toEqual([
+				{ ...pendingBefore, contentNeedsRebase: true },
+			]);
+			expect(await read_committed_text(runner, node._id)).toBe(committed);
+		},
+	);
+
 	test("heredoc redirect writes a multi-line pending proposal", async () => {
 		const runner = await create_bash_runner();
 

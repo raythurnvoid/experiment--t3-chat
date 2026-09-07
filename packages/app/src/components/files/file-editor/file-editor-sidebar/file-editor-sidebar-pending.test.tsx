@@ -174,6 +174,7 @@ function makePendingUpdate(args: {
 	threadIds?: string[];
 	/** Set for a proposal on a file with collaboration off: the content asset it was built from. */
 	baseAssetId?: string;
+	contentNeedsRebase?: true;
 }): app_convex_Doc<"files_pending_updates"> {
 	return {
 		_id: args.id,
@@ -197,6 +198,7 @@ function makePendingUpdate(args: {
 		...(args.eagerCreated ? { eagerCreated: args.eagerCreated } : {}),
 		...(args.pendingArchive ? { pendingArchive: args.pendingArchive } : {}),
 		...(args.threadIds ? { threadIds: args.threadIds } : {}),
+		...(args.contentNeedsRebase ? { contentNeedsRebase: true } : {}),
 		size: 0,
 		updatedAt: 1,
 	} as unknown as app_convex_Doc<"files_pending_updates">;
@@ -1313,6 +1315,49 @@ describe("FileEditorSidebarPending", () => {
 			nodeId: "node_b",
 			pendingUpdateId: "pu_fresh",
 		});
+	});
+
+	test("keeps changed-collaboration proposals for review and skips them while accepting a delete", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_review",
+				fileNodeId: "node_a",
+				staged: "s",
+				unstaged: "u",
+				contentNeedsRebase: true,
+			}),
+			makePendingUpdate({
+				id: "pu_delete",
+				fileNodeId: "node_b",
+				staged: "s",
+				unstaged: "u",
+				contentNeedsRebase: true,
+				pendingArchive: { fromPath: "/b.md" },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_a", path: "/a.md" }),
+			makeNode({ id: "node_b", path: "/b.md" }),
+		]);
+		render(<FileEditorSidebarPending />);
+
+		expect(screen.getByRole("link", { name: "/a.md, review after collaboration change" })).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "Accept changes to /a.md" }));
+		await act(async () => {});
+		expect(upsertPendingMock).not.toHaveBeenCalled();
+		expect(actionMock).not.toHaveBeenCalled();
+
+		fireEvent.click(screen.getByText("Accept all"));
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith("apply_file_pending_archive", {
+				membershipId: MEMBERSHIP_ID,
+				nodeId: "node_b",
+			}),
+		);
+		expect(toast.warning).toHaveBeenCalledWith(
+			"Changes waiting for review after a collaboration change are skipped. Open Review to update them.",
+		);
+		expect(upsertPendingMock).not.toHaveBeenCalled();
 	});
 
 	test("mixed row keeps the accordion and shows the from → dest move label", () => {
