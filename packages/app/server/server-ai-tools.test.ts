@@ -105,11 +105,17 @@ describe("ai_chat_tool_create_bash", () => {
 				description: expect.not.stringContaining("saves immediately"),
 			}),
 		);
-		// A member save after the agent's write makes the proposal stale; the agent must know
-		// its next write starts from the saved text.
+		// Stale work stays available while the next agent write prepares it.
 		expect(tool).toEqual(
 			expect.objectContaining({
 				description: expect.stringContaining("your pending change becomes stale"),
+			}),
+		);
+		expect(tool).toEqual(
+			expect.objectContaining({
+				description: expect.stringContaining(
+					"Your next edit or shell write automatically prepares the proposal before reading fresh text.",
+				),
 			}),
 		);
 	});
@@ -710,8 +716,7 @@ test("edit_file tool treats an invalid pending update id as absent", async () =>
 		),
 	).rejects.toThrow("File not found");
 
-	const [, firstReadArgs] = runAction.mock.calls[0]!;
-	expect(firstReadArgs.pendingUpdateId).toBeUndefined();
+	expect(runAction).not.toHaveBeenCalled();
 	expect(runQuery).toHaveBeenNthCalledWith(1, expect.anything(), { pendingUpdateId: "1" });
 });
 
@@ -725,18 +730,24 @@ test("edit_file tool surfaces the upsert rejection when the file is archived aft
 	};
 
 	let runActionCallCount = 0;
-	const { ctx, runQuery, runAction } = makeCtx(async () => null, {
-		// The upsert flow stages through internal mutations first: batch create, then text input.
-		runMutationImpl: async () => ({ _yay: { operationBatchId: "batch456", expiresAt: Date.now() + 60_000 } }),
-		runActionImpl: async () => {
-			runActionCallCount += 1;
-			if (runActionCallCount === 1) {
-				return currentContent;
-			}
-			// The node was archived (or deleted) between the read and the upsert.
-			return { _nay: { message: "Not found" } };
+	const { ctx, runQuery, runAction } = makeCtx(
+		async () => ({ _id: nodeId, kind: "file", assetId: "asset_edit", yjsRootKind: "plain_text" }),
+		{
+			// The upsert flow stages through internal mutations first: batch create, then text input.
+			runMutationImpl: async () => ({ _yay: { operationBatchId: "batch456", expiresAt: Date.now() + 60_000 } }),
+			runActionImpl: async () => {
+				runActionCallCount += 1;
+				if (runActionCallCount === 1) {
+					return { _yay: { pendingUpdate: null } };
+				}
+				if (runActionCallCount === 2) {
+					return currentContent;
+				}
+				// The node was archived (or deleted) between the read and the upsert.
+				return { _nay: { message: "Not found" } };
+			},
 		},
-	});
+	);
 	const tool = ai_chat_tool_create_edit_file(
 		ctx,
 		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_edit_file>[1],
@@ -749,29 +760,31 @@ test("edit_file tool surfaces the upsert rejection when the file is archived aft
 	).rejects.toThrow("the proposal was not recorded: Not found");
 
 	// The tool stops at the failed upsert: no success payload, no follow-up pending update doc read.
-	expect(runAction).toHaveBeenCalledTimes(2);
-	expect(runQuery).not.toHaveBeenCalled();
+	expect(runAction).toHaveBeenCalledTimes(3);
+	expect(runQuery).toHaveBeenCalledTimes(1);
 });
 
 test("edit_file tool stores pending unstaged branch updates from the agent", async () => {
 	const nodeId = "p456";
 	const pendingUpdateId = "pending456";
+	const pendingUpdateBaseStateId = "base456";
 	const currentContent = {
 		nodeId,
 		displayNodeId: nodeId,
 		content: "Hello world",
 		pendingUpdateId,
+		pendingUpdateBaseStateId,
 	};
 
-	let runQueryCallCount = 0;
 	const { ctx, runAction, runMutation } = makeCtx(
-		async () => {
-			runQueryCallCount += 1;
-			return runQueryCallCount === 1 ? currentContent : { _id: pendingUpdateId };
-		},
+		async (_ref, args) =>
+			args.path
+				? { _id: nodeId, kind: "file", assetId: "asset_edit", yjsRootKind: "plain_text" }
+				: { _id: pendingUpdateId },
 		{
 			// The upsert flow stages through internal mutations: batch create, then text input.
 			runMutationImpl: async () => ({ _yay: { operationBatchId: "batch456", expiresAt: Date.now() + 60_000 } }),
+			runActionImpl: async (_ref, args) => (args.path ? currentContent : { _yay: { pendingUpdate: null } }),
 		},
 	);
 	const tool = ai_chat_tool_create_edit_file(
@@ -795,8 +808,8 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 		throw new Error("`result` is AsyncIterable but expected sync object");
 	}
 
-	expect(runAction).toHaveBeenCalledTimes(2);
-	const [, firstQueryArgs] = runAction.mock.calls[0]!;
+	expect(runAction).toHaveBeenCalledTimes(3);
+	const [, firstQueryArgs] = runAction.mock.calls[1]!;
 	expect(firstQueryArgs).toEqual({
 		organizationId: test_mocks_hardcoded.organization_id.organization_1,
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
@@ -816,7 +829,7 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 		role: "unstaged",
 		text: "Hello team",
 	});
-	const [, pendingArgs] = runAction.mock.calls[1]!;
+	const [, pendingArgs] = runAction.mock.calls[2]!;
 	expect(pendingArgs).toEqual({
 		organizationId: test_mocks_hardcoded.organization_id.organization_1,
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
@@ -824,6 +837,7 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 		nodeId,
 		pendingUpdateId,
 		operationBatchId: "batch456",
+		expectedBaseStateId: pendingUpdateBaseStateId,
 		threadId: server_ai_tools_test_thread_id,
 	});
 
@@ -832,6 +846,84 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 	expect(result.metadata.pendingUpdateId).toBe(pendingUpdateId);
 	expect(result.metadata.matches).toBe(1);
 	expect(result.metadata.matcher).toBe("simple");
+});
+
+describe("ai_chat_tool_create_edit_file", () => {
+	test("refuses before opening a write batch when the file disappears after preparation", async () => {
+		const { ctx, runMutation } = makeCtx(
+			async () => ({ _id: "file_gone", kind: "file", assetId: "asset_edit", yjsRootKind: "plain_text" }),
+			{ runActionImpl: async (_ref, args) => (args.path ? null : { _yay: { pendingUpdate: null } }) },
+		);
+		const edit = ai_chat_tool_create_edit_file(ctx, server_ai_tools_test_ctx_data);
+		await expect(
+			edit.execute?.(
+				{ path: "/gone.txt", oldString: "old", newString: "new", replaceAll: false },
+				{ toolCallId: "gone", messages: [] },
+			),
+		).rejects.toThrow("the file changed while the edit was being prepared. Read it again.");
+		expect(runMutation).not.toHaveBeenCalled();
+	});
+
+	test.each([false, true])(
+		"recomputes once when the content family changes (second refusal: %s)",
+		async (refuseAgain) => {
+			let reads = 0;
+			let writes = 0;
+			const { ctx, runAction, runMutation } = makeCtx(
+				async (_ref, args) => ({
+					_id: args.path ? "file_retry" : "pending_retry",
+					kind: "file",
+					assetId: "asset_edit",
+					yjsRootKind: "plain_text",
+				}),
+				{
+					runMutationImpl: async () => ({ _yay: { operationBatchId: "batch_retry", expiresAt: Date.now() + 60_000 } }),
+					runActionImpl: async (_ref, args) => {
+						if (args.path) {
+							reads += 1;
+							return {
+								nodeId: "file_retry",
+								displayNodeId: "file_retry",
+								content: reads === 1 ? "old\n" : "saved\nold\n",
+								pendingUpdateId: reads === 1 ? null : "pending_retry",
+								pendingUpdateBaseStateId: reads === 1 ? undefined : "base_retry",
+							};
+						}
+						if (args.operationBatchId) {
+							writes += 1;
+							return writes === 1 || refuseAgain
+								? { _nay: { name: "pending_content_changed", message: "The proposal changed after it was read." } }
+								: { _yay: {} };
+						}
+						return { _yay: { pendingUpdate: null } };
+					},
+				},
+			);
+			const edit = ai_chat_tool_create_edit_file(ctx, server_ai_tools_test_ctx_data);
+			const result = edit.execute?.(
+				{ path: "/retry.txt", oldString: "old", newString: "new", replaceAll: false },
+				{ toolCallId: "retry", messages: [] },
+			);
+			if (refuseAgain) {
+				await expect(result).rejects.toThrow("The proposal changed after it was read.");
+			} else {
+				await expect(result).resolves.toMatchObject({ metadata: { modifiedContent: "saved\nnew\n" } });
+			}
+			expect(reads).toBe(2);
+			expect(writes).toBe(2);
+			expect(runAction.mock.calls.map(([, args]) => args)).toMatchObject([
+				{ nodeId: "file_retry" },
+				{ path: "/retry.txt" },
+				{ expectedBaseStateId: null },
+				{ nodeId: "file_retry" },
+				{ path: "/retry.txt" },
+				{ expectedBaseStateId: "base_retry" },
+			]);
+			expect(
+				runMutation.mock.calls.filter(([, args]) => args.role === "unstaged").map(([, args]) => args.text),
+			).toEqual(["new\n", "saved\nnew\n"]);
+		},
+	);
 });
 
 test("replace_once_or_all: line-trimmed matching preserves the following newline", () => {
@@ -922,15 +1014,15 @@ test("edit_file tool preserves the baseline trailing newline shape", async () =>
 		pendingUpdateId,
 	};
 
-	let runQueryCallCount = 0;
 	const { ctx, runAction, runMutation } = makeCtx(
-		async () => {
-			runQueryCallCount += 1;
-			return runQueryCallCount === 1 ? currentContent : { _id: pendingUpdateId };
-		},
+		async (_ref, args) =>
+			args.path
+				? { _id: nodeId, kind: "file", assetId: "asset_edit", yjsRootKind: "plain_text" }
+				: { _id: pendingUpdateId },
 		{
 			// The upsert flow stages through internal mutations: batch create, then text input.
 			runMutationImpl: async () => ({ _yay: { operationBatchId: "batch789", expiresAt: Date.now() + 60_000 } }),
+			runActionImpl: async (_ref, args) => (args.path ? currentContent : { _yay: { pendingUpdate: null } }),
 		},
 	);
 	const tool = ai_chat_tool_create_edit_file(
@@ -954,7 +1046,7 @@ test("edit_file tool preserves the baseline trailing newline shape", async () =>
 		throw new Error("`result` is AsyncIterable but expected sync object");
 	}
 
-	const [, firstQueryArgs] = runAction.mock.calls[0]!;
+	const [, firstQueryArgs] = runAction.mock.calls[1]!;
 	expect(firstQueryArgs).toEqual({
 		organizationId: test_mocks_hardcoded.organization_id.organization_1,
 		workspaceId: test_mocks_hardcoded.workspace_id.workspace_1,
@@ -984,14 +1076,14 @@ test("edit_file edits a plain text .json file and stages the exact text", async 
 		pendingUpdateId,
 	};
 
-	let runQueryCallCount = 0;
 	const { ctx, runMutation } = makeCtx(
-		async () => {
-			runQueryCallCount += 1;
-			return runQueryCallCount === 1 ? currentContent : { _id: pendingUpdateId };
-		},
+		async (_ref, args) =>
+			args.path
+				? { _id: nodeId, kind: "file", assetId: "asset_edit", yjsRootKind: "plain_text" }
+				: { _id: pendingUpdateId },
 		{
 			runMutationImpl: async () => ({ _yay: { operationBatchId: "batch901", expiresAt: Date.now() + 60_000 } }),
+			runActionImpl: async (_ref, args) => (args.path ? currentContent : { _yay: { pendingUpdate: null } }),
 		},
 	);
 	const tool = ai_chat_tool_create_edit_file(
@@ -1033,16 +1125,12 @@ test("edit_file describes and preserves a terminal read-only refusal", async () 
 		content: "before",
 		pendingUpdateId: null,
 	};
-	let runActionCallCount = 0;
-	const { ctx } = makeCtx(async () => null, {
-		runMutationImpl: async () => ({ _yay: { operationBatchId: "batch_read_only", expiresAt: Date.now() + 60_000 } }),
-		runActionImpl: async () => {
-			runActionCallCount += 1;
-			return runActionCallCount === 1
-				? currentContent
-				: { _nay: { name: "read_only", message: "This item is read-only." } };
+	const { ctx, runAction, runMutation } = makeCtx(
+		async () => ({ _id: currentContent.nodeId, kind: "file", assetId: "asset_edit", yjsRootKind: "plain_text" }),
+		{
+			runActionImpl: async () => ({ _nay: { name: "read_only", message: "This item is read-only." } }),
 		},
-	});
+	);
 	const tool = ai_chat_tool_create_edit_file(
 		ctx,
 		server_ai_tools_test_ctx_data as Parameters<typeof ai_chat_tool_create_edit_file>[1],
@@ -1063,13 +1151,14 @@ test("edit_file describes and preserves a terminal read-only refusal", async () 
 	).rejects.toThrow(
 		"Cannot edit /docs/locked.md: This item is read-only. Do not retry this path with another write tool.",
 	);
+	expect(runAction).toHaveBeenCalledTimes(1);
+	expect(runMutation).not.toHaveBeenCalled();
 });
 
 test("edit_file's refusal names the stored content type, not the path", async () => {
-	// The text read finds nothing because the file is a stored image. The node lookup that
-	// follows returns the file, so the refusal can name its type.
+	// A stored image has no text. Its node lookup lets the refusal name the stored type.
 	const { ctx, runAction, runQuery } = makeCtx(async () => ({ kind: "file", contentType: "image/png" }), {
-		runActionImpl: async () => null,
+		runActionImpl: async (_ref, args) => (args.path ? null : { _yay: { pendingUpdate: null } }),
 	});
 	const tool = ai_chat_tool_create_edit_file(
 		ctx,
@@ -1084,10 +1173,11 @@ test("edit_file's refusal names the stored content type, not the path", async ()
 			{ path: "/assets/photo.png", oldString: "a", newString: "b", replaceAll: false },
 			{ toolCallId: "test", messages: [] },
 		),
-	).rejects.toThrow(/Cannot edit \/assets\/photo\.png: this file's content type \('image\/png'\) is not editable as text/);
+	).rejects.toThrow(
+		/Cannot edit \/assets\/photo\.png: this file's content type \('image\/png'\) is not editable as text/,
+	);
 
-	// The read ran once (the type is only known from the store), then one node lookup.
-	expect(runAction).toHaveBeenCalledTimes(1);
+	expect(runAction).not.toHaveBeenCalled();
 	expect(runQuery).toHaveBeenCalledTimes(1);
 });
 

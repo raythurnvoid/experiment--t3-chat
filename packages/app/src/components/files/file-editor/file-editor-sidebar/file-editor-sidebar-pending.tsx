@@ -306,15 +306,16 @@ const PendingMoveLabel = memo(function PendingMoveLabel(props: { path: string; m
 /**
  * Load the staged/unstaged branch states of one pending update and read each one's text. The
  * branch states live in paged `files_pending_update_yjs_states` families, so this fetches each
- * role page by page; the shape comes from the NODE (via the row), never from the proposal. Every
- * refusal bubbles so Accept can refuse visibly instead of publishing a decoded empty string.
+ * role page by page. Retained branches keep their source shape until preparation rebuilds them.
+ * Every refusal bubbles so Accept can refuse visibly instead of publishing a decoded empty string.
  */
 async function decode_staged_unstaged(args: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	pendingUpdate: app_convex_Doc<"files_pending_updates">;
 	rootKind: files_YjsRootKind | null;
 }) {
-	const { membershipId, pendingUpdate, rootKind } = args;
+	const { membershipId, pendingUpdate } = args;
+	const rootKind = pendingUpdate.contentRebaseRootKind ?? args.rootKind;
 	if (!files_pending_update_has_content(pendingUpdate)) {
 		return Result({ _nay: { message: "Pending update has no content to decode" } });
 	}
@@ -372,10 +373,14 @@ async function files_pending_accept_and_save(
 	});
 	if (upserted._nay) return upserted;
 
+	const acceptedPendingUpdate = upserted._yay.pendingUpdate;
+	if (!files_pending_update_has_content(acceptedPendingUpdate)) return Result({ _yay: null });
+
 	return await convex.action(app_convex_api.files_pending_updates.save_file_pending_update, {
 		membershipId,
 		nodeId: pendingUpdate.fileNodeId,
-		pendingUpdateId: pendingUpdate._id,
+		pendingUpdateId: acceptedPendingUpdate._id,
+		reviewedUpdatedAt: acceptedPendingUpdate.updatedAt,
 	});
 }
 
@@ -411,7 +416,7 @@ async function files_pending_row_accept(
 		});
 	}
 	if (pendingUpdate.contentNeedsRebase) {
-		return Result({ _nay: { message: PENDING_REVIEW_AFTER_COLLABORATION_MESSAGE } });
+		return Result({ _nay: { message: files_PENDING_UPDATE_STALE_BASE_MESSAGE } });
 	}
 
 	if (pendingUpdate.pendingMove) {
@@ -528,16 +533,10 @@ const PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE =
 	"Use All changes to accept changes that also affect pending changes from another source";
 
 /**
- * "Accept all" skips stale rows (collaboration off, file saved since). The per-row sentence in
+ * "Accept all" skips proposals waiting for preparation. The per-row sentence in
  * `files_PENDING_UPDATE_STALE_BASE_MESSAGE` talks about one file, so the bulk action has its own.
  */
-const PENDING_ACCEPT_ALL_SKIPS_STALE_MESSAGE =
-	"Out-of-date changes are skipped. Ask the agent to make them again, or discard them.";
-
-const PENDING_REVIEW_AFTER_COLLABORATION_MESSAGE =
-	"Review this proposal after the collaboration change before accepting it.";
-const PENDING_ACCEPT_ALL_SKIPS_REVIEW_MESSAGE =
-	"Changes waiting for review after a collaboration change are skipped. Open Review to update them.";
+const PENDING_ACCEPT_ALL_SKIPS_REVIEW_MESSAGE = "Changes waiting for review are skipped. Open Review to update them.";
 
 /**
  * Mark shown rows whose accept can settle or invalidate a hidden row. Keep those accepts in the
@@ -574,10 +573,7 @@ function files_pending_rows_get_accept_requires_all_changes_ids(
 			row.pendingUpdate.pendingArchive != null &&
 			row.isFolder &&
 			hiddenRows.some((hiddenRow) => hiddenRow.path.startsWith(`${row.path}/`));
-		if (
-			deletesHiddenDescendant ||
-			(row.replacedNodeId != null && hiddenNodeIds.has(row.replacedNodeId))
-		) {
+		if (deletesHiddenDescendant || (row.replacedNodeId != null && hiddenNodeIds.has(row.replacedNodeId))) {
 			blockedPendingUpdateIds.add(row.pendingUpdate._id);
 		}
 	}
@@ -1063,18 +1059,15 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 			: (kind === "move" || kind === "content_and_move") && moveDestinationPath != null
 				? `move of ${path} to ${moveDestinationPath}`
 				: `changes to ${path}`;
-	const staleMessage = pendingUpdate.contentNeedsRebase
-		? PENDING_REVIEW_AFTER_COLLABORATION_MESSAGE
-		: files_PENDING_UPDATE_STALE_BASE_MESSAGE;
 
 	// `preventDefault()` stops the native <summary> from toggling when the action buttons are clicked.
 	const handleAccept = useFn((event: MouseEvent<HTMLButtonElement>) => {
 		event.preventDefault();
 		if (isBusy || !canAccept) return;
 		// The button stays enabled so the explanation is reachable by click too, not only by
-		// hovering the `title`. The server would refuse the accept with the same sentence.
+		// hovering the `title`.
 		if (isStale) {
-			toast.error(staleMessage);
+			toast.error(files_PENDING_UPDATE_STALE_BASE_MESSAGE);
 			return;
 		}
 		if (acceptRequiresAllChanges) {
@@ -1181,7 +1174,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 							aria-label={`Accept ${actionLabel}`}
 							title={
 								isStale
-									? staleMessage
+									? files_PENDING_UPDATE_STALE_BASE_MESSAGE
 									: acceptRequiresAllChanges
 										? PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE
 										: undefined
@@ -1211,24 +1204,21 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	// everything (a delete supersedes the doc's other aspects). The replace indicator wins the
 	// next slot: a move onto an occupied destination archives that file, so mark it as Replaced.
 	// Copy and replacement rows also show Replaced: accepting them installs a whole-file replacement
-	// (content and type). Plain edits show Modified. A stale proposal (collaboration off, file
-	// saved since) shows Out of date, because it can only be discarded.
+	// (content and type). Plain edits show Modified. Old proposals point the owner to Review.
 	const caption =
 		kind === "delete"
 			? "Deleted"
-			: pendingUpdate.contentNeedsRebase
-				? "Review after collaboration change"
-				: isStale
-					? "Out of date"
-					: replacedNodeId != null
-						? "Replaced"
-						: isAddedFile
-							? "Added"
-							: kind === "content_and_move"
-								? "Moved"
-								: kind === "copy" || kind === "replacement"
-									? "Replaced"
-									: "Modified";
+			: isStale
+				? "Review to update"
+				: replacedNodeId != null
+					? "Replaced"
+					: isAddedFile
+						? "Added"
+						: kind === "content_and_move"
+							? "Moved"
+							: kind === "copy" || kind === "replacement"
+								? "Replaced"
+								: "Modified";
 
 	// Content-plus-move rows show the same red → green move label as move-only rows; the link
 	// still opens the diff. Delete rows always show only their own path. The stale suffix gives
@@ -1237,9 +1227,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 		(kind === "move" || kind === "content_and_move") && moveDestinationPath != null
 			? `${path} → ${moveDestinationPath}`
 			: path;
-	const rowAccessibleLabel = isStale
-		? `${rowLabel}, ${pendingUpdate.contentNeedsRebase ? "review after collaboration change" : "out of date"}`
-		: rowLabel;
+	const rowAccessibleLabel = isStale ? `${rowLabel}, review to update` : rowLabel;
 
 	return (
 		<li>
@@ -1297,7 +1285,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 							aria-label={`Accept ${actionLabel}`}
 							title={
 								isStale
-									? staleMessage
+									? files_PENDING_UPDATE_STALE_BASE_MESSAGE
 									: acceptRequiresAllChanges
 										? PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE
 										: undefined
@@ -1332,8 +1320,8 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 						className={cn("FileEditorSidebarPending-item-diff" satisfies FileEditorSidebarPending_ClassNames)}
 					>
 						Replaces the file's content and type with a copy of {pendingUpdate.copiedFrom.path} (
-						{pendingUpdate.pendingReplacement.contentType}).{" "}
-						Save changes in all open editors first. An existing text file keeps its collaboration setting.
+						{pendingUpdate.pendingReplacement.contentType}). Save changes in all open editors first. An existing text
+						file keeps its collaboration setting.
 					</div>
 				) : isOpen && diffText != null ? (
 					<DiffMonospaceBlock
@@ -1560,16 +1548,10 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 			toast.error(PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE);
 			return;
 		}
-		// A stale proposal (collaboration off, file saved since) cannot be accepted, and the
-		// server would refuse it. Accept the other rows and explain the skipped ones once.
+		// Preparation must show its merged text in Review before a later Accept can publish it.
 		const acceptRows = visibleRows.filter((row) => !row.isStale);
 		if (acceptRows.length < visibleRows.length) {
-			if (visibleRows.some((row) => row.isStale && row.pendingUpdate.contentNeedsRebase)) {
-				toast.warning(PENDING_ACCEPT_ALL_SKIPS_REVIEW_MESSAGE);
-			}
-			if (visibleRows.some((row) => row.isStale && !row.pendingUpdate.contentNeedsRebase)) {
-				toast.warning(PENDING_ACCEPT_ALL_SKIPS_STALE_MESSAGE);
-			}
+			toast.warning(PENDING_ACCEPT_ALL_SKIPS_REVIEW_MESSAGE);
 		}
 		if (acceptRows.length === 0) return;
 		setIsBulkBusy(true);
@@ -1676,11 +1658,9 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 								// stale rows are only skipped.
 								acceptRequiresAllChangesIds.size > 0
 									? PENDING_ACCEPT_REQUIRES_ALL_CHANGES_MESSAGE
-									: visibleRows.some((row) => row.isStale && row.pendingUpdate.contentNeedsRebase)
+									: visibleRows.some((row) => row.isStale)
 										? PENDING_ACCEPT_ALL_SKIPS_REVIEW_MESSAGE
-										: visibleRows.some((row) => row.isStale)
-											? PENDING_ACCEPT_ALL_SKIPS_STALE_MESSAGE
-											: undefined
+										: undefined
 							}
 							aria-busy={isBulkBusy}
 							disabled={isBulkBusy || !canAcceptAllVisibleRows}

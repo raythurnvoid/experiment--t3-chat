@@ -1666,6 +1666,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 			nodeId: v.id("files_nodes"),
 			displayNodeId: v.id("files_nodes"),
 			pendingUpdateId: v.union(v.id("files_pending_updates"), v.null()),
+			pendingUpdateBaseStateId: v.optional(v.id("files_pending_update_yjs_states")),
 			materializationState: v.union(file_content_materialization_state_validator, v.null()),
 		}),
 		v.null(),
@@ -1714,6 +1715,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 				nodeId: fileNode._id,
 				displayNodeId: fileNode._id,
 				pendingUpdateId: null,
+				pendingUpdateBaseStateId: undefined,
 				materializationState: null,
 			};
 		}
@@ -1762,6 +1764,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 					nodeId: fileNode._id,
 					displayNodeId: fileNode._id,
 					pendingUpdateId: pendingUpdate._id,
+					pendingUpdateBaseStateId: pendingUpdate.baseStateId,
 					materializationState: null,
 				};
 			}
@@ -1788,9 +1791,8 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 				pendingUpdateContent = null;
 			}
 		}
-		// A proposal on a file with collaboration off is stale once a member saved the file after
-		// the agent made it. Serve the committed text then, like the stale generation above. The
-		// agent's next write rebuilds the proposal from the saved text.
+		// A member save hides stale proposal text until preparation updates it. Keep its base state ID
+		// in the read result so an edit cannot overwrite a proposal prepared after this read.
 		if (pendingUpdate && pendingUpdateContent && files_pending_update_content_is_stale(pendingUpdate, fileNode)) {
 			pendingUpdateContent = null;
 		}
@@ -1843,6 +1845,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 				nodeId: fileNode._id,
 				displayNodeId: fileNode._id,
 				pendingUpdateId: pendingUpdate._id,
+				pendingUpdateBaseStateId: pendingUpdate.baseStateId,
 				materializationState: null,
 			};
 		}
@@ -1891,6 +1894,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 					nodeId: fileNode._id,
 					displayNodeId: fileNode._id,
 					pendingUpdateId: pendingUpdate?._id ?? null,
+					pendingUpdateBaseStateId: pendingUpdate?.baseStateId,
 					materializationState: null,
 				};
 			}
@@ -1901,6 +1905,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 			nodeId: fileNode._id,
 			displayNodeId: fileNode._id,
 			pendingUpdateId: pendingUpdate?._id ?? null,
+			pendingUpdateBaseStateId: pendingUpdate?.baseStateId,
 			materializationState,
 		};
 	},
@@ -1920,6 +1925,7 @@ type get_file_last_available_text_content_by_path_Result = {
 	nodeId: Id<"files_nodes">;
 	displayNodeId: Id<"files_nodes">;
 	pendingUpdateId: Id<"files_pending_updates"> | null;
+	pendingUpdateBaseStateId?: Id<"files_pending_update_yjs_states">;
 } | null;
 
 export const get_file_last_available_text_content_by_path = internalAction({
@@ -1940,6 +1946,7 @@ export const get_file_last_available_text_content_by_path = internalAction({
 			nodeId: v.id("files_nodes"),
 			displayNodeId: v.id("files_nodes"),
 			pendingUpdateId: v.union(v.id("files_pending_updates"), v.null()),
+			pendingUpdateBaseStateId: v.optional(v.id("files_pending_update_yjs_states")),
 		}),
 		v.null(),
 	),
@@ -2013,6 +2020,7 @@ export const get_file_last_available_text_content_by_path = internalAction({
 			nodeId: contentState.nodeId,
 			displayNodeId: contentState.displayNodeId,
 			pendingUpdateId: contentState.pendingUpdateId,
+			pendingUpdateBaseStateId: contentState.pendingUpdateBaseStateId,
 		};
 	},
 });
@@ -4080,6 +4088,7 @@ async function db_install_file_content_replacement(
 		billedUser: Doc<"users">;
 		fileNode: Doc<"files_nodes">;
 		previousAssetId: Id<"files_r2_assets">;
+		pendingContent: "preserve" | "drop";
 		isNewCopy?: boolean;
 		backup?: { assetId: Id<"files_r2_assets">; size: number };
 		contentAssetId: Id<"files_r2_assets">;
@@ -4224,10 +4233,16 @@ async function db_install_file_content_replacement(
 		expectedActiveYjsLastSequenceId?: Id<"files_yjs_docs_last_sequences">;
 		nonCollaborativeCleanupYjsLastSequenceId?: Id<"files_yjs_docs_last_sequences">;
 	} | null = null;
-	// Every member's text proposal uses the text that goes away now, including the acting member's
-	// own proposal. A file with collaboration off has no document, but its proposals hold the
-	// committed text as their base, so they go the same way.
-	if (files_node_has_editable_text_content(fileNode)) {
+	// Restore keeps every owner's branches in their old shape until preparation rebuilds them.
+	// Accepting a whole-file copy still removes the old text proposals.
+	if (args.pendingContent === "preserve") {
+		await files_pending_updates_db_mark_content_for_rebase(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			nodeId,
+			rootKind: fileNode.yjsRootKind,
+		});
+	} else {
 		await files_pending_updates_db_drop_content_for_node(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -4596,6 +4611,7 @@ export const finalize_file_pending_replacement = internalMutation({
 			billedUser,
 			fileNode,
 			previousAssetId,
+			pendingContent: "drop",
 			isNewCopy: pendingUpdate.eagerCreated !== undefined,
 			backup: args.backup,
 			contentAssetId: args.contentAssetId,
@@ -4829,6 +4845,13 @@ export const restore_snapshot = internalMutation({
 			}
 			restoreUpdate = consumed._yay;
 		}
+
+		await files_pending_updates_db_mark_content_for_rebase(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			nodeId: args.nodeId,
+			rootKind: fileNode.yjsRootKind,
+		});
 
 		const now = Date.now();
 		const userId = userAuth.id;
@@ -5152,6 +5175,7 @@ export const finalize_snapshot_restore_replacement = internalMutation({
 			billedUser,
 			fileNode,
 			previousAssetId: fileNode.assetId,
+			pendingContent: "preserve",
 			backup: args.backup,
 			contentAssetId: args.contentAssetId,
 			contentSize: args.contentSize,

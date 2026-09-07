@@ -16,6 +16,7 @@ Paths below are relative to the repository root. Open the files for the affected
 | Client loading, rebasing, Monaco models, and presence | `packages/app/src/lib/files.ts` |
 | Yjs provider and its hook | `packages/app/src/lib/files-yjs-provider.ts`, `packages/app/src/lib/files-yjs-doc.ts`, `packages/app/src/lib/files-yjs-awareness.ts`, `packages/app/src/hooks/files-hooks.ts` |
 | Text conversion and Yjs updates | `packages/app/shared/files-tiptap.ts`, `packages/app/shared/files-yjs.ts` |
+| Proposal text merge | `packages/app/shared/files-pending-text-merge.ts` |
 | Live updates and stored content | `packages/app/convex/files_nodes.ts`, `packages/app/convex/files_nodes_content.ts`, `packages/app/convex/schema.ts` |
 | Proposal persistence | `packages/app/convex/files_pending_updates.ts` |
 
@@ -35,6 +36,12 @@ Read the existing specs when the task touches their rules:
 The collaborative rich editor sends edits through the provider as the user types. Monaco text edits stay local until Save. Its Sync merges remote changes into the local text while keeping undo history. This prevents incomplete Markdown edits from reaching the rich editor on each keystroke.
 
 Diff review has its own pending branches. Accepting a hunk changes the staged branch; Save commits it. Do not treat an accepted hunk as a saved file. Follow the pending-updates spec for partial saves and rebasing.
+
+Preparation, proposal Sync, and Save share the same line merge. Accepted changed lines win over saved overlaps, and unrelated saved text stays. Proposed text is merged separately, so a partial Save keeps unaccepted work. Build staged from the current base and unstaged from staged. Do not replay old branch delete sets into newer live text. Exact unique section moves keep their new position; accepted text in deleted sections keeps its paragraph breaks. If a rewritten saved block has extra lines and its target is unclear, refuse while keeping the proposal. Shared words can appear in an unrelated note, so they are not enough to choose a target.
+
+Review prepares stale branches before allowing edits. Agent edit and shell-write tools also prepare automatically before reading fresh text; opening Review is not a prerequisite for agent work. Draft persistence, Sync, and Save carry the loaded proposal's `reviewedUpdatedAt`, so an old pane cannot accept a newer version.
+
+Restore keeps every owner's proposals. The open diff view waits for preparation and reloads both prepared branches; it must not fill both panes with restored text. Retained branches use `contentRebaseRootKind` until preparation clears it and writes the current shape. Keep unsubmitted local text available for copying while replacing panes. Restoring stored bytes keeps text proposals too, but applying them to that stored-byte file remains undefined.
 
 Files with collaboration off still support the views allowed by their shape. Their ordinary editors save the whole text through `replace_file_content`; proposal review uses the pending-update save path. Do not send these files through live Yjs loading.
 

@@ -300,10 +300,14 @@ const app_convex_schema = defineSchema({
 		 */
 		baseAssetId: v.optional(v.id("files_r2_assets")),
 		/**
-		 * A collaboration toggle kept these branches on their old base. Review must rebuild them
+		 * A toggle or restore kept these branches on their old base. Preparation rebuilds them
 		 * before another content write. Marking alone keeps the proposal's current expiry.
 		 */
 		contentNeedsRebase: v.optional(v.literal(true)),
+		/**
+		 * Shape of preserved branches before a restore changes the file's shape.
+		 */
+		contentRebaseRootKind: v.optional(v.union(v.literal("plain_text"), v.literal("rich_text"))),
 		/** Pending move/rename proposal. Ids are authoritative; `fromPath` is display/conflict metadata only. */
 		pendingMove: v.optional(
 			v.object({

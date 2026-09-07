@@ -32,6 +32,7 @@ import type {
 import type {
 	files_pending_updates_get_by_file_node_Result,
 	files_pending_updates_get_pending_path_overlay_data_Result,
+	prepare_file_pending_update_for_agent_Result,
 } from "../convex/files_pending_updates.ts";
 import type { get_asset_by_id_Result } from "../convex/r2.ts";
 import { Result } from "common/errors-as-values-utils.ts";
@@ -259,6 +260,8 @@ type DbFilesCacheEntry = {
 	updatedAt: Doc<"files_nodes">["updatedAt"];
 	updatedBy?: Doc<"files_nodes">["updatedBy"] | "";
 	contentType?: Doc<"files_nodes">["contentType"];
+	assetId?: Doc<"files_nodes">["assetId"];
+	yjsRootKind?: Doc<"files_nodes">["yjsRootKind"];
 };
 
 export type bash_DbFilesFsOptions = {
@@ -624,6 +627,8 @@ export class bash_DbFilesFs implements IFileSystem {
 		// a real target. Only a missing target normalizes, so eager creation names new files
 		// exactly like cp and the UI create flow.
 		let dbFilesPath = requestedDbFilesPath;
+		// Listing caches omit document shape. Writes need the current editable-text marker.
+		this.entryCache.delete(dbFilesPath);
 		let entry = await this.getEntry(dbFilesPath);
 		if (!entry) {
 			const normalizedSegments = files_get_normalized_node_path_segments({
@@ -646,6 +651,7 @@ export class bash_DbFilesFs implements IFileSystem {
 				// overwrite target (cp's replace-target re-check). Creating at a silently
 				// renamed path is a trap instead: the redirect reports success while the
 				// requested path stays missing, so refuse and name the valid path.
+				this.entryCache.delete(normalizedDbFilesPath);
 				entry = await this.getEntry(normalizedDbFilesPath);
 				if (!entry) {
 					throw new Error(
@@ -658,6 +664,11 @@ export class bash_DbFilesFs implements IFileSystem {
 		if (entry?.kind === "folder") {
 			throw new Error(`EISDIR: illegal operation on a directory, open '${shellPath}'`);
 		}
+		if (entry?.kind === "file" && !files_node_has_editable_text_content(entry)) {
+			throw new Error(
+				`cannot write '${shellPath}': this file's content type ('${entry.contentType ?? "unknown"}') is not editable as text`,
+			);
+		}
 		const chunk = decode_write_content(content, options, shellPath);
 
 		// Writes only run for the tenant app db-files root: the mounted sources threw above,
@@ -667,46 +678,11 @@ export class bash_DbFilesFs implements IFileSystem {
 			throw should_never_happen("app file write reached the reserved mount scope", { organizationId, workspaceId });
 		}
 
-		// Full current content including the user's own pending overlay; never this.readFile,
-		// which caps inline reads and would truncate the append baseline. The chunk read
-		// serves the stored markdown verbatim; the last-available action reconstructs
-		// through the yjs branch, which is not always byte-identical to the stored text,
-		// so it stays the fallback for content chunks cannot serve.
-		let currentContent: {
-			nodeId: Id<"files_nodes">;
-			content: string;
-			pendingUpdateId: Id<"files_pending_updates"> | null;
-		} | null = (await this.ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
-			organizationId,
-			workspaceId,
-			userId,
-			path: dbFilesPath,
-			overlayUserId: userId,
-			mode: { kind: "full", maxBytes: files_MAX_TEXT_CONTENT_BYTES },
-		})) as files_nodes_read_file_content_from_chunks_Result;
-		if (!currentContent && entry != null) {
-			currentContent = (await this.ctx.runAction(
-				internal.files_nodes_content.get_file_last_available_text_content_by_path,
-				{
-					organizationId,
-					workspaceId,
-					userId,
-					path: dbFilesPath,
-					overlayUserId: userId,
-				},
-			)) as files_nodes_get_file_last_available_text_content_by_path_Result;
-		}
-		if (!currentContent && entry?.kind === "file") {
-			throw new Error(
-				`cannot write '${shellPath}': this file's content type ('${entry.contentType ?? "unknown"}') is not editable as text`,
-			);
-		}
-
 		let nodeId: Id<"files_nodes">;
 		let eagerCreatedCommittedSequence: number | undefined;
 		let createdAncestorIds: Id<"files_nodes">[] | undefined;
-		if (currentContent) {
-			nodeId = currentContent.nodeId;
+		if (entry?._id && entry._id !== files_ROOT_ID) {
+			nodeId = entry._id;
 		} else {
 			// Missing target: eager create like write_file/cp. The visible path must respect the
 			// user's pending moves: a vacated path keeps its committed occupant, and a path inside
@@ -741,34 +717,13 @@ export class bash_DbFilesFs implements IFileSystem {
 				// below keeps the node safe from discard/expiry hard deletes.
 				eagerCreatedCommittedSequence = created._yay.createdCommittedSequence;
 				createdAncestorIds = created._yay.createdAncestorIds;
-			} else {
-				// A raced creation reused a pre-existing node: re-read so the proposal overwrites
-				// that content instead of pretending the file is new.
-				currentContent = (await this.ctx.runAction(
-					internal.files_nodes_content.get_file_last_available_text_content_by_path,
-					{
-						organizationId,
-						workspaceId,
-						userId,
-						path: dbFilesPath,
-						overlayUserId: userId,
-					},
-				)) as files_nodes_get_file_last_available_text_content_by_path_Result;
-				if (!currentContent) {
-					throw new Error(
-						`cannot write '${shellPath}': the file changed while the command was running. Re-run the command.`,
-					);
-				}
-				nodeId = currentContent.nodeId;
 			}
 		}
 
-		const oldText = currentContent?.content ?? "";
 		// Real shell behavior: overwrite stores the bytes as written (only CRLF is
 		// normalized) and append concatenates, so a shell-written trailing newline
 		// survives and a later `>>` starts on a new line instead of gluing.
 		const normalizedChunk = files_normalize_lf_newlines(chunk);
-		const newText = mode === "append" ? oldText + normalizedChunk : normalizedChunk;
 
 		// A failure after the eager create (size cap, upsert) would leave the just-created empty node behind.
 		// Best-effort compensation: remove it while it is still provably untouched; a cleanup
@@ -799,43 +754,92 @@ export class bash_DbFilesFs implements IFileSystem {
 			}
 			return ` — an empty file was left behind at '${shellPath}'; remove it in Files if it is not wanted`;
 		};
-		if (files_get_utf8_byte_size(newText) > files_MAX_TEXT_CONTENT_BYTES) {
-			throw new Error(
-				`cannot write '${shellPath}': content exceeds the ${files_MAX_TEXT_CONTENT_BYTES}-byte app file limit${await eager_created_failure_note()}`,
-			);
-		}
-		let written: files_agent_write_file_text_Result;
-		try {
-			written = await files_agent_write_file_text(this.ctx, {
+		for (let attempt = 0; ; attempt += 1) {
+			// Prepare before reading or opening a write batch: preparation uses its own batch.
+			const prepared = (await this.ctx.runAction(internal.files_pending_updates.prepare_file_pending_update_for_agent, {
 				organizationId,
 				workspaceId,
 				userId,
 				nodeId,
-				pendingUpdateId: currentContent?.pendingUpdateId ?? undefined,
-				unstagedText: newText,
-				eagerCreatedCommittedSequence,
-				// Recorded on the pending update doc so Discard/TTL expiry can also remove the
-				// parent folders this write eagerly created.
-				eagerCreatedAncestorIds: createdAncestorIds,
-				threadId: threadId ?? undefined,
-			});
-		} catch (error) {
-			if (eagerCreatedCommittedSequence === undefined) {
-				throw error;
+			})) as prepare_file_pending_update_for_agent_Result;
+			if (prepared._nay) {
+				throw new Error(`cannot write '${shellPath}': ${prepared._nay.message}${await eager_created_failure_note()}`);
 			}
-			throw new Error(
-				`cannot write '${shellPath}': the proposal was not recorded.${await eager_created_failure_note()}`,
-				{
-					cause: error,
-				},
-			);
-		}
+			// Use full chunks, not capped readFile output. Keep exact Markdown bytes when
+			// available; the Yjs action is the fallback for text not served by chunks.
+			let currentContent: {
+				nodeId: Id<"files_nodes">;
+				content: string;
+				pendingUpdateId: Id<"files_pending_updates"> | null;
+				pendingUpdateBaseStateId?: Id<"files_pending_update_yjs_states">;
+			} | null = (await this.ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
+				organizationId,
+				workspaceId,
+				userId,
+				path: dbFilesPath,
+				overlayUserId: userId,
+				mode: { kind: "full", maxBytes: files_MAX_TEXT_CONTENT_BYTES },
+			})) as files_nodes_read_file_content_from_chunks_Result;
+			if (!currentContent) {
+				currentContent = (await this.ctx.runAction(
+					internal.files_nodes_content.get_file_last_available_text_content_by_path,
+					{
+						organizationId,
+						workspaceId,
+						userId,
+						path: dbFilesPath,
+						overlayUserId: userId,
+					},
+				)) as files_nodes_get_file_last_available_text_content_by_path_Result;
+			}
+			if (!currentContent) {
+				throw new Error(
+					`cannot write '${shellPath}': the file changed while the command was running. Re-run the command.${await eager_created_failure_note()}`,
+				);
+			}
+			const newText = mode === "append" ? currentContent.content + normalizedChunk : normalizedChunk;
+			if (files_get_utf8_byte_size(newText) > files_MAX_TEXT_CONTENT_BYTES) {
+				throw new Error(
+					`cannot write '${shellPath}': content exceeds the ${files_MAX_TEXT_CONTENT_BYTES}-byte app file limit${await eager_created_failure_note()}`,
+				);
+			}
+			let written: files_agent_write_file_text_Result;
+			try {
+				written = await files_agent_write_file_text(this.ctx, {
+					organizationId,
+					workspaceId,
+					userId,
+					nodeId,
+					pendingUpdateId: currentContent.pendingUpdateId ?? undefined,
+					// Append depends on the text read above; a full overwrite replaces it deliberately.
+					expectedBaseStateId: mode === "append" ? (currentContent.pendingUpdateBaseStateId ?? null) : undefined,
+					unstagedText: newText,
+					eagerCreatedCommittedSequence,
+					// Recorded on the pending update doc so Discard/TTL expiry can also remove the
+					// parent folders this write eagerly created.
+					eagerCreatedAncestorIds: createdAncestorIds,
+					threadId: threadId ?? undefined,
+				});
+			} catch (error) {
+				if (eagerCreatedCommittedSequence === undefined) {
+					throw error;
+				}
+				throw new Error(
+					`cannot write '${shellPath}': the proposal was not recorded.${await eager_created_failure_note()}`,
+					{
+						cause: error,
+					},
+				);
+			}
 
-		if (written._nay) {
-			throw new Error(`cannot write '${shellPath}': ${written._nay.message}${await eager_created_failure_note()}`);
+			if (written._nay) {
+				if (attempt === 0 && written._nay.name === "pending_content_changed") continue;
+				throw new Error(`cannot write '${shellPath}': ${written._nay.message}${await eager_created_failure_note()}`);
+			}
+			// Later commands chained in this same bash call must see the new proposal.
+			this.resetProposalCaches();
+			return;
 		}
-		// Later commands chained in this same bash call must see the new proposal.
-		this.resetProposalCaches();
 	}
 
 	async exists(path: string) {
@@ -1140,6 +1144,8 @@ export class bash_DbFilesFs implements IFileSystem {
 			updatedAt: dbFilesDoc.updatedAt,
 			updatedBy: dbFilesDoc.updatedBy,
 			contentType: dbFilesDoc.contentType,
+			assetId: dbFilesDoc.assetId,
+			yjsRootKind: dbFilesDoc.yjsRootKind,
 		} satisfies DbFilesCacheEntry;
 		this.rememberEntry(cacheEntry);
 		return cacheEntry;
@@ -2097,6 +2103,7 @@ export async function files_agent_write_file_text(
 		userId: Id<"users">;
 		nodeId: Id<"files_nodes">;
 		pendingUpdateId?: Id<"files_pending_updates">;
+		expectedBaseStateId?: Id<"files_pending_update_yjs_states"> | null;
 		unstagedText: string;
 		copiedFrom?: { nodeId: Id<"files_nodes">; path: string };
 		eagerCreatedCommittedSequence?: number;
@@ -2142,6 +2149,7 @@ export async function files_agent_write_file_text(
 		nodeId: args.nodeId,
 		operationBatchId,
 		...(args.pendingUpdateId ? { pendingUpdateId: args.pendingUpdateId } : {}),
+		...(args.expectedBaseStateId !== undefined ? { expectedBaseStateId: args.expectedBaseStateId } : {}),
 		...(args.copiedFrom ? { copiedFrom: args.copiedFrom } : {}),
 		...(args.eagerCreatedCommittedSequence !== undefined
 			? { eagerCreatedCommittedSequence: args.eagerCreatedCommittedSequence }

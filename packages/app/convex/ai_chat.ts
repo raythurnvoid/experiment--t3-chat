@@ -148,7 +148,7 @@ function ai_chat_system_prompt(args: {
 		"Run the exact printed `Next page:` command to continue a listing, and when the user asks for one continuation, run only the first one and then stop.",
 		"If a failed Bash command prints a `Try:` command that directly matches the user's request, run that `Try:` command next instead of only reporting the failure.",
 		"Only summarize actual Bash stdout/stderr. The blank line between the shell prompt and output is transcript formatting, not file content. If stdout is empty or a command failed, say that instead of inferring likely filesystem contents.",
-		"Bash app-file writes and `edit_file` create pending review changes for the user to apply; your own later reads see them as already applied. If a member saves the file after your write, your pending change becomes stale. Your reads show the saved text again. Your next write starts from the saved text and replaces the stale change.",
+		"Bash app-file writes and `edit_file` create pending review changes for the user to apply; your own later reads see them as already applied. On a file with collaboration off, a member save makes your older pending change stale. Reads then show saved text. Your next edit or shell write automatically prepares the proposal before reading fresh text. It keeps earlier proposed work and unrelated saved text. A full overwrite deliberately replaces the proposed text.",
 		// Ask mode has no write tools, so telling it to call this one would only produce a promise the
 		// model cannot keep. `edit_file` is named above as a description, not as an instruction.
 		...(args.canWriteFiles
@@ -2888,6 +2888,11 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			// Every agent write is a pending change now, also on a file with collaboration off.
 			expect(agentSurface).not.toContain("saves immediately");
 			expect(agentSurface).toContain("your pending change becomes stale");
+			expect(agentSurface).toContain(
+				"Your next edit or shell write automatically prepares the proposal before reading fresh text.",
+			);
+			expect(agentSurface).not.toContain("open Review to update the proposal, or discard it");
+			expect(agentSurface).not.toContain("replaces the stale change");
 			expect(agentSurface).toContain(
 				"Do not call /tmp ephemeral or temporary in a way that implies same-chat data loss.",
 			);

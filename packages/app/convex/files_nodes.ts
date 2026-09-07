@@ -6556,6 +6556,7 @@ export const read_file_content_from_chunks = internalQuery({
 			content: v.string(),
 			moreLines: v.boolean(),
 			pendingUpdateId: v.union(v.id("files_pending_updates"), v.null()),
+			pendingUpdateBaseStateId: v.optional(v.id("files_pending_update_yjs_states")),
 		}),
 		v.null(),
 	),
@@ -6601,6 +6602,7 @@ export const read_file_content_from_chunks = internalQuery({
 		const isNonCollaborativeTextFile = !isEditableTextFile && files_node_has_editable_text_content(fileNode);
 		const isReadOnlyPlainTextFile =
 			!isEditableTextFile && !isNonCollaborativeTextFile && (fileNode.contentType?.startsWith("text/plain") ?? false);
+		let pendingUpdateBaseStateId: Id<"files_pending_update_yjs_states"> | undefined;
 		if (realTenantScope) {
 			if (!isEditableTextFile && !isNonCollaborativeTextFile && !isReadOnlyPlainTextFile) return null;
 
@@ -6638,10 +6640,14 @@ export const read_file_content_from_chunks = internalQuery({
 						.first();
 				}
 
+				// Keep the source family even when stale reads show saved text. Review may replace
+				// this family before a read-based edit writes its result.
+				pendingUpdateBaseStateId = pendingUpdate?.baseStateId;
+
 				// Move-only docs and copies of stored files have no pending chunks; fall through to
 				// the committed chunks so reads do not return an empty file behind them. A stale
 				// proposal (a member saved the file with collaboration off after it was made) falls
-				// through too: the member's text is the file now, and Discard is all that is left.
+				// through too, until preparation updates it.
 				if (
 					pendingUpdate != null &&
 					files_pending_update_has_pending_chunks(pendingUpdate) &&
@@ -6664,6 +6670,7 @@ export const read_file_content_from_chunks = internalQuery({
 										content: "",
 										moreLines: false,
 										pendingUpdateId: pendingUpdate._id,
+										pendingUpdateBaseStateId,
 									};
 						}
 
@@ -6674,6 +6681,7 @@ export const read_file_content_from_chunks = internalQuery({
 							content,
 							moreLines: false,
 							pendingUpdateId: pendingUpdate._id,
+							pendingUpdateBaseStateId,
 						};
 					}
 
@@ -6695,6 +6703,7 @@ export const read_file_content_from_chunks = internalQuery({
 						content: range.content,
 						moreLines: range.moreLines,
 						pendingUpdateId: pendingUpdate._id,
+						pendingUpdateBaseStateId,
 					};
 				}
 			} else if (args.pendingUpdateId != null) {
@@ -6761,12 +6770,13 @@ export const read_file_content_from_chunks = internalQuery({
 							content: "",
 							moreLines: false,
 							pendingUpdateId: null,
+							pendingUpdateBaseStateId,
 						};
 			}
 
 			const content = files_merge_contiguous_chunks(chunks);
 			if (content == null) return null;
-			return { nodeId: fileNode._id, content, moreLines: false, pendingUpdateId: null };
+			return { nodeId: fileNode._id, content, moreLines: false, pendingUpdateId: null, pendingUpdateBaseStateId };
 		}
 
 		// Line reads use the lineEnd index to seek near the requested start line
@@ -6806,6 +6816,7 @@ export const read_file_content_from_chunks = internalQuery({
 			content: range.content,
 			moreLines: range.moreLines,
 			pendingUpdateId: null,
+			pendingUpdateBaseStateId,
 		};
 	},
 });

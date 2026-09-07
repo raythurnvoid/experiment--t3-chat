@@ -7,6 +7,7 @@ import { test_convex, test_get_file_yjs_pointers, test_mocks_fill_db_with } from
 import { r2_server_side_copy } from "./r2_client.ts";
 import { files_ROOT_ID, files_u8_to_array_buffer, files_YJS_DOC_KEYS } from "../shared/files.ts";
 import { files_yjs_doc_get_text } from "../shared/files-tiptap.ts";
+import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 
 const objects = new Map<string, BodyInit>();
 
@@ -42,14 +43,14 @@ beforeEach(() => {
 	);
 });
 
-async function create_file_fixture() {
+async function create_file_fixture(rootKind: "plain_text" | "rich_text" = "plain_text") {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 	const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
 	const created = await asUser.action(internal.files_nodes_content.create_file_by_path, {
 		...scope,
-		path: "/restore.txt",
+		path: rootKind === "rich_text" ? "/restore.md" : "/restore.txt",
 		textContent: "Original text\n",
 	});
 	if (created._nay) throw new Error(created._nay.message);
@@ -61,6 +62,45 @@ async function create_file_fixture() {
 		return snapshot._id;
 	});
 	return { t, db, asUser, scope, nodeId, pointers, snapshotId };
+}
+
+async function create_pending_proposal(
+	fixture: Awaited<ReturnType<typeof create_file_fixture>>,
+	userId = fixture.scope.userId,
+) {
+	const { t, scope, nodeId } = fixture;
+	const ownerScope = { ...scope, userId };
+	const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, {
+		...ownerScope,
+		nodeId,
+	});
+	if (batch._nay) throw new Error(batch._nay.message);
+	for (const [role, text] of [
+		["staged", "---\nreview: accepted\n---\n\nAccepted text\n"],
+		["unstaged", "---\nreview: accepted\n---\n\nAccepted text\n\nProposed text\n"],
+	] as const) {
+		const staged = await t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
+			...ownerScope,
+			operationBatchId: batch._yay.operationBatchId,
+			role,
+			text,
+		});
+		if (staged._nay) throw new Error(staged._nay.message);
+	}
+	const proposed = await t.action(internal.files_pending_updates.upsert_file_pending_update_internal_action, {
+		...ownerScope,
+		nodeId,
+		operationBatchId: batch._yay.operationBatchId,
+	});
+	if (proposed._nay) throw new Error(proposed._nay.message);
+	return await t.run(async (ctx) => {
+		const pending = await ctx.db
+			.query("files_pending_updates")
+			.withIndex("by_user_fileNode", (q) => q.eq("userId", userId).eq("fileNodeId", nodeId))
+			.first();
+		if (!pending) throw new Error("Missing pending proposal");
+		return pending;
+	});
 }
 
 async function expect_retired_uploads(t: ReturnType<typeof test_convex>, count: number) {
@@ -351,6 +391,125 @@ describe("materialize_file_content", () => {
 });
 
 describe("restore_snapshot_r2", () => {
+	test.each(
+		(["plain_text", "rich_text"] as const).flatMap((sourceRootKind) =>
+			(["plain_text", "rich_text"] as const).flatMap((targetRootKind) =>
+				[false, true].map((off) => ({ sourceRootKind, targetRootKind, off })),
+			),
+		),
+	)(
+		"preserves every owner's proposal and expiry across repeated restores: %j",
+		async ({ sourceRootKind, targetRootKind, off }) => {
+			const fixture = await create_file_fixture(sourceRootKind);
+			const { t, db, asUser, nodeId, snapshotId } = fixture;
+			await create_pending_proposal(fixture);
+			const otherUserId = await t.run(async (ctx) => {
+				const userId = await ctx.db.insert("users", { clerkUserId: "restore_other_owner" });
+				await ctx.db.insert("organizations_workspaces_users", {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId,
+					active: true,
+				});
+				await access_control_db_ensure_role_assignment(ctx, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId,
+					role: "member",
+					now: Date.now(),
+				});
+				return userId;
+			});
+			await create_pending_proposal(fixture, otherUserId);
+			if (off) {
+				const toggled = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+					membershipId: db.membershipId,
+					nodeId,
+					acknowledgeDropCollaborativeHistory: true,
+				});
+				expect(toggled._nay).toBeUndefined();
+			}
+
+			const readProposals = () =>
+				t.run(async (ctx) => {
+					const [pending, states, pages, cleanup, chunks, searchChunks, metadata] = await Promise.all([
+						ctx.db.query("files_pending_updates").collect(),
+						ctx.db.query("files_pending_update_yjs_states").collect(),
+						ctx.db.query("files_pending_update_yjs_state_pages").collect(),
+						ctx.db.query("files_pending_updates_cleanup_tasks").collect(),
+						ctx.db
+							.query("files_text_chunks")
+							.filter((q) => q.neq(q.field("pendingUpdateId"), undefined))
+							.collect(),
+						ctx.db
+							.query("files_plain_text_chunks")
+							.filter((q) => q.neq(q.field("pendingUpdateId"), undefined))
+							.collect(),
+						ctx.db
+							.query("files_metadata_docs")
+							.filter((q) => q.eq(q.field("sourceKind"), "pending"))
+							.collect(),
+					]);
+					return { pending, states, pages, cleanup, chunks, searchChunks, metadata };
+				});
+			const before = await readProposals();
+			expect(before.pending).toHaveLength(2);
+			const restoredText = "Restored text\n";
+			const versionId = await t.run(async (ctx) => {
+				const assetId = await ctx.db.insert("files_r2_assets", {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					kind: "content_snapshot",
+					r2Bucket: "test-bucket",
+					size: new TextEncoder().encode(restoredText).byteLength,
+					createdBy: db.userId,
+					updatedAt: Date.now(),
+				});
+				const r2Key = `test/restore-version-${assetId}`;
+				objects.set(r2Key, restoredText);
+				await ctx.db.patch("files_r2_assets", assetId, { r2Key });
+				return await ctx.db.insert("files_snapshots", {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					fileNodeId: nodeId,
+					assetId,
+					createdBy: db.userId,
+					archivedAt: 0,
+					contentType: targetRootKind === "rich_text" ? "text/markdown;charset=utf-8" : "text/plain;charset=utf-8",
+					yjsRootKind: targetRootKind,
+				});
+			});
+			for (const [restoreId, rootKind, text] of [
+				[versionId, targetRootKind, restoredText],
+				[snapshotId, sourceRootKind, "Original text\n"],
+			] as const) {
+				const restored = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
+					membershipId: db.membershipId,
+					nodeId,
+					snapshotId: restoreId,
+					sessionId: "restore-preserved-proposals",
+				});
+				expect(restored._nay).toBeUndefined();
+				expect(await readProposals()).toEqual({
+					...before,
+					pending: before.pending.map((pending) => ({
+						...pending,
+						contentNeedsRebase: true,
+						contentRebaseRootKind: sourceRootKind,
+					})),
+				});
+				const node = await t.run((ctx) => ctx.db.get("files_nodes", nodeId));
+				expect(node?.yjsRootKind).toBe(rootKind);
+				expect(node?.nonCollaborative === true).toBe(off);
+				const content = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+					...fixture.scope,
+					path: sourceRootKind === "rich_text" ? "/restore.md" : "/restore.txt",
+				});
+				expect(content?.content).toBe(text);
+			}
+		},
+	);
+
 	test("normalizes a version saved with collaboration off when the live document already matches", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
@@ -425,7 +584,9 @@ describe("restore_snapshot_r2", () => {
 	});
 
 	test("requires the Properties confirmation before a stored version removes shared history", async () => {
-		const { t, db, asUser, nodeId, snapshotId, pointers } = await create_file_fixture();
+		const fixture = await create_file_fixture();
+		const { t, db, asUser, nodeId, snapshotId, pointers } = fixture;
+		const pending = await create_pending_proposal(fixture);
 		// A historical version saved as stored bytes, before the file became editable text.
 		await t.run(async (ctx) =>
 			ctx.db.patch("files_snapshots", snapshotId, {
@@ -449,6 +610,7 @@ describe("restore_snapshot_r2", () => {
 		expect(refused._nay?.message).toBe(
 			"Turn collaboration off in Properties before replacing this text file with stored content.",
 		);
+		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", pending._id))).toEqual(pending);
 		expect(await test_get_file_yjs_pointers(t, nodeId)).toEqual(pointers);
 		const jobs = await t.run(async (ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect());
 		expect(jobs.filter((job) => job.reason === "failed_create")).toHaveLength(1);
@@ -462,6 +624,11 @@ describe("restore_snapshot_r2", () => {
 		const node = await t.run(async (ctx) => ctx.db.get("files_nodes", nodeId));
 		expect(node?.contentType).toBe("application/octet-stream");
 		expect(node?.yjsSnapshotId).toBeUndefined();
+		expect(await t.run((ctx) => ctx.db.get("files_pending_updates", pending._id))).toEqual({
+			...pending,
+			contentNeedsRebase: true,
+			contentRebaseRootKind: "plain_text",
+		});
 	});
 
 	test.each([false, true])(
@@ -527,6 +694,116 @@ describe("restore_snapshot_r2", () => {
 });
 
 describe("accept_file_pending_replacement", () => {
+	test.each(["text", "stored bytes"] as const)(
+		"drops another owner's retained proposal when copying %s after a stored-byte restore",
+		async (sourceKind) => {
+			const fixture = await create_file_fixture("rich_text");
+			const { t, db, asUser, scope, nodeId, snapshotId } = fixture;
+			const otherUserId = await t.run(async (ctx) => {
+				const userId = await ctx.db.insert("users", { clerkUserId: "copy_after_restore_owner" });
+				await ctx.db.insert("organizations_workspaces_users", {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId,
+					active: true,
+				});
+				await access_control_db_ensure_role_assignment(ctx, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId,
+					role: "member",
+					now: Date.now(),
+				});
+				return userId;
+			});
+			const pending = await create_pending_proposal(fixture, otherUserId);
+			await t.run((ctx) =>
+				ctx.db.patch("files_snapshots", snapshotId, {
+					contentType: "application/octet-stream",
+					yjsRootKind: undefined,
+				}),
+			);
+			vi.spyOn(r2_server_side_copy, "copy_object").mockImplementation(async (_ctx, args) => {
+				const body = objects.get(args.sourceKey)!;
+				objects.set(args.destinationKey, body);
+				return { outcome: "copied", size: (await new Response(body).arrayBuffer()).byteLength, etag: "copied" };
+			});
+			expect(
+				(
+					await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+						membershipId: db.membershipId,
+						nodeId,
+						acknowledgeDropCollaborativeHistory: true,
+					})
+				)._nay,
+			).toBeUndefined();
+			expect(
+				(
+					await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
+						membershipId: db.membershipId,
+						nodeId,
+						snapshotId,
+						sessionId: "copy-after-stored-restore",
+					})
+				)._nay,
+			).toBeUndefined();
+			expect((await t.run((ctx) => ctx.db.get("files_nodes", nodeId)))?.yjsRootKind).toBeUndefined();
+			expect(await t.run((ctx) => ctx.db.get("files_pending_updates", pending._id))).toEqual({
+				...pending,
+				contentNeedsRebase: true,
+				contentRebaseRootKind: "rich_text",
+			});
+			const source =
+				sourceKind === "text"
+					? await t.action(internal.files_nodes_content.create_file_by_path, {
+							...scope,
+							path: "/source.txt",
+							textContent: "Copied text\n",
+						})
+					: await asUser.mutation(api.files_nodes.create_upload_node, {
+							membershipId: db.membershipId,
+							parentId: files_ROOT_ID,
+							filename: "source.pdf",
+							contentType: "application/pdf",
+							size: 3,
+						});
+			if (source._nay) throw new Error(source._nay.message);
+			const sourceNode = await t.run((ctx) => ctx.db.get("files_nodes", source._yay.nodeId));
+			if (!sourceNode?.assetId) throw new Error("Missing copy source");
+			if (sourceKind === "stored bytes") {
+				const r2Key = "test/copy-after-restore.pdf";
+				objects.set(r2Key, new Uint8Array([0, 255, 128]));
+				await t.run((ctx) => ctx.db.patch("files_r2_assets", sourceNode.assetId!, { r2Key }));
+			}
+			const staged = await t.action(internal.files_pending_updates.stage_file_pending_replacement_internal_action, {
+				...scope,
+				nodeId,
+				source: { nodeId: sourceNode._id, path: sourceNode.path },
+				expectedSourceAssetId: sourceNode.assetId,
+				...(sourceKind === "text" ? { sourceText: "Copied text\n" } : {}),
+			});
+			if (staged._nay) throw new Error(staged._nay.message);
+			expect(
+				(
+					await asUser.action(api.files_pending_updates.accept_file_pending_replacement, {
+						membershipId: db.membershipId,
+						nodeId,
+						pendingUpdateId: staged._yay.pendingUpdateId,
+					})
+				)._nay,
+			).toBeUndefined();
+			await t.run(async (ctx) => {
+				expect(await ctx.db.get("files_pending_updates", pending._id)).toBeNull();
+				expect(
+					await ctx.db
+						.query("files_text_chunks")
+						.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pending._id))
+						.collect(),
+				).toHaveLength(0);
+			});
+		},
+	);
+
 	test("accepts stored bytes for a new eager copy and saves edits to its placeholder", async () => {
 		const { t, db, asUser, scope, nodeId, pointers } = await create_file_fixture();
 		const sourceBytes = new Uint8Array([0, 255, 10, 13, 128]);

@@ -1949,3 +1949,7 @@ window.__fresh = async (ref, args) => {
 ```
 
 It reads as the signed-in user. It is gone after a reload, so reinstall it with the harness scripts.
+
+## Close only the owned stuck tab
+
+If `page.close()` hangs, a CDP target close can still work. Get the target id from the owned page with `getCDPSession({ page })` and `Target.getTargetInfo`, then send `Target.closeTarget` with that exact id. The command may time out before the next call reports that the page closed. Check `context.pages()` before retrying. Open a fresh tab and rebind the harness. Do not kill the shared localhost renderer or restart the browser: that closes other people's tabs too. This recovered a full-page `New Chat` hang on 2026-09-07.

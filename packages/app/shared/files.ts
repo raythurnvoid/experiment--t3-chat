@@ -634,7 +634,7 @@ export const files_REPLACE_FILE_CONTENT_STALE_MESSAGE =
  * diff view, and the server all show this one sentence, so it lives in one place.
  */
 export const files_PENDING_UPDATE_STALE_BASE_MESSAGE =
-	"This file was saved after the agent made this change, so the change is out of date. Ask the agent to make the change again, or discard it.";
+	"This file changed. Open Review to update the proposal, or discard it.";
 
 export function files_create_tree_items_list_from_nodes(nodes: files_VisibleTreeNode[]) {
 	return [files_SYNTHETIC_ROOT_FOLDER, ...nodes];
@@ -838,9 +838,9 @@ export function files_pending_update_has_content<Row extends FilePendingUpdateFi
 /**
  * A content proposal on a file with collaboration off is stale when a member saved the file
  * after the proposal was made: the node's content asset is no longer the one the branches were
- * built from. Accept and every client edit refuse a stale proposal, the agent's reads skip it,
- * and Discard deletes it, or keeps only its move or delete. A collaboration toggle also makes
- * either kind stale until Review rebuilds its branches on the current file.
+ * built from. Reads use saved text. Agent writes and Review prepare the retained proposal
+ * on the current file. Toggles and restores use the same preparation flow. Discard deletes
+ * the content proposal, or keeps only its move or delete.
  */
 export function files_pending_update_content_is_stale(
 	row: FilePendingUpdateFieldsForContent & Pick<app_convex_Doc<"files_pending_updates">, "contentNeedsRebase">,

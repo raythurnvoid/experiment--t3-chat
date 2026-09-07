@@ -36,6 +36,8 @@ Recipes for driving the in-app AI agent (files-page sidebar and `/chat` page). T
 
 `waitForSelector("[role=option]", { state: "visible" })` is a trap in the agent panel: the thread-picker options stay mounted while hidden, so the wait pins the first match — an invisible `FileEditorSidebarAgentThreadPicker-item` — and times out even when the popover you actually opened (for example the `Chat model:` picker) is showing its options. Read all `[role=option]` matches and filter by bounding rect instead of waiting on the first. Same family as the mounted-closed `[role=dialog]` hazard in `known-hazards.md`.
 
+Before sending in a new chat, confirm its tab stays selected. `New Chat` on the full-page route can wedge the tab; a sidebar optimistic `ai_thread-*` tab can also disappear and return selection to an older chat. Do not assume the button created a usable chat. Use an existing chat only when it belongs to your QA run. See the stuck-tab and optimistic-tab entries in `known-hazards.md`.
+
 ## Tool cards keep a real rect while their disclosure is closed
 
 A tool part renders as `<details class="AiChatMessagePartDisclosure">`, and the cards inside it (`.AiChatMessagePartToolTextAreaSection`, `.DiffMonospaceBlock`) still report a plausible `getBoundingClientRect` while the disclosure is closed. Neighbouring cards then report overlapping rects, and `document.elementFromPoint` at a card center returns `.AiChatMessagePartDisclosureButton` instead. A pointer probe aimed at those coordinates silently hovers the summary, so a hover test reports "nothing is hovered" and reads like a broken app.

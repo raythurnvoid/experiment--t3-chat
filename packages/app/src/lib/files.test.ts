@@ -644,6 +644,25 @@ describe("files_yjs_reconcile_branch_with_local_text", () => {
 });
 
 describe("files_yjs_rebase_branch_with_local_text", () => {
+	test.each(["plain_text", "rich_text"] as const)("keeps the accepted line over current text in %s", (rootKind) => {
+		const previousBaseYjsDoc = new YDoc();
+		files_yjs_doc_update_from_text({ mut_yjsDoc: previousBaseYjsDoc, text: "Budget: 100\n\nOwner: Bob\n", rootKind });
+		const previousBranchYjsDoc = files_yjs_doc_clone({ yjsDoc: previousBaseYjsDoc });
+		files_yjs_doc_update_from_text({ mut_yjsDoc: previousBranchYjsDoc, text: "Budget: 150\n\nOwner: Bob\n", rootKind });
+		const nextBaseYjsDoc = files_yjs_doc_clone({ yjsDoc: previousBaseYjsDoc });
+		files_yjs_doc_update_from_text({ mut_yjsDoc: nextBaseYjsDoc, text: "Budget: 120\n\nOwner: Alice\n", rootKind });
+
+		const rebased = files_yjs_rebase_branch_with_local_text({
+			previousBaseYjsDoc,
+			previousBranchYjsDoc,
+			nextBaseYjsDoc,
+			localText: "Budget: 150\n\nOwner: Bob\n",
+			rootKind,
+		});
+
+		expect(rebased._yay?.rebasedBranchText).toBe("Budget: 150\n\nOwner: Alice\n");
+	});
+
 	beforeEach(() => {
 		const domParser = globalThis.window?.DOMParser;
 		if (!domParser) {

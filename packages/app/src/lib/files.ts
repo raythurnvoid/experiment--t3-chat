@@ -8,17 +8,14 @@ import {
 	type files_VisibleTreeNode,
 	type files_YjsRootKind,
 } from "../../shared/files.ts";
-import {
-	files_yjs_compute_diff_update_from_yjs_doc,
-	files_yjs_doc_clone,
-	files_yjs_doc_create_from_array_buffer_update,
-} from "../../shared/files-yjs.ts";
+import { files_yjs_doc_clone, files_yjs_doc_create_from_array_buffer_update } from "../../shared/files-yjs.ts";
 import {
 	files_headless_tiptap_editor_create,
 	files_yjs_doc_get_text,
 	files_yjs_doc_update_from_text,
 } from "../../shared/files-tiptap.ts";
 import { files_get_thread_ids_from_editor_state } from "../../shared/files-tiptap-comments.ts";
+import { files_pending_text_merge } from "../../shared/files-pending-text-merge.ts";
 import { composite_key } from "../../shared/shared-utils.ts";
 import { delay } from "../../shared/async-utils.ts";
 import type { Doc } from "../../convex/_generated/dataModel";
@@ -271,6 +268,10 @@ export function files_yjs_rebase_branch_with_local_text(args: {
 	previousBaseYjsDoc: YDoc;
 	nextBaseYjsDoc: YDoc;
 	previousBranchYjsDoc: YDoc;
+	/**
+	 * Build the proposed branch from the accepted branch when rebasing both together.
+	 */
+	nextBranchYjsDoc?: YDoc;
 	localText: string;
 	rootKind: files_YjsRootKind;
 }) {
@@ -282,12 +283,19 @@ export function files_yjs_rebase_branch_with_local_text(args: {
 		return previousBaseText;
 	}
 
-	const previousBranchText = files_yjs_doc_get_text({
-		yjsDoc: args.previousBranchYjsDoc,
+	const localBranchYjsDoc = files_yjs_doc_clone({ yjsDoc: args.previousBranchYjsDoc });
+	const localBranchUpdate = files_yjs_doc_update_from_text({
+		mut_yjsDoc: localBranchYjsDoc,
+		text: args.localText,
 		rootKind: args.rootKind,
 	});
-	if (previousBranchText._nay) {
-		return previousBranchText;
+	if (localBranchUpdate._nay) return localBranchUpdate;
+	const localBranchText = files_yjs_doc_get_text({
+		yjsDoc: localBranchYjsDoc,
+		rootKind: args.rootKind,
+	});
+	if (localBranchText._nay) {
+		return localBranchText;
 	}
 
 	const nextBaseText = files_yjs_doc_get_text({
@@ -298,61 +306,30 @@ export function files_yjs_rebase_branch_with_local_text(args: {
 		return nextBaseText;
 	}
 
-	if (args.localText === nextBaseText._yay) {
-		return Result({
-			_yay: {
-				rebasedBranchYjsDoc: files_yjs_doc_clone({ yjsDoc: args.nextBaseYjsDoc }),
-				rebasedBranchText: nextBaseText._yay,
-			},
-		});
+	const mergedText = files_pending_text_merge({
+		baseText: previousBaseText._yay,
+		proposedText: localBranchText._yay,
+		currentText: nextBaseText._yay,
+	});
+	if (mergedText._nay) {
+		return mergedText;
 	}
 
-	const rebasedStoredBranchYjsDoc =
-		previousBranchText._yay === previousBaseText._yay
-			? files_yjs_doc_clone({ yjsDoc: args.nextBaseYjsDoc })
-			: ((/* iife */) => {
-					const rebasedBranchYjsDoc = files_yjs_doc_clone({ yjsDoc: args.previousBranchYjsDoc });
-					const remoteDiffUpdate = files_yjs_compute_diff_update_from_yjs_doc({
-						yjsDoc: args.nextBaseYjsDoc,
-						yjsBeforeDoc: args.previousBaseYjsDoc,
-					});
-					if (remoteDiffUpdate) {
-						applyUpdate(rebasedBranchYjsDoc, remoteDiffUpdate);
-					}
-					return rebasedBranchYjsDoc;
-				})();
-
-	const rebasedStoredBranchText = files_yjs_doc_get_text({
-		yjsDoc: rebasedStoredBranchYjsDoc,
+	// Build on current history. Replaying old branch updates can change an accepted number.
+	const rebasedBranchYjsDoc = files_yjs_doc_clone({ yjsDoc: args.nextBranchYjsDoc ?? args.nextBaseYjsDoc });
+	const rebasedBranchUpdate = files_yjs_doc_update_from_text({
+		mut_yjsDoc: rebasedBranchYjsDoc,
+		text: mergedText._yay,
 		rootKind: args.rootKind,
 	});
-	if (rebasedStoredBranchText._nay) {
-		return rebasedStoredBranchText;
-	}
-
-	if (args.localText === previousBranchText._yay) {
-		return Result({
-			_yay: {
-				rebasedBranchYjsDoc: rebasedStoredBranchYjsDoc,
-				rebasedBranchText: rebasedStoredBranchText._yay,
-			},
-		});
-	}
-
-	const rebasedLocalBranchResult = files_yjs_reconcile_branch_with_local_text({
-		previousRemoteYjsDoc: args.previousBranchYjsDoc,
-		nextRemoteYjsDoc: rebasedStoredBranchYjsDoc,
-		localText: args.localText,
-		rootKind: args.rootKind,
-	});
-	if (rebasedLocalBranchResult._nay) {
-		return rebasedLocalBranchResult;
-	}
+	if (rebasedBranchUpdate._nay) return rebasedBranchUpdate;
+	const rebasedBranchText = files_yjs_doc_get_text({ yjsDoc: rebasedBranchYjsDoc, rootKind: args.rootKind });
+	if (rebasedBranchText._nay) return rebasedBranchText;
 
 	return Result({
 		_yay: {
-			rebasedBranchYjsDoc: rebasedLocalBranchResult._yay.mergedYjsDoc,
-			rebasedBranchText: rebasedLocalBranchResult._yay.mergedText,
+			rebasedBranchYjsDoc,
+			rebasedBranchText: rebasedBranchText._yay,
 		},
 	});
 }
@@ -567,6 +544,7 @@ export async function files_persist_file_pending_update_rebased_state(args: {
 	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	nodeId: app_convex_Id<"files_nodes">;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
+	reviewedUpdatedAt?: number;
 	baseYjsSequence: number;
 	baseYjsUpdate: ArrayBuffer;
 	stagedBranchYjsUpdate: ArrayBuffer;
@@ -619,6 +597,7 @@ export async function files_persist_file_pending_update_rebased_state(args: {
 		operationBatchId,
 		...(args.pendingUpdateId ? { pendingUpdateId: args.pendingUpdateId } : {}),
 		baseYjsSequence: args.baseYjsSequence,
+		...(args.reviewedUpdatedAt !== undefined ? { reviewedUpdatedAt: args.reviewedUpdatedAt } : {}),
 	});
 }
 

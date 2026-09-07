@@ -8810,11 +8810,26 @@ test("text_search_files searches pending unstaged content instead of stale commi
 	});
 	if (pending._nay) throw new Error(pending._nay.message);
 
-	const otherUserId = await t.run((ctx) =>
-		ctx.db.insert("users", {
-			clerkUserId: null,
-		}),
-	);
+	const otherUserId = await t.run(async (ctx) => {
+		const userId = await ctx.db.insert("users", { clerkUserId: null });
+		const now = Date.now();
+		await ctx.db.insert("organizations_workspaces_users", {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId,
+			active: true,
+			updatedAt: now,
+		});
+		await ctx.db.insert("access_control_role_assignments", {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId,
+			role: "member",
+			createdAt: now,
+			updatedAt: now,
+		});
+		return userId;
+	});
 	const otherUserPending = await upsert_pending_update_internal_for_test(t, {
 		organizationId: db.organizationId,
 		workspaceId: db.workspaceId,

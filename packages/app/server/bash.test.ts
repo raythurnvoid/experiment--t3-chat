@@ -35,7 +35,7 @@ import {
 	bash_READ_INLINE_MAX_BYTES,
 	bash_get_db_file_byte_size,
 } from "./bash-utils.ts";
-import { ai_chat_tool_create_set_file_metadata } from "./server-ai-tools.ts";
+import { ai_chat_tool_create_edit_file, ai_chat_tool_create_set_file_metadata } from "./server-ai-tools.ts";
 
 const test_db_files_mount = "/home/cloud-usr/w/personal/home";
 const function_name_of = (ref: unknown) => {
@@ -5364,20 +5364,20 @@ describe("bash_run_command", () => {
 		expect(rowsAfterAppend[0]!._id).toBe(pendingRows[0]!._id);
 	});
 
-	test("a member save hides the stale proposal from cat, wc, and grep until the next write rebuilds it", async () => {
+	test("a member save hides the stale proposal from reads and append prepares it automatically", async () => {
 		const path = `${test_db_files_mount}/docs/off-stale.txt`;
 		const runner = await create_bash_runner({
 			extraFiles: [
 				{
 					path: "/docs/off-stale.txt",
-					content: "committed needle\n",
+					content: "committed needle\nsecond line\n",
 					contentType: "text/plain;charset=utf-8",
 					nonCollaborative: true,
 				},
 			],
 		});
 		const nodeBefore = await get_seeded_node(runner, "/docs/off-stale.txt");
-		const proposed = await runner.run(`printf 'proposal needle\\n' > ${path}`);
+		const proposed = await runner.run(`printf 'proposal needle\\nsecond line\\n' > ${path}`);
 		expect(proposed.stderr).toBe("");
 		const [row] = await list_pending_updates(runner);
 		expect(row?.baseAssetId).toBe(nodeBefore.assetId);
@@ -5386,17 +5386,17 @@ describe("bash_run_command", () => {
 		const memberSave = await runner_as_user(runner).action(api.files_nodes_content.replace_file_content, {
 			membershipId: runner.seeded.membershipId,
 			nodeId: nodeBefore._id,
-			text: "saved needle\nsecond line\n",
+			text: "committed needle\nsaved line\n",
 		});
 		expect(memberSave._nay).toBeUndefined();
 		const read = await runner.run(`cat ${path} && wc -l ${path} && grep -n needle ${path}`);
 		expect(read.stderr).toBe("");
-		expect(read.stdout).toBe(`saved needle\nsecond line\n2 ${path}\n1:saved needle\n`);
+		expect(read.stdout).toBe(`committed needle\nsaved line\n2 ${path}\n1:committed needle\n`);
 
-		// The next write rebuilds the same doc on the saved text.
+		// Append prepares the old proposal before reading the text it will extend.
 		const rewritten = await runner.run(`printf 'proposal again\\n' >> ${path} && cat ${path}`);
 		expect(rewritten.stderr).toBe("");
-		expect(rewritten.stdout).toBe("saved needle\nsecond line\nproposal again\n");
+		expect(rewritten.stdout).toBe("proposal needle\nsaved line\nproposal again\n");
 		const rowsAfter = await list_pending_updates(runner);
 		expect(rowsAfter).toHaveLength(1);
 		expect(rowsAfter[0]!._id).toBe(row!._id);
@@ -5405,13 +5405,353 @@ describe("bash_run_command", () => {
 		expect(rowsAfter[0]!.baseAssetId).toBe(nodeAfter.assetId);
 	});
 
+	test.each(["append", "edit_file"] as const)(
+		"%s recomputes when a proposal appears after a read with no family",
+		async (operation) => {
+			const filePath = "/docs/new-family.txt";
+			const path = `${test_db_files_mount}${filePath}`;
+			const runner = await create_bash_runner({
+				extraFiles: [
+					{ path: filePath, content: "old\n", contentType: "text/plain;charset=utf-8", nonCollaborative: true },
+				],
+			});
+			const node = await get_seeded_node(runner, filePath);
+			const readSpy = operation === "edit_file" ? runner.runAction : runner.runQuery;
+			const readName =
+				operation === "edit_file"
+					? "files_nodes_content:get_file_last_available_text_content_by_path"
+					: "files_nodes:read_file_content_from_chunks";
+			const read = readSpy.getMockImplementation()!;
+			let inserted = false;
+			readSpy.mockImplementation(async (ref, args) => {
+				const result = await read(ref, args);
+				if (!inserted && function_name_of(ref) === readName && args.path === filePath) {
+					inserted = true;
+					await upsert_pending_update_for_test(runner, { nodeId: node._id, unstagedText: "earlier proposal\nold\n" });
+				}
+				return result;
+			});
+			if (operation === "edit_file") {
+				const edit = ai_chat_tool_create_edit_file(runner.ctx, {
+					...runner.ctxData,
+					getThreadId: () => runner.threadId,
+				});
+				await expect(
+					edit.execute?.(
+						{ path: filePath, oldString: "old", newString: "new", replaceAll: false },
+						{ toolCallId: "new-family", messages: [] },
+					),
+				).resolves.toMatchObject({ metadata: { modifiedContent: "earlier proposal\nnew\n" } });
+			} else {
+				const appended = await runner.run(`printf 'tail\\n' >> ${path}`);
+				expect(appended.stderr).toBe("");
+				expect(appended.metadata.exitCode).toBe(0);
+			}
+			expect(inserted).toBe(true);
+			expect((await runner.run(`cat ${path}`)).stdout).toBe(
+				operation === "append" ? "earlier proposal\nold\ntail\n" : "earlier proposal\nnew\n",
+			);
+			expect(await read_committed_text(runner, node._id)).toBe("old\n");
+		},
+	);
+
+	test.each([
+		["append", "saved"],
+		["edit_file", "saved"],
+		["append", "replaced"],
+		["edit_file", "replaced"],
+	] as const)("%s retries when the file is %s after its read without owner preparation", async (operation, race) => {
+		const filePath = "/docs/preflight-race.txt";
+		const path = `${test_db_files_mount}${filePath}`;
+		const runner = await create_bash_runner({
+			extraFiles: [
+				{
+					path: filePath,
+					content: "first: old\nsecond: old\nthird: old\n",
+					contentType: "text/plain;charset=utf-8",
+					nonCollaborative: true,
+				},
+			],
+		});
+		const node = await get_seeded_node(runner, filePath);
+		await upsert_pending_update_for_test(runner, {
+			nodeId: node._id,
+			unstagedText: "first: proposal\nsecond: old\nthird: old\n",
+		});
+		const [pending] = await list_pending_updates(runner);
+		if (!pending) throw new Error("Missing proposal");
+		const readSpy = operation === "edit_file" ? runner.runAction : runner.runQuery;
+		const readName =
+			operation === "edit_file"
+				? "files_nodes_content:get_file_last_available_text_content_by_path"
+				: "files_nodes:read_file_content_from_chunks";
+		const read = readSpy.getMockImplementation()!;
+		let changed = false;
+		readSpy.mockImplementation(async (ref, args) => {
+			const result = await read(ref, args);
+			if (!changed && function_name_of(ref) === readName && args.path === filePath) {
+				changed = true;
+				if (race === "saved") {
+					const saved = await runner_as_user(runner).action(api.files_nodes_content.replace_file_content, {
+						membershipId: runner.seeded.membershipId,
+						nodeId: node._id,
+						text: "first: old\nsecond: member\nthird: old\n",
+					});
+					expect(saved._nay).toBeUndefined();
+				} else {
+					const discarded = await runner_as_user(runner).mutation(
+						api.files_pending_updates.discard_file_pending_content,
+						{
+							membershipId: runner.seeded.membershipId,
+							nodeId: node._id,
+							pendingUpdateId: pending._id,
+						},
+					);
+					expect(discarded._nay).toBeUndefined();
+					await upsert_pending_update_for_test(runner, {
+						nodeId: node._id,
+						unstagedText: "first: replacement\nsecond: old\nthird: old\n",
+					});
+				}
+			}
+			return result;
+		});
+		const preparedText =
+			race === "saved"
+				? "first: proposal\nsecond: member\nthird: old\n"
+				: "first: replacement\nsecond: old\nthird: old\n";
+		if (operation === "edit_file") {
+			const edit = ai_chat_tool_create_edit_file(runner.ctx, { ...runner.ctxData, getThreadId: () => runner.threadId });
+			await expect(
+				edit.execute?.(
+					{ path: filePath, oldString: "third: old", newString: "third: tool", replaceAll: false },
+					{ toolCallId: "preflight-race", messages: [] },
+				),
+			).resolves.toMatchObject({ metadata: { modifiedContent: preparedText.replace("third: old", "third: tool") } });
+		} else {
+			const appended = await runner.run(`printf 'tail\\n' >> ${path}`);
+			expect(appended.stderr).toBe("");
+			expect(appended.metadata.exitCode).toBe(0);
+		}
+		expect(changed).toBe(true);
+		expect((await runner.run(`cat ${path}`)).stdout).toBe(
+			operation === "append" ? `${preparedText}tail\n` : preparedText.replace("third: old", "third: tool"),
+		);
+	});
+
+	test("append stops after a second content-family change without losing the latest proposal", async () => {
+		const filePath = "/docs/append-retry-limit.txt";
+		const path = `${test_db_files_mount}${filePath}`;
+		const runner = await create_bash_runner({
+			extraFiles: [
+				{ path: filePath, content: "old\n", contentType: "text/plain;charset=utf-8", nonCollaborative: true },
+			],
+		});
+		const node = await get_seeded_node(runner, filePath);
+		const read = runner.runQuery.getMockImplementation()!;
+		let races = 0;
+		runner.runQuery.mockImplementation(async (ref, args) => {
+			const result = await read(ref, args);
+			if (
+				races < 2 &&
+				function_name_of(ref) === "files_nodes:read_file_content_from_chunks" &&
+				args.path === filePath
+			) {
+				races += 1;
+				await upsert_pending_update_for_test(runner, { nodeId: node._id, unstagedText: `proposal ${races}\nold\n` });
+			}
+			return result;
+		});
+		const appended = await runner.run(`printf 'tail\\n' >> ${path}`);
+		expect(appended.metadata.exitCode).not.toBe(0);
+		expect(appended.stderr).toContain("The proposal changed after it was read.");
+		expect(races).toBe(2);
+		expect((await runner.run(`cat ${path}`)).stdout).toBe("proposal 2\nold\n");
+	});
+
+	test.each(["overwrite", "edit_file"] as const)(
+		"%s names a stored file's type before preparation",
+		async (operation) => {
+			const filePath = "/docs/image.png";
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: filePath, content: "stored bytes", contentType: "image/png", withoutYjsState: true }],
+			});
+			const message = "this file's content type ('image/png') is not editable as text";
+			if (operation === "edit_file") {
+				const edit = ai_chat_tool_create_edit_file(runner.ctx, {
+					...runner.ctxData,
+					getThreadId: () => runner.threadId,
+				});
+				await expect(
+					edit.execute?.(
+						{ path: filePath, oldString: "old", newString: "new", replaceAll: false },
+						{ toolCallId: "stored-type", messages: [] },
+					),
+				).rejects.toThrow(message);
+			} else {
+				const written = await runner.run(`printf replacement > ${test_db_files_mount}${filePath}`);
+				expect(written.metadata.exitCode).not.toBe(0);
+				expect(written.stderr).toContain(message);
+			}
+			expect(
+				runner.runAction.mock.calls.filter(
+					([ref]) => function_name_of(ref) === "files_pending_updates:prepare_file_pending_update_for_agent",
+				),
+			).toHaveLength(0);
+			expect(await list_pending_updates(runner)).toEqual([]);
+		},
+	);
+
+	test("a full overwrite prepares a stale proposal and keeps its staged branch", async () => {
+		const filePath = "/docs/staged-overwrite.txt";
+		const path = `${test_db_files_mount}${filePath}`;
+		const runner = await create_bash_runner({
+			extraFiles: [
+				{
+					path: filePath,
+					content: "first: old\nsecond: old\nthird: old\n",
+					contentType: "text/plain;charset=utf-8",
+					nonCollaborative: true,
+				},
+			],
+		});
+		const node = await get_seeded_node(runner, filePath);
+		await upsert_pending_update_for_test(runner, {
+			nodeId: node._id,
+			stagedText: "first: staged\nsecond: old\nthird: old\n",
+			unstagedText: "first: staged\nsecond: proposed\nthird: old\n",
+		});
+		const saved = await runner_as_user(runner).action(api.files_nodes_content.replace_file_content, {
+			membershipId: runner.seeded.membershipId,
+			nodeId: node._id,
+			text: "first: old\nsecond: old\nthird: member\n",
+		});
+		expect(saved._nay).toBeUndefined();
+		const overwritten = await runner.run(`printf 'replacement\\n' > ${path} && cat ${path}`);
+		expect(overwritten.stderr).toBe("");
+		expect(overwritten.stdout).toBe("replacement\n");
+		await save_pending_update_for_test(runner, node._id);
+		expect(await read_committed_text(runner, node._id)).toBe("first: staged\nsecond: old\nthird: member\n");
+	});
+
+	test.each([
+		["append", true, false],
+		["append", false, false],
+		["edit_file", true, false],
+		["edit_file", false, false],
+		["overwrite", true, false],
+		["append", true, true],
+	] as const)(
+		"%s recomputes after a proposal changes during its read (already stale: %s, accepted: %s)",
+		async (operation, staleAtRead, accepted) => {
+			const filePath = "/docs/read-race.txt";
+			const path = `${test_db_files_mount}${filePath}`;
+			const savedText = "first: old\nsecond: member\nthird: old\n";
+			const preparedText = "first: proposal\nsecond: member\nthird: old\n";
+			const runner = await create_bash_runner({
+				extraFiles: [
+					{
+						path: filePath,
+						content: "first: old\nsecond: old\nthird: old\n",
+						contentType: "text/plain;charset=utf-8",
+						nonCollaborative: true,
+					},
+				],
+			});
+			const node = await get_seeded_node(runner, filePath);
+			const proposed = await runner.run(`printf 'first: proposal\\nsecond: old\\nthird: old\\n' > ${path}`);
+			expect(proposed.stderr).toBe("");
+			expect(proposed.metadata.exitCode).toBe(0);
+			const [originalPending] = await list_pending_updates(runner);
+			if (!originalPending) throw new Error("Missing proposal");
+			const asUser = runner_as_user(runner);
+			const saveArgs = { membershipId: runner.seeded.membershipId, nodeId: node._id, text: savedText };
+			if (staleAtRead) {
+				expect(
+					(
+						await asUser.action(api.files_nodes_content.replace_file_content, {
+							...saveArgs,
+							text: "first: old\nsecond: intermediate\nthird: old\n",
+						})
+					)._nay,
+				).toBeUndefined();
+			}
+
+			let preparedPending = originalPending;
+			let preparedNode = node;
+			let preparedAfterRead = false;
+			const readSpy = operation === "edit_file" ? runner.runAction : runner.runQuery;
+			const readFunctionName =
+				operation === "edit_file"
+					? "files_nodes_content:get_file_last_available_text_content_by_path"
+					: "files_nodes:read_file_content_from_chunks";
+			const read = readSpy.getMockImplementation()!;
+			readSpy.mockImplementation(async (ref, args) => {
+				const result = await read(ref, args);
+				if (!preparedAfterRead && function_name_of(ref) === readFunctionName && args.path === filePath) {
+					// Another preparation can replace the fresh family before its write starts.
+					expect((await asUser.action(api.files_nodes_content.replace_file_content, saveArgs))._nay).toBeUndefined();
+					const prepared = await asUser.action(api.files_pending_updates.prepare_file_pending_update_for_review, {
+						membershipId: runner.seeded.membershipId,
+						nodeId: node._id,
+						pendingUpdateId: originalPending._id,
+					});
+					expect(prepared._nay).toBeUndefined();
+					const [pending] = await list_pending_updates(runner);
+					if (!pending) throw new Error("Missing prepared proposal");
+					preparedPending = pending;
+					if (accepted) {
+						await accept_pending_update_for_test(runner, { nodeId: node._id, path: filePath });
+						expect(await list_pending_updates(runner)).toEqual([]);
+					}
+					preparedNode = await get_seeded_node(runner, filePath);
+					expect(preparedPending.baseStateId).not.toBe(originalPending.baseStateId);
+					preparedAfterRead = true;
+				}
+				return result;
+			});
+
+			if (operation === "edit_file") {
+				const tool = ai_chat_tool_create_edit_file(runner.ctx, {
+					...runner.ctxData,
+					getThreadId: () => runner.threadId,
+				});
+				await expect(
+					tool.execute?.(
+						{ path: filePath, oldString: "third: old", newString: "third: tool", replaceAll: false },
+						{ toolCallId: "read-race", messages: [] },
+					),
+				).resolves.toMatchObject({ metadata: { modifiedContent: preparedText.replace("third: old", "third: tool") } });
+			} else {
+				const written = await runner.run(
+					operation === "append" ? `printf 'tool tail\\n' >> ${path}` : `printf 'replacement\\n' > ${path}`,
+				);
+				expect(written.metadata.exitCode).toBe(0);
+				expect(written.stderr).toBe("");
+			}
+			expect(preparedAfterRead).toBe(true);
+			expect(await list_pending_updates(runner)).toHaveLength(1);
+			expect((await runner.run(`cat ${path}`)).stdout).toBe(
+				operation === "overwrite"
+					? "replacement\n"
+					: operation === "append"
+						? `${preparedText}tool tail\n`
+						: preparedText.replace("third: old", "third: tool"),
+			);
+			expect(await get_seeded_node(runner, filePath)).toEqual(preparedNode);
+			expect(await read_committed_text(runner, node._id)).toBe(accepted ? preparedText : savedText);
+			const batches = await runner.t.run((ctx) => ctx.db.query("files_pending_update_operation_batches").collect());
+			expect(batches.every((batch) => batch.expiresAt === 0)).toBe(true);
+		},
+	);
+
 	test.each([
 		[false, "txt"],
 		[true, "txt"],
 		[false, "md"],
 		[true, "md"],
 	] as const)(
-		"a mode toggle keeps proposals out of agent reads and writes (OFF %s, %s)",
+		"a mode toggle hides proposals from reads and append prepares them (OFF %s, %s)",
 		async (nonCollaborative, extension) => {
 			const filePath = `/docs/toggle-pending.${extension}`;
 			const path = `${test_db_files_mount}${filePath}`;
@@ -5476,12 +5816,13 @@ describe("bash_run_command", () => {
 				expect(committedMetadata.stdout).toContain(path);
 			}
 
-			const refused = await runner.run(`printf replacement > ${path}`);
-			expect(refused.metadata.exitCode).not.toBe(0);
-			expect(refused.stderr).toContain("Review this proposal after the collaboration change");
-			expect(await list_pending_updates_for_node(runner, node._id)).toEqual([
-				{ ...pendingBefore, contentNeedsRebase: true },
-			]);
+			const appended = await runner.run(`printf 'agent tail\\n' >> ${path} && cat ${path}`);
+			expect(appended.metadata.exitCode).toBe(0);
+			expect(appended.stderr).toBe("");
+			expect(appended.stdout).toBe(`${proposed}agent tail\n`);
+			const [pendingAfter] = await list_pending_updates_for_node(runner, node._id);
+			expect(pendingAfter?._id).toBe(pendingBefore?._id);
+			expect(pendingAfter?.contentNeedsRebase).toBeUndefined();
 			expect(await read_committed_text(runner, node._id)).toBe(committed);
 		},
 	);

@@ -9,9 +9,11 @@ import type { Id } from "../convex/_generated/dataModel";
 import { internal } from "../convex/_generated/api.js";
 import type { public_api_Scope } from "../shared/public-api.ts";
 import { files_READ_RANGE_MAX_LINES, type files_nodes_get_by_path_Result } from "../convex/files_nodes.ts";
+import type { prepare_file_pending_update_for_agent_Result } from "../convex/files_pending_updates.ts";
 import { server_path_normalize } from "./server-utils.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "./crypto-utils.ts";
 import { files_normalize_ai_edit_content, files_normalize_lf_newlines } from "./files.ts";
+import { files_node_has_editable_text_content } from "../shared/files.ts";
 import { ai_chat_GENERATED_IMAGE_FORMAT } from "../shared/ai-chat.ts";
 import {
 	bash_EXTERNAL_MOUNTS_ROOT,
@@ -565,7 +567,7 @@ export function ai_chat_tool_create_bash(
 			To search content across files use search (or search --path <folder> for one folder); to find lines in a SINGLE file use grep [-n] [-i] [-F] PATTERN <file> over the file's stored text chunks. Normal single-file grep uses regex matching; -F/--fixed-strings uses literal substring matching; -n prints lineNumber:line, and without -n it prints raw matching lines; also -c count, -l list-if-matched, -v invert, and -A/-B/-C N context. For rendered plain-text chunk scans, use textgrep [-i] [-F] [-v] [-c] [-l] PATTERN <file> for one app file (regex by default; -F/--fixed-strings uses literal substring matching; -v inverts; -c counts; -l prints the path if matched), or textgrep -R PATTERN <folder> for a recursive folder scan via indexed full-text search (not exact recursive regex/fixed-string grep). Single-file textgrep has no line numbers or context flags; use grep for -n or -A/-B/-C context. Simple grep -R PATTERN <app-folder> is recovered through indexed full-text search, but complex or multi-file grep forms are not exact recursive grep; prefer search --path. Use tree [PATH] [--limit N] [--cursor CURSOR] for paginated app tree shape; unsupported native tree flags fail for app paths.
 			Keep commands simple: avoid strict-mode boilerplate such as set -euo pipefail because pipefail is unsupported, comments in command strings, and process substitution. For multi-command inspection or eval checks, do not use set -e or hide stderr with 2>/dev/null; later commands and visible stderr should still be observed. Only summarize actual Bash stdout/stderr; the blank line between the shell prompt and output is transcript formatting, not file content. If stdout is empty or a command failed, say that instead of inferring likely filesystem contents. Do not work around app read-only write or delete requests by copying app files to /tmp unless the user asked for a scratch copy.
 			App file tree mkdir is available only when this tool is configured for Agent mode; /tmp scratch does not create app file tree folders.
-			In Agent mode, shell writes under ${currentWorkspacePath} create pending proposals the user reviews in Files, exactly like edit_file: create or overwrite a file with a quoted heredoc (cat > '<path>' <<'EOF' ... EOF) or a redirect, append with >>, tee writes each app target as a proposal, and touch on a new path creates an empty-file proposal (touch on an existing app file changes nothing). Every app file has a stored content type, and that type (never the name) decides how the file opens and how a write is stored: a Markdown file keeps rich text and serves back its rendered Markdown text, and any other text type (plain text, JSON, YAML, CSS, JavaScript, and similar) stores bytes exactly as written. A new file takes its type from its name (README.md is Markdown, data.json is JSON, notes.txt or a name with no known extension is plain text); no extension is refused and no .md suffix is added. Renaming or moving a file never changes its type: mv data.json data.yaml keeps JSON. Copying a file copies its content and its type: cp notes.md data.json makes data.json a Markdown file, and cp data.json notes.md makes notes.md a JSON file. Your own reads (bash and the file tools) see your pending proposals as if applied, while other users and the Files UI see the committed tree until the user accepts (a brand-new file appears to everyone right away as an empty placeholder). On a file with collaboration off, if a member saves the file after your write, your pending change becomes stale. Your reads show the saved text again. Your next write starts from the saved text and replaces the stale change. In Ask mode app files are read-only. rm <app-path> proposes a pending delete: accepting archives the file, and rm -r <app-folder> archives the folder with everything inside. Your own reads see a pending-deleted path as gone; rm on your own not-yet-accepted new file usually removes it immediately (stdout prints removed '<path>'; when it cannot be removed safely it becomes a normal pending delete). ln is not available for app files. mv <app-path> <app-path> proposes a pending move/rename (one source only); accepting a move onto an occupied path replaces that file. Plain mv never overwrites an existing destination; mv -f <app-file> <existing-app-file> proposes replacing it: accepting moves the source file, with its type and history, onto that path and archives the file that was there (a plain folder move can replace an empty folder, and folders never replace files or the reverse). cp <app-file> <app-path> proposes a pending copy (one source only): a new destination file appears immediately with the copied content pending review, your reads at the destination show that pending content, accepting publishes it, and discarding removes the destination file. When the cp destination file already exists, the copy becomes a pending replacement of that file's content and type, and discarding keeps the destination file as it was. Use cp -n or cp --no-clobber to leave an existing final destination unchanged without creating a replacement proposal. cp <app-file> /tmp/<name> stays an immediate durable per-thread scratch copy. Targeted edits to existing text files belong in edit_file with app paths such as /docs/readme.md or /data/config.json; the edit_file description states how to convert a bash path to an app path. If a user asks to delete a file, run rm on it; the delete still waits for their accept in Files.`,
+			In Agent mode, shell writes under ${currentWorkspacePath} create pending proposals the user reviews in Files, exactly like edit_file: create or overwrite a file with a quoted heredoc (cat > '<path>' <<'EOF' ... EOF) or a redirect, append with >>, tee writes each app target as a proposal, and touch on a new path creates an empty-file proposal (touch on an existing app file changes nothing). Every app file has a stored content type, and that type (never the name) decides how the file opens and how a write is stored: a Markdown file keeps rich text and serves back its rendered Markdown text, and any other text type (plain text, JSON, YAML, CSS, JavaScript, and similar) stores bytes exactly as written. A new file takes its type from its name (README.md is Markdown, data.json is JSON, notes.txt or a name with no known extension is plain text); no extension is refused and no .md suffix is added. Renaming or moving a file never changes its type: mv data.json data.yaml keeps JSON. Copying a file copies its content and its type: cp notes.md data.json makes data.json a Markdown file, and cp data.json notes.md makes notes.md a JSON file. Your own reads (bash and the file tools) see your pending proposals as if applied, while other users and the Files UI see the committed tree until the user accepts (a brand-new file appears to everyone right away as an empty placeholder). On a file with collaboration off, if a member saves the file after your write, your pending change becomes stale. Your reads show the saved text again. Your next edit or shell write automatically prepares the proposal before reading fresh text. It keeps earlier proposed work and unrelated saved text; a full overwrite replaces the proposed text you choose to overwrite. In Ask mode app files are read-only. rm <app-path> proposes a pending delete: accepting archives the file, and rm -r <app-folder> archives the folder with everything inside. Your own reads see a pending-deleted path as gone; rm on your own not-yet-accepted new file usually removes it immediately (stdout prints removed '<path>'; when it cannot be removed safely it becomes a normal pending delete). ln is not available for app files. mv <app-path> <app-path> proposes a pending move/rename (one source only); accepting a move onto an occupied path replaces that file. Plain mv never overwrites an existing destination; mv -f <app-file> <existing-app-file> proposes replacing it: accepting moves the source file, with its type and history, onto that path and archives the file that was there (a plain folder move can replace an empty folder, and folders never replace files or the reverse). cp <app-file> <app-path> proposes a pending copy (one source only): a new destination file appears immediately with the copied content pending review, your reads at the destination show that pending content, accepting publishes it, and discarding removes the destination file. When the cp destination file already exists, the copy becomes a pending replacement of that file's content and type, and discarding keeps the destination file as it was. Use cp -n or cp --no-clobber to leave an existing final destination unchanged without creating a replacement proposal. cp <app-file> /tmp/<name> stays an immediate durable per-thread scratch copy. Targeted edits to existing text files belong in edit_file with app paths such as /docs/readme.md or /data/config.json; the edit_file description states how to convert a bash path to an app path. If a user asks to delete a file, run rm on it; the delete still waits for their accept in Files.`,
 		inputSchema: z.object({
 			command: z
 				.string()
@@ -695,96 +697,117 @@ export function ai_chat_tool_create_edit_file(
 					`Invalid path: ${normalizedPath}. The ${bash_PLUGINS_MOUNT_ROOT} tree is a read-only mount of installed plugin sources and cannot be edited.`,
 				);
 			}
-			const currentFileContent = await ctx.runAction(
-				internal.files_nodes_content.get_file_last_available_text_content_by_path,
-				{
+			const node = (await ctx.runQuery(internal.files_nodes.get_by_path, {
+				organizationId: ctxData.organizationId,
+				workspaceId: ctxData.workspaceId,
+				visibilityUserId: ctxData.userId,
+				overlayUserId: ctxData.userId,
+				path: normalizedPath,
+			})) as files_nodes_get_by_path_Result;
+			if (node?.kind !== "file") {
+				throw new Error(`File not found: ${normalizedPath}`);
+			}
+			if (!files_node_has_editable_text_content(node)) {
+				throw new Error(
+					`Cannot edit ${normalizedPath}: this file's content type ('${node.contentType ?? "unknown"}') is not editable as text`,
+				);
+			}
+			for (let attempt = 0; ; attempt += 1) {
+				const prepared = (await ctx.runAction(internal.files_pending_updates.prepare_file_pending_update_for_agent, {
 					organizationId: ctxData.organizationId,
 					workspaceId: ctxData.workspaceId,
 					userId: ctxData.userId,
-					path: normalizedPath,
-					pendingUpdateId,
-					overlayUserId: ctxData.userId,
-				},
-			);
-			// A stored file (an image, a PDF) also reads as null. Name its type in the refusal, so
-			// the model learns the rule instead of retrying a path that does exist.
-			if (!currentFileContent) {
-				const node = (await ctx.runQuery(internal.files_nodes.get_by_path, {
-					organizationId: ctxData.organizationId,
-					workspaceId: ctxData.workspaceId,
-					visibilityUserId: ctxData.userId,
-					path: normalizedPath,
-				})) as files_nodes_get_by_path_Result;
-				if (node?.kind === "file") {
+					nodeId: node._id,
+				})) as prepare_file_pending_update_for_agent_Result;
+				if (prepared._nay) {
 					throw new Error(
-						`Cannot edit ${normalizedPath}: this file's content type ('${node.contentType ?? "unknown"}') is not editable as text`,
+						`Cannot edit ${normalizedPath}: ${prepared._nay.message}${prepared._nay.name === "read_only" ? " Do not retry this path with another write tool." : ""}`,
+						{ cause: prepared._nay },
 					);
 				}
-				throw new Error(`File not found: ${normalizedPath}`);
-			}
-
-			const oldString = files_normalize_lf_newlines(args.oldString);
-			const newString = files_normalize_lf_newlines(args.newString);
-
-			const {
-				content: modifiedTextRaw,
-				matches,
-				matcher,
-			} = replace_once_or_all(currentFileContent.content, oldString, newString, {
-				replaceAll: args.replaceAll,
-				mode: "auto",
-			});
-			const modifiedText = files_normalize_ai_edit_content(modifiedTextRaw, currentFileContent.content);
-			const diff = ai_chat_tool_edit_file_create_diff(normalizedPath, currentFileContent.content, modifiedText);
-
-			const nodeId = currentFileContent.nodeId;
-
-			const written = await files_agent_write_file_text(ctx, {
-				organizationId: ctxData.organizationId,
-				workspaceId: ctxData.workspaceId,
-				userId: ctxData.userId,
-				nodeId,
-				pendingUpdateId: currentFileContent.pendingUpdateId ?? undefined,
-				unstagedText: modifiedText,
-				threadId: ctxData.getThreadId() ?? undefined,
-			});
-			// The write can be refused after the read above: the node was archived or deleted, the
-			// text is over the size cap, or a member saved the file in between. Pass the reason on,
-			// like the bash write does, so the model can act on it instead of guessing.
-			if (written._nay) {
-				if (written._nay.name === "read_only") {
+				const currentFileContent = await ctx.runAction(
+					internal.files_nodes_content.get_file_last_available_text_content_by_path,
+					{
+						organizationId: ctxData.organizationId,
+						workspaceId: ctxData.workspaceId,
+						userId: ctxData.userId,
+						path: normalizedPath,
+						pendingUpdateId,
+						overlayUserId: ctxData.userId,
+					},
+				);
+				if (!currentFileContent) {
 					throw new Error(
-						`Cannot edit ${normalizedPath}: ${written._nay.message} Do not retry this path with another write tool.`,
-						{ cause: written._nay },
+						`Cannot edit ${normalizedPath}: the file changed while the edit was being prepared. Read it again.`,
 					);
 				}
-				throw new Error(`Cannot edit ${normalizedPath}, the proposal was not recorded: ${written._nay.message}`, {
-					cause: written._nay,
-				});
-			}
-			const nextPendingUpdate = await ctx.runQuery(internal.files_pending_updates.get_file_pending_update_internal, {
-				organizationId: ctxData.organizationId,
-				workspaceId: ctxData.workspaceId,
-				userId: ctxData.userId,
-				nodeId,
-				pendingUpdateId: currentFileContent.pendingUpdateId ?? undefined,
-			});
 
-			const replacedCount = args.replaceAll ? `Replaced ${matches} occurrences` : "Replaced 1 occurrence";
-			return {
-				title: normalizedPath,
-				metadata: {
-					nodeId: currentFileContent.displayNodeId,
-					contentNodeId: nodeId,
-					pendingUpdateId: nextPendingUpdate?._id ?? null,
-					path: normalizedPath,
+				const oldString = files_normalize_lf_newlines(args.oldString);
+				const newString = files_normalize_lf_newlines(args.newString);
+
+				const {
+					content: modifiedTextRaw,
 					matches,
 					matcher,
-					diff,
-					modifiedContent: modifiedText,
-				},
-				output: replacedCount,
-			};
+				} = replace_once_or_all(currentFileContent.content, oldString, newString, {
+					replaceAll: args.replaceAll,
+					mode: "auto",
+				});
+				const modifiedText = files_normalize_ai_edit_content(modifiedTextRaw, currentFileContent.content);
+				const diff = ai_chat_tool_edit_file_create_diff(normalizedPath, currentFileContent.content, modifiedText);
+
+				const nodeId = currentFileContent.nodeId;
+
+				const written = await files_agent_write_file_text(ctx, {
+					organizationId: ctxData.organizationId,
+					workspaceId: ctxData.workspaceId,
+					userId: ctxData.userId,
+					nodeId,
+					pendingUpdateId: currentFileContent.pendingUpdateId ?? undefined,
+					expectedBaseStateId: currentFileContent.pendingUpdateBaseStateId ?? null,
+					unstagedText: modifiedText,
+					threadId: ctxData.getThreadId() ?? undefined,
+				});
+				// The write can be refused after the read above: the node was archived or deleted, the
+				// text is over the size cap, or a member saved the file in between. Pass the reason on,
+				// like the bash write does, so the model can act on it instead of guessing.
+				if (written._nay) {
+					// Recompute once from the fresh proposal; never resend the old whole-file text.
+					if (attempt === 0 && written._nay.name === "pending_content_changed") continue;
+					if (written._nay.name === "read_only") {
+						throw new Error(
+							`Cannot edit ${normalizedPath}: ${written._nay.message} Do not retry this path with another write tool.`,
+							{ cause: written._nay },
+						);
+					}
+					throw new Error(`Cannot edit ${normalizedPath}, the proposal was not recorded: ${written._nay.message}`, {
+						cause: written._nay,
+					});
+				}
+				const nextPendingUpdate = await ctx.runQuery(internal.files_pending_updates.get_file_pending_update_internal, {
+					organizationId: ctxData.organizationId,
+					workspaceId: ctxData.workspaceId,
+					userId: ctxData.userId,
+					nodeId,
+					pendingUpdateId: currentFileContent.pendingUpdateId ?? undefined,
+				});
+
+				const replacedCount = args.replaceAll ? `Replaced ${matches} occurrences` : "Replaced 1 occurrence";
+				return {
+					title: normalizedPath,
+					metadata: {
+						nodeId: currentFileContent.displayNodeId,
+						contentNodeId: nodeId,
+						pendingUpdateId: nextPendingUpdate?._id ?? null,
+						path: normalizedPath,
+						matches,
+						matcher,
+						diff,
+						modifiedContent: modifiedText,
+					},
+					output: replacedCount,
+				};
+			}
 		},
 	});
 }

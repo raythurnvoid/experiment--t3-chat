@@ -279,7 +279,22 @@ beforeEach(() => {
 		return bytes ? { _yay: bytes } : { _nay: { name: "nay", message: "Missing pending state fixture" } };
 	});
 	upsertPendingMock.mockReset();
-	upsertPendingMock.mockResolvedValue({ _yay: null });
+	upsertPendingMock.mockImplementation(
+		async (args: { pendingUpdateId: string; nodeId: string; stagedText: string; unstagedText: string }) => ({
+			_yay: {
+				pendingUpdate: {
+					...makePendingUpdate({
+						id: args.pendingUpdateId,
+						fileNodeId: args.nodeId,
+						staged: args.stagedText,
+						unstaged: args.unstagedText,
+					}),
+					updatedAt: 2,
+				},
+				currentYjsLastSequenceId: null,
+			},
+		}),
+	);
 	truncatePathForWidthMock.mockReset();
 	truncatePathForWidthMock.mockImplementation((args: { path: string }) => args.path);
 	useQueryMock.mockReset();
@@ -287,6 +302,7 @@ beforeEach(() => {
 	useQueriesMock.mockReturnValue({});
 	useStableQueryMock.mockReset();
 	vi.mocked(toast.error).mockClear();
+	vi.mocked(toast.warning).mockClear();
 });
 
 afterEach(() => {
@@ -563,6 +579,7 @@ describe("FileEditorSidebarPending", () => {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_agent",
 			pendingUpdateId: "pu_agent",
+			reviewedUpdatedAt: 2,
 		});
 		expect(upsertPendingMock).not.toHaveBeenCalledWith(expect.objectContaining({ nodeId: "node_user" }));
 	});
@@ -707,6 +724,7 @@ describe("FileEditorSidebarPending", () => {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
 			pendingUpdateId: "pu_a",
+			reviewedUpdatedAt: 2,
 		});
 	});
 
@@ -860,6 +878,7 @@ describe("FileEditorSidebarPending", () => {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
 			pendingUpdateId: "pu_a",
+			reviewedUpdatedAt: 2,
 		});
 		expect(upsertPendingMock).toHaveBeenCalledWith({
 			membershipId: MEMBERSHIP_ID,
@@ -873,6 +892,7 @@ describe("FileEditorSidebarPending", () => {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_b",
 			pendingUpdateId: "pu_b",
+			reviewedUpdatedAt: 2,
 		});
 	});
 
@@ -1269,7 +1289,53 @@ describe("FileEditorSidebarPending", () => {
 		expect(container.querySelector(".FileEditorSidebarPending-item-path-text-added")).toBeNull();
 	});
 
-	test("a stale row shows Out of date, refuses Accept with the sentence, and is skipped by Accept all", async () => {
+	test.each([
+		["rich_text", "plain_text"],
+		["plain_text", "rich_text"],
+		["rich_text", null],
+	] as const)(
+		"previews the retained %s proposal after restore changes the file shape to %s",
+		async (sourceKind, rootKind) => {
+			const pendingUpdate = {
+				...makePendingUpdate({
+					id: "pu_restored",
+					fileNodeId: "node_restored",
+					staged: "accepted\n",
+					unstaged: "proposed\n",
+					contentNeedsRebase: true,
+				}),
+				contentRebaseRootKind: sourceKind,
+			};
+			for (const [role, text] of [
+				["staged", "accepted\n"],
+				["unstaged", "proposed\n"],
+			] as const) {
+				const yjsDoc = files_yjs_doc_create_from_text({ text, rootKind: sourceKind });
+				if ("_nay" in yjsDoc) throw new Error(yjsDoc._nay.message);
+				pendingStateBytesByStateId.set(`pu_restored_${role}`, files_u8_to_array_buffer(encodeStateAsUpdate(yjsDoc)));
+				yjsDoc.destroy();
+			}
+			useQueryMock.mockReturnValue([pendingUpdate]);
+			useStableQueryMock.mockReturnValue([
+				{
+					...makeNode({ id: "node_restored", path: "/restored.txt", hasEditableYjsState: rootKind !== null }),
+					yjsRootKind: rootKind ?? undefined,
+				},
+			]);
+
+			const { container } = render(<FileEditorSidebarPending />);
+			fireEvent.click(container.querySelector("details summary button") as HTMLButtonElement);
+			await waitFor(() =>
+				expect(screen.getByRole("textbox", { name: "Diff preview" }).textContent).toContain("+proposed"),
+			);
+			expect(screen.getByRole("textbox", { name: "Diff preview" }).textContent).toContain("-accepted");
+			fireEvent.click(screen.getByRole("button", { name: "Accept changes to /restored.txt" }));
+			expect(upsertPendingMock).not.toHaveBeenCalled();
+			expect(actionMock).not.toHaveBeenCalled();
+		},
+	);
+
+	test("a stale row points to Review, refuses Accept, and is skipped by Accept all", async () => {
 		// Collaboration off on both files. /a.md was saved after its proposal: the node moved to
 		// another asset than the one the proposal was built from.
 		useQueryMock.mockReturnValue([
@@ -1292,9 +1358,9 @@ describe("FileEditorSidebarPending", () => {
 		const captions = Array.from(container.querySelectorAll(".FileEditorSidebarPending-item-caption")).map(
 			(caption) => caption.textContent,
 		);
-		expect(captions).toEqual(["Out of date", "Modified"]);
+		expect(captions).toEqual(["Review to update", "Modified"]);
 		// The suffix gives assistive tech the caption's meaning.
-		expect(screen.getByRole("link", { name: "/a.md, out of date" })).toBeTruthy();
+		expect(screen.getByRole("link", { name: "/a.md, review to update" })).toBeTruthy();
 		expect(screen.getByRole("link", { name: "/b.md" })).toBeTruthy();
 
 		// Accept on the stale row explains instead of sending: the server would refuse the same way.
@@ -1307,13 +1373,12 @@ describe("FileEditorSidebarPending", () => {
 		// Accept all skips the stale row, says so once, and accepts the fresh one.
 		fireEvent.click(screen.getByText("Accept all"));
 		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(1));
-		expect(toast.warning).toHaveBeenCalledWith(
-			"Out-of-date changes are skipped. Ask the agent to make them again, or discard them.",
-		);
+		expect(toast.warning).toHaveBeenCalledWith("Changes waiting for review are skipped. Open Review to update them.");
 		expect(actionMock).toHaveBeenCalledWith("save_file_pending_update", {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_b",
 			pendingUpdateId: "pu_fresh",
+			reviewedUpdatedAt: 2,
 		});
 	});
 
@@ -1341,7 +1406,7 @@ describe("FileEditorSidebarPending", () => {
 		]);
 		render(<FileEditorSidebarPending />);
 
-		expect(screen.getByRole("link", { name: "/a.md, review after collaboration change" })).toBeTruthy();
+		expect(screen.getByRole("link", { name: "/a.md, review to update" })).toBeTruthy();
 		fireEvent.click(screen.getByRole("button", { name: "Accept changes to /a.md" }));
 		await act(async () => {});
 		expect(upsertPendingMock).not.toHaveBeenCalled();
@@ -1354,10 +1419,54 @@ describe("FileEditorSidebarPending", () => {
 				nodeId: "node_b",
 			}),
 		);
-		expect(toast.warning).toHaveBeenCalledWith(
-			"Changes waiting for review after a collaboration change are skipped. Open Review to update them.",
-		);
+		expect(toast.warning).toHaveBeenCalledWith("Changes waiting for review are skipped. Open Review to update them.");
 		expect(upsertPendingMock).not.toHaveBeenCalled();
+	});
+
+	test("Accept all reports both preparation reasons once and accepts only fresh content and the delete", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({ id: "pu_stale", fileNodeId: "node_a", staged: "s", unstaged: "u", baseAssetId: "asset_old" }),
+			makePendingUpdate({
+				id: "pu_marked",
+				fileNodeId: "node_b",
+				staged: "s",
+				unstaged: "u",
+				contentNeedsRebase: true,
+			}),
+			makePendingUpdate({ id: "pu_fresh", fileNodeId: "node_c", staged: "s", unstaged: "u" }),
+			makePendingUpdate({
+				id: "pu_delete",
+				fileNodeId: "node_d",
+				staged: "s",
+				unstaged: "u",
+				contentNeedsRebase: true,
+				pendingArchive: { fromPath: "/d.md" },
+			}),
+		]);
+		useStableQueryMock.mockReturnValue([
+			makeNode({ id: "node_a", path: "/a.md", nonCollaborative: true }),
+			makeNode({ id: "node_b", path: "/b.md" }),
+			makeNode({ id: "node_c", path: "/c.md" }),
+			makeNode({ id: "node_d", path: "/d.md" }),
+		]);
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByText("Accept all"));
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith("apply_file_pending_archive", {
+				membershipId: MEMBERSHIP_ID,
+				nodeId: "node_d",
+			}),
+		);
+		expect(toast.warning).toHaveBeenCalledTimes(1);
+		expect(toast.warning).toHaveBeenCalledWith("Changes waiting for review are skipped. Open Review to update them.");
+		expect(upsertPendingMock).toHaveBeenCalledTimes(1);
+		expect(actionMock).toHaveBeenCalledTimes(1);
+		expect(actionMock).toHaveBeenCalledWith("save_file_pending_update", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_c",
+			pendingUpdateId: "pu_fresh",
+			reviewedUpdatedAt: 2,
+		});
 	});
 
 	test("mixed row keeps the accordion and shows the from → dest move label", () => {
@@ -1725,6 +1834,7 @@ describe("FileEditorSidebarPending", () => {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
 			pendingUpdateId: "pu_copy",
+			reviewedUpdatedAt: 2,
 		});
 		expect(mutationMock).not.toHaveBeenCalled();
 	});
@@ -1762,6 +1872,7 @@ describe("FileEditorSidebarPending", () => {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
 			pendingUpdateId: "pu_mixed",
+			reviewedUpdatedAt: 2,
 		});
 		expect(mutationMock.mock.invocationCallOrder[0] ?? 0).toBeLessThan(
 			upsertPendingMock.mock.invocationCallOrder[0] ?? 0,
@@ -1904,6 +2015,7 @@ describe("FileEditorSidebarPending", () => {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
 			pendingUpdateId: "pu_content",
+			reviewedUpdatedAt: 2,
 		});
 	});
 
