@@ -512,9 +512,16 @@ all four collections. Two things follow for QA:
   ticked, then open Chitchat as the other. If `create_organization` answers `Organization quota
   reached`, invite into `qa-browser` instead of making a new org.
 
-Driving scope membership from the browser means calling the doors yourself. Since SDK 0.13.0 the
-`client.scopes` wrapper is gone and `window.__ccClient` with it; reach the live client through the
-React fiber walk in `plugin-marketplace.md` ("Calling the plugin doors from inside a frame"), then:
+Use the channel row's `Actions for #<name>` menu and `People in #<name>` for native membership
+checks. Add a person with the picker; remove them with the `Remove` button in their `.people-item`
+row. The picker waits for the server before changing its checked state. Playwright's `check()` can
+throw even though the write lands just after its immediate check. Click once, then wait for the
+person to appear under current people. Read the new state before retrying. After closing the dialog,
+assert that no visible dialog remains; focus `Close` and press Enter if a pointer click did not close it.
+
+For a direct door check, SDK 0.13.0 removed `client.scopes` and `window.__ccClient`. Reach the live
+client through the React fiber walk in `plugin-marketplace.md` ("Calling the plugin doors from
+inside a frame"), then:
 
 ```js
 await frame.evaluate(async ({ key, userId }) => {
@@ -767,6 +774,14 @@ For the editable plugin-label flow, verify these cases through the app and read 
   every private write. Staged host tests cover a parent move/archive/replacement during that gap.
 - Relock an outer folder while a nested plugin lock remains. Ensure, write, access, and archive must
   refuse without changing any content, grants, or lock origin.
+
+For recovery after uninstall, use only an installation created for the test. Record its output,
+metadata, grants, and locks first. Uninstall through the detail page, then check that output remains
+and bindings drain. Unlock the leaf and folder through Properties, change the folder's labels and
+sharing, and move it by dragging its `.FilesSidebarTreeItemPrimaryAction` onto another folder's
+primary action. Verify the new parent and path in stored readbacks. Archive through the row menu.
+Reinstall the same published version and check that those member choices remain. A fresh install
+has an empty plugin store; do not mistake the empty channel list for lost Files output.
 
 **Proven live 2026-09-01, after the fix below.** A private channel created in `personal/home` now
 projects to `/chitchat/private/<slug>-<digest8>/<slug>-<digest8>.md` within a few seconds, holding the

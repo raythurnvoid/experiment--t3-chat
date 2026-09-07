@@ -542,6 +542,28 @@ Git submodule with its own repo (`raythurnvoid/bonobo-plugin-chitchat`), scaffol
 
 # Releases (SDK + Gallery)
 
+SDK 0.19.1 and Chitchat 0.7.7 shipped to dev on 2026-09-07. The reviewed host is
+`814d617570351e8941548814d1849a16e5434c98`; the SDK mirror is
+`ed27f96f0d5f735672f7f91bf5da59b033fae655`. Chitchat pins that SDK in its package and lock files.
+Its published commit is `f705ff523ea211713e895d9e4c3a560a9500896e`, version doc
+`hn7gyxadvs8az1v388qxd1c25h8dy7bq`. All four served files match the local hashes and sizes.
+The commit containing this entry and the gitlink is the final release checkpoint.
+
+Policy 15 passed all 14 frozen live review cases: eight harmless passes and six supported harmful
+rejections. The regular agent reads the hidden source mount through Bash. Real Chitchat and Council
+artifacts completed in the 64 MB review runtime; separate Node tools use 512 MB. These are runtime
+limits, not peak heap measurements. Earlier terminal verdicts remain as history.
+
+The three active-workspace Chitchat installations now use 0.7.7. Both Council installations remain
+enabled on 0.2.11. The cleanup-fenced Chitchat installation stays disabled on 0.6.0. All six original
+stores preserved their 400 documents, 45,690 bytes, and scope hashes. The Council app commit
+`d9da4765875c977db92af94c8231f00b327ee978` adds tests/docs only; no Worker deployment was needed.
+
+Native owner/member checks passed message and reply source preservation, editable file and folder
+labels, member locks, manual sharing after channel removal, private folder recovery, and output
+recovery after uninstall/reinstall. All 70 approved legacy nodes were converted and preserved; the
+strict schema has no old writer fields or migration bridge.
+
 Plugin runs keep their platform baseline of exact-source download, sibling Markdown writes, and
 activities. Every staged write also reloads the live run, installation, source node, actor membership,
 and the actor's `content.write` on that source in both the prepare and publish transactions. Removing
