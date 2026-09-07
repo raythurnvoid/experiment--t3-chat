@@ -7,7 +7,7 @@ import type { plugins_Capability } from "./plugins.ts";
 import {
 	plugins_CAPABILITIES,
 	plugins_consent_diff,
-	plugins_dist_review_mechanical_findings,
+	plugins_dist_review_advisories,
 	plugins_event_matches_configuration,
 	plugins_get_event_filter_values,
 	plugins_list_file_view_matches,
@@ -1523,21 +1523,19 @@ describe("plugins_consent_diff", () => {
 	});
 });
 
-describe("plugins_dist_review_mechanical_findings", () => {
+describe("plugins_dist_review_advisories", () => {
 	function read_first_party_dist(plugin: "image" | "pdf") {
 		// vitest runs with cwd at packages/app; import.meta.url is a vite /@fs URL here.
 		return readFileSync(`${process.cwd()}/../../plugins/bonobo-plugin-${plugin}/dist/backend/worker.js`, "utf8");
 	}
 
-	test("the real readable first-party dists produce no finding of either severity", () => {
-		expect(plugins_dist_review_mechanical_findings(read_first_party_dist("image"))).toEqual({
-			findings: [],
-			advisoryFindings: [],
-		});
-		expect(plugins_dist_review_mechanical_findings(read_first_party_dist("pdf"))).toEqual({
-			findings: [],
-			advisoryFindings: [],
-		});
+	test("the real readable first-party dists produce no advice", () => {
+		expect(plugins_dist_review_advisories(read_first_party_dist("image"))).toEqual([]);
+		expect(plugins_dist_review_advisories(read_first_party_dist("pdf"))).toEqual([]);
+	});
+
+	test("returns no advice for an empty file", () => {
+		expect(plugins_dist_review_advisories("")).toEqual([]);
 	});
 
 	test("reports the same dist with its whitespace minified away as advisory only", () => {
@@ -1548,62 +1546,69 @@ describe("plugins_dist_review_mechanical_findings", () => {
 			.join("");
 		// Shape alone never blocks: a normal bundled dependency looks exactly like this and the plugin
 		// author cannot fix it.
-		expect(plugins_dist_review_mechanical_findings(minified)).toEqual({
-			findings: [],
-			advisoryFindings: [expect.stringContaining("Longest line"), expect.stringContaining("Average line length")],
-		});
+		expect(plugins_dist_review_advisories(minified)).toEqual([
+			expect.stringContaining("Longest line"),
+			expect.stringContaining("Average line length"),
+		]);
 	});
 
 	test("reports a dist dominated by single-character identifiers as advisory only", () => {
 		const minified = Array.from({ length: 50 }, (_, i) => `var a${i % 3};function f(x,y,z){var q=x+y;return q*z}`).join(
 			"\n",
 		);
-		expect(plugins_dist_review_mechanical_findings(minified)).toEqual({
-			findings: [],
-			advisoryFindings: [expect.stringContaining("single character")],
-		});
+		expect(plugins_dist_review_advisories(minified)).toEqual([expect.stringContaining("single character")]);
 	});
 
-	test("rejects a dist with a giant base64 string literal", () => {
-		const readableLines = Array.from(
-			{ length: 20 },
-			(_, i) => `export function handler${i}(request) { return request; }`,
-		);
-		const source = [...readableLines, `const payload = decodePayload("${"A".repeat(300)}");`].join("\n");
-		expect(plugins_dist_review_mechanical_findings(source)).toEqual({
-			findings: [expect.stringContaining("base64")],
-			advisoryFindings: [],
-		});
+	test("reports a long response string as advice", () => {
+		const source = `const payload = "${"A".repeat(300)}";\nexport default { fetch: () => new Response(payload) };\n`;
+		expect(plugins_dist_review_advisories(source)).toEqual([
+			"Dist contains a base64-looking string literal of 256+ characters; inspect how the value is used",
+		]);
 	});
 
-	test("rejects escape-sequence obfuscation and the Function constructor", () => {
+	test("reports escaped text and a static Function constructor as advice", () => {
 		const escaped = `const readableName = "${"\\x41".repeat(20)}";\n`;
-		expect(plugins_dist_review_mechanical_findings(escaped)).toEqual({
-			findings: [expect.stringContaining("escape sequences")],
-			advisoryFindings: [],
-		});
-		expect(plugins_dist_review_mechanical_findings('const build = Function("return 1");\n')).toEqual({
-			findings: [expect.stringContaining("Function constructor")],
-			advisoryFindings: [],
-		});
+		expect(plugins_dist_review_advisories(escaped)).toEqual([
+			"Dist contains 20 \\x/\\u escape sequences; inspect how the encoded text is used",
+		]);
+		expect(plugins_dist_review_advisories('const build = Function("return 1");\n')).toEqual([
+			"Dist contains a Function constructor call pattern; inspect how the resulting code is used",
+		]);
 	});
 
-	test("a rejecting finding still rejects when the same file is also advisory", () => {
-		// One long line carrying a hidden payload. The shape is advisory and the payload rejects, and
-		// the two must land in their own arrays instead of merging back into one verdict.
-		const source = `const payload = decodePayload("${"A".repeat(300)}"); ${"// padding".repeat(100)}\n`;
-		expect(plugins_dist_review_mechanical_findings(source)).toEqual({
-			findings: [expect.stringContaining("base64")],
-			advisoryFindings: [expect.stringContaining("Longest line"), expect.stringContaining("Average line length")],
-		});
+	test("keeps shape and encoding advice in the same list", () => {
+		const source = `const payload = "${"A".repeat(300)}"; ${"// padding".repeat(100)}\n`;
+		expect(plugins_dist_review_advisories(source)).toEqual([
+			expect.stringContaining("Longest line"),
+			expect.stringContaining("Average line length"),
+			expect.stringContaining("base64"),
+		]);
 	});
 
 	test("keeps JavaScript-only checks out of non-JavaScript text", () => {
+		const source = 'const a = Function("return 1");\n';
+		const javaScriptAdvice = [
+			expect.stringContaining("single character"),
+			expect.stringContaining("Function constructor"),
+		];
+		expect(plugins_dist_review_advisories(source)).toEqual(javaScriptAdvice);
+		expect(plugins_dist_review_advisories(source, { javaScript: true })).toEqual(javaScriptAdvice);
+		expect(plugins_dist_review_advisories(source, { javaScript: false })).toEqual([]);
 		expect(
-			plugins_dist_review_mechanical_findings('main::before { content: "Function(return 1)"; }\n', {
+			plugins_dist_review_advisories('main::before { content: "Function(return 1)"; }\n', {
 				javaScript: false,
 			}),
-		).toEqual({ findings: [], advisoryFindings: [] });
+		).toEqual([]);
+	});
+
+	test("keeps encoding advice for non-JavaScript text", () => {
+		expect(plugins_dist_review_advisories(`"${"A".repeat(300)}"\n`, { javaScript: false })).toEqual([
+			expect.stringContaining("Average line length"),
+			"Dist contains a base64-looking string literal of 256+ characters; inspect how the value is used",
+		]);
+		expect(plugins_dist_review_advisories(`"${"\\u00e9".repeat(20)}"\n`, { javaScript: false })).toEqual([
+			"Dist contains 20 \\x/\\u escape sequences; inspect how the encoded text is used",
+		]);
 	});
 });
 

@@ -750,7 +750,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 								: parsed._yay.type === "d"
 									? { kind: "folder" as const }
 									: {}),
-							pathPrefix: `/${pageArgs.mount.pluginVersionId}`,
+							pathPrefix: pageArgs.mount.fs.dbFilesRootPath,
 						})) as files_nodes_search_paths_Result;
 						return {
 							items: pageResult.items.map((item) => ({
@@ -765,7 +765,7 @@ export function bash_find_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 						organizationId: pageArgs.mount.fs.ctxData.organizationId,
 						workspaceId: pageArgs.mount.fs.ctxData.workspaceId,
 						visibilityUserId: pageArgs.mount.fs.ctxData.userId,
-						folderPath: `/${pageArgs.mount.pluginVersionId}`,
+						folderPath: pageArgs.mount.fs.dbFilesRootPath,
 						numItems: pageArgs.numItems,
 						cursor: pageArgs.innerCursor,
 						...(parsed._yay.extension != null

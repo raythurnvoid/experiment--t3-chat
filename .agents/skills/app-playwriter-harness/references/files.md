@@ -515,9 +515,9 @@ One dialog holding the file's facts, its read-only lock, and the flat key-value 
   input.
 - The dialog holds four sections, reachable by their region names: `General` (a `<dl>` of facts),
   `Protection` (the read-only checkbox), `Collaboration` (the collaborative-editing checkbox), and
-  `Metadata` (the YAML editor). A folder gets the first two only — `set_entries` refuses a non-file,
-  so there is no editor to find. `Collaboration` renders only for an editable text file, so an image
-  shows three sections and no empty strip.
+  `Metadata` (the YAML editor). A folder gets General, Protection, and Metadata.
+  `Collaboration` renders only for an editable text file, so an image also shows three sections
+  and no empty strip.
 - The `Collaboration` checkbox is another `MyCheckboxButton`, so the same 1px-input rule applies:
   click `.FilesPropertiesModalCollaboration-checkbox`, or `focus()` the input and press `Space`.
   Both directions open an inline confirm step inside the same section —
@@ -547,6 +547,8 @@ One dialog holding the file's facts, its read-only lock, and the flat key-value 
 - The editor is Monaco. Synthetic keyboard input does not reach it. Set the text through the editor
   handle from page context:
   `monaco.editor.getEditors().find((e) => e.getRawOptions().ariaLabel === "Metadata YAML").setValue(yaml)`.
+  After opening Properties, wait for the textbox named `Metadata YAML` before reading the handle;
+  the dialog can appear before Monaco mounts, so an immediate lookup can return `undefined`.
   Get `monaco` with `await import("/@id/monaco-editor")` — the bare specifier `"monaco-editor"` does not
   resolve in page context under the Vite dev server, it throws `Failed to resolve module specifier`.
 - Monaco inside this dialog hoists nothing, unlike the file editors. Its suggest and hover widgets

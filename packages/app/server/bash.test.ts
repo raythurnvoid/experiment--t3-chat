@@ -7,6 +7,7 @@ import { api, internal } from "../convex/_generated/api.js";
 import type { Id } from "../convex/_generated/dataModel";
 import type { ActionCtx, MutationCtx } from "../convex/_generated/server.js";
 import type { ai_chat_files_patch_thread_tmp_files_Args } from "../convex/ai_chat_files.ts";
+import type { bash_ReviewScratch } from "../convex/bash.ts";
 import { files_db_yjs_push_update } from "../convex/files_nodes.ts";
 import { db_insert_file_text_content } from "../convex/files_nodes_content.ts";
 import { files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE } from "../convex/files_pending_updates.ts";
@@ -8109,6 +8110,256 @@ describe("bash_run_command", () => {
 			const catMissing = await runner.run("cat /.mounts/nope/x.md");
 			expect(catMissing.metadata.exitCode).not.toBe(0);
 			expect(catMissing.stderr).toContain("No such file");
+		});
+	});
+
+	describe("run_plugin_review", () => {
+		const reviewRoot = `/review-${"a".repeat(32)}`;
+		const otherRoot = `/review-${"b".repeat(32)}`;
+		const source = "// Reviewneedle marker\nexport const ready = true;\n";
+
+		async function create_review_runner() {
+			const runner = await create_bash_runner();
+			for (const [path, rawText] of [
+				[`${reviewRoot}/dist/worker.js`, source],
+				[`${reviewRoot}/script.sh`, "printf 'executed-source-marker'\n"],
+				[`${otherRoot}/other.js`, "Reviewneedle Otherreviewprivate\n"],
+			]) {
+				const created = await runner.t.action(internal.files_nodes_content.create_file_node_internal, {
+					workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
+					path,
+					rawText,
+				});
+				expect(created._nay).toBeUndefined();
+			}
+			let cwd = "/.plugins/review";
+			let scratch: bash_ReviewScratch = { fileNodes: [], fileNodesContentDict: {} };
+			const run = async (command: string) => {
+				const result = await runner.t.action(internal.bash.run_plugin_review, {
+					reviewRoot,
+					userId: runner.seeded.userId,
+					command,
+					cwd,
+					scratch,
+				});
+				cwd = result.cwd;
+				scratch = result.scratch;
+				return result;
+			};
+			return { runner, run };
+		}
+
+		test("reads and searches only the pinned source tree with ordinary Bash commands", async () => {
+			const { run } = await create_review_runner();
+			const read = await run("cat dist/worker.js");
+			expect(read.exitCode).toBe(0);
+			expect(read.output).toContain(source.trim());
+			for (const command of [
+				"ls dist",
+				"find .",
+				"grep -n Reviewneedle dist/worker.js",
+				"search Reviewneedle",
+				"tree /.plugins",
+				"find /.plugins",
+				"search --path /.plugins Reviewneedle",
+				"cd /tmp && search Reviewneedle",
+				`meta search --where '{"eq":["metadata.source","plugin-source"]}'`,
+				"cd / && search Reviewneedle",
+			]) {
+				const result = await run(command);
+				expect(result.exitCode, result.output).toBe(0);
+				expect(result.output).toContain("worker.js");
+				expect(result.output).not.toContain("Otherreviewprivate");
+				expect(result.output).not.toContain("other.js");
+			}
+		});
+
+		test("keeps cwd and scratch between calls without writing a chat thread", async () => {
+			const { runner, run } = await create_review_runner();
+			const before = await runner.t.run((ctx) => ctx.db.query("ai_chat_threads").collect());
+			expect((await run("mkdir /tmp/notes && printf 'follow the backend' > /tmp/notes/plan && cd dist")).exitCode).toBe(
+				0,
+			);
+			const next = await run("cat /tmp/notes/plan && cat worker.js");
+			expect(next.exitCode).toBe(0);
+			expect(next.cwd).toBe("/.plugins/review/dist");
+			expect(next.output).toContain("follow the backend");
+			expect(next.output).toContain(source.trim());
+			expect(await runner.t.run((ctx) => ctx.db.query("ai_chat_threads").collect())).toEqual(before);
+			expect(await runner.t.run((ctx) => ctx.db.query("ai_chat_files").collect())).toEqual([]);
+		});
+
+		test("hides review files from the main agent and blocks unrelated paths in review", async () => {
+			const { runner, run } = await create_review_runner();
+			expect((await runner.run("search Reviewneedle")).stdout).not.toContain("worker.js");
+			expect((await runner.run("cat /.plugins/review/dist/worker.js")).metadata.exitCode).not.toBe(0);
+			for (const path of [
+				"/home/cloud-usr/w/personal/home/docs/readme.md",
+				`${otherRoot}/other.js`,
+				`/.plugins/review/../../${otherRoot.slice(1)}/other.js`,
+				"/.plugins/other/other.js",
+				"/.mounts/other/other.js",
+				"/etc/passwd",
+			]) {
+				const result = await run(`cat ${path}`);
+				expect(result.exitCode, result.output).not.toBe(0);
+				expect(result.output).not.toContain("Otherreviewprivate");
+				expect(result.output).not.toContain("unique-token");
+			}
+		});
+
+		test("refuses source changes and mounted shell execution", async () => {
+			const { run } = await create_review_runner();
+			for (const command of [
+				"printf changed > dist/worker.js",
+				"printf changed | tee dist/worker.js",
+				"rm dist/worker.js",
+				"mv dist/worker.js dist/changed.js",
+				"cp dist/worker.js dist/copy.js",
+				"touch dist/new.js",
+				"mkdir new",
+				"bash script.sh",
+				"source script.sh",
+			]) {
+				const result = await run(command);
+				expect(result.exitCode, result.output).not.toBe(0);
+				expect(result.output).not.toContain("executed-source-marker");
+			}
+			expect((await run("cat dist/worker.js")).output).toContain(source.trim());
+		});
+
+		test("bounds scratch and keeps guidance when a pipeline discards stderr", async () => {
+			const { run } = await create_review_runner();
+			const scratch = await run("printf '%3000s' x > /tmp/large.txt");
+			expect(scratch.output).toContain("not persisted");
+			expect(scratch.scratch.fileNodes).toEqual([]);
+			expect((await run("cat /tmp/large.txt")).exitCode).not.toBe(0);
+			const invalid = await run("cat --invalid dist/worker.js 2>/dev/null | head");
+			expect(invalid.output).toContain("cat: unsupported option");
+		});
+
+		test("rejects a host request for a root outside the review namespace", async () => {
+			const { runner } = await create_review_runner();
+			await expect(
+				runner.t.action(internal.bash.run_plugin_review, {
+					reviewRoot: "/",
+					userId: runner.seeded.userId,
+					command: "ls",
+					cwd: "/.plugins/review",
+					scratch: { fileNodes: [], fileNodesContentDict: {} },
+				}),
+			).rejects.toThrow("Invalid plugin review root");
+		});
+
+		test("stages exact source and cleans only that attempt's nodes, chunks, and assets", async () => {
+			const { runner } = await create_review_runner();
+			const preserved = await runner.t.run((ctx) => ctx.db.query("files_nodes").collect());
+			const beforeAssets = await runner.t.run((ctx) => ctx.db.query("files_r2_assets").collect());
+			const staged = await runner.t.action(internal.plugins_review.stage_sources, {
+				files: [{ path: "dist/worker.js", source: "// café 🦜\r\nexport const value = 1;\r\n" }],
+			});
+			expect(staged._nay).toBeUndefined();
+			if (!staged._yay) throw new Error("Source staging failed");
+			const read = await runner.t.action(internal.bash.run_plugin_review, {
+				reviewRoot: staged._yay.reviewRoot,
+				userId: runner.seeded.userId,
+				command: "cat dist/worker.js",
+				cwd: "/.plugins/review",
+				scratch: { fileNodes: [], fileNodesContentDict: {} },
+			});
+			expect(read.exitCode).toBe(0);
+			expect(read.output).toContain("// café 🦜\nexport const value = 1;");
+			const nodes = await runner.t.run((ctx) => ctx.db.query("files_nodes").collect());
+			const stagedNodeIds = new Set(
+				nodes.filter((node) => node.path.startsWith(`${staged._yay.reviewRoot}/`)).map((node) => node._id),
+			);
+			const file = nodes.find((node) => node.path === `${staged._yay.reviewRoot}/dist/worker.js`);
+			if (!file?.assetId) throw new Error("Staged source has no asset");
+			const asset = await runner.t.run((ctx) => ctx.db.get("files_r2_assets", file.assetId!));
+			expect(test_r2_objects.get(asset!.r2Key!)).toEqual(
+				new TextEncoder().encode("// café 🦜\r\nexport const value = 1;\r\n"),
+			);
+			const stored = await runner.t.run((ctx) => ctx.db.query("files_text_chunks").collect());
+			expect(stored.some((chunk) => stagedNodeIds.has(chunk.fileNodeId))).toBe(true);
+			await runner.t.mutation(internal.plugins.delete_review_source_tree, { reviewRoot: staged._yay.reviewRoot });
+			expect(await runner.t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(preserved);
+			expect(await runner.t.run((ctx) => ctx.db.query("files_r2_assets").collect())).toEqual(beforeAssets);
+			for (const table of ["files_text_chunks", "files_plain_text_chunks"] as const) {
+				const chunks = await runner.t.run((ctx) => ctx.db.query(table).collect());
+				expect(chunks.some((chunk) => stagedNodeIds.has(chunk.fileNodeId))).toBe(false);
+			}
+		});
+
+		test("schedules cleanup before staging so an abandoned attempt expires", async () => {
+			const { runner } = await create_review_runner();
+			const before = await runner.t.run((ctx) => ctx.db.query("files_nodes").collect());
+			vi.useFakeTimers();
+			try {
+				const staged = await runner.t.action(internal.plugins_review.stage_sources, {
+					files: Array.from({ length: 30 }, (_, index) => ({ path: `dist/module-${index}.js`, source })),
+				});
+				expect(staged._nay).toBeUndefined();
+				expect((await runner.t.run((ctx) => ctx.db.query("files_nodes").collect())).length).toBeGreaterThan(
+					before.length,
+				);
+				await runner.t.finishAllScheduledFunctions(() => vi.runAllTimers());
+				expect(await runner.t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(before);
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
+		test("reads a bounded window near the end of a large minified file", async () => {
+			const { runner } = await create_review_runner();
+			const staged = await runner.t.action(internal.plugins_review.stage_sources, {
+				files: [{ path: "dist/large.js", source: `${"x".repeat(780_000)};const payload = 'Largetailneedle';` }],
+			});
+			if (!staged._yay) throw new Error(staged._nay.message);
+			const read = await runner.t.action(internal.bash.run_plugin_review, {
+				reviewRoot: staged._yay.reviewRoot,
+				userId: runner.seeded.userId,
+				command: "grep --start-index 780000 --max-chars 2000 payload dist/large.js",
+				cwd: "/.plugins/review",
+				scratch: { fileNodes: [], fileNodesContentDict: {} },
+			});
+			expect(read.exitCode, read.output).toBe(0);
+			expect(read.output).toContain("Largetailneedle");
+			expect(read.output.length).toBeLessThan(3000);
+		});
+
+		test.each(["../escape.js", "/escape.js", "dist/../escape.js", "dist//escape.js"])(
+			"refuses source path %s before writing anything",
+			async (path) => {
+				const { runner } = await create_review_runner();
+				const before = await runner.t.run((ctx) => ctx.db.query("files_nodes").collect());
+				const staged = await runner.t.action(internal.plugins_review.stage_sources, {
+					files: [
+						{ path: "dist/valid.js", source },
+						{ path, source },
+					],
+				});
+				expect(staged._nay?.message).toContain("normalized relative paths");
+				expect(await runner.t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(before);
+			},
+		);
+
+		test("cleans partial staging when a later file cannot be created", async () => {
+			const { runner } = await create_review_runner();
+			const before = await runner.t.run((ctx) => ctx.db.query("files_nodes").collect());
+			vi.useFakeTimers();
+			try {
+				const staged = await runner.t.action(internal.plugins_review.stage_sources, {
+					files: [
+						{ path: "dist/worker.js", source },
+						{ path: "dist/worker.js/child.js", source },
+					],
+				});
+				expect(staged._nay).toBeDefined();
+				await runner.t.finishAllScheduledFunctions(() => vi.runAllTimers());
+				expect(await runner.t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(before);
+			} finally {
+				vi.useRealTimers();
+			}
 		});
 	});
 

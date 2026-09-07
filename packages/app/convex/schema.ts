@@ -785,9 +785,6 @@ const app_convex_schema = defineSchema({
 		 * Never returned to clients.
 		 */
 		readOnlyPluginName: v.optional(v.string()),
-		// Temporary: keep the old fields only until the approved dev conversion is audited.
-		pluginOwnerName: v.optional(v.string()),
-		pluginServiceWritePluginName: v.optional(v.string()),
 		/** Created by user ID. SYSTEM is the pseudo user ID for reserved global-organization content. */
 		createdBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
 		/** Updated by user ID. SYSTEM is the pseudo user ID for reserved global-organization content. */

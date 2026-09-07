@@ -1786,7 +1786,7 @@ const RoutePluginsPluginPublisherReleases = memo(function RoutePluginsPluginPubl
 	const { versions, reviews, lastPublishAttempt, historyIsTruncated } = props;
 	const reviewsById = new Map(reviews.map((review) => [review._id, review]));
 	const releases: Array<{
-		artifactHash: string;
+		id: string;
 		name: string;
 		version: string;
 		sourceCommitSha: string | null;
@@ -1796,7 +1796,7 @@ const RoutePluginsPluginPublisherReleases = memo(function RoutePluginsPluginPubl
 	}> = versions.map((version) => {
 		const review = version.reviewId ? (reviewsById.get(version.reviewId) ?? null) : null;
 		return {
-			artifactHash: version.artifactHash,
+			id: version._id,
 			name: version.name,
 			version: version.version,
 			sourceCommitSha: version.sourceCommitSha,
@@ -1809,7 +1809,7 @@ const RoutePluginsPluginPublisherReleases = memo(function RoutePluginsPluginPubl
 	for (const review of reviews) {
 		if (!publishedReviewIds.has(review._id)) {
 			releases.push({
-				artifactHash: review.artifactHash,
+				id: review._id,
 				name: review.pluginName,
 				version: review.version,
 				sourceCommitSha: null,
@@ -1880,7 +1880,7 @@ const RoutePluginsPluginPublisherReleases = memo(function RoutePluginsPluginPubl
 						const advisoryFindings = release.review?.mechanicalAdvisoryFindings ?? [];
 						return (
 							<div
-								key={release.artifactHash}
+								key={release.id}
 								className={
 									"RoutePluginsPluginPublisherReleaseItem" satisfies RoutePluginsPluginPublisherReleases_ClassNames
 								}
@@ -2790,7 +2790,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("explains editable labels and member control for plugin file capabilities", () => {
 			const ownWriteLabel = format_capability_label("workspace.files.own-write");
 			expect(ownWriteLabel).toBe(
-				"Create and update files marked for this plugin. Members can edit their labels.",
+				"Create, update, and archive files and folders marked for this plugin. Members can edit their labels.",
 			);
 			const ownAccessLabel = format_capability_label("workspace.files.own-access");
 			expect(ownAccessLabel).toBe(

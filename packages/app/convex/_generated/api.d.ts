@@ -43,6 +43,7 @@ import type * as plugins_data_http from "../plugins_data_http.js";
 import type * as plugins_data_http_routes from "../plugins_data_http_routes.js";
 import type * as plugins_invoke from "../plugins_invoke.js";
 import type * as plugins_invoke_http_routes from "../plugins_invoke_http_routes.js";
+import type * as plugins_review from "../plugins_review.js";
 import type * as plugins_runtime from "../plugins_runtime.js";
 import type * as plugins_runtime_http_routes from "../plugins_runtime_http_routes.js";
 import type * as plugins_service from "../plugins_service.js";
@@ -110,6 +111,7 @@ declare const fullApi: ApiFromModules<{
   plugins_data_http_routes: typeof plugins_data_http_routes;
   plugins_invoke: typeof plugins_invoke;
   plugins_invoke_http_routes: typeof plugins_invoke_http_routes;
+  plugins_review: typeof plugins_review;
   plugins_runtime: typeof plugins_runtime;
   plugins_runtime_http_routes: typeof plugins_runtime_http_routes;
   plugins_service: typeof plugins_service;

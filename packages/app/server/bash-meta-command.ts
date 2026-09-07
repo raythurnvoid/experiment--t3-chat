@@ -579,7 +579,11 @@ export function bash_meta_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 		// meta search runs within exactly one indexed tree (the workspace or a single mount). The scope is the
 		// explicit --path folder when given, otherwise the cwd. Classify it to pick the right scope IDs.
 		const scopeShellPath = parsed._yay.pathShell ?? commandCtx.cwd;
-		const scope = bash_resolve_db_files_shell_path(scopeShellPath, dbFilesRoots);
+		let scope = bash_resolve_db_files_shell_path(scopeShellPath, dbFilesRoots);
+		// Outside an indexed tree, default to this agent's own root, including its stored prefix.
+		if (parsed._yay.pathShell == null && scope.kind === "outside_db_files") {
+			scope = bash_resolve_db_files_shell_path(currentWorkspacePath, dbFilesRoots);
+		}
 
 		if (scope.kind === "external_mounts_root") {
 			return {

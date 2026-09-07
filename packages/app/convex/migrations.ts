@@ -7,8 +7,6 @@ import { internalMutation, internalQuery, type MutationCtx, type QueryCtx } from
 import { quotas } from "../shared/quotas.ts";
 import { path_extract_segments_from } from "../shared/paths.ts";
 import { access_control_db_ensure_organization_member_role } from "./access_control.ts";
-import { files_metadata_db_write_entries } from "./files_metadata.ts";
-import { files_metadata_apply_set_and_remove, files_metadata_validate_entries } from "../shared/files-metadata.ts";
 import {
 	plugins_data_MAX_COLLECTIONS,
 	plugins_data_db_get_scope_access_state,
@@ -19,94 +17,6 @@ import {
 
 const app_migrations = new Migrations<DataModel>(components.migrations, {
 	internalMutation,
-});
-
-// One-time dev conversion. Remove these two migrations and the optional old fields after audit.
-export const backfill_plugin_file_metadata = app_migrations.define({
-	table: "files_nodes",
-	migrateOne: async (ctx, node) => {
-		const pluginName = node.pluginOwnerName ?? node.pluginServiceWritePluginName;
-		if (pluginName === undefined) {
-			return;
-		}
-		if (node.pluginOwnerName !== undefined && node.pluginServiceWritePluginName !== undefined &&
-			node.pluginOwnerName !== node.pluginServiceWritePluginName) {
-			throw new Error(`Conflicting old plugin names on ${node._id}`);
-		}
-		const docs = await ctx.db.query("files_metadata_docs")
-			.withIndex("by_organization_workspace_source_fileNode_qualifiedField", (q) => q
-				.eq("organizationId", node.organizationId)
-				.eq("workspaceId", node.workspaceId)
-				.eq("sourceKind", "committed")
-				.eq("fileNodeId", node._id)
-				.gte("qualifiedField", "metadata.")
-				.lt("qualifiedField", "metadata/"))
-			.collect();
-		const currentEntries = docs
-			.filter((doc) => doc.docKind === "value" && doc.valueKind !== "maybe_date")
-			.sort((left, right) => (left.entryIndex ?? 0) - (right.entryIndex ?? 0))
-			.map((doc) => {
-				const value = doc.stringValue ?? doc.numberValue ?? doc.booleanValue;
-				if (value === undefined) {
-					throw new Error(`Missing metadata value on ${node._id}`);
-				}
-				return { key: doc.qualifiedField.slice("metadata.".length), value };
-			});
-		const label = currentEntries.find((entry) => entry.key === "plugin-name");
-		if (label && label.value !== pluginName) {
-			throw new Error(`Metadata label changed on ${node._id}`);
-		}
-		if (label && currentEntries.some((entry) => entry.key === "source" && entry.value === "plugin")) {
-			return;
-		}
-		const validated = files_metadata_validate_entries(files_metadata_apply_set_and_remove(currentEntries, {
-			set: [{ key: "source", value: "plugin" }, { key: "plugin-name", value: pluginName }],
-			remove: [],
-		}));
-		if (validated._nay) {
-			throw new Error(`Metadata conversion refused on ${node._id}: ${validated._nay.message}`);
-		}
-		await files_metadata_db_write_entries(ctx, { fileNode: node, entries: validated._yay.entries });
-	},
-});
-
-export const strip_plugin_file_fields = app_migrations.define({
-	table: "files_nodes",
-	migrateOne: async (ctx, node) => {
-		if (node.pluginOwnerName === undefined && node.pluginServiceWritePluginName === undefined) {
-			return;
-		}
-		await ctx.db.patch("files_nodes", node._id, {
-			pluginOwnerName: undefined,
-			pluginServiceWritePluginName: undefined,
-		});
-	},
-});
-
-export const run_backfill_plugin_file_metadata = app_migrations.runner(internal.migrations.backfill_plugin_file_metadata);
-export const run_strip_plugin_file_fields = app_migrations.runner(internal.migrations.strip_plugin_file_fields);
-
-export const set_plugin_file_migration_pause = internalMutation({
-	args: {
-		installationIds: v.array(v.id("plugins_workspace_installations")),
-		paused: v.boolean(),
-	},
-	returns: v.object({
-		installationIds: v.array(v.id("plugins_workspace_installations")),
-		paused: v.boolean(),
-	}),
-	handler: async (ctx, args) => {
-		for (const installationId of args.installationIds) {
-			const installation = await ctx.db.get("plugins_workspace_installations", installationId);
-			if (!installation || !["chitchat", "council"].includes(installation.pluginName)) {
-				throw new Error("Expected an inventoried Chitchat or Council installation");
-			}
-			await ctx.db.patch("plugins_workspace_installations", installationId, {
-				status: args.paused ? "disabled" : "enabled",
-			});
-		}
-		return { installationIds: args.installationIds, paused: args.paused };
-	},
 });
 
 type LegacyBillingUsageSnapshot = Omit<Doc<"billing_usage_snapshots">, "_id" | "_creationTime"> & {

@@ -46,6 +46,7 @@ import { internal } from "../convex/_generated/api.js";
 import type { ActionCtx } from "../convex/_generated/server.js";
 import type { Doc, Id } from "../convex/_generated/dataModel";
 import type { ai_chat_get_thread_state_Result } from "../convex/ai_chat.ts";
+import type { bash_ReviewScratch } from "../convex/bash.ts";
 import type {
 	ai_chat_files_load_thread_tmp_files_Result,
 	ai_chat_files_patch_thread_tmp_files_Args,
@@ -545,8 +546,20 @@ class BashTmpFs implements IFileSystem {
 			threadId,
 		})) as ai_chat_files_load_thread_tmp_files_Result;
 
+		return await BashTmpFs.from_files({
+			fileNodes: loaded.file_nodes,
+			fileNodesContentDict: Object.fromEntries(
+				loaded.file_nodes.map((file) => [
+					file.path,
+					loaded.file_nodes_content_dict[file._id]?.bytes ?? new ArrayBuffer(0),
+				]),
+			),
+		});
+	}
+
+	static async from_files(loaded: bash_ReviewScratch) {
 		const tmpFs = new BashTmpFs();
-		for (const tmpFile of loaded.file_nodes) {
+		for (const tmpFile of loaded.fileNodes) {
 			if (tmpFile.kind === "directory") {
 				await tmpFs.fs.mkdir(tmpFile.path, { recursive: true });
 				await tmpFs.fs.chmod(tmpFile.path, tmpFile.mode);
@@ -555,7 +568,7 @@ class BashTmpFs implements IFileSystem {
 				await tmpFs.fs.symlink(tmpFile.symlinkTargetPath ?? "", tmpFile.path);
 				await tmpFs.fs.chmod(tmpFile.path, tmpFile.mode);
 			} else {
-				const bytes = loaded.file_nodes_content_dict[tmpFile._id]?.bytes ?? new ArrayBuffer(0);
+				const bytes = loaded.fileNodesContentDict[tmpFile.path] ?? new ArrayBuffer(0);
 				tmpFs.fs.writeFileSync(tmpFile.path, new Uint8Array(bytes), undefined, {
 					mode: tmpFile.mode,
 					mtime: new Date(tmpFile.mtime),
@@ -919,7 +932,6 @@ async function bash_fs_create(args: {
 				installation.pluginName,
 				{
 					pluginName: installation.pluginName,
-					pluginVersionId: installation.pluginVersionId,
 					fs: pluginFs,
 				},
 			] as const;
@@ -986,6 +998,32 @@ async function bash_fs_create(args: {
 		}
 	}
 
+	const shell = bash_shell_create(args.ctx, { fs, cwd, dbFilesRoots });
+	return {
+		cwd,
+		currentWorkspacePath,
+		...shell,
+		nearest_existing_dir: (path: string) => nearest_existing_dir(fs, path),
+		project_pending_moved_path,
+		evict_tmp_to_limits: () => tmp_fs_evict_to_limits(tmpFs),
+		create_tmp_patch: async () => {
+			if (!tmpFs.dirty) {
+				return null;
+			}
+			return await tmp_fs_delta_payload(tmpFs);
+		},
+		mark_tmp_clean: () => {
+			tmpFs.dirty = false;
+		},
+		path_index_truncated: () => appDbFilesFs.pathIndexTruncated,
+		truncate_output,
+		format_output: format_bash_output,
+	};
+}
+
+function bash_shell_create(ctx: ActionCtx, args: { fs: MountableFs; cwd: string; dbFilesRoots: bash_DbFilesRoots }) {
+	const { fs, cwd, dbFilesRoots } = args;
+	const currentWorkspacePath = dbFilesRoots.app.currentWorkspacePath;
 	// App commands answer a usage mistake on stderr, usually with a `Try:` line naming the command
 	// that works. That answer is tool guidance, not program output, but `2>/dev/null` deletes it and
 	// a pipe replaces the non-zero exit with the last stage's 0 — leaving an empty stdout and exit 0
@@ -1012,26 +1050,30 @@ async function bash_fs_create(args: {
 		commands: bash_ALLOWED_COMMANDS,
 		customCommands: [
 			// Indexed app discovery.
-			bash_search_command_create(args.ctx, dbFilesRoots),
-			bash_meta_command_create(args.ctx, dbFilesRoots),
-			bash_ls_command_create(args.ctx, dbFilesRoots),
-			bash_find_command_create(args.ctx, dbFilesRoots),
-			bash_tree_command_create(args.ctx, dbFilesRoots),
-			bash_grep_command_create(args.ctx, dbFilesRoots),
-			bash_textgrep_command_create(args.ctx, dbFilesRoots),
+			bash_search_command_create(ctx, dbFilesRoots),
+			bash_meta_command_create(ctx, dbFilesRoots),
+			bash_ls_command_create(ctx, dbFilesRoots),
+			bash_find_command_create(ctx, dbFilesRoots),
+			bash_tree_command_create(ctx, dbFilesRoots),
+			bash_grep_command_create(ctx, dbFilesRoots),
+			bash_textgrep_command_create(ctx, dbFilesRoots),
 			// App readers.
-			bash_cat_command_create(args.ctx, dbFilesRoots),
-			bash_head_tail_wc_command_create(args.ctx, dbFilesRoots, "head"),
-			bash_head_tail_wc_command_create(args.ctx, dbFilesRoots, "tail"),
-			bash_head_tail_wc_command_create(args.ctx, dbFilesRoots, "wc"),
-			bash_stat_command_create(args.ctx, dbFilesRoots),
+			bash_cat_command_create(ctx, dbFilesRoots),
+			bash_head_tail_wc_command_create(ctx, dbFilesRoots, "head"),
+			bash_head_tail_wc_command_create(ctx, dbFilesRoots, "tail"),
+			bash_head_tail_wc_command_create(ctx, dbFilesRoots, "wc"),
+			bash_stat_command_create(ctx, dbFilesRoots),
 			...stream_utility_command_create_all(currentWorkspacePath),
-			bash_sed_command_create(args.ctx, dbFilesRoots),
+			bash_sed_command_create(ctx, dbFilesRoots),
 			// Guarded mutators.
 			bash_touch_command_create(dbFilesRoots),
-			bash_rm_command_create(args.ctx, dbFilesRoots),
-			bash_cp_command_create(args.ctx, dbFilesRoots),
-			bash_mv_command_create(args.ctx, dbFilesRoots),
+			...(dbFilesRoots.app.fs.readOnlySource == null
+				? [
+						bash_rm_command_create(ctx, dbFilesRoots),
+						bash_cp_command_create(ctx, dbFilesRoots),
+						bash_mv_command_create(ctx, dbFilesRoots),
+					]
+				: []),
 			bash_tee_command_create(dbFilesRoots),
 			// Nested execution.
 			bash_nested_shell_command_create("bash", currentWorkspacePath),
@@ -1052,8 +1094,6 @@ async function bash_fs_create(args: {
 	});
 
 	return {
-		cwd,
-		currentWorkspacePath,
 		run_command: async (command: string) => {
 			// Block app and read-only mount files before Just Bash can load their
 			// contents as shell code through direct or nested commands.
@@ -1080,22 +1120,78 @@ async function bash_fs_create(args: {
 			}));
 			return result;
 		},
-		nearest_existing_dir: (path: string) => nearest_existing_dir(fs, path),
-		project_pending_moved_path,
-		evict_tmp_to_limits: () => tmp_fs_evict_to_limits(tmpFs),
-		create_tmp_patch: async () => {
-			if (!tmpFs.dirty) {
-				return null;
-			}
-			return await tmp_fs_delta_payload(tmpFs);
-		},
-		mark_tmp_clean: () => {
-			tmpFs.dirty = false;
-		},
-		path_index_truncated: () => appDbFilesFs.pathIndexTruncated,
 		app_command_diagnostics: () => appCommandDiagnostics,
-		truncate_output,
-		format_output: format_bash_output,
+	};
+}
+
+export async function bash_run_plugin_review_command(
+	ctx: ActionCtx,
+	args: { reviewRoot: string; userId: Id<"users">; command: string; cwd: string; scratch: bash_ReviewScratch },
+) {
+	// Only the host supplies this root. Never accept a tenant or published-version path here.
+	if (!/^\/review-[a-f0-9]{32}$/u.test(args.reviewRoot)) {
+		throw new Error("Invalid plugin review root");
+	}
+	const currentWorkspacePath = `${bash_PLUGINS_MOUNT_ROOT}/review`;
+	const sourceFs = new bash_DbFilesFs({
+		ctx,
+		ctxData: {
+			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+			workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
+			organizationName: "GLOBAL",
+			workspaceName: "PLUGINS",
+			userId: args.userId,
+			threadId: null,
+		},
+		currentWorkspacePath,
+		dbFilesPathPrefix: args.reviewRoot,
+		readOnlySource: "plugins",
+		allowDbFilesMkdir: false,
+	});
+	const tmpFs = await BashTmpFs.from_files(args.scratch);
+	const fs = new MountableFs({
+		base: new ReadOnlyBaseFs(),
+		mounts: [
+			{ mountPoint: currentWorkspacePath, filesystem: sourceFs },
+			{ mountPoint: bash_TMP_MOUNT, filesystem: tmpFs },
+		],
+	});
+	const cwd = (await nearest_existing_dir(fs, args.cwd)) ?? currentWorkspacePath;
+	const shell = bash_shell_create(ctx, {
+		fs,
+		cwd,
+		dbFilesRoots: {
+			app: { currentWorkspacePath, fs: sourceFs },
+			externalMounts: { currentWorkspacePath: bash_EXTERNAL_MOUNTS_ROOT, mounts: new Map() },
+			plugins: {
+				currentWorkspacePath: bash_PLUGINS_MOUNT_ROOT,
+				mounts: new Map([["review", { pluginName: "review", fs: sourceFs }]]),
+			},
+		},
+	});
+	const result = await shell.run_command(args.command);
+	for (const diagnostic of shell.app_command_diagnostics()) {
+		if (!result.stdout.includes(diagnostic.stderr.trim()) && !result.stderr.includes(diagnostic.stderr.trim())) {
+			result.stderr += `${diagnostic.name} exited ${diagnostic.exitCode}: ${diagnostic.stderr}`;
+		}
+	}
+	result.stderr += await tmp_fs_evict_to_limits(tmpFs);
+	const nextCwd = (await nearest_existing_dir(fs, result.env.PWD || cwd)) ?? currentWorkspacePath;
+	// Return the bounded scratch snapshot to this review, without creating a UI chat thread.
+	tmpFs.baselinePaths.clear();
+	const { fileNodes, fileNodesContentDict } = await tmp_fs_delta_payload(tmpFs);
+	return {
+		output: format_bash_output({
+			command: args.command,
+			cwd,
+			nextCwd,
+			exitCode: result.exitCode,
+			stdout: truncate_output(result.stdout).value,
+			stderr: truncate_output(result.stderr).value,
+		}),
+		exitCode: result.exitCode,
+		cwd: nextCwd,
+		scratch: { fileNodes, fileNodesContentDict },
 	};
 }
 

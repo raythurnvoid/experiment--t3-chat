@@ -5186,8 +5186,6 @@ const files_node_public_doc_fields = ((/* iife */) => {
 		readOnlyScopeNodeId: _readOnlyScopeNodeId,
 		readOnlyPluginName: _readOnlyPluginName,
 		readOnlyPluginServiceTargetId: _readOnlyPluginServiceTargetId,
-		pluginOwnerName: _pluginOwnerName,
-		pluginServiceWritePluginName: _pluginServiceWritePluginName,
 		...rest
 	} = doc(app_convex_schema, "files_nodes").fields;
 
@@ -5212,8 +5210,6 @@ function files_node_project_read_only(
 		readOnlyScopeNodeId,
 		readOnlyPluginName: _readOnlyPluginName,
 		readOnlyPluginServiceTargetId: _readOnlyPluginServiceTargetId,
-		pluginOwnerName: _pluginOwnerName,
-		pluginServiceWritePluginName: _pluginServiceWritePluginName,
 		...rest
 	} = fileNode;
 

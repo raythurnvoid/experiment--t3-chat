@@ -755,6 +755,10 @@ For the editable plugin-label flow, verify these cases through the app and read 
 - Change a private transcript folder's sharing. Reopen the channel and send: ensure does not reattach
   the binding, and the next transcript update keeps the manual sharing. Use a second non-owner member
   to prove visibility; an owner-only check cannot prove private access.
+- As a private-channel member with chat write access but only read access to its Files folder,
+  send and reply through the composer. A fresh folder ensure may return 403, but each source message
+  must still commit once. The invoke returns 200 with `transcriptUpdated: false`, and the mirrors
+  stay unchanged. Check the source message key as well as the file content.
 - Remove `plugin-name` from a transcript or unlock then relock it. A later mirror write refuses.
   A source-store write that already succeeded keeps its message key and reports
   `transcriptUpdated: false`. Check both the source message and unchanged file content.

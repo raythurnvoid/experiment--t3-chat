@@ -18,7 +18,7 @@ export const plugins_RUNTIME_VERSION = "1";
  * Keep one value through a multi-step rollout, or invalidate every verdict produced by the interim
  * steps before any of them can authorize a publish.
  */
-export const plugins_REVIEW_POLICY_VERSION = "10";
+export const plugins_REVIEW_POLICY_VERSION = "15";
 
 const MANIFEST_SCHEMA_VERSION = 1;
 const EVENT_TYPES = ["files.upload.completed", "users.account.deleted"] as const;
@@ -580,43 +580,27 @@ const JS_KEYWORDS = new Set([
 ]);
 
 /**
- * Static readability checks on a plugin dist source file, run before publish.
- * Plugin dists must ship as plain readable text so they can be reviewed;
- * this catches the mechanical signs of minified or obfuscated code (very long
- * lines, mostly single-character names, dense escape sequences, huge base64
- * blobs, the Function constructor) without spending an AI review call.
- *
- * The two arrays have different power. `findings` rejects the version.
- * `advisoryFindings` is shown to the publisher and blocks nothing.
- *
- * The shape checks (line length, average line length, single-character
- * identifier share) are advisory because a normal vendored or bundled
- * dependency trips them and the plugin author cannot fix it. The content
- * checks stay rejecting: dense escapes, a huge base64 literal, and the
- * Function constructor are patterns an author writes on purpose, and each one
- * hides code from the review that follows.
+ * Points out source patterns that may need a closer look. These checks do not
+ * prove harm: bundles, encoded assets, and generated code can be harmless.
+ * The returned advice never decides the review verdict.
  */
-export function plugins_dist_review_mechanical_findings(source: string, options?: { javaScript?: boolean }) {
-	const findings: string[] = [];
-	const advisoryFindings: string[] = [];
-	const readableKind = options?.javaScript === false ? "text" : "JavaScript";
+export function plugins_dist_review_advisories(source: string, options?: { javaScript?: boolean }) {
+	const advisories: string[] = [];
 
 	// Blank lines are dropped so they don't drag the average down.
 	const lines = source.split(NEWLINE_REGEX).filter((line) => line.trim().length > 0);
 
-	// Minifiers pack whole programs onto one line; readable code stays well under the limit.
+	// Minifiers can pack whole programs onto one line.
 	const longestLine = lines.reduce((max, line) => Math.max(max, line.length), 0);
 	if (longestLine > MAX_LINE_LENGTH) {
-		advisoryFindings.push(
-			`Longest line is ${longestLine} characters (limit ${MAX_LINE_LENGTH}); the dist must be plain readable ${readableKind}, not minified`,
-		);
+		advisories.push(`Longest line is ${longestLine} characters (advisory threshold ${MAX_LINE_LENGTH})`);
 	}
 
 	// The average catches minified output that was split across a few still-long lines.
 	const avgLineLength = lines.length > 0 ? lines.reduce((sum, line) => sum + line.length, 0) / lines.length : 0;
 	if (avgLineLength > MAX_AVG_LINE_LENGTH) {
-		advisoryFindings.push(
-			`Average line length is ${Math.round(avgLineLength)} characters (limit ${MAX_AVG_LINE_LENGTH}); the dist must be plain readable ${readableKind}, not minified`,
+		advisories.push(
+			`Average line length is ${Math.round(avgLineLength)} characters (advisory threshold ${MAX_AVG_LINE_LENGTH})`,
 		);
 	}
 
@@ -628,33 +612,28 @@ export function plugins_dist_review_mechanical_findings(source: string, options?
 		const singleCharShare =
 			identifiers.length > 0 ? identifiers.filter((word) => word.length === 1).length / identifiers.length : 0;
 		if (singleCharShare > MAX_SINGLE_CHAR_IDENTIFIER_SHARE) {
-			advisoryFindings.push(
-				`${Math.round(singleCharShare * 100)}% of identifiers are a single character (limit ${MAX_SINGLE_CHAR_IDENTIFIER_SHARE * 100}%); the dist must keep readable identifier names`,
+			advisories.push(
+				`${Math.round(singleCharShare * 100)}% of identifiers are a single character (advisory threshold ${MAX_SINGLE_CHAR_IDENTIFIER_SHARE * 100}%)`,
 			);
 		}
 	}
 
-	// Lots of \x/\u escapes usually means strings were encoded to hide their contents.
 	const escapeCount = (source.match(HEX_UNICODE_ESCAPE_REGEX) ?? []).length;
 	if (source.length > 0 && escapeCount / source.length > MAX_HEX_UNICODE_ESCAPE_DENSITY) {
-		findings.push(
-			`Dist is dense with \\x/\\u escape sequences (${escapeCount} escapes); encoded strings look obfuscated`,
-		);
+		advisories.push(`Dist contains ${escapeCount} \\x/\\u escape sequences; inspect how the encoded text is used`);
 	}
 
-	// A giant base64 string literal is a common way to smuggle code or assets past review.
 	if (BASE64_LITERAL_REGEX.test(source)) {
-		findings.push(
-			`Dist contains a base64-looking string literal of ${BASE64_LITERAL_MIN_LENGTH}+ characters; ship code and assets as plain files instead`,
+		advisories.push(
+			`Dist contains a base64-looking string literal of ${BASE64_LITERAL_MIN_LENGTH}+ characters; inspect how the value is used`,
 		);
 	}
 
-	// Code built from strings at runtime can't be reviewed, so ban the Function constructor.
 	if (options?.javaScript !== false && FUNCTION_CONSTRUCTOR_REGEX.test(source)) {
-		findings.push("Dist uses the Function constructor; dynamically-assembled code is not allowed");
+		advisories.push("Dist contains a Function constructor call pattern; inspect how the resulting code is used");
 	}
 
-	return { findings, advisoryFindings };
+	return advisories;
 }
 
 // #endregion dist review
@@ -705,7 +684,7 @@ export const plugins_MAX_ARTIFACT_BYTES = 16 * 1024 * 1024;
  * Manifest paths are stored and joined verbatim, so require an already-normalized
  * relative path: no leading/trailing/duplicate slashes and no "." / ".." segments.
  */
-const module_path_schema = z
+export const plugins_module_path_schema = z
 	.string()
 	.max(MAX_FILE_PATH_LENGTH)
 	.regex(MODULE_PATH_REGEX)
@@ -787,7 +766,7 @@ type plugins_Event = z.infer<typeof event_schema>;
 
 const manifest_file_schema = z
 	.object({
-		path: module_path_schema,
+		path: plugins_module_path_schema,
 		sha256: z.string().regex(SHA256_REGEX),
 		bytes: z.number().int().nonnegative().max(MAX_FILE_BYTES),
 		contentType: z.string().min(1).max(MAX_CONTENT_TYPE_LENGTH),
@@ -848,7 +827,7 @@ const page_schema = z
 		id: z.string().regex(PAGE_ID_REGEX),
 		title: z.string().min(1).max(80),
 		/** Must match a files[] entry with contentType "text/html"; served into a sandboxed iframe. */
-		entry: module_path_schema,
+		entry: plugins_module_path_schema,
 		/** Presence is the explicit opt-in for a main-sidebar nav item. */
 		navItem: page_nav_item_schema.optional(),
 	})
@@ -859,7 +838,7 @@ const file_view_schema = z
 		id: z.string().regex(PAGE_ID_REGEX),
 		title: z.string().min(1).max(80),
 		/** Must match a files[] entry with contentType "text/html"; served into a sandboxed iframe. */
-		entry: module_path_schema,
+		entry: plugins_module_path_schema,
 		/** Exact stored file content types this view opens for; matched against `files_nodes.contentType`. */
 		contentTypes: z
 			.array(
@@ -915,8 +894,8 @@ const manifest_schema = z
 			.strict(),
 		backend: z
 			.object({
-				entry: module_path_schema,
-				moduleName: module_path_schema,
+				entry: plugins_module_path_schema,
+				moduleName: plugins_module_path_schema,
 				compatibilityDate: z.string().regex(COMPATIBILITY_DATE_REGEX),
 				compatibilityFlags: z
 					.array(

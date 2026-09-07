@@ -1,11 +1,27 @@
 "use node";
 
-import { v } from "convex/values";
+import { v, type Infer } from "convex/values";
 import { internalAction } from "./_generated/server.js";
 
 // Shell diagnostics live with `bash_run_command`, so the Convex action imports
 // only the runner and does not need the lower-level shell constants.
-import { bash_run_command } from "../server/bash.ts";
+import { bash_run_command, bash_run_plugin_review_command } from "../server/bash.ts";
+
+const review_scratch = v.object({
+	fileNodes: v.array(
+		v.object({
+			path: v.string(),
+			kind: v.union(v.literal("file"), v.literal("directory"), v.literal("symlink")),
+			mode: v.number(),
+			size: v.number(),
+			mtime: v.number(),
+			symlinkTargetPath: v.optional(v.string()),
+		}),
+	),
+	fileNodesContentDict: v.record(v.string(), v.bytes()),
+});
+
+export type bash_ReviewScratch = Infer<typeof review_scratch>;
 
 export const run = internalAction({
 	args: {
@@ -37,5 +53,24 @@ export const run = internalAction({
 	}),
 	handler: async (ctx, args) => {
 		return await bash_run_command(ctx, args);
+	},
+});
+
+export const run_plugin_review = internalAction({
+	args: {
+		reviewRoot: v.string(),
+		userId: v.id("users"),
+		command: v.string(),
+		cwd: v.string(),
+		scratch: review_scratch,
+	},
+	returns: v.object({
+		output: v.string(),
+		exitCode: v.number(),
+		cwd: v.string(),
+		scratch: review_scratch,
+	}),
+	handler: async (ctx, args) => {
+		return await bash_run_plugin_review_command(ctx, args);
 	},
 });

@@ -181,7 +181,7 @@ export function bash_tree_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFi
 						organizationId: pageArgs.mount.fs.ctxData.organizationId,
 						workspaceId: pageArgs.mount.fs.ctxData.workspaceId,
 						visibilityUserId: pageArgs.mount.fs.ctxData.userId,
-						folderPath: `/${pageArgs.mount.pluginVersionId}`,
+						folderPath: pageArgs.mount.fs.dbFilesRootPath,
 						numItems: pageArgs.numItems,
 						cursor: pageArgs.innerCursor,
 					})) as files_nodes_list_subtree_Result;

@@ -80,9 +80,7 @@ function create_db_files_roots(): bash_DbFilesRoots {
 		},
 		plugins: {
 			currentWorkspacePath: bash_PLUGINS_MOUNT_ROOT,
-			mounts: new Map([
-				[PLUGIN_NAME, { pluginName: PLUGIN_NAME, pluginVersionId: PLUGIN_VERSION_ID, fs: pluginFs }],
-			]),
+			mounts: new Map([[PLUGIN_NAME, { pluginName: PLUGIN_NAME, fs: pluginFs }]]),
 		},
 	};
 }
@@ -181,9 +179,9 @@ describe("bash_resolve_db_files_shell_path", () => {
 		expect(bash_external_mounts_fan_out_db_files_path(mount, `/${MOUNT_NAME}/${MOUNT_COMMIT_SHA}`)).toBe(
 			`/${MOUNT_NAME}`,
 		);
-		expect(
-			bash_external_mounts_fan_out_db_files_path(mount, `/${MOUNT_NAME}/${MOUNT_COMMIT_SHA}/src/index.ts`),
-		).toBe(`/${MOUNT_NAME}/src/index.ts`);
+		expect(bash_external_mounts_fan_out_db_files_path(mount, `/${MOUNT_NAME}/${MOUNT_COMMIT_SHA}/src/index.ts`)).toBe(
+			`/${MOUNT_NAME}/src/index.ts`,
+		);
 	});
 
 	test("classifies the synthetic plugins root without a stored tree", () => {
@@ -209,9 +207,7 @@ describe("bash_resolve_db_files_shell_path", () => {
 		const file = bash_resolve_db_files_shell_path(`/.plugins/${PLUGIN_NAME}/dist/index.js`, dbFilesRoots);
 		expect(file.kind).toBe("external_mount");
 		expect(file.dbFilesPath).toBe(`/${PLUGIN_VERSION_ID}/dist/index.js`);
-		expect(file.renderShellPath(`/${PLUGIN_VERSION_ID}/dist/index.js`)).toBe(
-			`/.plugins/${PLUGIN_NAME}/dist/index.js`,
-		);
+		expect(file.renderShellPath(`/${PLUGIN_VERSION_ID}/dist/index.js`)).toBe(`/.plugins/${PLUGIN_NAME}/dist/index.js`);
 	});
 
 	test("resolves not-installed plugin names as plain non-db paths (no existence leak)", () => {
@@ -227,10 +223,7 @@ describe("bash_resolve_db_files_shell_path", () => {
 	test("normalizes `..` inside a plugin mount before classifying", () => {
 		const dbFilesRoots = create_db_files_roots();
 
-		const stillPlugin = bash_resolve_db_files_shell_path(
-			`/.plugins/${PLUGIN_NAME}/dist/../README.md`,
-			dbFilesRoots,
-		);
+		const stillPlugin = bash_resolve_db_files_shell_path(`/.plugins/${PLUGIN_NAME}/dist/../README.md`, dbFilesRoots);
 		expect(stillPlugin.kind).toBe("external_mount");
 		expect(stillPlugin.dbFilesPath).toBe(`/${PLUGIN_VERSION_ID}/README.md`);
 

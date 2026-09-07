@@ -181,7 +181,11 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 		// mount root (`/.mounts`, `/.plugins`). The scope is the explicit --path folder when given,
 		// otherwise the cwd. Classify it to pick the right scope IDs.
 		const scopeShellPath = parsed._yay.pathShell ?? commandCtx.cwd;
-		const scope = bash_resolve_db_files_shell_path(scopeShellPath, dbFilesRoots);
+		let scope = bash_resolve_db_files_shell_path(scopeShellPath, dbFilesRoots);
+		// Outside an indexed tree, default to this agent's own root, including its stored prefix.
+		if (parsed._yay.pathShell == null && scope.kind === "outside_db_files") {
+			scope = bash_resolve_db_files_shell_path(currentWorkspacePath, dbFilesRoots);
+		}
 
 		// The `/.mounts` root fans out one indexed search per synced mount under a
 		// composite cursor; with zero synced mounts the root itself does not exist.
@@ -316,7 +320,7 @@ export function bash_search_command_create(ctx: ActionCtx, dbFilesRoots: bash_Db
 						query: parsed._yay.query,
 						numItems: pageArgs.numItems,
 						cursor: pageArgs.innerCursor,
-						pathPrefix: `/${pageArgs.mount.pluginVersionId}`,
+						pathPrefix: pageArgs.mount.fs.dbFilesRootPath,
 					})) as files_nodes_text_search_files_Result;
 					return {
 						items: pageResult.items.map((item) => ({

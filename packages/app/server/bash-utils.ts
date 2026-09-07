@@ -52,7 +52,10 @@ import {
 } from "../shared/files.ts";
 import { LruCache, math_clamp, should_never_happen } from "../shared/shared-utils.ts";
 import { path_name_of } from "../shared/paths.ts";
-import { organizations_is_reserved_workspace_id, organizations_is_global_organization_id } from "../shared/organizations.ts";
+import {
+	organizations_is_reserved_workspace_id,
+	organizations_is_global_organization_id,
+} from "../shared/organizations.ts";
 import { pagination_fan_out_paginate } from "../shared/pagination.ts";
 
 // #region bash constants and path helpers
@@ -468,7 +471,10 @@ export class bash_DbFilesFs implements IFileSystem {
 	 * read-only mount message.
 	 */
 	private readOnlyFileSystemError(path: string) {
-		const shellPath = bash_db_files_path_to_current_workspace_path(this.currentWorkspacePath, bash_normalize_path(path));
+		const shellPath = bash_db_files_path_to_current_workspace_path(
+			this.currentWorkspacePath,
+			bash_normalize_path(path),
+		);
 		return new ReadOnlyFileSystemError(shellPath, this.readOnlySource);
 	}
 
@@ -786,7 +792,10 @@ export class bash_DbFilesFs implements IFileSystem {
 						: ` — nothing was created at '${shellPath}'`;
 				}
 			} catch (cleanupError) {
-				console.error("bash app-file write failed to remove the eagerly created node after a failed write", cleanupError);
+				console.error(
+					"bash app-file write failed to remove the eagerly created node after a failed write",
+					cleanupError,
+				);
 			}
 			return ` — an empty file was left behind at '${shellPath}'; remove it in Files if it is not wanted`;
 		};
@@ -814,9 +823,12 @@ export class bash_DbFilesFs implements IFileSystem {
 			if (eagerCreatedCommittedSequence === undefined) {
 				throw error;
 			}
-			throw new Error(`cannot write '${shellPath}': the proposal was not recorded.${await eager_created_failure_note()}`, {
-				cause: error,
-			});
+			throw new Error(
+				`cannot write '${shellPath}': the proposal was not recorded.${await eager_created_failure_note()}`,
+				{
+					cause: error,
+				},
+			);
 		}
 
 		if (written._nay) {
@@ -1025,8 +1037,14 @@ export class bash_DbFilesFs implements IFileSystem {
 		// An overlay user only exists on the tenant app scope, so the reserved mount
 		// scopes cannot reach this point. Narrow the ctxData union for the query args.
 		const { organizationId, workspaceId } = this.ctxData;
-		if (organizations_is_global_organization_id(organizationId) || organizations_is_reserved_workspace_id(workspaceId)) {
-			throw should_never_happen("pending path overlay reached the reserved mount scope", { organizationId, workspaceId });
+		if (
+			organizations_is_global_organization_id(organizationId) ||
+			organizations_is_reserved_workspace_id(workspaceId)
+		) {
+			throw should_never_happen("pending path overlay reached the reserved mount scope", {
+				organizationId,
+				workspaceId,
+			});
 		}
 		this.overlayPromise ??= (async (/* iife */) => {
 			const overlayData = (await this.ctx.runQuery(internal.files_pending_updates.get_pending_path_overlay_data, {
@@ -1164,7 +1182,6 @@ export type bash_DbFilesRoot = {
  */
 export type bash_PluginSourceMount = {
 	pluginName: string;
-	pluginVersionId: Id<"plugins_versions">;
 	fs: bash_DbFilesFs;
 };
 
@@ -1328,7 +1345,7 @@ export function bash_resolve_db_files_shell_path(
 		// `/.plugins/<name>/rest` maps to the version-keyed stored tree `/<pluginVersionId>/rest`
 		// in the reserved `GLOBAL`/`PLUGINS` scope; the renderer strips the version prefix back off.
 		const basePath = `${pluginsRootPath}/${pluginName}`;
-		const versionRootPath = `/${mount.pluginVersionId}`;
+		const versionRootPath = mount.fs.dbFilesRootPath;
 		const mountRelativePath = bash_current_workspace_path_to_db_files_path(basePath, normalized) ?? "/";
 		const dbFilesPath = mountRelativePath === "/" ? versionRootPath : `${versionRootPath}${mountRelativePath}`;
 		const renderShellPath = (renderDbFilesPath: string) => {
@@ -1775,10 +1792,7 @@ async function simple_command_loads_disallowed_shell_code(
  * whether a source target or nested command substitution reads a disallowed path;
  * normal `/tmp` script usage should continue through Just Bash.
  */
-export async function bash_command_loads_disallowed_shell_code(
-	command: string,
-	options: ShellCodeGuardOptions,
-) {
+export async function bash_command_loads_disallowed_shell_code(command: string, options: ShellCodeGuardOptions) {
 	const tokens = parse_shell_word_tokens(command.replace(bash_SHELL_COMMENT_LINE_REGEX, ""));
 	const shellCodeAssignmentNames = new Set<string>();
 	let words: string[] = [];
@@ -2222,7 +2236,7 @@ export async function bash_plugins_fan_out_paginate<TItem>(args: {
 		scope: `plugins:${args.command}`,
 		sources: [...args.plugins.mounts.values()]
 			.sort((a, b) => (a.pluginName < b.pluginName ? -1 : 1))
-			.map((mount) => ({ key: mount.pluginName, fingerprint: mount.pluginVersionId, source: mount })),
+			.map((mount) => ({ key: mount.pluginName, fingerprint: mount.fs.dbFilesRootPath.slice(1), source: mount })),
 		cursor: args.cursor,
 		limit: args.limit,
 		runPage: (pageArgs) =>
@@ -2249,7 +2263,7 @@ export async function bash_plugins_fan_out_paginate<TItem>(args: {
  * `renderShellPath` turns into `/.plugins/<pluginName>/rest`.
  */
 export function bash_plugins_fan_out_db_files_path(mount: bash_PluginSourceMount, storedPath: string) {
-	const versionRootPath = `/${mount.pluginVersionId}`;
+	const versionRootPath = mount.fs.dbFilesRootPath;
 	const relativePath =
 		storedPath === versionRootPath
 			? ""

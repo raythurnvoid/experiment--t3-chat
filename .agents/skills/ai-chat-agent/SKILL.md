@@ -191,6 +191,8 @@ Important limitation:
 
 ## `bash`
 
+- Main chat and plugin review share command construction and shell guards in `server/bash.ts`. Main chat keeps tenant access and durable thread scratch. The internal `bash.run_plugin_review` entrypoint instead gets one read-only `/.plugins/review` mount and private `/tmp` notes from the review host. It has no workspace, installed plugins, GitHub mounts, or chat thread. See `../plugin-system/SKILL.md` for staging, cleanup, and review behavior.
+- Default content and metadata searches outside a database mount use the primary mount's stored root. Keep this prefix when the primary mount is a reserved source subtree; an absent prefix would search other reviews in `GLOBAL/PLUGINS`.
 - Runs a curated Just Bash command surface against the current workspace path `/home/cloud-usr/w/{organizationName}/{workspaceName}` and the safe native-style scratch command surface against `/tmp`.
 - Never exposes or runs against the host filesystem.
 - Starts at the current workspace path `/home/cloud-usr/w/{organizationName}/{workspaceName}` for new chat threads.
