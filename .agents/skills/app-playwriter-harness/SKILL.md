@@ -60,6 +60,9 @@ vp env exec pnpx playwriter -s $session -e 'await state.appPlaywriterHarness.bin
 - For route-specific checks, read the relevant reference recipe and run it with generic helpers instead of adding a new helper function.
 - Keep each execute call focused on one observation or one action, then observe again.
 - Prefer small observe-act-observe scripts over bundled multi-step runners during interactive debugging and eval inspection. Batch only when the user explicitly asks for a runner or the flow is already stable and repeatable.
+- For stateful UI such as drag/drop, resize, or inline rename, test success, cancellation, and re-entry. Check cleanup immediately and again after 200-400 ms, then try nearby keyboard and pointer controls. A delayed callback can bring back a mode that appeared to close correctly.
+- During drag/drop, check that target indicators stay stable while hovering, clear after leaving or cancelling, and do not trigger hover tooltips. Check selection at drag start separately from the final drop result.
+- When a fix needs temporary runtime logs or forced test values, give them one searchable marker. Keep them through the verification run, then remove them and search the touched files for the marker. Save reusable lessons in the skill references and run-specific evidence in the task's artifact folder.
 
 # Leave The Process Better Than You Found It
 
