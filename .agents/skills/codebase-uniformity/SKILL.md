@@ -52,7 +52,7 @@ Use this checklist before accepting a patch.
 - **Placement:** Code is inserted beside the nearest similar helper, command, query, mutation, hook, component, or test.
 - **Definition order:** Prefer defining module-private helpers before their users when the file can do so without breaking a stronger local grouping. Avoid leaving a new helper below its first call site.
 - **Names:** Module-private helpers follow local naming. Do not add a file, feature, or domain prefix by default. Prefix symbols when they are exported and need import-site context, or when several owned helpers share one file. In a dedicated command module such as `bash-search-command.ts`, private helpers can drop the module prefix while exported symbols keep import-site context. Private helpers should stay plainly descriptive unless nearby code has a stronger local convention.
-- **Regions and ordering:** If the file uses regions or ordered sections, preserve them. Never introduce nested regions. If you add a `// #region`, close it with `// #endregion` before the next region begins; otherwise prefer plain `// Section name` comments. In `bash.ts`, keep command helpers inside the matching command region. Dedicated `bash-*-command.ts` modules do not use command-region markers.
+- **Regions and ordering:** Follow the [region rules](#regions). Group code by its concrete scope and keep supporting code with its owner. Preserve unrelated regions when the task does not reorganize them.
 - **Granularity:** Keep one-off logic inline unless a helper removes real duplication or hides a necessary external-system detail.
 - **Existing dependencies:** Before hand-rolling algorithmic code (diffing, parsing, formatting), check `package.json` and existing usage for a dependency that already does it — for example unified diffs come from `createPatch` in the `diff` package, already used in `server/server-ai-tools.ts` and the file editor.
 - **Prompt literals:** Follow the closest owning module. In `ai_chat.ts`, keep one prompt sentence per array entry and join the entries with `"\n"`, matching `TITLE_SYSTEM_PROMPT` and `ai_chat_system_prompt`. Keep `+` concatenation and explicit `\n` line endings where nearby conditional or interpolated prompts use that form. Do not rewrite one valid form into the other as style-only churn.
@@ -67,6 +67,18 @@ Use this checklist before accepting a patch.
 - **Retry helpers:** When an option changes retry acceptance, add a short JSDoc to the helper. Name the exact value being waited for, why a weaker condition is insufficient, and which external system can return stale data.
 - **Tests:** Put tests under the same `describe(...)` grouping and naming rhythm as the file already uses. Test public behavior unless a private helper is already naturally exposed by an existing pattern.
 - **Docs/specs:** Update durable skills or README/spec files only when product behavior, architecture, or agent-facing workflows changed.
+
+# Regions
+
+Use regions only when the user requests them or the file already uses them. Within that scope, use a region for a complete feature, component owner, or operation that is useful to read and fold as a unit. Use plain comments for small groupings. A long file alone does not justify more regions or a file split.
+
+- Name the scope, such as `sharing`, `scope restriction`, or `installation secrets`. Do not create catch-all `helpers`, `types`, `validators`, `queries`, or `mutations` regions.
+- Keep the scope's types, reused validators, helpers, checks, reads, and writes together. Public/internal visibility and function kind do not decide placement.
+- Keep helpers with their concrete owner even when another region calls them. Put checks and setup shared across the whole module near the top, without a catch-all region.
+- Preserve local ordering inside each scope. Prefer helpers before callers and keep values above code that reads them during module initialization. Follow the owning domain's constants placement rule.
+- Keep regions flat, with matching opening and closing labels. Close one before opening the next. Avoid duplicate labels, empty regions, and one region per function.
+- Preserve existing casing and order outside the requested reorganization. Otherwise use short lowercase labels. Leave existing nested regions alone unless reorganizing them is part of the task.
+- In `bash.ts`, keep command helpers inside their command region. Dedicated `bash-*-command.ts` modules stay without regions. Paired TSX/CSS regions use the same owner label when both contain code for that owner.
 
 # Vocabulary Pass
 

@@ -5,7 +5,9 @@ Use this before finalizing a broad implementation or PR plan.
 ## Organization
 
 - Is new code beside the nearest similar helper, command, query, mutation, or test?
-- Are regions used only where the surrounding file already uses coarse regions?
+- Are regions requested by the user or already used in the file, with plain comments for small groupings?
+- Does each region name a concrete scope and keep its supporting code together across function kinds?
+- Are the region pairs flat, closed, and free of duplicate or empty labels?
 - Are tests owned by the module they primarily exercise, or is fixture reuse a documented reason to keep them elsewhere?
 
 ## Naming

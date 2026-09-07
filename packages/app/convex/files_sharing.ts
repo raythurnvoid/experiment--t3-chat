@@ -89,7 +89,103 @@ const MAX_FILE_SHARES_PER_ROLE = 50;
  */
 const MAX_ROLE_SHARE_GRANT_DOCS = MAX_FILE_SHARES_PER_ROLE * 3 + 1;
 
-// #region validators
+/**
+ * Load the membership, the node, and the organization for a sharing call, and check one permission
+ * against the node itself.
+ *
+ * Checking against the node, and not against the workspace, is the whole point: inside a restricted
+ * scope only a grant passes. So an admin who was never given this folder is refused here, exactly
+ * like anybody else.
+ */
+async function authorize_node_sharing(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		userAuth: { id: Id<"users"> };
+		membershipId: Id<"organizations_workspaces_users">;
+		nodeId: Id<"files_nodes">;
+		permission: access_control_Permission;
+	},
+) {
+	const membership = await organizations_db_get_membership(ctx, {
+		userId: args.userAuth.id,
+		membershipId: args.membershipId,
+	});
+	if (!membership) {
+		return Result({ _nay: { message: "Unauthorized" } });
+	}
+
+	const authorized = await access_control_db_authorize_node(ctx, {
+		userAuth: args.userAuth,
+		membership,
+		nodeId: args.nodeId,
+		permission: args.permission,
+	});
+	if (authorized._nay) {
+		return authorized;
+	}
+
+	return Result({
+		_yay: {
+			membership,
+			node: authorized._yay.fileNode,
+			organization: authorized._yay.organization,
+			defaultWorkspaceId: authorized._yay.defaultWorkspaceId,
+		},
+	});
+}
+
+/**
+ * Whether the caller may hand out every permission of one level on one node.
+ *
+ * Same rule as everywhere else in access control: nobody gives away what they do not have. It is
+ * asked against the node, so a manager of a restricted folder who only has "can view" plus "can
+ * manage" cannot turn somebody else into an editor.
+ */
+async function caller_can_hand_out_level(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		organization: Doc<"organizations">;
+		defaultWorkspaceId: Id<"organizations_workspaces">;
+		workspaceId: Id<"organizations_workspaces">;
+		node: Doc<"files_nodes">;
+		userId: Id<"users">;
+		level: access_control_FileShareLevel;
+	},
+) {
+	for (const permission of access_control_FILE_SHARE_LEVELS[args.level].permissions) {
+		const allowed = await access_control_db_has_permission(ctx, {
+			organizationId: args.organization._id,
+			workspaceId: args.workspaceId,
+			defaultWorkspaceId: args.defaultWorkspaceId,
+			organizationOwnerUserId: args.organization.ownerUserId,
+			resource: {
+				kind: "file",
+				id: String(args.node._id),
+				restrictedScopeNodeId: args.node.restrictedScopeNodeId ?? null,
+			},
+			permission,
+			userId: args.userId,
+		});
+		if (!allowed) {
+			return permission;
+		}
+	}
+
+	return null;
+}
+
+/** A manual sharing change takes over the reader list without removing its grants. */
+async function db_detach_file_access_binding(ctx: MutationCtx, nodeId: Id<"files_nodes">) {
+	const binding = await ctx.db
+		.query("plugins_file_access_bindings")
+		.withIndex("by_node", (q) => q.eq("nodeId", nodeId))
+		.first();
+	if (binding) {
+		await ctx.db.delete("plugins_file_access_bindings", binding._id);
+	}
+}
+
+// #region sharing
 
 /** Written by hand: when you add a level to `access_control_FILE_SHARE_LEVELS`, add it here too. */
 const share_level_validator = v.union(v.literal("read"), v.literal("write"), v.literal("manage"));
@@ -117,10 +213,6 @@ type FileSharePrincipal = { kind: "user"; userId: Id<"users"> } | { kind: "role"
 function share_principal_key(principal: FileSharePrincipal) {
 	return principal.kind === "user" ? `user:${principal.userId}` : `role:${principal.role}`;
 }
-
-// #endregion validators
-
-// #region grant helpers
 
 /**
  * Every grant doc saved on one restricted node, whatever the principal.
@@ -266,17 +358,6 @@ async function db_set_principal_level(
 	return changed;
 }
 
-/** A manual sharing change takes over the reader list without removing its grants. */
-async function db_detach_file_access_binding(ctx: MutationCtx, nodeId: Id<"files_nodes">) {
-	const binding = await ctx.db
-		.query("plugins_file_access_bindings")
-		.withIndex("by_node", (q) => q.eq("nodeId", nodeId))
-		.first();
-	if (binding) {
-		await ctx.db.delete("plugins_file_access_bindings", binding._id);
-	}
-}
-
 /**
  * Refuse a change that would take the last manager off a restricted node's list.
  *
@@ -316,95 +397,6 @@ function would_leave_no_manager(args: {
 	}
 
 	return !args.entries.some((entry) => entry.level === "manage" && share_principal_key(entry.principal) !== key);
-}
-
-// #endregion grant helpers
-
-// #region authorization
-
-/**
- * Load the membership, the node, and the organization for a sharing call, and check one permission
- * against the node itself.
- *
- * Checking against the node, and not against the workspace, is the whole point: inside a restricted
- * scope only a grant passes. So an admin who was never given this folder is refused here, exactly
- * like anybody else.
- */
-async function authorize_node_sharing(
-	ctx: QueryCtx | MutationCtx,
-	args: {
-		userAuth: { id: Id<"users"> };
-		membershipId: Id<"organizations_workspaces_users">;
-		nodeId: Id<"files_nodes">;
-		permission: access_control_Permission;
-	},
-) {
-	const membership = await organizations_db_get_membership(ctx, {
-		userId: args.userAuth.id,
-		membershipId: args.membershipId,
-	});
-	if (!membership) {
-		return Result({ _nay: { message: "Unauthorized" } });
-	}
-
-	const authorized = await access_control_db_authorize_node(ctx, {
-		userAuth: args.userAuth,
-		membership,
-		nodeId: args.nodeId,
-		permission: args.permission,
-	});
-	if (authorized._nay) {
-		return authorized;
-	}
-
-	return Result({
-		_yay: {
-			membership,
-			node: authorized._yay.fileNode,
-			organization: authorized._yay.organization,
-			defaultWorkspaceId: authorized._yay.defaultWorkspaceId,
-		},
-	});
-}
-
-/**
- * Whether the caller may hand out every permission of one level on one node.
- *
- * Same rule as everywhere else in access control: nobody gives away what they do not have. It is
- * asked against the node, so a manager of a restricted folder who only has "can view" plus "can
- * manage" cannot turn somebody else into an editor.
- */
-async function caller_can_hand_out_level(
-	ctx: QueryCtx | MutationCtx,
-	args: {
-		organization: Doc<"organizations">;
-		defaultWorkspaceId: Id<"organizations_workspaces">;
-		workspaceId: Id<"organizations_workspaces">;
-		node: Doc<"files_nodes">;
-		userId: Id<"users">;
-		level: access_control_FileShareLevel;
-	},
-) {
-	for (const permission of access_control_FILE_SHARE_LEVELS[args.level].permissions) {
-		const allowed = await access_control_db_has_permission(ctx, {
-			organizationId: args.organization._id,
-			workspaceId: args.workspaceId,
-			defaultWorkspaceId: args.defaultWorkspaceId,
-			organizationOwnerUserId: args.organization.ownerUserId,
-			resource: {
-				kind: "file",
-				id: String(args.node._id),
-				restrictedScopeNodeId: args.node.restrictedScopeNodeId ?? null,
-			},
-			permission,
-			userId: args.userId,
-		});
-		if (!allowed) {
-			return permission;
-		}
-	}
-
-	return null;
 }
 
 /**
@@ -455,10 +447,6 @@ async function validate_principal(
 
 	return Result({ _yay: null });
 }
-
-// #endregion authorization
-
-// #region queries
 
 /**
  * Everything the share dialog shows for one node.
@@ -620,160 +608,6 @@ export const get_node_share_state = query({
 			entries: group_grants_into_entries(grants),
 			organizationOwnerUserId: organization.ownerUserId,
 		};
-	},
-});
-
-// #endregion queries
-
-// #region mutations
-
-export const restrict_node = mutation({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		nodeId: v.id("files_nodes"),
-	},
-	returns: v_result({ _yay: v.null() }),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
-		}
-
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_sharing_write", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
-		}
-
-		const authorized = await authorize_node_sharing(ctx, {
-			userAuth,
-			membershipId: args.membershipId,
-			nodeId: args.nodeId,
-			permission: "content.permissions.manage",
-		});
-		if (authorized._nay) {
-			return authorized;
-		}
-		const { membership, node, organization, defaultWorkspaceId } = authorized._yay;
-		if (node.restrictedScopeNodeId === node._id) {
-			// Already restricted. Answering yes keeps a double click, or two people clicking at once,
-			// from reading as an error.
-			return Result({ _yay: null });
-		}
-
-		const isOwner = userAuth.id === organization.ownerUserId;
-
-		// The grant below is a `manage` grant, and `manage` carries write. Somebody who may choose access
-		// but not edit content would walk out of this call able to edit. Same ceiling as handing the level
-		// to anybody else. Asked here because it has to be asked twice over: before the patch, since a
-		// refusal after one still commits it, and while the node is still open, because once it is
-		// restricted a role gives nothing inside it and this would refuse everyone.
-		if (!isOwner) {
-			const missing = await caller_can_hand_out_level(ctx, {
-				organization,
-				defaultWorkspaceId,
-				workspaceId: membership.workspaceId,
-				node,
-				userId: userAuth.id,
-				level: "manage",
-			});
-			if (missing) {
-				return Result({
-					_nay: {
-						message: `You cannot give "${access_control_FILE_SHARE_LEVELS["manage"].label}" here: you do not have "${access_control_PERMISSION_CATALOG[missing].label}" on it`,
-					},
-				});
-			}
-		}
-
-		const now = Date.now();
-		await db_detach_file_access_binding(ctx, node._id);
-		await ctx.db.patch("files_nodes", node._id, { restrictedScopeNodeId: node._id });
-		await files_nodes_db_cascade_restricted_scope(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			parentId: node._id,
-			scopeNodeId: node._id,
-		});
-
-		// The person restricting it has to stay in. A role gives nothing inside a restricted scope, so
-		// without this an admin would restrict a folder and lose it in the same click, and only the
-		// owner could give it back.
-		//
-		// The owner is skipped because they already pass every check and hold no docs anywhere in access
-		// control. The dialog shows them as a fixed row instead.
-		if (!isOwner) {
-			await db_set_principal_level(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				scopeNodeId: node._id,
-				principal: { kind: "user", userId: userAuth.id },
-				level: "manage",
-				grants: [],
-				now,
-			});
-		}
-
-		return Result({ _yay: null });
-	},
-});
-
-export const unrestrict_node = mutation({
-	args: {
-		membershipId: v.id("organizations_workspaces_users"),
-		nodeId: v.id("files_nodes"),
-	},
-	returns: v_result({ _yay: v.null() }),
-	handler: async (ctx, args) => {
-		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) {
-			return Result({ _nay: { message: "Unauthenticated" } });
-		}
-
-		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_sharing_write", key: userAuth.id });
-		if (rateLimit) {
-			return Result({ _nay: { message: rateLimit.message } });
-		}
-
-		const authorized = await authorize_node_sharing(ctx, {
-			userAuth,
-			membershipId: args.membershipId,
-			nodeId: args.nodeId,
-			permission: "content.permissions.manage",
-		});
-		if (authorized._nay) {
-			return authorized;
-		}
-		const { membership, node } = authorized._yay;
-		if (node.restrictedScopeNodeId !== node._id) {
-			return Result({ _nay: { message: "This is not restricted" } });
-		}
-
-		// Back to whatever the folder above says. That is usually nothing, and then the workspace roles
-		// decide again, but a restricted folder inside another restricted folder falls back to the outer
-		// one instead of becoming open to everybody.
-		const parentScopeNodeId = await files_nodes_db_resolve_parent_restricted_scope(ctx, {
-			parentId: node.parentId,
-		});
-
-		await db_detach_file_access_binding(ctx, node._id);
-		await ctx.db.patch("files_nodes", node._id, { restrictedScopeNodeId: parentScopeNodeId });
-		await files_nodes_db_cascade_restricted_scope(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			parentId: node._id,
-			scopeNodeId: parentScopeNodeId,
-		});
-
-		const grants = await db_list_scope_grants(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			scopeNodeId: node._id,
-		});
-		for (const grant of grants) {
-			await ctx.db.delete("access_control_permission_grants", grant._id);
-		}
-
-		return Result({ _yay: null });
 	},
 });
 
@@ -1018,4 +852,158 @@ export const remove_node_share_grant = mutation({
 	},
 });
 
-// #endregion mutations
+// #endregion sharing
+
+// #region scope restriction
+
+export const restrict_node = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		nodeId: v.id("files_nodes"),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_sharing_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const authorized = await authorize_node_sharing(ctx, {
+			userAuth,
+			membershipId: args.membershipId,
+			nodeId: args.nodeId,
+			permission: "content.permissions.manage",
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+		const { membership, node, organization, defaultWorkspaceId } = authorized._yay;
+		if (node.restrictedScopeNodeId === node._id) {
+			// Already restricted. Answering yes keeps a double click, or two people clicking at once,
+			// from reading as an error.
+			return Result({ _yay: null });
+		}
+
+		const isOwner = userAuth.id === organization.ownerUserId;
+
+		// The grant below is a `manage` grant, and `manage` carries write. Somebody who may choose access
+		// but not edit content would walk out of this call able to edit. Same ceiling as handing the level
+		// to anybody else. Asked here because it has to be asked twice over: before the patch, since a
+		// refusal after one still commits it, and while the node is still open, because once it is
+		// restricted a role gives nothing inside it and this would refuse everyone.
+		if (!isOwner) {
+			const missing = await caller_can_hand_out_level(ctx, {
+				organization,
+				defaultWorkspaceId,
+				workspaceId: membership.workspaceId,
+				node,
+				userId: userAuth.id,
+				level: "manage",
+			});
+			if (missing) {
+				return Result({
+					_nay: {
+						message: `You cannot give "${access_control_FILE_SHARE_LEVELS["manage"].label}" here: you do not have "${access_control_PERMISSION_CATALOG[missing].label}" on it`,
+					},
+				});
+			}
+		}
+
+		const now = Date.now();
+		await db_detach_file_access_binding(ctx, node._id);
+		await ctx.db.patch("files_nodes", node._id, { restrictedScopeNodeId: node._id });
+		await files_nodes_db_cascade_restricted_scope(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			parentId: node._id,
+			scopeNodeId: node._id,
+		});
+
+		// The person restricting it has to stay in. A role gives nothing inside a restricted scope, so
+		// without this an admin would restrict a folder and lose it in the same click, and only the
+		// owner could give it back.
+		//
+		// The owner is skipped because they already pass every check and hold no docs anywhere in access
+		// control. The dialog shows them as a fixed row instead.
+		if (!isOwner) {
+			await db_set_principal_level(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				scopeNodeId: node._id,
+				principal: { kind: "user", userId: userAuth.id },
+				level: "manage",
+				grants: [],
+				now,
+			});
+		}
+
+		return Result({ _yay: null });
+	},
+});
+
+export const unrestrict_node = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		nodeId: v.id("files_nodes"),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
+		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_sharing_write", key: userAuth.id });
+		if (rateLimit) {
+			return Result({ _nay: { message: rateLimit.message } });
+		}
+
+		const authorized = await authorize_node_sharing(ctx, {
+			userAuth,
+			membershipId: args.membershipId,
+			nodeId: args.nodeId,
+			permission: "content.permissions.manage",
+		});
+		if (authorized._nay) {
+			return authorized;
+		}
+		const { membership, node } = authorized._yay;
+		if (node.restrictedScopeNodeId !== node._id) {
+			return Result({ _nay: { message: "This is not restricted" } });
+		}
+
+		// Back to whatever the folder above says. That is usually nothing, and then the workspace roles
+		// decide again, but a restricted folder inside another restricted folder falls back to the outer
+		// one instead of becoming open to everybody.
+		const parentScopeNodeId = await files_nodes_db_resolve_parent_restricted_scope(ctx, {
+			parentId: node.parentId,
+		});
+
+		await db_detach_file_access_binding(ctx, node._id);
+		await ctx.db.patch("files_nodes", node._id, { restrictedScopeNodeId: parentScopeNodeId });
+		await files_nodes_db_cascade_restricted_scope(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			parentId: node._id,
+			scopeNodeId: parentScopeNodeId,
+		});
+
+		const grants = await db_list_scope_grants(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			scopeNodeId: node._id,
+		});
+		for (const grant of grants) {
+			await ctx.db.delete("access_control_permission_grants", grant._id);
+		}
+
+		return Result({ _yay: null });
+	},
+});
+
+// #endregion scope restriction

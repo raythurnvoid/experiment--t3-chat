@@ -16,6 +16,16 @@ Use this reference when touching `packages/app/convex/**`.
 - Derive whole-doc mutation `args` from the schema by listing each field as `doc(app_convex_schema, "<table>").fields.<field>` (never `omit(...)`/`pick(...)` on validator fields) and spread `{ ...args }` into the write; name patch-or-insert mutations `upsert_*`.
 - Keep a private helper only when it removes real duplication or hides a necessary boundary such as pending-vs-committed indexed lookup, linked-doc validation, or external cursor parsing. Inline one-use predicates and pass-through wrappers.
 
+## Regions
+
+Apply the [region rules](../SKILL.md#regions) across Convex function kinds. Keep numeric and configuration constants in the top constants block, as required by the Convex guidelines. Reused validators belong with their feature and must be initialized before registered functions use them.
+
+Use these source examples:
+
+- [files_metadata.ts](../../../../packages/app/convex/files_metadata.ts): `file metadata` holds its entry validator, read/write helpers, permission check, query, mutation, and internal mutation.
+- [files_sharing.ts](../../../../packages/app/convex/files_sharing.ts): `sharing` holds the share list and its reads and edits. `scope restriction` holds `restrict_node` and `unrestrict_node`. Permission checks shared by both stay above the regions.
+- [plugins.ts](../../../../packages/app/convex/plugins.ts): `installation secrets` keeps its list, writes, runtime calls, and result type together. The shared `db_authorize_plugin_management` stays above the feature regions.
+
 ## Schema Comments
 
 Schema comments should name the concrete docs and why the table exists:

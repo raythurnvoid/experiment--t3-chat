@@ -6,6 +6,10 @@ These extend the base Convex guidance in [../SKILL.md](../SKILL.md) with pattern
 
 Use **doc/docs** when referring to entries in Convex tables in code comments, tests, and project guidance. Avoid **row/rows** unless quoting a Convex API field name, a database-neutral external source, or an existing identifier that must not be renamed.
 
+# Region organization
+
+Follow the [uniformity region rules](../../codebase-uniformity/SKILL.md#regions) and their [Convex examples](../../codebase-uniformity/references/convex-backend.md#regions) when adding or reorganizing regions in a Convex module.
+
 # Environment variables: module-level consts, never accessor functions
 
 Read required env vars once at module level, into a plain const, and throw at module root when they are missing. Never wrap the read in a `get_x()` / `x()` accessor function — a module-root throw fails the deploy immediately, while a function defers the failure to the first request that happens to call it.
