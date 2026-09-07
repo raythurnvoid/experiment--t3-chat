@@ -18834,7 +18834,7 @@ describe("files_nodes_content.restore_snapshot read-only gates", () => {
 		);
 	});
 
-	test("handed-off ledger jobs survive failing delete attempts with attempts recorded", async () => {
+	test("handed-off ledger jobs survive failed deletes with failures counted", async () => {
 		// Fake timers make the runAfter(0) processors start deterministically before the readback.
 		vi.useFakeTimers();
 		try {
@@ -18874,7 +18874,7 @@ describe("files_nodes_content.restore_snapshot read-only gates", () => {
 			expect(jobs.length).toBe(2);
 			for (const job of jobs) {
 				expect(job.reason).toBe("read_only_snapshot_restore");
-				expect(job.attempts).toBe(1);
+				expect(job.failureCount).toBe(1);
 				expect(job.nextAttemptAt).toBeGreaterThan(Date.now());
 			}
 		} finally {

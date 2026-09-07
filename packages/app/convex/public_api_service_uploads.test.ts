@@ -1446,7 +1446,7 @@ describe("service upload targets", () => {
 				r2Key: canonicalKey,
 				reason: "untracked_asset_event",
 				generation: 1,
-				attempts: 0,
+				failureCount: 0,
 				nextAttemptAt: Date.now(),
 			});
 		});

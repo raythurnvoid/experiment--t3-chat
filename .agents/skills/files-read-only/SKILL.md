@@ -78,6 +78,7 @@ delete flow does not prove that the file was deleted.
 
 - Keep one live job for each exact key. A new cleanup handoff or a new R2 object-create event increases
   the job's `generation`. Delivering the same event id again makes no change.
+- `failureCount` counts failed deletes in the current generation and resets when the generation advances.
 - The processor reads `{ jobId, generation }` before it calls `deleteR2Object`. It may finish that job
   only when the stored generation still matches. A newer PUT increases the generation, so an older
   delete result cannot finish newer cleanup work.

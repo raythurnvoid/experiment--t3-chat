@@ -461,7 +461,7 @@ export async function r2_enqueue_object_deletion_job(
 			generation: 1,
 			lastR2EventId: args.r2EventId,
 			putMayArriveUntil: args.putMayArriveUntil,
-			attempts: 0,
+			failureCount: 0,
 			nextAttemptAt: now,
 		});
 		await ctx.scheduler.runAfter(0, internal.r2_client.process_object_deletion_job, { jobId, generation: 1 });
@@ -488,7 +488,7 @@ export async function r2_enqueue_object_deletion_job(
 		...(args.putMayArriveUntil === undefined
 			? {}
 			: { putMayArriveUntil: Math.max(existing.putMayArriveUntil ?? 0, args.putMayArriveUntil) }),
-		attempts: 0,
+		failureCount: 0,
 		nextAttemptAt: now,
 	});
 	await ctx.scheduler.runAfter(0, internal.r2_client.process_object_deletion_job, {
@@ -540,7 +540,7 @@ export const process_object_deletion_job = internalAction({
 			console.warn("Confirmed R2 object delete attempt failed", {
 				jobId: args.jobId,
 				generation: args.generation,
-				attempts: job.attempts,
+				failureCount: job.failureCount,
 				error,
 			});
 			await ctx.runMutation(internal.r2_client.record_object_deletion_failure, {
@@ -636,10 +636,10 @@ export const record_object_deletion_failure = internalMutation({
 			return null;
 		}
 
-		const attempts = job.attempts + 1;
-		const delayMs = Math.min(DELETION_RETRY_MAX_MS, DELETION_RETRY_INITIAL_MS * 2 ** Math.min(attempts - 1, 8));
+		const failureCount = job.failureCount + 1;
+		const delayMs = Math.min(DELETION_RETRY_MAX_MS, DELETION_RETRY_INITIAL_MS * 2 ** Math.min(failureCount - 1, 8));
 		await ctx.db.patch("files_r2_object_deletion_jobs", job._id, {
-			attempts,
+			failureCount,
 			nextAttemptAt: Date.now() + delayMs,
 		});
 		await ctx.scheduler.runAfter(delayMs, internal.r2_client.process_object_deletion_job, {

@@ -4096,7 +4096,7 @@ describe("process_workspace_deletion_request", () => {
 				r2Key: `organizations/${user.defaultOrganizationId}/workspaces/${workspaceId}/assets/refused-stage`,
 				reason: "read_only_stage",
 				generation: 1,
-				attempts: 0,
+				failureCount: 0,
 				nextAttemptAt: Date.now() + 60 * 60 * 1000,
 			});
 			const requestId = await data_deletion_db_request(ctx, {

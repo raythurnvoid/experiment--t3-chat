@@ -1206,7 +1206,8 @@ const app_convex_schema = defineSchema({
 		 * successful delete and delete again later. Leave it empty when no later upload can arrive.
 		 */
 		putMayArriveUntil: v.optional(v.number()),
-		attempts: v.number(),
+		/** Failed deletes in the current generation. */
+		failureCount: v.number(),
 		nextAttemptAt: v.number(),
 	})
 		.index("by_r2_key", ["r2Key"])

@@ -2531,7 +2531,7 @@ describe("review: upload guard survives workspace purge", () => {
 		}
 		expect(await t.run((ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect())).toHaveLength(1);
 		expect(await t.run((ctx) => ctx.db.get("files_r2_object_deletion_jobs", job._id))).toMatchObject({
-			attempts: 12,
+			failureCount: 12,
 			putMayArriveUntil: guard,
 			nextAttemptAt: now + 60 * 60 * 1000,
 		});
@@ -2542,6 +2542,7 @@ describe("review: upload guard survives workspace purge", () => {
 		});
 		// Named side effect: pre-expiry success must keep the job for a possible later PUT.
 		expect(await t.run((ctx) => ctx.db.get("files_r2_object_deletion_jobs", job._id))).toMatchObject({
+			failureCount: 12,
 			putMayArriveUntil: guard,
 			nextAttemptAt: guard,
 		});
@@ -2845,7 +2846,7 @@ describe("process_user_deletion_request eager copy assets", () => {
 			await t.action(internal.r2_client.process_object_deletion_job, { jobId: job._id, generation: job.generation });
 		}
 		const retry = await t.query(internal.r2_client.get_object_deletion_job, { jobId: job._id });
-		expect(retry?.attempts).toBe(6);
+		expect(retry?.failureCount).toBe(6);
 		if (!retry) throw new Error("Expected another deletion attempt");
 		vi.setSystemTime(retry.nextAttemptAt);
 		confirmedDelete.mockResolvedValue(undefined);

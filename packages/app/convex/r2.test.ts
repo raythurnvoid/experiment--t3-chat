@@ -4564,13 +4564,20 @@ describe("r2_enqueue_object_deletion_job", () => {
 		await enqueue({ r2Key: "test/ledger-key", putMayArriveUntil: farFuture });
 		expect(await get_deletion_job_by_key(t, "test/ledger-key")).toMatchObject({
 			generation: 1,
+			failureCount: 0,
 			putMayArriveUntil: farFuture,
 		});
+		const job = await get_deletion_job_by_key(t, "test/ledger-key");
+		if (!job) throw new Error("Expected deletion job");
+		expect(job).not.toHaveProperty("attempts");
+		await t.mutation(internal.r2_client.record_object_deletion_failure, { jobId: job._id, generation: 1 });
+		expect(await get_deletion_job_by_key(t, "test/ledger-key")).toMatchObject({ failureCount: 1 });
 
 		// A second handoff advances the generation and can only widen the window, never shorten it.
 		await enqueue({ r2Key: "test/ledger-key", putMayArriveUntil: farFuture - 1000 });
 		expect(await get_deletion_job_by_key(t, "test/ledger-key")).toMatchObject({
 			generation: 2,
+			failureCount: 0,
 			putMayArriveUntil: farFuture,
 		});
 
@@ -4580,28 +4587,87 @@ describe("r2_enqueue_object_deletion_job", () => {
 			generation: 3,
 			lastR2EventId: "evt_1",
 		});
+		await t.mutation(internal.r2_client.record_object_deletion_failure, { jobId: job._id, generation: 3 });
 		await enqueue({ r2Key: "test/ledger-key", r2EventId: "evt_1" });
-		expect(await get_deletion_job_by_key(t, "test/ledger-key")).toMatchObject({ generation: 3 });
+		expect(await get_deletion_job_by_key(t, "test/ledger-key")).toMatchObject({
+			generation: 3,
+			failureCount: 1,
+		});
 		await enqueue({ r2Key: "test/ledger-key", r2EventId: "evt_2" });
 		expect(await get_deletion_job_by_key(t, "test/ledger-key")).toMatchObject({
 			generation: 4,
+			failureCount: 0,
 			lastR2EventId: "evt_2",
 		});
 
 		// "ensure" never advances an existing job but creates a missing one.
+		await t.mutation(internal.r2_client.record_object_deletion_failure, { jobId: job._id, generation: 4 });
 		await enqueue({ r2Key: "test/ledger-key", mode: "ensure" });
-		expect(await get_deletion_job_by_key(t, "test/ledger-key")).toMatchObject({ generation: 4 });
+		expect(await get_deletion_job_by_key(t, "test/ledger-key")).toMatchObject({
+			generation: 4,
+			failureCount: 1,
+		});
 		const linkedUpload = await create_upload_fixture(t, db, "ensure-linked.png");
 		await enqueue({ r2Key: "test/ledger-key", mode: "ensure", assetId: linkedUpload.assetId });
 		expect(await get_deletion_job_by_key(t, "test/ledger-key")).toMatchObject({
 			generation: 4,
+			failureCount: 1,
 			assetId: linkedUpload.assetId,
 		});
 		await enqueue({ r2Key: "test/ledger-other", mode: "ensure", putMayArriveUntil: farFuture });
-		expect(await get_deletion_job_by_key(t, "test/ledger-other")).toMatchObject({ generation: 1 });
+		expect(await get_deletion_job_by_key(t, "test/ledger-other")).toMatchObject({
+			generation: 1,
+			failureCount: 0,
+		});
 
 		const jobs = await t.run(async (ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect());
 		expect(jobs).toHaveLength(2);
+		for (const currentJob of jobs) {
+			expect(currentJob).not.toHaveProperty("attempts");
+		}
+	});
+});
+
+describe("record_object_deletion_failure", () => {
+	test("counts failures with the same retry delays and ignores stale generations", async () => {
+		vi.useFakeTimers();
+		try {
+			const t = test_convex();
+			const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+			const now = Date.now();
+			await t.run(async (ctx) => {
+				await r2_enqueue_object_deletion_job(ctx, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					r2Key: "test/failure-delays",
+					reason: "read_only_stage",
+				});
+			});
+			const job = await get_deletion_job_by_key(t, "test/failure-delays");
+			if (!job) throw new Error("Expected deletion job");
+
+			const delays = [30_000, 60_000, 120_000, 240_000, 480_000, 960_000, 1_920_000, 3_600_000, 3_600_000];
+			for (const [index, delayMs] of delays.entries()) {
+				await t.mutation(internal.r2_client.record_object_deletion_failure, {
+					jobId: job._id,
+					generation: job.generation,
+				});
+				expect(await t.query(internal.r2_client.get_object_deletion_job, { jobId: job._id })).toMatchObject({
+					generation: job.generation,
+					failureCount: index + 1,
+					nextAttemptAt: now + delayMs,
+				});
+			}
+
+			const before = await t.query(internal.r2_client.get_object_deletion_job, { jobId: job._id });
+			await t.mutation(internal.r2_client.record_object_deletion_failure, {
+				jobId: job._id,
+				generation: job.generation - 1,
+			});
+			expect(await t.query(internal.r2_client.get_object_deletion_job, { jobId: job._id })).toEqual(before);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
 
@@ -4639,7 +4705,7 @@ describe("process_object_deletion_job", () => {
 
 			// Failures never drop the job, the deadline, or the bytes.
 			const failingJob = await get_deletion_job_by_key(t, upload.key);
-			expect(failingJob?.attempts).toBeGreaterThanOrEqual(4);
+			expect(failingJob?.failureCount).toBeGreaterThanOrEqual(4);
 			expect(r2Objects.has(upload.key)).toBe(true);
 			expect((await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload.assetId)))?.unfinalizedExpiresAt).toEqual(
 				expect.any(Number),
@@ -4751,6 +4817,7 @@ describe("process_object_deletion_job", () => {
 				await ctx.db.delete("files_nodes", upload.nodeId);
 			});
 			r2Objects.set(upload.key, new TextEncoder().encode("tombstone-bytes"));
+			confirmedDeleteSpy.mockRejectedValueOnce(new Error("temporary R2 failure"));
 			const response = await post_r2_put_event(t, {
 				bucket,
 				key: upload.key,
@@ -4763,12 +4830,20 @@ describe("process_object_deletion_job", () => {
 				vi.advanceTimersByTime(1000);
 				await t.finishInProgressScheduledFunctions();
 			}
+			expect(await get_deletion_job_by_key(t, upload.key)).toMatchObject({ failureCount: 1 });
+			vi.advanceTimersByTime(31_000);
+			await t.finishInProgressScheduledFunctions();
 
 			// R2 confirms deletion before another upload is impossible. Keep the job and run it again at
 			// the final-delete time.
 			const window = mintedNow + 60_000 + r2_PUT_MAY_ARRIVE_MARGIN_MS;
 			const tombstone = await get_deletion_job_by_key(t, upload.key);
-			expect(tombstone).toMatchObject({ generation: 1, putMayArriveUntil: window, nextAttemptAt: window });
+			expect(tombstone).toMatchObject({
+				generation: 1,
+				failureCount: 1,
+				putMayArriveUntil: window,
+				nextAttemptAt: window,
+			});
 			expect(r2Objects.has(upload.key)).toBe(false);
 
 			// A late PUT through the still-signed URL lands and its event never arrives.
@@ -4819,7 +4894,7 @@ describe("process_object_deletion_job", () => {
 			vi.advanceTimersByTime(1000);
 			await t.finishInProgressScheduledFunctions();
 			const afterCrash = await get_deletion_job_by_key(t, "test/crash-after-delete");
-			expect(afterCrash?.attempts).toBe(1);
+			expect(afterCrash?.failureCount).toBe(1);
 			expect(r2Objects.has("test/crash-after-delete")).toBe(false);
 
 			// R2 DELETE is idempotent: the retry confirms the delete again and settles.
@@ -4847,7 +4922,7 @@ describe("process_object_deletion_job", () => {
 					r2Key: `test/drain-${i}`,
 					reason: "read_only_stage",
 					generation: 1,
-					attempts: 0,
+					failureCount: 0,
 					nextAttemptAt: now - 1,
 				});
 			}
