@@ -399,6 +399,9 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				assetId,
 				createdBy: args.userId,
 				archivedAt: -1,
+				contentType: "text/markdown;charset=utf-8",
+				yjsRootKind: "rich_text",
+				collaborationEnabled: true,
 			}),
 		]);
 		if (i < 5) {

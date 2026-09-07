@@ -148,7 +148,7 @@ The authoritative identity is per user and per file node. Two users can each hav
 
 Pending updates attach to editable text `files_nodes` docs (`files_node_has_editable_text_content`), in either shape and in both collaboration modes.
 
-Node keys are required. `textKind` records the text shape, including when `collaborationEnabled` is false and live Yjs pointers are null. Blobs and folders have null text and collaboration settings. Pending replacement and snapshot payloads keep `yjsRootKind` and `nonCollaborative`; map those fields explicitly when reading or publishing a node. Node archive markers use null while pending metadata and plain-text chunks keep an absent archive marker for active content.
+Node keys are required. `textKind` records the text shape, including when `collaborationEnabled` is false and live Yjs pointers are null. Blobs and folders have null text and collaboration settings. Pending replacements keep optional `yjsRootKind` and `nonCollaborative`; map those fields explicitly when publishing a node. Snapshots require their saved content type, nullable `yjsRootKind`, and boolean `collaborationEnabled`. Stored snapshots use null shape and false collaboration; stored nodes use null for both. Node archive markers use null while pending metadata and plain-text chunks keep an absent archive marker for active content.
 
 - Editable Markdown files (`rich_text`) and plain-text files such as `.json` or `.yaml` (`plain_text`) participate directly in pending review/edit flows.
 - Plugin-generated Markdown outputs are ordinary files, so they can participate in pending review/edit flows after the plugin creates them.

@@ -969,7 +969,7 @@ async function db_finalize_editable_text_file_node_from_r2_assets(
 			archivedAt: -1,
 			contentType: args.contentType,
 			yjsRootKind: args.rootKind,
-			nonCollaborative: args.yjsSnapshot === null ? true : undefined,
+			collaborationEnabled: args.yjsSnapshot !== null,
 		}),
 	]);
 

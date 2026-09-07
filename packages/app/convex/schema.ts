@@ -1102,14 +1102,17 @@ const app_convex_schema = defineSchema({
 		assetId: v.id("files_r2_assets"),
 		/**
 		 * The content type of this version. A version records what the file was when it was
-		 * saved, so restoring it brings the type back together with the bytes. Optional only
-		 * while the backfill migration fills old rows from their node.
+		 * saved, so restoring it brings the type back together with the bytes.
 		 */
-		contentType: v.optional(v.string()),
-		/** The document shape of this version. Absent for stored bytes. */
-		yjsRootKind: v.optional(v.union(v.literal("rich_text"), v.literal("plain_text"))),
-		/** True when this text version was saved with collaboration off. Absent for stored bytes. */
-		nonCollaborative: v.optional(v.boolean()),
+		contentType: v.string(),
+		/**
+		 * The document shape of this version. Null for stored bytes.
+		 */
+		yjsRootKind: v.union(v.literal("rich_text"), v.literal("plain_text"), v.null()),
+		/**
+		 * True only for text saved with collaboration on.
+		 */
+		collaborationEnabled: v.boolean(),
 		createdBy: v.id("users"),
 		/**
 		 * Use -1 for snapshots that were never archived, 0 for snapshots that were

@@ -5074,6 +5074,9 @@ test("files_snapshot_write rate limit runs before restore snapshot validation", 
 			assetId: snapshotAssetId,
 			createdBy: db.userId,
 			archivedAt: 0,
+			contentType: "text/markdown;charset=utf-8",
+			yjsRootKind: "rich_text",
+			collaborationEnabled: true,
 		});
 
 		const expectedYjsLastSequenceId = await ctx.db.insert("files_yjs_docs_last_sequences", {
@@ -8563,7 +8566,7 @@ describe("non-collaborative files", () => {
 				archivedAt: 0,
 				contentType: "text/plain;charset=utf-8",
 				yjsRootKind: "plain_text",
-				nonCollaborative: true,
+				collaborationEnabled: false,
 			});
 			return { assetId: versionAssetId, snapshotId };
 		});
@@ -11946,6 +11949,7 @@ test("create_file_snapshot_content_url returns a signed R2 URL without fetching 
 			assetId,
 			contentType: "text/markdown;charset=utf-8",
 			yjsRootKind: "rich_text",
+			collaborationEnabled: true,
 			createdBy: db.userId,
 			archivedAt: 0,
 		});
@@ -12018,6 +12022,9 @@ test("create_file_snapshot_content_url fails when a snapshot asset has no R2 key
 			assetId,
 			createdBy: db.userId,
 			archivedAt: 0,
+			contentType: "text/markdown;charset=utf-8",
+			yjsRootKind: "rich_text",
+			collaborationEnabled: true,
 		});
 
 		return { snapshotId };
@@ -12101,6 +12108,9 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 			assetId: snapshotAssetId,
 			createdBy: db.userId,
 			archivedAt: 0,
+			contentType: "text/markdown;charset=utf-8",
+			yjsRootKind: "rich_text",
+			collaborationEnabled: true,
 		});
 
 		return { snapshotId };
@@ -12142,7 +12152,7 @@ test("restore_snapshot_r2 restores from R2-backed content without Convex Markdow
 });
 
 describe("restore_snapshot_r2 whole-file restore", () => {
-	// A version row that recorded the type, shape, and collaboration mode of its content.
+	// A version doc that recorded the type, shape, and collaboration mode of its content.
 	async function seed_version(
 		t: ReturnType<typeof test_convex>,
 		r2Objects: Map<string, BodyInit>,
@@ -12152,8 +12162,8 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 			body: string;
 			kind: "content" | "content_snapshot";
 			contentType: string;
-			yjsRootKind?: "rich_text" | "plain_text";
-			nonCollaborative?: true;
+			yjsRootKind: "rich_text" | "plain_text" | null;
+			collaborationEnabled: boolean;
 		},
 	) {
 		return await t.run(async (ctx) => {
@@ -12178,7 +12188,7 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 				archivedAt: 0,
 				contentType: version.contentType,
 				yjsRootKind: version.yjsRootKind,
-				nonCollaborative: version.nonCollaborative,
+				collaborationEnabled: version.collaborationEnabled,
 			});
 			return { assetId, r2Key, snapshotId };
 		});
@@ -12198,7 +12208,7 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 						r2Key: asset?.r2Key,
 						contentType: row.contentType,
 						yjsRootKind: row.yjsRootKind,
-						nonCollaborative: row.nonCollaborative,
+						collaborationEnabled: row.collaborationEnabled,
 					};
 				}),
 			);
@@ -12297,6 +12307,7 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 			kind: "content_snapshot",
 			contentType: "text/plain;charset=utf-8",
 			yjsRootKind: "plain_text",
+			collaborationEnabled: true,
 		});
 
 		const restored = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
@@ -12375,6 +12386,7 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 			kind: "content_snapshot",
 			contentType: "text/plain;charset=utf-8",
 			yjsRootKind: "plain_text",
+			collaborationEnabled: true,
 		});
 
 		const restored = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
@@ -12423,6 +12435,7 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 			kind: "content_snapshot",
 			contentType: "text/plain;charset=utf-8",
 			yjsRootKind: "plain_text",
+			collaborationEnabled: true,
 		});
 
 		const versionsBefore = await read_versions(t, nodeId);
@@ -12572,6 +12585,8 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 			body: pngBytes,
 			kind: "content",
 			contentType: "image/png",
+			yjsRootKind: null,
+			collaborationEnabled: false,
 		});
 
 		const restored = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
@@ -12601,8 +12616,13 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 		const versions = await read_versions(t, nodeId);
 		const pdfVersion = versions.find((row) => row.assetId === pdfAssetId);
 		expect(pdfVersion?.contentType).toBe("application/pdf");
-		expect(pdfVersion?.yjsRootKind).toBeUndefined();
-		expect(versions.find((row) => row.assetId === after.assetId)).toMatchObject({ contentType: "image/png" });
+		expect(pdfVersion?.yjsRootKind).toBeNull();
+		expect(pdfVersion?.collaborationEnabled).toBe(false);
+		expect(versions.find((row) => row.assetId === after.assetId)).toMatchObject({
+			contentType: "image/png",
+			yjsRootKind: null,
+			collaborationEnabled: false,
+		});
 	});
 });
 
@@ -12817,6 +12837,9 @@ test("restore_snapshot blocks Free users without enough credits before writing",
 			assetId: snapshotAssetId,
 			createdBy: db.userId,
 			archivedAt: 0,
+			contentType: "text/markdown;charset=utf-8",
+			yjsRootKind: "rich_text",
+			collaborationEnabled: true,
 		});
 
 		return { snapshotId, currentSnapshotAssetId, restoredSnapshotAssetId };
@@ -13096,6 +13119,9 @@ test("restore_snapshot emits file_save usage for the restored Yjs sequence", asy
 			assetId: snapshotAssetId,
 			createdBy: db.userId,
 			archivedAt: 0,
+			contentType: "text/markdown;charset=utf-8",
+			yjsRootKind: "rich_text",
+			collaborationEnabled: true,
 		});
 
 		return { snapshotId, currentSnapshotAssetId, restoredSnapshotAssetId };
@@ -13230,6 +13256,9 @@ describe("files_nodes.cleanup_old_snapshots", () => {
 						assetId,
 						createdBy: db.userId,
 						archivedAt: -1,
+						contentType: "text/markdown;charset=utf-8",
+						yjsRootKind: "rich_text",
+						collaborationEnabled: true,
 					});
 
 					return { snapshotId, assetId, r2Key };
@@ -15150,6 +15179,11 @@ describe("files_nodes_content.repair_file_yjs_state_from_visible_text", () => {
 				.first();
 			expect(newestSnapshot?.assetId).toBe(node.assetId);
 			expect(newestSnapshot?.createdBy).toBe(db.userId);
+			expect(newestSnapshot).toMatchObject({
+				contentType: "text/markdown;charset=utf-8",
+				yjsRootKind: "rich_text",
+				collaborationEnabled: true,
+			});
 
 			// Retention: the superseded content asset and its object key survive for old-version
 			// restore; only the superseded Yjs asset is removed by the cleanup continuation.
@@ -16772,6 +16806,9 @@ async function seed_read_only_snapshot(t: ReturnType<typeof test_convex>, archiv
 			assetId,
 			createdBy: db.userId,
 			archivedAt,
+			contentType: "text/markdown;charset=utf-8",
+			yjsRootKind: "rich_text",
+			collaborationEnabled: true,
 		});
 	});
 
@@ -18708,6 +18745,9 @@ async function seed_snapshot_restore_target(
 			assetId: snapshotAssetId,
 			createdBy: db.userId,
 			archivedAt: 0,
+			contentType: "text/markdown;charset=utf-8",
+			yjsRootKind: "rich_text",
+			collaborationEnabled: true,
 		});
 		return { nodeId, snapshotId, currentSnapshotAssetId, restoredSnapshotAssetId };
 	});

@@ -1197,9 +1197,7 @@ export async function files_nodes_db_finalize_editable_text_node_creation(
 			assetId: args.versionSnapshotAssetId,
 			createdBy: args.userId,
 			archivedAt: -1,
-			contentType: fileNode.contentType ?? undefined,
-			yjsRootKind: fileNode.textKind ?? undefined,
-			nonCollaborative: fileNode.collaborationEnabled === false ? true : undefined,
+			...file_node_snapshot_fields(fileNode),
 		}),
 	]);
 
@@ -2501,6 +2499,21 @@ function yjs_create_state_update_from_tiptap_editor(args: { tiptapEditor: Editor
 
 // #region snapshots
 
+function file_node_snapshot_fields(fileNode: Doc<"files_nodes">) {
+	if (fileNode.contentType === null) {
+		const errorMessage = "A file snapshot requires a content type";
+		const errorData = { nodeId: fileNode._id };
+		console.error(errorMessage, errorData);
+		throw should_never_happen(errorMessage, errorData);
+	}
+
+	return {
+		contentType: fileNode.contentType,
+		yjsRootKind: fileNode.textKind,
+		collaborationEnabled: fileNode.collaborationEnabled === true,
+	};
+}
+
 const store_version_snapshot_args_schema = v.object({
 	organizationId: v.id("organizations"),
 	workspaceId: v.id("organizations_workspaces"),
@@ -2508,13 +2521,12 @@ const store_version_snapshot_args_schema = v.object({
 	assetId: v.id("files_r2_assets"),
 	userId: v.id("users"),
 	/**
-	 * The file's type, shape, and collaboration mode at the moment this version was saved. A
-	 * restore brings all three back, so the row must carry them instead of reading the node's
-	 * current values later.
+	 * The file's type, shape, and collaboration mode when this version was saved.
+	 * These fields belong to the version even if the current file changes later.
 	 */
-	contentType: v.optional(v.string()),
-	yjsRootKind: v.optional(v.union(v.literal("rich_text"), v.literal("plain_text"))),
-	nonCollaborative: v.optional(v.boolean()),
+	contentType: v.string(),
+	yjsRootKind: v.union(v.literal("rich_text"), v.literal("plain_text"), v.null()),
+	collaborationEnabled: v.boolean(),
 });
 
 async function db_insert_snapshot_restore_update(
@@ -2580,7 +2592,7 @@ async function store_version_snapshot(ctx: MutationCtx, args: Infer<typeof store
 		archivedAt: -1,
 		contentType: args.contentType,
 		yjsRootKind: args.yjsRootKind,
-		nonCollaborative: args.nonCollaborative,
+		collaborationEnabled: args.collaborationEnabled,
 	});
 
 	return snapshotId;
@@ -2633,9 +2645,7 @@ export async function files_nodes_db_fill_text_node_content(
 			nodeId: args.fileNode._id,
 			assetId: args.contentSnapshotAssetId,
 			userId: args.userId,
-			contentType: args.fileNode.contentType ?? undefined,
-			yjsRootKind: args.fileNode.textKind ?? undefined,
-			nonCollaborative: args.fileNode.collaborationEnabled === false ? true : undefined,
+			...file_node_snapshot_fields(args.fileNode),
 		}),
 		ctx.db.patch("files_nodes", args.fileNode._id, {
 			assetId: args.contentSnapshotAssetId,
@@ -2872,9 +2882,7 @@ export const finalize_file_content_materialization = internalMutation({
 					nodeId: args.nodeId,
 					assetId: args.versionSnapshotAssetId,
 					userId: args.userId,
-					contentType: header.fileNode.contentType ?? undefined,
-					yjsRootKind: header.fileNode.textKind ?? undefined,
-					nonCollaborative: header.fileNode.collaborationEnabled === false ? true : undefined,
+					...file_node_snapshot_fields(header.fileNode),
 				}),
 			]),
 		);
@@ -3869,9 +3877,7 @@ export async function files_nodes_db_commit_text_replacement(
 				nodeId: fileNode._id,
 				assetId: args.versionSnapshotAssetId,
 				userId: args.userId,
-				contentType: fileNode.contentType ?? undefined,
-				yjsRootKind: fileNode.textKind ?? undefined,
-				nonCollaborative: fileNode.collaborationEnabled === false ? true : undefined,
+				...file_node_snapshot_fields(fileNode),
 			}),
 		]),
 	);
@@ -4194,9 +4200,7 @@ async function db_install_file_content_replacement(
 			nodeId,
 			assetId: args.backup.assetId,
 			userId: user._id,
-			contentType: fileNode.contentType ?? undefined,
-			yjsRootKind: fileNode.textKind ?? undefined,
-			nonCollaborative: fileNode.collaborationEnabled === false ? true : undefined,
+			...file_node_snapshot_fields(fileNode),
 		});
 	} else {
 		// A stored file has no version row for its current asset yet. An editable file already has
@@ -4214,9 +4218,7 @@ async function db_install_file_content_replacement(
 				nodeId,
 				assetId: args.previousAssetId,
 				userId: user._id,
-				contentType: fileNode.contentType ?? undefined,
-				yjsRootKind: fileNode.textKind ?? undefined,
-				nonCollaborative: fileNode.collaborationEnabled === false ? true : undefined,
+				...file_node_snapshot_fields(fileNode),
 			});
 		}
 	}
@@ -4411,8 +4413,8 @@ async function db_install_file_content_replacement(
 		assetId: args.contentAssetId,
 		userId: user._id,
 		contentType: args.contentType,
-		yjsRootKind: args.yjsRootKind,
-		nonCollaborative: args.nonCollaborative === true ? true : undefined,
+		yjsRootKind: args.yjsRootKind ?? null,
+		collaborationEnabled: args.yjsRootKind !== undefined && args.nonCollaborative !== true,
 	});
 
 	// The old update log can be long, so a bounded continuation deletes it and then removes
@@ -4853,9 +4855,9 @@ export const restore_snapshot = internalMutation({
 
 		const now = Date.now();
 		const userId = userAuth.id;
-		// The version brings its own type back. A row from before versions recorded their type
-		// keeps the node's current type (the backfill migration fills those rows).
-		const restoredContentType = snapshotContent.contentType ?? fileNode.contentType;
+		// The version brings its own type back.
+		const snapshotFields = file_node_snapshot_fields(fileNode);
+		const restoredContentType = snapshotContent.contentType;
 
 		// Restoring snapshots can be destructive and we defensively store
 		// the current state as a backup snapshot
@@ -4888,9 +4890,7 @@ export const restore_snapshot = internalMutation({
 				nodeId: args.nodeId,
 				assetId: args.currentSnapshotAssetId,
 				userId,
-				contentType: fileNode.contentType ?? undefined,
-				yjsRootKind: fileNode.textKind ?? undefined,
-				nonCollaborative: fileNode.collaborationEnabled === false ? true : undefined,
+				...snapshotFields,
 			}),
 
 			// Store the restored content as a new snapshot. It brings the version's type back;
@@ -4902,9 +4902,8 @@ export const restore_snapshot = internalMutation({
 				nodeId: args.nodeId,
 				assetId: args.restoredSnapshotAssetId,
 				userId,
-				contentType: restoredContentType ?? undefined,
-				yjsRootKind: fileNode.textKind ?? undefined,
-				nonCollaborative: fileNode.collaborationEnabled === false ? true : undefined,
+				...snapshotFields,
+				contentType: restoredContentType,
 			}),
 
 			ctx.db.patch("files_nodes", fileNode._id, {
@@ -5202,9 +5201,9 @@ export const get_data_for_restore_snapshot = internalQuery({
 					asset: doc(app_convex_schema, "files_r2_assets"),
 					snapshotId: v.id("files_snapshots"),
 					_creationTime: v.number(),
-					contentType: v.optional(v.string()),
-					yjsRootKind: v.optional(v.union(v.literal("rich_text"), v.literal("plain_text"))),
-					nonCollaborative: v.optional(v.boolean()),
+					contentType: doc(app_convex_schema, "files_snapshots").fields.contentType,
+					yjsRootKind: doc(app_convex_schema, "files_snapshots").fields.yjsRootKind,
+					collaborationEnabled: doc(app_convex_schema, "files_snapshots").fields.collaborationEnabled,
 				}),
 				v.null(),
 			),
@@ -5277,7 +5276,7 @@ async function action_restore_snapshot_as_replacement(
 		fileNode: Doc<"files_nodes">;
 		expectedAssetId?: Id<"files_r2_assets">;
 		versionAsset: Doc<"files_r2_assets">;
-		version: { contentType: string; rootKind?: "rich_text" | "plain_text"; nonCollaborative: boolean };
+		version: { contentType: string; rootKind: "rich_text" | "plain_text" | null; collaborationEnabled: boolean };
 		materializationState: NonNullable<get_file_content_materialization_state_Result> | null;
 	},
 ): Promise<restore_snapshot_r2_Result> {
@@ -5371,7 +5370,7 @@ async function action_restore_snapshot_as_replacement(
 		yjsSnapshot?: { assetId: Id<"files_r2_assets">; size: number };
 		text?: string;
 	};
-	if (args.version.rootKind === undefined) {
+	if (args.version.rootKind === null) {
 		// Stored bytes: copy the version's object to a new content asset on the R2 server side.
 		const { assetId, r2Key } = await insert_asset({ kind: "content", size: args.versionAsset.size });
 		const copied = await r2_copy_object_to_immutable_key(ctx, {
@@ -5390,7 +5389,7 @@ async function action_restore_snapshot_as_replacement(
 		const rootKind = args.version.rootKind;
 		let text = await r2_fetch_object_from_bucket({ key: args.versionAsset.r2Key }).then((response) => response.text());
 		let yjsSnapshot: { assetId: Id<"files_r2_assets">; size: number } | undefined;
-		if (!args.version.nonCollaborative) {
+		if (args.version.collaborationEnabled) {
 			const yjsDoc = files_yjs_doc_create_from_text({ text, rootKind });
 			if ("_nay" in yjsDoc) {
 				await cleanup_uploads();
@@ -5435,7 +5434,7 @@ async function action_restore_snapshot_as_replacement(
 			}),
 			contentSize: textSize,
 			yjsRootKind: rootKind,
-			...(args.version.nonCollaborative ? { nonCollaborative: true } : {}),
+			...(!args.version.collaborationEnabled ? { nonCollaborative: true } : {}),
 			...(yjsSnapshot ? { yjsSnapshot } : {}),
 			text,
 		};
@@ -5520,20 +5519,12 @@ export const restore_snapshot_r2 = action({
 		}
 
 		// Restore the version's type and shape. An existing text file keeps its collaboration mode.
-		const versionRecorded = snapshotContent.contentType !== undefined;
-		const versionContentType = snapshotContent.contentType ?? fileNode.contentType;
-		if (versionContentType === null) {
-			const errorMessage = "A file with content has no content type";
-			const errorData = { nodeId: args.nodeId, snapshotId: args.snapshotId };
-			console.error(errorMessage, errorData);
-			throw should_never_happen(errorMessage, errorData);
-		}
 		const version = {
-			contentType: versionContentType,
-			rootKind: versionRecorded ? snapshotContent.yjsRootKind : fileNode.textKind ?? undefined,
-			nonCollaborative: files_node_has_editable_text_content(fileNode)
-				? fileNode.collaborationEnabled === false
-				: snapshotContent.nonCollaborative === true,
+			contentType: snapshotContent.contentType,
+			rootKind: snapshotContent.yjsRootKind,
+			collaborationEnabled: files_node_has_editable_text_content(fileNode)
+				? fileNode.collaborationEnabled === true
+				: snapshotContent.collaborationEnabled,
 		};
 
 		// A version with the live document's shape is written into that document, so the file's
@@ -5543,7 +5534,7 @@ export const restore_snapshot_r2 = action({
 			materializationState === null ||
 			!files_node_has_editable_yjs_state(fileNode) ||
 			version.rootKind !== fileNode.textKind ||
-			version.nonCollaborative
+			!version.collaborationEnabled
 		) {
 			return await action_restore_snapshot_as_replacement(ctx, {
 				userId: userAuth.id,
@@ -5687,9 +5678,8 @@ export const restore_snapshot_r2 = action({
 				key: restoredSnapshotR2Key,
 				body: restoredText._yay,
 				contentType:
-					files_editable_text_content_type_of(
-						snapshotContent.contentType ?? materializationState.fileNode.contentType,
-					) ?? ("application/octet-stream" satisfies files_ContentType),
+					files_editable_text_content_type_of(snapshotContent.contentType) ??
+					("application/octet-stream" satisfies files_ContentType),
 			}),
 		]);
 
@@ -6202,9 +6192,7 @@ export const finalize_file_yjs_repair = internalMutation({
 					nodeId: args.nodeId,
 					assetId: args.contentSnapshotAssetId,
 					userId: args.authorUserId,
-					contentType: state.fileNode.contentType ?? undefined,
-					yjsRootKind: state.fileNode.textKind ?? undefined,
-					nonCollaborative: state.fileNode.collaborationEnabled === false ? true : undefined,
+					...file_node_snapshot_fields(state.fileNode),
 				}),
 				db_replace_file_chunks(ctx, {
 					organizationId: args.organizationId,
@@ -7185,10 +7173,9 @@ export const finalize_file_collaboration_enable = internalMutation({
 					nodeId: args.nodeId,
 					assetId: args.contentSnapshotAssetId,
 					userId: user._id,
-					contentType: fileNode.contentType ?? undefined,
-					yjsRootKind: fileNode.textKind ?? undefined,
+					...file_node_snapshot_fields(fileNode),
 					// The node is collaborative from this version on.
-					nonCollaborative: undefined,
+					collaborationEnabled: true,
 				}),
 			]),
 		);

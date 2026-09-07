@@ -7845,6 +7845,7 @@ describe("pending text after restore and collaborative edits", () => {
 					archivedAt: 0,
 					contentType: rootKind === "rich_text" ? "text/markdown;charset=utf-8" : "text/plain;charset=utf-8",
 					yjsRootKind: rootKind,
+					collaborationEnabled: true,
 				});
 			});
 			expect(
@@ -15316,6 +15317,9 @@ describe("discard_file_pending_structural", () => {
 				assetId: destNode.assetId,
 				createdBy: dest.userId,
 				archivedAt: -1,
+				contentType: "text/markdown;charset=utf-8",
+				yjsRootKind: "rich_text",
+				collaborationEnabled: true,
 			});
 			const metadataDocId = await ctx.db.insert("files_metadata_docs", {
 				organizationId: dest.organizationId,

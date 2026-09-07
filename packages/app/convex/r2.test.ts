@@ -640,6 +640,11 @@ describe("r2 asset content", () => {
 		);
 		expect(docs.updates).toHaveLength(0);
 		expect(docs.snapshots).toHaveLength(1);
+		expect(docs.snapshots[0]).toMatchObject({
+			contentType: "text/markdown;charset=utf-8",
+			yjsRootKind: "rich_text",
+			collaborationEnabled: true,
+		});
 		expect(docs.versionAsset?.kind).toBe("content_snapshot");
 		expect(docs.versionAsset?.r2Key ? r2_text(docs.versionAsset.r2Key) : null).toBe(files_INITIAL_CONTENT);
 	});
@@ -1798,6 +1803,11 @@ describe("r2 asset content", () => {
 		// Producer shape pair: a node born with a `textKind` that does not match its first Yjs
 		// snapshot is invisible to every later guard, so read both sides of this producer's write.
 		expect(docs.fileNode?.textKind).toBe("rich_text");
+		expect(await t.run((ctx) => ctx.db.query("files_snapshots").first())).toMatchObject({
+			contentType: "text/markdown;charset=utf-8",
+			yjsRootKind: "rich_text",
+			collaborationEnabled: true,
+		});
 		const yjsSnapshotR2Key = await t.run(async (ctx) => {
 			const fileNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
 			if (!fileNode?.yjsSnapshotId) {
@@ -1892,6 +1902,11 @@ describe("r2 asset content", () => {
 
 		expect(docs.fileNode?.textKind).toBe("plain_text");
 		expect(docs.fileNode?.contentType).toBe("text/plain;charset=utf-8");
+		expect(await t.run((ctx) => ctx.db.query("files_snapshots").first())).toMatchObject({
+			contentType: "text/plain;charset=utf-8",
+			yjsRootKind: "plain_text",
+			collaborationEnabled: true,
+		});
 		expect(docs.fileNode?.yjsSnapshotId).toEqual(expect.any(String));
 		expect(docs.fileNode?.yjsLastSequenceId).toEqual(expect.any(String));
 		expect(docs.contentAsset?.kind).toBe("content_snapshot");
@@ -2730,6 +2745,9 @@ describe("cleanup_expired_unfinalized_assets", () => {
 				assetId: versionSnapshotAssetId,
 				createdBy: db.userId,
 				archivedAt: -1,
+				contentType: "application/pdf",
+				yjsRootKind: null,
+				collaborationEnabled: false,
 			});
 		});
 
@@ -3104,6 +3122,9 @@ describe("cleanup_expired_unfinalized_assets", () => {
 				assetId: upload.assetId,
 				createdBy: db.userId,
 				archivedAt: -1,
+				contentType: "image/png",
+				yjsRootKind: null,
+				collaborationEnabled: false,
 			});
 			await ctx.db.delete("files_nodes", upload.nodeId);
 			// A stale cleanup deadline must not erase bytes kept by history.
@@ -4111,6 +4132,11 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		expect(published.yjsSequences).toHaveLength(0);
 		expect(published.yjsUpdates).toHaveLength(0);
 		expect(published.fileSnapshots).toHaveLength(1);
+		expect(published.fileSnapshots[0]).toMatchObject({
+			contentType: "text/markdown;charset=utf-8",
+			yjsRootKind: "rich_text",
+			collaborationEnabled: false,
+		});
 		expect(published.chunks.length).toBeGreaterThan(0);
 	});
 

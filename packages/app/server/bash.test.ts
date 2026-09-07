@@ -6561,6 +6561,7 @@ describe("bash_run_command", () => {
 				archivedAt: -1,
 				contentType: richTarget.contentType!,
 				yjsRootKind: "rich_text",
+				collaborationEnabled: true,
 			}),
 		);
 		const versionsBefore = await version_snapshot_asset_ids(runner, richTarget._id);

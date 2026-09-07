@@ -8328,7 +8328,7 @@ export async function db_get_file_snapshot_content(
 		_creationTime: snapshot._creationTime,
 		contentType: snapshot.contentType,
 		yjsRootKind: snapshot.yjsRootKind,
-		nonCollaborative: snapshot.nonCollaborative,
+		collaborationEnabled: snapshot.collaborationEnabled,
 	};
 }
 
@@ -8345,9 +8345,9 @@ export const get_data_for_create_file_snapshot_content_url = internalQuery({
 			snapshotId: v.id("files_snapshots"),
 			_creationTime: v.number(),
 			/** The version's own content type. The signer pins the served type from it. */
-			contentType: v.optional(v.string()),
-			yjsRootKind: v.optional(v.union(v.literal("rich_text"), v.literal("plain_text"))),
-			nonCollaborative: v.optional(v.boolean()),
+			contentType: doc(app_convex_schema, "files_snapshots").fields.contentType,
+			yjsRootKind: doc(app_convex_schema, "files_snapshots").fields.yjsRootKind,
+			collaborationEnabled: doc(app_convex_schema, "files_snapshots").fields.collaborationEnabled,
 			/**
 			 * The AUTHORIZED node's name, for the disposition file name. The signer must use this
 			 * server-resolved value, never a caller-supplied name.

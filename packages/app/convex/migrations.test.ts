@@ -59,17 +59,6 @@ const migrations_test_schema = defineSchema({
 		updatedBy: v.id("users"),
 		updatedAt: v.number(),
 	}),
-	files_snapshots: defineTable({
-		organizationId: v.string(),
-		workspaceId: v.string(),
-		fileNodeId: v.id("files_nodes"),
-		assetId: v.string(),
-		createdBy: v.id("users"),
-		archivedAt: v.number(),
-		contentType: v.optional(v.string()),
-		yjsRootKind: v.optional(v.union(v.literal("rich_text"), v.literal("plain_text"))),
-		nonCollaborative: v.optional(v.boolean()),
-	}),
 	files_text_chunks: defineTable({
 		organizationId: v.string(),
 		workspaceId: v.string(),
@@ -1602,70 +1591,6 @@ describe("backfill_files_nodes_lowercase_extension", () => {
 		expect(result.markdownFile).toMatchObject({ lowercaseExtension: "md" });
 		expect(result.folder).toMatchObject({ lowercaseExtension: null });
 		expect(result.extensionlessFile).toMatchObject({ lowercaseExtension: null });
-	});
-});
-
-describe("backfill_files_snapshots_content_state", () => {
-	test("fills empty rows from the file and leaves recorded rows alone", async () => {
-		const t = convexTest(migrations_test_schema, migrations_test_modules);
-		component.register(t);
-		const seeded = await t.run(async (ctx) => {
-			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-user-snapshots-backfill" });
-			// The reduced test schema stores the asset id as a plain string; the migration never reads it.
-			const assetId = "asset-snapshots-backfill";
-			const fileId = await ctx.db.insert("files_nodes", {
-				organizationId: "organization-snapshots-backfill",
-				workspaceId: "workspace-snapshots-backfill",
-				path: "/todo.txt",
-				name: "todo.txt",
-				kind: "file",
-				contentType: "text/plain;charset=utf-8",
-				textKind: "plain_text",
-				collaborationEnabled: false,
-				parentId: "root",
-				createdBy: userId,
-				updatedBy: userId,
-				updatedAt: 100,
-			});
-			const legacyRowId = await ctx.db.insert("files_snapshots", {
-				organizationId: "organization-snapshots-backfill",
-				workspaceId: "workspace-snapshots-backfill",
-				fileNodeId: fileId,
-				assetId,
-				createdBy: userId,
-				archivedAt: 0,
-			});
-			const recordedRowId = await ctx.db.insert("files_snapshots", {
-				organizationId: "organization-snapshots-backfill",
-				workspaceId: "workspace-snapshots-backfill",
-				fileNodeId: fileId,
-				assetId,
-				createdBy: userId,
-				archivedAt: 0,
-				contentType: "text/markdown;charset=utf-8",
-				yjsRootKind: "rich_text",
-			});
-
-			return { legacyRowId, recordedRowId };
-		});
-
-		const result = await t.run(async (ctx) => {
-			await runToCompletion(ctx, components.migrations, internal.migrations.backfill_files_snapshots_content_state);
-
-			return {
-				legacyRow: await ctx.db.get("files_snapshots", seeded.legacyRowId),
-				recordedRow: await ctx.db.get("files_snapshots", seeded.recordedRowId),
-			};
-		});
-
-		expect(result.legacyRow).toMatchObject({
-			contentType: "text/plain;charset=utf-8",
-			yjsRootKind: "plain_text",
-			nonCollaborative: true,
-		});
-		// A row that recorded a different shape keeps it: the file changed shape after that version.
-		expect(result.recordedRow).toMatchObject({ contentType: "text/markdown;charset=utf-8", yjsRootKind: "rich_text" });
-		expect(result.recordedRow?.nonCollaborative).toBeUndefined();
 	});
 });
 
