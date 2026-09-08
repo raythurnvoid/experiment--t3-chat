@@ -257,7 +257,10 @@ describe("RoutePluginsPluginPage", () => {
 		expect(secondBridge.iframe.getAttribute("referrerpolicy")).toBe("no-referrer");
 		// `allow-forms` lets plugin JS handle submit events; the asset CSP's `form-action 'none'`
 		// keeps real HTTP form submissions blocked.
-		expect(secondBridge.iframe.getAttribute("sandbox")).toBe("allow-scripts allow-same-origin allow-forms");
+		// Downloads are allowed, while popup and top-navigation permissions stay absent.
+		expect(secondBridge.iframe.getAttribute("sandbox")).toBe(
+			"allow-scripts allow-same-origin allow-forms allow-downloads",
+		);
 		// No `Permissions-Policy` header is sent for plugin assets, so this attribute is the whole
 		// delegation. Pin it exactly: without it `navigator.clipboard.writeText` rejects in every
 		// plugin page, and a second feature listed here would reach every plugin unnoticed.

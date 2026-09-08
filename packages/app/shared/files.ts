@@ -530,7 +530,7 @@ function files_content_disposition(kind: "inline" | "attachment", fileName: stri
 
 /**
  * The response headers every signed R2 download URL must pin, derived from the stored content
- * type. The name only fills the disposition file name.
+ * type. The name only fills the disposition file name. `download` forces media to download too.
  *
  * A presigned R2 GET carries no `nosniff` and no CSP. The signer can set only
  * `responseContentType` and `responseContentDisposition`, so this pinned type plus the
@@ -540,12 +540,16 @@ function files_content_disposition(kind: "inline" | "attachment", fileName: stri
  * upload time, and that is fine here: the inline set holds only types a browser never runs as
  * a page, whatever bytes sit behind them.
  */
-export function files_get_signed_download_serving(args: { contentType: string | null | undefined; fileName: string }) {
+export function files_get_signed_download_serving(args: {
+	contentType: string | null | undefined;
+	fileName: string;
+	download?: boolean;
+}) {
 	const essence = args.contentType == null ? null : (files_parse_content_type(args.contentType)?.essence ?? null);
 	if (essence !== null && FILES_INLINE_SERVED_MEDIA_CONTENT_TYPES.has(essence)) {
 		return {
 			responseContentType: essence,
-			responseContentDisposition: files_content_disposition("inline", args.fileName),
+			responseContentDisposition: files_content_disposition(args.download ? "attachment" : "inline", args.fileName),
 		};
 	}
 

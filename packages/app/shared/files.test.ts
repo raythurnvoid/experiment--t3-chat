@@ -597,6 +597,30 @@ describe("files_resolve_upload_content_type", () => {
 
 describe("files_get_signed_download_serving", () => {
 	test.each([
+		["image/png", "image/png"],
+		["video/mp4", "video/mp4"],
+		["audio/mpeg", "application/octet-stream"],
+		["image/svg+xml", "application/octet-stream"],
+		["text/html", "application/octet-stream"],
+		["text/plain", "text/plain;charset=utf-8"],
+	])("forces %s to download without changing its safe served type", (contentType, responseContentType) => {
+		const serving = files_get_signed_download_serving({ contentType, fileName: "it's a file.png", download: true });
+		expect(serving).toEqual({
+			responseContentType,
+			responseContentDisposition: "attachment; filename*=UTF-8''it%27s%20a%20file.png",
+		});
+	});
+
+	test("keeps media inline when download is false", () => {
+		expect(
+			files_get_signed_download_serving({ contentType: "image/png", fileName: "photo.png", download: false }),
+		).toEqual({
+			responseContentType: "image/png",
+			responseContentDisposition: "inline; filename*=UTF-8''photo.png",
+		});
+	});
+
+	test.each([
 		["image/png", "photo.png", "image/png", "inline"],
 		["IMAGE/JPEG; charset=binary", "photo.jpg", "image/jpeg", "inline"],
 		["video/mp4", "movie.mp4", "video/mp4", "inline"],

@@ -9,7 +9,7 @@ The public API is the workspace file surface for external callers: import CLIs, 
 
 The HTTP wrappers are split by startup cost. `/api/v1/files/list` lives in `packages/app/convex/public_api_files_list_http.ts` and stays in the small static root graph because it is the hot plugin read path. The other `/api/v1` routes are spread over five more small modules, each registered in `http.ts`: `public_api_http_routes.ts` (the generic file routes), `public_api_plugin_files_http_routes.ts`, `public_api_service_uploads_http_routes.ts`, `plugins_data_http_routes.ts`, and `plugins_invoke_http_routes.ts`. Each route loads its heavy implementation (`public_api.ts` or `plugins_data_http.ts`) with a literal dynamic import only when that route runs. Shared Bearer-token authorization lives in `packages/app/convex/public_api_http_auth.ts`. Public scopes and the plugin token formats that principal resolution and HTTP authorization must agree on live in `packages/app/shared/public-api.ts`; one-consumer credential and grant details stay private to their owning Convex module.
 
-Plugin UI documents and `/api/v1/*` share the Convex HTTP origin. Their iframe keeps that origin through `sandbox="allow-scripts allow-same-origin allow-forms"`, so the browser sends the existing JSON plus `Authorization` request directly without a CORS preflight. Do not add a `text/plain` token envelope or route calls through the host app. External browser callers on another origin still use normal CORS behavior.
+Plugin UI documents and `/api/v1/*` share the Convex HTTP origin. Their iframe keeps that origin through `sandbox="allow-scripts allow-same-origin allow-forms allow-downloads"`, so the browser sends the existing JSON plus `Authorization` request directly without a CORS preflight. Do not add a `text/plain` token envelope or route calls through the host app. External browser callers on another origin still use normal CORS behavior.
 
 A caller is never more powerful than the user behind it. `public_api_http_auth.ts` maps file and plugin-data scopes to their app permission. Routes pass only their scope. File requests also check the actual target; a service account may hold only a file grant, so HTTP entry must not require a workspace-wide account grant. Invoke file writes require both the actor's and the account's current permission. Upload-triggered runs keep their source/sibling ceiling and never pass a selected-writer policy. The plugin-data store keeps its separate actor and private-scope rules. Final file mutations recheck the original credential, membership, consent, target ACL, account grant, and current policy in one transaction.
 
@@ -54,6 +54,11 @@ All routes are POST and return JSON. Batch caps are tied to rate-bucket capaciti
 | `/api/v1/auth/verify`         | none               | `user_api_key` only, empty body; answers the key's tenant and the scopes it can still use today                                                                                            |
 
 `/api/v1/auth/verify` is the one route with no required scope, so it uses `public_api_authorize_key_inspection` instead of `public_api_authorize_request`. Keep them separate: making `requiredScope` nullable would let an ordinary route forget its app-permission check. It reports the sponsor and nullable account ID. The helper filters stored scopes through current actor permissions. An empty list is valid. Account access is checked on each requested file, not inferred from this workspace-level answer.
+
+`/api/v1/files/download-urls` accepts optional `download: boolean`. `true` signs an attachment
+disposition for every file, including safe inline media. Omitted or `false` keeps existing preview
+headers. Safe content types and encoded filenames stay unchanged. The flag grants no file access
+and changes no scope, batch limit, TTL clamp, or before/after-signing authority check.
 
 ## Plugin document store routes
 

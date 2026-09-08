@@ -871,6 +871,7 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 		// preflight. The host app uses a different origin, so the plugin still cannot reach its DOM.
 		// `allow-forms` only lets the submit EVENT fire so plugin code can handle it in JS; the
 		// asset CSP's `form-action 'none'` still blocks every real HTTP form submission.
+		// `allow-downloads` lets every plugin save files; popup and top-navigation permissions stay off.
 		//
 		// `clipboard-write` is Permissions-Policy gated, and a cross-origin frame does not inherit it.
 		// Without this grant every Copy button in every plugin rejects with `NotAllowedError`. Some
@@ -882,7 +883,7 @@ export const PluginsUiFrame = memo(function PluginsUiFrame(props: PluginsUiFrame
 			ref={iframeRef}
 			className={"PluginsUiFrame" satisfies PluginsUiFrame_ClassNames}
 			title={title}
-			sandbox="allow-scripts allow-same-origin allow-forms"
+			sandbox="allow-scripts allow-same-origin allow-forms allow-downloads"
 			allow="clipboard-write"
 			referrerPolicy="no-referrer"
 		/>

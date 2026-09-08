@@ -1,7 +1,7 @@
 /**
  * Plugin UI pages and file views: manifest-declared HTML entries rendered in sandboxed iframes
- * (`sandbox="allow-scripts allow-same-origin allow-forms"`; the CSP below keeps `form-action
- * 'none'`, so plugin JS can handle submit events but no real HTTP form submission can leave the
+ * (`sandbox="allow-scripts allow-same-origin allow-forms allow-downloads"`; the CSP below keeps
+ * `form-action 'none'`, so plugin JS can handle submit events but no real HTTP form submission can leave the
  * page). Pages open from the plugins nav; file views open from `/files` when a file's stored
  * content type matches a view's declared content types.
  *

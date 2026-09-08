@@ -1214,6 +1214,47 @@ describe("plugin ui sessions", () => {
 		});
 	});
 
+	test("pins an attachment filename for an explicit media download", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		const seeded = await seed_upload_node(t, fixture, { filename: "it's photo.png", contentType: "image/png" });
+		await t.run((ctx) => ctx.db.patch("files_r2_assets", seeded.assetId, { r2Key: "test/photo.png" }));
+		const session = await mint_session_token(fixture);
+		const signerCalls: Array<{ key: string; options: Record<string, unknown> | undefined }> = [];
+		vi.spyOn(R2.prototype, "getUrl").mockImplementation(async (key: string, options?: Record<string, unknown>) => {
+			signerCalls.push({ key, options });
+			return `https://r2.test/object?key=${encodeURIComponent(key)}`;
+		});
+
+		const response = await t.fetch("/api/v1/files/download-urls", {
+			method: "POST",
+			headers: auth_headers(session.token),
+			body: JSON.stringify({ fileNodeIds: [seeded.nodeId], download: true }),
+		});
+		expect(response.status).toBe(200);
+		expect(signerCalls.find(({ key }) => key === "test/photo.png")?.options).toMatchObject({
+			responseContentType: "image/png",
+			responseContentDisposition: "attachment; filename*=UTF-8''it%27s%20photo.png",
+		});
+	});
+
+	test("refuses a non-boolean download option before signing", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		const seeded = await seed_upload_node(t, fixture, { filename: "photo.png", contentType: "image/png" });
+		await t.run((ctx) => ctx.db.patch("files_r2_assets", seeded.assetId, { r2Key: "test/photo.png" }));
+		const session = await mint_session_token(fixture);
+		const signer = vi.spyOn(R2.prototype, "getUrl");
+
+		const response = await t.fetch("/api/v1/files/download-urls", {
+			method: "POST",
+			headers: auth_headers(session.token),
+			body: JSON.stringify({ fileNodeIds: [seeded.nodeId], download: "true" }),
+		});
+		expect(response.status).toBe(400);
+		expect(signer).not.toHaveBeenCalled();
+	});
+
 	test("mints batch download URLs with per-id errors", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);

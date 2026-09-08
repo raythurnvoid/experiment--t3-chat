@@ -6361,6 +6361,7 @@ export async function public_api_http_touch_files(ctx: ActionCtx, request: Reque
 const download_urls_body_validator = z.object({
 	fileNodeIds: z.array(z.string().min(1)).min(1).max(FILES_DOWNLOAD_URLS_MAX_REQUEST_ITEMS),
 	expiresInSeconds: z.number().int().min(1).max(FILES_DOWNLOAD_URL_MAX_TTL_SECONDS).optional(),
+	download: z.boolean().optional(),
 });
 
 export type public_api_http_download_urls_Body = z.infer<typeof download_urls_body_validator>;
@@ -6593,6 +6594,7 @@ export async function public_api_http_download_urls(
 			const serving = files_get_signed_download_serving({
 				contentType: data.fileNode.contentType,
 				fileName: data.fileNode.name,
+				download: body.data.download,
 			});
 			return {
 				fileNodeId,
