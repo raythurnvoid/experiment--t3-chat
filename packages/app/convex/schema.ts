@@ -764,7 +764,9 @@ const app_convex_schema = defineSchema({
 		 * stays right without walking up the tree. See `files_nodes_db_cascade_restricted_scope`.
 		 */
 		restrictedScopeNodeId: v.union(v.id("files_nodes"), v.null()),
-		/** Nearest policy scope, or null when ordinary ACL rules decide writes. */
+		/**
+		 * Nearest policy scope, or null when ordinary ACL rules decide writes.
+		 */
 		writePolicyScopeNodeId: v.union(v.id("files_nodes"), v.null()),
 		writePolicy: v.union(
 			v.null(),
@@ -1576,7 +1578,9 @@ const app_convex_schema = defineSchema({
 		createdAt: v.number(),
 	}).index("by_pluginName", ["pluginName"]),
 
-	/** A trusted plugin source keeps its account across uninstall and reinstall. */
+	/**
+	 * A trusted plugin source keeps its account across uninstall and reinstall.
+	 */
 	plugins_service_account_bindings: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),

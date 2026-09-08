@@ -439,7 +439,9 @@ describe("file write policy API", () => {
 			parentId: files_ROOT_ID,
 			path: "managed",
 		});
-		if (folder._nay) throw new Error(folder._nay.message);
+		if (folder._nay) {
+			throw new Error(folder._nay.message);
+		}
 		const nodeId = folder._yay.nodeId;
 		expect(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId })).toEqual({
 			_yay: null,
@@ -479,7 +481,9 @@ describe("file write policy API", () => {
 			name: "Policy only",
 			scopes: ["files:permissions"],
 		});
-		if (key._nay) throw new Error(key._nay.message);
+		if (key._nay) {
+			throw new Error(key._nay.message);
+		}
 		expect(
 			await asManager.mutation(api.files_nodes.set_node_write_policy, {
 				membershipId: manager.membershipId,
@@ -513,7 +517,9 @@ describe("service-bound API credentials", () => {
 			parentId: files_ROOT_ID,
 			path: "logs",
 		});
-		if (folder._nay) throw new Error(folder._nay.message);
+		if (folder._nay) {
+			throw new Error(folder._nay.message);
+		}
 		const nodeId = folder._yay.nodeId;
 		expect(
 			(await asUser.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId }))._nay,
@@ -522,7 +528,9 @@ describe("service-bound API credentials", () => {
 			membershipId: db.membershipId,
 			name: "Log writer",
 		});
-		if (account._nay) throw new Error(account._nay.message);
+		if (account._nay) {
+			throw new Error(account._nay.message);
+		}
 		const serviceAccountId = account._yay.serviceAccountId;
 		expect(
 			(
@@ -540,7 +548,9 @@ describe("service-bound API credentials", () => {
 			name: "Logs",
 			scopes: ["files:read", "files:write", "files:permissions"],
 		});
-		if (key._nay) throw new Error(key._nay.message);
+		if (key._nay) {
+			throw new Error(key._nay.message);
+		}
 		const headers = auth_headers(key._yay.credential);
 		const writePolicy = { mode: "writer", writer: { kind: "service_account", serviceAccountId } };
 		const policy = await t.fetch("/api/v1/files/write-policy/set", {
@@ -570,7 +580,9 @@ describe("service-bound API credentials", () => {
 			name: "Human",
 			scopes: ["files:write"],
 		});
-		if (personal._nay) throw new Error(personal._nay.message);
+		if (personal._nay) {
+			throw new Error(personal._nay.message);
+		}
 		const humanWrite = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers: auth_headers(personal._yay.credential),
@@ -584,7 +596,9 @@ describe("service-bound API credentials", () => {
 			name: "Write only",
 			scopes: ["files:write"],
 		});
-		if (writeOnly._nay) throw new Error(writeOnly._nay.message);
+		if (writeOnly._nay) {
+			throw new Error(writeOnly._nay.message);
+		}
 		const refusedPolicy = await t.fetch("/api/v1/files/write-policy/set", {
 			method: "POST",
 			headers: auth_headers(writeOnly._yay.credential),
@@ -628,7 +642,9 @@ describe("service-bound API credentials", () => {
 			membershipId: db.membershipId,
 			name: "Downloader",
 		});
-		if (account._nay) throw new Error(account._nay.message);
+		if (account._nay) {
+			throw new Error(account._nay.message);
+		}
 		const serviceAccountId = account._yay.serviceAccountId;
 		expect(
 			(
@@ -646,7 +662,9 @@ describe("service-bound API credentials", () => {
 			name: "Download",
 			scopes: ["files:download"],
 		});
-		if (key._nay) throw new Error(key._nay.message);
+		if (key._nay) {
+			throw new Error(key._nay.message);
+		}
 		const request = () =>
 			t.fetch("/api/v1/files/download-urls", {
 				method: "POST",
@@ -682,7 +700,9 @@ describe("service-bound API credentials", () => {
 			membershipId: db.membershipId,
 			name: "Log writer",
 		});
-		if (account._nay) throw new Error(account._nay.message);
+		if (account._nay) {
+			throw new Error(account._nay.message);
+		}
 		const serviceAccountId = account._yay.serviceAccountId;
 		const created = await asUser.mutation(api.public_api.api_credential_create, {
 			membershipId: db.membershipId,
@@ -690,7 +710,9 @@ describe("service-bound API credentials", () => {
 			name: "Logs",
 			scopes: ["files:read", "files:permissions"],
 		});
-		if (created._nay) throw new Error(created._nay.message);
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
 		const inspected = await t.fetch("/api/v1/auth/verify", {
 			method: "POST",
 			headers: auth_headers(created._yay.credential),
@@ -705,11 +727,14 @@ describe("service-bound API credentials", () => {
 			membershipId: db.membershipId,
 			credentialId: created._yay.credentialId,
 		});
-		if (rotated._nay) throw new Error(rotated._nay.message);
+		if (rotated._nay) {
+			throw new Error(rotated._nay.message);
+		}
 		const listed = await asUser.query(api.public_api.api_credentials_list, { membershipId: db.membershipId });
 		expect(listed._yay).toHaveLength(2);
-		for (const key of listed._yay!)
+		for (const key of listed._yay!) {
 			expect(key).toMatchObject({ serviceAccountId, serviceAccountName: "Log writer", sponsorUserId: db.userId });
+		}
 		const stored = await t.run(async (ctx) => ({
 			oldKey: await ctx.db.get("api_credentials", created._yay.credentialId),
 			newKey: await ctx.db.get("api_credentials", rotated._yay.credentialId),
@@ -752,7 +777,9 @@ describe("service-bound API credentials", () => {
 				membershipId: db.membershipId,
 				name: "Files only",
 			});
-			if (account._nay) throw new Error(account._nay.message);
+			if (account._nay) {
+				throw new Error(account._nay.message);
+			}
 			const serviceAccountId = account._yay.serviceAccountId;
 			const refused = await asUser.mutation(api.public_api.api_credential_create, {
 				membershipId: db.membershipId,
@@ -768,7 +795,9 @@ describe("service-bound API credentials", () => {
 				name: "Personal",
 				scopes: [scope],
 			});
-			if (personal._nay) throw new Error(personal._nay.message);
+			if (personal._nay) {
+				throw new Error(personal._nay.message);
+			}
 			expect(
 				(await t.query(internal.public_api.resolve_principal, { presented: personal._yay.credential }))._yay?.scopes,
 			).toContain(scope);
@@ -805,7 +834,9 @@ describe("service-bound API credentials", () => {
 			membershipId: db.membershipId,
 			name: "Private writer",
 		});
-		if (account._nay) throw new Error(account._nay.message);
+		if (account._nay) {
+			throw new Error(account._nay.message);
+		}
 		const member = await t.run(async (ctx) => {
 			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-service-key-member" });
 			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
@@ -6162,7 +6193,7 @@ describe("service file writes", () => {
 					updatedAt: now,
 					revokedAt: null,
 				}));
-			if (!binding)
+			if (!binding) {
 				await ctx.db.insert("plugins_service_account_bindings", {
 					organizationId: args.db.organizationId,
 					workspaceId: args.db.workspaceId,
@@ -6171,6 +6202,7 @@ describe("service file writes", () => {
 					sourceRepositoryUrl: "https://github.com/bonobo/council-plugin",
 					serviceAccountId,
 				});
+			}
 			const pluginVersionId = await ctx.db.insert("plugins_versions", {
 				name: pluginName,
 				displayName: "Council",
@@ -6241,7 +6273,9 @@ describe("service file writes", () => {
 			resource: { kind: "workspace" },
 			level: "manage",
 		});
-		if (granted._nay) throw new Error(granted._nay.message);
+		if (granted._nay) {
+			throw new Error(granted._nay.message);
+		}
 		return { token, ...seeded };
 	}
 
@@ -6879,7 +6913,9 @@ describe("service file writes", () => {
 			membershipId: db.membershipId,
 			name: "Other writer",
 		});
-		if (other._nay) throw new Error(other._nay.message);
+		if (other._nay) {
+			throw new Error(other._nay.message);
+		}
 		expect(
 			(
 				await asUser.mutation(api.files_nodes.set_node_write_policy, {

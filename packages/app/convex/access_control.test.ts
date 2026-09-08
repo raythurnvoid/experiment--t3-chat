@@ -333,6 +333,7 @@ describe("access_control_db_set_service_account_grant", () => {
 				updatedAt: 10,
 				revokedAt: null,
 			});
+
 			const nodeId = await ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
 				organizationId,
@@ -341,6 +342,7 @@ describe("access_control_db_set_service_account_grant", () => {
 				updatedBy: userId,
 			});
 			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
+
 			const humanGrantId = await ctx.db.insert("access_control_permission_grants", {
 				organizationId,
 				workspaceId,
@@ -353,6 +355,7 @@ describe("access_control_db_set_service_account_grant", () => {
 				updatedAt: 21,
 			});
 			const humanGrant = await ctx.db.get("access_control_permission_grants", humanGrantId);
+
 			const args = { organizationId, workspaceId, serviceAccountId, resource: { kind: "file" as const, nodeId } };
 			expect((await access_control_db_set_service_account_grant(ctx, { ...args, level: "manage" }))._yay).toEqual({
 				changed: true,
@@ -364,13 +367,16 @@ describe("access_control_db_set_service_account_grant", () => {
 					.map((grant) => grant.permission)
 					.sort(),
 			).toEqual(["content.permissions.manage", "content.read", "content.write"]);
+
 			expect((await access_control_db_set_service_account_grant(ctx, { ...args, level: "manage" }))._yay).toEqual({
 				changed: false,
 			});
 			expect(await ctx.db.query("access_control_permission_grants").collect()).toEqual(first);
+
 			expect((await access_control_db_set_service_account_grant(ctx, { ...args, level: "read" }))._yay).toEqual({
 				changed: true,
 			});
+
 			expect((await access_control_db_set_service_account_grant(ctx, { ...args, level: null }))._yay).toEqual({
 				changed: true,
 			});
@@ -423,6 +429,7 @@ describe("access_control_db_set_service_account_grant", () => {
 				createdBy: userId,
 				updatedBy: userId,
 			});
+
 			const args = { organizationId, workspaceId, serviceAccountId, level: "write" as const };
 			expect(
 				(
@@ -449,6 +456,7 @@ describe("access_control_db_set_service_account_grant", () => {
 					})
 				)._nay?.message,
 			).toBe("Set access on the restricted scope");
+
 			await ctx.db.patch("access_control_service_accounts", serviceAccountId, { revokedAt: 30 });
 			expect(
 				(
@@ -485,20 +493,23 @@ describe("service account controls", () => {
 				level: "write",
 			}),
 		).toEqual({ _yay: null });
+
 		await t.run(async (ctx) => {
-			if (state === "workspace purge")
+			if (state === "workspace purge") {
 				await ctx.db.patch("organizations_workspaces", fixture.defaultWorkspaceId, {
 					pluginDataPurgeStartedAt: Date.now(),
 				});
-			else
+			} else {
 				await ctx.db.patch("organizations_workspaces_users", fixture.ownerMembershipId, {
 					pendingOrganizationRemoval: true,
 				});
+			}
 		});
 		const before = await t.run(async (ctx) => ({
 			accounts: await ctx.db.query("access_control_service_accounts").collect(),
 			grants: await ctx.db.query("access_control_permission_grants").collect(),
 		}));
+
 		expect(
 			(
 				await fixture.asOwner.mutation(api.access_control.create_service_account, {
@@ -543,6 +554,7 @@ describe("service account controls", () => {
 		await t.run(async (ctx) => {
 			await ctx.db.patch("organizations", fixture.organizationId, { default: true });
 		});
+
 		const created = await fixture.asOwner.mutation(api.access_control.create_service_account, {
 			membershipId: fixture.ownerMembershipId,
 			name: "  Personal script  ",
@@ -552,12 +564,14 @@ describe("service account controls", () => {
 		const initial = await t.run(async (ctx) => await ctx.db.get("access_control_service_accounts", serviceAccountId));
 		expect(initial?.name).toBe("Personal script");
 		expect(await t.run(async (ctx) => await ctx.db.query("access_control_permission_grants").collect())).toEqual([]);
+
 		const args = { membershipId: fixture.memberMembershipId, serviceAccountId };
 		expect((await fixture.asMember.query(api.access_control.get_service_account, args))?.name).toBe("Personal script");
 		expect(
 			(await fixture.asMember.mutation(api.access_control.rename_service_account, { ...args, name: "Denied" }))._nay
 				?.message,
 		).toBe("Permission denied");
+
 		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
 		expect(
 			(
@@ -570,6 +584,7 @@ describe("service account controls", () => {
 		).toBeUndefined();
 		const renamed = await t.run(async (ctx) => await ctx.db.get("access_control_service_accounts", serviceAccountId));
 		expect(renamed).toEqual({ ...initial, name: "Renamed", updatedAt: renamed!.updatedAt });
+
 		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
 		expect(
 			(
@@ -580,6 +595,7 @@ describe("service account controls", () => {
 			)._nay,
 		).toBeUndefined();
 		const revoked = await t.run(async (ctx) => await ctx.db.get("access_control_service_accounts", serviceAccountId));
+
 		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
 		await fixture.asOwner.mutation(api.access_control.revoke_service_account, {
 			...args,
@@ -588,6 +604,7 @@ describe("service account controls", () => {
 		expect(await t.run(async (ctx) => await ctx.db.get("access_control_service_accounts", serviceAccountId))).toEqual(
 			revoked,
 		);
+
 		expect(await fixture.asMember.query(api.access_control.get_service_account, args)).toBeNull();
 		expect(
 			(
@@ -658,6 +675,7 @@ describe("service account controls", () => {
 				});
 			}
 		});
+
 		const args = {
 			membershipId: fixture.memberMembershipId,
 			serviceAccountId,
@@ -669,9 +687,11 @@ describe("service account controls", () => {
 			(await fixture.asMember.mutation(api.access_control.set_service_account_grant, { ...args, level: "write" }))._nay
 				?.message,
 		).toContain("Edit workspace content");
+
 		expect(
 			(await fixture.asMember.mutation(api.access_control.set_service_account_grant, { ...args, level: "read" }))._nay,
 		).toBeUndefined();
+
 		expect(
 			(
 				await fixture.asMember.mutation(api.access_control.set_service_account_grant, {
@@ -681,6 +701,7 @@ describe("service account controls", () => {
 				})
 			)._nay,
 		).toBeDefined();
+
 		const page = await fixture.asMember.query(api.access_control.list_service_account_grants, {
 			membershipId: fixture.memberMembershipId,
 			serviceAccountId,
@@ -774,7 +795,9 @@ describe("access_control_db_has_permission service accounts", () => {
 						.eq("userId", fixture.memberId),
 				)
 				.collect();
-			for (const assignment of assignments) await ctx.db.delete("access_control_role_assignments", assignment._id);
+			for (const assignment of assignments) {
+				await ctx.db.delete("access_control_role_assignments", assignment._id);
+			}
 			for (const permission of ["content.read", "content.write"] as const) {
 				await ctx.db.insert("access_control_permission_grants", {
 					organizationId: fixture.organizationId,
@@ -857,7 +880,9 @@ describe("set_node_share_grant service accounts", () => {
 		const activityId = await access_control_test_seed_activity(t, fixture, { fileNodeId: nodeId });
 		const binding = await t.run(async (ctx) => {
 			const activity = (await ctx.db.get("activities", activityId))!;
-			if (activity.source.type !== "plugin_run") throw new Error("Expected plugin activity");
+			if (activity.source.type !== "plugin_run") {
+				throw new Error("Expected plugin activity");
+			}
 			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
 			const id = await ctx.db.insert("plugins_file_access_bindings", {
 				organizationId: fixture.organizationId,

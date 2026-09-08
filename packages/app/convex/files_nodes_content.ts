@@ -6306,6 +6306,7 @@ export async function files_nodes_db_handoff_yjs_cleanup_task(ctx: MutationCtx, 
 			putMayArriveUntil: task.putMayArriveUntil ?? undefined,
 		});
 	}
+
 	await ctx.db.delete("files_yjs_cleanup_tasks", task._id);
 }
 
@@ -6314,9 +6315,12 @@ export const cleanup_file_yjs_task = internalMutation({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const task = await ctx.db.get("files_yjs_cleanup_tasks", args.taskId);
-		if (!task) return null;
+		if (!task) {
+			return null;
+		}
 
 		const fileNode = await ctx.db.get("files_nodes", task.fileNodeId);
+
 		// Read the task in this transaction. A retired task cannot touch a new document's history.
 		if (
 			task.historyPending &&
@@ -6339,12 +6343,14 @@ export const cleanup_file_yjs_task = internalMutation({
 		}
 
 		await ctx.db.patch("files_yjs_cleanup_tasks", task._id, { historyPending: false });
+
 		// Asset cleanup needs only the live reference check, even when history authority was retired.
 		await db_delete_superseded_yjs_asset(ctx, {
 			supersededYjsAssetId: task.supersededYjsAssetId,
 			putMayArriveUntil: task.putMayArriveUntil ?? undefined,
 		});
 		await ctx.db.delete("files_yjs_cleanup_tasks", task._id);
+
 		return null;
 	},
 });
@@ -6357,16 +6363,19 @@ export const recover_file_yjs_cleanup_tasks = internalMutation({
 			cursor: args.cursor ?? null,
 			numItems: FILE_CONTENT_CLEANUP_BATCH_SIZE,
 		});
+
 		await Promise.all(
 			tasks.page.map((task) =>
 				ctx.scheduler.runAfter(0, internal.files_nodes_content.cleanup_file_yjs_task, { taskId: task._id }),
 			),
 		);
+
 		if (!tasks.isDone) {
 			await ctx.scheduler.runAfter(0, internal.files_nodes_content.recover_file_yjs_cleanup_tasks, {
 				cursor: tasks.continueCursor,
 			});
 		}
+
 		return null;
 	},
 });
@@ -6531,7 +6540,6 @@ export const set_file_non_collaborative = mutation({
 			return Result({ _nay: { message: "Not found" } });
 		}
 
-		// Already off. Repeated calls succeed.
 		if (fileNode.collaborationEnabled === false) {
 			return Result({ _yay: null });
 		}
@@ -6758,7 +6766,9 @@ export const get_set_file_collaborative_preflight = internalQuery({
 			 * The file already has a Yjs document, so the action answers success and stops.
 			 */
 			alreadyCollaborative: v.boolean(),
-			/** The action refuses a blocked file before it uploads. */
+			/**
+			 * The action refuses a blocked file before it uploads.
+			 */
 			canWrite: v.boolean(),
 			cleanupInProgress: v.boolean(),
 			assetId: v.id("files_r2_assets"),

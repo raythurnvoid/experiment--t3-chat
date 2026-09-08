@@ -214,7 +214,9 @@ function mockQueries(args: {
 		if (query === "get_anagraphic") {
 			return { displayName: "Ada" };
 		}
-		if (query === "list_workspace_users") return ["user_1"];
+		if (query === "list_workspace_users") {
+			return ["user_1"];
+		}
 		if (query === "get_entries") {
 			return args.entries;
 		}
@@ -366,7 +368,7 @@ describe("FilesPropertiesModalFacts", () => {
 	});
 });
 
-describe("FilesPropertiesModalReadOnly", () => {
+describe("FilesPropertiesModalWritePolicy", () => {
 	test.each([
 		[WRITABLE_POLICY, "Inherit", "You can edit this file."],
 		[
@@ -398,7 +400,9 @@ describe("FilesPropertiesModalReadOnly", () => {
 
 	test("disables policy choices until settings arrive", () => {
 		renderModal();
-		for (const radio of screen.getAllByRole("radio")) expect((radio as HTMLInputElement).disabled).toBe(true);
+		for (const radio of screen.getAllByRole("radio")) {
+			expect((radio as HTMLInputElement).disabled).toBe(true);
+		}
 		expect(screen.getByText("Loading write policy…")).toBeTruthy();
 	});
 

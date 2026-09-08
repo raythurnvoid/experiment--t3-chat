@@ -216,11 +216,12 @@ type FileSharePrincipal =
 /**
  * One string that stands for one principal, so entries can be grouped in a `Map`.
  *
- * The two kinds are kept apart by the prefix. Without it a custom role id and a user id could
- * collide, because both are plain Convex ids.
+ * The prefix keeps user, role, and service-account IDs apart.
  */
 function share_principal_key(principal: FileSharePrincipal) {
-	if (principal.kind === "service_account") return `service_account:${principal.serviceAccountId}`;
+	if (principal.kind === "service_account") {
+		return `service_account:${principal.serviceAccountId}`;
+	}
 	return principal.kind === "user" ? `user:${principal.userId}` : `role:${principal.role}`;
 }
 
@@ -228,7 +229,7 @@ function share_principal_key(principal: FileSharePrincipal) {
  * Every grant doc saved on one restricted node, whatever the principal.
  *
  * The index starts with organization, workspace, resource kind and resource id, and `principalKind`
- * only comes after those, so this one query returns user grants and role grants together.
+ * only comes after those, so this query returns user, role, and service-account grants together.
  */
 function db_list_scope_grants(
 	ctx: QueryCtx | MutationCtx,
@@ -605,8 +606,9 @@ export const get_node_share_state = query({
 						userId: userAuth.id,
 						level,
 					})) === null
-				)
+				) {
 					serviceGrantableLevels.push(level);
+				}
 			}
 		}
 
@@ -716,7 +718,9 @@ export const set_node_share_grant = mutation({
 				resource,
 				level: args.level,
 			});
-			if (allowed._nay) return allowed;
+			if (allowed._nay) {
+				return allowed;
+			}
 			const result = await access_control_db_set_service_account_grant(ctx, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
@@ -894,7 +898,9 @@ export const remove_node_share_grant = mutation({
 				resource,
 				level: null,
 			});
-			if (allowed._nay) return allowed;
+			if (allowed._nay) {
+				return allowed;
+			}
 			const result = await access_control_db_set_service_account_grant(ctx, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,

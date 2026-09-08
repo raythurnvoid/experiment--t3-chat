@@ -8,15 +8,14 @@ const FRONTMATTER_REGEX = /^---\n([\s\S]*?)\n---(?:\n|$)/u;
 export const files_metadata_FIELD_SEGMENT_REGEX = /^[A-Za-z0-9_-]+$/u;
 
 /**
- * Qualified-field prefix for docs extracted from Markdown frontmatter. `files_metadata_docs` now
- * holds two sources, so the prefix is what tells them apart. Convex needs this to delete only the
- * frontmatter docs when a save re-indexes a file's content.
+ * Prefix for Markdown frontmatter fields. A save uses this prefix to replace
+ * only the frontmatter docs and keep metadata written next to the file.
  */
 export const files_metadata_FRONTMATTER_FIELD_PREFIX = "frontmatter.";
 
 /**
- * Qualified-field prefix for docs written next to the file, by a user or an agent, instead of
- * being extracted from the file's own content.
+ * Prefix for metadata fields written next to a file by a user or an agent.
+ * These values do not come from the file's content.
  */
 export const files_metadata_METADATA_FIELD_PREFIX = "metadata.";
 

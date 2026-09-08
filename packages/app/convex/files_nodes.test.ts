@@ -8512,7 +8512,9 @@ describe("non-collaborative files", () => {
 					.filter((q) => q.eq(q.field("fileNodeId"), nodeId))
 					.first(),
 			}));
-			if (!before.node?.assetId || !before.snapshot) throw new Error("Expected a file and version");
+			if (!before.node?.assetId || !before.snapshot) {
+				throw new Error("Expected a file and version");
+			}
 			const off = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
 				membershipId: db.membershipId,
 				nodeId,
@@ -12537,7 +12539,8 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 			expect(restored._nay).toBeUndefined();
 			const versions = await read_versions(t, nodeId);
 			const backup = versions.find(
-				(row) => row.r2Key !== undefined && String(r2Objects.get(row.r2Key)).includes("Edit during restore"),
+				(version) =>
+					version.r2Key !== undefined && String(r2Objects.get(version.r2Key)).includes("Edit during restore"),
 			);
 			expect(backup).toMatchObject({ contentType: "text/markdown;charset=utf-8", yjsRootKind: "rich_text" });
 			const readResult = await asUser.action(
@@ -16074,7 +16077,10 @@ describe("selected file writers", () => {
 			membershipId: fixture.db.membershipId,
 			name: "File Writer",
 		});
-		if (created._nay) throw new Error(created._nay.message);
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
+
 		const serviceAccountId = created._yay.serviceAccountId;
 		const writeContext: files_nodes_WriteContext = {
 			writer: { kind: "service_account", serviceAccountId },
@@ -16082,6 +16088,7 @@ describe("selected file writers", () => {
 			resourceScope: { kind: "workspace" },
 			policyReach: "direct",
 		};
+
 		return { ...fixture, serviceAccountId, writeContext };
 	}
 
@@ -16107,6 +16114,7 @@ describe("selected file writers", () => {
 		});
 		const asMember = t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId });
 		const selected = { mode: "writer", writer: { kind: "user", userId: member.userId } } as const;
+
 		expect(
 			(
 				await asUser.mutation(api.files_nodes.set_node_write_policy, {
@@ -16122,6 +16130,7 @@ describe("selected file writers", () => {
 				nodeId: deepId,
 			}),
 		).toBe(false);
+
 		expect(
 			(
 				await asUser.mutation(api.access_control.set_user_role, {
@@ -16138,6 +16147,7 @@ describe("selected file writers", () => {
 				nodeId: deepId,
 			}),
 		).toBe(true);
+
 		expect(
 			(
 				await asMember.mutation(api.files_metadata.set_entries, {
@@ -16178,6 +16188,7 @@ describe("selected file writers", () => {
 				nodeId: deepId,
 			}),
 		).toBe(false);
+
 		expect(
 			(
 				await asUser.mutation(api.files_nodes.set_node_write_policy, {
@@ -16193,6 +16204,7 @@ describe("selected file writers", () => {
 				nodeId: deepId,
 			}),
 		).toBe(true);
+
 		const tree = await asMember.query(api.files_nodes.list_tree, { membershipId: member.membershipId });
 		expect(tree.find((node) => node._id === innerId)).toMatchObject({ canWrite: true, writePolicyState: "self" });
 		expect(tree.find((node) => node._id === deepId)).toMatchObject({ canWrite: true, writePolicyState: "inherited" });
@@ -16200,48 +16212,54 @@ describe("selected file writers", () => {
 
 	test("direct account reach cannot match a parent rule during creation", async () => {
 		const t = test_convex();
-		const f = await seed_account(t);
+		const fixture = await seed_account(t);
+
 		expect(
 			(
-				await f.asUser.mutation(api.access_control.set_service_account_grant, {
-					membershipId: f.db.membershipId,
-					serviceAccountId: f.serviceAccountId,
-					resource: { kind: "file", nodeId: f.outerId },
+				await fixture.asUser.mutation(api.access_control.set_service_account_grant, {
+					membershipId: fixture.db.membershipId,
+					serviceAccountId: fixture.serviceAccountId,
+					resource: { kind: "file", nodeId: fixture.outerId },
 					level: "manage",
 				})
 			)._nay,
 		).toBeUndefined();
 		expect(
 			(
-				await f.asUser.mutation(api.files_nodes.set_node_write_policy, {
-					membershipId: f.db.membershipId,
-					nodeId: f.outerId,
-					writePolicy: { mode: "writer", writer: f.writeContext.writer },
+				await fixture.asUser.mutation(api.files_nodes.set_node_write_policy, {
+					membershipId: fixture.db.membershipId,
+					nodeId: fixture.outerId,
+					writePolicy: { mode: "writer", writer: fixture.writeContext.writer },
 				})
 			)._nay,
 		).toBeUndefined();
+
 		const result = await t.run(async (ctx) => {
-			const node = await ctx.db.get("files_nodes", f.outerId);
-			if (!node) throw new Error("Missing folder");
+			const node = await ctx.db.get("files_nodes", fixture.outerId);
+			if (!node) {
+				throw new Error("Missing folder");
+			}
+
 			const direct = await files_nodes_db_require_writable(ctx, {
-				organizationId: f.db.organizationId,
-				workspaceId: f.db.workspaceId,
-				writeContext: f.writeContext,
+				organizationId: fixture.db.organizationId,
+				workspaceId: fixture.db.workspaceId,
+				writeContext: fixture.writeContext,
 				target: { kind: "node", node },
 			});
 			const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
-				organizationId: f.db.organizationId,
-				workspaceId: f.db.workspaceId,
-				userId: f.db.userId,
-				parentId: f.outerId,
+				organizationId: fixture.db.organizationId,
+				workspaceId: fixture.db.workspaceId,
+				userId: fixture.db.userId,
+				parentId: fixture.outerId,
 				path: "new/deep",
 				kind: "folder",
 				now: Date.now(),
 				writeContext: {
-					...f.writeContext,
-					resourceScope: { kind: "create", parentNodeId: f.outerId, path: "/outer/new/deep" },
+					...fixture.writeContext,
+					resourceScope: { kind: "create", parentNodeId: fixture.outerId, path: "/outer/new/deep" },
 				},
 			});
+
 			return { direct, created, paths: (await ctx.db.query("files_nodes").collect()).map((item) => item.path) };
 		});
 		expect(result.direct._nay).toBeUndefined();
@@ -16252,42 +16270,51 @@ describe("selected file writers", () => {
 
 	test("exact folder management covers open children but refuses a nested restricted scope", async () => {
 		const t = test_convex();
-		const f = await seed_account(t);
-		const policy = { mode: "writer", writer: f.writeContext.writer } as const;
+		const fixture = await seed_account(t);
+		const policy = { mode: "writer", writer: fixture.writeContext.writer } as const;
+
 		expect(
 			(
-				await f.asUser.mutation(api.access_control.set_service_account_grant, {
-					membershipId: f.db.membershipId,
-					serviceAccountId: f.serviceAccountId,
-					resource: { kind: "file", nodeId: f.outerId },
+				await fixture.asUser.mutation(api.access_control.set_service_account_grant, {
+					membershipId: fixture.db.membershipId,
+					serviceAccountId: fixture.serviceAccountId,
+					resource: { kind: "file", nodeId: fixture.outerId },
 					level: "manage",
 				})
 			)._nay,
 		).toBeUndefined();
 		const setPolicy = async (writePolicy: typeof policy | null) =>
 			await t.run(async (ctx) => {
-				const node = await ctx.db.get("files_nodes", f.outerId);
-				if (!node) throw new Error("Missing folder");
-				return await files_nodes_db_set_write_policy(ctx, { node, writeContext: f.writeContext, writePolicy });
+				const node = await ctx.db.get("files_nodes", fixture.outerId);
+				if (!node) {
+					throw new Error("Missing folder");
+				}
+				return await files_nodes_db_set_write_policy(ctx, { node, writeContext: fixture.writeContext, writePolicy });
 			});
+
 		expect((await setPolicy(policy))._nay).toBeUndefined();
-		expect(await read_lock_node(t, f.deepId)).toMatchObject({ writePolicyScopeNodeId: f.outerId, writePolicy: null });
+		expect(await read_lock_node(t, fixture.deepId)).toMatchObject({
+			writePolicyScopeNodeId: fixture.outerId,
+			writePolicy: null,
+		});
+
 		expect(
 			(
-				await f.asUser.mutation(api.files_sharing.restrict_node, {
-					membershipId: f.db.membershipId,
-					nodeId: f.frozenId,
+				await fixture.asUser.mutation(api.files_sharing.restrict_node, {
+					membershipId: fixture.db.membershipId,
+					nodeId: fixture.frozenId,
 				})
 			)._nay,
 		).toBeUndefined();
 		expect((await setPolicy(null))._nay?.message).toBe("Permission denied");
-		expect(await read_lock_node(t, f.outerId)).toMatchObject({ writePolicy: policy });
+		expect(await read_lock_node(t, fixture.outerId)).toMatchObject({ writePolicy: policy });
+
 		expect(
 			(
-				await f.asUser.mutation(api.access_control.set_service_account_grant, {
-					membershipId: f.db.membershipId,
-					serviceAccountId: f.serviceAccountId,
-					resource: { kind: "file", nodeId: f.frozenId },
+				await fixture.asUser.mutation(api.access_control.set_service_account_grant, {
+					membershipId: fixture.db.membershipId,
+					serviceAccountId: fixture.serviceAccountId,
+					resource: { kind: "file", nodeId: fixture.frozenId },
 					level: "manage",
 				})
 			)._nay,
@@ -16297,13 +16324,14 @@ describe("selected file writers", () => {
 
 	test("creating a local policy uses parent management and adds no child grant", async () => {
 		const t = test_convex();
-		const f = await seed_account(t);
+		const fixture = await seed_account(t);
+
 		expect(
 			(
-				await f.asUser.mutation(api.access_control.set_service_account_grant, {
-					membershipId: f.db.membershipId,
-					serviceAccountId: f.serviceAccountId,
-					resource: { kind: "file", nodeId: f.outerId },
+				await fixture.asUser.mutation(api.access_control.set_service_account_grant, {
+					membershipId: fixture.db.membershipId,
+					serviceAccountId: fixture.serviceAccountId,
+					resource: { kind: "file", nodeId: fixture.outerId },
 					level: "write",
 				})
 			)._nay,
@@ -16312,77 +16340,92 @@ describe("selected file writers", () => {
 			await t.run(
 				async (ctx) =>
 					await files_nodes_db_create_node_recursively_at_path(ctx, {
-						organizationId: f.db.organizationId,
-						workspaceId: f.db.workspaceId,
-						userId: f.db.userId,
-						parentId: f.outerId,
+						organizationId: fixture.db.organizationId,
+						workspaceId: fixture.db.workspaceId,
+						userId: fixture.db.userId,
+						parentId: fixture.outerId,
 						path: "new/deep",
 						kind: "folder",
 						now: Date.now(),
 						writeContext: {
-							...f.writeContext,
-							resourceScope: { kind: "create", parentNodeId: f.outerId, path: "/outer/new/deep" },
+							...fixture.writeContext,
+							resourceScope: { kind: "create", parentNodeId: fixture.outerId, path: "/outer/new/deep" },
 						},
-						writePolicy: { mode: "writer", writer: f.writeContext.writer },
+						writePolicy: { mode: "writer", writer: fixture.writeContext.writer },
 					}),
 			);
+
 		expect((await create())._nay?.message).toBe("Permission denied");
 		expect(
 			await t.run(async (ctx) =>
 				(await ctx.db.query("files_nodes").collect()).some((node) => node.path.startsWith("/outer/new")),
 			),
 		).toBe(false);
+
 		expect(
 			(
-				await f.asUser.mutation(api.access_control.set_service_account_grant, {
-					membershipId: f.db.membershipId,
-					serviceAccountId: f.serviceAccountId,
-					resource: { kind: "file", nodeId: f.outerId },
+				await fixture.asUser.mutation(api.access_control.set_service_account_grant, {
+					membershipId: fixture.db.membershipId,
+					serviceAccountId: fixture.serviceAccountId,
+					resource: { kind: "file", nodeId: fixture.outerId },
 					level: "manage",
 				})
 			)._nay,
 		).toBeUndefined();
+
 		const created = await create();
-		if (created._nay) throw new Error(created._nay.message);
+		if (created._nay) {
+			throw new Error(created._nay.message);
+		}
 		const result = await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", created._yay);
-			if (!node) throw new Error("Missing created folder");
+			if (!node) {
+				throw new Error("Missing created folder");
+			}
 			return {
 				node,
 				grants: (await ctx.db.query("access_control_permission_grants").collect()).filter(
 					(grant) => grant.principalKind === "service_account",
 				),
-				state: await files_nodes_db_get_write_policy_management_state(ctx, { node, writeContext: f.writeContext }),
+				state: await files_nodes_db_get_write_policy_management_state(ctx, {
+					node,
+					writeContext: fixture.writeContext,
+				}),
 			};
 		});
+
 		expect(result.node).toMatchObject({
 			writePolicyScopeNodeId: created._yay,
-			writePolicy: { mode: "writer", writer: f.writeContext.writer },
+			writePolicy: { mode: "writer", writer: fixture.writeContext.writer },
 		});
-		expect(result.grants.every((grant) => grant.resourceId === f.outerId)).toBe(true);
+		expect(result.grants.every((grant) => grant.resourceId === fixture.outerId)).toBe(true);
 		expect(result.state).toMatchObject({ canWrite: false, canManage: false, writeBlockedReason: "permission" });
 	});
 
-	test("a moved node no longer belongs to the sealed subtree", async () => {
+	test("a moved node no longer belongs to the allowed subtree", async () => {
 		const t = test_convex();
-		const f = await seed_account(t);
+		const fixture = await seed_account(t);
 		const check = async () =>
 			await t.run(async (ctx) => {
-				const node = await ctx.db.get("files_nodes", f.deepId);
-				if (!node) throw new Error("Missing moved folder");
+				const node = await ctx.db.get("files_nodes", fixture.deepId);
+				if (!node) {
+					throw new Error("Missing moved folder");
+				}
 				return await files_nodes_db_require_writable(ctx, {
-					organizationId: f.db.organizationId,
-					workspaceId: f.db.workspaceId,
-					writeContext: { ...f.writeContext, resourceScope: { kind: "subtree", nodeId: f.innerId } },
+					organizationId: fixture.db.organizationId,
+					workspaceId: fixture.db.workspaceId,
+					writeContext: { ...fixture.writeContext, resourceScope: { kind: "subtree", nodeId: fixture.innerId } },
 					target: { kind: "node", node },
 				});
 			});
+
 		expect((await check())._nay).toBeUndefined();
+
 		expect(
 			(
-				await f.asUser.mutation(api.files_nodes.move_nodes, {
-					membershipId: f.db.membershipId,
-					itemIds: [f.deepId],
+				await fixture.asUser.mutation(api.files_nodes.move_nodes, {
+					membershipId: fixture.db.membershipId,
+					itemIds: [fixture.deepId],
 					targetParentId: files_ROOT_ID,
 				})
 			)._nay,
@@ -16392,38 +16435,41 @@ describe("selected file writers", () => {
 
 	test("a revoked selected writer is redacted and a manager can replace it", async () => {
 		const t = test_convex();
-		const f = await seed_account(t);
-		const args = { membershipId: f.db.membershipId, nodeId: f.innerId };
+		const fixture = await seed_account(t);
+		const args = { membershipId: fixture.db.membershipId, nodeId: fixture.innerId };
+
 		expect(
 			(
-				await f.asUser.mutation(api.files_nodes.set_node_write_policy, {
+				await fixture.asUser.mutation(api.files_nodes.set_node_write_policy, {
 					...args,
-					writePolicy: { mode: "writer", writer: f.writeContext.writer },
+					writePolicy: { mode: "writer", writer: fixture.writeContext.writer },
 				})
 			)._nay,
 		).toBeUndefined();
+
 		expect(
 			(
-				await f.asUser.mutation(api.access_control.revoke_service_account, {
-					membershipId: f.db.membershipId,
-					serviceAccountId: f.serviceAccountId,
+				await fixture.asUser.mutation(api.access_control.revoke_service_account, {
+					membershipId: fixture.db.membershipId,
+					serviceAccountId: fixture.serviceAccountId,
 				})
 			)._nay,
 		).toBeUndefined();
-		expect(await f.asUser.query(api.files_nodes.get_node_write_policy_management_state, args)).toMatchObject({
+		expect(await fixture.asUser.query(api.files_nodes.get_node_write_policy_management_state, args)).toMatchObject({
 			canManage: true,
 			canWrite: false,
 			localPolicy: { mode: "writer", writer: null },
 		});
+
 		expect(
 			(
-				await f.asUser.mutation(api.files_nodes.set_node_write_policy, {
+				await fixture.asUser.mutation(api.files_nodes.set_node_write_policy, {
 					...args,
 					writePolicy: { mode: "read_only" },
 				})
 			)._nay,
 		).toBeUndefined();
-		expect(await read_lock_node(t, f.innerId)).toMatchObject({ writePolicy: { mode: "read_only" } });
+		expect(await read_lock_node(t, fixture.innerId)).toMatchObject({ writePolicy: { mode: "read_only" } });
 	});
 });
 
@@ -16431,6 +16477,7 @@ describe("files_nodes.get_user_file_write_access", () => {
 	test("a node with no policy is writable", async () => {
 		const t = test_convex();
 		const { db, siblingId } = await seed_read_only_lock_tree(t);
+
 		expect(
 			(
 				await t.query(internal.files_nodes.get_user_file_write_access, {
@@ -16447,6 +16494,7 @@ describe("files_nodes.get_user_file_write_access", () => {
 		const t = test_convex();
 		const { db, asUser, outerId } = await seed_read_only_lock_tree(t);
 		await set_read_only_or_throw(asUser, db.membershipId, outerId);
+
 		const refused = await t.query(internal.files_nodes.get_user_file_write_access, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,

@@ -525,8 +525,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 						? roleName(entry.principal.role)
 						: (entry.serviceAccountName ?? "Service account unavailable"),
 		}))
-		// People first, then roles and service accounts, and by name inside each. A share list is short, so one stable order
-		// matters more than any ranking.
+		// Keep people first, then roles and service accounts; sort each kind by name.
 		.sort((a, b) =>
 			a.principal.kind === b.principal.kind
 				? a.name.localeCompare(b.name)
@@ -548,10 +547,8 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 		)
 		.map((userId) => ({ userId, name: read_display_name(userAnagraphicDict[userId]) }))
 		.sort((a, b) => a.name.localeCompare(b.name));
-	// A caller who does not manage roles is refused for every new role share, so the picker offers
-	// people only. Rows already on the list still show, and they can still be lowered or removed:
-	// neither hands the role out, and taking a role back off is a different mutation that asks only
-	// about this node.
+	// Hide new role choices unless the caller can manage roles. Existing role shares can still
+	// be lowered or removed because those changes grant no new access.
 	const candidateRoles = (
 		!shareState?.canShareWithRoles
 			? []

@@ -1,24 +1,23 @@
-/**
- * The `/api/v1/files/service-uploads/*` storage behind the routes in
- * `public_api_service_uploads_http.ts`.
- *
- * A sealed processing-phase service grant uploads a closed meeting's files here: it creates one
- * upload target per file under the grant's destination prefix. The R2 event confirms and commits
- * the target; the service polls finalize for that answer. When the meeting is deleted later, a fresh
- * grant sealed to the same destination archives that whole folder, because deleting a file in this
- * product means archiving it. The separate write and plugin-archive routes also accept sealed
- * grants, with the same current account and file policy checks.
- *
- * Accounting: creating a target charges nothing. The size in the request is only the service's
- * guess, and a signed PUT does not bind how many bytes actually arrive. The workspace is charged
- * for the largest stored size R2 confirms across its attempts. Creating a target refuses a workspace
- * whose `plugin_service_storage_bytes` quota is already full, which stops the next file rather than
- * the current one. That counter only grows: deleting a stored file gives nothing back, exactly like
- * `public_api_upload_bytes` on the normal upload path.
- *
- * The quota is a budget, not a guard. A signed PUT does not bind the object's length, so a service
- * can always store more than it declared; the settle below charges it, it does not prevent it.
- */
+// The `/api/v1/files/service-uploads/*` storage behind the routes in
+// `public_api_service_uploads_http.ts`.
+//
+// A sealed processing-phase service grant uploads a closed meeting's files here: it creates one
+// upload target per file under the grant's destination prefix. The R2 event confirms and commits
+// the target; the service polls finalize for that answer. When the meeting is deleted later, a fresh
+// grant sealed to the same destination archives that whole folder, because deleting a file in this
+// product means archiving it. The separate write and plugin-archive routes also accept sealed
+// grants, with the same current account and file policy checks.
+//
+// Accounting: creating a target charges nothing. The size in the request is only the service's
+// guess, and a signed PUT does not bind how many bytes actually arrive. The workspace is charged
+// for the largest stored size R2 confirms across its attempts. Creating a target refuses a workspace
+// whose `plugin_service_storage_bytes` quota is already full, which stops the next file rather than
+// the current one. That counter only grows: deleting a stored file gives nothing back, exactly like
+// `public_api_upload_bytes` on the normal upload path.
+//
+// The quota is a budget, not a guard. A signed PUT does not bind the object's length, so a service
+// can always store more than it declared; the settle below charges it, it does not prevent it.
+
 import { v } from "convex/values";
 import type { RegisteredMutation } from "convex/server";
 
@@ -399,8 +398,9 @@ async function db_validate_target_node(
 		target.deleteRequestedAt !== undefined ||
 		(target.state !== "pending" && target.state !== "committed") ||
 		(await db_target_destination_is_closed(ctx, target))
-	)
+	) {
 		return false;
+	}
 
 	const destination = await ctx.db.get("files_nodes", args.destinationNodeId);
 	if (
@@ -408,24 +408,34 @@ async function db_validate_target_node(
 		destination.kind !== "folder" ||
 		destination.organizationId !== args.organizationId ||
 		destination.workspaceId !== args.workspaceId
-	)
+	) {
 		return false;
+	}
 
 	let parentId = node.parentId;
 	while (parentId !== files_ROOT_ID && parentId !== destination._id) {
 		const parent = await ctx.db.get("files_nodes", parentId);
-		if (!parent || parent.organizationId !== args.organizationId || parent.workspaceId !== args.workspaceId)
+		if (!parent || parent.organizationId !== args.organizationId || parent.workspaceId !== args.workspaceId) {
 			return false;
+		}
 		parentId = parent.parentId;
 	}
-	if (parentId !== destination._id) return false;
+	if (parentId !== destination._id) {
+		return false;
+	}
 
 	// Passing a protected target retains its capability and human management ceiling.
 	// An ordinary unprotected content update needs only its normal write authority.
 	if (node.writePolicy?.mode === "writer") {
-		if (!args.installation.acceptedCapabilities.includes("workspace.files.create-read-only")) return false;
+		if (!args.installation.acceptedCapabilities.includes("workspace.files.create-read-only")) {
+			return false;
+		}
+
 		const organization = await ctx.db.get("organizations", args.organizationId);
-		if (!organization?.defaultWorkspaceId) return false;
+		if (!organization?.defaultWorkspaceId) {
+			return false;
+		}
+
 		return await access_control_db_has_permission(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -436,6 +446,7 @@ async function db_validate_target_node(
 			permission: "content.permissions.manage",
 		});
 	}
+
 	return true;
 }
 
@@ -458,7 +469,10 @@ export async function public_api_service_uploads_db_validate_node_target(
 		.query("plugin_service_storage_targets")
 		.withIndex("by_node", (q) => q.eq("nodeId", args.node._id))
 		.first();
-	if (!target) return true;
+	if (!target) {
+		return true;
+	}
+
 	const destination = await files_db_get_visible_node_by_path(ctx, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
@@ -468,8 +482,10 @@ export async function public_api_service_uploads_db_validate_node_target(
 		!destination ||
 		destination.kind !== "folder" ||
 		!public_api_is_path_inside_prefix(args.node.path, args.pathPrefix)
-	)
+	) {
 		return false;
+	}
+
 	return await db_validate_target_node(ctx, { ...args, target, destinationNodeId: destination._id });
 }
 
@@ -1035,14 +1051,18 @@ export const create_upload_target = internalMutation({
 			serviceAccountId: authorized._yay.serviceAccountId,
 			permission: "content.write",
 		});
-		if (!accountCanWrite) return Result({ _nay: { message: "Permission denied" } });
+		if (!accountCanWrite) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
 		const writable = await files_nodes_db_require_writable(ctx, {
 			organizationId: args.principal.organizationId,
 			workspaceId: args.principal.workspaceId,
 			writeContext,
 			target: writeTarget,
 		});
-		if (writable._nay) return writable;
+		if (writable._nay) {
+			return writable;
+		}
 		const writePolicy = args.readOnly ? { mode: "writer" as const, writer: writeContext.writer } : undefined;
 
 		if (args.readOnly && !installation.acceptedCapabilities.includes("workspace.files.create-read-only")) {
@@ -1057,7 +1077,9 @@ export const create_upload_target = internalMutation({
 				target: writeTarget,
 				writePolicy,
 			});
-			if (management._nay) return management;
+			if (management._nay) {
+				return management;
+			}
 		}
 
 		const runTargets = await ctx.db
@@ -1619,7 +1641,9 @@ export const delete_upload_target = internalMutation({
 		// Preflight every matching node before changing policies or archiving files.
 		const policiesToClear: Array<{ node: Doc<"files_nodes">; writeContext: files_nodes_WriteContext }> = [];
 		for (const match of matches) {
-			if (!match.node) continue;
+			if (!match.node) {
+				continue;
+			}
 			const writeContext: files_nodes_WriteContext = {
 				writer: { kind: "service_account", serviceAccountId: authorized._yay.serviceAccountId },
 				actorUserId: args.principal.actorUserId,
@@ -1635,15 +1659,18 @@ export const delete_upload_target = internalMutation({
 					fileNode: match.node,
 					permission: "content.write",
 				}))
-			)
+			) {
 				return Result({ _nay: { message: "Permission denied" } });
+			}
 			const writable = await files_nodes_db_require_writable(ctx, {
 				organizationId: args.principal.organizationId,
 				workspaceId: args.principal.workspaceId,
 				writeContext,
 				target: { kind: "node", node: match.node },
 			});
-			if (writable._nay) return writable;
+			if (writable._nay) {
+				return writable;
+			}
 			if (
 				!(await db_validate_target_node(ctx, {
 					target: match.target,
@@ -1655,8 +1682,9 @@ export const delete_upload_target = internalMutation({
 					destinationNodeId: match.target.destinationNodeId,
 					node: match.node,
 				}))
-			)
+			) {
 				return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This upload target is no longer available" } });
+			}
 			if (match.target.state === "committed" && match.node.writePolicy !== null) {
 				const management = await files_nodes_db_require_write_policy_management(ctx, {
 					organizationId: args.principal.organizationId,
@@ -1665,7 +1693,9 @@ export const delete_upload_target = internalMutation({
 					target: { kind: "node", node: match.node },
 					writePolicy: null,
 				});
-				if (management._nay) return management;
+				if (management._nay) {
+					return management;
+				}
 				policiesToClear.push({ node: match.node, writeContext });
 			}
 		}
@@ -1933,6 +1963,7 @@ export const archive_destination = internalMutation({
 			policyReach: "direct",
 		};
 		const policiesToClear: Array<Doc<"files_nodes">> = [];
+
 		// Archived descendants also need to remain restorable after this archive.
 		for (const node of [destination, ...descendants]) {
 			if (
@@ -1944,22 +1975,28 @@ export const archive_destination = internalMutation({
 					fileNode: node,
 					permission: "content.write",
 				}))
-			)
+			) {
 				return Result({ _nay: { message: "Permission denied" } });
+			}
+
 			const writable = await files_nodes_db_require_writable(ctx, {
 				organizationId: args.principal.organizationId,
 				workspaceId: args.principal.workspaceId,
 				writeContext,
 				target: { kind: "node", node },
 			});
-			if (writable._nay) return writable;
+			if (writable._nay) {
+				return writable;
+			}
+
 			const target = await ctx.db
 				.query("plugin_service_storage_targets")
 				.withIndex("by_node", (q) => q.eq("nodeId", node._id))
 				.first();
 			// A completed delete keeps its archived node and target as history.
-			if (node.archiveOperationId !== null && target?.state === "released" && target.deleteRequestedAt !== undefined)
+			if (node.archiveOperationId !== null && target?.state === "released" && target.deleteRequestedAt !== undefined) {
 				continue;
+			}
 			if (
 				target &&
 				!(await db_validate_target_node(ctx, {
@@ -1972,11 +2009,15 @@ export const archive_destination = internalMutation({
 					destinationNodeId: destination._id,
 					node,
 				}))
-			)
+			) {
 				return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This upload target is no longer available" } });
+			}
+
 			if (node.writePolicy !== null) {
-				if (!authorized._yay.installation.acceptedCapabilities.includes("workspace.files.create-read-only"))
+				if (!authorized._yay.installation.acceptedCapabilities.includes("workspace.files.create-read-only")) {
 					return Result({ _nay: { message: "Permission denied" } });
+				}
+
 				const management = await files_nodes_db_require_write_policy_management(ctx, {
 					organizationId: args.principal.organizationId,
 					workspaceId: args.principal.workspaceId,
@@ -1984,7 +2025,9 @@ export const archive_destination = internalMutation({
 					target: { kind: "node", node },
 					writePolicy: null,
 				});
-				if (management._nay) return management;
+				if (management._nay) {
+					return management;
+				}
 				policiesToClear.push(node);
 			}
 		}
@@ -1997,6 +2040,7 @@ export const archive_destination = internalMutation({
 			throughEpoch: stableTarget.destinationEpoch ?? 1,
 			now,
 		});
+
 		// A service archive ends this destination's service lifecycle. Keep the files restorable for
 		// members, but do not let their old targets consume the cap or reopen old service calls.
 		for (const node of descendants) {

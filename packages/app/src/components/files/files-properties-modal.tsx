@@ -146,7 +146,7 @@ const FilesPropertiesModalFacts = memo(function FilesPropertiesModalFacts(props:
 		);
 	}
 
-	// The node is gone, or this member may not read it. The read-only section below reports the
+	// The node is gone, or this member may not read it. The write-policy section below reports the
 	// same absence through its own query, so say nothing more here.
 	if (node === null) {
 		return null;
@@ -211,15 +211,15 @@ const FilesPropertiesModalFacts = memo(function FilesPropertiesModalFacts(props:
 });
 // #endregion facts
 
-// #region read-only
-type FilesPropertiesModalReadOnly_ClassNames =
-	| "FilesPropertiesModalReadOnly"
-	| "FilesPropertiesModalReadOnly-choices"
-	| "FilesPropertiesModalReadOnly-description"
-	| "FilesPropertiesModalReadOnly-actions"
-	| "FilesPropertiesModalReadOnly-error";
+// #region write policy
+type FilesPropertiesModalWritePolicy_ClassNames =
+	| "FilesPropertiesModalWritePolicy"
+	| "FilesPropertiesModalWritePolicy-choices"
+	| "FilesPropertiesModalWritePolicy-description"
+	| "FilesPropertiesModalWritePolicy-actions"
+	| "FilesPropertiesModalWritePolicy-error";
 
-type FilesPropertiesModalReadOnly_Props = {
+type FilesPropertiesModalWritePolicy_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	nodeKind: "file" | "folder";
 	hasVisibleReadOnlyDescendant: boolean;
@@ -231,8 +231,8 @@ type FilesPropertiesModalReadOnly_Props = {
  * Edit the local rule separately from the current user's effective write access.
  * Clearing this rule leaves every parent policy in force.
  */
-const FilesPropertiesModalReadOnly = memo(function FilesPropertiesModalReadOnly(
-	props: FilesPropertiesModalReadOnly_Props,
+const FilesPropertiesModalWritePolicy = memo(function FilesPropertiesModalWritePolicy(
+	props: FilesPropertiesModalWritePolicy_Props,
 ) {
 	const { nodeId, nodeKind, hasVisibleReadOnlyDescendant, onNavigateNode, onClose } = props;
 	const { membershipId, organizationId, workspaceId } = AppTenantProvider.useContext();
@@ -270,6 +270,7 @@ const FilesPropertiesModalReadOnly = memo(function FilesPropertiesModalReadOnly(
 			[userIds],
 		),
 	);
+
 	const localPolicy = managementState?.localPolicy;
 	const writer = localPolicy?.mode === "writer" ? localPolicy.writer : null;
 	const choice = draft ?? {
@@ -293,22 +294,31 @@ const FilesPropertiesModalReadOnly = memo(function FilesPropertiesModalReadOnly(
 							? "A policy on a parent folder blocks editing."
 							: "The local policy blocks editing.";
 
-	const write = () => {
-		if (isRunning || !canManage || !draft || (choice.mode === "writer" && !writerSelected)) return;
+	const handleSavePolicy = () => {
+		if (isRunning || !canManage || !draft || (choice.mode === "writer" && !writerSelected)) {
+			return;
+		}
+
 		let writePolicy: app_convex_FunctionArgs<typeof app_convex_api.files_nodes.set_node_write_policy>["writePolicy"] =
 			null;
-		if (choice.mode === "read_only") writePolicy = { mode: "read_only" };
+		if (choice.mode === "read_only") {
+			writePolicy = { mode: "read_only" };
+		}
 		if (choice.mode === "writer") {
-			if (choice.writerKind === "user" && choice.userId)
+			if (choice.writerKind === "user" && choice.userId) {
 				writePolicy = { mode: "writer", writer: { kind: "user", userId: choice.userId } };
-			if (choice.writerKind === "service_account" && choice.serviceAccountId)
+			}
+			if (choice.writerKind === "service_account" && choice.serviceAccountId) {
 				writePolicy = {
 					mode: "writer",
 					writer: { kind: "service_account", serviceAccountId: choice.serviceAccountId },
 				};
+			}
 		}
+
 		setError(null);
 		setIsRunning(true);
+
 		app_convex
 			.mutation(app_convex_api.files_nodes.set_node_write_policy, { membershipId, nodeId, writePolicy })
 			.then((result) => {
@@ -320,7 +330,7 @@ const FilesPropertiesModalReadOnly = memo(function FilesPropertiesModalReadOnly(
 				}
 			})
 			.catch((caughtError: unknown) => {
-				console.error("[FilesPropertiesModalReadOnly.write] Failed to change write policy", {
+				console.error("[FilesPropertiesModalWritePolicy.handleSavePolicy] Failed to change write policy", {
 					error: caughtError,
 					nodeId,
 				});
@@ -341,10 +351,10 @@ const FilesPropertiesModalReadOnly = memo(function FilesPropertiesModalReadOnly(
 	});
 
 	return (
-		<div className={"FilesPropertiesModalReadOnly" satisfies FilesPropertiesModalReadOnly_ClassNames}>
+		<div className={"FilesPropertiesModalWritePolicy" satisfies FilesPropertiesModalWritePolicy_ClassNames}>
 			<fieldset
 				ref={choicesRef}
-				className={"FilesPropertiesModalReadOnly-choices" satisfies FilesPropertiesModalReadOnly_ClassNames}
+				className={"FilesPropertiesModalWritePolicy-choices" satisfies FilesPropertiesModalWritePolicy_ClassNames}
 				aria-describedby={descriptionId}
 			>
 				<legend>Local write policy</legend>
@@ -380,8 +390,9 @@ const FilesPropertiesModalReadOnly = memo(function FilesPropertiesModalReadOnly(
 					<MySelect
 						value={choice.writerKind}
 						setValue={(value) => {
-							if (!isRunning && (value === "user" || value === "service_account"))
+							if (!isRunning && (value === "user" || value === "service_account")) {
 								setDraft({ ...choice, writerKind: value });
+							}
 						}}
 					>
 						<MySelectLabel>Writer type</MySelectLabel>
@@ -403,7 +414,9 @@ const FilesPropertiesModalReadOnly = memo(function FilesPropertiesModalReadOnly(
 							value={choice.serviceAccountId}
 							disabled={!canManage}
 							onChange={(serviceAccountId) => {
-								if (!isRunning) setDraft({ ...choice, serviceAccountId });
+								if (!isRunning) {
+									setDraft({ ...choice, serviceAccountId });
+								}
 							}}
 						/>
 					) : (
@@ -411,7 +424,9 @@ const FilesPropertiesModalReadOnly = memo(function FilesPropertiesModalReadOnly(
 							value={choice.userId ?? ""}
 							setValue={(value) => {
 								const userId = userIds?.find((id) => id === value);
-								if (!isRunning && userId) setDraft({ ...choice, userId });
+								if (!isRunning && userId) {
+									setDraft({ ...choice, userId });
+								}
 							}}
 						>
 							<MySelectLabel>Person</MySelectLabel>
@@ -446,7 +461,11 @@ const FilesPropertiesModalReadOnly = memo(function FilesPropertiesModalReadOnly(
 							</MySelectPopover>
 						</MySelect>
 					)}
-					<p className={"FilesPropertiesModalReadOnly-description" satisfies FilesPropertiesModalReadOnly_ClassNames}>
+					<p
+						className={
+							"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames
+						}
+					>
 						{!draft && writer?.name ? `Only ${writer.name} can edit. ` : "Only the selected writer can edit. "}Parent
 						rules and access permissions still apply.
 					</p>
@@ -454,7 +473,7 @@ const FilesPropertiesModalReadOnly = memo(function FilesPropertiesModalReadOnly(
 			) : null}
 			<p
 				id={descriptionId}
-				className={"FilesPropertiesModalReadOnly-description" satisfies FilesPropertiesModalReadOnly_ClassNames}
+				className={"FilesPropertiesModalWritePolicy-description" satisfies FilesPropertiesModalWritePolicy_ClassNames}
 			>
 				{description}
 				{managementState?.canManage === false ? " You cannot change this policy." : null}
@@ -465,12 +484,12 @@ const FilesPropertiesModalReadOnly = memo(function FilesPropertiesModalReadOnly(
 					? " This folder contains read-only items, so it cannot be renamed, moved, or archived."
 					: null}
 			</p>
-			<div className={"FilesPropertiesModalReadOnly-actions" satisfies FilesPropertiesModalReadOnly_ClassNames}>
+			<div className={"FilesPropertiesModalWritePolicy-actions" satisfies FilesPropertiesModalWritePolicy_ClassNames}>
 				<MyButton
 					variant="outline"
 					disabled={!canManage || !draft || (choice.mode === "writer" && !writerSelected)}
 					aria-busy={isRunning || undefined}
-					onClick={write}
+					onClick={handleSavePolicy}
 				>
 					{isRunning ? "Saving…" : "Save policy"}
 				</MyButton>
@@ -483,7 +502,7 @@ const FilesPropertiesModalReadOnly = memo(function FilesPropertiesModalReadOnly(
 
 			{error ? (
 				<p
-					className={"FilesPropertiesModalReadOnly-error" satisfies FilesPropertiesModalReadOnly_ClassNames}
+					className={"FilesPropertiesModalWritePolicy-error" satisfies FilesPropertiesModalWritePolicy_ClassNames}
 					role="alert"
 				>
 					{error}
@@ -492,7 +511,7 @@ const FilesPropertiesModalReadOnly = memo(function FilesPropertiesModalReadOnly(
 		</div>
 	);
 });
-// #endregion read-only
+// #endregion write policy
 
 // #region collaboration
 type FilesPropertiesModalCollaboration_ClassNames =
@@ -1131,7 +1150,7 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 									aria-label="Protection"
 									className={"FilesPropertiesModal-section" satisfies FilesPropertiesModal_ClassNames}
 								>
-									<FilesPropertiesModalReadOnly
+									<FilesPropertiesModalWritePolicy
 										nodeId={nodeId}
 										nodeKind={nodeKind}
 										hasVisibleReadOnlyDescendant={hasVisibleReadOnlyDescendant}

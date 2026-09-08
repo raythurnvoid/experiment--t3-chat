@@ -7,16 +7,19 @@ const { queryMock, pageMock, mutationMock } = vi.hoisted(() => ({
 	pageMock: vi.fn(),
 	mutationMock: vi.fn(),
 }));
+
 vi.mock("convex/react", () => ({
 	useQuery: (...args: unknown[]) => queryMock(...args),
 	usePaginatedQuery: (...args: unknown[]) => pageMock(...args),
 	useQueries: () => ({ owner_1: { displayName: "Owner" }, user_1: { displayName: "Ada" } }),
 }));
+
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	AppTenantProvider: {
 		useContext: () => ({ membershipId: "membership_1", organizationId: "organization_1", workspaceId: "workspace_1" }),
 	},
 }));
+
 vi.mock("@/lib/app-convex-client.ts", () => ({
 	app_convex: { mutation: (...args: unknown[]) => mutationMock(...args) },
 	app_convex_api: {
@@ -52,9 +55,11 @@ const SHARE = {
 		serviceAccountName: string | null;
 	}[],
 };
+
 function renderModal() {
 	return render(<FilesShareModal nodeId={"node_1" as app_convex_Id<"files_nodes">} onClose={() => {}} />);
 }
+
 beforeEach(() => {
 	queryMock
 		.mockReset()
@@ -68,6 +73,7 @@ beforeEach(() => {
 	});
 	mutationMock.mockReset().mockResolvedValue({ _yay: null });
 });
+
 afterEach(cleanup);
 
 describe("FilesShareModal", () => {
@@ -76,6 +82,7 @@ describe("FilesShareModal", () => {
 		fireEvent.click(screen.getByRole("combobox", { name: "Person, role, or service account to add" }));
 		fireEvent.click(await screen.findByRole("option", { name: "Report bot" }));
 		fireEvent.click(screen.getByRole("button", { name: "Add" }));
+
 		await waitFor(() =>
 			expect(mutationMock).toHaveBeenCalledWith("set_grant", {
 				membershipId: "membership_1",
@@ -96,6 +103,7 @@ describe("FilesShareModal", () => {
 		fireEvent.click(screen.getByRole("combobox", { name: "Person, role, or service account to add" }));
 		fireEvent.click(await screen.findByRole("option", { name: "Report bot" }));
 		fireEvent.click(screen.getByRole("combobox", { name: "Access level for the new person, role, or account" }));
+
 		expect((await screen.findByRole("option", { name: "Can manage" })).getAttribute("aria-disabled")).toBe("true");
 	});
 
@@ -116,10 +124,13 @@ describe("FilesShareModal", () => {
 					? ["owner_1"]
 					: [],
 		);
+
 		renderModal();
 		const row = document.querySelector('[data-share-principal="service_account:account_1"]') as HTMLElement;
 		expect(row.textContent).toContain("Service account unavailable");
+
 		fireEvent.click(within(row).getByRole("button", { name: "Remove Service account unavailable" }));
+
 		await waitFor(() =>
 			expect(mutationMock).toHaveBeenCalledWith("remove_grant", {
 				membershipId: "membership_1",
@@ -138,8 +149,10 @@ describe("FilesShareModal", () => {
 					? ["owner_1", "user_1"]
 					: [],
 		);
+
 		renderModal();
 		fireEvent.click(screen.getByRole("combobox", { name: "Person, role, or service account to add" }));
+
 		expect(screen.queryByRole("option", { name: "Report bot" })).toBeNull();
 		expect(await screen.findByRole("option", { name: "Ada" })).toBeTruthy();
 	});

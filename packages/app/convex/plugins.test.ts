@@ -356,7 +356,9 @@ describe("install_version service accounts", () => {
 			...media_plugin_consent,
 			serviceAccountGrants: [{ resource: { kind: "workspace" }, level: "write" }],
 		});
-		if (first._nay) throw new Error(first._nay.message);
+		if (first._nay) {
+			throw new Error(first._nay.message);
+		}
 		const installation = (await t.run((ctx) =>
 			ctx.db.get("plugins_workspace_installations", first._yay.installationId),
 		))!;
@@ -400,7 +402,9 @@ describe("install_version service accounts", () => {
 			membershipId: membership.membershipId,
 			name: "Replacement",
 		});
-		if (replacement._nay) throw new Error(replacement._nay.message);
+		if (replacement._nay) {
+			throw new Error(replacement._nay.message);
+		}
 		expect(
 			(
 				await asOwner.mutation(api.plugins.set_installation_service_account, {
@@ -427,7 +431,9 @@ describe("install_version service accounts", () => {
 			...media_plugin_consent,
 			serviceAccountGrants: [],
 		});
-		if (reinstalled._nay) throw new Error(reinstalled._nay.message);
+		if (reinstalled._nay) {
+			throw new Error(reinstalled._nay.message);
+		}
 		expect(
 			await t.run((ctx) => ctx.db.get("plugins_workspace_installations", reinstalled._yay.installationId)),
 		).toMatchObject({ serviceAccountId: replacement._yay.serviceAccountId });
@@ -474,7 +480,9 @@ describe("install_version service accounts", () => {
 			membershipId: membership.membershipId,
 			serviceAccountGrants: [{ resource: { kind: "workspace" }, level: "write" }],
 		});
-		if (installed._nay) throw new Error(installed._nay.message);
+		if (installed._nay) {
+			throw new Error(installed._nay.message);
+		}
 		expect(await asOperator.mutation(api.plugins.install_version, args)).toEqual(installed);
 		vi.advanceTimersByTime(60_000);
 		const before = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", installed._yay.installationId));
@@ -541,7 +549,9 @@ describe("install_version service accounts", () => {
 			parentId: files_ROOT_ID,
 			path: "private",
 		});
-		if (folder._nay) throw new Error(folder._nay.message);
+		if (folder._nay) {
+			throw new Error(folder._nay.message);
+		}
 		const nodeId = folder._yay.nodeId;
 		await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: membership.membershipId, nodeId });
 		const operator = await t.run(async (ctx) => {
@@ -596,7 +606,9 @@ describe("install_version service accounts", () => {
 			...args,
 			serviceAccountGrants: [{ resource: { kind: "file", nodeId }, level: "read" }],
 		});
-		if (installed._nay) throw new Error(installed._nay.message);
+		if (installed._nay) {
+			throw new Error(installed._nay.message);
+		}
 		expect(
 			(await t.run((ctx) => ctx.db.query("access_control_permission_grants").collect())).filter(
 				(grant) => grant.principalKind === "service_account",
@@ -616,11 +628,15 @@ describe("install_version service accounts", () => {
 				pluginVersionId: firstVersion.pluginVersionId,
 				...media_plugin_consent,
 			});
-			if (first._nay) throw new Error(first._nay.message);
+			if (first._nay) {
+				throw new Error(first._nay.message);
+			}
 			const firstInstallation = await t.run((ctx) =>
 				ctx.db.get("plugins_workspace_installations", first._yay.installationId),
 			);
-			if (!firstInstallation?.serviceAccountId) throw new Error("Expected first account");
+			if (!firstInstallation?.serviceAccountId) {
+				throw new Error("Expected first account");
+			}
 			const targetMembership =
 				changed === "tenant"
 					? await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "other-organization" }))
@@ -663,7 +679,9 @@ describe("install_version service accounts", () => {
 					pluginVersionId: replacementVersion.pluginVersionId,
 					...media_plugin_consent,
 				});
-			if (replacement._nay) throw new Error(replacement._nay.message);
+			if (replacement._nay) {
+				throw new Error(replacement._nay.message);
+			}
 			const nextInstallation = await t.run((ctx) =>
 				ctx.db.get("plugins_workspace_installations", replacement._yay.installationId),
 			);
@@ -4563,7 +4581,9 @@ describe("plugins Phase 0", () => {
 				membershipId: fixture.membership.membershipId,
 				name: "Replacement",
 			});
-			if (replacement._nay) throw new Error(replacement._nay.message);
+			if (replacement._nay) {
+				throw new Error(replacement._nay.message);
+			}
 			expect(
 				(
 					await asOwner.mutation(api.plugins.set_installation_service_account, {
@@ -11599,7 +11619,9 @@ describe("plugins backend invoke runs", () => {
 			membershipId: fixture.membership.membershipId,
 			name: "Replacement",
 		});
-		if (replacement._nay) throw new Error(replacement._nay.message);
+		if (replacement._nay) {
+			throw new Error(replacement._nay.message);
+		}
 		expect(
 			(
 				await fixture.asOwner.mutation(api.plugins.set_installation_service_account, {
@@ -16523,7 +16545,9 @@ describe("plugins admin hard delete", () => {
 		await t.run(async (ctx) => {
 			const now = Date.now();
 			const installation = await ctx.db.get("plugins_workspace_installations", installed._yay.installationId);
-			if (!installation) throw new Error("Expected installation");
+			if (!installation) {
+				throw new Error("Expected installation");
+			}
 			for (let index = 0; index < 101; index += 1) {
 				await ctx.db.insert("plugin_service_grants", {
 					organizationId: membership.organizationId,

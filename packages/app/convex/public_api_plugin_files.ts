@@ -1,10 +1,9 @@
-/**
- * The plugin file doors behind `/api/v1/files/plugin-folders/ensure`, `/api/v1/files/plugin-archive`,
- * and `/api/v1/files/plugin-access/set` (routes in `public_api_plugin_files_http_routes.ts`).
- *
- * Editable `plugin-name` metadata selects the files and folders a plugin can use.
- * Current capabilities, actor permissions, and locks still control each operation.
- */
+// The plugin file doors behind `/api/v1/files/plugin-folders/ensure`, `/api/v1/files/plugin-archive`,
+// and `/api/v1/files/plugin-access/set` (routes in `public_api_plugin_files_http_routes.ts`).
+//
+// Editable `plugin-name` metadata selects the files and folders a plugin can use.
+// Current capabilities, actor and account permissions, and write policies control each operation.
+
 import { v, type Infer } from "convex/values";
 import type { RegisteredMutation } from "convex/server";
 import { z } from "zod";
@@ -69,7 +68,7 @@ async function db_get_active_node_at_path(
 }
 
 /**
- * Finish access checks before creating a folder or changing its locks and readers.
+ * Finish access checks before creating a folder or changing its write policy and readers.
  */
 async function db_prepare_plugin_access(
 	ctx: MutationCtx,
@@ -86,6 +85,7 @@ async function db_prepare_plugin_access(
 	if (!args.installation.acceptedCapabilities.includes("workspace.files.own-access")) {
 		return Result({ _nay: { message: "Permission denied" } });
 	}
+
 	let writePolicy: Doc<"files_nodes">["writePolicy"] | undefined =
 		args.readOnly === undefined
 			? undefined
@@ -104,9 +104,12 @@ async function db_prepare_plugin_access(
 			nodeId: args.node?._id ?? null,
 			readScopeId: args.readScopeId,
 		});
-		if (prepared._nay) return prepared;
+		if (prepared._nay) {
+			return prepared;
+		}
 		binding = prepared._yay;
 	}
+
 	// Existing nodes already passed target management. Only changes affecting descendants need their grants.
 	if (!args.node || writePolicy !== undefined || (binding && binding.readScopeId !== null)) {
 		const parentNode = args.parentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", args.parentId);
@@ -117,8 +120,11 @@ async function db_prepare_plugin_access(
 			target: args.node ? { kind: "node", node: args.node } : { kind: "create", parentNode, path: args.path },
 			writePolicy: writePolicy === undefined ? (args.node?.writePolicy ?? null) : writePolicy,
 		});
-		if (managed._nay) return managed;
+		if (managed._nay) {
+			return managed;
+		}
 	}
+
 	return Result({ _yay: { writePolicy, binding } });
 }
 
@@ -137,8 +143,11 @@ async function db_apply_plugin_access(
 			writeContext: args.writeContext,
 			writePolicy: args.prepared.writePolicy,
 		});
-		if (managed._nay) return managed;
+		if (managed._nay) {
+			return managed;
+		}
 	}
+
 	if (args.prepared.binding) {
 		await plugins_data_db_apply_file_access_binding(ctx, {
 			installation: args.installation,
@@ -146,6 +155,7 @@ async function db_apply_plugin_access(
 			prepared: args.prepared.binding,
 		});
 	}
+
 	return Result({ _yay: null });
 }
 
@@ -187,6 +197,7 @@ export const ensure_plugin_folder = internalMutation({
 		if (!installation.acceptedCapabilities.includes("workspace.files.own-write")) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
+
 		// Decide the access consent before any folder is created, so a refusal creates nothing.
 		if (
 			(args.readOnly !== undefined || args.readScopeId !== undefined) &&
@@ -195,12 +206,12 @@ export const ensure_plugin_folder = internalMutation({
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
-		// Walk the existing chain. The walk stops at the first missing segment; everything after
-		// it is created below.
 		const segments = path_extract_segments_from(args.path);
 		let currentParent: Doc<"files_nodes">["parentId"] = files_ROOT_ID;
 		let deepest: Doc<"files_nodes"> | null = null;
 		let firstMissingIndex: number | null = null;
+
+		// Stop at the first missing segment; the remaining folders are created after access checks.
 		for (const [index, name] of segments.entries()) {
 			const existing = await ctx.db
 				.query("files_nodes")
@@ -220,6 +231,7 @@ export const ensure_plugin_folder = internalMutation({
 			deepest = existing;
 			currentParent = existing._id;
 		}
+
 		const writeContext: files_nodes_WriteContext = {
 			writer: { kind: "service_account", serviceAccountId: pluginRun.serviceAccountId },
 			actorUserId: args.userId,
@@ -230,9 +242,7 @@ export const ensure_plugin_folder = internalMutation({
 					: { kind: "create", parentNodeId: deepest?._id ?? files_ROOT_ID, path: args.path },
 		};
 
-		// The run acts for its member, so the member must still be one and must still be allowed
-		// to write here — the same rule as the write engine, asked against the deepest existing
-		// node so a restricted plugin folder is judged by the grants that let the actor in.
+		// Use the deepest existing node so its restricted-scope grants apply to the actor.
 		const actorMembership = await ctx.db
 			.query("organizations_workspaces_users")
 			.withIndex("by_active_user_organization_workspace", (q) =>
@@ -247,11 +257,15 @@ export const ensure_plugin_folder = internalMutation({
 		if (!actorMembership || !actor || actor.deletedAt != null) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
+
 		const [organization, workspace] = await Promise.all([
 			ctx.db.get("organizations", args.organizationId),
 			ctx.db.get("organizations_workspaces", args.workspaceId),
 		]);
-		if (!organization?.defaultWorkspaceId || !workspace) return Result({ _nay: { message: "Permission denied" } });
+		if (!organization?.defaultWorkspaceId || !workspace) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
 		const permissionArgs = {
 			organizationId: organization._id,
 			workspaceId: workspace._id,
@@ -272,6 +286,7 @@ export const ensure_plugin_folder = internalMutation({
 		if (!canWrite) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
+
 		if (
 			deepest &&
 			(deepest.kind !== "folder" ||
@@ -296,15 +311,18 @@ export const ensure_plugin_folder = internalMutation({
 					? { kind: "node", node: deepest }
 					: { kind: "create", parentNode: deepest, path: args.path },
 		});
-		if (writable._nay) return writable;
+		if (writable._nay) {
+			return writable;
+		}
 
 		let nodeId: Id<"files_nodes">;
 		let created = false;
-		// Existing folders keep the member's metadata, locks, and sharing. A missing reader
+
+		// Existing folders keep the member's metadata, write policy, and sharing. A missing reader
 		// binding may be a manual sharing choice; ensure must not recreate it.
 		if (firstMissingIndex === null) {
+			// The route refuses "/", so the walk always saw at least one segment.
 			if (!deepest) {
-				// The route refuses "/", so the walk always saw at least one segment.
 				throw should_never_happen("plugin folder ensure walked no segments", { path: args.path });
 			}
 			nodeId = deepest._id;
@@ -346,6 +364,7 @@ export const ensure_plugin_folder = internalMutation({
 				}
 				preparedAccess = prepared._yay;
 			}
+
 			const createdResult = await files_nodes_db_create_node_recursively_at_path(ctx, {
 				userId: args.userId,
 				organizationId: args.organizationId,
@@ -362,11 +381,11 @@ export const ensure_plugin_folder = internalMutation({
 				now,
 			});
 			if (createdResult._nay) {
-				// A concurrent create raced this walk; the caller retries and hits the idempotent path.
 				return Result({ _nay: { name: "conflict", message: createdResult._nay.message } });
 			}
 			nodeId = createdResult._yay;
 			created = true;
+
 			if (preparedAccess?.binding) {
 				const node = await ctx.db.get("files_nodes", nodeId);
 				if (!node) {
@@ -430,9 +449,10 @@ export const archive_plugin_path = internalMutation({
 		if (args.principalRef.kind === "plugin_run" && facts.pluginRun?.event !== "ui.invoke.requested") {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
+
 		const installation = facts.installation;
+		// Both allowed principal kinds resolve an installation.
 		if (!installation) {
-			// Unreachable: both allowed principal kinds resolve an installation.
 			throw should_never_happen("plugin archive without an installation", { path: args.path });
 		}
 
@@ -474,7 +494,7 @@ export const archive_plugin_path = internalMutation({
 				});
 			}
 
-			// Every descendant must opt in before any lock is released or node is archived.
+			// Every descendant must opt in before any policy is cleared or node is archived.
 			for (const swept of descendants) {
 				if (
 					(await files_metadata_db_read_entry(ctx, {
@@ -501,18 +521,25 @@ export const archive_plugin_path = internalMutation({
 						fileNode: swept,
 						permission: "content.write",
 					}))
-				)
+				) {
 					return Result({ _nay: { message: "Permission denied" } });
+				}
+
 				const writable = await files_nodes_db_require_writable(ctx, {
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
 					writeContext: facts.writeContext,
 					target: { kind: "node", node: swept },
 				});
-				if (writable._nay) return writable;
+				if (writable._nay) {
+					return writable;
+				}
+
 				if (swept.writePolicy !== null) {
-					if (!installation.acceptedCapabilities.includes("workspace.files.own-access"))
+					if (!installation.acceptedCapabilities.includes("workspace.files.own-access")) {
 						return Result({ _nay: { message: "Permission denied" } });
+					}
+
 					const managed = await files_nodes_db_require_write_policy_management(ctx, {
 						organizationId: args.organizationId,
 						workspaceId: args.workspaceId,
@@ -520,10 +547,13 @@ export const archive_plugin_path = internalMutation({
 						target: { kind: "node", node: swept },
 						writePolicy: null,
 					});
-					if (managed._nay) return managed;
+					if (managed._nay) {
+						return managed;
+					}
 					directPolicyNodes.push(swept);
 				}
 			}
+
 			// Clear only authorized local policies so this archived set can be restored.
 			for (const policyNode of directPolicyNodes) {
 				const cleared = await files_nodes_db_set_write_policy(ctx, {
@@ -531,14 +561,18 @@ export const archive_plugin_path = internalMutation({
 					writeContext: facts.writeContext,
 					writePolicy: null,
 				});
-				if (cleared._nay) throw convex_error({ message: "Failed to clear file policy", cause: cleared._nay });
+				if (cleared._nay) {
+					throw convex_error({ message: "Failed to clear file policy", cause: cleared._nay });
+				}
 			}
+
 			const activeDescendants = descendants.filter((descendant) => descendant.archiveOperationId === null);
 			await files_nodes_db_archive_nodes(ctx, {
 				nodeIds: [node._id, ...activeDescendants.map((descendant) => descendant._id)],
 				updatedBy: args.userId,
 				now,
 			});
+
 			return Result({ _yay: { archivedNodes: activeDescendants.length + 1 } });
 		}
 
@@ -554,24 +588,34 @@ export const archive_plugin_path = internalMutation({
 		) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
+
 		const writable = await files_nodes_db_require_writable(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			writeContext: facts.writeContext,
 			target: { kind: "node", node },
 		});
-		if (writable._nay) return writable;
+		if (writable._nay) {
+			return writable;
+		}
+
 		if (node.writePolicy !== null) {
-			if (!installation.acceptedCapabilities.includes("workspace.files.create-read-only"))
+			if (!installation.acceptedCapabilities.includes("workspace.files.create-read-only")) {
 				return Result({ _nay: { message: "Permission denied" } });
+			}
+
 			const cleared = await files_nodes_db_set_write_policy(ctx, {
 				node,
 				writeContext: facts.writeContext,
 				writePolicy: null,
 			});
-			if (cleared._nay) return cleared;
+			if (cleared._nay) {
+				return cleared;
+			}
 		}
+
 		await files_nodes_db_archive_nodes(ctx, { nodeIds: [node._id], updatedBy: args.userId, now });
+
 		return Result({ _yay: { archivedNodes: 1 } });
 	},
 });
@@ -641,15 +685,18 @@ export const set_plugin_access = internalMutation({
 				fileNode: node,
 				permission: "content.permissions.manage",
 			}))
-		)
+		) {
 			return Result({ _nay: { message: "Permission denied" } });
+		}
 		const writable = await files_nodes_db_require_writable(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			writeContext,
 			target: { kind: "node", node },
 		});
-		if (writable._nay) return writable;
+		if (writable._nay) {
+			return writable;
+		}
 		const binding = await ctx.db
 			.query("plugins_file_access_bindings")
 			.withIndex("by_node", (q) => q.eq("nodeId", node._id))
@@ -670,7 +717,9 @@ export const set_plugin_access = internalMutation({
 			return prepared;
 		}
 		const applied = await db_apply_plugin_access(ctx, { installation, node, writeContext, prepared: prepared._yay });
-		if (applied._nay) return applied;
+		if (applied._nay) {
+			return applied;
+		}
 
 		return Result({ _yay: { nodeId: node._id } });
 	},

@@ -12,17 +12,25 @@ export async function plugins_db_get_live_service_account(
 	},
 ) {
 	const { installation, serviceAccountId } = args;
-	if (installation.serviceAccountId !== serviceAccountId) return null;
+	if (installation.serviceAccountId !== serviceAccountId) {
+		return null;
+	}
+
 	const account = await ctx.db.get("access_control_service_accounts", serviceAccountId);
 	if (
 		!account ||
 		account.revokedAt !== null ||
 		account.organizationId !== installation.organizationId ||
 		account.workspaceId !== installation.workspaceId
-	)
+	) {
 		return null;
+	}
+
 	const version = await ctx.db.get("plugins_versions", installation.pluginVersionId);
-	if (!version || version.name !== installation.pluginName) return null;
+	if (!version || version.name !== installation.pluginName) {
+		return null;
+	}
+
 	const binding = await ctx.db
 		.query("plugins_service_account_bindings")
 		.withIndex("by_organization_workspace_pluginName_publisher_source", (q) =>
@@ -34,5 +42,6 @@ export async function plugins_db_get_live_service_account(
 				.eq("sourceRepositoryUrl", version.sourceRepositoryUrl),
 		)
 		.first();
+
 	return binding?.serviceAccountId === serviceAccountId ? account : null;
 }

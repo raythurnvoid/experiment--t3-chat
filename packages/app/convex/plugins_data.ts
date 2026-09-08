@@ -4082,7 +4082,7 @@ export async function plugins_data_db_apply_file_access_binding(
 	});
 	const kept = new Set<Id<"users">>();
 	for (const grant of nodeGrants) {
-		// Reader changes do not change independent software access.
+		// Updating human readers keeps service-account grants.
 		if (grant.principalKind === "service_account") {
 			continue;
 		}

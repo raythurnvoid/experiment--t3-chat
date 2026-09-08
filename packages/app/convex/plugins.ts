@@ -3525,7 +3525,9 @@ export const remove_plugin_service_registration = mutation({
 
 // #region installations and marketplace
 
-/** Callers authorize the account choice before changing a trusted tuple's binding. */
+/**
+ * Callers authorize the account choice before changing a trusted tuple's binding.
+ */
 async function db_set_service_account_binding(
 	ctx: MutationCtx,
 	args: {
@@ -3537,10 +3539,11 @@ async function db_set_service_account_binding(
 	},
 ) {
 	if (args.binding) {
-		if (args.binding.serviceAccountId !== args.serviceAccountId)
+		if (args.binding.serviceAccountId !== args.serviceAccountId) {
 			await ctx.db.patch("plugins_service_account_bindings", args.binding._id, {
 				serviceAccountId: args.serviceAccountId,
 			});
+		}
 	} else {
 		await ctx.db.insert("plugins_service_account_bindings", {
 			organizationId: args.organizationId,
@@ -3688,6 +3691,7 @@ export const install_version = mutation({
 				return Result({ _nay: { message: "Plugin name already installed from a different source" } });
 			}
 		}
+
 		const binding = await ctx.db
 			.query("plugins_service_account_bindings")
 			.withIndex("by_organization_workspace_pluginName_publisher_source", (q) =>
@@ -3699,8 +3703,11 @@ export const install_version = mutation({
 					.eq("sourceRepositoryUrl", pluginVersion.sourceRepositoryUrl),
 			)
 			.first();
+
 		const grants = args.serviceAccountGrants ?? [];
-		if (grants.length > 20) return Result({ _nay: { message: "Set at most 20 grants during installation" } });
+		if (grants.length > 20) {
+			return Result({ _nay: { message: "Set at most 20 grants during installation" } });
+		}
 		if (!existingInstallation || !binding || args.serviceAccountId !== undefined || grants.length > 0) {
 			const allowed = await access_control_db_has_permission(ctx, {
 				organizationId: installationScope.organizationId,
@@ -3711,30 +3718,45 @@ export const install_version = mutation({
 				permission: "workspace.service_accounts.manage",
 				userId: userAuth.id,
 			});
-			if (!allowed) return Result({ _nay: { message: "Permission denied" } });
+			if (!allowed) {
+				return Result({ _nay: { message: "Permission denied" } });
+			}
 		}
-		const chosenId = args.serviceAccountId ?? binding?.serviceAccountId;
-		const account = chosenId ? await ctx.db.get("access_control_service_accounts", chosenId) : null;
+
+		const chosenServiceAccountId = args.serviceAccountId ?? binding?.serviceAccountId;
+		const account = chosenServiceAccountId
+			? await ctx.db.get("access_control_service_accounts", chosenServiceAccountId)
+			: null;
 		if (
-			chosenId &&
+			chosenServiceAccountId &&
 			(!account ||
 				account.organizationId !== installationScope.organizationId ||
 				account.workspaceId !== installationScope.workspaceId)
-		)
+		) {
 			return Result({ _nay: { message: "Not found" } });
-		if (account?.revokedAt != null) return Result({ _nay: { message: "Choose an active service account" } });
+		}
+		if (account?.revokedAt != null) {
+			return Result({ _nay: { message: "Choose an active service account" } });
+		}
+
 		const resources = new Set<string>();
 		for (const grant of grants) {
 			const key = grant.resource.kind === "workspace" ? "workspace" : grant.resource.nodeId;
-			if (resources.has(key)) return Result({ _nay: { message: "Choose each grant resource once" } });
+			if (resources.has(key)) {
+				return Result({ _nay: { message: "Choose each grant resource once" } });
+			}
 			resources.add(key);
+
 			const allowed = await access_control_db_authorize_service_account_grant(ctx, {
 				userAuth,
 				membership: authorization._yay.membership,
 				...grant,
 			});
-			if (allowed._nay) return allowed;
+			if (allowed._nay) {
+				return allowed;
+			}
 		}
+
 		const serviceAccountId =
 			account?._id ??
 			(await ctx.db.insert("access_control_service_accounts", {
@@ -3752,6 +3774,7 @@ export const install_version = mutation({
 			binding,
 			serviceAccountId,
 		});
+
 		for (const grant of grants) {
 			const result = await access_control_db_set_service_account_grant(ctx, {
 				...installationScope,
@@ -3759,8 +3782,11 @@ export const install_version = mutation({
 				...grant,
 			});
 			// A resource limit must roll back every grant and the account choice together.
-			if (result._nay) throw convex_error(result._nay);
+			if (result._nay) {
+				throw convex_error(result._nay);
+			}
 		}
+
 		if (existingInstallation) {
 			installationId = existingInstallation._id;
 			installationCreatedAt = existingInstallation._creationTime;
@@ -3848,12 +3874,18 @@ export const set_installation_service_account = mutation({
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
-		if (!userAuth) return Result({ _nay: { message: "Unauthenticated" } });
+		if (!userAuth) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+
 		const authorization = await db_authorize_plugin_management(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
 		});
-		if (authorization._nay) return authorization;
+		if (authorization._nay) {
+			return authorization;
+		}
+
 		const { membership, organization, defaultWorkspaceId } = authorization._yay;
 		const allowed = await access_control_db_has_permission(ctx, {
 			organizationId: membership.organizationId,
@@ -3864,7 +3896,10 @@ export const set_installation_service_account = mutation({
 			permission: "workspace.service_accounts.manage",
 			userId: userAuth.id,
 		});
-		if (!allowed) return Result({ _nay: { message: "Permission denied" } });
+		if (!allowed) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+
 		const installation = await ctx.db.get("plugins_workspace_installations", args.installationId);
 		const account = await ctx.db.get("access_control_service_accounts", args.serviceAccountId);
 		const workspace = await ctx.db.get("organizations_workspaces", membership.workspaceId);
@@ -3878,10 +3913,15 @@ export const set_installation_service_account = mutation({
 			account.revokedAt !== null ||
 			!workspace ||
 			workspace.pluginDataPurgeStartedAt !== undefined
-		)
+		) {
 			return Result({ _nay: { message: "Not found" } });
+		}
+
 		const version = await ctx.db.get("plugins_versions", installation.pluginVersionId);
-		if (!version || version.name !== installation.pluginName) return Result({ _nay: { message: "Not found" } });
+		if (!version || version.name !== installation.pluginName) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+
 		const binding = await ctx.db
 			.query("plugins_service_account_bindings")
 			.withIndex("by_organization_workspace_pluginName_publisher_source", (q) =>
@@ -3893,8 +3933,12 @@ export const set_installation_service_account = mutation({
 					.eq("sourceRepositoryUrl", version.sourceRepositoryUrl),
 			)
 			.first();
+
 		const limit = await rate_limiter_limit_by_key(ctx, { name: "plugins_manage", key: userAuth.id });
-		if (limit) return Result({ _nay: { message: limit.message } });
+		if (limit) {
+			return Result({ _nay: { message: limit.message } });
+		}
+
 		await db_set_service_account_binding(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -3902,8 +3946,10 @@ export const set_installation_service_account = mutation({
 			binding,
 			serviceAccountId: account._id,
 		});
-		if (installation.serviceAccountId !== account._id)
+		if (installation.serviceAccountId !== account._id) {
 			await ctx.db.patch("plugins_workspace_installations", installation._id, { serviceAccountId: account._id });
+		}
+
 		return Result({ _yay: null });
 	},
 });

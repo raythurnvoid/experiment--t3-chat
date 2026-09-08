@@ -23,9 +23,15 @@ vi.mock("@tanstack/react-router", () => ({
 vi.mock("convex/react", () => ({
 	useQuery: (query: string, args: unknown) => {
 		const result = useQueryMock(query, args);
-		if (query === "account_permission") return accountPermissionMock();
-		if (query === "anagraphic") return { displayName: "Ada" };
-		if (query === "get_account") return { _id: "account_1", name: "Publisher", revokedAt: null };
+		if (query === "account_permission") {
+			return accountPermissionMock();
+		}
+		if (query === "anagraphic") {
+			return { displayName: "Ada" };
+		}
+		if (query === "get_account") {
+			return { _id: "account_1", name: "Publisher", revokedAt: null };
+		}
 		return result;
 	},
 	usePaginatedQuery: () => ({

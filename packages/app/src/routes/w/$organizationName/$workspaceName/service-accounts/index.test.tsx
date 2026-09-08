@@ -15,15 +15,18 @@ vi.mock("@tanstack/react-router", () => ({
 		<a href={`api-keys?serviceAccountId=${props.search.serviceAccountId}`}>{props.children}</a>
 	),
 }));
+
 vi.mock("convex/react", () => ({
 	useQuery: (...args: unknown[]) => queryMock(...args),
 	usePaginatedQuery: (...args: unknown[]) => pageMock(...args),
 }));
+
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	AppTenantProvider: {
 		useContext: () => ({ membershipId: "membership_1", organizationName: "personal", workspaceName: "home" }),
 	},
 }));
+
 vi.mock("@/lib/app-convex-client.ts", () => ({
 	app_convex: { mutation: (...args: unknown[]) => mutationMock(...args) },
 	app_convex_api: {
@@ -53,6 +56,7 @@ const ACCOUNT = {
 	updatedAt: 1,
 	revokedAt: null as number | null,
 };
+
 const WORKSPACE_GRANT = {
 	resource: { kind: "workspace" },
 	level: "read",
@@ -69,14 +73,26 @@ function renderRoute() {
 beforeEach(() => {
 	mutationMock.mockReset().mockResolvedValue({ _yay: null });
 	loadMoreMock.mockReset();
+
 	queryMock.mockReset().mockImplementation((query: string, args: unknown) => {
-		if (args === "skip") return undefined;
-		if (query === "permission") return true;
-		if (query === "account") return ACCOUNT;
-		if (query === "management") return { ...WORKSPACE_GRANT, level: null };
-		if (query === "node") return { nodeId: "child_1" };
+		if (args === "skip") {
+			return undefined;
+		}
+		if (query === "permission") {
+			return true;
+		}
+		if (query === "account") {
+			return ACCOUNT;
+		}
+		if (query === "management") {
+			return { ...WORKSPACE_GRANT, level: null };
+		}
+		if (query === "node") {
+			return { nodeId: "child_1" };
+		}
 		return undefined;
 	});
+
 	pageMock
 		.mockReset()
 		.mockImplementation((query: string) => ({
@@ -85,11 +101,13 @@ beforeEach(() => {
 			loadMore: loadMoreMock,
 		}));
 });
+
 afterEach(cleanup);
 
 describe("RouteServiceAccounts", () => {
 	test("supports personal workspaces and links the active identity to key creation", () => {
 		renderRoute();
+
 		expect(screen.getByRole("button", { name: "Create account" }).hasAttribute("disabled")).toBe(false);
 		expect(screen.getByRole("link", { name: "Create API key" }).getAttribute("href")).toContain(
 			"serviceAccountId=account_1",
@@ -105,10 +123,13 @@ describe("RouteServiceAccounts", () => {
 		renderRoute();
 		const create = screen.getByRole("button", { name: "Create account" });
 		fireEvent.click(create);
+
 		const name = screen.getByRole("textbox", { name: "Name" });
 		expect(name.getAttribute("maxlength")).toBe("80");
+
 		fireEvent.change(name, { target: { value: "  Daily report  " } });
 		fireEvent.click(screen.getByRole("button", { name: "Save account" }));
+
 		await waitFor(() =>
 			expect(mutationMock).toHaveBeenCalledWith("create", { membershipId: "membership_1", name: "Daily report" }),
 		);
@@ -118,10 +139,12 @@ describe("RouteServiceAccounts", () => {
 
 	test("keeps the same account when renaming and shows refused changes", async () => {
 		mutationMock.mockResolvedValue({ _nay: { message: "Permission changed" } });
+
 		renderRoute();
 		fireEvent.click(screen.getByRole("button", { name: "Rename" }));
 		fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "Renamed bot" } });
 		fireEvent.click(screen.getByRole("button", { name: "Save account" }));
+
 		expect(mutationMock).toHaveBeenCalledWith("rename", {
 			membershipId: "membership_1",
 			serviceAccountId: "account_1",
@@ -134,9 +157,12 @@ describe("RouteServiceAccounts", () => {
 	test("confirms revocation while explaining preserved file policies", async () => {
 		renderRoute();
 		fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
+
 		expect(screen.getByText(/Protected files keep their policies/)).toBeTruthy();
 		expect(mutationMock).not.toHaveBeenCalled();
+
 		fireEvent.click(screen.getByRole("button", { name: "Revoke account" }));
+
 		await waitFor(() =>
 			expect(mutationMock).toHaveBeenCalledWith("revoke", {
 				membershipId: "membership_1",
@@ -148,8 +174,11 @@ describe("RouteServiceAccounts", () => {
 	test("uses the management answer before the first grant exists", async () => {
 		renderRoute();
 		fireEvent.click(screen.getByRole("button", { name: "Manage grants" }));
+
 		expect(screen.getByText("No grants yet.")).toBeTruthy();
+
 		fireEvent.click(screen.getByRole("button", { name: "Save grant" }));
+
 		await waitFor(() =>
 			expect(mutationMock).toHaveBeenCalledWith("set_grant", {
 				membershipId: "membership_1",
@@ -162,11 +191,19 @@ describe("RouteServiceAccounts", () => {
 
 	test("shows and submits the actual restricted scope for a child path", async () => {
 		queryMock.mockImplementation((query: string, args: { resource?: { kind: string } } | "skip") => {
-			if (args === "skip") return undefined;
-			if (query === "permission") return true;
-			if (query === "account") return ACCOUNT;
-			if (query === "node") return { nodeId: "child_1" };
-			if (query === "management")
+			if (args === "skip") {
+				return undefined;
+			}
+			if (query === "permission") {
+				return true;
+			}
+			if (query === "account") {
+				return ACCOUNT;
+			}
+			if (query === "node") {
+				return { nodeId: "child_1" };
+			}
+			if (query === "management") {
 				return args.resource?.kind === "file"
 					? {
 							...WORKSPACE_GRANT,
@@ -175,7 +212,9 @@ describe("RouteServiceAccounts", () => {
 							file: { path: "/protected", name: "protected", scope: "restricted_scope" },
 						}
 					: { ...WORKSPACE_GRANT, level: null };
+			}
 		});
+
 		renderRoute();
 		fireEvent.click(screen.getByRole("button", { name: "Manage grants" }));
 		fireEvent.click(screen.getByRole("combobox", { name: "Resource" }));
@@ -183,8 +222,11 @@ describe("RouteServiceAccounts", () => {
 		fireEvent.change(screen.getByRole("textbox", { name: "File or folder path" }), {
 			target: { value: "/protected/child" },
 		});
+
 		expect(screen.getByText("/protected — This restricted scope")).toBeTruthy();
+
 		fireEvent.click(screen.getByRole("button", { name: "Save grant" }));
+
 		await waitFor(() =>
 			expect(mutationMock).toHaveBeenCalledWith("set_grant", {
 				membershipId: "membership_1",
@@ -205,14 +247,19 @@ describe("RouteServiceAccounts", () => {
 			status: "Exhausted",
 			loadMore: loadMoreMock,
 		}));
+
 		renderRoute();
+
 		expect(screen.getByText("Revoked")).toBeTruthy();
 		expect(screen.queryByRole("link", { name: "Create API key" })).toBeNull();
+
 		fireEvent.click(screen.getByRole("button", { name: "Manage grants" }));
 		expect(screen.queryByRole("button", { name: "Save grant" })).toBeNull();
+
 		fireEvent.click(
 			within(screen.getByRole("list", { name: "Account grants" })).getByRole("button", { name: "Remove" }),
 		);
+
 		await waitFor(() =>
 			expect(mutationMock).toHaveBeenCalledWith("remove_grant", {
 				membershipId: "membership_1",
@@ -225,6 +272,7 @@ describe("RouteServiceAccounts", () => {
 	test("does not expose account management without the workspace permission", () => {
 		queryMock.mockReturnValue(false);
 		renderRoute();
+
 		expect(screen.getByRole("alert").textContent).toContain("don't have permission");
 		expect(screen.getByRole("button", { name: "Create account" }).hasAttribute("disabled")).toBe(true);
 		expect(screen.queryByRole("list")).toBeNull();

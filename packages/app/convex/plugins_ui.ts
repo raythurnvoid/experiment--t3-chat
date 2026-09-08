@@ -281,8 +281,9 @@ export const insert_page_session = internalMutation({
 				installation,
 				serviceAccountId: installation.serviceAccountId,
 			}))
-		)
+		) {
 			return Result({ _nay: { message: "Not found" } });
+		}
 		const now = Date.now();
 		const expiresAt = now + SESSION_TTL_MS;
 		const token = `plu_${crypto_random_hex(32)}`;
@@ -448,8 +449,9 @@ export const insert_file_view_session = internalMutation({
 				installation,
 				serviceAccountId: installation.serviceAccountId,
 			}))
-		)
+		) {
 			return Result({ _nay: { message: "Not found" } });
+		}
 		const now = Date.now();
 		const expiresAt = now + SESSION_TTL_MS;
 		const token = `plu_${crypto_random_hex(32)}`;
@@ -584,8 +586,11 @@ export const rotate_ui_session = internalMutation({
 		// Rotating a token creates a new one, so it follows the same rule as the mint that created the
 		// session. A file-view session checks against its file node, so a restriction added after the
 		// mint stops the refresh.
-		if (!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: session.serviceAccountId })))
+		if (
+			!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: session.serviceAccountId }))
+		) {
 			return Result({ _nay: { message: "Not found" } });
+		}
 		const fileNode = session.fileNodeId ? await ctx.db.get("files_nodes", session.fileNodeId) : null;
 		if (session.fileNodeId && !fileNode) {
 			return Result({ _nay: { message: "Not found" } });

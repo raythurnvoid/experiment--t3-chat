@@ -2445,7 +2445,9 @@ describe("r2 asset content", () => {
 			}),
 		);
 		const installation = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", installationId));
-		if (!installation) throw new Error("Expected plugin installation");
+		if (!installation) {
+			throw new Error("Expected plugin installation");
+		}
 		// Replacing an existing plugin output also changes its access state.
 		expect(
 			await asUser.mutation(api.access_control.set_service_account_grant, {
@@ -3981,7 +3983,9 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		return await t.run(async (ctx) => {
 			const now = Date.now();
 			const installation = await ctx.db.get("plugins_workspace_installations", installationId);
-			if (!installation) throw new Error("Expected plugin installation");
+			if (!installation) {
+				throw new Error("Expected plugin installation");
+			}
 			const serviceAccountId = installation.serviceAccountId;
 			await ctx.db.insert("quotas", {
 				quotaName: "plugin_service_storage_bytes",

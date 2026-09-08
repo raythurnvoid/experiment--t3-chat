@@ -83,14 +83,14 @@
 	}
 	/* #endregion facts */
 
-	/* #region read-only */
-	.FilesPropertiesModalReadOnly {
+	/* #region write policy */
+	.FilesPropertiesModalWritePolicy {
 		display: flex;
 		flex-direction: column;
 		gap: 10px;
 	}
 
-	.FilesPropertiesModalReadOnly-choices {
+	.FilesPropertiesModalWritePolicy-choices {
 		display: flex;
 		flex-wrap: wrap;
 		gap: 12px;
@@ -113,7 +113,7 @@
 		}
 	}
 
-	.FilesPropertiesModalReadOnly-description {
+	.FilesPropertiesModalWritePolicy-description {
 		font-size: 12px;
 		line-height: 1.4;
 		font-weight: 400;
@@ -122,19 +122,19 @@
 		text-wrap: pretty;
 	}
 
-	.FilesPropertiesModalReadOnly-actions {
+	.FilesPropertiesModalWritePolicy-actions {
 		display: flex;
 		flex-wrap: wrap;
 		gap: 8px;
 	}
 
-	.FilesPropertiesModalReadOnly-error {
+	.FilesPropertiesModalWritePolicy-error {
 		margin: 0;
 
 		font-size: 13px;
 		color: var(--color-red-11);
 	}
-	/* #endregion read-only */
+	/* #endregion write policy */
 
 	/* #region collaboration */
 	.FilesPropertiesModalCollaboration {

@@ -560,7 +560,6 @@ type RouteApiKeysCreateModal_Props = {
 	scopes: Record<RouteApiKeys_Scope, boolean>;
 	serviceAccountId: app_convex_Id<"access_control_service_accounts"> | null;
 	canBindAccount: boolean;
-	onServiceAccountChange: (value: app_convex_Id<"access_control_service_accounts"> | null) => void;
 	validationMessage?: string;
 	displayValidationMessage?: string;
 	error?: string;
@@ -569,6 +568,7 @@ type RouteApiKeysCreateModal_Props = {
 	onNameChange: (name: string) => void;
 	onNameBlur: () => void;
 	onScopeChange: (scope: RouteApiKeys_Scope, checked: boolean) => void;
+	onServiceAccountChange: (value: app_convex_Id<"access_control_service_accounts"> | null) => void;
 	onSubmit: (event: FormEvent<HTMLFormElement>) => void;
 };
 
@@ -581,7 +581,6 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 		scopes,
 		serviceAccountId,
 		canBindAccount,
-		onServiceAccountChange,
 		validationMessage,
 		displayValidationMessage,
 		error,
@@ -590,6 +589,7 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 		onNameChange,
 		onNameBlur,
 		onScopeChange,
+		onServiceAccountChange,
 		onSubmit,
 	} = props;
 	const modalId = `RouteApiKeysCreateModal-${useId()}`;
@@ -616,10 +616,10 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 						<div className={"RouteApiKeysCreateModal-fields" satisfies RouteApiKeysCreateModal_ClassNames}>
 							<ServiceAccountSelect
 								value={serviceAccountId}
-								onChange={onServiceAccountChange}
 								label="Identity"
 								emptyLabel="Personal"
 								disabled={pending || !canBindAccount}
+								onChange={onServiceAccountChange}
 							/>
 							{serviceAccountId ? (
 								<p>Service keys use file scopes only. Account grants and your access must both allow the request.</p>
@@ -1012,11 +1012,14 @@ function RouteApiKeysMembership(props: {
 		setCreateError(undefined);
 	});
 	const handleServiceAccountChange = useFn((value: app_convex_Id<"access_control_service_accounts"> | null) => {
-		if (createPending || (value !== null && canBindAccount !== true)) return;
+		if (createPending || (value !== null && canBindAccount !== true)) {
+			return;
+		}
 		setCreateServiceAccountId(value);
 		setCreateError(undefined);
-		if (value !== null)
+		if (value !== null) {
 			setCreateScopes((scopes) => ({ ...scopes, "plugin_data:read": false, "plugin_data:write": false }));
+		}
 	});
 
 	const handleCreate = useFn((event: FormEvent<HTMLFormElement>) => {
@@ -1040,7 +1043,9 @@ function RouteApiKeysMembership(props: {
 				(createServiceAccountId === null || public_api_SERVICE_ACCOUNT_SCOPES.some((scope) => scope === row.scope)),
 		).map((row) => row.scope);
 		if (submittedScopes.length === 0) return;
-		if (createServiceAccountId !== null && canBindAccount !== true) return;
+		if (createServiceAccountId !== null && canBindAccount !== true) {
+			return;
+		}
 
 		const submittedName = createName.trim();
 		setCreatePending(true);
@@ -1211,7 +1216,6 @@ function RouteApiKeysMembership(props: {
 				scopes={createScopes}
 				serviceAccountId={createServiceAccountId}
 				canBindAccount={canBindAccount === true}
-				onServiceAccountChange={handleServiceAccountChange}
 				validationMessage={createValidationMessage}
 				displayValidationMessage={createDisplayValidationMessage}
 				error={createError}
@@ -1220,6 +1224,7 @@ function RouteApiKeysMembership(props: {
 				onNameChange={handleCreateNameChange}
 				onNameBlur={handleCreateNameBlur}
 				onScopeChange={handleCreateScopeChange}
+				onServiceAccountChange={handleServiceAccountChange}
 				onSubmit={handleCreate}
 			/>
 			<RouteApiKeysRevealModal

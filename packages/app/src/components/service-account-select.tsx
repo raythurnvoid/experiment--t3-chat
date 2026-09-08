@@ -17,19 +17,19 @@ import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 
 export const ServiceAccountSelect = memo(function ServiceAccountSelect(props: {
 	value: app_convex_Id<"access_control_service_accounts"> | null;
-	onChange: (value: app_convex_Id<"access_control_service_accounts"> | null) => void;
 	label?: string;
 	emptyLabel?: string;
 	disabled?: boolean;
+	onChange: (value: app_convex_Id<"access_control_service_accounts"> | null) => void;
 }) {
-	const { value, onChange, label = "Service account", emptyLabel = "Choose a service account", disabled } = props;
+	const { value, label = "Service account", emptyLabel = "Choose a service account", disabled, onChange } = props;
 	const { membershipId } = AppTenantProvider.useContext();
 	const accounts = usePaginatedQuery(
 		app_convex_api.access_control.list_service_accounts,
 		{ membershipId, includeRevoked: false },
 		{ initialNumItems: 50 },
 	);
-	const selected = useQuery(
+	const selectedAccount = useQuery(
 		app_convex_api.access_control.get_service_account,
 		value ? { membershipId, serviceAccountId: value } : "skip",
 	);
@@ -45,7 +45,11 @@ export const ServiceAccountSelect = memo(function ServiceAccountSelect(props: {
 				<MySelectLabel>{label}</MySelectLabel>
 				<MySelectTrigger disabled={disabled || accounts.status === "LoadingFirstPage"}>
 					<MyButton variant="outline">
-						{value ? (selected?.revokedAt === null ? selected.name : "Service account unavailable") : emptyLabel}
+						{value
+							? selectedAccount?.revokedAt === null
+								? selectedAccount.name
+								: "Service account unavailable"
+							: emptyLabel}
 						<MySelectOpenIndicator />
 					</MyButton>
 				</MySelectTrigger>

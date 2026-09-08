@@ -55,6 +55,7 @@ type Account = NonNullable<app_convex_FunctionReturnType<typeof app_convex_api.a
 type Grant = app_convex_FunctionReturnType<
 	typeof app_convex_api.access_control.list_service_account_grants
 >["page"][number];
+
 type RouteServiceAccounts_ClassNames =
 	| "RouteServiceAccounts"
 	| "RouteServiceAccounts-header"
@@ -77,6 +78,7 @@ const RouteServiceAccountsGrants = memo(function RouteServiceAccountsGrants(prop
 		{ membershipId, serviceAccountId: account._id },
 		{ initialNumItems: 50 },
 	);
+
 	const [resourceKind, setResourceKind] = useState<"workspace" | "file">("workspace");
 	const [path, setPath] = useState("");
 	const [level, setLevel] = useState<access_control_FileShareLevel>("read");
@@ -84,11 +86,12 @@ const RouteServiceAccountsGrants = memo(function RouteServiceAccountsGrants(prop
 	const [error, setError] = useState<string | null>(null);
 	const dialogRef = useRef<HTMLDivElement>(null);
 	const pathHelperId = useId();
+
 	const node = useQuery(
 		app_convex_api.files_nodes.get_authorized_by_path,
 		resourceKind === "file" && path.startsWith("/") ? { membershipId, path } : "skip",
 	);
-	const management = useQuery(
+	const grantManagement = useQuery(
 		app_convex_api.access_control.get_service_account_grant_management_state,
 		resourceKind === "workspace"
 			? { membershipId, serviceAccountId: account._id, resource: { kind: "workspace" } }
@@ -96,13 +99,20 @@ const RouteServiceAccountsGrants = memo(function RouteServiceAccountsGrants(prop
 				? { membershipId, serviceAccountId: account._id, resource: { kind: "file", nodeId: node.nodeId } }
 				: "skip",
 	);
-	const canSet =
-		management?.canManage === true && management.grantableLevels.includes(level) && account.revokedAt === null;
 
-	const write = (resource: Grant["resource"], nextLevel: access_control_FileShareLevel | null) => {
-		if (pending) return;
+	const canSet =
+		grantManagement?.canManage === true &&
+		grantManagement.grantableLevels.includes(level) &&
+		account.revokedAt === null;
+
+	const handleChangeGrant = (resource: Grant["resource"], nextLevel: access_control_FileShareLevel | null) => {
+		if (pending) {
+			return;
+		}
+
 		setPending(true);
 		setError(null);
+
 		Promise.try(() =>
 			nextLevel === null
 				? app_convex.mutation(app_convex_api.access_control.remove_service_account_grant, {
@@ -118,11 +128,14 @@ const RouteServiceAccountsGrants = memo(function RouteServiceAccountsGrants(prop
 					}),
 		)
 			.then((result) => {
-				if (result._nay) setError(result._nay.message);
-				else if (nextLevel === null) dialogRef.current?.focus();
+				if (result._nay) {
+					setError(result._nay.message);
+				} else if (nextLevel === null) {
+					dialogRef.current?.focus();
+				}
 			})
 			.catch((caughtError: unknown) => {
-				console.error("[RouteServiceAccountsGrants.write] Failed to change grant", {
+				console.error("[RouteServiceAccountsGrants.handleChangeGrant] Failed to change grant", {
 					error: caughtError,
 					serviceAccountId: account._id,
 				});
@@ -135,7 +148,9 @@ const RouteServiceAccountsGrants = memo(function RouteServiceAccountsGrants(prop
 		<MyModal
 			open
 			setOpen={(open) => {
-				if (!open && !pending) onClose();
+				if (!open && !pending) {
+					onClose();
+				}
 			}}
 		>
 			<MyModalPopover ref={dialogRef} tabIndex={-1} hideOnEscape={!pending} hideOnInteractOutside={!pending}>
@@ -175,8 +190,12 @@ const RouteServiceAccountsGrants = memo(function RouteServiceAccountsGrants(prop
 											<MySelect
 												value={grant.level}
 												setValue={(next) => {
-													if (grant.canManage && grant.grantableLevels.includes(next as access_control_FileShareLevel))
-														void write(grant.resource, next as access_control_FileShareLevel);
+													if (
+														grant.canManage &&
+														grant.grantableLevels.includes(next as access_control_FileShareLevel)
+													) {
+														void handleChangeGrant(grant.resource, next as access_control_FileShareLevel);
+													}
 												}}
 											>
 												<MySelectTrigger
@@ -205,7 +224,7 @@ const RouteServiceAccountsGrants = memo(function RouteServiceAccountsGrants(prop
 												variant="ghost_destructive"
 												disabled={!grant.canManage}
 												aria-busy={pending || undefined}
-												onClick={() => void write(grant.resource, null)}
+												onClick={() => void handleChangeGrant(grant.resource, null)}
 											>
 												Remove
 											</MyButton>
@@ -224,7 +243,9 @@ const RouteServiceAccountsGrants = memo(function RouteServiceAccountsGrants(prop
 								className={"RouteServiceAccounts-fields" satisfies RouteServiceAccounts_ClassNames}
 								onSubmit={(event) => {
 									event.preventDefault();
-									if (canSet && management) void write(management.resource, level);
+									if (canSet && grantManagement) {
+										void handleChangeGrant(grantManagement.resource, level);
+									}
 								}}
 							>
 								<h3>Add or change a grant</h3>
@@ -277,11 +298,11 @@ const RouteServiceAccountsGrants = memo(function RouteServiceAccountsGrants(prop
 										</MyInputHelperText>
 									</MyInput>
 								) : null}
-								{management ? (
+								{grantManagement ? (
 									<p>
-										{management.resource.kind === "workspace"
+										{grantManagement.resource.kind === "workspace"
 											? "Unrestricted workspace content"
-											: `${management.file?.path ?? "Protected item"} — ${management.file?.scope === "restricted_scope" ? "This restricted scope" : "This item only"}`}
+											: `${grantManagement.file?.path ?? "Protected item"} — ${grantManagement.file?.scope === "restricted_scope" ? "This restricted scope" : "This item only"}`}
 									</p>
 								) : null}
 								<MySelect
@@ -290,8 +311,9 @@ const RouteServiceAccountsGrants = memo(function RouteServiceAccountsGrants(prop
 										if (
 											!pending &&
 											access_control_FILE_SHARE_LEVEL_KEYS.includes(next as access_control_FileShareLevel)
-										)
+										) {
 											setLevel(next as access_control_FileShareLevel);
+										}
 									}}
 								>
 									<MySelectLabel>Access level</MySelectLabel>
@@ -304,14 +326,14 @@ const RouteServiceAccountsGrants = memo(function RouteServiceAccountsGrants(prop
 									<MySelectPopover>
 										<MySelectPopoverContent>
 											{access_control_FILE_SHARE_LEVEL_KEYS.map((key) => (
-												<MySelectItem key={key} value={key} disabled={!management?.grantableLevels.includes(key)}>
+												<MySelectItem key={key} value={key} disabled={!grantManagement?.grantableLevels.includes(key)}>
 													{access_control_FILE_SHARE_LEVELS[key].label}
 												</MySelectItem>
 											))}
 										</MySelectPopoverContent>
 									</MySelectPopover>
 								</MySelect>
-								{management?.canManage === false ? <p>You cannot manage access to this resource.</p> : null}
+								{grantManagement?.canManage === false ? <p>You cannot manage access to this resource.</p> : null}
 								<MyButton type="submit" variant="outline" disabled={!canSet} aria-busy={pending || undefined}>
 									{pending ? "Saving…" : "Save grant"}
 								</MyButton>
@@ -347,6 +369,7 @@ function RouteServiceAccountsMembership() {
 		canManage === true ? { membershipId, includeRevoked: true } : "skip",
 		{ initialNumItems: 50 },
 	);
+
 	const [editor, setEditor] = useState<{ kind: "create" } | { kind: "rename" | "revoke"; account: Account } | null>(
 		null,
 	);
@@ -357,29 +380,41 @@ function RouteServiceAccountsMembership() {
 	const [error, setError] = useState<string | null>(null);
 	const createButtonRef = useRef<HTMLButtonElement>(null);
 	const nameHelperId = useId();
+
 	const grantAccount = useQuery(
 		app_convex_api.access_control.get_service_account,
 		grantAccountId ? { membershipId, serviceAccountId: grantAccountId } : "skip",
 	);
+
 	const validationMessage = name.trim() ? undefined : "Account name is required";
-	const openEditor = (next: NonNullable<typeof editor>) => {
+
+	const handleOpenEditor = (next: NonNullable<typeof editor>) => {
 		setEditor(next);
 		setName(next.kind === "create" ? "" : next.account.name);
 		setTouched(false);
 		setError(null);
 	};
-	const closeEditor = () => {
+
+	const handleCloseEditor = () => {
 		if (!pending) {
 			setEditor(null);
 			setError(null);
 		}
 	};
-	const save = () => {
-		if (!editor || pending || canManage !== true) return;
+
+	const handleSaveAccount = () => {
+		if (!editor || pending || canManage !== true) {
+			return;
+		}
+
 		setTouched(true);
-		if (editor.kind !== "revoke" && validationMessage) return;
+		if (editor.kind !== "revoke" && validationMessage) {
+			return;
+		}
+
 		setPending(true);
 		setError(null);
+
 		const request =
 			editor.kind === "create"
 				? app_convex.mutation(app_convex_api.access_control.create_service_account, {
@@ -398,11 +433,17 @@ function RouteServiceAccountsMembership() {
 						});
 		request
 			.then((result) => {
-				if (result._nay) setError(result._nay.message);
-				else setEditor(null);
+				if (result._nay) {
+					setError(result._nay.message);
+				} else {
+					setEditor(null);
+				}
 			})
 			.catch((caughtError: unknown) => {
-				console.error("[RouteServiceAccounts.save] Failed to change account", { error: caughtError, membershipId });
+				console.error("[RouteServiceAccounts.handleSaveAccount] Failed to change account", {
+					error: caughtError,
+					membershipId,
+				});
 				setError("Could not change the account. Try again.");
 			})
 			.finally(() => setPending(false));
@@ -424,7 +465,7 @@ function RouteServiceAccountsMembership() {
 					ref={createButtonRef}
 					variant="outline"
 					disabled={canManage !== true}
-					onClick={() => openEditor({ kind: "create" })}
+					onClick={() => handleOpenEditor({ kind: "create" })}
 				>
 					<Plus aria-hidden />
 					Create account
@@ -461,7 +502,7 @@ function RouteServiceAccountsMembership() {
 										<MyButton variant="outline" onClick={() => setGrantAccountId(account._id)}>
 											Manage grants
 										</MyButton>
-										<MyButton variant="ghost" onClick={() => openEditor({ kind: "rename", account })}>
+										<MyButton variant="ghost" onClick={() => handleOpenEditor({ kind: "rename", account })}>
 											Rename
 										</MyButton>
 										{account.revokedAt === null ? (
@@ -474,7 +515,10 @@ function RouteServiceAccountsMembership() {
 												>
 													Create API key
 												</MyLink>
-												<MyButton variant="ghost_destructive" onClick={() => openEditor({ kind: "revoke", account })}>
+												<MyButton
+													variant="ghost_destructive"
+													onClick={() => handleOpenEditor({ kind: "revoke", account })}
+												>
 													Revoke
 												</MyButton>
 											</>
@@ -498,14 +542,16 @@ function RouteServiceAccountsMembership() {
 			<MyModal
 				open={editor !== null}
 				setOpen={(open) => {
-					if (!open) closeEditor();
+					if (!open) {
+						handleCloseEditor();
+					}
 				}}
 			>
 				<MyModalPopover hideOnEscape={!pending} hideOnInteractOutside={!pending} finalFocus={createButtonRef}>
 					<form
 						onSubmit={(event) => {
 							event.preventDefault();
-							void save();
+							void handleSaveAccount();
 						}}
 					>
 						<MyModalHeader>
@@ -559,7 +605,7 @@ function RouteServiceAccountsMembership() {
 							) : null}
 						</MyModalScrollableArea>
 						<MyModalFooter>
-							<MyButton variant="ghost" disabled={pending} onClick={closeEditor}>
+							<MyButton variant="ghost" disabled={pending} onClick={handleCloseEditor}>
 								Cancel
 							</MyButton>
 							<MyButton

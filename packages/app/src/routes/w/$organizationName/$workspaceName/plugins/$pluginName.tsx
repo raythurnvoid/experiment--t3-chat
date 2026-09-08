@@ -2069,11 +2069,13 @@ const RoutePluginsServiceAccountGrants = memo(function RoutePluginsServiceAccoun
 	const [resourceKind, setResourceKind] = useState<"workspace" | "file">("workspace");
 	const [path, setPath] = useState("");
 	const [level, setLevel] = useState<access_control_FileShareLevel>("read");
+	const [resourceLabels, setResourceLabels] = useState<Record<string, string>>({});
+
 	const node = useQuery(
 		app_convex_api.files_nodes.get_authorized_by_path,
 		resourceKind === "file" && path.startsWith("/") ? { membershipId, path } : "skip",
 	);
-	const management = useQuery(
+	const grantManagement = useQuery(
 		app_convex_api.access_control.get_service_account_grant_management_state,
 		resourceKind === "workspace"
 			? { membershipId, serviceAccountId, resource: { kind: "workspace" } }
@@ -2081,25 +2083,34 @@ const RoutePluginsServiceAccountGrants = memo(function RoutePluginsServiceAccoun
 				? { membershipId, serviceAccountId, resource: { kind: "file", nodeId: node.nodeId } }
 				: "skip",
 	);
-	const [labels, setLabels] = useState<Record<string, string>>({});
-	const resourceKey = (resource: PluginServiceAccountGrants[number]["resource"]) =>
+
+	const get_resource_key = (resource: PluginServiceAccountGrants[number]["resource"]) =>
 		resource.kind === "workspace" ? "workspace" : resource.nodeId;
-	const add = () => {
-		if (disabled || !management?.canManage || !management.grantableLevels.includes(level) || grants.length >= 20)
+
+	const handleAddGrant = () => {
+		if (
+			disabled ||
+			!grantManagement?.canManage ||
+			!grantManagement.grantableLevels.includes(level) ||
+			grants.length >= 20
+		) {
 			return;
-		const key = resourceKey(management.resource);
-		setLabels({
-			...labels,
+		}
+
+		const key = get_resource_key(grantManagement.resource);
+		setResourceLabels({
+			...resourceLabels,
 			[key]:
-				management.resource.kind === "workspace"
+				grantManagement.resource.kind === "workspace"
 					? "Workspace"
-					: `${management.file?.path ?? "Protected item"} — ${management.file?.scope === "restricted_scope" ? "This restricted scope" : "This item only"}`,
+					: `${grantManagement.file?.path ?? "Protected item"} — ${grantManagement.file?.scope === "restricted_scope" ? "This restricted scope" : "This item only"}`,
 		});
 		onChange([
-			...grants.filter((grant) => resourceKey(grant.resource) !== key),
-			{ resource: management.resource, level },
+			...grants.filter((grant) => get_resource_key(grant.resource) !== key),
+			{ resource: grantManagement.resource, level },
 		]);
 	};
+
 	return (
 		<div className={"RoutePluginsPluginConsentModal-accountFields" satisfies RoutePluginsPlugin_ClassNames}>
 			<h3>Grants to apply on install</h3>
@@ -2107,7 +2118,9 @@ const RoutePluginsServiceAccountGrants = memo(function RoutePluginsServiceAccoun
 			<MySelect
 				value={resourceKind}
 				setValue={(value) => {
-					if (!disabled && (value === "workspace" || value === "file")) setResourceKind(value);
+					if (!disabled && (value === "workspace" || value === "file")) {
+						setResourceKind(value);
+					}
 				}}
 			>
 				<MySelectLabel>Grant resource</MySelectLabel>
@@ -2133,19 +2146,21 @@ const RoutePluginsServiceAccountGrants = memo(function RoutePluginsServiceAccoun
 							value={path}
 							placeholder="/logs"
 							onChange={(event) => {
-								if (!disabled) setPath(event.currentTarget.value);
+								if (!disabled) {
+									setPath(event.currentTarget.value);
+								}
 							}}
 						/>
 					</MyInputArea>
 					<MyInputBox />
 				</MyInput>
 			) : null}
-			{management ? (
+			{grantManagement ? (
 				<p>
-					{management.file?.path ?? "Workspace"}:{" "}
-					{management.resource.kind === "workspace"
+					{grantManagement.file?.path ?? "Workspace"}:{" "}
+					{grantManagement.resource.kind === "workspace"
 						? "Unrestricted workspace content"
-						: management.file?.scope === "restricted_scope"
+						: grantManagement.file?.scope === "restricted_scope"
 							? "This restricted scope"
 							: "This item only"}
 				</p>
@@ -2153,7 +2168,9 @@ const RoutePluginsServiceAccountGrants = memo(function RoutePluginsServiceAccoun
 			<MySelect
 				value={level}
 				setValue={(value) => {
-					if (!disabled) setLevel(value as access_control_FileShareLevel);
+					if (!disabled) {
+						setLevel(value as access_control_FileShareLevel);
+					}
 				}}
 			>
 				<MySelectLabel>Grant access level</MySelectLabel>
@@ -2166,7 +2183,7 @@ const RoutePluginsServiceAccountGrants = memo(function RoutePluginsServiceAccoun
 				<MySelectPopover>
 					<MySelectPopoverContent>
 						{access_control_FILE_SHARE_LEVEL_KEYS.map((key) => (
-							<MySelectItem key={key} value={key} disabled={!management?.grantableLevels.includes(key)}>
+							<MySelectItem key={key} value={key} disabled={!grantManagement?.grantableLevels.includes(key)}>
 								{access_control_FILE_SHARE_LEVELS[key].label}
 							</MySelectItem>
 						))}
@@ -2176,22 +2193,29 @@ const RoutePluginsServiceAccountGrants = memo(function RoutePluginsServiceAccoun
 			<MyButton
 				variant="outline"
 				disabled={
-					disabled || !management?.canManage || !management.grantableLevels.includes(level) || grants.length >= 20
+					disabled ||
+					!grantManagement?.canManage ||
+					!grantManagement.grantableLevels.includes(level) ||
+					grants.length >= 20
 				}
-				onClick={add}
+				onClick={handleAddGrant}
 			>
 				Add reviewed grant
 			</MyButton>
 			<ul>
 				{grants.map((grant) => (
-					<li key={resourceKey(grant.resource)}>
-						{labels[resourceKey(grant.resource)] ?? "Selected resource"}:{" "}
+					<li key={get_resource_key(grant.resource)}>
+						{resourceLabels[get_resource_key(grant.resource)] ?? "Selected resource"}:{" "}
 						{access_control_FILE_SHARE_LEVELS[grant.level].label}
 						<MyButton
 							variant="ghost"
 							disabled={disabled}
 							onClick={() =>
-								onChange(grants.filter((candidate) => resourceKey(candidate.resource) !== resourceKey(grant.resource)))
+								onChange(
+									grants.filter(
+										(candidate) => get_resource_key(candidate.resource) !== get_resource_key(grant.resource),
+									),
+								)
 							}
 						>
 							Remove from install
@@ -2272,9 +2296,19 @@ function RoutePluginsPlugin() {
 			: "skip",
 	);
 	const handleRebind = useFn(() => {
-		if (!installedItem || !rebindAccountId || rebinding || canManageAccounts !== true || publishBusy || managementBusy)
+		if (
+			!installedItem ||
+			!rebindAccountId ||
+			rebinding ||
+			canManageAccounts !== true ||
+			publishBusy ||
+			managementBusy
+		) {
 			return;
+		}
+
 		setRebinding(true);
+
 		app_convex
 			.mutation(app_convex_api.plugins.set_installation_service_account, {
 				membershipId,
@@ -2282,8 +2316,9 @@ function RoutePluginsPlugin() {
 				serviceAccountId: rebindAccountId,
 			})
 			.then((result) => {
-				if (result._nay) toast.error(result._nay.message);
-				else {
+				if (result._nay) {
+					toast.error(result._nay.message);
+				} else {
 					heroTitleRef.current?.focus();
 					setRebindAccountId(null);
 					toast.success("Plugin service account changed");
@@ -2731,11 +2766,13 @@ function RoutePluginsPlugin() {
 							<>
 								<ServiceAccountSelect
 									value={rebindAccountId}
-									onChange={(value) => {
-										if (!rebinding) setRebindAccountId(value);
-									}}
 									label="Replacement service account"
 									disabled={rebinding}
+									onChange={(value) => {
+										if (!rebinding) {
+											setRebindAccountId(value);
+										}
+									}}
 								/>
 								<p>
 									Changing accounts stops work using the old account. It does not move grants or change existing file
@@ -2812,14 +2849,14 @@ function RoutePluginsPlugin() {
 						<div className={"RoutePluginsPluginConsentModal-accountFields" satisfies RoutePluginsPlugin_ClassNames}>
 							<ServiceAccountSelect
 								value={installAccountId ?? installedItem?.installation.serviceAccountId ?? null}
+								emptyLabel={installedItem ? "Keep current account" : "Create an empty account"}
+								disabled={installing || canManageAccounts !== true}
 								onChange={(value) => {
 									if (!installing) {
 										setInstallAccountId(value ?? undefined);
 										setInstallGrants([]);
 									}
 								}}
-								emptyLabel={installedItem ? "Keep current account" : "Create an empty account"}
-								disabled={installing || canManageAccounts !== true}
 							/>
 							<p>
 								{installedItem

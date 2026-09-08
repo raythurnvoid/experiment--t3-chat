@@ -316,9 +316,15 @@ async function db_has_live_credential_account(
 	ctx: QueryCtx,
 	credential: Pick<Doc<"api_credentials">, "organizationId" | "workspaceId" | "serviceAccountId" | "scopes">,
 ) {
-	if (credential.serviceAccountId === null) return true;
+	if (credential.serviceAccountId === null) {
+		return true;
+	}
+
 	const allowedScopes: readonly public_api_Scope[] = public_api_SERVICE_ACCOUNT_SCOPES;
-	if (credential.scopes.some((scope) => !allowedScopes.includes(scope))) return false;
+	if (credential.scopes.some((scope) => !allowedScopes.includes(scope))) {
+		return false;
+	}
+
 	const account = await ctx.db.get("access_control_service_accounts", credential.serviceAccountId);
 	return (
 		account !== null &&
@@ -338,7 +344,10 @@ async function authorize_credential_account_binding(
 		workspace: Doc<"organizations_workspaces">;
 	},
 ) {
-	if (args.serviceAccountId === null) return Result({ _yay: null });
+	if (args.serviceAccountId === null) {
+		return Result({ _yay: null });
+	}
+
 	if (
 		!args.organization.defaultWorkspaceId ||
 		!(await access_control_db_has_permission(ctx, {
@@ -353,6 +362,7 @@ async function authorize_credential_account_binding(
 	) {
 		return Result({ _nay: { message: "Permission denied" } });
 	}
+
 	if (
 		!(await db_has_live_credential_account(ctx, {
 			organizationId: args.organization._id,
@@ -363,6 +373,7 @@ async function authorize_credential_account_binding(
 	) {
 		return Result({ _nay: { message: "Choose an active service account and file scopes only" } });
 	}
+
 	return Result({ _yay: null });
 }
 
@@ -385,6 +396,7 @@ async function has_workspace_content_permission(
 	if (args.fileNode && args.serviceAccountId) {
 		return await access_control_db_can_act_on_file_node(ctx, { ...args, fileNode: args.fileNode });
 	}
+
 	const [organization, workspace] = await Promise.all([
 		ctx.db.get("organizations", args.organizationId),
 		ctx.db.get("organizations_workspaces", args.workspaceId),
@@ -877,7 +889,9 @@ export const api_credential_create = mutation({
 			organization: credentialManagement._yay.organization,
 			workspace: credentialManagement._yay.workspace,
 		});
-		if (accountBinding._nay) return accountBinding;
+		if (accountBinding._nay) {
+			return accountBinding;
+		}
 
 		const quota = await quotas_db_get(ctx, {
 			quotaName: "active_api_credentials",
@@ -1086,7 +1100,9 @@ export const api_credential_rotate = mutation({
 			organization: credentialManagement._yay.organization,
 			workspace: credentialManagement._yay.workspace,
 		});
-		if (accountBinding._nay) return accountBinding;
+		if (accountBinding._nay) {
+			return accountBinding;
+		}
 
 		const rateLimit = await rate_limiter_limit_by_key(ctx, {
 			name: "api_credentials_write",
@@ -1819,9 +1835,13 @@ async function db_revalidate_user_credential(
 		credential.organizationId !== args.organizationId ||
 		credential.workspaceId !== args.workspaceId ||
 		!(await db_has_live_credential_account(ctx, credential))
-	)
+	) {
 		return Result({ _nay: { message: "Unauthenticated" } });
-	if (!credential.scopes.includes(args.requiredScope)) return Result({ _nay: { message: "Permission denied" } });
+	}
+	if (!credential.scopes.includes(args.requiredScope)) {
+		return Result({ _nay: { message: "Permission denied" } });
+	}
+
 	const user = await ctx.db.get("users", credential.userId);
 	const membership = await ctx.db
 		.query("organizations_workspaces_users")
@@ -1833,8 +1853,10 @@ async function db_revalidate_user_credential(
 				.eq("workspaceId", credential.workspaceId),
 		)
 		.first();
-	if (!user || user.deletedAt != null || !membership || membership.pendingOrganizationRemoval)
+	if (!user || user.deletedAt != null || !membership || membership.pendingOrganizationRemoval) {
 		return Result({ _nay: { message: "Unauthenticated" } });
+	}
+
 	return Result({ _yay: credential });
 }
 
@@ -1850,7 +1872,10 @@ async function db_authorize_file_policy_request(
 	},
 ) {
 	const liveCredential = await db_revalidate_user_credential(ctx, args);
-	if (liveCredential._nay) return liveCredential;
+	if (liveCredential._nay) {
+		return liveCredential;
+	}
+
 	const nodeId = ctx.db.normalizeId("files_nodes", args.nodeId);
 	const node = nodeId ? await ctx.db.get("files_nodes", nodeId) : null;
 	if (
@@ -1861,6 +1886,7 @@ async function db_authorize_file_policy_request(
 	) {
 		return Result({ _nay: { message: "Not found" } });
 	}
+
 	const credential = liveCredential._yay;
 	if (
 		!(await has_workspace_content_permission(ctx, {
@@ -1871,8 +1897,10 @@ async function db_authorize_file_policy_request(
 			fileNode: node,
 			permission: args.requiredScope === "files:permissions" ? "content.permissions.manage" : "content.read",
 		}))
-	)
+	) {
 		return Result({ _nay: { message: "Not found" } });
+	}
+
 	const writeContext: files_nodes_WriteContext = {
 		writer:
 			credential.serviceAccountId === null
@@ -1882,6 +1910,7 @@ async function db_authorize_file_policy_request(
 		resourceScope: { kind: "workspace" },
 		policyReach: "ancestors",
 	};
+
 	return Result({ _yay: { node, writeContext } });
 }
 
@@ -1896,7 +1925,10 @@ export const get_file_write_policy = internalQuery({
 	returns: v_result({ _yay: files_nodes_write_policy_management_state_validator }),
 	handler: async (ctx, args) => {
 		const authorized = await db_authorize_file_policy_request(ctx, { ...args, requiredScope: "files:read" });
-		if (authorized._nay) return authorized;
+		if (authorized._nay) {
+			return authorized;
+		}
+
 		return Result({ _yay: await files_nodes_db_get_write_policy_management_state(ctx, authorized._yay) });
 	},
 });
@@ -1928,22 +1960,30 @@ export const set_file_write_policy = internalMutation({
 	returns: v_result({ _yay: v.null() }),
 	handler: async (ctx, args) => {
 		const authorized = await db_authorize_file_policy_request(ctx, { ...args, requiredScope: "files:permissions" });
-		if (authorized._nay) return authorized;
+		if (authorized._nay) {
+			return authorized;
+		}
+
 		let writePolicy: Doc<"files_nodes">["writePolicy"];
 		if (args.writePolicy?.mode === "writer") {
 			const writer = args.writePolicy.writer;
 			if (writer.kind === "user") {
 				const userId = ctx.db.normalizeId("users", writer.userId);
-				if (!userId) return Result({ _nay: { message: "Writer is not available" } });
+				if (!userId) {
+					return Result({ _nay: { message: "Writer is not available" } });
+				}
 				writePolicy = { mode: "writer", writer: { kind: "user", userId } };
 			} else {
 				const serviceAccountId = ctx.db.normalizeId("access_control_service_accounts", writer.serviceAccountId);
-				if (!serviceAccountId) return Result({ _nay: { message: "Writer is not available" } });
+				if (!serviceAccountId) {
+					return Result({ _nay: { message: "Writer is not available" } });
+				}
 				writePolicy = { mode: "writer", writer: { kind: "service_account", serviceAccountId } };
 			}
 		} else {
 			writePolicy = args.writePolicy;
 		}
+
 		return await files_nodes_db_set_write_policy(ctx, { ...authorized._yay, writePolicy });
 	},
 });
@@ -2055,9 +2095,13 @@ export async function public_api_db_revalidate_file_write_principal(
 			return liveRun;
 		}
 		const { pluginRun, installation } = liveRun._yay;
-		if (pluginRun.actorUserId !== args.userId) return Result({ _nay: { message: "Unauthenticated" } });
+		if (pluginRun.actorUserId !== args.userId) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
 		const actor = await ctx.db.get("users", args.userId);
-		if (!actor || actor.deletedAt != null) return Result({ _nay: { message: "Unauthenticated" } });
+		if (!actor || actor.deletedAt != null) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
 
 		// Invoke writes select nodes by their editable plugin label. Upload runs keep the sibling rule.
 		if (pluginRun.event === "ui.invoke.requested") {
@@ -2231,7 +2275,9 @@ export async function public_api_db_revalidate_file_write_principal(
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
 		const actor = await ctx.db.get("users", grant.actorUserId);
-		if (!actor || actor.deletedAt != null) return Result({ _nay: { message: "Unauthenticated" } });
+		if (!actor || actor.deletedAt != null) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
 
 		// The seal is a location bound, checked again here so a stage prepared for one path can
 		// never publish outside the destination the grant was sealed to.
@@ -2303,7 +2349,9 @@ export async function public_api_db_revalidate_file_write_principal(
 		credentialId: args.principalRef.credentialId,
 		requiredScope: "files:write",
 	});
-	if (liveCredential._nay) return liveCredential;
+	if (liveCredential._nay) {
+		return liveCredential;
+	}
 	const credential = liveCredential._yay;
 	if (
 		!(await has_workspace_content_permission(ctx, {
@@ -2465,7 +2513,9 @@ async function db_preflight_file_write_target(
 			writeContext,
 			target: { kind: "node", node: activeNode },
 		});
-		if (writable._nay) return writable;
+		if (writable._nay) {
+			return writable;
+		}
 
 		return Result({
 			_yay: {
@@ -2484,15 +2534,18 @@ async function db_preflight_file_write_target(
 			fileNode: ancestor ?? undefined,
 			permission: "content.write",
 		}))
-	)
+	) {
 		return Result({ _nay: { message: "Permission denied" } });
+	}
 	const writable = await files_nodes_db_require_writable(ctx, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		writeContext,
 		target: { kind: "create", parentNode: ancestor, path: args.path },
 	});
-	if (writable._nay) return writable;
+	if (writable._nay) {
+		return writable;
+	}
 
 	return Result({ _yay: { targetAnchor: { kind: "create" as const } } });
 }
@@ -2795,8 +2848,9 @@ export const publish_file_write = internalMutation({
 				fileNode: activeNode ?? parentNode ?? undefined,
 				permission: "content.write",
 			}))
-		)
+		) {
 			return Result({ _nay: { message: "Permission denied" } });
+		}
 
 		if (
 			activeNode
@@ -2829,8 +2883,12 @@ export const publish_file_write = internalMutation({
 		}
 
 		if (activeNode) {
-			if (activeNode.kind !== "file") return Result({ _nay: { message: "A folder already exists at this path" } });
-			if (stage.overwrite === "fail") return Result({ _nay: { message: "A file already exists at this path" } });
+			if (activeNode.kind !== "file") {
+				return Result({ _nay: { message: "A folder already exists at this path" } });
+			}
+			if (stage.overwrite === "fail") {
+				return Result({ _nay: { message: "A file already exists at this path" } });
+			}
 			if (
 				principalRef.kind === "plugin_service" &&
 				!(await db_service_matches_file_label(ctx, { facts: revalidated._yay, node: activeNode }))
@@ -2848,14 +2906,17 @@ export const publish_file_write = internalMutation({
 					fileNode: activeNode,
 					permission: "content.permissions.manage",
 				}))
-			)
+			) {
 				return Result({ _nay: { message: "Permission denied" } });
+			}
 
 			// Keep the actor's existing replacement ceiling on each folder in the path.
 			let ancestorId = activeNode.parentId;
 			while (ancestorId !== files_ROOT_ID) {
 				const ancestor: Doc<"files_nodes"> | null = await ctx.db.get("files_nodes", ancestorId);
-				if (!ancestor) break;
+				if (!ancestor) {
+					break;
+				}
 				if (
 					!(await access_control_db_can_act_on_file_node(ctx, {
 						organizationId: stage.organizationId,
@@ -2864,8 +2925,9 @@ export const publish_file_write = internalMutation({
 						fileNode: ancestor,
 						permission: "content.write",
 					}))
-				)
+				) {
 					return Result({ _nay: { message: "Permission denied" } });
+				}
 				ancestorId = ancestor.parentId;
 			}
 		}
@@ -2884,8 +2946,9 @@ export const publish_file_write = internalMutation({
 				fileNode: parentNode ?? undefined,
 				permission: "content.write",
 			}))
-		)
+		) {
 			return Result({ _nay: { message: "Permission denied" } });
+		}
 		const createTarget = { kind: "create" as const, parentNode, path: stage.path };
 		const canCreate = await files_nodes_db_require_writable(ctx, {
 			organizationId: stage.organizationId,
@@ -2905,13 +2968,16 @@ export const publish_file_write = internalMutation({
 		let writePolicy = activeNode?.writePolicy ?? undefined;
 		if (args.requestReadOnly === true) {
 			const installation = revalidated._yay.installation;
-			if (!installation || writeContext.writer.kind !== "service_account")
+			if (!installation || writeContext.writer.kind !== "service_account") {
 				return Result({ _nay: { message: "Permission denied" } });
+			}
 			const canSelectWriter = revalidated._yay.pluginRun
 				? revalidated._yay.pluginRun.event === "ui.invoke.requested" &&
 					installation.acceptedCapabilities.includes("workspace.files.own-access")
 				: installation.acceptedCapabilities.includes("workspace.files.create-read-only");
-			if (!canSelectWriter) return Result({ _nay: { message: "Permission denied" } });
+			if (!canSelectWriter) {
+				return Result({ _nay: { message: "Permission denied" } });
+			}
 			writePolicy = { mode: "writer", writer: writeContext.writer };
 		}
 		if (writePolicy !== undefined) {
@@ -2922,11 +2988,14 @@ export const publish_file_write = internalMutation({
 				target: createTarget,
 				writePolicy,
 			});
-			if (managed._nay) return managed;
+			if (managed._nay) {
+				return managed;
+			}
 		}
 
-		if (activeNode)
+		if (activeNode) {
 			await files_nodes_db_archive_nodes(ctx, { nodeIds: [activeNode._id], updatedBy: stage.userId, now });
+		}
 		const pluginName = revalidated._yay.installation?.pluginName;
 		const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
 			userId: stage.userId,
@@ -2951,7 +3020,9 @@ export const publish_file_write = internalMutation({
 			now,
 		});
 		if (created._nay) {
-			if (activeNode) throw convex_error({ message: "Failed to replace file", cause: created._nay });
+			if (activeNode) {
+				throw convex_error({ message: "Failed to replace file", cause: created._nay });
+			}
 			return created;
 		}
 
@@ -3596,10 +3667,13 @@ export const can_write_file_node = internalQuery({
 			fileNode.workspaceId !== args.workspaceId ||
 			fileNode.archiveOperationId !== null ||
 			fileNode.path !== args.path
-		)
+		) {
 			return "permission_denied";
+		}
 		const revalidated = await public_api_db_revalidate_file_write_principal(ctx, { ...args, now: Date.now() });
-		if (revalidated._nay) return "permission_denied";
+		if (revalidated._nay) {
+			return "permission_denied";
+		}
 		const writeContext = revalidated._yay.writeContext;
 		if (
 			!(await has_workspace_content_permission(ctx, {
@@ -3611,8 +3685,9 @@ export const can_write_file_node = internalQuery({
 				fileNode,
 				permission: "content.write",
 			}))
-		)
+		) {
 			return "permission_denied";
+		}
 		const writable = await files_nodes_db_require_writable(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -3770,7 +3845,9 @@ export const create_file_upload_targets = internalMutation({
 	}),
 	handler: async (ctx, args) => {
 		const now = Date.now();
-		if (args.principalRef.kind !== "user_api_key") return Result({ _nay: { message: "Permission denied" } });
+		if (args.principalRef.kind !== "user_api_key") {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
 		// One transactional re-check covers the whole batch. The user_api_key branch never reads
 		// the path (path only matters for the plugin-run sibling constraint, and the route only
 		// admits user keys), so any placeholder path works.
@@ -3904,8 +3981,9 @@ export const create_file_upload_targets = internalMutation({
 						fileNode: existingNode,
 						permission: "content.permissions.manage",
 					}))
-				)
+				) {
 					return Result({ _nay: { message: "Permission denied", data: { path: item.path } } });
+				}
 			}
 
 			// The caller's type is stored when it is valid, so a text type here makes the upload an
@@ -3981,8 +4059,9 @@ export const create_file_upload_targets = internalMutation({
 					fileNode: parentNode ?? undefined,
 					permission: "content.write",
 				}))
-			)
+			) {
 				return Result({ _nay: { message: "Permission denied", data: { path: item.path } } });
+			}
 			const target = { kind: "create" as const, parentNode, path: item.path };
 			const writable = await files_nodes_db_require_writable(ctx, {
 				organizationId: args.organizationId,
@@ -3990,7 +4069,9 @@ export const create_file_upload_targets = internalMutation({
 				writeContext,
 				target,
 			});
-			if (writable._nay) return { ...writable, _nay: { ...writable._nay, data: { path: item.path } } };
+			if (writable._nay) {
+				return { ...writable, _nay: { ...writable._nay, data: { path: item.path } } };
+			}
 			if (item.writePolicy !== undefined) {
 				const managed = await files_nodes_db_require_write_policy_management(ctx, {
 					organizationId: args.organizationId,
@@ -3999,7 +4080,9 @@ export const create_file_upload_targets = internalMutation({
 					target,
 					writePolicy: item.writePolicy,
 				});
-				if (managed._nay) return Result({ _nay: { ...managed._nay, data: { path: item.path } } });
+				if (managed._nay) {
+					return Result({ _nay: { ...managed._nay, data: { path: item.path } } });
+				}
 			}
 		}
 
@@ -5110,9 +5193,15 @@ export async function public_api_http_get_file_write_policy(
 		allowedKinds: ["user_api_key"],
 		route: path,
 	});
-	if (auth._nay) return auth._nay;
+	if (auth._nay) {
+		return auth._nay;
+	}
+
 	const body = await server_request_json_parse_and_validate(request, get_file_write_policy_body_validator);
-	if (body._nay) return { status: 400, body: { message: body._nay.message } } as const;
+	if (body._nay) {
+		return { status: 400, body: { message: body._nay.message } } as const;
+	}
+
 	const principal = auth._yay.principal;
 	const result = (await ctx.runQuery(internal.public_api.get_file_write_policy, {
 		credentialId: principal.credentialId,
@@ -5121,11 +5210,13 @@ export async function public_api_http_get_file_write_policy(
 		userId: principal.userId,
 		nodeId: body._yay.nodeId,
 	})) as get_file_write_policy_Result;
-	if (result._nay)
+	if (result._nay) {
 		return {
 			status: result._nay.message === "Unauthenticated" ? 401 : result._nay.message === "Not found" ? 404 : 403,
 			body: { message: result._nay.message },
 		} as const;
+	}
+
 	return { status: 200, body: result._yay, headers: { "Cache-Control": "no-store" } } as const;
 }
 
@@ -5155,9 +5246,15 @@ export async function public_api_http_set_file_write_policy(
 		allowedKinds: ["user_api_key"],
 		route: path,
 	});
-	if (auth._nay) return auth._nay;
+	if (auth._nay) {
+		return auth._nay;
+	}
+
 	const body = await server_request_json_parse_and_validate(request, set_file_write_policy_body_validator);
-	if (body._nay) return { status: 400, body: { message: body._nay.message } } as const;
+	if (body._nay) {
+		return { status: 400, body: { message: body._nay.message } } as const;
+	}
+
 	const principal = auth._yay.principal;
 	const result = (await ctx.runMutation(internal.public_api.set_file_write_policy, {
 		credentialId: principal.credentialId,
@@ -5166,7 +5263,7 @@ export async function public_api_http_set_file_write_policy(
 		userId: principal.userId,
 		...body._yay,
 	})) as set_file_write_policy_Result;
-	if (result._nay)
+	if (result._nay) {
 		return {
 			status:
 				result._nay.message === "Unauthenticated"
@@ -5178,6 +5275,8 @@ export async function public_api_http_set_file_write_policy(
 							: 403,
 			body: { message: result._nay.message },
 		} as const;
+	}
+
 	return { status: 200, body: { nodeId: body._yay.nodeId }, headers: { "Cache-Control": "no-store" } } as const;
 }
 
@@ -6368,7 +6467,7 @@ export async function public_api_http_download_urls(
 		} as const;
 	}
 	// File grants can change while R2 signs, without changing the credential itself.
-	const currentFiles = await Promise.all(
+	const revalidatedFiles = await Promise.all(
 		items.map((item) =>
 			ctx.runQuery(internal.r2.get_data_for_public_download_url, {
 				organizationId: principal.organizationId,
@@ -6379,7 +6478,7 @@ export async function public_api_http_download_urls(
 			}),
 		),
 	);
-	if (currentFiles.some((data) => data === null)) {
+	if (revalidatedFiles.some((file) => file === null)) {
 		return {
 			status: 403,
 			body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),

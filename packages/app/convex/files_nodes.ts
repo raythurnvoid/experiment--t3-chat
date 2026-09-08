@@ -572,6 +572,7 @@ async function db_is_within_write_scope(
 	if (node && (node.organizationId !== args.organizationId || node.workspaceId !== args.workspaceId)) {
 		return false;
 	}
+
 	if (scope.kind === "workspace") {
 		return true;
 	}
@@ -585,12 +586,14 @@ async function db_is_within_write_scope(
 	if (scope.kind === "node") {
 		return args.target.kind === "node" && node?._id === scope.nodeId;
 	}
+
 	while (node) {
 		if (node._id === scope.nodeId) {
 			return true;
 		}
 		node = node.parentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", node.parentId);
 	}
+
 	return false;
 }
 
@@ -600,6 +603,7 @@ async function db_get_blocking_write_policy(
 ) {
 	const node = args.target.kind === "node" ? args.target.node : args.target.parentNode;
 	let scopeNodeId = node?.writePolicyScopeNodeId ?? null;
+
 	while (scopeNodeId !== null) {
 		const scopeNode = await ctx.db.get("files_nodes", scopeNodeId);
 		if (!scopeNode) {
@@ -607,29 +611,35 @@ async function db_get_blocking_write_policy(
 			console.error(message, { scopeNodeId });
 			throw should_never_happen(message, { scopeNodeId });
 		}
+
 		const policy = scopeNode.writePolicy;
 		const writer = args.writeContext.writer;
-		const matches =
+		const writerMatches =
 			policy?.mode === "writer" &&
 			(policy.writer.kind === "user"
 				? writer.kind === "user" && policy.writer.userId === writer.userId
 				: writer.kind === "service_account" && policy.writer.serviceAccountId === writer.serviceAccountId);
+
 		// A create's parent is an ancestor, even when its rule is local to that parent.
-		const inReach =
+		const policyInReach =
 			args.writeContext.policyReach === "ancestors" ||
 			(args.writeContext.policyReach === "direct" &&
 				args.target.kind === "node" &&
 				scopeNode._id === args.target.node._id);
-		if (!matches || !inReach) {
+		if (!writerMatches || !policyInReach) {
 			return scopeNode;
 		}
+
 		const parent = scopeNode.parentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", scopeNode.parentId);
 		scopeNodeId = parent?.writePolicyScopeNodeId ?? null;
 	}
+
 	return null;
 }
 
-/** Apply the current policy after actor, account, and credential permission checks. */
+/**
+ * Apply the current policy after actor, account, and credential permission checks.
+ */
 export async function files_nodes_db_require_writable(
 	ctx: QueryCtx | MutationCtx,
 	args: {
@@ -642,9 +652,11 @@ export async function files_nodes_db_require_writable(
 	if (!(await db_is_within_write_scope(ctx, args))) {
 		return Result({ _nay: { message: "Permission denied" } });
 	}
+
 	if (await db_get_blocking_write_policy(ctx, args)) {
 		return Result({ _nay: { name: "read_only", message: "This item is read-only." } });
 	}
+
 	return Result({ _yay: null });
 }
 
@@ -708,13 +720,16 @@ export async function files_nodes_db_cascade_write_policy_scope(
 						writePolicy: null,
 					});
 				}
+
 				stack.push(child._id);
 			}),
 		);
 	}
 }
 
-/** Ordinary app and agent writes always use their current human actor. */
+/**
+ * Ordinary app and agent writes always use their current human actor.
+ */
 export async function files_nodes_db_require_user_writable(
 	ctx: QueryCtx | MutationCtx,
 	args: { node: Doc<"files_nodes">; userId: Id<"users"> },
@@ -732,7 +747,9 @@ export async function files_nodes_db_require_user_writable(
 	});
 }
 
-/** Actions check the current actor's ACL and policy before writing external objects. */
+/**
+ * Actions check the current actor's ACL and policy before writing external objects.
+ */
 export const get_user_file_write_access = internalQuery({
 	args: {
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
@@ -749,6 +766,7 @@ export const get_user_file_write_access = internalQuery({
 		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
+
 		const writeContext: files_nodes_WriteContext = {
 			writer: { kind: "user", userId: args.userId },
 			actorUserId: args.userId,
@@ -758,6 +776,7 @@ export const get_user_file_write_access = internalQuery({
 		if (!(await db_has_write_context_permission(ctx, { ...args, node, writeContext, permission: "content.write" }))) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
+
 		return node
 			? await files_nodes_db_require_user_writable(ctx, { node, userId: args.userId })
 			: Result({ _yay: null });
@@ -868,11 +887,13 @@ export async function files_nodes_db_require_swept_nodes_writable(
 	// Check each restricted folder once.
 	const readableByScopeNodeId = new Map<Id<"files_nodes">, boolean>();
 	let hasHiddenRefusal = false;
+
 	for (const node of args.nodes) {
 		const writable = await files_nodes_db_require_writable(ctx, { ...args, target: { kind: "node", node } });
 		if (!writable._nay) {
 			continue;
 		}
+
 		const scopeNodeId = node.restrictedScopeNodeId;
 		// This node is not restricted. The caller can see the read-only error.
 		if (!scopeNodeId) {
@@ -892,6 +913,7 @@ export async function files_nodes_db_require_swept_nodes_writable(
 			});
 			readableByScopeNodeId.set(scopeNodeId, readable);
 		}
+
 		if (readable) {
 			return writable;
 		}
@@ -982,6 +1004,7 @@ async function db_has_write_context_permission(
 	if (!organizationId || !workspaceId) {
 		return false;
 	}
+
 	const membership = await ctx.db
 		.query("organizations_workspaces_users")
 		.withIndex("by_active_user_organization_workspace", (q) =>
@@ -995,6 +1018,7 @@ async function db_has_write_context_permission(
 	if (!membership || membership.pendingOrganizationRemoval) {
 		return false;
 	}
+
 	const authorized = await access_control_db_authorize_membership(ctx, {
 		userAuth: { id: args.writeContext.actorUserId },
 		membership,
@@ -1004,9 +1028,11 @@ async function db_has_write_context_permission(
 	if (authorized._nay) {
 		return false;
 	}
+
 	if (args.writeContext.writer.kind === "user") {
 		return true;
 	}
+
 	return await access_control_db_has_permission(ctx, {
 		organizationId,
 		workspaceId,
@@ -1038,11 +1064,13 @@ async function db_get_visible_policy_writer(
 			? { ...writer, name: account.name }
 			: null;
 	}
+
 	const organizationId = ctx.db.normalizeId("organizations", String(args.organizationId));
 	const workspaceId = ctx.db.normalizeId("organizations_workspaces", String(args.workspaceId));
 	if (!organizationId || !workspaceId) {
 		return null;
 	}
+
 	const [user, membership] = await Promise.all([
 		ctx.db.get("users", writer.userId),
 		ctx.db
@@ -1059,11 +1087,14 @@ async function db_get_visible_policy_writer(
 	if (!user || user.deletedAt != null || !membership || membership.pendingOrganizationRemoval) {
 		return null;
 	}
+
 	const anagraphic = user.anagraphic ? await ctx.db.get("users_anagraphics", user.anagraphic) : null;
 	return { ...writer, name: anagraphic?.displayName ?? "User" };
 }
 
-/** Validate all management before a create or a larger operation starts writing. */
+/**
+ * Validate all management before a create or a larger operation starts writing.
+ */
 export async function files_nodes_db_require_write_policy_management(
 	ctx: QueryCtx | MutationCtx,
 	args: {
@@ -1085,20 +1116,24 @@ export async function files_nodes_db_require_write_policy_management(
 	) {
 		return Result({ _nay: { message: "Permission denied" } });
 	}
+
 	if (
 		args.writePolicy?.mode === "writer" &&
 		!(await db_get_visible_policy_writer(ctx, { ...args, writer: args.writePolicy.writer }))
 	) {
 		return Result({ _nay: { message: "Writer is not available" } });
 	}
+
 	if (args.target.kind === "node" && args.target.node.kind === "folder") {
 		const descendants = await files_nodes_db_collect_descendants(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			parentId: args.target.node._id,
 		});
-		// The folder's management covers open descendants. Nested restricted scopes need their own grant.
+
 		const checkedScopeNodeIds = new Set<Id<"files_nodes">>();
+
+		// The folder's management covers open descendants. Nested restricted scopes need their own grant.
 		for (const descendant of descendants) {
 			const scopeNodeId = descendant.restrictedScopeNodeId;
 			if (
@@ -1108,6 +1143,7 @@ export async function files_nodes_db_require_write_policy_management(
 			) {
 				continue;
 			}
+
 			checkedScopeNodeIds.add(scopeNodeId);
 			if (
 				!(await db_has_write_context_permission(ctx, {
@@ -1120,6 +1156,7 @@ export async function files_nodes_db_require_write_policy_management(
 			}
 		}
 	}
+
 	return Result({ _yay: null });
 }
 
@@ -1137,6 +1174,7 @@ async function db_set_write_policy(
 	) {
 		return;
 	}
+
 	await ctx.db.patch("files_nodes", args.node._id, {
 		writePolicy: args.writePolicy,
 		writePolicyScopeNodeId: scopeNodeId,
@@ -1167,9 +1205,11 @@ export async function files_nodes_db_set_write_policy(
 	if (allowed._nay) {
 		return allowed;
 	}
+
 	if (JSON.stringify(args.node.writePolicy) !== JSON.stringify(args.writePolicy)) {
 		await db_set_write_policy(ctx, args);
 	}
+
 	return Result({ _yay: null });
 }
 
@@ -1190,6 +1230,7 @@ export async function files_nodes_db_get_write_policy_management_state(
 		files_nodes_db_resolve_parent_write_policy_scope(ctx, { parentId: node.parentId }),
 	]);
 	const inScope = await db_is_within_write_scope(ctx, { ...permissionArgs, target: { kind: "node", node } });
+
 	let inheritedSource: { nodeId: Id<"files_nodes">; path: string } | null = null;
 	if (parentScopeNodeId !== null) {
 		const source = await ctx.db.get("files_nodes", parentScopeNodeId);
@@ -1200,6 +1241,7 @@ export async function files_nodes_db_get_write_policy_management_state(
 			inheritedSource = { nodeId: source._id, path: source.path };
 		}
 	}
+
 	const localPolicy =
 		node.writePolicy?.mode === "writer"
 			? {
@@ -1209,6 +1251,7 @@ export async function files_nodes_db_get_write_policy_management_state(
 			: node.writePolicy;
 	const writeBlockedReason =
 		!canWriteContent || !inScope ? ("permission" as const) : blockingPolicy ? ("read_only" as const) : null;
+
 	return {
 		nodeId: node._id,
 		canManage: !management._nay,
@@ -1255,6 +1298,7 @@ export const get_node_write_policy_management_state = query({
 		if (!userAuth) {
 			throw convex_error({ message: "Unauthenticated" });
 		}
+
 		const membership = await organizations_db_get_membership(ctx, {
 			userId: userAuth.id,
 			membershipId: args.membershipId,
@@ -1262,6 +1306,7 @@ export const get_node_write_policy_management_state = query({
 		if (!membership) {
 			return null;
 		}
+
 		const authorized = await access_control_db_authorize_node(ctx, {
 			userAuth,
 			membership,
@@ -1271,6 +1316,7 @@ export const get_node_write_policy_management_state = query({
 		if (authorized._nay) {
 			return null;
 		}
+
 		return await files_nodes_db_get_write_policy_management_state(ctx, {
 			node: authorized._yay.fileNode,
 			writeContext: {
@@ -1295,10 +1341,12 @@ export const set_node_write_policy = mutation({
 		if (!userAuth) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
+
 		const rateLimit = await rate_limiter_limit_by_key(ctx, { name: "files_tree_write", key: userAuth.id });
 		if (rateLimit) {
 			return Result({ _nay: { message: rateLimit.message } });
 		}
+
 		const authorized = await db_authorize_write_policy_management(ctx, {
 			userAuth,
 			membershipId: args.membershipId,
@@ -1307,6 +1355,7 @@ export const set_node_write_policy = mutation({
 		if (authorized._nay) {
 			return authorized;
 		}
+
 		return await files_nodes_db_set_write_policy(ctx, {
 			node: authorized._yay.node,
 			writePolicy: args.writePolicy,
@@ -1587,9 +1636,13 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		 * folders are skipped), in creation order (shallowest first).
 		 */
 		mut_createdAncestorIds?: Array<Id<"files_nodes">>;
-		/** Trusted delegated facts; ordinary callers use their explicit human author. */
+		/**
+		 * Trusted delegated facts; ordinary callers use their explicit human author.
+		 */
 		writeContext?: files_nodes_WriteContext;
-		/** Initial local policy on the leaf. It requires manage permission before any insert. */
+		/**
+		 * Initial local policy on the leaf. It requires manage permission before any insert.
+		 */
 		writePolicy?: Doc<"files_nodes">["writePolicy"];
 	},
 ) {
@@ -1600,6 +1653,7 @@ export async function files_nodes_db_create_node_recursively_at_path(
 	) {
 		return Result({ _nay: { message: "Not found" } });
 	}
+
 	const segments = path_extract_segments_from(args.path);
 	let parentPath = parentNode?.path ?? "/";
 	let firstMissing = 0;
@@ -1630,6 +1684,7 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		if (!existing) {
 			break;
 		}
+
 		if (
 			writeContext &&
 			!(await access_control_db_can_act_on_file_node(ctx, {
@@ -1642,6 +1697,7 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
+
 		const isLeaf = i === segments.length - 1;
 		if (existing.kind !== "folder" || isLeaf) {
 			if (
@@ -1663,9 +1719,11 @@ export async function files_nodes_db_create_node_recursively_at_path(
 				_nay: { message: isLeaf && args.kind === "file" ? "This file already exists." : "This folder already exists." },
 			});
 		}
+
 		parentNode = existing;
 		parentPath = existing.path;
 	}
+
 	const missingNames = segments.slice(firstMissing);
 	const intendedPath = missingNames.reduce((path, name) => path_join(path, name), parentPath);
 	if (writeContext) {
@@ -1681,6 +1739,7 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
+
 		const writable = await files_nodes_db_require_writable(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
@@ -1690,6 +1749,7 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		if (writable._nay) {
 			return writable;
 		}
+
 		if (args.writePolicy !== undefined) {
 			const managed = await files_nodes_db_require_write_policy_management(ctx, {
 				organizationId: args.organizationId,
@@ -1703,6 +1763,7 @@ export async function files_nodes_db_create_node_recursively_at_path(
 			}
 		}
 	}
+
 	let currentParent = parentNode?._id ?? files_ROOT_ID;
 	let path = parentPath;
 	for (const [i, name] of missingNames.entries()) {
@@ -1726,6 +1787,7 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		if (nodeIdResult._nay) {
 			return nodeIdResult;
 		}
+
 		const metadata =
 			isLeaf && args.metadata
 				? files_metadata_apply_set_and_remove(args.createdNodesMetadata ?? [], { set: args.metadata, remove: [] })
@@ -1740,12 +1802,14 @@ export async function files_nodes_db_create_node_recursively_at_path(
 			}
 			await files_metadata_db_write_entries(ctx, { fileNode: createdNode, entries: metadata });
 		}
+
 		if (isLeaf) {
 			return Result({ _yay: nodeIdResult._yay });
 		}
 		args.mut_createdAncestorIds?.push(nodeIdResult._yay);
 		currentParent = nodeIdResult._yay;
 	}
+
 	const errorMessage = "nodeId not resolved after node path creation";
 	const errorData = {};
 	console.error(errorMessage, errorData);
@@ -5489,7 +5553,7 @@ const files_node_public_doc_fields = ((/* iife */) => {
  * Pass `readableSource` only when the caller may read the policy source.
  * Pass null to hide its id and path.
  */
-function files_node_project_write_policy(
+function get_public_node_fields(
 	fileNode: Doc<"files_nodes">,
 	readableSource: Pick<Doc<"files_nodes">, "_id" | "path"> | null,
 	writeBlockedReason: "permission" | "read_only" | null,
@@ -5587,7 +5651,7 @@ export const get_file_node_for_membership = query({
 			fileNode,
 		});
 		const writable = await files_nodes_db_require_user_writable(ctx, { node: fileNode, userId: userAuth.id });
-		return files_node_project_write_policy(
+		return get_public_node_fields(
 			fileNode,
 			readableSource,
 			canWriteContent._nay ? "permission" : writable._nay ? "read_only" : null,
@@ -5719,7 +5783,7 @@ export const list_tree = query({
 			hasWorkspaceRead: !authorized._nay,
 		});
 
-		// The lock source is this node or one of its parents.
+		// The policy source is this node or one of its parents.
 		// Every node in this map already passed the read check above.
 		const readableById = new Map(fileNodes.map((fileNode) => [fileNode._id, fileNode]));
 
@@ -5751,7 +5815,8 @@ export const list_tree = query({
 					}).then((result) => !result._nay);
 					canWriteContentByScope.set(fileNode.restrictedScopeNodeId, canWriteContent);
 				}
-				// Human ancestor reach has the same answer for nodes sharing a policy source, not an ACL scope.
+
+				// Nodes with the same policy source have the same human write-policy answer.
 				let policyWritable = policyWritableByScope.get(fileNode.writePolicyScopeNodeId);
 				if (!policyWritable) {
 					policyWritable = files_nodes_db_require_user_writable(ctx, { node: fileNode, userId: userAuth.id }).then(
@@ -5759,6 +5824,7 @@ export const list_tree = query({
 					);
 					policyWritableByScope.set(fileNode.writePolicyScopeNodeId, policyWritable);
 				}
+
 				const writeBlockedReason = !(await canWriteContent)
 					? "permission"
 					: !(await policyWritable)
@@ -5766,7 +5832,7 @@ export const list_tree = query({
 						: null;
 
 				return {
-					...files_node_project_write_policy(fileNode, readableSource, writeBlockedReason),
+					...get_public_node_fields(fileNode, readableSource, writeBlockedReason),
 					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
 					createdBy: fileNode.createdBy,
@@ -6323,7 +6389,9 @@ export const get_file_content_materialization_state = internalQuery({
 	handler: async (ctx, args) => {
 		if (args.userId !== undefined || args.serviceAccountId !== undefined) {
 			const node = await ctx.db.get("files_nodes", args.nodeId);
-			if (!node || args.userId === undefined) return null;
+			if (!node || args.userId === undefined) {
+				return null;
+			}
 			const [readable] = await access_control_db_filter_readable_file_nodes(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
@@ -6331,7 +6399,9 @@ export const get_file_content_materialization_state = internalQuery({
 				serviceAccountId: args.serviceAccountId,
 				nodes: [node],
 			});
-			if (!readable) return null;
+			if (!readable) {
+				return null;
+			}
 		}
 		return await db_get_file_content_materialization_db_state(ctx, args);
 	},

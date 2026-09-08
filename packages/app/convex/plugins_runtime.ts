@@ -299,8 +299,9 @@ export async function plugins_runtime_db_enqueue_upload_completed_runs(
 				installation: candidate.installation,
 				serviceAccountId: candidate.installation.serviceAccountId,
 			}))
-		)
+		) {
 			continue;
+		}
 		// Skip if this installation already ran for this upload: an asset is uploaded only once, so
 		// a second upload-completed event can only be an R2 redelivery (with a fresh event id).
 		// Note: this dedupe on (asset, installation) only works for once-per-asset events; a
@@ -496,8 +497,9 @@ export const enqueue_account_deleted_runs = internalMutation({
 						installation,
 						serviceAccountId: installation.serviceAccountId,
 					}))
-				)
+				) {
 					continue;
+				}
 
 				const runId = await ctx.db.insert("plugins_event_runs", {
 					organizationId: membership.organizationId,
@@ -591,8 +593,9 @@ export const start_event_run = internalMutation({
 		}
 		if (
 			!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: pluginRun.serviceAccountId }))
-		)
+		) {
 			return Result({ _nay: { message: "Not found" } });
+		}
 
 		const now = Date.now();
 		await ctx.db.patch("plugins_event_runs", pluginRun._id, {
@@ -688,8 +691,9 @@ export const start_invoke_run = internalMutation({
 		if (!installation.acceptedCapabilities.includes("plugin.backend.invoke")) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
-		if (!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: args.serviceAccountId })))
+		if (!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: args.serviceAccountId }))) {
 			return Result({ _nay: { message: "Not found" } });
+		}
 
 		const version = await ctx.db.get("plugins_versions", installation.pluginVersionId);
 		if (!version || !version.backendEntrypointFile) {

@@ -780,7 +780,9 @@ describe("plugin ui sessions", () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
 		const installation = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", fixture.installationId));
-		if (!installation?.serviceAccountId) throw new Error("Expected installation account");
+		if (!installation?.serviceAccountId) {
+			throw new Error("Expected installation account");
+		}
 		await t.run(async (ctx) => {
 			const grants = await ctx.db.query("access_control_permission_grants").collect();
 			for (const grant of grants) {
@@ -835,7 +837,9 @@ describe("plugin ui sessions", () => {
 			membershipId: fixture.membership.membershipId,
 			name: "Replacement",
 		});
-		if (replacement._nay) throw new Error(replacement._nay.message);
+		if (replacement._nay) {
+			throw new Error(replacement._nay.message);
+		}
 		expect(
 			(
 				await fixture.asOwner.mutation(api.plugins.set_installation_service_account, {

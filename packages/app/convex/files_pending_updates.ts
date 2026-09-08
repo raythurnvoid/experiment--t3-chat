@@ -5281,7 +5281,9 @@ export const prepare_file_pending_update_for_review = action({
 			userId: userAuth.id,
 			nodeId: args.nodeId,
 		})) as files_nodes_get_user_file_write_access_Result;
-		if (allowed._nay) return allowed;
+		if (allowed._nay) {
+			return allowed;
+		}
 		return prepare_pending_update(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,

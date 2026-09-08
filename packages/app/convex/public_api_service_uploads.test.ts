@@ -91,7 +91,9 @@ async function seed_installation(
 			resource: { kind: "workspace" },
 			level: "manage",
 		});
-		if (accountGrant._nay) throw new Error(accountGrant._nay.message);
+		if (accountGrant._nay) {
+			throw new Error(accountGrant._nay.message);
+		}
 		const pluginVersionId = await ctx.db.insert("plugins_versions", {
 			name: pluginName,
 			displayName: "Council",
@@ -1065,7 +1067,9 @@ describe("service upload targets", () => {
 				kind: "folder",
 				now: Date.now(),
 			});
-			if (created._nay) throw new Error(created._nay.message);
+			if (created._nay) {
+				throw new Error(created._nay.message);
+			}
 			await ctx.db.patch("files_nodes", created._yay, { restrictedScopeNodeId: created._yay });
 			for (const [resource, level] of [
 				[{ kind: "workspace" }, null],
@@ -2810,7 +2814,9 @@ describe("service upload archive", () => {
 		const targets = await read_targets(t);
 		const first = targets.find((target) => target.targetKey === "first")!;
 		const second = targets.find((target) => target.targetKey === "second")!;
-		for (const target of targets) await simulate_finalizer(t, fixture, target, { size: MIB });
+		for (const target of targets) {
+			await simulate_finalizer(t, fixture, target, { size: MIB });
+		}
 		expect((await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete-first", targetKey: "first" })).status).toBe(
 			200,
 		);

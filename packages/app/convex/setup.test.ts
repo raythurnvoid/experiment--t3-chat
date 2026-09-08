@@ -447,7 +447,9 @@ export const test_mocks_fill_db_with = {
 		},
 	) => {
 		const version = await ctx.db.get("plugins_versions", args.pluginVersionId);
-		if (!version) throw new Error("Expected plugin version");
+		if (!version) {
+			throw new Error("Expected plugin version");
+		}
 		const now = Date.now();
 		const serviceAccountId = await ctx.db.insert("access_control_service_accounts", {
 			organizationId: args.organizationId,

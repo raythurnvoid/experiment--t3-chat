@@ -31,9 +31,13 @@ vi.mock("@tanstack/react-router", () => ({
 vi.mock("convex/react", () => ({
 	useQuery: (query: string, ...args: unknown[]) => {
 		const result = useQueryMock(query, ...args);
-		if (query === "account_permission") return true;
-		if (query === "get_account") return { _id: "account_1", name: "Media worker", revokedAt: null };
-		if (query === "grant_management")
+		if (query === "account_permission") {
+			return true;
+		}
+		if (query === "get_account") {
+			return { _id: "account_1", name: "Media worker", revokedAt: null };
+		}
+		if (query === "grant_management") {
 			return {
 				resource: { kind: "workspace" },
 				level: null,
@@ -41,6 +45,7 @@ vi.mock("convex/react", () => ({
 				grantableLevels: ["read", "write"],
 				file: null,
 			};
+		}
 		return result;
 	},
 	usePaginatedQuery: () => ({
