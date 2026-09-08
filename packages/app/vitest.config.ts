@@ -6,6 +6,7 @@ export default defineConfig({
 	resolve: {
 		alias: {
 			"@": fileURLToPath(new URL("./src", import.meta.url)),
+			"cloudflare:workers": fileURLToPath(new URL("../plugin-runner/src/test-cloudflare-workers.ts", import.meta.url)),
 			"monaco-editor/editor/editor.worker?worker": fileURLToPath(
 				new URL("./src/test-stubs/monaco-worker.ts", import.meta.url),
 			),

@@ -14,7 +14,11 @@ import { z } from "zod";
 
 import { internal } from "./_generated/api.js";
 import type { ActionCtx } from "./_generated/server.js";
-import { plugins_runtime_execute_runner_request, type start_invoke_run_Result } from "./plugins_runtime.ts";
+import {
+	plugins_runtime_execute_runner_request,
+	type start_invoke_run_Result,
+	type finish_event_run_Result,
+} from "./plugins_runtime.ts";
 import { public_api_authorize_request } from "./public_api_http_auth.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
@@ -28,9 +32,6 @@ import type { public_api_Scope } from "../shared/public-api.ts";
 // backslash-heavy 16 KiB configuration), so the exact wire body is still measured before the
 // fetch. Do not raise this cap.
 const INVOKE_REQUEST_MAX_BYTES = 32 * 1024;
-// 256 KiB: how much of the plugin's output the answer carries back to the page. A larger output
-// is cut and flagged, not refused — the plugin already ran.
-const INVOKE_RESPONSE_MAX_BYTES = 262_144;
 // 35 seconds: under the 60-second invoke run TTL, so the runner answer (or this timeout) always
 // lands while the run record is still live and this action settles it instead of the expiry cron.
 const INVOKE_RUNNER_TIMEOUT_MS = 35_000;
@@ -168,7 +169,7 @@ export async function plugins_invoke_http_invoke(
 			runId,
 			outcome: { kind: "failed", errorMessage: "Plugin backend is missing" },
 		});
-		return { status: 502, body: { message: "Plugin backend failed", runId: String(runId) } } as const;
+		return { status: 502, body: { message: "Plugin backend failed", runId: String(runId), code: undefined } } as const;
 	}
 
 	let configuration: plugins_ConfigurationValue = null;
@@ -182,7 +183,10 @@ export async function plugins_invoke_http_invoke(
 				runId,
 				outcome: { kind: "failed", errorMessage: parsed._nay.message },
 			});
-			return { status: 502, body: { message: "Plugin backend failed", runId: String(runId) } } as const;
+			return {
+				status: 502,
+				body: { message: "Plugin backend failed", runId: String(runId), code: undefined },
+			} as const;
 		}
 		configuration = parsed._yay.configuration;
 	}
@@ -190,6 +194,7 @@ export async function plugins_invoke_http_invoke(
 	try {
 		const runner = await plugins_runtime_execute_runner_request({
 			timeoutMs: INVOKE_RUNNER_TIMEOUT_MS,
+			responseMode: "invoke",
 			// The plugin's own fetch handler routes on this path; the reserved default is only for
 			// host event deliveries.
 			requestPath: started._yay.endpointPath,
@@ -234,7 +239,7 @@ export async function plugins_invoke_http_invoke(
 
 		// Hand over the raw facts; finish_event_run classifies success or failure, and freeing
 		// the serialization lock is that same settle.
-		await ctx.runMutation(internal.plugins_runtime.finish_event_run, {
+		const finished = (await ctx.runMutation(internal.plugins_runtime.finish_event_run, {
 			runId,
 			outcome: {
 				kind: "runner_response",
@@ -245,31 +250,27 @@ export async function plugins_invoke_http_invoke(
 				pluginStatus: runMetrics?.pluginStatus,
 				runnerElapsedMs: runMetrics?.elapsedMs,
 				runnerOutputBytes: runMetrics?.outputBytes,
-				runnerOutputTruncated: runMetrics?.outputTruncated,
+				runnerOutputTruncated: false,
 			},
-		});
+		})) as finish_event_run_Result;
 
-		if (runnerResult._nay) {
-			return { status: 502, body: { message: "Plugin backend failed", runId: String(runId) } } as const;
+		if (runnerResult._nay || finished._nay || !finished._yay.canRelayResponse || runnerResult._yay.kind !== "invoke") {
+			const code = runnerResult._nay?.code === "response_too_large" ? ("response_too_large" as const) : undefined;
+			return {
+				status: 502,
+				body: {
+					message: code ? "Plugin backend response was too large" : "Plugin backend failed",
+					runId: String(runId),
+					code,
+				},
+			} as const;
 		}
 
-		// Cut on the byte budget; stream mode holds back a code point the cut split, so the kept
-		// text stays well formed.
-		const outputBytes = new TextEncoder().encode(runnerResult._yay.output);
-		const truncate = outputBytes.byteLength > INVOKE_RESPONSE_MAX_BYTES;
-		const output = truncate
-			? new TextDecoder().decode(outputBytes.subarray(0, INVOKE_RESPONSE_MAX_BYTES), { stream: true })
-			: runnerResult._yay.output;
-
+		// The finalizer approved this exact complete reply. Keep its encoded bytes unchanged.
 		return {
 			status: 200,
-			body: {
-				runId: String(runId),
-				pluginStatus: runnerResult._yay.pluginStatus,
-				output,
-				outputTruncated: truncate || runnerResult._yay.outputTruncated,
-			},
-			headers: { "Cache-Control": "no-store" },
+			body: runnerResult._yay.body,
+			headers: { "Cache-Control": "no-store", "Content-Type": "application/json" },
 		} as const;
 	} catch (error) {
 		// A network error — or our own timeout aborting the fetch — still settles the run as
@@ -286,6 +287,6 @@ export async function plugins_invoke_http_invoke(
 				errorMessage: timedOut ? "Plugin runner request timed out" : "Plugin runner request failed",
 			},
 		});
-		return { status: 502, body: { message: "Plugin backend failed", runId: String(runId) } } as const;
+		return { status: 502, body: { message: "Plugin backend failed", runId: String(runId), code: undefined } } as const;
 	}
 }

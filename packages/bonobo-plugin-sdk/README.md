@@ -505,8 +505,8 @@ if (res.status !== 200) {
 	// branch must exist.
 	report(200, "the answer was not JSON");
 } else {
-	// The backend answered. `pluginStatus` is its own HTTP status, `output` its response body
-	// text (`outputTruncated` when the host cut it at its byte cap), and `runId` names the run
+	// The backend answered. `pluginStatus` is its own HTTP status, `output` its complete masked
+	// response text, and `runId` names the run
 	// record for support. A non-2xx `pluginStatus` is still a `200` here — the backend did
 	// answer, and what its answer means is the plugin's own contract.
 	handle(res.body.pluginStatus, res.body.output);
@@ -514,6 +514,16 @@ if (res.status !== 200) {
 ```
 
 The backend receives a `BonoboInvokeRequestedEvent` at the endpoint's declared path — the normal run envelope plus `invoke: { endpointId, serializationKey, input }`. The whole invoke request body may be at most 32 KiB.
+
+The complete encoded reply is limited to 16 MiB, including JSON escaping and the run/status fields.
+The raw backend body has the same cap. Output is never truncated. Empty `204` responses are valid;
+the plugin decides whether its endpoint requires JSON. Events may succeed without writing a file.
+The host waits for the whole response and settled API calls before forwarding any reply bytes.
+
+A host `502` with `code: "response_too_large"` means the reply exceeded its limit. Earlier changes
+may already be saved. Stop automatic retries for this size error, keep the request ID, and offer
+manual retry. A plugin `5xx` inside outer `200` may also follow a saved write; retry only with the
+same request ID and the plugin's own duplicate-request protection.
 
 Three rules for a plugin that uses it:
 

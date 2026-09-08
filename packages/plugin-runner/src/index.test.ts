@@ -56,7 +56,9 @@ function make_env(opts?: {
 	onPluginRequest?: (request: Request) => Response | Promise<Response>;
 }): Env {
 	const artifactSource =
-		opts && "artifactSource" in opts && opts.artifactSource !== undefined ? opts.artifactSource : DEFAULT_ARTIFACT_SOURCE;
+		opts && "artifactSource" in opts && opts.artifactSource !== undefined
+			? opts.artifactSource
+			: DEFAULT_ARTIFACT_SOURCE;
 	return {
 		PLUGIN_RUNNER_SECRET: opts?.secret ?? "test-secret",
 		PLUGIN_RUNNER_HOST_SECRET: opts?.hostSecret ?? "test-host-secret",
@@ -96,10 +98,7 @@ function make_env(opts?: {
 	};
 }
 
-async function make_run_body(opts?: {
-	artifactSource?: string;
-	body?: Record<string, unknown>;
-}) {
+async function make_run_body(opts?: { artifactSource?: string; body?: Record<string, unknown> }) {
 	const artifactSource = opts?.artifactSource ?? DEFAULT_ARTIFACT_SOURCE;
 	return JSON.stringify({
 		pluginId: "media",
@@ -108,6 +107,8 @@ async function make_run_body(opts?: {
 		artifactKey: "plugins/media.js",
 		artifactHash: await sha256_artifact(artifactSource),
 		pluginRunId: "run_123",
+		responseMode: "invoke",
+		timeoutMs: 35_000,
 		host: DEFAULT_HOST,
 		acceptedCapabilities: ["plugin.secrets.read", "outbound.fetch"],
 		outboundOrigins: ["https://api.openai.com"],
@@ -121,6 +122,42 @@ function run_request(rawBody: string, headers: Record<string, string> = { Author
 		headers: { "Content-Type": "application/json", ...headers },
 		body: rawBody,
 	});
+}
+
+function streamed_response(text: string, chunkBytes: number, status = 200) {
+	const bytes = TEXT_ENCODER.encode(text);
+	let offset = 0;
+	return new Response(
+		new ReadableStream<Uint8Array>({
+			pull(controller) {
+				if (offset === bytes.byteLength) {
+					controller.close();
+					return;
+				}
+				const end = Math.min(offset + chunkBytes, bytes.byteLength);
+				controller.enqueue(bytes.subarray(offset, end));
+				offset = end;
+			},
+		}),
+		{ status },
+	);
+}
+
+async function read_runner_response(response: Response) {
+	const text = await response.text();
+	const bodyBytes = TEXT_ENCODER.encode(text).byteLength;
+	expect(response.headers.get("X-Bonobo-Runner-Body-Bytes")).toBe(String(bodyBytes));
+	let metadataBytes = 0;
+	for (const [name, value] of response.headers) {
+		if (!name.startsWith("x-bonobo-runner-")) continue;
+		expect(value).toMatch(/^[\x20-\x7e]*$/u);
+		metadataBytes += name.length + value.length + 4;
+	}
+	expect(metadataBytes).toBeLessThanOrEqual(LIMITS.metadataBytes);
+	if (response.headers.get("X-Bonobo-Runner-Kind") !== "invoke") {
+		expect(bodyBytes).toBeLessThanOrEqual(LIMITS.smallResponseBytes);
+	}
+	return text;
 }
 
 function fetch_request(input: Parameters<typeof fetch>[0]) {
@@ -289,6 +326,30 @@ describe("auth + kill switch", () => {
 });
 
 describe("validation", () => {
+	it.each([
+		{ responseMode: undefined, timeoutMs: undefined },
+		{ responseMode: undefined },
+		{ timeoutMs: undefined },
+		{ responseMode: "stream" },
+		{ timeoutMs: 0 },
+		{ timeoutMs: -1 },
+		{ timeoutMs: 1.5 },
+		{ timeoutMs: "35000" },
+		{ timeoutMs: 35_001 },
+		{ responseMode: "event", timeoutMs: 180_001 },
+		{ pluginRunId: "run\n123" },
+		{ pluginRunId: "run🦊" },
+		{ unknownField: true },
+	])("refuses invalid strict runner fields before loading: %j", async (body) => {
+		const onGet = vi.fn();
+		const response = await worker.fetch(run_request(await make_run_body({ body })), make_env({ onGet }), make_ctx());
+		expect(response.status).toBe(400);
+		expect(onGet).not.toHaveBeenCalled();
+		expect(response.headers.get("X-Bonobo-Runner-Kind")).toBe("error");
+		expect(response.headers.get("X-Bonobo-Runner-Run-Id")).toBeNull();
+		expect(JSON.parse(await read_runner_response(response))._nay.code).toBe("runner_refused");
+	});
+
 	it("rejects invalid JSON", async () => {
 		const res = await worker.fetch(run_request("{nope"), make_env());
 		expect(res.status).toBe(400);
@@ -302,10 +363,7 @@ describe("validation", () => {
 	});
 
 	it("requires artifactHash", async () => {
-		const res = await worker.fetch(
-			run_request(await make_run_body({ body: { artifactHash: undefined } })),
-			make_env(),
-		);
+		const res = await worker.fetch(run_request(await make_run_body({ body: { artifactHash: undefined } })), make_env());
 		expect(res.status).toBe(400);
 		expect((await res.json())._nay.message).toContain("artifactHash");
 	});
@@ -320,7 +378,11 @@ describe("validation", () => {
 	});
 
 	it("rejects outboundOrigins entries that are not exact https origins", async () => {
-		for (const outboundOrigins of [["https://modal.example/convert"], ["http://modal.example"], "https://modal.example"]) {
+		for (const outboundOrigins of [
+			["https://modal.example/convert"],
+			["http://modal.example"],
+			"https://modal.example",
+		]) {
 			const res = await worker.fetch(run_request(await make_run_body({ body: { outboundOrigins } })), make_env());
 			expect(res.status).toBe(400);
 			expect((await res.json())._nay.message).toContain("outboundOrigins");
@@ -367,7 +429,11 @@ describe("validation", () => {
 		const base = await make_run_body({ body: { input: "" } });
 		const padding = "a".repeat(LIMITS.bodyBytes - base.length);
 
-		const exact = await worker.fetch(run_request(await make_run_body({ body: { input: padding } })), make_env(), make_ctx());
+		const exact = await worker.fetch(
+			run_request(await make_run_body({ body: { input: padding } })),
+			make_env(),
+			make_ctx(),
+		);
 		expect(exact.status).toBe(200);
 
 		const oneOver = await worker.fetch(
@@ -395,11 +461,7 @@ describe("validation", () => {
 	});
 
 	it("returns 404 for a missing R2 object", async () => {
-		const res = await worker.fetch(
-			run_request(await make_run_body()),
-			make_env({ artifactSource: null }),
-			make_ctx(),
-		);
+		const res = await worker.fetch(run_request(await make_run_body()), make_env({ artifactSource: null }), make_ctx());
 		expect(res.status).toBe(404);
 		expect((await res.json())._nay.name).toBe("artifact_not_found");
 	});
@@ -517,9 +579,9 @@ describe("dynamic worker loading", () => {
 			pluginRunId: "run_123",
 		});
 		const body = await res.json();
-		expect(body._yay.pluginStatus).toBe(202);
-		expect(body._yay.elapsedMs).toEqual(expect.any(Number));
-		expect(body._yay.outputBytes).toBe("plugin-ok".length);
+		expect(body).toEqual({ runId: "run_123", pluginStatus: 202, output: "plugin-ok" });
+		expect(Number(res.headers.get("X-Bonobo-Runner-Elapsed-Ms"))).toBeGreaterThanOrEqual(0);
+		expect(res.headers.get("X-Bonobo-Runner-Output-Bytes")).toBe(String("plugin-ok".length));
 	});
 
 	it("delivers requestPath to the plugin fetch handler and keeps the reserved default without one", async () => {
@@ -533,11 +595,7 @@ describe("dynamic worker loading", () => {
 
 		const paths = ["/echo", "/", "/nested/echo", "/v1/send-message"];
 		for (const requestPath of paths) {
-			const withPath = await worker.fetch(
-				run_request(await make_run_body({ body: { requestPath } })),
-				env,
-				make_ctx(),
-			);
+			const withPath = await worker.fetch(run_request(await make_run_body({ body: { requestPath } })), env, make_ctx());
 			expect(withPath.status, requestPath).toBe(200);
 		}
 
@@ -563,7 +621,7 @@ describe("dynamic worker loading", () => {
 		expect(loaderIds[0]).not.toBe(loaderIds[1]);
 	});
 
-	it("reports plugin HTTP errors as errored runs", async () => {
+	it("preserves a complete plugin HTTP error response", async () => {
 		const res = await worker.fetch(
 			run_request(await make_run_body()),
 			make_env({
@@ -574,15 +632,8 @@ describe("dynamic worker loading", () => {
 
 		expect(res.status).toBe(200);
 		const body = await res.json();
-		expect(body).toMatchObject({
-			_nay: {
-				name: "PluginResponseError",
-				message: "Plugin returned status 500",
-				data: { pluginStatus: 500, outputBytes: "plugin failed".length },
-			},
-		});
-		expect(body._yay).toBeUndefined();
-		expect(JSON.stringify(body)).not.toContain("plugin failed");
+		expect(body).toEqual({ runId: "run_123", pluginStatus: 500, output: "plugin failed" });
+		expect(res.headers.get("X-Bonobo-Runner-Kind")).toBe("invoke");
 	});
 
 	it("does not log tokens, source, input, output, or raw artifact keys", async () => {
@@ -621,6 +672,376 @@ describe("dynamic worker loading", () => {
 	});
 });
 
+describe("runner responses", () => {
+	it.each([200, 204, 400, 401, 403, 409, 500])(
+		"returns a complete invoke response with plugin status %i",
+		async (status) => {
+			const output = status === 204 ? "" : 'A useful answer: "🦊"\n';
+			const response = await worker.fetch(
+				run_request(await make_run_body()),
+				make_env({ onPluginRequest: () => new Response(status === 204 ? null : output, { status }) }),
+				make_ctx(),
+			);
+			expect(response.status).toBe(200);
+			expect(response.headers.get("X-Bonobo-Runner-Kind")).toBe("invoke");
+			expect(response.headers.get("X-Bonobo-Runner-Run-Id")).toBe("run_123");
+			expect(response.headers.get("X-Bonobo-Runner-Plugin-Status")).toBe(String(status));
+			expect(response.headers.get("X-Bonobo-Runner-Elapsed-Ms")).toMatch(/^\d+$/u);
+			expect(response.headers.get("X-Bonobo-Runner-Output-Bytes")).toBe(String(TEXT_ENCODER.encode(output).byteLength));
+			expect(await read_runner_response(response)).toBe(
+				JSON.stringify({ runId: "run_123", pluginStatus: status, output }),
+			);
+		},
+	);
+
+	it.each([204, 409, 500])("consumes an event response with status %i without returning its text", async (status) => {
+		const output = status === 204 ? "" : "An event body has no consumer";
+		const response = await worker.fetch(
+			run_request(await make_run_body({ body: { responseMode: "event", timeoutMs: 180_000 } })),
+			make_env({ onPluginRequest: () => new Response(status === 204 ? null : output, { status }) }),
+			make_ctx(),
+		);
+		expect(response.status).toBe(200);
+		expect(response.headers.get("X-Bonobo-Runner-Kind")).toBe("event");
+		const body = JSON.parse(await read_runner_response(response));
+		expect(body).toEqual({
+			_yay: { pluginRunId: "run_123", pluginStatus: status, outputBytes: output.length, elapsedMs: expect.any(Number) },
+		});
+		expect(response.headers.get("X-Bonobo-Runner-Output-Bytes")).toBe(String(body._yay.outputBytes));
+	});
+
+	it("uses only runner-owned metadata", async () => {
+		const response = await worker.fetch(
+			run_request(await make_run_body()),
+			make_env({
+				onPluginRequest: () =>
+					new Response("safe", {
+						status: 409,
+						headers: {
+							"X-Bonobo-Runner-Kind": "error",
+							"X-Bonobo-Runner-Run-Id": "forged",
+							"X-Bonobo-Runner-Plugin-Status": "200",
+							"X-Bonobo-Runner-Body-Bytes": "1",
+							"X-Bonobo-Runner-Output-Bytes": "1",
+							"X-Bonobo-Runner-Elapsed-Ms": "-1",
+							"X-Bonobo-Runner-Other": "forged",
+						},
+					}),
+			}),
+			make_ctx(),
+		);
+		expect(response.headers.get("X-Bonobo-Runner-Kind")).toBe("invoke");
+		expect(response.headers.get("X-Bonobo-Runner-Run-Id")).toBe("run_123");
+		expect(response.headers.get("X-Bonobo-Runner-Plugin-Status")).toBe("409");
+		expect(response.headers.get("X-Bonobo-Runner-Output-Bytes")).toBe("4");
+		expect(response.headers.get("X-Bonobo-Runner-Other")).toBeNull();
+		await read_runner_response(response);
+	});
+
+	it.each([
+		{ pattern: "a", chunkBytes: 64 * 1024 },
+		{ pattern: "🦊", chunkBytes: 65_535 },
+		{ pattern: '"\\\n\u0000', chunkBytes: 64 * 1024 },
+		{ pattern: "a", chunkBytes: 64 },
+	])("accepts the exact encoded cap and refuses one byte more: %j", async ({ pattern, chunkBytes }) => {
+		const overhead = JSON.stringify({ runId: "run_123", pluginStatus: 200, output: "" }).length;
+		const encodedUnitBytes = TEXT_ENCODER.encode(JSON.stringify(pattern).slice(1, -1)).byteLength;
+		const available = LIMITS.responseBytes - overhead;
+		const output = pattern.repeat(Math.floor(available / encodedUnitBytes)) + "a".repeat(available % encodedUnitBytes);
+		const expected = JSON.stringify({ runId: "run_123", pluginStatus: 200, output });
+		expect(TEXT_ENCODER.encode(expected).byteLength).toBe(LIMITS.responseBytes);
+		const requestBody = await make_run_body();
+		const exact = await worker.fetch(
+			run_request(requestBody),
+			make_env({
+				onPluginRequest: () => streamed_response(output, chunkBytes),
+			}),
+			make_ctx(),
+		);
+		expect(exact.headers.get("X-Bonobo-Runner-Kind")).toBe("invoke");
+		expect(await read_runner_response(exact)).toBe(expected);
+
+		const excess = await worker.fetch(
+			run_request(requestBody),
+			make_env({
+				onPluginRequest: () => streamed_response(`${output}a`, chunkBytes),
+			}),
+			make_ctx(),
+		);
+		expect(excess.headers.get("X-Bonobo-Runner-Kind")).toBe("error");
+		expect(JSON.parse(await read_runner_response(excess))._nay.code).toBe("response_too_large");
+	});
+
+	it("keeps Unicode whole across one-byte reads and JSON piece boundaries", async () => {
+		const output = `${"a".repeat(16_383)}🦊é\ud800${"b".repeat(49_150)}🌿`;
+		const decodedOutput = new TextDecoder().decode(TEXT_ENCODER.encode(output));
+		const response = await worker.fetch(
+			run_request(await make_run_body()),
+			make_env({
+				onPluginRequest: () => streamed_response(output, 1),
+			}),
+			make_ctx(),
+		);
+		expect(await read_runner_response(response)).toBe(
+			JSON.stringify({ runId: "run_123", pluginStatus: 200, output: decodedOutput }),
+		);
+	});
+
+	it("keeps live abort listeners bounded across many tiny reads", async () => {
+		const originalAdd = AbortSignal.prototype.addEventListener;
+		const originalRemove = AbortSignal.prototype.removeEventListener;
+		const listeners = new WeakMap<AbortSignal, Set<EventListenerOrEventListenerObject>>();
+		let maximum = 0;
+		const addSpy = vi
+			.spyOn(AbortSignal.prototype, "addEventListener")
+			.mockImplementation(function (type, listener, options) {
+				if (type === "abort" && listener) {
+					let active = listeners.get(this);
+					if (!active) {
+						active = new Set();
+						listeners.set(this, active);
+					}
+					active.add(listener);
+					maximum = Math.max(maximum, active.size);
+				}
+				return originalAdd.call(this, type, listener, options);
+			});
+		const removeSpy = vi
+			.spyOn(AbortSignal.prototype, "removeEventListener")
+			.mockImplementation(function (type, listener, options) {
+				if (type === "abort" && listener) listeners.get(this)?.delete(listener);
+				return originalRemove.call(this, type, listener, options);
+			});
+		try {
+			const output = "x".repeat(32_768);
+			const response = await worker.fetch(
+				run_request(await make_run_body()),
+				make_env({
+					onPluginRequest: () => streamed_response(output, 1),
+				}),
+				make_ctx(),
+			);
+			expect(JSON.parse(await read_runner_response(response)).output).toBe(output);
+			// Allow the Request's own abort forwarding, but no retained listener for each completed read.
+			expect(maximum).toBeGreaterThan(0);
+			expect(maximum).toBeLessThanOrEqual(2);
+		} finally {
+			addSpy.mockRestore();
+			removeSpy.mockRestore();
+		}
+	});
+
+	it("accepts the raw event cap and cancels one byte over without waiting on source cleanup", async () => {
+		const requestBody = await make_run_body({ body: { responseMode: "event", timeoutMs: 180_000 } });
+		const exact = await worker.fetch(
+			run_request(requestBody),
+			make_env({
+				onPluginRequest: () => new Response(new Uint8Array(LIMITS.outputBytes)),
+			}),
+			make_ctx(),
+		);
+		expect(exact.headers.get("X-Bonobo-Runner-Kind")).toBe("event");
+		expect(JSON.parse(await read_runner_response(exact))._yay.outputBytes).toBe(LIMITS.outputBytes);
+
+		const cancel = vi.fn(() => new Promise<void>(() => {}));
+		const excess = await worker.fetch(
+			run_request(requestBody),
+			make_env({
+				onPluginRequest: () =>
+					new Response(
+						new ReadableStream<Uint8Array>({
+							start(controller) {
+								controller.enqueue(new Uint8Array(LIMITS.outputBytes + 1));
+							},
+							cancel,
+						}),
+					),
+			}),
+			make_ctx(),
+		);
+		expect(cancel).toHaveBeenCalledOnce();
+		expect(JSON.parse(await read_runner_response(excess))._nay).toMatchObject({
+			code: "response_too_large",
+			data: { outputBytes: LIMITS.outputBytes + 1 },
+		});
+	});
+
+	it.each(["invoke", "event"])("fails a broken %s body after its headers arrived", async (responseMode) => {
+		let pulls = 0;
+		const response = await worker.fetch(
+			run_request(await make_run_body({ body: { responseMode } })),
+			make_env({
+				onPluginRequest: () =>
+					new Response(
+						new ReadableStream<Uint8Array>({
+							pull(controller) {
+								if (pulls++ === 0) controller.enqueue(TEXT_ENCODER.encode("partial"));
+								else controller.error(new Error("stream broke"));
+							},
+						}),
+					),
+			}),
+			make_ctx(),
+		);
+		expect(response.headers.get("X-Bonobo-Runner-Kind")).toBe("error");
+		expect(JSON.parse(await read_runner_response(response))._nay).toMatchObject({
+			code: "execution_failed",
+			message: "stream broke",
+		});
+	});
+
+	it.each(["response_too_large", "response_timeout"])("does not trust a plugin-thrown %s error code", async (name) => {
+		const response = await worker.fetch(
+			run_request(await make_run_body()),
+			make_env({
+				onPluginRequest: () => {
+					throw Object.assign(new Error("plugin failure"), { name, code: name });
+				},
+			}),
+			make_ctx(),
+		);
+		expect(JSON.parse(await read_runner_response(response))._nay).toMatchObject({ code: "execution_failed", name });
+	});
+
+	it.each(["invoke", "event"])(
+		"times out a never-ending %s body and does not await cancellation",
+		async (responseMode) => {
+			const requestBody = await make_run_body({ body: { responseMode, timeoutMs: 100 } });
+			const cancel = vi.fn(() => new Promise<void>(() => {}));
+			let entered = () => {};
+			const reading = new Promise<void>((resolve) => {
+				entered = resolve;
+			});
+			vi.useFakeTimers();
+			try {
+				const pending = worker.fetch(
+					run_request(requestBody),
+					make_env({
+						onPluginRequest: () =>
+							new Response(
+								new ReadableStream<Uint8Array>({
+									pull() {
+										entered();
+									},
+									cancel,
+								}),
+							),
+					}),
+					make_ctx(),
+				);
+				await reading;
+				await vi.advanceTimersByTimeAsync(100);
+				const response = await pending;
+				expect(cancel).toHaveBeenCalledOnce();
+				expect(JSON.parse(await read_runner_response(response))._nay.code).toBe("response_timeout");
+				expect(vi.getTimerCount()).toBe(0);
+			} finally {
+				vi.useRealTimers();
+			}
+		},
+	);
+
+	it("times out execution and aborts the plugin request", async () => {
+		const requestBody = await make_run_body({ body: { timeoutMs: 100 } });
+		let entered = () => {};
+		const executing = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		let requestSignal: AbortSignal | undefined;
+		vi.useFakeTimers();
+		try {
+			const pending = worker.fetch(
+				run_request(requestBody),
+				make_env({
+					onPluginRequest(request) {
+						requestSignal = request.signal;
+						entered();
+						return new Promise<Response>(() => {});
+					},
+				}),
+				make_ctx(),
+			);
+			await executing;
+			await vi.advanceTimersByTimeAsync(100);
+			expect(JSON.parse(await read_runner_response(await pending))._nay.code).toBe("response_timeout");
+			expect(requestSignal?.aborted).toBe(true);
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not start queued artifact work after its deadline", async () => {
+		const requestBody = await make_run_body({ body: { timeoutMs: 100 } });
+		const onGet = vi.fn();
+		const env = make_env({ onGet });
+		let entered = () => {};
+		const loading = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		let finishLoad: (value: null) => void = () => {};
+		env.PLUGIN_ARTIFACTS.get = () =>
+			new Promise((resolve) => {
+				finishLoad = resolve;
+				entered();
+			});
+		vi.useFakeTimers();
+		try {
+			const pending = worker.fetch(run_request(requestBody), env, make_ctx());
+			await loading;
+			await vi.advanceTimersByTimeAsync(100);
+			expect(JSON.parse(await read_runner_response(await pending))._nay.code).toBe("response_timeout");
+			finishLoad(null);
+			await vi.advanceTimersByTimeAsync(0);
+			expect(onGet).not.toHaveBeenCalled();
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("uses the time left after execution for the body", async () => {
+		const requestBody = await make_run_body({ body: { timeoutMs: 100 } });
+		let entered = () => {};
+		const executing = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		let bodyTimer: ReturnType<typeof setTimeout> | undefined;
+		const cancel = vi.fn(() => clearTimeout(bodyTimer));
+		vi.useFakeTimers();
+		try {
+			const pending = worker.fetch(
+				run_request(requestBody),
+				make_env({
+					async onPluginRequest() {
+						entered();
+						await new Promise((resolve) => setTimeout(resolve, 40));
+						return new Response(
+							new ReadableStream<Uint8Array>({
+								start(controller) {
+									bodyTimer = setTimeout(() => {
+										controller.enqueue(TEXT_ENCODER.encode("late"));
+										controller.close();
+									}, 70);
+								},
+								cancel,
+							}),
+						);
+					},
+				}),
+				make_ctx(),
+			);
+			await executing;
+			await vi.advanceTimersByTimeAsync(100);
+			expect(JSON.parse(await read_runner_response(await pending))._nay.code).toBe("response_timeout");
+			expect(cancel).toHaveBeenCalledOnce();
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
 describe("BonoboHost", () => {
 	it("forwards secrets through the host API only with the secret capability", async () => {
 		const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
@@ -644,7 +1065,11 @@ describe("BonoboHost", () => {
 				} as unknown as BonoboHost,
 				// A rogue host/pluginRunId in the input must be ignored: run identity and the host
 				// origin/token come from trusted props only.
-				{ host: { origin: "https://evil.example", token: "stolen" }, pluginRunId: "run_forged", name: "OPENAI_API_KEY" },
+				{
+					host: { origin: "https://evil.example", token: "stolen" },
+					pluginRunId: "run_forged",
+					name: "OPENAI_API_KEY",
+				},
 			);
 			expect(result).toBe("openai-secret");
 			const request = fetchSpy.mock.calls[0]?.[0] as Request;
@@ -902,6 +1327,129 @@ describe("secret masking", () => {
 		);
 	}
 
+	it("masks complete secrets across byte blocks in a non-2xx response and keeps raw byte counts", async () => {
+		const secret = "super-secret-value-123";
+		const { fetchSpy } = fetch_secret_during_run(secret);
+		const prefix = "a".repeat(65_530);
+		try {
+			const response = await worker.fetch(
+				run_request(await make_run_body()),
+				make_env({
+					async onPluginRequest() {
+						await plugin_secret_get();
+						return streamed_response(`${prefix}${secret} done`, 7, 409);
+					},
+				}),
+				make_ctx(),
+			);
+			expect(response.headers.get("X-Bonobo-Runner-Output-Bytes")).toBe(String(prefix.length + secret.length + 5));
+			expect(JSON.parse(await read_runner_response(response))).toEqual({
+				runId: "run_123",
+				pluginStatus: 409,
+				output: `${prefix}*** done`,
+			});
+		} finally {
+			fetchSpy.mockRestore();
+		}
+	});
+
+	it("masks error names and messages before their bounds, including heavily escaped text", async () => {
+		const secret = "super-secret-value-123";
+		const { fetchSpy } = fetch_secret_during_run(secret);
+		try {
+			const response = await worker.fetch(
+				run_request(await make_run_body()),
+				make_env({
+					async onPluginRequest() {
+						await plugin_secret_get();
+						throw Object.assign(new Error(`${"\u0000".repeat(490)}${secret}${"\u0000".repeat(10_000)}`), {
+							name: `${"\u0000".repeat(60)}${secret}${"\u0000".repeat(10_000)}`,
+						});
+					},
+				}),
+				make_ctx(),
+			);
+			const body = JSON.parse(await read_runner_response(response));
+			expect(body._nay.name).toBe(`${"\u0000".repeat(60)}***\u0000`);
+			expect(body._nay.message).toBe(`${"\u0000".repeat(490)}***${"\u0000".repeat(7)}`);
+			expect(body._nay.code).toBe("execution_failed");
+		} finally {
+			fetchSpy.mockRestore();
+		}
+	});
+
+	it("refuses an oversized raw invoke body even when masking would make the reply fit", async () => {
+		const secret = "super-secret-value-123";
+		const { fetchSpy } = fetch_secret_during_run(secret);
+		try {
+			const response = await worker.fetch(
+				run_request(await make_run_body()),
+				make_env({
+					async onPluginRequest() {
+						await plugin_secret_get();
+						return new Response(secret.repeat(Math.floor(LIMITS.outputBytes / secret.length) + 1));
+					},
+				}),
+				make_ctx(),
+			);
+			expect(JSON.parse(await read_runner_response(response))._nay.code).toBe("response_too_large");
+		} finally {
+			fetchSpy.mockRestore();
+		}
+	});
+
+	it("releases late responses and does not recreate secret state after a timeout", async () => {
+		const requestBody = await make_run_body({ body: { timeoutMs: 100 } });
+		let entered = () => {};
+		const fetching = new Promise<void>((resolve) => {
+			entered = resolve;
+		});
+		let finishSecret: (response: Response) => void = () => {};
+		const { fetchSpy } = mock_host_fetch((request) => {
+			if (request.url.endsWith("/secret-get")) {
+				entered();
+				return new Promise<Response>((resolve) => {
+					finishSecret = resolve;
+				});
+			}
+		});
+		let cancelled = () => {};
+		const lateCancellation = new Promise<void>((resolve) => {
+			cancelled = resolve;
+		});
+		const cancel = vi.fn(() => {
+			cancelled();
+			return new Promise<void>(() => {});
+		});
+		const mapSet = vi.spyOn(Map.prototype, "set");
+		vi.useFakeTimers();
+		try {
+			const pending = worker.fetch(
+				run_request(requestBody),
+				make_env({
+					async onPluginRequest() {
+						await plugin_secret_get();
+						return new Response(new ReadableStream<Uint8Array>({ cancel }));
+					},
+				}),
+				make_ctx(),
+			);
+			await fetching;
+			await vi.advanceTimersByTimeAsync(100);
+			expect(JSON.parse(await read_runner_response(await pending))._nay.code).toBe("response_timeout");
+			mapSet.mockClear();
+			finishSecret(Response.json({ value: "late-secret-value" }));
+			await lateCancellation;
+			expect(cancel).toHaveBeenCalledOnce();
+			expect(mapSet.mock.calls.filter(([key]) => key === "run_123")).toEqual([]);
+			expect(vi.getTimerCount()).toBe(0);
+		} finally {
+			mapSet.mockRestore();
+			vi.useRealTimers();
+			fetchSpy.mockRestore();
+		}
+	});
+
 	it("masks tracked secret values in run output and never logs them", async () => {
 		const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 		const { fetchSpy } = fetch_secret_during_run("super-secret-value-123");
@@ -918,8 +1466,8 @@ describe("secret masking", () => {
 			);
 			expect(res.status).toBe(200);
 			const body = await res.json();
-			expect(body._yay.output).toContain("***");
-			expect(body._yay.output).not.toContain("super-secret-value-123");
+			expect(body.output).toContain("***");
+			expect(body.output).not.toContain("super-secret-value-123");
 			const logs = logSpy.mock.calls.map((call) => String(call[0])).join("\n");
 			expect(logs).not.toContain("super-secret-value-123");
 		} finally {
@@ -937,7 +1485,7 @@ describe("secret masking", () => {
 			make_ctx(),
 		);
 		const body = await res.json();
-		expect(body._yay.output).toBe("token=*** done");
+		expect(body.output).toBe("token=*** done");
 	});
 
 	it("does not mask secrets shorter than the minimum length", async () => {
@@ -954,7 +1502,7 @@ describe("secret masking", () => {
 				make_ctx(),
 			);
 			const body = await res.json();
-			expect(body._yay.output).toBe("token=abc12 done");
+			expect(body.output).toBe("token=abc12 done");
 		} finally {
 			fetchSpy.mockRestore();
 		}
@@ -973,7 +1521,7 @@ describe("secret masking", () => {
 				}),
 				make_ctx(),
 			);
-			expect((await first.json())._yay.output).toBe("token=***");
+			expect((await first.json()).output).toBe("token=***");
 
 			// Same pluginRunId, but this plugin never calls secretGet: an unmasked echo proves
 			// the per-run set was deleted at the end of the first run.
@@ -984,7 +1532,7 @@ describe("secret masking", () => {
 				}),
 				make_ctx(),
 			);
-			expect((await second.json())._yay.output).toBe("token=super-secret-value-123");
+			expect((await second.json()).output).toBe("token=super-secret-value-123");
 		} finally {
 			fetchSpy.mockRestore();
 		}

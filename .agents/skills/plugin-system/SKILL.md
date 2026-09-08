@@ -139,6 +139,28 @@ Scope deletion and account/org teardown remove attached mirrored grants and bind
 
 ## Invoke runs (`plugin.backend.invoke`)
 
+Backend success does not require file output. Events and invokes use the same finalizer. It first
+keeps any terminal outcome, then checks the stored deadline, execution failure, and unfinished
+calls or unpublished file stages. A handled failed API call is settled and does not block success.
+A complete plugin non-2xx response is a failed run whose body may still reach the caller. The
+finalizer returns `status`, `errorMessage`, and `canRelayResponse`; only that decision permits relay.
+Duplicate or late completion cannot replace history or repeat cleanup. Committed files and store
+docs survive later failure. Queued code from an older installed version is refused before execution.
+
+Invoke replies are outer HTTP 200 with `{ runId, pluginStatus, output }`. Output is complete masked
+text, including non-2xx bodies; empty 204 is valid. Both raw response and complete encoded JSON
+are capped at 16 MiB. The runner encodes once, and Convex validates bounded metadata and holds
+the complete bytes until finalization. Events consume and discard their body. The trusted mode
+and deadline are required: 35 seconds for invoke, 180 seconds for event. Wire details and rollout
+order live in `packages/plugin-runner/README.md`. Keep the old stored output counters and metrics;
+new `runnerOutputBytes` counts raw bytes consumed, and new `runnerOutputTruncated` is false.
+
+Host 502 with `code: "response_too_large"` is a deterministic response failure, but earlier writes
+may be saved. Chitchat retains its pending entry and request ID for manual Retry and does not
+retry that error automatically. Plugin 5xx and uncertain transport results reuse the same ID.
+The plugin-data transaction keeps `credentialRef.runId` and checks the original run's status,
+deadline, token expiry, actor, version, tenant, and pinned service account before a write commits.
+
 A page or file view calls `POST /api/v1/plugin-backend/invoke` with its `plu_` token to run the plugin's own reviewed backend synchronously — route contract in `../public-api/SKILL.md#invoke-door`. The run is a normal `plugins_event_runs` record with event `ui.invoke.requested`: same runner, same `plr_` token, same `MAX_API_CALLS = 20`, same call ledger and retention. The plugin's `fetch()` now serves two callers: plugin-declared endpoint paths handle invokes, and host events arrive on the reserved `/__bonobo_senate/run` path. Manifest validation and the runner accept only `/` or slash-separated lowercase letters, digits, and dashes, at most 256 characters. Trailing or duplicate slashes, dots, escapes, and underscores are refused. This grammar keeps declared endpoints separate from the reserved host-event path. The run's `actorUserId` is the member behind the `plu_` session, host-verified and delivered only in the event envelope — never inside the page's `input` — so backends enforce authorship from the envelope alone; the same id lands on the `plugin_run` principal, so store writes record that member as `createdBy`/`updatedBy`. Serialization: at most one live invoke run per `(installationId, lockKey)` — the default is one lock for the whole installation, and an endpoint declared `serialization: "caller-key"` uses the caller's `serializationKey`; a concurrent second invoke answers 409 `busy` with `retryAfterMs`. File reads for runs (`files:read` + `files:list`) are gated on accepted `workspace.files.read` for BOTH invoke and upload runs, and a run reads with its actor's eyes, so it never sees inside a restricted folder that member cannot open.
 
 `plugin.service.connect` is the only capability whose holder is not code the app runs. It lets a plugin frame exchange its `plu_` token for an installation-bound `psg_` service grant, so the publisher's own server keeps working while nobody has the plugin open. A file view drives that exchange exactly as a page does: `plugins_service.ts` accepts any `plu_` UI token, and a page and a file view both carry one. So the capability row above says "pages and file views", and both consent screens must say the same thing, under the same both-screens rule as the UI outbound warning. A dialog that names only the page understates this capability by half.

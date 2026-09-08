@@ -149,6 +149,22 @@ function bytes_to_response_body(bytes: Uint8Array) {
 	return copy.buffer;
 }
 
+function plugin_runner_event_response(pluginRunId: string) {
+	const body = JSON.stringify({ _yay: { pluginRunId, pluginStatus: 200, elapsedMs: 12, outputBytes: 0 } });
+	return new Response(body, {
+		status: 200,
+		headers: {
+			"Content-Type": "application/json",
+			"X-Bonobo-Runner-Kind": "event",
+			"X-Bonobo-Runner-Run-Id": pluginRunId,
+			"X-Bonobo-Runner-Plugin-Status": "200",
+			"X-Bonobo-Runner-Elapsed-Ms": "12",
+			"X-Bonobo-Runner-Output-Bytes": "0",
+			"X-Bonobo-Runner-Body-Bytes": String(new TextEncoder().encode(body).byteLength),
+		},
+	});
+}
+
 function stub_r2_and_modal_fetch(
 	args: {
 		markdown?: string;
@@ -275,15 +291,7 @@ function stub_r2_and_modal_fetch(
 				const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
 				return (
 					(await onPluginRunnerRequest?.(body)) ??
-					new Response(
-						JSON.stringify({
-							_yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, output: "", outputTruncated: false },
-						}),
-						{
-							status: 200,
-							headers: { "Content-Type": "application/json" },
-						},
-					)
+					plugin_runner_event_response(String(body.pluginRunId))
 				);
 			}
 
@@ -1174,15 +1182,7 @@ describe("r2 asset content", () => {
 					}),
 				});
 				expect(writeResponse.status).toBe(200);
-				return new Response(
-					JSON.stringify({
-						_yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, output: "", outputTruncated: false },
-					}),
-					{
-						status: 200,
-						headers: { "Content-Type": "application/json" },
-					},
-				);
+				return plugin_runner_event_response(String(body.pluginRunId));
 			},
 		});
 
@@ -1357,15 +1357,7 @@ describe("r2 asset content", () => {
 					}),
 				});
 				expect(writeResponse.status).toBe(200);
-				return new Response(
-					JSON.stringify({
-						_yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, output: "", outputTruncated: false },
-					}),
-					{
-						status: 200,
-						headers: { "Content-Type": "application/json" },
-					},
-				);
+				return plugin_runner_event_response(String(body.pluginRunId));
 			},
 		});
 		const asUser = t.withIdentity({
@@ -1531,15 +1523,7 @@ describe("r2 asset content", () => {
 					});
 					expect(writeResponse.status).toBe(200);
 				}
-				return new Response(
-					JSON.stringify({
-						_yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, output: "", outputTruncated: false },
-					}),
-					{
-						status: 200,
-						headers: { "Content-Type": "application/json" },
-					},
-				);
+				return plugin_runner_event_response(String(body.pluginRunId));
 			},
 		});
 
@@ -2496,15 +2480,7 @@ describe("r2 asset content", () => {
 					}),
 				});
 				expect(writeResponse.status).toBe(200);
-				return new Response(
-					JSON.stringify({
-						_yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, output: "", outputTruncated: false },
-					}),
-					{
-						status: 200,
-						headers: { "Content-Type": "application/json" },
-					},
-				);
+				return plugin_runner_event_response(String(body.pluginRunId));
 			},
 		});
 		const response = await t.fetch("/api/r2/event", {

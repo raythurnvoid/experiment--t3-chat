@@ -2,7 +2,8 @@
 // the workpool executor → claimed by start_event_run, which issues a per-run `plr_` API token →
 // executed by POSTing to the plugin runner → settled by finish_event_run. While running, the
 // plugin authenticates against the public `/api/v1/*` machine API as a `plugin_run` service
-// principal (resolved in public_api.ts) to download its source file and write Markdown outputs.
+// principal (resolved in public_api.ts) to call its allowed file and plugin-data APIs. A clean
+// response may succeed without writing a file.
 //
 // Three credentials: PLUGIN_RUNNER_SECRET authenticates Convex → runner requests; the per-run
 // `plr_` token (stored hashed on the run) authenticates plugin → public API calls; and the
@@ -21,7 +22,7 @@ import { internalAction, internalMutation, type ActionCtx, type MutationCtx } fr
 import type { Doc, Id } from "./_generated/dataModel.js";
 import app_convex_schema from "./schema.ts";
 import { type pluginRunnerApiSchema } from "common/api-schemas.ts";
-import { Result, Result_try_promise } from "common/errors-as-values-utils.ts";
+import { Result } from "common/errors-as-values-utils.ts";
 import { composite_id, should_never_happen } from "../shared/shared-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { files_node_has_editable_text_content } from "../server/files.ts";
@@ -62,6 +63,11 @@ const INVOKE_RUN_TTL_MS = 60 * 1000;
 // Mirror of the runner's LIMITS.bodyBytes. The exact wire body is measured before the fetch so
 // an oversized invoke fails with a labeled error instead of a generic runner 413.
 const RUNNER_BODY_MAX_BYTES = 64_000;
+// The runner encodes the public JSON once; keep it as bytes below Convex's HTTP response limit.
+const RUNNER_RESPONSE_MAX_BYTES = 16 * 1024 * 1024;
+const RUNNER_SMALL_RESPONSE_MAX_BYTES = 8 * 1024;
+const RUNNER_METADATA_MAX_BYTES = 2 * 1024;
+const RUNNER_RESPONSE_BLOCK_BYTES = 64 * 1024;
 // One shared transactional quota across every plugin-consuming call, whatever the route.
 const MAX_API_CALLS = 20;
 const RUNNER_ERROR_MESSAGE_MAX_CHARS = 500;
@@ -574,6 +580,10 @@ export const start_event_run = internalMutation({
 		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
+		// Queued code must not use a newer installation's settings or consent.
+		if (installation.pluginVersionId !== pluginRun.pluginVersionId) {
+			return Result({ _nay: { message: "Plugin version changed before the run started" } });
+		}
 		// A file event whose file is gone has nothing to run on. An event that never named a file is
 		// not missing anything.
 		if (pluginRun.event !== ACCOUNT_DELETED_EVENT_TYPE && (!asset || !fileNode)) {
@@ -850,27 +860,43 @@ export const finish_event_run = internalMutation({
 				runnerErrorMessage: v.union(v.string(), v.null()),
 				pluginStatus: v.optional(v.number()),
 				runnerElapsedMs: v.optional(v.number()),
+				// New runs record raw response bytes consumed. Older stored metrics keep their meaning.
 				runnerOutputBytes: v.optional(v.number()),
 				runnerOutputTruncated: v.optional(v.boolean()),
 			}),
 		),
 	},
-	returns: v.null(),
+	returns: v_result({
+		_yay: v.object({
+			status: v.union(v.literal("succeeded"), v.literal("failed")),
+			errorMessage: v.union(v.string(), v.null()),
+			canRelayResponse: v.boolean(),
+		}),
+	}),
 	handler: async (ctx, args) => {
 		const pluginRun = await ctx.db.get("plugins_event_runs", args.runId);
-		// A run that is no longer live was already settled (the expiry cron or a duplicate finish won);
-		// finishing is a no-op, not an error. "queued" is live too: a refused start still settles here.
-		if (!pluginRun || (pluginRun.status !== "queued" && pluginRun.status !== "running")) {
-			return null;
+		if (!pluginRun) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		// A late response cannot replace history or repeat cleanup after another finish won.
+		if (pluginRun.status !== "queued" && pluginRun.status !== "running") {
+			return Result({
+				_yay: { status: pluginRun.status, errorMessage: pluginRun.errorMessage, canRelayResponse: false },
+			});
 		}
 
 		const now = Date.now();
 		const outcome = args.outcome;
 		let succeeded = false;
 		let errorMessage: string | null = null;
+		let canRelayResponse = false;
 
-		if (outcome.kind === "failed") {
+		if (pluginRun.expiresAt <= now) {
+			errorMessage = "Run expired";
+		} else if (outcome.kind === "failed") {
 			errorMessage = outcome.errorMessage;
+		} else if (!outcome.runnerOk || outcome.bodyStatus !== "succeeded" || outcome.pluginStatus === undefined) {
+			errorMessage = outcome.runnerErrorMessage ?? `Plugin runner failed with status ${outcome.runnerHttpStatus}`;
 		} else {
 			const [calls, stages] = await Promise.all([
 				ctx.db
@@ -883,39 +909,16 @@ export const finish_event_run = internalMutation({
 					.collect(),
 			]);
 			const startedCallCount = calls.filter((call) => call.status === "started").length;
-			const pluginStatusIsOk =
-				outcome.pluginStatus === undefined || (outcome.pluginStatus >= 200 && outcome.pluginStatus < 300);
-
-			// A clean runner exit is not enough: the plugin must also have left no API call
-			// unfinished and no staged write unpublished.
-			const cleanExit =
-				outcome.runnerOk &&
-				outcome.bodyStatus === "succeeded" &&
-				startedCallCount === 0 &&
-				stages.length === 0 &&
-				pluginStatusIsOk;
-			// An invoke run is a request/response exchange whose result is the plugin's own output
-			// body, so a clean exit alone succeeds. A file event run must also have published at
-			// least one Markdown output.
-			if (pluginRun.event === UI_INVOKE_EVENT_TYPE) {
-				succeeded = cleanExit;
-			} else {
-				succeeded = cleanExit && pluginRun.outputWriteCount > 0;
-			}
-
-			errorMessage = succeeded
-				? null
-				: outcome.pluginStatus !== undefined && (outcome.pluginStatus < 200 || outcome.pluginStatus >= 300)
-					? `Plugin returned status ${outcome.pluginStatus}`
-					: outcome.runnerErrorMessage
-						? outcome.runnerErrorMessage
-						: startedCallCount
-							? "Plugin left API calls unfinished"
-							: stages.length
-								? "Plugin left an output write unpublished"
-								: outcome.runnerOk && outcome.bodyStatus === "succeeded"
-									? "Plugin produced no Markdown output"
-									: `Plugin runner failed with status ${outcome.runnerHttpStatus}`;
+			// File writes are optional. Only unfinished host work prevents a complete reply.
+			canRelayResponse = startedCallCount === 0 && stages.length === 0;
+			succeeded = canRelayResponse && outcome.pluginStatus >= 200 && outcome.pluginStatus < 300;
+			errorMessage = startedCallCount
+				? "Plugin left API calls unfinished"
+				: stages.length
+					? "Plugin left an output write unpublished"
+					: succeeded
+						? null
+						: `Plugin returned status ${outcome.pluginStatus}`;
 		}
 
 		if (!succeeded) {
@@ -950,9 +953,16 @@ export const finish_event_run = internalMutation({
 			db_terminalize_run_leftovers(ctx, { runId: pluginRun._id, now }),
 		]);
 
-		return null;
+		return Result({
+			_yay: { status: succeeded ? ("succeeded" as const) : ("failed" as const), errorMessage, canRelayResponse },
+		});
 	},
 });
+
+export type finish_event_run_Result =
+	typeof finish_event_run extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
 
 /**
  * Hourly cron: marks expired queued/running runs as failed. A run normally settles through
@@ -1091,37 +1101,212 @@ export const cleanup_old_event_runs = internalMutation({
 	},
 });
 
-// A plugin failure still arrives as HTTP 200 + _nay (run metrics under data); a non-200
-// status means the runner itself failed. The _yay metrics and output are validated because
-// finish_event_run and the invoke route consume them; the _nay arm is trusted beyond name
-// and message.
+const runner_count_validator = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const runner_header_count_validator = z
+	.string()
+	.regex(/^(0|[1-9]\d*)$/)
+	.transform(Number)
+	.pipe(runner_count_validator);
+const runner_metadata_validator = z.object({
+	kind: z.enum(["invoke", "event", "error"]),
+	runId: z.string().min(1).max(128).optional(),
+	pluginStatus: runner_header_count_validator.pipe(z.number().min(200).max(599)).optional(),
+	elapsedMs: runner_header_count_validator.optional(),
+	outputBytes: runner_header_count_validator.optional(),
+	bodyBytes: runner_header_count_validator,
+});
+
+// Only events and safe errors are parsed here. Invoke replies stay encoded through this runtime.
 const runner_response_body_validator = z.union([
 	z.object({
-		_yay: z.looseObject({
-			pluginStatus: z.number(),
-			elapsedMs: z.number(),
-			outputBytes: z.number(),
-			output: z.string(),
-			outputTruncated: z.boolean(),
+		_yay: z.object({
+			pluginRunId: z.string().min(1).max(128),
+			pluginStatus: z.number().int().min(200).max(599),
+			elapsedMs: runner_count_validator,
+			outputBytes: runner_count_validator,
 		}),
 		_nay: z.undefined().optional(),
 	}),
 	z.object({
 		_yay: z.undefined().optional(),
-		_nay: z.looseObject({
-			name: z.string(),
-			message: z.string(),
+		_nay: z.object({
+			code: z.enum(["response_too_large", "response_timeout", "execution_failed", "runner_refused"]),
+			name: z.string().max(200),
+			message: z.string().max(RUNNER_ERROR_MESSAGE_MAX_CHARS),
 			data: z
-				.looseObject({
-					pluginStatus: z.number().optional(),
-					elapsedMs: z.number().optional(),
-					outputBytes: z.number().optional(),
-					outputTruncated: z.boolean().optional(),
+				.object({
+					pluginRunId: z.string().min(1).max(128),
+					pluginStatus: z.number().int().min(200).max(599).optional(),
+					elapsedMs: runner_count_validator.optional(),
+					outputBytes: runner_count_validator.optional(),
 				})
 				.optional(),
 		}),
 	}),
 ]);
+
+async function read_runner_response(
+	response: Response,
+	args: { runId: string; responseMode: "invoke" | "event"; signal: AbortSignal },
+) {
+	// Result() keeps only its standard error fields; preserve the runner-owned wire code here.
+	const invalidResponse = {
+		_yay: undefined,
+		_nay: {
+			code: "invalid_response" as const,
+			name: "invalid_response",
+			message: "Plugin runner returned an invalid response",
+			data: undefined,
+		},
+	} as const;
+	const tooLarge = {
+		_yay: undefined,
+		_nay: {
+			code: "response_too_large" as const,
+			name: "response_too_large",
+			message: "Plugin response was too large",
+			data: undefined,
+		},
+	} as const;
+	const reader = response.body?.getReader();
+	const cancel = () => {
+		if (reader) void reader.cancel().catch(() => {});
+	};
+	args.signal.addEventListener("abort", cancel, { once: true });
+	let complete = false;
+	try {
+		args.signal.throwIfAborted();
+		let metadataBytes = 0;
+		for (const [name, value] of response.headers) {
+			if (!name.startsWith("x-bonobo-runner-")) continue;
+			metadataBytes += name.length + value.length + 4;
+			if (metadataBytes > RUNNER_METADATA_MAX_BYTES || !/^[\x20-\x7E]*$/.test(value)) return invalidResponse;
+		}
+		const parsedMetadata = runner_metadata_validator.safeParse({
+			kind: response.headers.get("X-Bonobo-Runner-Kind"),
+			runId: response.headers.get("X-Bonobo-Runner-Run-Id") ?? undefined,
+			pluginStatus: response.headers.get("X-Bonobo-Runner-Plugin-Status") ?? undefined,
+			elapsedMs: response.headers.get("X-Bonobo-Runner-Elapsed-Ms") ?? undefined,
+			outputBytes: response.headers.get("X-Bonobo-Runner-Output-Bytes") ?? undefined,
+			bodyBytes: response.headers.get("X-Bonobo-Runner-Body-Bytes"),
+		});
+		if (!parsedMetadata.success) return invalidResponse;
+		const metadata = parsedMetadata.data;
+		if (metadata.runId !== undefined && metadata.runId !== args.runId) return invalidResponse;
+		if (metadata.kind === "error") {
+			if (![200, 400, 401, 404, 413, 503].includes(response.status)) return invalidResponse;
+		} else if (
+			response.status !== 200 ||
+			metadata.kind !== args.responseMode ||
+			metadata.runId !== args.runId ||
+			metadata.pluginStatus === undefined ||
+			metadata.elapsedMs === undefined ||
+			metadata.outputBytes === undefined ||
+			metadata.outputBytes > RUNNER_RESPONSE_MAX_BYTES
+		) {
+			return invalidResponse;
+		}
+		const maxBytes = metadata.kind === "invoke" ? RUNNER_RESPONSE_MAX_BYTES : RUNNER_SMALL_RESPONSE_MAX_BYTES;
+		if (metadata.bodyBytes > maxBytes) return tooLarge;
+
+		// Repack tiny input chunks into fixed blocks so their count cannot exhaust the heap.
+		const blocks: Uint8Array[] = [];
+		let block = new Uint8Array(Math.min(RUNNER_RESPONSE_BLOCK_BYTES, maxBytes));
+		let used = 0;
+		let byteLength = 0;
+		if (reader) {
+			for (;;) {
+				const { value, done } = await reader.read();
+				args.signal.throwIfAborted();
+				if (done) break;
+				byteLength += value.byteLength;
+				if (byteLength > maxBytes) return tooLarge;
+				if (byteLength > metadata.bodyBytes) return invalidResponse;
+				let offset = 0;
+				while (offset < value.byteLength) {
+					const size = Math.min(block.byteLength - used, value.byteLength - offset);
+					block.set(value.subarray(offset, offset + size), used);
+					used += size;
+					offset += size;
+					if (used === block.byteLength) {
+						blocks.push(block);
+						block = new Uint8Array(Math.min(RUNNER_RESPONSE_BLOCK_BYTES, maxBytes));
+						used = 0;
+					}
+				}
+			}
+		}
+		complete = true;
+		if (byteLength !== metadata.bodyBytes) return invalidResponse;
+		if (used > 0) blocks.push(block.subarray(0, used));
+		const bytes = new Uint8Array(byteLength);
+		let offset = 0;
+		for (const retained of blocks) {
+			bytes.set(retained, offset);
+			offset += retained.byteLength;
+		}
+		blocks.length = 0;
+
+		if (
+			metadata.kind === "invoke" &&
+			metadata.pluginStatus !== undefined &&
+			metadata.elapsedMs !== undefined &&
+			metadata.outputBytes !== undefined
+		) {
+			return Result({
+				_yay: {
+					kind: "invoke" as const,
+					pluginStatus: metadata.pluginStatus,
+					elapsedMs: metadata.elapsedMs,
+					outputBytes: metadata.outputBytes,
+					body: bytes,
+				},
+			});
+		}
+		let json: unknown;
+		try {
+			json = JSON.parse(new TextDecoder().decode(bytes));
+		} catch {
+			return invalidResponse;
+		}
+		const parsed = runner_response_body_validator.safeParse(json);
+		if (!parsed.success) return invalidResponse;
+		if (parsed.data._nay) {
+			if (metadata.kind !== "error") return invalidResponse;
+			const facts = parsed.data._nay.data;
+			if (
+				facts?.pluginRunId !== metadata.runId ||
+				facts?.pluginStatus !== metadata.pluginStatus ||
+				facts?.elapsedMs !== metadata.elapsedMs ||
+				facts?.outputBytes !== metadata.outputBytes
+			)
+				return invalidResponse;
+			return { _yay: undefined, _nay: parsed.data._nay };
+		}
+		const facts = parsed.data._yay;
+		if (
+			metadata.kind !== "event" ||
+			facts.pluginRunId !== metadata.runId ||
+			facts.pluginStatus !== metadata.pluginStatus ||
+			facts.elapsedMs !== metadata.elapsedMs ||
+			facts.outputBytes !== metadata.outputBytes
+		)
+			return invalidResponse;
+		return Result({
+			_yay: {
+				kind: "event" as const,
+				pluginStatus: facts.pluginStatus,
+				elapsedMs: facts.elapsedMs,
+				outputBytes: facts.outputBytes,
+				body: null,
+			},
+		});
+	} finally {
+		args.signal.removeEventListener("abort", cancel);
+		// A stalled cancellation must not extend the response deadline.
+		if (!complete) cancel();
+	}
+}
 
 /**
  * One runner round trip shared by event runs and invoke runs. Builds the exact wire body,
@@ -1130,6 +1315,7 @@ const runner_response_body_validator = z.union([
  */
 export async function plugins_runtime_execute_runner_request(args: {
 	timeoutMs: number;
+	responseMode: "invoke" | "event";
 	requestPath?: string;
 	version: Doc<"plugins_versions">;
 	backendEntrypointFile: NonNullable<Doc<"plugins_versions">["backendEntrypointFile"]>;
@@ -1141,6 +1327,8 @@ export async function plugins_runtime_execute_runner_request(args: {
 }) {
 	// One exact body string: the size refusal below must judge the same bytes the runner would.
 	const body = JSON.stringify({
+		responseMode: args.responseMode,
+		timeoutMs: args.timeoutMs,
 		// Runner wire fields; the plugin's name doubles as its id.
 		pluginId: args.version.name,
 		pluginName: args.version.name,
@@ -1179,33 +1367,56 @@ export async function plugins_runtime_execute_runner_request(args: {
 
 	// The runner downloads the plugin bundle, executes it, and only then responds: this one
 	// request spans the whole plugin execution, and its response body is the run's result.
-	const runnerResponse = await fetch(`${PLUGIN_RUNNER_URL}/internal/plugin-runner/run`, {
-		method: "POST",
-		// A hung runner request would otherwise hold the action until the Convex action timeout
-		// kills it, which reads as a crash (workpool retry + expiry cron) instead of a labeled failure.
-		signal: AbortSignal.timeout(args.timeoutMs),
-		headers: {
-			Authorization: `Bearer ${PLUGIN_RUNNER_SECRET}`,
-			"Content-Type": "application/json",
-		},
-		body,
+	const controller = new AbortController();
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const deadline = new Promise<never>((_resolve, reject) => {
+		timer = setTimeout(() => {
+			const error = new Error("Plugin runner request timed out");
+			error.name = "TimeoutError";
+			controller.abort(error);
+			reject(error);
+		}, args.timeoutMs);
 	});
+	try {
+		const runnerResponse = await Promise.race([
+			fetch(`${PLUGIN_RUNNER_URL}/internal/plugin-runner/run`, {
+				method: "POST",
+				// A hung runner request would otherwise hold the action until the Convex action timeout
+				// kills it, which reads as a crash (workpool retry + expiry cron) instead of a labeled failure.
+				signal: controller.signal,
+				headers: {
+					Authorization: `Bearer ${PLUGIN_RUNNER_SECRET}`,
+					"Content-Type": "application/json",
+				},
+				body,
+			}).then((response) => {
+				if (controller.signal.aborted) {
+					if (response.body) void response.body.cancel().catch(() => {});
+					controller.signal.throwIfAborted();
+				}
+				return response;
+			}),
+			deadline,
+		]);
+		const runnerResult = await Promise.race([
+			read_runner_response(runnerResponse, {
+				runId: String(args.pluginRunId),
+				responseMode: args.responseMode,
+				signal: controller.signal,
+			}),
+			deadline,
+		]);
 
-	const runnerJson = await Result_try_promise<unknown>(runnerResponse.json());
-	const runnerParsed = runner_response_body_validator.safeParse(runnerJson._yay);
-	const runnerResult = runnerJson._nay
-		? Result({ _nay: { name: "invalid_response", message: "Plugin runner returned invalid JSON" } })
-		: runnerParsed.success
-			? runnerParsed.data
-			: Result({ _nay: { name: "invalid_response", message: "Plugin runner returned an invalid response" } });
-
-	return Result({
-		_yay: {
-			runnerOk: runnerResponse.ok,
-			runnerHttpStatus: runnerResponse.status,
-			runnerResult,
-		},
-	});
+		return Result({
+			_yay: {
+				runnerOk: runnerResponse.ok,
+				runnerHttpStatus: runnerResponse.status,
+				runnerResult,
+			},
+		});
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 /**
@@ -1259,6 +1470,7 @@ export const execute_upload_completed_event_run = internalAction({
 		try {
 			const runner = await plugins_runtime_execute_runner_request({
 				timeoutMs: RUNNER_REQUEST_TIMEOUT_MS,
+				responseMode: "event",
 				version: startResult._yay.version,
 				backendEntrypointFile,
 				pluginRunId: startResult._yay.pluginRun._id,
@@ -1311,15 +1523,14 @@ export const execute_upload_completed_event_run = internalAction({
 					runnerOk: runner._yay.runnerOk,
 					runnerHttpStatus: runner._yay.runnerHttpStatus,
 					bodyStatus: runnerResult._nay ? "errored" : "succeeded",
-					// The plugin's own truncated error message is persisted for workspace admins; plugin
-					// authors own the risk of secrets embedded in their exception messages.
+					// The outer runner bounds and masks error text before it reaches run history.
 					runnerErrorMessage: runnerResult._nay
 						? runnerResult._nay.message.slice(0, RUNNER_ERROR_MESSAGE_MAX_CHARS)
 						: null,
 					pluginStatus: runMetrics?.pluginStatus,
 					runnerElapsedMs: runMetrics?.elapsedMs,
 					runnerOutputBytes: runMetrics?.outputBytes,
-					runnerOutputTruncated: runMetrics?.outputTruncated,
+					runnerOutputTruncated: false,
 				},
 			});
 			return null;
@@ -1327,7 +1538,7 @@ export const execute_upload_completed_event_run = internalAction({
 			// A network error — or our own timeout aborting the fetch — still settles the run as
 			// failed. Only a real crash of this action leaves the run live for the workpool retry
 			// and, failing that, the expiry cron.
-			// AbortSignal.timeout aborts with "TimeoutError"; some runtimes surface it as "AbortError".
+			// The deadline uses TimeoutError; a fetch abort may surface as AbortError.
 			const timedOut = error instanceof Error && (error.name === "TimeoutError" || error.name === "AbortError");
 			console.error("Plugin event run threw", {
 				runId: args.runId,

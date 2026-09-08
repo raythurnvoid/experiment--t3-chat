@@ -159,6 +159,26 @@ The three `/api/v1/files/plugin-*` routes live in `public_api_plugin_files_http_
 
 # Invoke door
 
+Completed responses use outer 200 with `{ runId: string, pluginStatus: number, output: string }`.
+The plugin status stays inside this object, so a plugin 401 does not trigger host-session refresh.
+Output is the complete secret-masked text, including error bodies. It may be empty for 204.
+The raw body and complete encoded JSON each have a 16 MiB cap. There is no public truncation flag.
+The runner builds the JSON bytes once; Convex validates metadata, reads the whole bounded body,
+and forwards the same bytes only after `finish_event_run` allows relay. The route overrides only
+its derived public `200.body` type; errors remain handler-derived.
+
+Host execution, stream, expiry, and unfinished-work failures answer 502. A response-size failure
+also carries `code: "response_too_large"`; earlier side effects may already be saved. Clients must
+stop automatic size-error retries and keep the same request ID for manual retry. A complete plugin
+non-2xx may relay with a failed run outcome. Clean events may succeed with no file writes.
+Deadlines cover execution and body reading: 35 seconds for invoke, 180 seconds for event.
+Existing request limits and 400/413, session, permission, busy, and rate refusals stay in place.
+
+Plugin-data writes carry the original trusted `credentialRef.runId` into the store transaction.
+The live-run check includes both `expiresAt` and `apiTokenExpiresAt`, plus the current installation,
+version, tenant, actor and service-account pin. A live service account cannot extend an ended run.
+The write, batch, and delete doors keep all existing collection, scope, ownership, and quota rules.
+
 `POST /api/v1/plugin-backend/invoke` (registered in `plugins_invoke_http_routes.ts`, implemented in `plugins_invoke.ts`) lets a plugin frame run its own reviewed backend synchronously. Scope `backend:invoke`, `allowedKinds: ["plugin_ui"]`, capability `plugin.backend.invoke`, and the installed version must declare the endpoint in `backend.endpoints`.
 
 - Body `{ endpoint, input?, serializationKey? }`, raw cap `INVOKE_REQUEST_MAX_BYTES` = 32 KiB — smaller than the plugin-data routes on purpose, because the host wraps the input with the configuration and origins and the runner refuses its own body above 64,000 bytes. The host also measures the exact runner JSON before `fetch` and answers 413 without calling the runner when the wrapper does not fit.

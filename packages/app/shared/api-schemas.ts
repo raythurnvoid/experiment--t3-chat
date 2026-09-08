@@ -48,6 +48,9 @@ Schema to store all api types grouped by api path for easy lookup.
 - Use the same `path`, `method`, and `handler` values for runtime registration and the computed schema keys.
 - Infer `response` from the handler's literal `{ status, body, headers? }` return union. Keep every
   status literal narrow with `as const`.
+- The plugin invoke route returns already encoded JSON bytes on 200. Only that route replaces
+  the derived `200.body` with the runner's public reply type. All error responses stay inferred;
+  the bytes never become the public JSON type.
 
 ## Data types to use in special scenarios
 - Use `never` if the request body, response body, search params, path params are not supposed to be sent.

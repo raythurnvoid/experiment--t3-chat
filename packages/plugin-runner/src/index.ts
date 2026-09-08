@@ -19,10 +19,7 @@ import { z } from "zod";
 
 import { Result } from "common/errors-as-values-utils.ts";
 import { type api_schemas_BuildResponseSpecFromHandler } from "common/api-schemas.ts";
-import {
-	type cloudflare_workers_RouteHandler,
-	type cloudflare_workers_RouteHandlerArgs,
-} from "common/cloudflare-workers.ts";
+import { type cloudflare_workers_RouteHandlerArgs } from "common/cloudflare-workers.ts";
 
 type DynamicWorkerLimits = {
 	cpuMs: number;
@@ -117,10 +114,19 @@ export type Env = {
 	PLUGIN_RUNNER_DISABLED?: string;
 };
 
+export type pluginRunner_InvokeReply = {
+	runId: string;
+	pluginStatus: number;
+	output: string;
+};
+
 export const LIMITS = {
 	bodyBytes: 64_000,
 	artifactBytes: 1_000_000,
-	outputBytes: 900_000,
+	outputBytes: 16 * 1024 * 1024,
+	responseBytes: 16 * 1024 * 1024,
+	smallResponseBytes: 8 * 1024,
+	metadataBytes: 2 * 1024,
 	hostResponseBytes: 64_000,
 	outboundResponseBytes: 25 * 1024 * 1024,
 } as const;
@@ -136,6 +142,8 @@ const COMPAT_DATE = "2026-07-01";
 const ENTRY_MODULE = "bonobo-plugin-wrapper.js";
 const PLUGIN_MODULE = "plugin.js";
 const PLUGIN_WRAPPER_VERSION = "bonobo-host-v3";
+const RESPONSE_BLOCK_BYTES = 64 * 1024;
+const RESPONSE_TOO_LARGE = new Error("Plugin response exceeds the size limit");
 // Decrypted secret values tracked per run so run output and errors can be masked.
 // This cannot live on the BonoboHost instance: the host is reached via a loopback binding
 // and workerd constructs a new instance per RPC call, so per-instance state does not
@@ -148,19 +156,15 @@ const MASK_MIN_SECRET_LENGTH = 6;
 
 function track_run_secret_value(pluginRunId: string, value: string) {
 	if (value.length < MASK_MIN_SECRET_LENGTH) return;
-	let values = RUN_SECRET_VALUES.get(pluginRunId);
-	if (!values) {
-		values = new Set();
-		RUN_SECRET_VALUES.set(pluginRunId, values);
-	}
-	values.add(value);
+	// A secret call that finishes after the deadline must not recreate the finished run's set.
+	RUN_SECRET_VALUES.get(pluginRunId)?.add(value);
 }
 
 function mask_secret_values(text: string, values: ReadonlySet<string> | undefined): string {
 	if (!values || values.size === 0) return text;
 	let masked = text;
 	for (const value of values) {
-		masked = masked.split(value).join("***");
+		masked = masked.replaceAll(value, "***");
 	}
 	return masked;
 }
@@ -206,10 +210,6 @@ function json_response(body: unknown, status: number): Response {
 	});
 }
 
-function byte_length(value: string) {
-	return TEXT_ENCODER.encode(value).length;
-}
-
 async function constant_time_sha256_equal(a: string, b: string): Promise<boolean> {
 	const [aDigest, bDigest] = await Promise.all([
 		crypto.subtle.digest("SHA-256", TEXT_ENCODER.encode(a)),
@@ -248,14 +248,16 @@ function is_record(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function sanitize_error(error: unknown): { name: string; message: string } {
+function sanitize_error(error: unknown, secrets?: ReadonlySet<string>): { name: string; message: string } {
 	if (error && typeof error === "object") {
 		const e = error as { name?: unknown; message?: unknown };
 		return {
-			name: typeof e.name === "string" ? e.name : "Error",
-			// The plugin's own failure reason is forwarded for workspace admins; secret values the
-			// run fetched are masked at the response site, and the host truncates to the same cap.
-			message: typeof e.message === "string" && e.message ? e.message.slice(0, 500) : "Plugin execution failed",
+			name: typeof e.name === "string" ? mask_secret_values(e.name, secrets).slice(0, 64) : "Error",
+			// Mask before shortening, so a boundary cannot expose the first half of a secret.
+			message:
+				typeof e.message === "string" && e.message
+					? mask_secret_values(e.message, secrets).slice(0, 500)
+					: "Plugin execution failed",
 		};
 	}
 	return { name: "Error", message: "Plugin execution failed" };
@@ -345,12 +347,164 @@ async function read_response_json_limited(response: Response) {
 	}
 }
 
-async function response_text_limited(response: Response) {
-	const text = await response.text();
-	if (byte_length(text) > LIMITS.outputBytes) {
-		return { text: text.slice(0, LIMITS.outputBytes), truncated: true };
+function create_deadline(timeoutMs: number) {
+	const controller = new AbortController();
+	const error = new Error("Plugin response deadline exceeded");
+	const expiresAt = Date.now() + timeoutMs;
+	const timer = setTimeout(() => controller.abort(error), timeoutMs);
+	const check = () => {
+		if (Date.now() >= expiresAt) controller.abort(error);
+		controller.signal.throwIfAborted();
+	};
+
+	return {
+		signal: controller.signal,
+		check,
+		clear: () => clearTimeout(timer),
+		async wait<T>(operation: Promise<T>) {
+			let onAbort = () => {};
+			const aborted = new Promise<never>((_resolve, reject) => {
+				onAbort = () => reject(error);
+				controller.signal.addEventListener("abort", onAbort, { once: true });
+			});
+			try {
+				// One listener per current read, not one retained reaction per chunk on a shared promise.
+				if (controller.signal.aborted) onAbort();
+				const value = await Promise.race([operation, aborted]);
+				check();
+				return value;
+			} finally {
+				controller.signal.removeEventListener("abort", onAbort);
+			}
+		},
+	};
+}
+
+async function read_plugin_response(
+	response: Response,
+	keepText: boolean,
+	deadline: ReturnType<typeof create_deadline>,
+	metrics: { outputBytes: number },
+) {
+	const reader = response.body?.getReader();
+	if (!reader) return "";
+
+	const decoder = new TextDecoder();
+	const parts: string[] = [];
+	const block = new Uint8Array(keepText ? RESPONSE_BLOCK_BYTES : 0);
+	let filled = 0;
+	let complete = false;
+	try {
+		for (;;) {
+			const next = await deadline.wait(reader.read());
+			if (next.done) {
+				complete = true;
+				break;
+			}
+			// This is raw output, before decoding or secret masking, including bytes read on failure.
+			metrics.outputBytes += next.value.byteLength;
+			if (metrics.outputBytes > LIMITS.outputBytes) throw RESPONSE_TOO_LARGE;
+			if (!keepText) continue;
+
+			let offset = 0;
+			while (offset < next.value.byteLength) {
+				const count = Math.min(block.byteLength - filled, next.value.byteLength - offset);
+				block.set(next.value.subarray(offset, offset + count), filled);
+				filled += count;
+				offset += count;
+				if (filled === block.byteLength) {
+					parts.push(decoder.decode(block, { stream: true }));
+					filled = 0;
+				}
+			}
+		}
+		if (keepText) parts.push(decoder.decode(block.subarray(0, filled)));
+		return parts.join("");
+	} finally {
+		// Cancelling a plugin-controlled source may never settle. Do not extend the run to await it.
+		if (!complete) void reader.cancel().catch(() => {});
+		reader.releaseLock();
 	}
-	return { text, truncated: false };
+}
+
+function encode_invoke_reply(reply: pluginRunner_InvokeReply, deadline: ReturnType<typeof create_deadline>) {
+	const blocks: Uint8Array[] = [];
+	let block = new Uint8Array(RESPONSE_BLOCK_BYTES);
+	let filled = 0;
+	let totalBytes = 0;
+	const append = (text: string) => {
+		const bytes = TEXT_ENCODER.encode(text);
+		// The public JSON cap includes escaping, field names, run ID, status, and punctuation.
+		if (totalBytes + bytes.byteLength > LIMITS.responseBytes) throw RESPONSE_TOO_LARGE;
+		totalBytes += bytes.byteLength;
+		let offset = 0;
+		while (offset < bytes.byteLength) {
+			const count = Math.min(block.byteLength - filled, bytes.byteLength - offset);
+			block.set(bytes.subarray(offset, offset + count), filled);
+			filled += count;
+			offset += count;
+			if (filled === block.byteLength) {
+				blocks.push(block);
+				block = new Uint8Array(RESPONSE_BLOCK_BYTES);
+				filled = 0;
+			}
+		}
+	};
+
+	append(`{"runId":${JSON.stringify(reply.runId)},"pluginStatus":${reply.pluginStatus},"output":"`);
+	for (let start = 0; start < reply.output.length; ) {
+		deadline.check();
+		let end = Math.min(start + 16 * 1024, reply.output.length);
+		const last = reply.output.charCodeAt(end - 1);
+		const next = reply.output.charCodeAt(end);
+		if (last >= 0xd800 && last <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) end--;
+		append(JSON.stringify(reply.output.slice(start, end)).slice(1, -1));
+		start = end;
+	}
+	append('"}');
+	if (filled > 0) blocks.push(block.subarray(0, filled));
+
+	const bytes = new Uint8Array(totalBytes);
+	let offset = 0;
+	for (const chunk of blocks) {
+		bytes.set(chunk, offset);
+		offset += chunk.byteLength;
+	}
+	blocks.length = 0;
+	deadline.check();
+	return bytes;
+}
+
+function runner_refusal<const Status extends 400 | 401 | 404 | 413 | 503>(
+	status: Status,
+	name: string,
+	message: string,
+) {
+	return {
+		status,
+		kind: "error" as const,
+		// The general Result constructor drops extra error fields, including this wire's code.
+		body: { _nay: { code: "runner_refused" as const, name, message: message.slice(0, 500) } },
+	};
+}
+
+function runner_headers(
+	kind: "invoke" | "event" | "error",
+	bodyBytes: number,
+	metrics?: { pluginRunId: string; elapsedMs: number; outputBytes: number; pluginStatus?: number },
+) {
+	const headers: Record<string, string> = {
+		"Content-Type": "application/json",
+		"X-Bonobo-Runner-Kind": kind,
+		"X-Bonobo-Runner-Body-Bytes": String(bodyBytes),
+	};
+	if (metrics) {
+		headers["X-Bonobo-Runner-Run-Id"] = metrics.pluginRunId;
+		headers["X-Bonobo-Runner-Elapsed-Ms"] = String(metrics.elapsedMs);
+		headers["X-Bonobo-Runner-Output-Bytes"] = String(metrics.outputBytes);
+		if (metrics.pluginStatus !== undefined) headers["X-Bonobo-Runner-Plugin-Status"] = String(metrics.pluginStatus);
+	}
+	return headers;
 }
 
 const HOST_RUNTIME_SCHEMA = z
@@ -383,81 +537,93 @@ const HOST_RUNTIME_SCHEMA = z
 		return { origin: url.origin, token: value.token } satisfies HostRuntime;
 	});
 
-const RUN_REQUEST_SCHEMA = z.strictObject({
-	pluginId: z.string({ error: "pluginId is required" }).min(1, "pluginId is required").max(128, "pluginId is required"),
-	pluginName: z
-		.string({ error: "pluginName is required" })
-		.min(1, "pluginName is required")
-		.max(128, "pluginName is required")
-		.regex(/^[A-Za-z0-9._@/-]+$/u, "pluginName is invalid"),
-	pluginVersion: z
-		.string({ error: "pluginVersion is required" })
-		.min(1, "pluginVersion is required")
-		.max(100, "pluginVersion must be at most 100 characters")
-		.regex(/^[A-Za-z0-9._@/+\-]+$/u, "pluginVersion is invalid"),
-	artifactKey: z.string({ error: "artifactKey is required" }).min(1, "artifactKey is required"),
-	artifactHash: z
-		.string({ error: "artifactHash is required" })
-		.regex(/^sha256:[a-f0-9]{64}$/iu, "artifactHash must be sha256:<hex>")
-		.transform((value) => value.toLowerCase()),
-	pluginRunId: z
-		.string({ error: "pluginRunId is required" })
-		.min(1, "pluginRunId is required")
-		.max(128, "pluginRunId is required"),
-	/**
-	 * The path the plugin's fetch handler sees. Absent for host event runs, which keep the
-	 * reserved default below. Simple segments exclude that prefix and URL rewrites.
-	 * Keep the endpoint grammar in sync with packages/app/shared/plugins.ts.
-	 */
-	requestPath: z
-		.string({ error: "requestPath is invalid" })
-		.max(256, "requestPath is invalid")
-		.regex(/^\/(?:[a-z0-9-]+(?:\/[a-z0-9-]+)*)?$/u, "requestPath is invalid")
-		.optional(),
-	input: z.unknown(),
-	host: HOST_RUNTIME_SCHEMA,
-	acceptedCapabilities: z
-		.array(
-			z
-				.string({ error: "acceptedCapabilities contains an invalid value" })
-				.min(1, "acceptedCapabilities contains an invalid value")
-				.max(128, "acceptedCapabilities contains an invalid value"),
-			{ error: "acceptedCapabilities must be an array" },
-		)
-		.default([]),
-	outboundOrigins: z
-		.array(
-			z
-				.string({ error: "outboundOrigins contains an invalid value" })
-				.min(1, "outboundOrigins contains an invalid value")
-				.max(256, "outboundOrigins contains an invalid value"),
-			{ error: "outboundOrigins must be an array" },
-		)
-		.max(32, "outboundOrigins contains too many entries")
-		.superRefine((entries, ctx) => {
-			for (const origin of entries) {
-				let url: URL;
-				try {
-					url = new URL(origin);
-				} catch {
-					ctx.addIssue({ code: "custom", message: "outboundOrigins contains an invalid value" });
-					return;
+const RUN_REQUEST_SCHEMA = z
+	.strictObject({
+		pluginId: z
+			.string({ error: "pluginId is required" })
+			.min(1, "pluginId is required")
+			.max(128, "pluginId is required"),
+		pluginName: z
+			.string({ error: "pluginName is required" })
+			.min(1, "pluginName is required")
+			.max(128, "pluginName is required")
+			.regex(/^[A-Za-z0-9._@/-]+$/u, "pluginName is invalid"),
+		pluginVersion: z
+			.string({ error: "pluginVersion is required" })
+			.min(1, "pluginVersion is required")
+			.max(100, "pluginVersion must be at most 100 characters")
+			.regex(/^[A-Za-z0-9._@/+\-]+$/u, "pluginVersion is invalid"),
+		artifactKey: z.string({ error: "artifactKey is required" }).min(1, "artifactKey is required"),
+		artifactHash: z
+			.string({ error: "artifactHash is required" })
+			.regex(/^sha256:[a-f0-9]{64}$/iu, "artifactHash must be sha256:<hex>")
+			.transform((value) => value.toLowerCase()),
+		pluginRunId: z
+			.string({ error: "pluginRunId is required" })
+			.min(1, "pluginRunId is required")
+			.max(128, "pluginRunId is required")
+			.regex(/^[\x21-\x7e]+$/u, "pluginRunId must be visible ASCII"),
+		responseMode: z.enum(["invoke", "event"], { error: "responseMode must be invoke or event" }),
+		timeoutMs: z.number({ error: "timeoutMs must be a positive integer" }).int().positive(),
+		/**
+		 * The path the plugin's fetch handler sees. Absent for host event runs, which keep the
+		 * reserved default below. Simple segments exclude that prefix and URL rewrites.
+		 * Keep the endpoint grammar in sync with packages/app/shared/plugins.ts.
+		 */
+		requestPath: z
+			.string({ error: "requestPath is invalid" })
+			.max(256, "requestPath is invalid")
+			.regex(/^\/(?:[a-z0-9-]+(?:\/[a-z0-9-]+)*)?$/u, "requestPath is invalid")
+			.optional(),
+		input: z.unknown(),
+		host: HOST_RUNTIME_SCHEMA,
+		acceptedCapabilities: z
+			.array(
+				z
+					.string({ error: "acceptedCapabilities contains an invalid value" })
+					.min(1, "acceptedCapabilities contains an invalid value")
+					.max(128, "acceptedCapabilities contains an invalid value"),
+				{ error: "acceptedCapabilities must be an array" },
+			)
+			.default([]),
+		outboundOrigins: z
+			.array(
+				z
+					.string({ error: "outboundOrigins contains an invalid value" })
+					.min(1, "outboundOrigins contains an invalid value")
+					.max(256, "outboundOrigins contains an invalid value"),
+				{ error: "outboundOrigins must be an array" },
+			)
+			.max(32, "outboundOrigins contains too many entries")
+			.superRefine((entries, ctx) => {
+				for (const origin of entries) {
+					let url: URL;
+					try {
+						url = new URL(origin);
+					} catch {
+						ctx.addIssue({ code: "custom", message: "outboundOrigins contains an invalid value" });
+						return;
+					}
+					// Each entry must be exactly an https origin: no path, userinfo, query, hash, or default port.
+					if (url.protocol !== "https:" || url.origin !== origin) {
+						ctx.addIssue({ code: "custom", message: "outboundOrigins entries must be https origins" });
+						return;
+					}
 				}
-				// Each entry must be exactly an https origin: no path, userinfo, query, hash, or default port.
-				if (url.protocol !== "https:" || url.origin !== origin) {
-					ctx.addIssue({ code: "custom", message: "outboundOrigins entries must be https origins" });
-					return;
-				}
-			}
-		}),
-});
+			}),
+	})
+	.superRefine((value, ctx) => {
+		if (value.timeoutMs > (value.responseMode === "invoke" ? 35_000 : 180_000)) {
+			ctx.addIssue({ code: "custom", message: "timeoutMs exceeds the response mode's budget" });
+		}
+	});
 
 // Messages come from the curated strings attached to the schema; never pass zod default text
 // through — runner errors are persisted by the host and must not echo received values.
 function validation_error_message(error: z.ZodError): string {
 	const issue = error.issues[0];
 	if (!issue) return "Request body is invalid";
-	if (issue.code === "unrecognized_keys") return `Unknown field: ${issue.keys[0]}`;
+	if (issue.code === "unrecognized_keys") return "Request body contains unknown fields";
 	if (issue.code === "invalid_type" && issue.path.length === 0) return "Request body must be an object";
 	return issue.message;
 }
@@ -689,7 +855,6 @@ export class BonoboOutbound extends WorkerEntrypoint<Env, BonoboOutboundProps> {
 }
 
 type RouteHandlerArgs = cloudflare_workers_RouteHandlerArgs<Env, PluginRunnerContext>;
-type RouteHandler = cloudflare_workers_RouteHandler<Env, PluginRunnerContext>;
 
 // This object is both the runtime dispatch table and the schema type source: each entry is the
 // handler function with the request/response spec phantom-intersected onto its type (the spec
@@ -717,83 +882,63 @@ const routes = {
 		POST: ((/* iife */) => {
 			const handler = async ({ request, env, ctx }: RouteHandlerArgs) => {
 				if (!(await is_authorized(request, env))) {
-					return { status: 401, body: Result({ _nay: { name: "unauthorized", message: "Unauthorized" } }) } as const;
+					return runner_refusal(401, "unauthorized", "Unauthorized");
 				}
 				if (env.PLUGIN_RUNNER_DISABLED === "true") {
-					return {
-						status: 503,
-						body: Result({ _nay: { name: "disabled", message: "Plugin runner is disabled" } }),
-					} as const;
+					return runner_refusal(503, "disabled", "Plugin runner is disabled");
 				}
 
 				const raw = await read_bounded_text(request);
 				if (!raw.ok) {
-					return {
-						status: 413,
-						body: Result({ _nay: { name: "body_too_large", message: "Request body too large" } }),
-					} as const;
+					return runner_refusal(413, "body_too_large", "Request body too large");
 				}
 
 				let body: unknown;
 				try {
 					body = JSON.parse(raw.text);
 				} catch {
-					return { status: 400, body: Result({ _nay: { name: "invalid_json", message: "Invalid JSON" } }) } as const;
+					return runner_refusal(400, "invalid_json", "Invalid JSON");
 				}
 
 				const validated = RUN_REQUEST_SCHEMA.safeParse(body);
 				if (!validated.success) {
-					return {
-						status: 400,
-						body: Result({ _nay: { name: "invalid_request", message: validation_error_message(validated.error) } }),
-					} as const;
+					return runner_refusal(400, "invalid_request", validation_error_message(validated.error));
 				}
 
 				const prefix = env.PLUGIN_RUNNER_ARTIFACT_PREFIX ?? "plugins/";
 				if (!validated.data.artifactKey.startsWith(prefix)) {
-					return {
-						status: 400,
-						body: Result({
-							_nay: { name: "invalid_artifact_key", message: "Artifact key is outside the plugin prefix" },
-						}),
-					} as const;
+					return runner_refusal(400, "invalid_artifact_key", "Artifact key is outside the plugin prefix");
 				}
 				if (!ctx?.exports?.BonoboHost || !ctx.exports.BonoboOutbound) {
-					return {
-						status: 503,
-						body: Result({ _nay: { name: "misconfigured", message: "Runner entrypoint bindings are unavailable" } }),
-					} as const;
+					return runner_refusal(503, "misconfigured", "Runner entrypoint bindings are unavailable");
 				}
 
 				const startedAt = Date.now();
-				const artifactKeyHash = await sha256_hex(validated.data.artifactKey);
-				const pluginStableId = build_plugin_stable_id(validated.data);
-				const pluginStableIdHash = await sha256_hex(pluginStableId);
+				const deadline = create_deadline(validated.data.timeoutMs);
+				const metrics: { pluginRunId: string; pluginStatus?: number; outputBytes: number } = {
+					pluginRunId: validated.data.pluginRunId,
+					outputBytes: 0,
+				};
 				try {
 					// The run token is plugin-visible via env.BONOBO.host.token, so mask it in outputs
 					// exactly like secret values.
+					RUN_SECRET_VALUES.set(validated.data.pluginRunId, new Set());
 					track_run_secret_value(validated.data.pluginRunId, validated.data.host.token);
-					const artifact = await env.PLUGIN_ARTIFACTS.get(validated.data.artifactKey);
+					const artifactKeyHash = await deadline.wait(sha256_hex(validated.data.artifactKey));
+					const pluginStableId = build_plugin_stable_id(validated.data);
+					const pluginStableIdHash = await deadline.wait(sha256_hex(pluginStableId));
+					const artifact = await deadline.wait(env.PLUGIN_ARTIFACTS.get(validated.data.artifactKey));
 					if (!artifact) {
-						return {
-							status: 404,
-							body: Result({ _nay: { name: "artifact_not_found", message: "Artifact not found" } }),
-						} as const;
+						return runner_refusal(404, "artifact_not_found", "Artifact not found");
 					}
 
-					const artifactRead = await read_r2_artifact(artifact);
+					const artifactRead = await deadline.wait(read_r2_artifact(artifact));
 					if (!artifactRead.ok) {
-						return {
-							status: 413,
-							body: Result({ _nay: { name: "artifact_too_large", message: "Artifact too large" } }),
-						} as const;
+						return runner_refusal(413, "artifact_too_large", "Artifact too large");
 					}
-					const actualArtifactHash = `sha256:${await sha256_hex_bytes(artifactRead.bytes)}`;
+					const actualArtifactHash = `sha256:${await deadline.wait(sha256_hex_bytes(artifactRead.bytes))}`;
 					if (actualArtifactHash !== validated.data.artifactHash) {
-						return {
-							status: 400,
-							body: Result({ _nay: { name: "artifact_hash_mismatch", message: "Artifact hash mismatch" } }),
-						} as const;
+						return runner_refusal(400, "artifact_hash_mismatch", "Artifact hash mismatch");
 					}
 
 					const hostBinding = ctx.exports.BonoboHost({
@@ -818,6 +963,7 @@ const routes = {
 					// BONOBO_RPC and globalOutbound). If the id were shared across runs, a later run would
 					// execute with an earlier run's token and permissions. So the id includes the run id:
 					// one worker per run. Sharing is only safe once nothing run-specific is built in here.
+					deadline.check();
 					const worker = env.LOADER.get(`${pluginStableId}:${validated.data.pluginRunId}`, () => ({
 						compatibilityDate: COMPAT_DATE,
 						compatibilityFlags: ["nodejs_compat"],
@@ -832,100 +978,119 @@ const routes = {
 						globalOutbound: outboundBinding,
 						limits: DYNAMIC_WORKER_LIMITS,
 					}));
-					const pluginResponse = await worker
-						.getEntrypoint(null, {
-							props: {
-								pluginRunId: validated.data.pluginRunId,
-								host: validated.data.host,
-								acceptedCapabilities: validated.data.acceptedCapabilities,
-							},
-							limits: DYNAMIC_WORKER_LIMITS,
-						})
-						.fetch(
-							new Request(`https://plugin.local${validated.data.requestPath ?? "/__bonobo_senate/run"}`, {
-								method: "POST",
-								headers: { "Content-Type": "application/json" },
-								body: JSON.stringify(build_plugin_event(validated.data.input, validated.data.pluginRunId)),
-							}),
-						);
-					const output = await response_text_limited(pluginResponse);
-					const elapsedMs = Date.now() - startedAt;
+					const pluginResponse = await deadline.wait(
+						Promise.resolve(
+							worker
+								.getEntrypoint(null, {
+									props: {
+										pluginRunId: validated.data.pluginRunId,
+										host: validated.data.host,
+										acceptedCapabilities: validated.data.acceptedCapabilities,
+									},
+									limits: DYNAMIC_WORKER_LIMITS,
+								})
+								.fetch(
+									new Request(`https://plugin.local${validated.data.requestPath ?? "/__bonobo_senate/run"}`, {
+										method: "POST",
+										headers: { "Content-Type": "application/json" },
+										body: JSON.stringify(build_plugin_event(validated.data.input, validated.data.pluginRunId)),
+										signal: deadline.signal,
+									}),
+								),
+						).then((response) => {
+							try {
+								deadline.check();
+							} catch (error) {
+								// A plugin may return after abort. Release its body without waiting on cleanup.
+								void response.body?.cancel().catch(() => {});
+								throw error;
+							}
+							return response;
+						}),
+					);
+					if (pluginResponse.status < 200 || pluginResponse.status > 599) {
+						void pluginResponse.body?.cancel().catch(() => {});
+						throw new Error("Plugin response status is invalid");
+					}
+					metrics.pluginStatus = pluginResponse.status;
+					const output = await read_plugin_response(
+						pluginResponse,
+						validated.data.responseMode === "invoke",
+						deadline,
+						metrics,
+					);
+					const body =
+						validated.data.responseMode === "invoke"
+							? encode_invoke_reply(
+									{
+										runId: validated.data.pluginRunId,
+										pluginStatus: pluginResponse.status,
+										output: mask_secret_values(output, RUN_SECRET_VALUES.get(validated.data.pluginRunId)),
+									},
+									deadline,
+								)
+							: null;
+					deadline.check();
+					const completedMetrics = {
+						...metrics,
+						pluginStatus: pluginResponse.status,
+						elapsedMs: Date.now() - startedAt,
+					};
 					log_plugin_execution({
 						pluginRunId: validated.data.pluginRunId,
 						pluginId: validated.data.pluginId,
 						artifactKeyHash: artifactKeyHash.slice(0, 16),
 						pluginStableIdHash: pluginStableIdHash.slice(0, 16),
 						status: pluginResponse.status,
-						elapsedMs,
+						elapsedMs: completedMetrics.elapsedMs,
 					});
 
-					if (!pluginResponse.ok) {
+					if (body) {
 						return {
 							status: 200,
-							body: Result({
-								_nay: {
-									name: "PluginResponseError",
-									message: `Plugin returned status ${pluginResponse.status}`,
-									data: {
-										pluginRunId: validated.data.pluginRunId,
-										pluginStatus: pluginResponse.status,
-										elapsedMs,
-										outputBytes: byte_length(output.text),
-										outputTruncated: output.truncated,
-									},
-								},
-							}),
+							kind: "invoke",
+							body,
+							metrics: completedMetrics,
 						} as const;
 					}
 
-					const maskedOutput = mask_secret_values(output.text, RUN_SECRET_VALUES.get(validated.data.pluginRunId));
 					return {
 						status: 200,
-						body: Result({
-							_yay: {
-								pluginRunId: validated.data.pluginRunId,
-								pluginStatus: pluginResponse.status,
-								elapsedMs,
-								outputBytes: byte_length(maskedOutput),
-								output: maskedOutput,
-								outputTruncated: output.truncated,
-							},
-						}),
+						kind: "event",
+						body: Result({ _yay: completedMetrics }),
+						metrics: completedMetrics,
 					} as const;
 				} catch (error) {
-					const sanitized = sanitize_error(error);
+					const sanitized = sanitize_error(error, RUN_SECRET_VALUES.get(validated.data.pluginRunId));
 					const elapsedMs = Date.now() - startedAt;
 					log_plugin_execution({
 						pluginRunId: validated.data.pluginRunId,
 						pluginId: validated.data.pluginId,
-						artifactKeyHash: artifactKeyHash.slice(0, 16),
-						pluginStableIdHash: pluginStableIdHash.slice(0, 16),
 						status: "errored",
 						elapsedMs,
 					});
-					// Plugin-thrown names and messages are forwarded as-is, so any secret values the run
-					// fetched must be masked before they leave the worker.
-					const runSecretValues = RUN_SECRET_VALUES.get(validated.data.pluginRunId);
+					// Only runner-owned error identities choose these codes; plugin error names cannot.
+					const code =
+						error === RESPONSE_TOO_LARGE
+							? "response_too_large"
+							: deadline.signal.aborted
+								? "response_timeout"
+								: "execution_failed";
+					const failedMetrics = { ...metrics, elapsedMs };
 					return {
 						status: 200,
-						body: Result({
+						kind: "error",
+						metrics: failedMetrics,
+						body: {
 							_nay: {
-								name: mask_secret_values(sanitized.name, runSecretValues),
-								message: mask_secret_values(sanitized.message, runSecretValues),
-								data: {
-									pluginRunId: validated.data.pluginRunId,
-									elapsedMs,
-									// The plugin threw instead of responding, so these metrics do not exist. The explicit
-									// undefined keys (dropped by JSON.stringify) keep every _nay data the same shape in
-									// the inferred wire type, so the host can read them off any failure.
-									pluginStatus: undefined,
-									outputBytes: undefined,
-									outputTruncated: undefined,
-								},
+								code,
+								...sanitized,
+								data: failedMetrics,
 							},
-						}),
+						},
 					} as const;
 				} finally {
+					deadline.clear();
 					RUN_SECRET_VALUES.delete(validated.data.pluginRunId);
 				}
 			};
@@ -942,14 +1107,7 @@ const routes = {
 
 export type pluginRunnerApiSchema = typeof routes;
 
-type RunnerRunResponses = pluginRunnerApiSchema["/internal/plugin-runner/run"]["POST"]["response"];
-
-/**
- * Wire shape of the run endpoint's JSON body: _yay carries the run result, while _nay carries
- * the failure (with run metrics under data once the plugin ran). A plugin failure is still
- * HTTP 200 — non-200 means the runner itself refused or broke.
- */
-type RunnerRunResult = RunnerRunResponses[keyof RunnerRunResponses]["body"];
+type RouteHandler = (typeof routes)["/health"]["GET"] | (typeof routes)["/internal/plugin-runner/run"]["POST"];
 
 export default {
 	async fetch(request: Request, env: Env, ctx?: PluginRunnerContext): Promise<Response> {
@@ -957,11 +1115,13 @@ export default {
 
 		// @ts-expect-error arbitrary request strings can't index the literal-keyed routes table
 		const handler: RouteHandler | undefined = routes[url.pathname]?.[request.method];
-		if (!handler) {
-			return json_response(Result({ _nay: { name: "not_found", message: "Not found" } }) satisfies RunnerRunResult, 404);
-		}
+		const result = handler ? await handler({ request, env, ctx }) : runner_refusal(404, "not_found", "Not found");
+		if (!("kind" in result)) return json_response(result.body, result.status);
 
-		const result = await handler({ request, env, ctx });
-		return json_response(result.body, result.status);
+		const bytes = result.body instanceof Uint8Array ? result.body : TEXT_ENCODER.encode(JSON.stringify(result.body));
+		return new Response(bytes, {
+			status: result.status,
+			headers: runner_headers(result.kind, bytes.byteLength, "metrics" in result ? result.metrics : undefined),
+		});
 	},
 };

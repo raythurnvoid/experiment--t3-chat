@@ -65,4 +65,4 @@ type _SplitStatus200 = //
 	Expect<{ ok: true } extends SplitStatusResponses[200]["body"] ? true : false>;
 // #endregion split-status check
 
-export type { pluginRunnerApiSchema } from "../../plugin-runner/src/index.ts";
+export type { pluginRunnerApiSchema, pluginRunner_InvokeReply } from "../../plugin-runner/src/index.ts";

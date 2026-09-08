@@ -462,10 +462,12 @@ async function db_authorize(
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 	} else if (credentialRef.kind === "plugin_run") {
+		// A run's deadline can arrive before its token expires.
 		const run = await ctx.db.get("plugins_event_runs", credentialRef.runId);
 		if (
 			!run ||
 			run.status !== "running" ||
+			run.expiresAt <= now ||
 			!run.apiTokenExpiresAt ||
 			run.apiTokenExpiresAt <= now ||
 			run.organizationId !== installation.organizationId ||

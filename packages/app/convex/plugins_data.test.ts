@@ -2446,14 +2446,22 @@ describe("plugin-data credential revalidation", () => {
 	);
 
 	test.each([
-		["plugin_run", "revoke", "read"],
-		["plugin_run", "revoke", "write"],
-		["plugin_run", "rebind", "read"],
-		["plugin_run", "rebind", "write"],
-		["plugin_run", "end", "read"],
-		["plugin_run", "end", "write"],
-		["plugin_run", "expire", "read"],
-		["plugin_run", "expire", "write"],
+		...(["read", "write", "write-batch", "delete"] as const).flatMap((operation) =>
+			(
+				[
+					"revoke",
+					"rebind",
+					"end",
+					"fail",
+					"expire",
+					"deadline",
+					"upgrade",
+					"actor",
+					"organization",
+					"workspace",
+				] as const
+			).map((change) => ["plugin_run", change, operation] as const),
+		),
 		["plugin_ui", "revoke", "read"],
 		["plugin_ui", "rebind", "read"],
 		["plugin_ui", "end", "read"],
@@ -2475,13 +2483,21 @@ describe("plugin-data credential revalidation", () => {
 		const fixture = await seed_installation_with_key_owner(t, `store-race-${kind}-${change}-${operation}`);
 		const token = await mint_store_token(t, fixture, kind);
 		const saved = await t.mutation(internal.plugins_data.write_document, {
-			principal: await store_principal(t, fixture),
+			principal: await store_principal(t, fixture, { kind: "user_api_key" }),
 			collection: "meetings",
 			key: "saved",
 			value: { text: "saved" },
 		});
 		expect(saved._nay).toBeUndefined();
 		const before = await read_documents(t, fixture);
+		const usageBefore = await read_usage(t, fixture);
+		const memberUsageBefore = await read_member_usage(t, fixture, fixture.userId);
+		const quotasBefore = await t.run((ctx) =>
+			ctx.db
+				.query("quotas")
+				.withIndex("by_workspace_quotaName", (q) => q.eq("workspaceId", fixture.workspaceId))
+				.collect(),
+		);
 		const authorize = public_api_http_auth.public_api_authorize_request;
 		const paused = vi
 			.spyOn(public_api_http_auth, "public_api_authorize_request")
@@ -2489,13 +2505,19 @@ describe("plugin-data credential revalidation", () => {
 				const auth = await authorize(...args);
 				if (auth._nay) throw new Error(`Initial auth failed: ${auth._nay.status}`);
 				const principal = auth._yay.principal;
-				if (change === "end" || change === "expire") {
+				if (change === "end" || change === "fail" || change === "expire" || change === "deadline") {
 					await t.run(async (ctx) => {
 						if (principal.kind === "plugin_run") {
 							await ctx.db.patch(
 								"plugins_event_runs",
 								principal.runId,
-								change === "end" ? { status: "succeeded" } : { apiTokenExpiresAt: Date.now() - 1 },
+								change === "end"
+									? { status: "succeeded" }
+									: change === "fail"
+										? { status: "failed" }
+										: change === "deadline"
+											? { expiresAt: Date.now() - 1 }
+											: { apiTokenExpiresAt: Date.now() - 1 },
 							);
 						} else if (principal.kind === "plugin_ui") {
 							if (change === "end") await ctx.db.delete("plugins_ui_sessions", principal.sessionId);
@@ -2508,6 +2530,26 @@ describe("plugin-data credential revalidation", () => {
 							);
 						} else throw new Error("Expected a plugin credential");
 					});
+				} else if (change === "upgrade") {
+					await t.run(async (ctx) => {
+						const { _id, _creationTime, ...version } = (await ctx.db.get("plugins_versions", fixture.pluginVersionId))!;
+						const pluginVersionId = await ctx.db.insert("plugins_versions", { ...version, version: "0.2.0" });
+						await ctx.db.patch("plugins_workspace_installations", fixture.installationId, { pluginVersionId });
+					});
+				} else if (change === "actor" || change === "organization" || change === "workspace") {
+					if (principal.kind !== "plugin_run") throw new Error("Expected a plugin run");
+					const other = await seed_installation(t, { organizationName: "other-organization" });
+					await t.run((ctx) =>
+						ctx.db.patch(
+							"plugins_event_runs",
+							principal.runId,
+							change === "actor"
+								? { actorUserId: other.userId }
+								: change === "organization"
+									? { organizationId: other.organizationId }
+									: { workspaceId: other.workspaceId },
+						),
+					);
 				} else if (principal.kind === "user_api_key") {
 					const result = await fixture.asUser.mutation(
 						change === "rotate" ? api.public_api.api_credential_rotate : api.public_api.api_credential_revoke,
@@ -2545,20 +2587,75 @@ describe("plugin-data credential revalidation", () => {
 			const response = await t.fetch(`/api/v1/plugin-data/${operation}`, {
 				method: "POST",
 				headers: service_headers(token),
-				body: JSON.stringify({
-					...(kind === "user_api_key" ? { installationId: fixture.installationId } : {}),
-					collection: "meetings",
-					key: "saved",
-					...(operation === "write" ? { value: { text: "changed" } } : {}),
-				}),
+				body: JSON.stringify(
+					operation === "write-batch"
+						? {
+								documents: [
+									{ collection: "new-collection", key: "new", value: { text: "new" } },
+									{ collection: "meetings", key: "saved", value: { text: "changed" } },
+								],
+							}
+						: {
+								...(kind === "user_api_key" ? { installationId: fixture.installationId } : {}),
+								collection: "meetings",
+								key: "saved",
+								...(operation === "write" ? { value: { text: "changed" } } : {}),
+							},
+				),
 			});
 			expect(paused).toHaveBeenCalledTimes(1);
 			expect(response.status).toBe(401);
 			expect(await response.json()).toEqual({ message: "Unauthenticated" });
+			// Compare full docs so refused writes cannot change revision, ownership, or member charges.
 			expect(await read_documents(t, fixture)).toEqual(before);
+			expect(await read_usage(t, fixture)).toEqual(usageBefore);
+			expect(await read_member_usage(t, fixture, fixture.userId)).toEqual(memberUsageBefore);
+			if (kind === "plugin_run") {
+				expect(
+					await t.run((ctx) =>
+						ctx.db
+							.query("quotas")
+							.withIndex("by_workspace_quotaName", (q) => q.eq("workspaceId", fixture.workspaceId))
+							.collect(),
+					),
+				).toEqual(quotasBefore);
+			}
 		} finally {
 			paused.mockRestore();
 		}
+	});
+
+	test("accepts a live run's batch and delete through the HTTP routes", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const run = await start_plugin_run(t, fixture, {
+			acceptedCapabilities: ["plugin.data.read", "plugin.data.write"],
+			tokenSeed: "b",
+		});
+		const written = await t.fetch("/api/v1/plugin-data/write-batch", {
+			method: "POST",
+			headers: service_headers(run.apiToken),
+			body: JSON.stringify({
+				documents: [
+					{ collection: "meetings", key: "keep", value: { n: 1 } },
+					{ collection: "meetings", key: "remove", value: { n: 2 } },
+				],
+			}),
+		});
+		expect(written.status).toBe(200);
+		expect(await read_documents(t, fixture)).toHaveLength(2);
+
+		const deleted = await t.fetch("/api/v1/plugin-data/delete", {
+			method: "POST",
+			headers: service_headers(run.apiToken),
+			body: JSON.stringify({ collection: "meetings", key: "remove" }),
+		});
+		expect(deleted.status).toBe(200);
+		expect(await deleted.json()).toEqual({ deleted: true });
+		const documents = await read_documents(t, fixture);
+		expect(documents).toHaveLength(1);
+		expect(documents[0]).toMatchObject({ key: "keep", value: { n: 1 }, revision: 1 });
+		expect(await read_usage(t, fixture)).toMatchObject({ usedDocuments: 1, usedBytes: 7 });
 	});
 });
 

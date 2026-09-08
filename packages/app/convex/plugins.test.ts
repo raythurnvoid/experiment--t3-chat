@@ -6,7 +6,13 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { plugins_ai_review } from "./plugins.ts";
-import { plugins_runtime_db_enqueue_upload_completed_runs } from "./plugins_runtime.ts";
+import {
+	plugins_runtime_db_enqueue_upload_completed_runs,
+	plugins_runtime_execute_runner_request,
+} from "./plugins_runtime.ts";
+import * as activities from "./activities.ts";
+import plugin_runner, { type Env as PluginRunnerEnv } from "../../plugin-runner/src/index.ts";
+import { chat_invoke_backend } from "../../../plugins/bonobo-plugin-chitchat/src/chat-invoke.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import {
@@ -118,6 +124,47 @@ function user_identity(userId: Id<"users">) {
 		external_id: userId,
 		email: "plugin-test@example.com",
 	};
+}
+
+function runner_response_headers(args: {
+	kind: "invoke" | "event" | "error";
+	runId?: string;
+	pluginStatus?: number;
+	elapsedMs?: number;
+	outputBytes?: number;
+	bodyBytes: number;
+}) {
+	const headers = new Headers({ "Content-Type": "application/json" });
+	for (const [name, value] of Object.entries({
+		Kind: args.kind,
+		"Run-Id": args.runId,
+		"Plugin-Status": args.pluginStatus,
+		"Elapsed-Ms": args.elapsedMs,
+		"Output-Bytes": args.outputBytes,
+		"Body-Bytes": args.bodyBytes,
+	})) {
+		if (value !== undefined) headers.set(`X-Bonobo-Runner-${name}`, String(value));
+	}
+	return headers;
+}
+
+function runner_success_response(args: {
+	kind: "invoke" | "event";
+	runId: string;
+	pluginStatus: number;
+	elapsedMs: number;
+	output: string;
+}) {
+	const outputBytes = new TextEncoder().encode(args.output).byteLength;
+	const body = JSON.stringify(
+		args.kind === "invoke"
+			? { runId: args.runId, pluginStatus: args.pluginStatus, output: args.output }
+			: { _yay: { pluginRunId: args.runId, pluginStatus: args.pluginStatus, elapsedMs: args.elapsedMs, outputBytes } },
+	);
+	return new Response(body, {
+		status: 200,
+		headers: runner_response_headers({ ...args, outputBytes, bodyBytes: new TextEncoder().encode(body).byteLength }),
+	});
 }
 
 const media_configuration_yaml = "triggers:\n  files.upload.completed:\n    folders:\n      - /\n";
@@ -628,14 +675,18 @@ describe("install_version service accounts", () => {
 });
 
 describe("plugins Phase 0", () => {
-	async function install_plugin_with_upload_asset(t: ReturnType<typeof test_convex>) {
+	async function install_plugin_with_upload_asset(
+		t: ReturnType<typeof test_convex>,
+		capabilities: plugins_Capability[] = media_plugin_consent.acceptedCapabilities,
+	) {
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
-		const registered = await register_media_plugin(t, membership.userId);
+		const registered = await register_media_plugin(t, membership.userId, { capabilities });
 		const asOwner = t.withIdentity(user_identity(membership.userId));
 		const installed = await asOwner.mutation(api.plugins.install_version, {
 			membershipId: membership.membershipId,
 			pluginVersionId: registered.pluginVersionId,
 			...media_plugin_consent,
+			acceptedCapabilities: capabilities,
 		});
 		if (installed._nay) {
 			throw new Error(installed._nay.message);
@@ -1687,6 +1738,7 @@ describe("plugins Phase 0", () => {
 				runnerHttpStatus: 200,
 				bodyStatus: "succeeded",
 				runnerErrorMessage: null,
+				pluginStatus: 200,
 			},
 		});
 
@@ -1748,6 +1800,7 @@ describe("plugins Phase 0", () => {
 				runnerHttpStatus: 200,
 				bodyStatus: "succeeded",
 				runnerErrorMessage: null,
+				pluginStatus: 200,
 			},
 		});
 		signingGate.resolve();
@@ -3082,20 +3135,8 @@ describe("plugins Phase 0", () => {
 				updatedAt: Date.now(),
 			});
 		});
-		vi.mocked(fetch).mockImplementation(
-			async () =>
-				new Response(
-					JSON.stringify({
-						_yay: {
-							pluginStatus: 500,
-							elapsedMs: 12,
-							outputBytes: 13,
-							output: "",
-							outputTruncated: false,
-						},
-					}),
-					{ status: 200, headers: { "Content-Type": "application/json" } },
-				),
+		vi.mocked(fetch).mockImplementation(async () =>
+			runner_success_response({ kind: "event", runId, pluginStatus: 500, elapsedMs: 12, output: "Plugin failed" }),
 		);
 
 		await t.action(internal.plugins_runtime.execute_upload_completed_event_run, { runId });
@@ -3133,7 +3174,7 @@ describe("plugins Phase 0", () => {
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
 		expect(run).toMatchObject({
 			status: "failed",
-			errorMessage: "Runner exploded",
+			errorMessage: "Plugin runner returned an invalid response",
 			runnerHttpStatus: 500,
 		});
 	});
@@ -3571,7 +3612,7 @@ describe("plugins Phase 0", () => {
 		expect(response.status).toBe(401);
 	});
 
-	test("does not mark a run succeeded without a completed markdown write", async () => {
+	test("accepts an empty event response without a file write", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin(t, membership.userId);
@@ -3614,37 +3655,147 @@ describe("plugins Phase 0", () => {
 				status: "queued",
 				acceptedCapabilities: installation.acceptedCapabilities,
 				expiresAt: Date.now() + 30 * 60 * 1000,
-				// API calls happened, but none of them published an output.
-				apiCallCount: 1,
+				apiCallCount: 0,
 				outputWriteCount: 0,
 				errorMessage: null,
 				updatedAt: Date.now(),
 			});
 		});
-		vi.mocked(fetch).mockImplementation(
-			async () =>
-				new Response(
-					JSON.stringify({
-						_yay: {
-							pluginStatus: 200,
-							elapsedMs: 12,
-							outputBytes: 2,
-							output: "ok",
-							outputTruncated: false,
-						},
-					}),
-					{ status: 200, headers: { "Content-Type": "application/json" } },
-				),
+		vi.mocked(fetch).mockImplementation(async () =>
+			runner_success_response({ kind: "event", runId, pluginStatus: 204, elapsedMs: 12, output: "" }),
 		);
 
 		await t.action(internal.plugins_runtime.execute_upload_completed_event_run, { runId });
 
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
 		expect(run).toMatchObject({
-			status: "failed",
-			errorMessage: "Plugin produced no Markdown output",
+			status: "succeeded",
+			errorMessage: null,
 			runnerHttpStatus: 200,
-			pluginStatus: 200,
+			pluginStatus: 204,
+			outputWriteCount: 0,
+		});
+	});
+
+	test.each([204, 500, "broken stream"] as const)(
+		"keeps event store writes after a %s response without requiring files",
+		async (outcome) => {
+			const t = test_convex();
+			const fixture = await install_plugin_with_upload_asset(t, ["plugin.data.read", "plugin.data.write"]);
+			const runId = await insert_event_run(t, fixture, {
+				eventId: "plugin:data-only",
+				status: "queued",
+				expiresAt: Date.now() + 30 * 60_000,
+			});
+			vi.mocked(fetch).mockImplementation(async (_input, init) => {
+				const wire = JSON.parse(String(init?.body)) as {
+					responseMode: string;
+					timeoutMs: number;
+					host: { token: string };
+				};
+				expect(wire.responseMode).toBe("event");
+				expect(wire.timeoutMs).toBe(180_000);
+				const written = await t.fetch("/api/v1/plugin-data/write", {
+					method: "POST",
+					headers: { Authorization: `Bearer ${wire.host.token}`, "Content-Type": "application/json" },
+					body: JSON.stringify({ collection: "results", key: "saved", value: { done: true } }),
+				});
+				expect(written.status).toBe(200);
+				const response = runner_success_response({
+					kind: "event",
+					runId,
+					pluginStatus: outcome === "broken stream" ? 200 : outcome,
+					elapsedMs: 1,
+					output: "",
+				});
+				if (outcome !== "broken stream") return response;
+				return new Response(
+					new ReadableStream<Uint8Array>({
+						start(controller) {
+							controller.error(new Error("Stream broke after write"));
+						},
+					}),
+					{ headers: response.headers },
+				);
+			});
+
+			await t.action(internal.plugins_runtime.execute_upload_completed_event_run, { runId });
+			const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
+			expect(run).toMatchObject({
+				status: outcome === 204 ? "succeeded" : "failed",
+				apiCallCount: 1,
+				outputWriteCount: 0,
+			});
+			expect(run?.apiTokenHash).toBeUndefined();
+			expect(await t.run((ctx) => ctx.db.query("plugins_data").collect())).toMatchObject([
+				{ collection: "results", key: "saved", value: { done: true }, revision: 1 },
+			]);
+			expect(await t.run((ctx) => ctx.db.query("plugins_event_run_calls").collect())).toMatchObject([
+				{ route: "/api/v1/plugin-data/write", status: "succeeded" },
+			]);
+		},
+	);
+
+	test("refuses completion with an unpublished stage and schedules its cleanup once", async () => {
+		const t = test_convex();
+		const fixture = await start_running_plugin_run(t);
+		const claimed = await t.mutation(internal.plugins_runtime.consume_run_api_call, {
+			runId: fixture.runId,
+			kind: "api_request",
+			route: "/api/v1/files/write",
+		});
+		if (claimed._nay) throw new Error(claimed._nay.message);
+		const prepared = await t.mutation(internal.public_api.prepare_file_write, {
+			organizationId: fixture.membership.organizationId,
+			workspaceId: fixture.membership.workspaceId,
+			userId: fixture.membership.userId,
+			principalRef: { kind: "plugin_run", runId: fixture.runId, callId: claimed._yay.callId },
+			path: "/photo.png.md",
+			overwrite: "replace",
+			contentType: "text/markdown",
+			yjsRootKind: "rich_text",
+			contentSize: 5,
+			yjsSnapshotSize: 5,
+		});
+		if (prepared._nay) throw new Error(prepared._nay.message);
+		await t.mutation(internal.plugins_runtime.finish_run_call, {
+			callId: claimed._yay.callId,
+			status: "failed",
+			errorCode: "conflict",
+			errorMessage: "Handled conflict",
+			responseStatus: 409,
+		});
+		const result = await t.mutation(internal.plugins_runtime.finish_event_run, {
+			runId: fixture.runId,
+			outcome: {
+				kind: "runner_response",
+				runnerOk: true,
+				runnerHttpStatus: 200,
+				bodyStatus: "succeeded",
+				runnerErrorMessage: null,
+				pluginStatus: 200,
+			},
+		});
+		expect(result).toEqual({
+			_yay: { status: "failed", errorMessage: "Plugin left an output write unpublished", canRelayResponse: false },
+		});
+		const scheduled = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+		const cleanup = scheduled.filter((job) => job.name === "public_api:cleanup_file_write_stage");
+		expect(cleanup).toHaveLength(1);
+		const before = await t.run((ctx) => ctx.db.get("plugins_event_runs", fixture.runId));
+		expect(before?.apiTokenHash).toBeUndefined();
+		await t.mutation(internal.plugins_runtime.finish_event_run, {
+			runId: fixture.runId,
+			outcome: { kind: "failed", errorMessage: "Late failure" },
+		});
+		expect(await t.run((ctx) => ctx.db.get("plugins_event_runs", fixture.runId))).toEqual(before);
+		expect(await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect())).toEqual(scheduled);
+		await t.mutation(internal.public_api.cleanup_file_write_stage, { stageId: prepared._yay.stageId });
+		expect(await t.run((ctx) => ctx.db.query("public_api_file_write_stages").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.get("plugins_event_run_calls", claimed._yay.callId))).toMatchObject({
+			status: "failed",
+			errorCode: "conflict",
+			errorMessage: "Handled conflict",
 		});
 	});
 
@@ -3673,17 +3824,8 @@ describe("plugins Phase 0", () => {
 				updatedAt: now,
 			});
 		});
-		vi.mocked(fetch).mockImplementation(
-			async () =>
-				new Response(
-					JSON.stringify({
-						_yay: { pluginStatus: 200, elapsedMs: 12, outputBytes: 0, output: "", outputTruncated: false },
-					}),
-					{
-						status: 200,
-						headers: { "Content-Type": "application/json" },
-					},
-				),
+		vi.mocked(fetch).mockImplementation(async () =>
+			runner_success_response({ kind: "event", runId, pluginStatus: 200, elapsedMs: 12, output: "" }),
 		);
 
 		await t.action(internal.plugins_runtime.execute_upload_completed_event_run, { runId });
@@ -3703,7 +3845,7 @@ describe("plugins Phase 0", () => {
 		});
 	});
 
-	test("persists truncated plugin error messages from the runner", async () => {
+	test("persists bounded runner error messages and refuses oversized messages", async () => {
 		const t = test_convex();
 		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
 		const registered = await register_media_plugin(t, membership.userId);
@@ -3752,28 +3894,37 @@ describe("plugins Phase 0", () => {
 				updatedAt: Date.now(),
 			});
 		});
-		vi.mocked(fetch).mockImplementation(
-			async () =>
-				new Response(
-					JSON.stringify({
-						_nay: { name: "Error", message: "sk-runtime-secret", data: { elapsedMs: 12 } },
-					}),
-					{ status: 200, headers: { "Content-Type": "application/json" } },
-				),
-		);
+		vi.mocked(fetch).mockImplementation(async () => {
+			const body = JSON.stringify({
+				_nay: {
+					code: "execution_failed",
+					name: "Error",
+					message: "Plugin failed: [redacted]",
+					data: { pluginRunId: runId, elapsedMs: 12 },
+				},
+			});
+			return new Response(body, {
+				status: 200,
+				headers: runner_response_headers({
+					kind: "error",
+					runId,
+					elapsedMs: 12,
+					bodyBytes: new TextEncoder().encode(body).byteLength,
+				}),
+			});
+		});
 
 		await t.action(internal.plugins_runtime.execute_upload_completed_event_run, { runId });
 
-		// The plugin's own truncated error message is persisted for workspace admins; plugin
-		// authors own the risk of secrets in their exception messages.
+		// The outer runner masks and bounds errors before the host accepts them.
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
 		expect(run).toMatchObject({
 			status: "failed",
-			errorMessage: "sk-runtime-secret",
+			errorMessage: "Plugin failed: [redacted]",
 			runnerHttpStatus: 200,
 		});
 
-		// Long messages persist only their 500-char prefix.
+		// A runner message outside that contract is a protocol failure.
 		const longRunId = await t.run(async (ctx) => {
 			const installation = await ctx.db.get("plugins_workspace_installations", installed._yay.installationId);
 			if (!installation) {
@@ -3800,20 +3951,30 @@ describe("plugins Phase 0", () => {
 				updatedAt: Date.now(),
 			});
 		});
-		vi.mocked(fetch).mockImplementation(
-			async () =>
-				new Response(
-					JSON.stringify({
-						_nay: { name: "Error", message: "x".repeat(600), data: { elapsedMs: 12 } },
-					}),
-					{ status: 200, headers: { "Content-Type": "application/json" } },
-				),
-		);
+		vi.mocked(fetch).mockImplementation(async () => {
+			const body = JSON.stringify({
+				_nay: {
+					code: "execution_failed",
+					name: "Error",
+					message: "x".repeat(600),
+					data: { pluginRunId: longRunId, elapsedMs: 12 },
+				},
+			});
+			return new Response(body, {
+				status: 200,
+				headers: runner_response_headers({
+					kind: "error",
+					runId: longRunId,
+					elapsedMs: 12,
+					bodyBytes: new TextEncoder().encode(body).byteLength,
+				}),
+			});
+		});
 
 		await t.action(internal.plugins_runtime.execute_upload_completed_event_run, { runId: longRunId });
 
 		const longRun = await t.run((ctx) => ctx.db.get("plugins_event_runs", longRunId));
-		expect(longRun?.errorMessage).toBe("x".repeat(500));
+		expect(longRun?.errorMessage).toBe("Plugin runner returned an invalid response");
 	});
 
 	test("fails expired queued and running runs", async () => {
@@ -4052,6 +4213,7 @@ describe("plugins Phase 0", () => {
 				runnerHttpStatus: 200,
 				bodyStatus: "succeeded",
 				runnerErrorMessage: null,
+				pluginStatus: 200,
 			},
 		});
 		const finished = await t.run((ctx) => ctx.db.get("activities", activityId));
@@ -4361,6 +4523,32 @@ describe("plugins Phase 0", () => {
 	});
 
 	describe("start_event_run", () => {
+		test("settles queued code from an older installation version without calling the runner", async () => {
+			const t = test_convex();
+			const fixture = await install_plugin_with_upload_asset(t);
+			const runId = await insert_event_run(t, fixture, {
+				eventId: "plugin:old-queued-version",
+				status: "queued",
+				expiresAt: Date.now() + 60_000,
+			});
+			const updated = await register_media_plugin(t, fixture.membership.userId, { version: "0.2.0" });
+			const installed = await t
+				.withIdentity(user_identity(fixture.membership.userId))
+				.mutation(api.plugins.install_version, {
+					membershipId: fixture.membership.membershipId,
+					pluginVersionId: updated.pluginVersionId,
+					...media_plugin_consent,
+				});
+			expect(installed._nay).toBeUndefined();
+			vi.mocked(fetch).mockClear();
+			await t.action(internal.plugins_runtime.execute_upload_completed_event_run, { runId });
+			expect(fetch).not.toHaveBeenCalled();
+			const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
+			expect(run).toMatchObject({ status: "failed", errorMessage: "Plugin version changed before the run started" });
+			expect(run?.apiTokenHash).toBeUndefined();
+			expect(run?.pluginVersionId).toBe(fixture.installation.pluginVersionId);
+		});
+
 		test("refuses a queued run after account rebind and preserves its original pin", async () => {
 			const t = test_convex();
 			const fixture = await install_plugin_with_upload_asset(t);
@@ -6391,20 +6579,8 @@ describe("plugins outbound origins consent", () => {
 				updatedAt: Date.now(),
 			});
 		});
-		vi.mocked(fetch).mockImplementation(
-			async () =>
-				new Response(
-					JSON.stringify({
-						_yay: {
-							pluginStatus: 500,
-							elapsedMs: 12,
-							outputBytes: 0,
-							output: "",
-							outputTruncated: false,
-						},
-					}),
-					{ status: 200, headers: { "Content-Type": "application/json" } },
-				),
+		vi.mocked(fetch).mockImplementation(async () =>
+			runner_success_response({ kind: "event", runId, pluginStatus: 500, elapsedMs: 12, output: "" }),
 		);
 
 		await t.action(internal.plugins_runtime.execute_upload_completed_event_run, { runId });
@@ -11590,6 +11766,100 @@ describe("plugins backend invoke runs", () => {
 		expect(channelB._nay).toBeUndefined();
 	});
 
+	describe("finish_event_run", () => {
+		test.each(["files.upload.completed", "files.run.requested", "users.account.deleted"] as const)(
+			"accepts a complete empty %s response with no file writes",
+			async (event) => {
+				const t = test_convex();
+				const fixture = await install_invoke_plugin(t);
+				const started = await t.mutation(internal.plugins_runtime.start_invoke_run, start_invoke_args(fixture));
+				if (started._nay) throw new Error(started._nay.message);
+				const runId = started._yay.pluginRun._id;
+				await t.run((ctx) => ctx.db.patch("plugins_event_runs", runId, { event }));
+				const result = await t.mutation(internal.plugins_runtime.finish_event_run, {
+					runId,
+					outcome: {
+						kind: "runner_response",
+						runnerOk: true,
+						runnerHttpStatus: 200,
+						bodyStatus: "succeeded",
+						runnerErrorMessage: null,
+						pluginStatus: 204,
+					},
+				});
+				expect(await t.run((ctx) => ctx.db.get("plugins_event_runs", runId))).toMatchObject({
+					status: "succeeded",
+					outputWriteCount: 0,
+					errorMessage: null,
+				});
+				expect(result).toEqual({ _yay: { status: "succeeded", errorMessage: null, canRelayResponse: true } });
+			},
+		);
+
+		test("relays a complete plugin refusal and keeps its failed outcome on duplicate completion", async () => {
+			const t = test_convex();
+			const fixture = await install_invoke_plugin(t);
+			const started = await t.mutation(internal.plugins_runtime.start_invoke_run, start_invoke_args(fixture));
+			if (started._nay) throw new Error(started._nay.message);
+			const runId = started._yay.pluginRun._id;
+			const result = await t.mutation(internal.plugins_runtime.finish_event_run, {
+				runId,
+				outcome: {
+					kind: "runner_response",
+					runnerOk: true,
+					runnerHttpStatus: 200,
+					bodyStatus: "succeeded",
+					runnerErrorMessage: null,
+					pluginStatus: 409,
+				},
+			});
+			expect(result).toEqual({
+				_yay: { status: "failed", errorMessage: "Plugin returned status 409", canRelayResponse: true },
+			});
+			const before = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
+			expect(before?.apiTokenHash).toBeUndefined();
+			const duplicate = await t.mutation(internal.plugins_runtime.finish_event_run, {
+				runId,
+				outcome: {
+					kind: "runner_response",
+					runnerOk: true,
+					runnerHttpStatus: 200,
+					bodyStatus: "succeeded",
+					runnerErrorMessage: null,
+					pluginStatus: 200,
+				},
+			});
+			expect(duplicate).toEqual({
+				_yay: { status: "failed", errorMessage: "Plugin returned status 409", canRelayResponse: false },
+			});
+			expect(await t.run((ctx) => ctx.db.get("plugins_event_runs", runId))).toEqual(before);
+		});
+
+		test("refuses success after the stored deadline before the expiry cron runs", async () => {
+			const t = test_convex();
+			const fixture = await install_invoke_plugin(t);
+			const started = await t.mutation(internal.plugins_runtime.start_invoke_run, start_invoke_args(fixture));
+			if (started._nay) throw new Error(started._nay.message);
+			const runId = started._yay.pluginRun._id;
+			await t.run((ctx) => ctx.db.patch("plugins_event_runs", runId, { expiresAt: Date.now() - 1 }));
+			const result = await t.mutation(internal.plugins_runtime.finish_event_run, {
+				runId,
+				outcome: {
+					kind: "runner_response",
+					runnerOk: true,
+					runnerHttpStatus: 200,
+					bodyStatus: "succeeded",
+					runnerErrorMessage: null,
+					pluginStatus: 200,
+				},
+			});
+			const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
+			expect(run).toMatchObject({ status: "failed", errorMessage: "Run expired" });
+			expect(run?.apiTokenHash).toBeUndefined();
+			expect(result).toEqual({ _yay: { status: "failed", errorMessage: "Run expired", canRelayResponse: false } });
+		});
+	});
+
 	test("finishes an invoke run as succeeded with no output writes, but not with an unfinished call", async () => {
 		const t = test_convex();
 		const fixture = await install_invoke_plugin(t);
@@ -11600,8 +11870,7 @@ describe("plugins backend invoke runs", () => {
 		}
 		const runId = started._yay.pluginRun._id;
 
-		// An invoke that only answers (or only writes store documents) is a success; the
-		// Markdown-output requirement is an upload-run rule.
+		// A complete response can succeed without creating a file or store document.
 		await t.mutation(internal.plugins_runtime.finish_event_run, {
 			runId,
 			outcome: {
@@ -11737,13 +12006,15 @@ describe("plugins backend invoke runs", () => {
 		const runnerBodies: Array<Record<string, unknown>> = [];
 		vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
 			if (String(input) === `${process.env.PLUGIN_RUNNER_URL}/internal/plugin-runner/run`) {
-				runnerBodies.push(JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>);
-				return new Response(
-					JSON.stringify({
-						_yay: { pluginStatus: 200, elapsedMs: 7, outputBytes: 4, output: "pong", outputTruncated: false },
-					}),
-					{ status: 200, headers: { "Content-Type": "application/json" } },
-				);
+				const wire = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
+				runnerBodies.push(wire);
+				return runner_success_response({
+					kind: "invoke",
+					runId: String(wire.pluginRunId),
+					pluginStatus: 200,
+					elapsedMs: 7,
+					output: "pong",
+				});
 			}
 			return new Response(null, { status: 404 });
 		});
@@ -11755,10 +12026,12 @@ describe("plugins backend invoke runs", () => {
 		);
 		expect(response.status).toBe(200);
 		const responseBody = (await response.json()) as Record<string, unknown>;
-		expect(responseBody).toMatchObject({ pluginStatus: 200, output: "pong", outputTruncated: false });
+		expect(responseBody).toEqual({ runId: expect.any(String), pluginStatus: 200, output: "pong" });
 
 		expect(runnerBodies).toHaveLength(1);
 		const wire = runnerBodies[0]! as {
+			responseMode: string;
+			timeoutMs: number;
 			requestPath?: string;
 			input: {
 				event: string;
@@ -11768,6 +12041,8 @@ describe("plugins backend invoke runs", () => {
 			};
 		};
 		expect(wire.requestPath).toBe("/echo");
+		expect(wire.responseMode).toBe("invoke");
+		expect(wire.timeoutMs).toBe(35_000);
 		expect(wire.input.event).toBe("ui.invoke.requested");
 		// Identity is host-verified: the envelope names the session member even though the page
 		// body claimed someone else, and the page's input goes through untouched.
@@ -11791,6 +12066,612 @@ describe("plugins backend invoke runs", () => {
 		// The settle freed the serialization lock, so a second invoke goes through.
 		const again = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
 		expect(again.status).toBe(200);
+	});
+
+	test.each([200, 400, 409, 500, "too large"] as const)(
+		"passes an actual runner %s reply through Convex and the Chitchat parser",
+		async (outcome) => {
+			const t = test_convex();
+			const fixture = await install_invoke_plugin(t, {
+				endpoints: [{ id: "message-send", path: "/messages/send", serialization: "installation" }],
+			});
+			const token = await seed_invoke_session(t, fixture);
+			const source = "export default { fetch() { return new Response('{}'); } };";
+			await t.run(async (ctx) => {
+				const version = (await ctx.db.get("plugins_versions", fixture.pluginVersionId))!;
+				await ctx.db.patch("plugins_versions", fixture.pluginVersionId, {
+					backendEntrypointFile: { ...version.backendEntrypointFile!, sha256: await sha256_text(source) },
+				});
+			});
+			const output =
+				outcome === "too large"
+					? "\\".repeat(8 * 1024 * 1024)
+					: JSON.stringify(outcome === 200 ? { messageId: "saved" } : { message: "Specific plugin refusal" });
+			const env: PluginRunnerEnv = {
+				PLUGIN_RUNNER_SECRET: process.env.PLUGIN_RUNNER_SECRET!,
+				PLUGIN_RUNNER_HOST_SECRET: process.env.PLUGIN_RUNNER_HOST_SECRET!,
+				PLUGIN_RUNNER_ARTIFACT_PREFIX: "plugins/",
+				PLUGIN_ARTIFACTS: { get: async () => ({ text: async () => source }) },
+				LOADER: {
+					get: (_id, getCode) => {
+						const code = Promise.resolve(getCode());
+						return {
+							getEntrypoint: () => ({
+								fetch: async () => {
+									await code;
+									return new Response(output, { status: outcome === "too large" ? 200 : outcome });
+								},
+							}),
+						};
+					},
+				},
+			};
+			const context = {
+				waitUntil: () => {},
+				exports: {
+					BonoboHost: () => ({ secretGet: async () => null }),
+					BonoboOutbound: () => ({ fetch: async () => new Response(null, { status: 404 }) }),
+				},
+			};
+			const runnerFetch = vi
+				.mocked(fetch)
+				.mockClear()
+				.mockImplementation(async (input, init) => {
+					const request = new Request(input, init);
+					expect(request.url).toBe(`${process.env.PLUGIN_RUNNER_URL}/internal/plugin-runner/run`);
+					return await plugin_runner.fetch(request, env, context);
+				});
+			const fetchJson = vi.fn(async (_path: string, body: Record<string, unknown>) => {
+				const response = await post_invoke(t, token, JSON.stringify(body));
+				return { status: response.status, body: await response.json() };
+			});
+			const client = { fetchJson } as unknown as Parameters<typeof chat_invoke_backend>[0];
+			const input = { clientRequestId: "same-request", text: "message" };
+			const result = await chat_invoke_backend(client, "message-send", input);
+			expect(fetchJson).toHaveBeenCalledExactlyOnceWith("/api/v1/plugin-backend/invoke", {
+				endpoint: "message-send",
+				input,
+			});
+			expect(runnerFetch).toHaveBeenCalledOnce();
+			if (outcome === 200) expect(result).toEqual({ _yay: { messageId: "saved" } });
+			else if (outcome === "too large")
+				expect(result).toEqual({
+					_nay: {
+						name: "response_too_large",
+						message: "The backend response was too large. Your changes may already be saved.",
+					},
+				});
+			else
+				expect(result).toEqual({
+					_nay: {
+						name: outcome === 409 ? "conflict" : outcome === 500 ? "unavailable" : "refused",
+						message: "Specific plugin refusal",
+					},
+				});
+			expect(await t.run((ctx) => ctx.db.query("plugins_event_runs").first())).toMatchObject({
+				status: outcome === 200 ? "succeeded" : "failed",
+			});
+		},
+	);
+
+	test.each([204, 400, 401, 409, 500])(
+		"relays a complete plugin %s response through outer HTTP 200",
+		async (pluginStatus) => {
+			const t = test_convex();
+			const fixture = await install_invoke_plugin(t);
+			const token = await seed_invoke_session(t, fixture);
+			const output =
+				pluginStatus === 204 ? "" : JSON.stringify({ message: "Please try another value", detail: "🙂\\\n" });
+			vi.mocked(fetch).mockImplementation(async (_input, init) => {
+				const wire = JSON.parse(String(init?.body)) as { pluginRunId: string };
+				return runner_success_response({ kind: "invoke", runId: wire.pluginRunId, pluginStatus, elapsedMs: 7, output });
+			});
+
+			const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+			expect(response.status).toBe(200);
+			const run = (await t.run((ctx) => ctx.db.query("plugins_event_runs").first()))!;
+			expect(await response.json()).toEqual({ runId: run._id, pluginStatus, output });
+			expect(run.status).toBe(pluginStatus < 300 ? "succeeded" : "failed");
+			expect(run.errorMessage).toBe(pluginStatus < 300 ? null : `Plugin returned status ${pluginStatus}`);
+			expect(run.apiTokenHash).toBeUndefined();
+			expect(run.runnerOutputBytes).toBe(new TextEncoder().encode(output).byteLength);
+		},
+	);
+
+	test.each([
+		["Kind", "event"],
+		["Run-Id", "another-run"],
+		["Plugin-Status", "199"],
+		["Plugin-Status", null],
+		["Elapsed-Ms", "Infinity"],
+		["Output-Bytes", "-1"],
+		["Body-Bytes", "invalid"],
+		["Extra", "é"],
+		["Extra", "x".repeat(2048)],
+	] as const)("cancels invalid %s metadata (case %#)", async (name, value) => {
+		const t = test_convex();
+		const fixture = await install_invoke_plugin(t);
+		const token = await seed_invoke_session(t, fixture);
+		const canceled = vi.fn();
+		vi.mocked(fetch).mockImplementation(async (_input, init) => {
+			const wire = JSON.parse(String(init?.body)) as { pluginRunId: string };
+			const response = runner_success_response({
+				kind: "invoke",
+				runId: wire.pluginRunId,
+				pluginStatus: 200,
+				elapsedMs: 1,
+				output: "hidden",
+			});
+			if (value === null) response.headers.delete(`X-Bonobo-Runner-${name}`);
+			else response.headers.set(`X-Bonobo-Runner-${name}`, value);
+			return new Response(new ReadableStream<Uint8Array>({ cancel: canceled }), { headers: response.headers });
+		});
+
+		const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+		expect(response.status).toBe(502);
+		expect(await response.json()).toMatchObject({ message: "Plugin backend failed", runId: expect.any(String) });
+		expect(canceled).toHaveBeenCalledOnce();
+		expect(await t.run((ctx) => ctx.db.query("plugins_event_runs").first())).toMatchObject({
+			status: "failed",
+			errorMessage: "Plugin runner returned an invalid response",
+		});
+	});
+
+	test.each(["short", "extra", "broken"] as const)(
+		"refuses a %s response body without relaying its prefix",
+		async (kind) => {
+			const t = test_convex();
+			const fixture = await install_invoke_plugin(t);
+			const token = await seed_invoke_session(t, fixture);
+			vi.mocked(fetch).mockImplementation(async (_input, init) => {
+				const wire = JSON.parse(String(init?.body)) as { pluginRunId: string };
+				const response = runner_success_response({
+					kind: "invoke",
+					runId: wire.pluginRunId,
+					pluginStatus: 200,
+					elapsedMs: 1,
+					output: "must stay hidden",
+				});
+				const bytes = new Uint8Array(await response.arrayBuffer());
+				let sent = false;
+				const body = new ReadableStream<Uint8Array>({
+					pull(controller) {
+						if (sent) {
+							if (kind === "broken") controller.error(new Error("Response stream broke"));
+							else controller.close();
+							return;
+						}
+						sent = true;
+						controller.enqueue(kind === "short" ? bytes.subarray(0, bytes.byteLength - 1) : bytes);
+						if (kind === "extra") controller.enqueue(new Uint8Array([32]));
+					},
+				});
+				return new Response(body, { headers: response.headers });
+			});
+
+			const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+			expect(response.status).toBe(502);
+			expect(await response.json()).toEqual({ message: "Plugin backend failed", runId: expect.any(String) });
+			const run = await t.run((ctx) => ctx.db.query("plugins_event_runs").first());
+			expect(run?.status).toBe("failed");
+			expect(run?.apiTokenHash).toBeUndefined();
+		},
+	);
+
+	test.each(["plain", "unicode", "escaped"] as const)(
+		"forwards exactly 16 MiB of encoded %s JSON and refuses one byte over",
+		async (kind) => {
+			const t = test_convex();
+			const fixture = await install_invoke_plugin(t);
+			const token = await seed_invoke_session(t, fixture);
+			const limit = 16 * 1024 * 1024;
+			const unit = kind === "unicode" ? "🙂" : kind === "escaped" ? "\\\n" : "x";
+			const unitBytes = new TextEncoder().encode(JSON.stringify(unit)).byteLength - 2;
+			let over = false;
+			let expectedOutput = "";
+			const canceled = vi.fn();
+			vi.mocked(fetch).mockImplementation(async (_input, init) => {
+				const wire = JSON.parse(String(init?.body)) as { pluginRunId: string };
+				const prefixBytes = new TextEncoder().encode(
+					JSON.stringify({ runId: wire.pluginRunId, pluginStatus: 200, output: "" }),
+				).byteLength;
+				const room = limit - prefixBytes;
+				expectedOutput = unit.repeat(Math.floor(room / unitBytes)) + "x".repeat((room % unitBytes) + (over ? 1 : 0));
+				const encoded = new TextEncoder().encode(
+					JSON.stringify({ runId: wire.pluginRunId, pluginStatus: 200, output: expectedOutput }),
+				);
+				expect(encoded.byteLength).toBe(limit + (over ? 1 : 0));
+				const headers = runner_response_headers({
+					kind: "invoke",
+					runId: wire.pluginRunId,
+					pluginStatus: 200,
+					elapsedMs: 1,
+					outputBytes: new TextEncoder().encode(expectedOutput).byteLength,
+					bodyBytes: limit,
+				});
+				// Enforcement counts the actual bytes, even when both claimed lengths are too small.
+				headers.set("Content-Length", "1");
+				let sent = false;
+				return new Response(
+					new ReadableStream<Uint8Array>({
+						pull(controller) {
+							if (sent) {
+								if (!over) controller.close();
+								return;
+							}
+							sent = true;
+							controller.enqueue(encoded);
+						},
+						cancel: canceled,
+					}),
+					{ headers },
+				);
+			});
+
+			const accepted = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+			expect(accepted.status).toBe(200);
+			const acceptedBytes = await accepted.arrayBuffer();
+			expect(acceptedBytes.byteLength).toBe(limit);
+			expect(JSON.parse(new TextDecoder().decode(acceptedBytes))).toEqual({
+				runId: expect.any(String),
+				pluginStatus: 200,
+				output: expectedOutput,
+			});
+			over = true;
+			const refused = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+			expect(refused.status).toBe(502);
+			expect(await refused.json()).toMatchObject({ code: "response_too_large" });
+			expect(canceled).toHaveBeenCalledOnce();
+		},
+	);
+
+	test("keeps Unicode and escapes intact across many tiny response chunks", async () => {
+		const t = test_convex();
+		const fixture = await install_invoke_plugin(t);
+		const token = await seed_invoke_session(t, fixture);
+		const output = "é🙂\\\n".repeat(4096);
+		vi.mocked(fetch).mockImplementation(async (_input, init) => {
+			const wire = JSON.parse(String(init?.body)) as { pluginRunId: string };
+			const response = runner_success_response({
+				kind: "invoke",
+				runId: wire.pluginRunId,
+				pluginStatus: 200,
+				elapsedMs: 1,
+				output,
+			});
+			const bytes = new Uint8Array(await response.arrayBuffer());
+			let offset = 0;
+			return new Response(
+				new ReadableStream<Uint8Array>({
+					pull(controller) {
+						if (offset === bytes.byteLength) {
+							controller.close();
+							return;
+						}
+						controller.enqueue(bytes.subarray(offset, ++offset));
+					},
+				}),
+				{ headers: response.headers },
+			);
+		});
+
+		const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ runId: expect.any(String), pluginStatus: 200, output });
+	});
+
+	test("uses one host deadline for headers and body without waiting for stalled cancellation", async () => {
+		const t = test_convex();
+		const fixture = await install_invoke_plugin(t);
+		const started = await t.mutation(internal.plugins_runtime.start_invoke_run, start_invoke_args(fixture));
+		if (started._nay) throw new Error(started._nay.message);
+		const { version, pluginRun } = started._yay;
+		const canceled = vi.fn(() => new Promise<void>(() => {}));
+		let requestSignal: AbortSignal | null | undefined;
+		vi.mocked(fetch).mockImplementation(async (_input, init) => {
+			requestSignal = init?.signal;
+			await new Promise<void>((resolve) => setTimeout(resolve, 30));
+			return new Response(new ReadableStream<Uint8Array>({ cancel: canceled }), {
+				headers: runner_response_headers({
+					kind: "invoke",
+					runId: pluginRun._id,
+					pluginStatus: 200,
+					elapsedMs: 1,
+					outputBytes: 1,
+					bodyBytes: 1,
+				}),
+			});
+		});
+
+		vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+		try {
+			const pending = plugins_runtime_execute_runner_request({
+				timeoutMs: 50,
+				responseMode: "invoke",
+				requestPath: "/echo",
+				version,
+				backendEntrypointFile: version.backendEntrypointFile!,
+				pluginRunId: pluginRun._id,
+				apiToken: "test-token",
+				acceptedCapabilities: pluginRun.acceptedCapabilities,
+				outboundOrigins: [],
+				input: null,
+			});
+			const refused = expect(pending).rejects.toMatchObject({
+				name: "TimeoutError",
+				message: "Plugin runner request timed out",
+			});
+			await vi.advanceTimersByTimeAsync(30);
+			expect(requestSignal?.aborted).toBe(false);
+			await vi.advanceTimersByTimeAsync(20);
+			await refused;
+			expect(requestSignal?.aborted).toBe(true);
+			expect(canceled).toHaveBeenCalledOnce();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test.each([200, 400, 401, 404, 413, 503])("accepts a bounded error envelope at runner HTTP %s", async (status) => {
+		const t = test_convex();
+		const fixture = await install_invoke_plugin(t);
+		const token = await seed_invoke_session(t, fixture);
+		vi.mocked(fetch).mockImplementation(async () => {
+			const body = JSON.stringify({ _nay: { code: "runner_refused", name: "refused", message: "Runner unavailable" } });
+			return new Response(body, {
+				status,
+				headers: runner_response_headers({ kind: "error", bodyBytes: new TextEncoder().encode(body).byteLength }),
+			});
+		});
+
+		const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+		expect(response.status).toBe(502);
+		expect(await response.json()).toEqual({ message: "Plugin backend failed", runId: expect.any(String) });
+		expect(await t.run((ctx) => ctx.db.query("plugins_event_runs").first())).toMatchObject({
+			status: "failed",
+			errorMessage: "Runner unavailable",
+			runnerHttpStatus: status,
+		});
+	});
+
+	test.each([
+		"wrong status",
+		"wrong run",
+		"wrong metrics",
+		"invalid JSON",
+		"event envelope",
+		"oversized envelope",
+	] as const)("refuses a runner error with %s", async (kind) => {
+		const t = test_convex();
+		const fixture = await install_invoke_plugin(t);
+		const token = await seed_invoke_session(t, fixture);
+		vi.mocked(fetch).mockImplementation(async (_input, init) => {
+			const wire = JSON.parse(String(init?.body)) as { pluginRunId: string };
+			const body =
+				kind === "invalid JSON"
+					? "{"
+					: JSON.stringify(
+							kind === "event envelope"
+								? { _yay: { pluginRunId: wire.pluginRunId, pluginStatus: 200, elapsedMs: 1, outputBytes: 0 } }
+								: {
+										_nay: {
+											code: "execution_failed",
+											name: "Error",
+											message: "Runner failed",
+											data: {
+												pluginRunId: kind === "wrong run" ? "another-run" : wire.pluginRunId,
+												elapsedMs: kind === "wrong metrics" ? 2 : 1,
+											},
+										},
+										...(kind === "oversized envelope" ? { padding: "x".repeat(8192) } : {}),
+									},
+						);
+			return new Response(body, {
+				status: kind === "wrong status" ? 500 : 200,
+				headers: runner_response_headers({
+					kind: "error",
+					runId: wire.pluginRunId,
+					elapsedMs: 1,
+					bodyBytes: new TextEncoder().encode(body).byteLength,
+				}),
+			});
+		});
+
+		const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+		expect(response.status).toBe(502);
+		const run = await t.run((ctx) => ctx.db.query("plugins_event_runs").first());
+		expect(run?.errorMessage).toBe(
+			kind === "oversized envelope" ? "Plugin response was too large" : "Plugin runner returned an invalid response",
+		);
+	});
+
+	test.each([201, 500])("refuses success metadata at runner HTTP %s", async (status) => {
+		const t = test_convex();
+		const fixture = await install_invoke_plugin(t);
+		const token = await seed_invoke_session(t, fixture);
+		vi.mocked(fetch).mockImplementation(async (_input, init) => {
+			const wire = JSON.parse(String(init?.body)) as { pluginRunId: string };
+			const response = runner_success_response({
+				kind: "invoke",
+				runId: wire.pluginRunId,
+				pluginStatus: 200,
+				elapsedMs: 1,
+				output: "hidden",
+			});
+			return new Response(response.body, { status, headers: response.headers });
+		});
+		const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+		expect(response.status).toBe(502);
+		expect(await response.json()).toEqual({ message: "Plugin backend failed", runId: expect.any(String) });
+	});
+
+	test("keeps the response-size refusal code through the HTTP route", async () => {
+		const t = test_convex();
+		const fixture = await install_invoke_plugin(t);
+		const token = await seed_invoke_session(t, fixture);
+		vi.mocked(fetch).mockImplementation(async (_input, init) => {
+			const wire = JSON.parse(String(init?.body)) as { pluginRunId: string };
+			const body = JSON.stringify({
+				_nay: {
+					code: "response_too_large",
+					name: "ResponseTooLarge",
+					message: "Plugin response was too large",
+					data: { pluginRunId: wire.pluginRunId, elapsedMs: 9, outputBytes: 16 * 1024 * 1024 },
+				},
+			});
+			return new Response(body, {
+				headers: runner_response_headers({
+					kind: "error",
+					runId: wire.pluginRunId,
+					elapsedMs: 9,
+					outputBytes: 16 * 1024 * 1024,
+					bodyBytes: new TextEncoder().encode(body).byteLength,
+				}),
+			});
+		});
+
+		const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+		expect(response.status).toBe(502);
+		expect(await response.json()).toEqual({
+			code: "response_too_large",
+			message: "Plugin backend response was too large",
+			runId: expect.any(String),
+		});
+		expect(await t.run((ctx) => ctx.db.query("plugins_event_runs").first())).toMatchObject({
+			status: "failed",
+			runnerOutputBytes: 16 * 1024 * 1024,
+		});
+	});
+
+	test.each(["expired", "already failed", "unfinished call"] as const)(
+		"does not relay success when the run has %s",
+		async (change) => {
+			const t = test_convex();
+			const fixture = await install_invoke_plugin(t);
+			const token = await seed_invoke_session(t, fixture);
+			let storedBefore: Doc<"plugins_event_runs"> | null = null;
+			vi.mocked(fetch).mockImplementation(async (_input, init) => {
+				const wire = JSON.parse(String(init?.body)) as { pluginRunId: Id<"plugins_event_runs"> };
+				if (change === "expired") {
+					await t.run((ctx) => ctx.db.patch("plugins_event_runs", wire.pluginRunId, { expiresAt: Date.now() - 1 }));
+				} else if (change === "already failed") {
+					await t.mutation(internal.plugins_runtime.finish_event_run, {
+						runId: wire.pluginRunId,
+						outcome: { kind: "failed", errorMessage: "Earlier completion won" },
+					});
+					storedBefore = await t.run((ctx) => ctx.db.get("plugins_event_runs", wire.pluginRunId));
+				} else {
+					const call = await t.mutation(internal.plugins_runtime.consume_run_api_call, {
+						runId: wire.pluginRunId,
+						kind: "api_request",
+						route: "/api/v1/plugin-data/write",
+					});
+					expect(call._nay).toBeUndefined();
+				}
+				return runner_success_response({
+					kind: "invoke",
+					runId: wire.pluginRunId,
+					pluginStatus: 200,
+					elapsedMs: 1,
+					output: "must stay hidden",
+				});
+			});
+
+			const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+			expect(response.status).toBe(502);
+			expect(await response.json()).toEqual({ message: "Plugin backend failed", runId: expect.any(String) });
+			const run = await t.run((ctx) => ctx.db.query("plugins_event_runs").first());
+			expect(run?.status).toBe("failed");
+			expect(run?.apiTokenHash).toBeUndefined();
+			if (change === "already failed") expect(run).toEqual(storedBefore);
+			if (change === "expired") expect(run?.errorMessage).toBe("Run expired");
+			if (change === "unfinished call") {
+				expect(run?.errorMessage).toBe("Plugin left API calls unfinished");
+				expect(await t.run((ctx) => ctx.db.query("plugins_event_run_calls").first())).toMatchObject({
+					status: "failed",
+					errorCode: "run_ended",
+				});
+			}
+		},
+	);
+
+	test("allows success after the plugin handles a completed API failure", async () => {
+		const t = test_convex();
+		const fixture = await install_invoke_plugin(t);
+		const token = await seed_invoke_session(t, fixture);
+		vi.mocked(fetch).mockImplementation(async (_input, init) => {
+			const wire = JSON.parse(String(init?.body)) as { pluginRunId: Id<"plugins_event_runs"> };
+			const claimed = await t.mutation(internal.plugins_runtime.consume_run_api_call, {
+				runId: wire.pluginRunId,
+				kind: "api_request",
+				route: "/api/v1/plugin-data/write",
+			});
+			if (claimed._nay) throw new Error(claimed._nay.message);
+			await t.mutation(internal.plugins_runtime.finish_run_call, {
+				callId: claimed._yay.callId,
+				status: "failed",
+				responseStatus: 409,
+				errorCode: "conflict",
+				errorMessage: "Handled conflict",
+			});
+			return runner_success_response({
+				kind: "invoke",
+				runId: wire.pluginRunId,
+				pluginStatus: 200,
+				elapsedMs: 1,
+				output: "handled",
+			});
+		});
+
+		const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({ output: "handled" });
+		expect(await t.run((ctx) => ctx.db.query("plugins_event_runs").first())).toMatchObject({ status: "succeeded" });
+		expect(await t.run((ctx) => ctx.db.query("plugins_event_run_calls").first())).toMatchObject({
+			status: "failed",
+			errorCode: "conflict",
+			errorMessage: "Handled conflict",
+		});
+	});
+
+	test("waits for finalization before returning any public response", async () => {
+		const t = test_convex();
+		const fixture = await install_invoke_plugin(t);
+		const token = await seed_invoke_session(t, fixture);
+		vi.mocked(fetch).mockImplementation(async (_input, init) => {
+			const wire = JSON.parse(String(init?.body)) as { pluginRunId: string };
+			return runner_success_response({
+				kind: "invoke",
+				runId: wire.pluginRunId,
+				pluginStatus: 200,
+				elapsedMs: 1,
+				output: "complete",
+			});
+		});
+		const entered = Promise.withResolvers<void>();
+		const release = Promise.withResolvers<void>();
+		const finishActivity = activities.activities_db_finish;
+		vi.spyOn(activities, "activities_db_finish").mockImplementationOnce(async (...args) => {
+			entered.resolve();
+			await release.promise;
+			return await finishActivity(...args);
+		});
+		let responded = false;
+		const pending = post_invoke(t, token, invoke_request_body({ endpoint: "echo" })).then((response) => {
+			responded = true;
+			return response;
+		});
+		try {
+			await entered.promise;
+			await Promise.resolve();
+			expect(responded).toBe(false);
+		} finally {
+			release.resolve();
+		}
+		const response = await pending;
+		expect(response.status).toBe(200);
+		expect(await response.json()).toMatchObject({ output: "complete" });
+		expect(await t.run((ctx) => ctx.db.query("plugins_event_runs").first())).toMatchObject({ status: "succeeded" });
 	});
 
 	test("refuses an invoke wire body the runner would reject, without calling the runner", async () => {
@@ -11851,12 +12732,14 @@ describe("plugins backend invoke runs", () => {
 		vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
 			if (String(input) === `${process.env.PLUGIN_RUNNER_URL}/internal/plugin-runner/run`) {
 				runnerBodySizes.push(new TextEncoder().encode(String(init?.body ?? "")).byteLength);
-				return new Response(
-					JSON.stringify({
-						_yay: { pluginStatus: 200, elapsedMs: 1, outputBytes: 4, output: "pong", outputTruncated: false },
-					}),
-					{ status: 200, headers: { "Content-Type": "application/json" } },
-				);
+				const wire = JSON.parse(String(init?.body ?? "{}")) as { pluginRunId: string };
+				return runner_success_response({
+					kind: "invoke",
+					runId: wire.pluginRunId,
+					pluginStatus: 200,
+					elapsedMs: 1,
+					output: "pong",
+				});
 			}
 			return new Response(null, { status: 404 });
 		});
@@ -11898,10 +12781,13 @@ describe("plugins backend invoke runs", () => {
 
 		vi.mocked(fetch).mockImplementation(async (input: RequestInfo | URL) => {
 			if (String(input) === `${process.env.PLUGIN_RUNNER_URL}/internal/plugin-runner/run`) {
-				return new Response(
-					JSON.stringify({ _nay: { name: "PluginResponseError", message: "Plugin returned status 500" } }),
-					{ status: 200, headers: { "Content-Type": "application/json" } },
-				);
+				const body = JSON.stringify({
+					_nay: { code: "execution_failed", name: "Error", message: "Plugin threw before responding" },
+				});
+				return new Response(body, {
+					status: 200,
+					headers: runner_response_headers({ kind: "error", bodyBytes: new TextEncoder().encode(body).byteLength }),
+				});
 			}
 			return new Response(null, { status: 404 });
 		});
@@ -11913,7 +12799,7 @@ describe("plugins backend invoke runs", () => {
 
 		// The run record keeps the detail the response left out.
 		const run = await t.run(async (ctx) => await ctx.db.query("plugins_event_runs").first());
-		expect(run).toMatchObject({ status: "failed", errorMessage: "Plugin returned status 500" });
+		expect(run).toMatchObject({ status: "failed", errorMessage: "Plugin threw before responding" });
 	});
 	// #endregion invoke route transport
 });
