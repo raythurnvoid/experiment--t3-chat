@@ -1,3 +1,7 @@
+if (process.env.AI_CHAT_WORKSPACE_INSTRUCTIONS_ENABLED === undefined) {
+	process.env.AI_CHAT_WORKSPACE_INSTRUCTIONS_ENABLED = "true";
+}
+
 // CORS / checkout allowlist: use a real URL so `generate_checkout_link` URL checks and server helpers stay consistent.
 if (!process.env.ALLOWED_ORIGINS) {
 	process.env.ALLOWED_ORIGINS = "https://app.test";

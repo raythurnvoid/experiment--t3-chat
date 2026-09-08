@@ -11,6 +11,12 @@ import type {
 	ai_chat_tool_create_web_search_ToolOutput,
 	ai_chat_tool_create_execute_code_ToolInput,
 	ai_chat_tool_create_execute_code_ToolOutput,
+	ai_chat_tool_create_load_skill_ToolInput,
+	ai_chat_tool_create_load_skill_ToolOutput,
+	ai_chat_tool_create_read_skill_resource_ToolInput,
+	ai_chat_tool_create_read_skill_resource_ToolOutput,
+	ai_chat_tool_create_run_skill_script_ToolInput,
+	ai_chat_tool_create_run_skill_script_ToolOutput,
 	ai_chat_tool_create_image_generation_ToolInput,
 	ai_chat_tool_create_image_generation_ToolOutput,
 } from "../server/server-ai-tools.ts";
@@ -123,6 +129,18 @@ export type ai_chat_UiTools = {
 		input: ai_chat_tool_create_execute_code_ToolInput;
 		output: ai_chat_tool_create_execute_code_ToolOutput;
 	};
+	load_skill: {
+		input: ai_chat_tool_create_load_skill_ToolInput;
+		output: ai_chat_tool_create_load_skill_ToolOutput;
+	};
+	read_skill_resource: {
+		input: ai_chat_tool_create_read_skill_resource_ToolInput;
+		output: ai_chat_tool_create_read_skill_resource_ToolOutput;
+	};
+	run_skill_script: {
+		input: ai_chat_tool_create_run_skill_script_ToolInput;
+		output: ai_chat_tool_create_run_skill_script_ToolOutput;
+	};
 	/**
 	 * The output holds a reference to an R2 asset, not the picture. See
 	 * `ai_chat_tool_create_image_generation_stored`.
@@ -157,6 +175,7 @@ export type ai_chat_UiMessage = UIMessage<
 		parentClientGeneratedId: string | null;
 		selectedModelId?: ai_chat_ModelId | undefined;
 		selectedModeId?: ai_chat_ModeId | undefined;
+		skillIds?: string[] | undefined;
 	},
 	ai_chat_UiDataParts,
 	ai_chat_UiTools

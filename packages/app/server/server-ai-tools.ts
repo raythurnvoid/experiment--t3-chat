@@ -16,6 +16,12 @@ import { files_normalize_ai_edit_content, files_normalize_lf_newlines } from "./
 import { files_node_has_editable_text_content } from "../shared/files.ts";
 import { ai_chat_GENERATED_IMAGE_FORMAT } from "../shared/ai-chat.ts";
 import {
+	ai_chat_context_load_skill,
+	ai_chat_context_read_resource,
+	ai_chat_context_add_script_result,
+	type ai_chat_context_Context,
+} from "./ai-chat-context.ts";
+import {
 	bash_EXTERNAL_MOUNTS_ROOT,
 	bash_PLUGINS_MOUNT_ROOT,
 	bash_is_path_under,
@@ -1151,6 +1157,86 @@ function ai_chat_tool_execute_code_format_output(result: ai_chat_tool_execute_co
 	return blocks.join("\n");
 }
 
+async function execute_code(
+	ctx: ActionCtx,
+	ctxData: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		userId: Id<"users">;
+		getThreadId?: () => Id<"ai_chat_threads"> | null;
+	},
+	args: { code: string; input?: unknown },
+	abortSignal: AbortSignal | undefined,
+	allowPublicNetwork: boolean,
+) {
+	const baseUrl = process.env.CODE_EXECUTION_RUNNER_URL?.trim();
+	const secret = process.env.CODE_EXECUTION_RUNNER_SECRET?.trim();
+	if (!baseUrl || !secret) throw new Error("Code execution is unavailable.");
+
+	if (ai_chat_tool_execute_code_TEXT_ENCODER.encode(args.code).length > ai_chat_tool_execute_code_CODE_MAX_BYTES) {
+		throw new Error("`code` is too large.");
+	}
+	let inputJson: string;
+	try {
+		inputJson = args.input === undefined ? "null" : (JSON.stringify(args.input) ?? "null");
+	} catch {
+		throw new Error("`input` must be JSON-serializable.");
+	}
+	if (ai_chat_tool_execute_code_TEXT_ENCODER.encode(inputJson).length > ai_chat_tool_execute_code_INPUT_MAX_BYTES) {
+		throw new Error("`input` is too large.");
+	}
+
+	abortSignal?.throwIfAborted();
+	const url = `${baseUrl.replace(/\/$/u, "")}/internal/execute-code`;
+	const appOrigin = ai_chat_tool_execute_code_app_origin();
+	const executionId = crypto.randomUUID();
+	const publicApiGrantToken = crypto_random_hex(32);
+	await ctx.runMutation(internal.public_api.create_grant, {
+		organizationId: ctxData.organizationId,
+		workspaceId: ctxData.workspaceId,
+		userId: ctxData.userId,
+		threadId: ctxData.getThreadId?.() ?? null,
+		principalKey: executionId,
+		tokenHash: await crypto_sha256_hex(publicApiGrantToken),
+		scopes: ["files:list", "files:read"] satisfies public_api_Scope[],
+		pathPrefix: null,
+		now: Date.now(),
+	});
+
+	let response: Response;
+	try {
+		response = await fetch(url, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Authorization: `Bearer ${secret}` },
+			signal: abortSignal,
+			body: JSON.stringify({
+				executionId, code: args.code, input: args.input ?? null,
+				...(allowPublicNetwork ? { network: { mode: "public_http" } } : {}),
+				app: { origin: appOrigin, token: publicApiGrantToken },
+			}),
+		});
+	} catch (error) {
+		abortSignal?.throwIfAborted();
+		throw new Error(`Code execution request failed: ${error instanceof Error ? error.message : String(error)}`);
+	}
+
+	if (!response.ok) {
+		let message = `Code execution request failed (${response.status}).`;
+		try {
+			const body = ai_chat_tool_execute_code_runner_error_schema.parse(await response.json());
+			if (body.error?.message) message = body.error.message;
+		} catch {
+			// Keep the status-code fallback message.
+		}
+		throw new Error(message);
+	}
+	try {
+		return ai_chat_tool_execute_code_runner_result_schema.parse(await response.json());
+	} catch {
+		throw new Error("Code execution returned an invalid response.");
+	}
+}
+
 /**
  * Run a short, untrusted JavaScript snippet in the isolated Dynamic Worker
  * sandbox (`bonobo-senate-code-execution-runner`) and return its value plus logs.
@@ -1196,87 +1282,8 @@ export function ai_chat_tool_create_execute_code(
 			})
 			.strict(),
 
-		execute: async (args) => {
-			const baseUrl = process.env.CODE_EXECUTION_RUNNER_URL?.trim();
-			const secret = process.env.CODE_EXECUTION_RUNNER_SECRET?.trim();
-			if (!baseUrl || !secret) {
-				throw new Error("Code execution is unavailable.");
-			}
-
-			// Reject oversized tool payloads before the runner request; the runner
-			// still enforces its own request limits.
-			if (ai_chat_tool_execute_code_TEXT_ENCODER.encode(args.code).length > ai_chat_tool_execute_code_CODE_MAX_BYTES) {
-				throw new Error("`code` is too large.");
-			}
-
-			let inputJson: string;
-			try {
-				inputJson = args.input === undefined ? "null" : (JSON.stringify(args.input) ?? "null");
-			} catch {
-				throw new Error("`input` must be JSON-serializable.");
-			}
-			if (ai_chat_tool_execute_code_TEXT_ENCODER.encode(inputJson).length > ai_chat_tool_execute_code_INPUT_MAX_BYTES) {
-				throw new Error("`input` is too large.");
-			}
-
-			const url = `${baseUrl.replace(/\/$/u, "")}/internal/execute-code`;
-			const appOrigin = ai_chat_tool_execute_code_app_origin();
-			const executionId = crypto.randomUUID();
-			const publicApiGrantToken = crypto_random_hex(32);
-			await ctx.runMutation(internal.public_api.create_grant, {
-				organizationId: ctxData.organizationId,
-				workspaceId: ctxData.workspaceId,
-				userId: ctxData.userId,
-				threadId: ctxData.getThreadId?.() ?? null,
-				principalKey: executionId,
-				tokenHash: await crypto_sha256_hex(publicApiGrantToken),
-				scopes: ["files:list", "files:read"] satisfies public_api_Scope[],
-				pathPrefix: null,
-				now: Date.now(),
-			});
-
-			let response: Response;
-			try {
-				response = await fetch(url, {
-					method: "POST",
-					headers: {
-						"Content-Type": "application/json",
-						Authorization: `Bearer ${secret}`,
-					},
-					body: JSON.stringify({
-						executionId,
-						code: args.code,
-						input: args.input ?? null,
-						network: { mode: "public_http" },
-						app: {
-							origin: appOrigin,
-							token: publicApiGrantToken,
-						},
-					}),
-				});
-			} catch (error) {
-				throw new Error(`Code execution request failed: ${error instanceof Error ? error.message : String(error)}`);
-			}
-
-			if (!response.ok) {
-				let message = `Code execution request failed (${response.status}).`;
-				try {
-					const body = ai_chat_tool_execute_code_runner_error_schema.parse(await response.json());
-					if (body.error?.message) {
-						message = body.error.message;
-					}
-				} catch {
-					// Keep the status-code fallback message.
-				}
-				throw new Error(message);
-			}
-
-			let result: ai_chat_tool_execute_code_RunnerResult;
-			try {
-				result = ai_chat_tool_execute_code_runner_result_schema.parse(await response.json());
-			} catch {
-				throw new Error("Code execution returned an invalid response.");
-			}
+		execute: async (args, options) => {
+			const result = await execute_code(ctx, ctxData, args, options.abortSignal, true);
 			const output = ai_chat_tool_execute_code_format_output(result);
 
 			return {
@@ -1298,6 +1305,156 @@ type ai_chat_tool_create_execute_code_Tool = ReturnType<typeof ai_chat_tool_crea
 export type ai_chat_tool_create_execute_code_ToolInput = InferToolInput<ai_chat_tool_create_execute_code_Tool>;
 export type ai_chat_tool_create_execute_code_ToolOutput = InferToolOutput<ai_chat_tool_create_execute_code_Tool>;
 // #endregion execute code
+
+// #region skills
+const skill_id_schema = z.string().min(1).max(128).regex(/^[a-z0-9_]+$/u);
+const skill_input_schema = z.object({ skillId: skill_id_schema }).strict();
+const skill_resource_input_schema = skill_input_schema.extend({ resourceId: skill_id_schema });
+
+export const ai_chat_skill_tool_output_schema = z.object({
+	skillId: skill_id_schema,
+	resourceId: skill_id_schema.optional(),
+	version: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
+	status: z.enum(["loaded", "read", "completed", "unavailable", "invalid", "changed", "too_large", "not_loaded", "unsupported_runtime", "failed"]),
+}).strict();
+
+function skill_context(value: unknown) {
+	// This object is made by the route, never supplied by a chat message.
+	if (!value || typeof value !== "object" || !("loaded" in value) || !(value.loaded instanceof Map)) {
+		throw new Error("Skill operation failed.");
+	}
+	return value as ai_chat_context_Context;
+}
+
+function skill_failure_status(name: string | undefined): z.infer<typeof ai_chat_skill_tool_output_schema>["status"] {
+	switch (name) {
+		case "unavailable": case "invalid": case "changed": case "too_large": case "not_loaded": case "unsupported_runtime":
+			return name;
+		case "limit": return "too_large";
+		default: return "failed";
+	}
+}
+
+export function ai_chat_tool_create_load_skill(ctx: ActionCtx) {
+	return tool({
+		description: "Load a skill from the catalog by its skillId. Its saved instructions and resource IDs appear in the next step. Invalid skills need a corrected SKILL.md saved before a new turn.",
+		inputSchema: skill_input_schema,
+		outputSchema: ai_chat_skill_tool_output_schema,
+		execute: async ({ skillId }, options): Promise<z.infer<typeof ai_chat_skill_tool_output_schema>> => {
+			try {
+				const result = await ai_chat_context_load_skill(ctx, skill_context(options.experimental_context), skillId);
+				return result._nay ? { skillId, status: skill_failure_status(result._nay.name) } : { skillId, version: result._yay.version, status: "loaded" as const };
+			} catch {
+				options.abortSignal?.throwIfAborted();
+				return { skillId, status: "failed" as const };
+			}
+		},
+	});
+}
+
+type ai_chat_tool_create_load_skill_Tool = ReturnType<typeof ai_chat_tool_create_load_skill>;
+export type ai_chat_tool_create_load_skill_ToolInput = InferToolInput<ai_chat_tool_create_load_skill_Tool>;
+export type ai_chat_tool_create_load_skill_ToolOutput = InferToolOutput<ai_chat_tool_create_load_skill_Tool>;
+
+export function ai_chat_tool_create_read_skill_resource(ctx: ActionCtx) {
+	return tool({
+		description: "Read a saved text resource by IDs from a loaded skill's manifest. Load the skill in an earlier step first. Text appears in the next step's context. Binary files are unsupported.",
+		inputSchema: skill_resource_input_schema,
+		outputSchema: ai_chat_skill_tool_output_schema,
+		execute: async ({ skillId, resourceId }, options) => {
+			try {
+				const result = await ai_chat_context_read_resource(ctx, skill_context(options.experimental_context), skillId, resourceId);
+				return result._nay ? { skillId, resourceId, status: skill_failure_status(result._nay.name) } : { skillId, resourceId, version: result._yay.version, status: "read" as const };
+			} catch {
+				options.abortSignal?.throwIfAborted();
+				return { skillId, resourceId, status: "failed" as const };
+			}
+		},
+	});
+}
+
+type ai_chat_tool_create_read_skill_resource_Tool = ReturnType<typeof ai_chat_tool_create_read_skill_resource>;
+export type ai_chat_tool_create_read_skill_resource_ToolInput = InferToolInput<ai_chat_tool_create_read_skill_resource_Tool>;
+export type ai_chat_tool_create_read_skill_resource_ToolOutput = InferToolOutput<ai_chat_tool_create_read_skill_resource_Tool>;
+
+export function ai_chat_tool_create_run_skill_script(ctx: ActionCtx, ctxData: Parameters<typeof ai_chat_tool_create_execute_code>[1]) {
+	return tool({
+		description: "Run the exact saved .js resource from a skill loaded in an earlier step. Requires metadata.bonobo-script-runtime: worker-async-body-v1. The file must be an async function body, not Node, ESM, or a shell script. App file reads are allowed; public network is disabled. Result and logs appear in the next step's context.",
+		inputSchema: skill_resource_input_schema.extend({ input: z.unknown().optional() }),
+		outputSchema: ai_chat_skill_tool_output_schema,
+		execute: async ({ skillId, resourceId, input }, options) => {
+			const context = skill_context(options.experimental_context);
+			try {
+				const read = await ai_chat_context_read_resource(ctx, context, skillId, resourceId, true);
+				if (read._nay) return { skillId, resourceId, status: skill_failure_status(read._nay.name) };
+				const result = await execute_code(ctx, ctxData, { code: read._yay.content, input }, options.abortSignal, false);
+				const added = ai_chat_context_add_script_result(context, skillId, {
+					toolCallId: options.toolCallId, resourceId, text: ai_chat_tool_execute_code_format_output(result),
+				});
+				if (!added) return { skillId, resourceId, version: read._yay.version, status: "too_large" as const };
+				return { skillId, resourceId, version: read._yay.version, status: result.status === "succeeded" ? "completed" as const : "failed" as const };
+			} catch (error) {
+				options.abortSignal?.throwIfAborted();
+				ai_chat_context_add_script_result(context, skillId, {
+					toolCallId: options.toolCallId, resourceId, text: error instanceof Error ? error.message : "Skill script failed.",
+				});
+				return { skillId, resourceId, status: "failed" as const };
+			}
+		},
+	});
+}
+
+export function ai_chat_tool_create_run_skill_script_stored() {
+	return tool({ inputSchema: skill_resource_input_schema, outputSchema: ai_chat_skill_tool_output_schema });
+}
+
+type ai_chat_tool_create_run_skill_script_stored_Tool = ReturnType<typeof ai_chat_tool_create_run_skill_script_stored>;
+export type ai_chat_tool_create_run_skill_script_ToolInput = InferToolInput<ai_chat_tool_create_run_skill_script_stored_Tool>;
+export type ai_chat_tool_create_run_skill_script_ToolOutput = InferToolOutput<ai_chat_tool_create_run_skill_script_stored_Tool>;
+
+export function ai_chat_skill_tool_safe_input(toolName: string, input: unknown) {
+	const schema = toolName === "load_skill" ? skill_input_schema : skill_resource_input_schema;
+	// Strip live script parameters before validating the stored contract.
+	if (!input || typeof input !== "object") return null;
+	const parsed = schema.safeParse({
+		skillId: "skillId" in input ? input.skillId : undefined,
+		...(toolName !== "load_skill" ? { resourceId: "resourceId" in input ? input.resourceId : undefined } : {}),
+	});
+	return parsed.success ? parsed.data : null;
+}
+
+export function ai_chat_skill_tool_parts_are_safe(parts: unknown[]) {
+	for (const part of parts) {
+		if (!part || typeof part !== "object" || !("type" in part) || typeof part.type !== "string") continue;
+		if (part.type === "dynamic-tool" && "toolName" in part && ["load_skill", "read_skill_resource", "run_skill_script"].includes(String(part.toolName).toLowerCase())) return false;
+		if (!["tool-load_skill", "tool-read_skill_resource", "tool-run_skill_script"].includes(part.type.toLowerCase())) continue;
+		if (part.type !== part.type.toLowerCase()) return false;
+		const parsed = z.object({
+			type: z.string(), toolCallId: z.string(),
+			state: z.enum(["input-streaming", "input-available", "output-available", "output-error"]),
+			input: z.unknown().optional(), output: ai_chat_skill_tool_output_schema.optional(),
+			rawInput: z.undefined().optional(),
+			providerExecuted: z.boolean().optional(),
+			preliminary: z.boolean().optional(),
+			title: z.undefined().optional(),
+			toolMetadata: z.undefined().optional(),
+			errorText: z.literal("Skill operation failed.").optional(),
+		}).strict().safeParse(part);
+		if (!parsed.success) return false;
+		const { input, state, output } = parsed.data;
+		if (state === "input-streaming") {
+			if (input !== undefined && !z.object({}).strict().safeParse(input).success) return false;
+		} else if (state === "output-error" && input === undefined) {
+			continue;
+		} else {
+			const schema = part.type === "tool-load_skill" ? skill_input_schema : skill_resource_input_schema;
+			if (!schema.safeParse(input).success) return false;
+		}
+		if (state === "output-available" && !output) return false;
+	}
+	return true;
+}
+// #endregion skills
 
 // #region image generation
 

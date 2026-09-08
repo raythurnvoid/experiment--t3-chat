@@ -39,7 +39,7 @@ import { files_ROOT_ID } from "../server/files.ts";
 import { server_path_normalize, server_request_json_parse_and_validate } from "../server/server-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
-import { files_normalize_name } from "../shared/files.ts";
+import { files_normalize_name, files_normalize_special_node_path } from "../shared/files.ts";
 import { path_extract_segments_from } from "../shared/paths.ts";
 import type { public_api_Scope } from "../shared/public-api.ts";
 
@@ -743,7 +743,7 @@ function validate_canonical_folder_path(rawPath: string) {
 	if (!rawPath.startsWith("/")) {
 		return Result({ _nay: { message: "Path must be absolute." } });
 	}
-	const normalized = server_path_normalize(rawPath);
+	const normalized = files_normalize_special_node_path("folder", server_path_normalize(rawPath));
 	if (normalized === "/") {
 		return Result({ _nay: { message: "Path must not be the workspace root." } });
 	}

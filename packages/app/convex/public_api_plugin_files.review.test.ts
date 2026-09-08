@@ -7,7 +7,10 @@ import { files_ROOT_ID } from "../server/files.ts";
 import type { plugins_Capability } from "../shared/plugins.ts";
 
 describe("ensure_plugin_folder", () => {
-	test("rechecks workspace write permission on an unrestricted ancestor during a live invoke", async () => {
+	test.each([
+		["/tagged/new", "/tagged/new"],
+		["/tagged/.AGENTS", "/tagged/.agents"],
+	])("rechecks workspace write permission and canonical spelling for %s during a live invoke", async (inputPath, expectedPath) => {
 		const t = test_convex();
 		const fixture = await t.run(async (ctx) => {
 			const now = Date.now();
@@ -202,7 +205,7 @@ describe("ensure_plugin_folder", () => {
 		const request = {
 			method: "POST",
 			headers: { Authorization: `Bearer ${apiToken}`, "Content-Type": "application/json" },
-			body: JSON.stringify({ path: "/tagged/new" }),
+			body: JSON.stringify({ path: inputPath }),
 		};
 		const refused = await t.fetch("/api/v1/files/plugin-folders/ensure", request);
 		expect(refused.status).toBe(403);
@@ -231,12 +234,12 @@ describe("ensure_plugin_folder", () => {
 					q
 						.eq("organizationId", fixture.owner.organizationId)
 						.eq("workspaceId", fixture.owner.workspaceId)
-						.eq("path", "/tagged/new")
+						.eq("path", expectedPath)
 						.eq("archiveOperationId", null),
 				)
 				.first(),
 		);
 		expect(created).toMatchObject({ parentId: fixture.parentId, kind: "folder", createdBy: fixture.userId });
-		expect(await accepted.json()).toEqual({ nodeId: created!._id, path: "/tagged/new", created: true });
+		expect(await accepted.json()).toEqual({ nodeId: created!._id, path: expectedPath, created: true });
 	});
 });

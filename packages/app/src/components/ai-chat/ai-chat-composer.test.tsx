@@ -7,6 +7,9 @@ import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 
+// The skills dialog and chips have real-browser coverage in ai-chat-skills.browser.test.tsx.
+vi.mock("./ai-chat-skills.tsx", () => ({ AiChatSkillsControl: () => null, AiChatSkillChips: () => null }));
+
 // The mention popup reads the workspace tree through a Convex subscription;
 // serve a small fixed tree instead of a live client. Tests can override the
 // mock per test (for example to render the loading state).
@@ -122,7 +125,7 @@ describe("AiChatComposer", () => {
 
 		fireEvent.click(queueButton);
 
-		expect(onSubmit).toHaveBeenCalledWith("keep this draft", []);
+		expect(onSubmit).toHaveBeenCalledWith("keep this draft", [], []);
 		expect(screen.getByRole("textbox", { name: "Send a message..." }).textContent).toBe("keep this draft");
 	});
 
@@ -167,7 +170,7 @@ describe("AiChatComposer", () => {
 		expect(queueButton.querySelector(".AiChatComposer-send-icon")).not.toBeNull();
 
 		fireEvent.click(queueButton);
-		expect(onSubmit).toHaveBeenCalledWith("Queue this next", []);
+		expect(onSubmit).toHaveBeenCalledWith("Queue this next", [], []);
 		expect(onCancel).toHaveBeenCalledOnce();
 	});
 
@@ -414,7 +417,7 @@ describe("AiChatComposer", () => {
 
 		fireEvent.click(screen.getByRole("button", { name: "Save queued message" }));
 
-		expect(onSubmit).toHaveBeenCalledWith("Edit this queued message", []);
+		expect(onSubmit).toHaveBeenCalledWith("Edit this queued message", [], []);
 	});
 
 	test("hides Stop while editing a queued message during an active response", () => {
@@ -445,7 +448,7 @@ describe("AiChatComposer", () => {
 
 		fireEvent.click(screen.getByRole("button", { name: "Save queued message" }));
 
-		expect(onSubmit).toHaveBeenCalledWith("Edit this queued message", []);
+		expect(onSubmit).toHaveBeenCalledWith("Edit this queued message", [], []);
 		expect(onCancel).not.toHaveBeenCalled();
 	});
 
@@ -607,7 +610,7 @@ describe("AiChatComposer", () => {
 
 		// The next Enter submits; the chip serializes to the full path token.
 		fireEvent.keyDown(textbox, { key: "Enter", code: "Enter" });
-		expect(onSubmit).toHaveBeenCalledWith("@/docs/api.md ", []);
+		expect(onSubmit).toHaveBeenCalledWith("@/docs/api.md ", [], []);
 	});
 
 	test("closes only the mention popup on Escape, keeping the composer open", async () => {
@@ -696,7 +699,7 @@ describe("AiChatComposer", () => {
 		expect(textbox.querySelector(".AiChatComposerFileMention")?.textContent).toBe("@docs/");
 
 		fireEvent.click(screen.getByRole("button", { name: "Send message" }));
-		expect(onSubmit).toHaveBeenCalledWith("@/docs/ ", []);
+		expect(onSubmit).toHaveBeenCalledWith("@/docs/ ", [], []);
 	});
 
 	test("does not pick a mention row while IME composition is active", async () => {
@@ -932,7 +935,7 @@ describe("AiChatComposer", () => {
 
 		// The token round-trips as plain text and sends unchanged.
 		fireEvent.click(screen.getByRole("button", { name: "Send message" }));
-		expect(onSubmit).toHaveBeenCalledWith("see @/docs/api.md please", []);
+		expect(onSubmit).toHaveBeenCalledWith("see @/docs/api.md please", [], []);
 	});
 
 	test("does not save a queued edit when Enter confirms IME text", () => {

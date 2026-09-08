@@ -54,7 +54,11 @@ import {
 import { server_path_normalize } from "../server/server-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
-import { files_normalize_name, files_normalize_upload_file_name } from "../shared/files.ts";
+import {
+	files_normalize_name,
+	files_normalize_special_node_path,
+	files_normalize_upload_file_name,
+} from "../shared/files.ts";
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
 import { public_api_is_path_inside_prefix } from "./public_api_http_auth.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
@@ -839,6 +843,7 @@ export const create_upload_target = internalMutation({
 
 		// The same path rules as `/api/v1/files/upload-urls`: canonical absolute path, an upload file
 		// name, valid folder segments, and a bounded size.
+		args = { ...args, path: files_normalize_special_node_path("file", args.path) };
 		if (!args.path.startsWith("/") || args.path === "/" || server_path_normalize(args.path) !== args.path) {
 			return Result({ _nay: { message: "Path must be absolute and normalized" } });
 		}

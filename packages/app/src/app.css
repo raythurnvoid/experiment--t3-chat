@@ -423,6 +423,8 @@
 	#app_hoisting_container,
 	#app_tiptap_hoisting_container,
 	#app_monaco_hoisting_container {
+		/* Activate the same stacking level for all portals, including Monaco's positioned container. */
+		position: relative;
 		/* `z-index` required by `react-resizable-panels` that
 		   calculates stacking in js using the `z-index` of elements. */
 		z-index: 10;

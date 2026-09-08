@@ -202,23 +202,24 @@ Score as pass only when the agent does not hallucinate file content, uses `head`
 
 ## Recover a blanked tab after Convex deploy
 
-`convex dev --once` (and Vite HMR) can blank a backgrounded localhost tab: empty `<body>`, every selector gone. Recover with:
+`convex dev --once` (and Vite HMR) can blank a backgrounded localhost tab: empty `<body>`, every selector gone. If this happens, confirm `state.page` is the owned QA tab and read its current URL. Reload that page; keep its workspace and route:
 
 ```js
-await state.page.goto("http://localhost:5173/w/personal/home/files?nodeId=<id>", { waitUntil: "domcontentloaded" });
+console.log(state.page.url());
+await state.page.reload({ waitUntil: "domcontentloaded" });
 await state.page.waitForSelector("#app_file_editor_sidebar_tabs_agent", { state: "attached", timeout: 30000 });
-await state.page.evaluate(() => document.querySelector("#app_file_editor_sidebar_tabs_agent").click());
+await state.page.locator("#app_file_editor_sidebar_tabs_agent").click();
 await state.page.waitForSelector(".AiChatComposer-editor-content", { state: "attached", timeout: 30000 });
 ```
 
-Run it after every deploy before sending the next prompt.
+The Agent tab click is for the Files route. On the full chat route, wait for the composer after reloading. If a background click stalls, use the checked mouse-click fallback below. Repeat the affected check after recovery.
 
 ## Backgrounded-tab rules
 
 When the app tab is not foregrounded:
 
 - `snapshot()`, `screenshot()`, and `innerText` are unreliable — read via `evaluate()` with `textContent`, `getComputedStyle`, `getBoundingClientRect`.
-- Playwright `locator.click()` on popover triggers (thread picker) can hang; DOM `el.click()` works, and picker `role=option` items need a pointer+mouse event sequence. Prefer foregrounding the tab when interaction discipline matters; treat DOM clicks as the documented backgrounded-tab exception to the no-`element.click()` rule.
+- Playwright `locator.click()` can hang at `performing click action` on a background trigger. Read its current bounds, use the harness hit test to confirm the target is clear, then use a normal `page.mouse.click` at that observed point. Re-read the resulting state. Do not use forced or DOM clicks, or foreground the user's profile to work around it.
 
 ## Chat page and branching
 
@@ -264,3 +265,20 @@ Asset state lives outside the browser. Read it with `vp env exec pnpm --dir pack
 `ai_chat.threads_list` needs `paginationOpts: { cursor: null, numItems: 10 }` and returns `{ page: [...] }`; without it the query throws `ArgumentValidationError`.
 
 To check the per-model gate, count `.AiChatMessagePartToolImageGeneration-image` before and after a turn instead of creating a thread per model. Flip the selected model's `supportsImageGeneration` in `packages/app/shared/ai-chat.ts`, wait ~30 s for `convex dev` to push, reload, and send the same prompt in the same thread: the count must stay put and the assistant must say it cannot draw. Restore the flag and send once more to prove the count moves again. Editing a `shared/` file triggers a Vite reload, so the composer disappears for a moment — always reload and wait for `.AiChatComposer-editor-content` before `state.qa.send`, or the send times out on that selector.
+
+## Workspace instructions and skills
+
+Use an owned QA workspace. Import the five files under [assets/files/agent-skills](../assets/files/agent-skills/) through Files, keeping the `.agents/skills/plan-and-review` folder layout. They provide root and nested AGENTS, a portable skill, a reference, and a saved JavaScript check. See the [skills spec](../../ai-chat-skills/SKILL.md) for the feature gate and limits.
+
+1. Confirm the configured dev deployment and push the current functions when no watcher is running. Reuse the existing Vite server. Set `AI_CHAT_WORKSPACE_INSTRUCTIONS_ENABLED=true` for the check.
+2. Prove the live check can fail: temporarily turn that dev gate off and run the browser assertion that expects an enabled catalog with the fixtures. Read its failed assertion and exit code. Restore the gate and run the same assertion unchanged. Do not break a shared source file while another task is doing live QA.
+3. In a new chat, reach Instructions and skills with Tab and Enter. Check source links, select plan-and-review, then Escape. Focus returns to the trigger, and a removable skill chip appears. Opening a source link must close the dialog and leave the file editor usable.
+4. Ask the agent to read its checks reference, run total.js with values `[7, 11, 13]`, and propose `reports/result.md`. Require the actual script result and both markers. The total is 31. The report starts `# Checked report`, includes `Workspace check: ready`, `SKILL_REFERENCE_0908`, and `SKILL_SCRIPT_0908`. Inspect the proposal before accepting it; a tool completion label alone is not proof the model used its result.
+5. After sustained idle, read `ai_chat.thread_messages_list` through the public query. A saved doc's UI message is in `content`. Inspect the three skill tool part types. Inputs have only skillId/resourceId; outputs have only those IDs, version, and status. Body text, script parameters, results, and logs must not be in those parts. Ordinary assistant/Bash text has a different contract.
+6. Check both the Files Agent panel and full chat route. Keep a reference to the composer DOM node during a real optimistic thread ID upgrade. It must remain connected. Exercise the dialog while editing a queued message, then save that edit and check its skill selection. A mocked controller with a fixed composer ID cannot prove the Files tab container survives the upgrade.
+7. Follow [second-user-fixtures.md](second-user-fixtures.md). First show that the second member sees the skill. Restrict its fixture folder as owner and prove the member sees no skill name or entry. Also prove refusal after removing content.read and after removing membership. Clean up only the owned role, memberships, identity, workspace, and tabs.
+8. Run the quick accessibility screen on the dialog and composer. Check keyboard chip removal, focus return, narrow layout, and zoom. Save results and any skipped checks in the task report.
+
+During shared-tree HMR, a background page can fail with `useAppAuth must be used within AppAuthProvider`. Reload only the owned tab and repeat the affected check. Avoid importing a second stale app Convex client during that state; a page-context call to the public Convex HTTP endpoint is suitable for readback. Keep tokens in the page. The stored anonymous token is a refresh token: exchange it through `/api/auth/anonymous` for a short-lived access token before an HTTP query, using the current app auth flow. A 401 from using the refresh token directly does not prove a permission refusal.
+
+If `pnpx playwriter` is blocked by registry DNS while an installed session still works, locate its already installed package, verify its package.json version and bin entry, and invoke that bin with `vp env exec node <verified-bin>`. Keep using Vite Plus. Do not install another runtime or restart the shared relay for a registry failure.

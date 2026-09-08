@@ -8,6 +8,7 @@ import type { Id } from "../convex/_generated/dataModel";
 import type { ActionCtx, MutationCtx } from "../convex/_generated/server.js";
 import type { ai_chat_files_patch_thread_tmp_files_Args } from "../convex/ai_chat_files.ts";
 import type { bash_ReviewScratch } from "../convex/bash.ts";
+import { access_control_db_ensure_role_assignment } from "../convex/access_control.ts";
 import { files_db_yjs_push_update } from "../convex/files_nodes.ts";
 import { db_insert_file_text_content } from "../convex/files_nodes_content.ts";
 import { files_PENDING_REPLACEMENT_BASE_CHANGED_MESSAGE } from "../convex/files_pending_updates.ts";
@@ -2278,6 +2279,13 @@ describe("bash_run_command", () => {
 				path: "/ask-denied",
 			}),
 		);
+	});
+
+	test("normalizes the skills folder through bash mkdir", async () => {
+		const { run, runMutation } = await create_bash_runner({ allowDbFilesMkdir: true });
+		const result = await run(`mkdir -p ${test_db_files_mount}/.AGENTS/skills/one`);
+		expect(result.metadata.exitCode).toBe(0);
+		expect(runMutation).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ path: "/.agents/skills/one" }));
 	});
 
 	test("runs indexed search with options before the query", async () => {
@@ -5930,6 +5938,147 @@ describe("bash_run_command", () => {
 		expect(pendingRows[0]!.eagerCreated).toBeUndefined();
 	});
 
+	test("normalizes special file names on new Bash writes without renaming existing files", async () => {
+		const runner = await create_bash_runner({
+			extraFiles: [
+				{ path: "/legacy/readme.md", content: "legacy\n", withRealYjsSnapshot: true },
+				{ path: "/legacy/readme", content: "legacy bare\n", withRealYjsSnapshot: true },
+				{ path: "/legacy/README.md", content: "canonical sibling\n", withRealYjsSnapshot: true },
+			],
+		});
+		for (const [input, path] of [
+			["/.agents/skills/one/skill.md", "/.agents/skills/one/SKILL.md"],
+			["/instructions/agents.md", "/instructions/AGENTS.md"],
+			["/instructions/readme.md", "/instructions/README.md"],
+			["/new/readme", "/new/README.md"],
+		] as const) {
+			const written = await runner.run(`printf 'saved body' > ${test_db_files_mount}${input}`);
+			expect(written.metadata.exitCode, written.stderr).toBe(0);
+			expect((await get_seeded_node(runner, path)).path).toBe(path);
+		}
+		for (const name of ["readme.md", "readme"]) {
+			const nodeId = await get_seeded_node_id(runner, `/legacy/${name}`);
+			const existing = await runner.run(`printf 'existing body' > ${test_db_files_mount}/legacy/${name}`);
+			expect(existing.metadata.exitCode, existing.stderr).toBe(0);
+			expect((await get_seeded_node(runner, `/legacy/${name}`))._id).toBe(nodeId);
+		}
+		expect((await runner.run(`cat ${test_db_files_mount}/legacy/README.md`)).stdout).toBe("canonical sibling\n");
+	});
+
+	test("uses README.md for new bare readme copy and move destinations", async () => {
+		const runner = await create_bash_runner({ extraFiles: [
+			{ path: "/legacy/readme", content: "legacy\n", withRealYjsSnapshot: true },
+			{ path: "/copies", kind: "folder" },
+			{ path: "/moved", kind: "folder" },
+		] });
+		for (const destination of ["/copies", "/docs/readme"]) {
+			const copied = await runner.run(`cp ${test_db_files_mount}/legacy/readme ${test_db_files_mount}${destination}`);
+			expect(copied.metadata.exitCode, copied.stderr).toBe(0);
+		}
+		expect((await get_seeded_node(runner, "/copies/README.md")).name).toBe("README.md");
+		expect((await get_seeded_node(runner, "/docs/README.md")).name).toBe("README.md");
+		const moved = await runner.run(`mv ${test_db_files_mount}/legacy/readme ${test_db_files_mount}/moved/readme`);
+		expect(moved.metadata.exitCode, moved.stderr).toBe(0);
+		expect(await list_pending_updates(runner)).toEqual(expect.arrayContaining([
+			expect.objectContaining({ pendingMove: expect.objectContaining({ destName: "README.md" }) }),
+		]));
+	});
+
+	test("normalizes special destinations for Bash cp and mv", async () => {
+		const runner = await create_bash_runner({
+			extraFiles: [{ path: "/legacy/readme.md", content: "legacy\n", withRealYjsSnapshot: true }],
+		});
+		const copied = await runner.run(`cp ${test_db_files_mount}/legacy/readme.md ${test_db_files_mount}/docs/skill.md`);
+		expect(copied.metadata.exitCode, copied.stderr).toBe(0);
+		expect((await get_seeded_node(runner, "/docs/SKILL.md")).path).toBe("/docs/SKILL.md");
+		const moved = await runner.run(`mv ${test_db_files_mount}/legacy/readme.md ${test_db_files_mount}/docs/agents.md`);
+		expect(moved.metadata.exitCode, moved.stderr).toBe(0);
+		expect(await list_pending_updates(runner)).toEqual(expect.arrayContaining([
+			expect.objectContaining({ pendingMove: expect.objectContaining({ destName: "AGENTS.md" }) }),
+		]));
+	});
+
+	test.each(["missing", "literal", "canonical no-clobber"] as const)("cp into a folder resolves special names for a %s child", async (destination) => {
+		const destinationPath = "/.agents/skills/summarize";
+		const runner = await create_bash_runner({
+			extraFiles: [
+				{ path: "/templates/skill.md", content: "Saved skill body\n", withRealYjsSnapshot: true },
+				{ path: destinationPath, kind: "folder" },
+				...(destination === "literal" ? [{ path: `${destinationPath}/skill.md`, content: "Legacy target\n", withRealYjsSnapshot: true }] : []),
+				...(destination !== "missing" ? [{ path: `${destinationPath}/SKILL.md`, content: "Canonical sibling\n", withRealYjsSnapshot: true }] : []),
+			],
+		});
+		const literalId = destination === "literal" ? await get_seeded_node_id(runner, `${destinationPath}/skill.md`) : null;
+		const canonicalId = destination !== "missing" ? await get_seeded_node_id(runner, `${destinationPath}/SKILL.md`) : null;
+		const copied = await runner.run(`cp ${destination === "canonical no-clobber" ? "-n " : ""}${test_db_files_mount}/templates/skill.md ${test_db_files_mount}${destinationPath}`);
+		expect(copied.metadata.exitCode, copied.stderr).toBe(0);
+		if (destination === "canonical no-clobber") {
+			expect(copied.stdout).toBe("");
+			expect(await list_pending_updates(runner)).toEqual([]);
+		} else {
+			const expectedPath = `${destinationPath}/${literalId ? "skill.md" : "SKILL.md"}`;
+			const node = await get_seeded_node(runner, expectedPath);
+			if (literalId) expect(node._id).toBe(literalId);
+			expect(copied.stdout).toContain(` -> ${expectedPath} — `);
+			expect(await list_pending_updates(runner)).toEqual([expect.objectContaining({ fileNodeId: node._id })]);
+			await accept_pending_replacement_for_test(runner, node._id);
+			expect(await read_committed_text(runner, node._id)).toBe("Saved skill body\n");
+		}
+		if (canonicalId) {
+			expect((await get_seeded_node(runner, `${destinationPath}/SKILL.md`))._id).toBe(canonicalId);
+			expect(await read_committed_text(runner, canonicalId)).toBe("Canonical sibling\n");
+		}
+		if (!literalId) {
+			const literal = await runner.t.query(internal.files_nodes.get_by_path, {
+				organizationId: runner.seeded.organizationId, workspaceId: runner.seeded.workspaceId,
+				visibilityUserId: runner.seeded.userId, path: `${destinationPath}/skill.md`,
+			});
+			expect(literal).toBeNull();
+		}
+	});
+
+	test.each(["cp folder", "cp file", "write", "mkdir"] as const)("%s refuses a hidden special-name target without changing visible siblings", async (door) => {
+		const owner = await create_bash_runner({ extraFiles: [
+			{ path: "/templates/skill.md", content: "Source text\n", withRealYjsSnapshot: true },
+			{ path: "/destination/skill.md", content: "Hidden legacy text\n", withRealYjsSnapshot: true },
+			{ path: "/destination/SKILL.md", content: "Visible sibling\n", withRealYjsSnapshot: true },
+			...(door === "mkdir" ? [{ path: "/.agents", kind: "folder" as const }] : []),
+		] });
+		const literalId = await get_seeded_node_id(owner, "/destination/skill.md");
+		const canonicalId = await get_seeded_node_id(owner, "/destination/SKILL.md");
+		const hiddenPath = door === "mkdir" ? "/.agents" : "/destination/skill.md";
+		const hiddenId = await get_seeded_node_id(owner, hiddenPath);
+		const member = await owner.t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "literal-member" });
+			await test_mocks_fill_db_with.plan(ctx, { userId, plan: "Pay As You Go" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: owner.seeded.organizationId, workspaceId: owner.seeded.workspaceId,
+				userId, active: true, updatedAt: Date.now(),
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: owner.seeded.organizationId, workspaceId: owner.seeded.workspaceId,
+				userId, role: "member", now: Date.now(),
+			});
+			await ctx.db.patch("files_nodes", hiddenId, { restrictedScopeNodeId: hiddenId });
+			return { userId, membershipId };
+		});
+		const runner = await create_bash_runner({ shared: { t: owner.t, seeded: { ...owner.seeded, ...member } } });
+		expect(await runner.t.query(internal.files_nodes.get_by_path, {
+			organizationId: runner.seeded.organizationId, workspaceId: runner.seeded.workspaceId,
+			visibilityUserId: member.userId, path: hiddenPath,
+		})).toBeNull();
+		const command = door === "mkdir"
+			? `mkdir -p ${test_db_files_mount}/.AGENTS`
+			: door === "write"
+				? `printf changed > ${test_db_files_mount}/destination/skill.md`
+				: `cp ${test_db_files_mount}/templates/skill.md ${test_db_files_mount}/destination${door === "cp file" ? "/skill.md" : ""}`;
+		const refused = await runner.run(command);
+		expect(refused.metadata.exitCode).not.toBe(0);
+		expect(await list_pending_updates(runner)).toEqual([]);
+		expect(await read_committed_text(owner, literalId)).toBe("Hidden legacy text\n");
+		expect(await read_committed_text(owner, canonicalId)).toBe("Visible sibling\n");
+	});
+
 	test("tee writes app targets as pending proposals", async () => {
 		const runner = await create_bash_runner();
 
@@ -6240,10 +6389,10 @@ describe("bash_run_command", () => {
 		expect(overlayRead.stdout).toContain("# Readme");
 		expect(overlayRead.stdout).toContain("unique-token");
 
-		// An existing folder destination keeps the source name inside it.
+		// A new child inside an existing folder uses the special-name casing.
 		const folderDest = await runner.run(`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/reports`);
 		expect(folderDest.metadata.exitCode).toBe(0);
-		expect(folderDest.stdout).toBe("pending copy created: /docs/readme.md -> /reports/readme.md — review in Files\n");
+		expect(folderDest.stdout).toBe("pending copy created: /docs/readme.md -> /reports/README.md — review in Files\n");
 	});
 
 	test("blocks writes in a read-only subtree but lets cp read its source", async () => {

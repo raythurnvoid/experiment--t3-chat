@@ -200,6 +200,18 @@ describe("FilesNameInputControl", () => {
 		expect(input.value).toBe("my-folder");
 	});
 
+	test("keeps a leading dot while typing and pasting a skill path", () => {
+		const input = render_name_input({ kind: "folder", initialValue: "" });
+		input.focus();
+		fireEvent(input, create_text_input_event("."));
+		expect(input.value).toBe(".");
+		input.setSelectionRange(1, 1);
+		fireEvent(input, create_paste_event("agents/skills/my-skill"));
+		expect(input.value).toBe(".agents/skills/my-skill");
+		fireEvent.change(input, { target: { value: ".AGENTS" } });
+		expect(input.value).toBe(".agents");
+	});
+
 	test("sanitizes the whole value after IME composition ends", () => {
 		const input = render_name_input({ kind: "file", initialValue: "notes.md" });
 

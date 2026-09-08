@@ -3283,7 +3283,13 @@ describe("files_nodes.create_upload_nodes", () => {
 		expect(imported._yay.created).toHaveLength(2);
 	});
 
-	test("rejects a markdown leaf the markdown normalizer would rename, and accepts the normalized one", async () => {
+	test.each([
+		["readme", "README.md"],
+		["README", "README.md"],
+		["readme.md", "README.md"],
+		["agents.md", "AGENTS.md"],
+		["skill.md", "SKILL.md"],
+	])("normalizes special upload name %s and reuses its canonical path", async (input, name) => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({
@@ -3292,30 +3298,35 @@ describe("files_nodes.create_upload_nodes", () => {
 			name: "Test User",
 		});
 
-		// `readme` is special-cased to uppercase, so the lowercase name is not a fixed point of
-		// the normalizer and must fail the whole call. The client sends normalizer output, so a
-		// real import carries `README.md` already.
+		// All callers get the same conventional spelling before collision checks.
 		const lowercase = await asUser.mutation(api.files_nodes.create_upload_nodes, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
 			onConflict: "skip",
-			items: [{ relativePath: "docs/readme.md", contentType: "text/markdown", size: 1 }],
+			items: [{ relativePath: `.AGENTS/skills/one/${input}`, contentType: "text/markdown", size: 1 }],
 		});
-		expect(lowercase._nay).toMatchObject({
-			message: "Path ends in an invalid file name",
-			data: { path: "docs/readme.md" },
-		});
+		expect(lowercase._nay).toBeUndefined();
+		expect(lowercase._yay?.created).toHaveLength(1);
+		expect(lowercase._yay?.created[0]?.relativePath).toBe(`.agents/skills/one/${name}`);
 
 		const normalized = await asUser.mutation(api.files_nodes.create_upload_nodes, {
 			membershipId: db.membershipId,
 			parentId: files_ROOT_ID,
 			onConflict: "skip",
-			items: [{ relativePath: "docs/README.md", contentType: "text/markdown", size: 1 }],
+			items: [{ relativePath: `.agents/skills/one/${name}`, contentType: "text/markdown", size: 1 }],
 		});
 		if (normalized._nay) {
 			throw new Error(normalized._nay.message);
 		}
-		expect(normalized._yay.created).toHaveLength(1);
+		expect(normalized._yay.created).toHaveLength(0);
+		expect(normalized._yay.skipped).toHaveLength(1);
+		const single = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId, parentId: files_ROOT_ID,
+			filename: input, contentType: "text/markdown", size: 1, onConflict: "fail",
+		});
+		expect(single._nay).toBeUndefined();
+		const uploadedNode = await t.run(async (ctx) => await ctx.db.get("files_nodes", single._yay!.nodeId));
+		expect(uploadedNode?.name).toBe(name);
 	});
 
 	test("rejects a malformed path and creates nothing, including the valid items", async () => {
@@ -4281,7 +4292,13 @@ test("rename_node creates missing folders for nested file paths", async () => {
 	});
 });
 
-test("rename_node preserves caller-provided nested file names", async () => {
+test.each([
+	["readme", "README.md"],
+	["README", "README.md"],
+	["readme.md", "README.md"],
+	["agents.md", "AGENTS.md"],
+	["skill.md", "SKILL.md"],
+])("rename_node normalizes special nested name %s", async (input, name) => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
 	const asUser = t.withIdentity({
@@ -4290,9 +4307,7 @@ test("rename_node preserves caller-provided nested file names", async () => {
 		name: "Test User",
 	});
 
-	// A real editable Markdown file, created through the supported flow. The rename rule
-	// lets an editable file take an extensionless name (it claims no class; swap cycles rely on
-	// it), while a bare stored fixture would pin its extension and refuse.
+	// Use the supported editable file flow so this checks naming without a stored-type conflict.
 	const createdFile = await asUser.action(api.files_nodes_content.create_text_node, {
 		membershipId: db.membershipId,
 		parentId: db.files.file_root_1._id,
@@ -4308,7 +4323,7 @@ test("rename_node preserves caller-provided nested file names", async () => {
 	const renameResult = await asUser.mutation(api.files_nodes.rename_node, {
 		membershipId: db.membershipId,
 		nodeId: nestedFileId,
-		path: "README",
+		path: `.AGENTS/${input}`,
 	});
 	if (renameResult._nay) {
 		throw new Error("Expected rename_node to preserve nested README file name", {
@@ -4318,8 +4333,8 @@ test("rename_node preserves caller-provided nested file names", async () => {
 
 	await t.run(async (ctx) => {
 		const fileNode = await ctx.db.get("files_nodes", nestedFileId);
-		expect(fileNode?.name).toBe("README");
-		expect(fileNode?.path).toBe(`/${db.files.file_root_1.name}/README`);
+		expect(fileNode?.name).toBe(name);
+		expect(fileNode?.path).toBe(`/${db.files.file_root_1.name}/.agents/${name}`);
 	});
 });
 

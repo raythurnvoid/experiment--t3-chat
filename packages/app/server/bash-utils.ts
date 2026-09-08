@@ -44,6 +44,7 @@ import {
 	files_get_utf8_byte_size,
 	files_node_has_editable_text_content,
 	files_normalize_lf_newlines,
+	files_normalize_special_node_path,
 	files_pending_path_overlay_build,
 	files_pending_path_overlay_project_committed_path,
 	files_pending_path_overlay_translate_path,
@@ -633,11 +634,23 @@ export class bash_DbFilesFs implements IFileSystem {
 		this.entryCache.delete(dbFilesPath);
 		let entry = await this.getEntry(dbFilesPath);
 		if (!entry) {
+			dbFilesPath = files_normalize_special_node_path("file", requestedDbFilesPath);
+			if (dbFilesPath !== requestedDbFilesPath) {
+				dbFilesPath = await this.ctx.runQuery(internal.files_nodes.resolve_new_node_path, {
+					organizationId: this.ctxData.organizationId, workspaceId: this.ctxData.workspaceId,
+					path: requestedDbFilesPath, normalizedPath: dbFilesPath, overlayUserId: this.overlayUserId,
+				});
+				if (dbFilesPath === requestedDbFilesPath) {
+					throw new Error(`cannot write '${shellPath}': Permission denied`);
+				}
+				this.entryCache.delete(dbFilesPath);
+				entry = await this.getEntry(dbFilesPath);
+			}
 			const normalizedSegments = files_get_normalized_node_path_segments({
 				kind: "file",
-				nameOrPath: requestedDbFilesPath,
-				// Agent writes keep the name the agent typed. The stored content type comes from the
-				// name only as a hint, and an unknown or missing extension becomes plain text.
+				nameOrPath: dbFilesPath,
+				// New special names are canonicalized above. The extension is a content-type hint;
+				// an unknown or missing extension becomes plain text.
 				fileNamePolicy: "keep_extension",
 			});
 			if (!normalizedSegments || "validationMessage" in normalizedSegments) {
@@ -871,11 +884,23 @@ export class bash_DbFilesFs implements IFileSystem {
 
 	async mkdir(path: string, options?: MkdirOptions) {
 		const normalizedPath = bash_normalize_path(path);
-		const dbFilesPath = this.toDbFilesPath(normalizedPath);
+		const requestedDbFilesPath = this.toDbFilesPath(normalizedPath);
+		let dbFilesPath = requestedDbFilesPath;
 		if (bash_GLOB_METACHARACTER_REGEX.test(dbFilesPath)) {
 			throw new Error(`app file glob patterns are not supported: '${this.shellPathOf(dbFilesPath)}'`);
 		}
-		const existing = await this.getEntry(dbFilesPath);
+		let existing = await this.getEntry(dbFilesPath);
+		const normalizedDbFilesPath = files_normalize_special_node_path("folder", dbFilesPath);
+		if (!existing && normalizedDbFilesPath !== dbFilesPath) {
+			dbFilesPath = await this.ctx.runQuery(internal.files_nodes.resolve_new_node_path, {
+				organizationId: this.ctxData.organizationId, workspaceId: this.ctxData.workspaceId,
+				path: dbFilesPath, normalizedPath: normalizedDbFilesPath, overlayUserId: this.overlayUserId,
+			});
+			if (dbFilesPath === requestedDbFilesPath) {
+				throw new Error(`cannot create '${this.shellPathOf(dbFilesPath)}': Permission denied`);
+			}
+			existing = await this.getEntry(dbFilesPath);
+		}
 		if (existing) {
 			if (options?.recursive && existing.kind === "folder") {
 				return;

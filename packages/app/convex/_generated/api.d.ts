@@ -11,6 +11,7 @@
 import type * as access_control from "../access_control.js";
 import type * as activities from "../activities.js";
 import type * as ai_chat from "../ai_chat.js";
+import type * as ai_chat_context from "../ai_chat_context.js";
 import type * as ai_chat_files from "../ai_chat_files.js";
 import type * as ai_chat_http_routes from "../ai_chat_http_routes.js";
 import type * as bash from "../bash.js";
@@ -80,6 +81,7 @@ declare const fullApi: ApiFromModules<{
   access_control: typeof access_control;
   activities: typeof activities;
   ai_chat: typeof ai_chat;
+  ai_chat_context: typeof ai_chat_context;
   ai_chat_files: typeof ai_chat_files;
   ai_chat_http_routes: typeof ai_chat_http_routes;
   bash: typeof bash;

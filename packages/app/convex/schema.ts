@@ -819,6 +819,12 @@ const app_convex_schema = defineSchema({
 			"path",
 			"archiveOperationId",
 		])
+		.index("by_organization_workspace_archiveOperation_name", [
+			"organizationId",
+			"workspaceId",
+			"archiveOperationId",
+			"name",
+		])
 		.index("by_organization_workspace_treePath", ["organizationId", "workspaceId", "treePath"])
 		.index("by_organization_workspace_archiveOperation_treePath", [
 			"organizationId",

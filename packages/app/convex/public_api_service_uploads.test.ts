@@ -975,6 +975,17 @@ describe("service upload drain", () => {
 });
 
 describe("service upload targets", () => {
+	test.each([["skill.md", "SKILL.md"], ["readme", "README.md"]])("normalizes special name %s before target identity and path checks", async (input, name) => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture);
+		const response = await call(t, CREATE_TARGET_PATH, sealed, target_body({
+			path: `/meetings/.AGENTS/skills/one/${input}`, contentType: "text/markdown", size: 1,
+		}));
+		expect(response.status, await response.clone().text()).toBe(200);
+		expect(await response.json()).toMatchObject({ path: `/meetings/.agents/skills/one/${name}` });
+	});
+
 	test("refuses a declared size over the 2 GiB upload cap and accepts the cap itself", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);

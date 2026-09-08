@@ -41,7 +41,8 @@ vi.mock("@/components/ai-chat/ai-chat-composer.tsx", () => ({
 		submitLabel?: string;
 		selectedModelId: string;
 		selectedModeId: string;
-		onSubmit: (value: string) => boolean | void;
+		initialSkillIds: readonly string[];
+		onSubmit: (value: string, attachments: [], skillIds: readonly string[]) => boolean | void;
 		onClose?: () => void;
 	}) {
 		return (
@@ -55,6 +56,7 @@ vi.mock("@/components/ai-chat/ai-chat-composer.tsx", () => ({
 				data-input-label={props.inputLabel}
 				data-selected-model-id={props.selectedModelId}
 				data-selected-mode-id={props.selectedModeId}
+				data-skill-ids={props.initialSkillIds.join(",")}
 				tabIndex={-1}
 				onKeyDown={(event) => {
 					if (event.key === "Escape") {
@@ -62,7 +64,7 @@ vi.mock("@/components/ai-chat/ai-chat-composer.tsx", () => ({
 					}
 				}}
 			>
-				<button type="button" onClick={() => props.onSubmit(props.initialValue)}>
+				<button type="button" onClick={() => props.onSubmit(props.initialValue, [], props.initialSkillIds)}>
 					{props.submitLabel ?? "Send message"}
 				</button>
 			</div>
@@ -112,6 +114,7 @@ function makeController(overrides?: Partial<AiChatThreadRuntime>): AiChatThreadR
 		selectedThreadId: null,
 		selectedModelId: "model_1",
 		selectedModeId: "mode_agent",
+		selectedSkillIds: [],
 		session: null,
 		status: "ready",
 		error: null,
@@ -130,11 +133,13 @@ function makeController(overrides?: Partial<AiChatThreadRuntime>): AiChatThreadR
 		stop: vi.fn(),
 		setSelectedModelId: vi.fn(),
 		setSelectedModeId: vi.fn(),
+		setSelectedSkillIds: vi.fn(),
 		sendUserText: vi.fn(),
 		startQueuedUserMessageEdit: vi.fn(),
 		setQueuedUserMessageEditText: vi.fn(),
 		setQueuedUserMessageEditModelId: vi.fn(),
 		setQueuedUserMessageEditModeId: vi.fn(),
+		setQueuedUserMessageEditSkillIds: vi.fn(),
 		saveQueuedUserMessageEdit: vi.fn(),
 		cancelQueuedUserMessageEdit: vi.fn(),
 		setQueuedUserMessagesReordering: vi.fn(),
@@ -152,6 +157,32 @@ afterEach(() => {
 });
 
 describe("AiChatThread", () => {
+	test("keeps the same composer when an optimistic thread gets its persisted id during a queued edit", () => {
+		const queuedUserMessageEdit = {
+			id: "ai_message-queued",
+			text: "Draft",
+			attachments: [],
+			skillIds: ["skill_1"],
+			selectedModelId: "gpt-5.4-nano",
+			selectedModeId: "agent",
+		} as const;
+		const controller = makeController({
+			selectedThreadId: "ai_thread-optimistic",
+			session: { composerId: "composer_stable", draftComposerText: "Normal draft" } as AiChatThreadRuntime["session"],
+			queuedUserMessages: [queuedUserMessageEdit],
+			queuedUserMessageEdit,
+		});
+		const view = render(<AiChatThread controller={controller} scrollableContainer={null} />);
+		const composer = screen.getByTestId("ai-chat-composer");
+		composer.focus();
+		view.rerender(
+			<AiChatThread controller={{ ...controller, selectedThreadId: "thread_persisted" }} scrollableContainer={null} />,
+		);
+		expect(screen.getByTestId("ai-chat-composer")).toBe(composer);
+		expect(document.activeElement).toBe(composer);
+		expect(composer.dataset.skillIds).toBe("skill_1");
+	});
+
 	test("keeps Thinking visible until the running assistant has content", async () => {
 		const userMessage = {
 			id: "message_user_pending",
@@ -257,6 +288,7 @@ describe("AiChatThread", () => {
 							id: "ai_message-queued",
 							text: "Run this next",
 							attachments: [],
+							skillIds: [],
 							selectedModelId: "gpt-5.4-nano",
 							selectedModeId: "agent",
 						},
@@ -291,6 +323,7 @@ describe("AiChatThread", () => {
 			id: "ai_message-queued",
 			text: "Edited queued text",
 			attachments: [],
+			skillIds: ["skill_queued"],
 			selectedModelId: "gpt-5.4-mini",
 			selectedModeId: "ask",
 		} as const;
@@ -322,6 +355,7 @@ describe("AiChatThread", () => {
 		expect(composer.dataset.inputLabel).toBe("Edit queued message");
 		expect(composer.dataset.selectedModelId).toBe("gpt-5.4-mini");
 		expect(composer.dataset.selectedModeId).toBe("ask");
+		expect(composer.dataset.skillIds).toBe("skill_queued");
 		expect(composer.dataset.canQueue).toBe("true");
 		expect(screen.getByRole("status").textContent).toBe(
 			"1 queued message. Queue is full. Editing a queued message.",
@@ -357,6 +391,7 @@ describe("AiChatThread", () => {
 			id: "ai_message-queued",
 			text: "Leave this queued text alone",
 			attachments: [],
+			skillIds: [],
 			selectedModelId: "gpt-5.4-mini",
 			selectedModeId: "ask",
 		} as const;
@@ -406,6 +441,7 @@ describe("AiChatThread", () => {
 			id: "ai_message-first",
 			text: "First queued message",
 			attachments: [],
+			skillIds: [],
 			selectedModelId: "gpt-5.4-nano",
 			selectedModeId: "agent",
 		} as const;
@@ -413,6 +449,7 @@ describe("AiChatThread", () => {
 			id: "ai_message-second",
 			text: "Second queued message",
 			attachments: [],
+			skillIds: [],
 			selectedModelId: "gpt-5.4-mini",
 			selectedModeId: "ask",
 		} as const;

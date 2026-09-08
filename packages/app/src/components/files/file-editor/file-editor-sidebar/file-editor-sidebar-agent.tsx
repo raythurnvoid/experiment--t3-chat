@@ -1106,9 +1106,9 @@ const FileEditorSidebarAgentContent = memo(function FileEditorSidebarAgentConten
 					onOptimisticThreadCreated={rememberOptimisticThreadId}
 				/>
 				<MyTabsPanels className={cn("FileEditorSidebarAgent-chat-area" satisfies FileEditorSidebarAgent_ClassNames)}>
+					{/* The thread owns its reset keys; an ID upgrade must keep this panel mounted. */}
 					<MyTabsPanel
 						ref={setScrollableContainer}
-						key={selectedChatTabId}
 						className={cn(
 							"FileEditorSidebarAgent-chat-area-panel" satisfies FileEditorSidebarAgent_ClassNames,
 							"app-scrollable" satisfies AppClassName,

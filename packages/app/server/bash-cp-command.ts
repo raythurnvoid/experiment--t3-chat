@@ -18,6 +18,7 @@ import {
 	files_editable_text_content_type_of,
 	files_get_normalized_node_path_segments,
 	files_node_has_editable_text_content,
+	files_normalize_special_node_path,
 	files_pending_path_overlay_translate_path,
 } from "../shared/files.ts";
 import { organizations_is_global_organization_id, organizations_is_reserved_workspace_id } from "../shared/organizations.ts";
@@ -163,10 +164,9 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				// eager node under the moved folder, so it travels with it on accept.
 				let creationDestPath: string;
 				if (destNode && destNode.kind === "folder") {
-					// An existing folder destination keeps the source's visible basename inside it,
-					// like native cp (a moved source's committed name may differ). Occupants and
-					// stdout use the REQUESTED visible join: a moved destination folder's committed
-					// path reads as vacated and would miss the visible occupant.
+					// Start with the source's visible basename; new special names are cased below.
+					// A moved source's stored name can differ. Resolve occupants at the requested
+					// join because a moved destination folder's committed path reads as vacated.
 					destPath = path_join(rawDestDbFilesPath, path_name_of(sourceDbFilesPath));
 					creationDestPath = path_join(destNode.path, path_name_of(sourceDbFilesPath));
 				} else if (destNode) {
@@ -194,6 +194,14 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 						};
 					}
 					destPath = `/${normalizedDestSegments.normalizedPathSegments.join("/")}`;
+					if (files_normalize_special_node_path("file", rawDestDbFilesPath) !== rawDestDbFilesPath) {
+						const selectedPath = await ctx.runQuery(internal.files_nodes.resolve_new_node_path, {
+							organizationId, workspaceId, path: rawDestDbFilesPath, normalizedPath: destPath, overlayUserId: userId,
+						});
+						if (selectedPath === rawDestDbFilesPath) {
+							return { stdout: "", stderr: "cp: Permission denied\n", exitCode: bash_COMMAND_EXIT_FAILURE };
+						}
+					}
 					// Implicit parent creation must not build committed folders under a visible file
 					// ancestor (committed, or a pending file move's claim); real cp fails with ENOTDIR.
 					const nearestAncestor = await dbFilesRoots.app.fs.getNearestVisibleAncestor(destPath);
@@ -213,7 +221,7 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 				}
 				// Resolve the final (joined/normalized) path: an existing file there becomes the
 				// replace target instead of an eagerly-created node.
-				const occupant =
+				let occupant =
 					destNode && destNode.kind !== "folder"
 						? destNode
 						: ((await ctx.runQuery(internal.files_nodes.get_by_path, {
@@ -223,6 +231,25 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 								path: destPath,
 								overlayUserId: userId,
 							})) as files_nodes_get_by_path_Result);
+				if (!occupant && destNode?.kind === "folder") {
+					// Preserve an exact child first. Only a new child gets special-name casing.
+					const name = files_normalize_special_node_path("file", path_name_of(sourceDbFilesPath));
+					if (name !== path_name_of(sourceDbFilesPath)) {
+						const selectedPath = await ctx.runQuery(internal.files_nodes.resolve_new_node_path, {
+							organizationId, workspaceId, path: destPath,
+							normalizedPath: path_join(rawDestDbFilesPath, name), overlayUserId: userId,
+						});
+						if (selectedPath === destPath) {
+							return { stdout: "", stderr: "cp: Permission denied\n", exitCode: bash_COMMAND_EXIT_FAILURE };
+						}
+						destPath = selectedPath;
+						creationDestPath = path_join(destNode.path, name);
+						occupant = await ctx.runQuery(internal.files_nodes.get_by_path, {
+							organizationId, workspaceId, visibilityUserId: userId,
+							path: destPath, overlayUserId: userId,
+						});
+					}
+				}
 				if (occupant && occupant._id === sourceNode._id) {
 					return {
 						stdout: "",

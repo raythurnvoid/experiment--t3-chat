@@ -42,6 +42,7 @@ Primary:
 - `../../../packages/app/src/components/ai-chat/ai-chat.tsx`
 - `../../../packages/app/src/components/files/file-editor/file-editor-sidebar/file-editor-sidebar-agent.tsx`
 - `../files-agent-pending-updates/SKILL.md`
+- [Workspace instructions and skills spec](../ai-chat-skills/SKILL.md)
 
 # Architecture Overview
 
@@ -72,7 +73,7 @@ For `POST /api/chat`:
 7. Resolve the existing thread or keep the optimistic client thread id for a new thread, then credit-gate before LLM work.
 8. Create the thread if needed and persist incoming user messages before generation.
 9. Convert stored UI messages to model messages, then decode image data URLs into bytes. The AI SDK routes URL-shaped file parts through its download step and Convex `fetch` cannot request `data:` URLs, so without the decode the model call fails with "Failed to download data:...".
-10. Run `streamText(...)` with the current tools and `activeTools`.
+10. Run `streamText(...)` with the current tools and `activeTools`. When workspace instructions are enabled, build the initial system string from saved sources and selected skills. `prepareStep` refreshes that system context before each model step.
 11. Stream UI message chunks back through `createUIMessageStreamResponse(...)`.
 12. Persist the assistant response in `onFinish`.
 13. If the thread has no title yet, generate a short title and persist it.
@@ -80,6 +81,8 @@ For `POST /api/chat`:
 
 Non-obvious runtime details:
 
+- Workspace `AGENTS.md` and Agent Skills use the optional `AI_CHAT_WORKSPACE_INSTRUCTIONS_ENABLED` Convex env var, read once at module root. Only `true` enables them. See the [skills spec](../ai-chat-skills/SKILL.md) for saved-source access, limits, strict parsing, and the system-only tool content boundary. In enabled turns, the tenth and last model step disables tools and asks for the result or a remaining checkpoint.
+- Skill selections are stable file IDs. Drafts, queued messages, queue edits, message edits, retries, and regeneration keep their own selection. Explicit `skillIds: []` clears a previous selection. Both chat surfaces preserve the selection when an optimistic thread gets its persisted ID. The Instructions and skills dialog closes on Escape without cancelling a composer edit, and returns focus to its trigger.
 - Ask mode drops the write tools (`ai_chat_WRITE_TOOL_NAMES`: `edit_file` and `set_file_metadata`) from the `tools` record `streamText` receives, not only from `activeTools`. `validationTools` keeps the whole registry so a thread that ran in agent mode still validates its stored `edit_file` parts when reopened in ask mode. Agent-mode file writes otherwise go through `bash` shell writes.
 - User messages are persisted before generation so they survive aborts/stopped generations.
 - As soon as a running user message is visible, the shared message list shows a temporary `Thinking` assistant row without message actions. This covers the time before AI SDK creates the assistant message. While the running assistant message has no visible text, reasoning, tool, file, or source part, its renderer keeps showing `Thinking`. Active runs use their live parts so the placeholder disappears with the first visible part and does not remain beside later streaming text or tool calls. Empty text and reasoning parts do not count as visible content. Do not show the placeholder for a non-running empty assistant message.
@@ -101,14 +104,19 @@ Non-obvious runtime details:
 
 # Current Toolbelt
 
-The main tool object contains exactly six tools:
+The tool registry supports these tools. Mode, model support, and the workspace-instructions gate decide which ones the model can call:
 
 - `bash`
 - `edit_file` (in `ai_chat_WRITE_TOOL_NAMES`; absent from the registry in ask mode)
 - `set_file_metadata` (in `ai_chat_WRITE_TOOL_NAMES`; absent from the registry in ask mode)
 - `web_search`
 - `execute_code`
+- `load_skill` (workspace-instructions gate; saved body reaches the next model step through system context)
+- `read_skill_resource` (workspace-instructions gate; saved text from a loaded skill's resource list)
+- `run_skill_script` (workspace-instructions gate; exact saved JavaScript in the supported Worker runtime)
 - `image_generation` (run by OpenAI, not by this route; only for models whose `ai_chat_MODELS` entry sets `supportsImageGeneration`)
+
+The three skill tools are available in both modes when enabled. `validationTools` keeps their stored shapes even when the gate is off. Their stored inputs hold only source IDs; outputs hold only IDs, an optional version, and status. Read the [skills spec](../ai-chat-skills/SKILL.md) before changing their stream or persistence code.
 
 `read_file`, `list_files`, `glob_files`, `grep_files`, and `write_file` were deleted, not deactivated — `bash` replaced all five, and the `BASH_REPLACED_TOOL_NAMES` list that used to hold them is gone too. Old threads still render their stored parts, because rendering reads the message, not the registry.
 
@@ -200,7 +208,7 @@ Important limitation:
 - Does not alias `/` to app files; `/` only exposes normal mount-point directories such as `/home` and `/tmp`.
 - `cat` reads app-file operands from materialized text chunks and preserves the current user's pending-update overlay. It does not fall back to full-content reconstruction for unreadable or unmaterialized files; summarize stderr as an advisory or failure, not file content.
 - Lists direct app children through `files_nodes.list_children`, and folder subtrees through `files_nodes.list_subtree` after exact targets are resolved with `files_nodes.get_by_path`.
-- Agent-mode shell content writes (`>`, `>>`, heredoc redirects, `touch`, `tee`) create pending content proposals through `bash_DbFilesFs.writeFile`/`appendFile` in `server/bash-utils.ts`; a missing target is eagerly created empty and stamped `eagerCreated`. Writes work on every editable text file, decided by the stored content type and never by the name: a Markdown file keeps rich text and serves back its rendered Markdown text, while any other text type stores bytes exactly as written. A new file takes its type from the name's hint (`.md` is Markdown, a known text extension is that type), and any other name, an unknown extension or none, becomes a plain text file; no name is refused for its extension and nothing appends `.md`. A rename (`mv`) keeps the content and the stored type. A copy (`cp`) carries the source's content, content type, and document shape onto the destination, whatever the destination's name says; an existing text file keeps its own collaboration mode, a new copy or a stored-file destination takes the source's mode, and the destination keeps its id and history. The agent sees it as a pending copy (`pending copy created: A -> B — replaces the existing file's content and type when accepted; review in Files`, or `— review in Files` for a new destination), in both collaboration modes. An existing target at the requested path is always written as-is; a missing target whose name normalization would silently change the path (README casing, leading dots, spaces) is refused with the normalized path in the error, while normalization that lands on an existing file overwrites that file. Ask mode rejects app writes; `sed -i` stays rejected in both modes. Agent-mode `mv`, `cp`, and `rm` use pending structural proposals instead of direct mutations; Ask mode rejects app `rm` too. A target file with collaboration turned off gets the same pending proposal: its branches are built from the saved text, and Accept saves the text as a new version (see the `files-agent-pending-updates` skill). `mv -f` is a structural replace-move, not a copy: the pending move on the source stores `replacesNodeId`, and accepting moves the source, with its type and history, onto the path and archives the file that was there.
+- Agent-mode shell content writes (`>`, `>>`, heredoc redirects, `touch`, `tee`) create pending content proposals through `bash_DbFilesFs.writeFile`/`appendFile` in `server/bash-utils.ts`; a missing target is eagerly created empty and stamped `eagerCreated`. Writes work on every editable text file, decided by the stored content type and never by the name: a Markdown file keeps rich text and serves back its rendered Markdown text, while any other text type stores bytes exactly as written. A new file takes its type from the normalized name's hint (`.md` is Markdown, a known text extension is that type), and other names become plain text. Bare `readme` becomes `README.md`; other names keep their extension policy. A rename (`mv`) keeps the content and the stored type. A copy (`cp`) carries the source's content, content type, and document shape onto the destination, whatever the destination's name says; an existing text file keeps its own collaboration mode, a new copy or a stored-file destination takes the source's mode, and the destination keeps its id and history. The agent sees it as a pending copy (`pending copy created: A -> B — replaces the existing file's content and type when accepted; review in Files`, or `— review in Files` for a new destination), in both collaboration modes. An existing literal target keeps its identity. Missing destinations use `README.md`, `AGENTS.md`, `SKILL.md`, and `.agents` for those special names. Other name cleanup, such as spaces or other leading dots, is refused with the normalized path in the error unless it resolves to an existing file. Ask mode rejects app writes; `sed -i` stays rejected in both modes. Agent-mode `mv`, `cp`, and `rm` use pending structural proposals instead of direct mutations; Ask mode rejects app `rm` too. A target file with collaboration turned off gets the same pending proposal: its branches are built from the saved text, and Accept saves the text as a new version (see the `files-agent-pending-updates` skill). `mv -f` is a structural replace-move, not a copy: the pending move on the source stores `replacesNodeId`, and accepting moves the source, with its type and history, onto the path and archives the file that was there.
 - Convert bash paths to app paths before calling `edit_file` by removing the current workspace path prefix `/home/cloud-usr/w/{organizationName}/{workspaceName}` while preserving the full remaining suffix. For example, `/home/cloud-usr/w/personal/home/folder/README.md` becomes `/folder/README.md`, never `/README.md`.
 - Creates persistent folders only through `mkdir` under the app file tree in Agent-mode `bash`; Ask-mode `bash` rejects durable folder creation.
 - Provides `/tmp` as writable durable scratch space scoped to the chat thread. `/tmp` persists across later `bash` calls in the same chat and reloads from Convex if the warm backend runtime cache is gone, but a new chat has a separate scratch filesystem. App-mount guards should not prevent `/tmp`-only commands from using native-style scratch utilities.
@@ -310,6 +318,7 @@ These tools are **deleted**. The sections below stay only so an old assistant me
 
 ## `execute_code`
 
+- Stop passes the tool abort signal to the runner's HTTP fetch. `run_skill_script` uses the same helper and signal. This aborts the request; it is not proof that a remote isolate has already stopped.
 - Runs an untrusted JavaScript snippet in an isolated Cloudflare Dynamic Worker. The Convex action creates a `public_api_grants` doc, then `POST`s `{ executionId, code, input?, network, app }` to `bonobo-senate-code-execution-runner` (`/internal/execute-code`) with `Authorization: Bearer <CODE_EXECUTION_RUNNER_SECRET>`; the factory is `ai_chat_tool_create_execute_code` in `../../../packages/app/server/server-ai-tools.ts`, and the host Worker lives in `../../../packages/code-execution-runner/src/index.ts`.
 - The snippet is the body of `async (input) => { ... }`. It `return`s a JSON-serializable value (the tool reports `Result: <json>`) and may `console.log/info/warn/error` (captured, bounded to 100 lines / 16 KB). `input` is the optional JSON argument.
 - Default isolation of the runner is still sealed when no app/network capability is supplied: `globalOutbound: null` means `fetch()`/`connect()` throw and no platform `env` is passed. The app chat tool normally supplies both gatewayed public HTTP and the app file capability, so snippets can do real fetch work and can call the app file APIs directly.
@@ -338,13 +347,14 @@ These tools are **deleted**. The sections below stay only so an old assistant me
 
 - Credential management and public file reads live in `../../../packages/app/convex/public_api.ts`. Credentials are reveal-once, stored as `sha256(secret)` plus an obfuscated display value, and scoped to one organization/workspace/user membership.
 - The public file routes accept either a `Bearer pk_...` credential or a gateway-injected public API grant token. They check active membership through the shared verifier, enforce explicit file scopes, rate-limit both pre-auth and per principal, log route use, and update `api_credentials.lastUsedAt` for user API keys. Active signed-in members can create, list, rotate, and revoke only their own keys in the current workspace. Keys are limited to 20 active keys per user/workspace, names are required and limited to 80 characters, and member removal permanently revokes keys for the organization.
-- The file HTTP route family is `/api/v1/files/list`, `/api/v1/files/read`, `/api/v1/files/read-many`, `/api/v1/files/write`, `/api/v1/files/write-many`, `/api/v1/files/touch`, `/api/v1/files/download-urls`, and `/api/v1/files/upload-urls`. The plugin-only doors (`plugin-folders/ensure`, `plugin-archive`, `plugin-access/set`) and the sealed `service-uploads/*` pipeline are documented in `../public-api/SKILL.md`. `write` and `touch` commit Markdown; they are not general binary upload. Do not add `/api/code-execution/*` compatibility aliases.
+- The file HTTP route family is `/api/v1/files/list`, `/api/v1/files/read`, `/api/v1/files/read-many`, `/api/v1/files/write`, `/api/v1/files/write-many`, `/api/v1/files/touch`, `/api/v1/files/download-urls`, and `/api/v1/files/upload-urls`. The plugin-only doors (`plugin-folders/ensure`, `plugin-archive`, `plugin-access/set`) and the sealed `service-uploads/*` pipeline are documented in `../public-api/SKILL.md`. `write` commits editable text and `touch` creates empty editable text files; binary files use the upload doors. Do not add `/api/code-execution/*` compatibility aliases.
 - Public file routes are scoped to real tenant organization/workspace ids. They do not authorize reserved `GLOBAL`/`GITHUB` or `GLOBAL`/`PLUGINS` docs, even when the requested path looks like `/.mounts/<name>`, `/.plugins/<pluginName>`, or a stored reserved-scope path.
 
 # Pending Update Integration
 
 Reads:
 
+- Workspace instruction and skill loading has a separate saved-only read path in `convex/ai_chat_context.ts`. It never uses the pending overlay described below. Pending eager creates stay excluded until their saved creation stamp advances. See the [skills spec](../ai-chat-skills/SKILL.md).
 - Bash reads (`cat` and the other exact readers) and `edit_file` go through `get_file_last_available_text_content_by_path`.
 - That action resolves visible app paths through the current user's pending structural overlay before reading content. Pending destinations are visible, vacated or replaced paths are hidden, and descendants follow a pending folder move.
 - After path resolution, it checks `files_pending_updates` for `(organizationId, workspaceId, userId, fileNodeId)` and overlays the current pending `unstaged` branch when content exists.
@@ -392,9 +402,11 @@ Writes:
 16. Server-side AI tool calls stream and persist through `/api/chat`; the client must not use AI SDK `sendAutomaticallyWhen` to resubmit completed server-side tool messages.
 17. Message image attachments are `FileUIPart`s with allowlisted media types and base64 data URLs. The chat route rejects any other file-part shape with a 400, and the public `thread_messages_add` mutation enforces the same contract, because stored file parts are forwarded to the model provider on later turns and a remote URL must never reach it.
 18. The chat route decodes image data URLs into bytes after `convertToModelMessages`. Without that, the AI SDK's download step tries to fetch the data URL and Convex `fetch` rejects it.
+19. Skill bodies, resource text, and script results reach the model through request-local system context. Script parameters stay private to the running tool. Do not put these fields in skill tool history. Recheck source access before each model step and each new source read.
 
 # Verification Checklist
 
+- Run the focused workspace instruction, skill tool, selection, and keyboard checks listed in the [skills spec](../ai-chat-skills/SKILL.md). Include route-level system strings, strict stored parts, revocation, and Stop reaching both runner fetches.
 - New threads still dedupe optimistic entries correctly.
 - User messages persist even if generation is aborted mid-stream.
 - Assistant responses persist under the correct parent message.

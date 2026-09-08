@@ -27,9 +27,12 @@ import {
 	ai_chat_tool_create_set_file_metadata,
 	ai_chat_tool_create_web_search,
 	ai_chat_tool_create_execute_code,
+	ai_chat_tool_create_run_skill_script,
+	ai_chat_skill_tool_parts_are_safe,
 	replace_once_or_all,
 } from "./server-ai-tools.ts";
 import { has_defined_property } from "../shared/shared-utils.ts";
+import type { ai_chat_context_Context } from "./ai-chat-context.ts";
 
 type server_ai_tools_test_user_identity = NonNullable<Awaited<ReturnType<ActionCtx["auth"]["getUserIdentity"]>>>;
 
@@ -1462,6 +1465,71 @@ test("execute_code tool: describes app file API reads", () => {
 			description: expect.stringContaining("run file API fetches inside the snippet"),
 		}),
 	);
+});
+
+describe("skill tool history", () => {
+	const skillId = "a".repeat(32);
+	const resourceId = "b".repeat(32);
+	const part = {
+		type: "tool-run_skill_script", toolCallId: "script-call", state: "output-available",
+		input: { skillId, resourceId }, output: { skillId, resourceId, status: "completed", version: "c".repeat(64) },
+	};
+
+	test("accepts safe references and rejects bodies or parameters anywhere in the tool part", () => {
+		expect(ai_chat_skill_tool_parts_are_safe([part])).toBe(true);
+		expect(ai_chat_skill_tool_parts_are_safe([{ ...part, output: { ...part.output, body: "PRIVATE SKILL BODY" } }])).toBe(false);
+		expect(ai_chat_skill_tool_parts_are_safe([{ ...part, input: { ...part.input, input: "PRIVATE PARAMETER" } }])).toBe(false);
+		expect(ai_chat_skill_tool_parts_are_safe([{ ...part, rawInput: "PRIVATE PARAMETER" }])).toBe(false);
+		expect(ai_chat_skill_tool_parts_are_safe([{ ...part, callProviderMetadata: { private: "PRIVATE BODY" } }])).toBe(false);
+		expect(ai_chat_skill_tool_parts_are_safe([{ ...part, type: "dynamic-tool", toolName: "run_skill_script" }])).toBe(false);
+		expect(ai_chat_skill_tool_parts_are_safe([{ ...part, type: "dynamic-tool", toolName: "RUN_SKILL_SCRIPT" }])).toBe(false);
+		expect(ai_chat_skill_tool_parts_are_safe([{ ...part, type: "tool-RUN_SKILL_SCRIPT" }])).toBe(false);
+		expect(ai_chat_skill_tool_parts_are_safe([{ ...part, type: "tool-Run_Skill_Script", input: { input: "PRIVATE" } }])).toBe(false);
+	});
+	test("accepts a Stop during argument streaming only while input is empty", () => {
+		const partial = { type: "tool-run_skill_script", toolCallId: "script-call", state: "input-streaming" };
+		expect(ai_chat_skill_tool_parts_are_safe([partial])).toBe(true);
+		expect(ai_chat_skill_tool_parts_are_safe([{ ...partial, input: { input: "PRIVATE" } }])).toBe(false);
+	});
+});
+
+describe("runner cancellation", () => {
+	test.each(["execute_code", "run_skill_script"] as const)("Stop aborts the %s fetch", async (name) => {
+		const abort = new AbortController();
+		let notifyFetch!: () => void;
+		const fetched = new Promise<void>((resolve) => { notifyFetch = resolve; });
+		let fetchWasAborted = false;
+		await execute_code_test_with_runner({
+			url: "https://runner.test", secret: "test-runner-secret",
+			fetchImpl: async (...args) => {
+				const init = args[1] as RequestInit;
+				notifyFetch();
+				expect(init.signal).toBe(abort.signal);
+				if (name === "run_skill_script") expect(JSON.parse(String(init.body))).not.toHaveProperty("network");
+				return await new Promise<execute_code_test_runner_response>((_resolve, reject) => {
+					init.signal?.addEventListener("abort", () => { fetchWasAborted = true; reject(init.signal?.reason); }, { once: true });
+				});
+			},
+		}, async () => {
+			const source = { nodeId: "a".repeat(32) as Id<"files_nodes">, path: "/.agents/skills/calculate/SKILL.md", version: "c".repeat(64), size: 20, status: "ready" as const };
+			const resource = { ...source, nodeId: "b".repeat(32) as Id<"files_nodes">, path: "/.agents/skills/calculate/scripts/totals.js" };
+			const { ctx } = makeCtx(async () => ({ _yay: [source] }), { runActionImpl: async () => ({ _yay: { source: resource, content: "return 2 + 2;" } }) });
+			const context: ai_chat_context_Context = {
+				membershipId: "d".repeat(32) as Id<"organizations_workspaces_users">,
+				userId: server_ai_tools_test_user_id, instructions: [], catalog: [],
+				loaded: new Map([[source.nodeId, { source, name: "calculate", body: "Calculate", runtime: "worker-async-body-v1", resources: [resource], delivered: true, resourceText: new Map(), scriptResults: [] }]]),
+			};
+			const options = { toolCallId: "abort-call", messages: [], abortSignal: abort.signal, experimental_context: context };
+			const operation = name === "execute_code"
+				? ai_chat_tool_create_execute_code(ctx, server_ai_tools_test_ctx_data).execute?.({ code: "return 2 + 2;" }, options)
+				: ai_chat_tool_create_run_skill_script(ctx, server_ai_tools_test_ctx_data).execute?.({ skillId: source.nodeId, resourceId: resource.nodeId }, options);
+			const rejected = expect(operation).rejects.toThrow("Stop");
+			await fetched;
+			abort.abort(new Error("Stop"));
+			await rejected;
+			expect(fetchWasAborted).toBe(true);
+		});
+	});
 });
 
 test("execute_code tool: posts to the runner and formats a succeeded result with logs", async () => {

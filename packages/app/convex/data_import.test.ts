@@ -480,6 +480,17 @@ describe("data_import.create_upload_targets", () => {
 		expect(created._nay).toMatchObject({ message: "Not found" });
 	});
 
+	test.each([["skill.md", "SKILL.md"], ["readme", "README.md"]])("normalizes special name %s in operator imports", async (input, name) => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+		const result = await t.mutation(internal.data_import.create_upload_targets, {
+			organizationId: db.organizationId, workspaceId: db.workspaceId, createdBy: db.userId,
+			items: [{ path: `/.AGENTS/skills/one/${input}`, contentType: "text/markdown", size: 1 }],
+		});
+		expect(result._nay).toBeUndefined();
+		expect(result._yay?.[0]?.path).toBe(`/.agents/skills/one/${name}`);
+	});
+
 	test("rejects non-normalized paths and names", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));

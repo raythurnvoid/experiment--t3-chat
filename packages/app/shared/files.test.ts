@@ -20,6 +20,8 @@ import {
 	files_node_has_editable_text_content,
 	files_node_has_editable_yjs_state,
 	files_normalize_markdown_name,
+	files_normalize_file_rename_name,
+	files_normalize_special_node_path,
 	files_normalize_upload_file_name,
 	files_normalize_text_document_input,
 	files_u8_equals,
@@ -802,6 +804,9 @@ describe("files_normalize_name_input", () => {
 		[{ kind: "file", previousText: "foo", insertedText: "/bar", nextText: "" }, "/bar"],
 		[{ kind: "folder", previousText: "foo", insertedText: "\\bar", nextText: "" }, "/bar"],
 		[{ kind: "file", previousText: "", insertedText: "-file", nextText: "" }, "file"],
+		[{ kind: "folder", previousText: "", insertedText: ".", nextText: "" }, "."],
+		[{ kind: "folder", previousText: "", insertedText: ".agents", nextText: "" }, ".agents"],
+		[{ kind: "file", previousText: "docs/", insertedText: ".agents/skills/one/skill.md", nextText: "" }, ".agents/skills/one/skill.md"],
 	] satisfies Array<[Parameters<typeof files_normalize_name_input>[0], string]>)(
 		"normalizes live input %#",
 		(input, expected) => {
@@ -823,6 +828,8 @@ describe("files_normalize_name", () => {
 		["asd/.txt", "asd-txt"],
 		["test.", "test"],
 		[".test", "test"],
+		[".agents", ".agents"],
+		[".AGENTS", ".agents"],
 		[".", "untitled"],
 		["test/test.txt", "test-test.txt"],
 		["test//test.txt", "test-test.txt"],
@@ -856,6 +863,8 @@ describe("files_normalize_name", () => {
 		["README", "README.md"],
 		["readme.md", "README.md"],
 		["README.md", "README.md"],
+		["agents.md", "AGENTS.md"],
+		["skill.md", "SKILL.md"],
 		["New File.md", "new-file.md"],
 		["a\u1ab0file.md", "afile.md"],
 		["---notes---.MD", "notes.md"],
@@ -918,6 +927,11 @@ describe("files_normalize_markdown_name", () => {
 
 describe("files_normalize_upload_file_name", () => {
 	test.each([
+		["readme", "README.md"],
+		["README", "README.md"],
+		["readme.md", "README.md"],
+		["agents.md", "AGENTS.md"],
+		["skill.md", "SKILL.md"],
 		["data.json", "data.json"],
 		["DATA.JSON", "data.json"],
 		["My Notes.yaml", "my-notes.yaml"],
@@ -925,12 +939,40 @@ describe("files_normalize_upload_file_name", () => {
 		// Any extension is kept as it is. The name never decides what the file is.
 		["tool.exe", "tool.exe"],
 		["script.py", "script.py"],
-		// Names without an extension stay without one. No `.md` is added.
+		// Other names without an extension stay without one.
 		["Feature Plan", "feature-plan"],
 		["notes.", "notes"],
 		["a\\b/c.txt", "c.txt"],
 	])("normalizes %s to %s", (input, expected) => {
 		expect(files_normalize_upload_file_name(input)).toBe(expected);
+	});
+});
+
+describe("files_normalize_file_rename_name", () => {
+	test.each([
+		["readme.md", "README.md"],
+		["agents.md", "AGENTS.md"],
+		["skill.md", "SKILL.md"],
+		["readme", "README.md"],
+		["README", "README.md"],
+		["agents", "AGENTS"],
+		["skill", "SKILL"],
+		["data.yaml", "data.yaml"],
+	])("normalizes %s to %s", (input, expected) => {
+		expect(files_normalize_file_rename_name(input)).toEqual({ _yay: expected });
+	});
+});
+
+describe("files_normalize_special_node_path", () => {
+	test.each([
+		["file", "/.AGENTS/skills/one/skill.md", "/.agents/skills/one/SKILL.md"],
+		["file", "/docs/agents.MD", "/docs/AGENTS.md"],
+		["file", "/docs/readme", "/docs/README.md"],
+		["folder", "/.AGENTS", "/.agents"],
+		["file", "/Bad Folder//bad File.md", "/Bad Folder//bad File.md"],
+		["file", "/../.agents/SKILL.md", "/../.agents/SKILL.md"],
+	] as const)("changes only special spelling %#", (kind, path, expected) => {
+		expect(files_normalize_special_node_path(kind, path)).toBe(expected);
 	});
 });
 

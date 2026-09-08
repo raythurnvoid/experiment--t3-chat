@@ -131,6 +131,7 @@ import {
 	files_name_input_select_stem,
 	files_node_has_editable_text_content,
 	files_normalize_name,
+	files_normalize_special_node_path,
 	files_normalize_file_rename_name,
 	files_normalize_markdown_name,
 	files_normalize_upload_file_name,
@@ -377,9 +378,14 @@ function build_import_plan(entries: FilesImportEntry[]) {
 	const items: FilesImportPlanItem[] = [];
 	const skipped: Array<{ relativePath: string; reason: FilesImportSkipReason }> = [];
 	const seenPaths = new Set<string>();
+	const skillRoots = entries
+		.filter((entry) => entry.relativePath.split("/").at(-1)?.toLowerCase() === "skill.md")
+		.map((entry) => entry.relativePath.slice(0, -"skill.md".length));
+	const invalidSkillPaths: string[] = [];
 
 	for (const entry of entries) {
 		const segments = entry.relativePath.split("/");
+		const skillRoot = skillRoots.find((root) => entry.relativePath.startsWith(root));
 		// The name's hint wins over the browser MIME (browsers report `.md` as octet-stream).
 		const contentType = files_guess_content_type_from_name(entry.file.name) ?? (entry.file.type || undefined);
 
@@ -396,9 +402,8 @@ function build_import_plan(entries: FilesImportEntry[]) {
 				continue;
 			}
 
-			// A `.md` name follows the Markdown name rule (README casing). Every other name keeps
-			// its extension. The name never decides the stored type by itself; the import sends
-			// the type separately.
+			// Markdown names use their own rule. Other names keep their extension, except bare README.
+			// The import sends the stored type separately.
 			if (segment.toLowerCase().endsWith(".md")) {
 				const normalizedLeaf = files_normalize_markdown_name(segment);
 				if (normalizedLeaf._nay) {
@@ -416,15 +421,33 @@ function build_import_plan(entries: FilesImportEntry[]) {
 			}
 		}
 		if (skipReason) {
+			if (skillRoot !== undefined) {
+				invalidSkillPaths.push(entry.relativePath);
+			}
 			skipped.push({ relativePath: entry.relativePath, reason: skipReason });
 			continue;
 		}
 
 		const normalizedPath = normalizedSegments.join("/");
+		// Resource links and script imports must still name the same files after upload.
+		if (
+			skillRoot !== undefined &&
+			(normalizedPath !==
+				files_normalize_special_node_path("folder", skillRoot) +
+					(entry.relativePath.slice(skillRoot.length).toLowerCase() === "skill.md"
+						? "SKILL.md"
+						: entry.relativePath.slice(skillRoot.length)) ||
+				entry.file.size > files_MAX_UPLOADS_BYTES)
+		) {
+			invalidSkillPaths.push(entry.relativePath);
+		}
 		if (
 			normalizedSegments.length > FILES_IMPORT_MAX_PATH_DEPTH ||
 			normalizedPath.length > FILES_IMPORT_MAX_PATH_LENGTH
 		) {
+			if (skillRoot !== undefined) {
+				invalidSkillPaths.push(entry.relativePath);
+			}
 			skipped.push({ relativePath: entry.relativePath, reason: "too_deep" });
 			continue;
 		}
@@ -434,6 +457,9 @@ function build_import_plan(entries: FilesImportEntry[]) {
 		// earlier chunk's node as a conflict and, in replace mode, archive a file imported seconds
 		// before.
 		if (seenPaths.has(normalizedPath)) {
+			if (skillRoot !== undefined) {
+				invalidSkillPaths.push(entry.relativePath);
+			}
 			skipped.push({ relativePath: entry.relativePath, reason: "duplicate_after_normalization" });
 			continue;
 		}
@@ -442,7 +468,7 @@ function build_import_plan(entries: FilesImportEntry[]) {
 		items.push({ file: entry.file, relativePath: entry.relativePath, normalizedPath, contentType });
 	}
 
-	return { items, skipped };
+	return { items: invalidSkillPaths.length > 0 ? [] : items, skipped, invalidSkillPaths };
 }
 
 function chunk_array<T>(items: T[], size: number) {
@@ -560,6 +586,12 @@ async function run_folder_import(args: {
 	entries: FilesImportEntry[];
 }) {
 	const plan = build_import_plan(args.entries);
+	if (plan.invalidSkillPaths.length > 0) {
+		toast.error(
+			`Skill import stopped. Fix these paths before importing, and update any renamed references: ${plan.invalidSkillPaths.join(", ")}`,
+		);
+		return;
+	}
 	useFilesImportStore.setState({
 		...FILES_IMPORT_INITIAL_STATE,
 		phase: "preparing",
@@ -4607,7 +4639,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 						pathSegments[pathSegments.length - 1] = leafSegmentResult._yay;
 					}
 
-					return pathSegments.join("/");
+					return files_normalize_special_node_path(itemData.kind, pathSegments.join("/"));
 				}
 
 				const normalizedNameResult =
@@ -6317,14 +6349,29 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("build_import_plan keeps special-cased markdown names server-acceptable", () => {
-			// The server re-runs the markdown normalizer and rejects any leaf it would change, and
-			// `readme` is special-cased to uppercase, so the plan must already carry `README.md`.
-			const readme = test_file_with_path("readme.md", "/docs/readme.md", "text/markdown");
+			// The browser and server use the same spelling for instruction files.
+			const readme = test_file_with_path("readme", "/docs/readme", "text/markdown");
 
-			const plan = build_import_plan(get_import_file_entries([readme]));
+			const agents = test_file_with_path("agents.md", "/docs/agents.md", "text/markdown");
+			const skill = test_file_with_path("skill.md", "/.agents/skills/one/skill.md", "text/markdown");
+			const plan = build_import_plan(get_import_file_entries([readme, agents, skill]));
 
-			expect(plan.items.map((item) => item.normalizedPath)).toEqual(["docs/README.md"]);
+			expect(plan.items.map((item) => item.normalizedPath)).toEqual([
+				"docs/README.md",
+				"docs/AGENTS.md",
+				".agents/skills/one/SKILL.md",
+			]);
 			expect(plan.skipped).toEqual([]);
+			expect(plan.invalidSkillPaths).toEqual([]);
+		});
+
+		test("build_import_plan refuses the whole skill bundle before a resource path changes", () => {
+			const skill = test_file_with_path("SKILL.md", "/one/SKILL.md", "text/markdown");
+			const reference = test_file_with_path("Output_Format.md", "/one/references/Output_Format.md", "text/markdown");
+			const readme = test_file_with_path("readme.md", "/one/references/readme.md", "text/markdown");
+			const plan = build_import_plan(get_import_file_entries([skill, reference, readme]));
+			expect(plan.items).toEqual([]);
+			expect(plan.invalidSkillPaths).toEqual(["one/references/Output_Format.md", "one/references/readme.md"]);
 		});
 
 		test("build_import_plan skips too-deep paths", () => {

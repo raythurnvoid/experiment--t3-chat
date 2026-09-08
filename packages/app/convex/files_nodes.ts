@@ -100,6 +100,7 @@ import { rate_limiter_check_by_key, rate_limiter_limit_by_key } from "./rate_lim
 import {
 	files_normalize_markdown_name,
 	files_normalize_name,
+	files_normalize_special_node_path,
 	files_normalize_upload_file_name,
 	files_pending_update_content_is_stale,
 } from "../shared/files.ts";
@@ -382,6 +383,22 @@ export type files_nodes_get_by_path_Result =
 	typeof get_by_path extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
+
+export const resolve_new_node_path = internalQuery({
+	args: {
+		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
+		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
+		path: v.string(),
+		normalizedPath: v.string(),
+		overlayUserId: v.optional(v.id("users")),
+	},
+	returns: v.string(),
+	handler: async (ctx, args) => {
+		if (args.path === args.normalizedPath) return args.path;
+		// Hidden targets still occupy their names. Write doors check access after choosing the path.
+		return (await files_db_get_visible_node_by_path(ctx, args)) ? args.path : args.normalizedPath;
+	},
+});
 
 async function resolve_parent_path_from_parent_id(
 	ctx: QueryCtx,
@@ -2730,6 +2747,7 @@ export const create_upload_node = mutation({
 			parentPath = parent.path;
 		}
 
+		args = { ...args, filename: files_normalize_special_node_path("file", args.filename) };
 		const path = path_join(parentPath, args.filename);
 		const existingNode = await ctx.db
 			.query("files_nodes")
@@ -3072,7 +3090,8 @@ export const create_upload_nodes = mutation({
 			contentType: string | undefined;
 			size: number;
 		}> = [];
-		for (const item of args.items) {
+		for (const rawItem of args.items) {
+			const item = { ...rawItem, relativePath: files_normalize_special_node_path("file", rawItem.relativePath) };
 			const segments = path_extract_segments_from(item.relativePath);
 
 			// The splitter drops empty segments, so without this reconstruction check `a//b`, a
@@ -4333,6 +4352,7 @@ export const rename_node = mutation({
 			return sourceWritable;
 		}
 
+		args = { ...args, path: files_normalize_special_node_path(fileNode.kind, args.path) };
 		const pathSegments = path_extract_segments_from(args.path);
 		// Plan the full rename before writing anything.
 		// Remember missing folders now. Create them only after every check passes.

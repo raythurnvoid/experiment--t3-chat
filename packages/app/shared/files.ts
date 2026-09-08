@@ -209,7 +209,7 @@ export type files_ContentType =
  */
 export type files_YjsRootKind = "rich_text" | "plain_text";
 
-export type files_SpecialFileName = "README.md";
+export type files_SpecialFileName = "README.md" | "AGENTS.md" | "SKILL.md";
 
 export type files_InlineAiModelId = "gpt-5-mini";
 
@@ -1316,7 +1316,11 @@ const FILES_FOLDER_NAME_INPUT_SEPARATOR_REGEX = /^[/._-]$/;
 type files_SpecialFileBaseName = files_SpecialFileName extends `${infer BaseName}.${string}`
 	? BaseName
 	: files_SpecialFileName;
-const FILES_SPECIAL_UPPERCASE_FILE_BASE_NAMES = new Set(["readme" satisfies Lowercase<files_SpecialFileBaseName>]);
+const FILES_SPECIAL_UPPERCASE_FILE_BASE_NAMES = new Set<string>([
+	"readme",
+	"agents",
+	"skill",
+] satisfies Lowercase<files_SpecialFileBaseName>[]);
 
 export function files_normalize_name_input(args: {
 	kind: app_convex_Doc<"files_nodes">["kind"];
@@ -1341,8 +1345,9 @@ export function files_normalize_name_input(args: {
 		// Convert each incoming character to the live draft alphabet for the node kind.
 		const normalizedCharacter = files_normalize_name_input_character(args.kind, character);
 		if (files_is_name_input_separator(args.kind, normalizedCharacter)) {
-			// Skip leading separators and adjacent separator pairs while typing.
-			if (!previousCharacter || files_is_name_input_separator(args.kind, previousCharacter)) {
+			// A leading dot stays in the draft so `.agents` can be typed one letter at a time.
+			const isLeadingDot = normalizedCharacter === "." && (!previousCharacter || previousCharacter === "/");
+			if (!isLeadingDot && (!previousCharacter || files_is_name_input_separator(args.kind, previousCharacter))) {
 				continue;
 			}
 		}
@@ -1371,6 +1376,9 @@ export function files_normalize_name(kind: app_convex_Doc<"files_nodes">["kind"]
 	}
 
 	if (kind === "folder") {
+		if (name.trim().toLowerCase() === ".agents") {
+			return Result({ _yay: ".agents" });
+		}
 		// Keep already-canonical folder names on a cheap fast path; pasted path-like names take the slower cleanup route.
 		if (FILES_NORMALIZED_DOTTED_NAME_REGEX.test(name)) {
 			return Result({ _yay: name });
@@ -1433,8 +1441,8 @@ export function files_normalize_markdown_name(name: string) {
 
 /**
  * File name normalizer for renames and for files the agent creates: clean the characters but
- * keep whatever extension the caller typed. The extension is only part of the name. It never
- * decides or changes the stored content type, so this normalizer must not refuse or rewrite it.
+ * keep the typed extension, except bare README becomes README.md. Renames never change the
+ * stored content type.
  */
 export function files_normalize_file_rename_name(name: string) {
 	if (name.includes("..")) {
@@ -1453,7 +1461,9 @@ export function files_normalize_file_rename_name(name: string) {
 		fallbackBaseName: "untitled",
 	});
 	return Result({
-		_yay: fileNameParts.extension ? `${fileNameParts.baseName}.${fileNameParts.extension}` : fileNameParts.baseName,
+		_yay: files_apply_special_file_name_case(
+			fileNameParts.extension ? `${fileNameParts.baseName}.${fileNameParts.extension}` : fileNameParts.baseName,
+		),
 	});
 }
 
@@ -1464,7 +1474,26 @@ export function files_normalize_upload_file_name(fileName: string) {
 		pathSeparators: "leaf",
 		fallbackBaseName: "upload",
 	});
-	return fileNameParts.extension ? `${fileNameParts.baseName}.${fileNameParts.extension}` : fileNameParts.baseName;
+	return files_apply_special_file_name_case(
+		fileNameParts.extension ? `${fileNameParts.baseName}.${fileNameParts.extension}` : fileNameParts.baseName,
+	);
+}
+
+/**
+ * Apply conventional spelling and the bare README extension. Other names keep strict validation.
+ */
+export function files_normalize_special_node_path(kind: "file" | "folder", path: string) {
+	// Keep empty segments and escaped slashes so this never repairs an invalid path.
+	const segments = path.split(/(?<!\\)\//);
+	return segments
+		.map((segment, index) =>
+			kind === "file" && index === segments.length - 1
+				? files_apply_special_file_name_case(segment)
+				: segment.toLowerCase() === ".agents"
+					? ".agents"
+					: segment,
+		)
+		.join("/");
 }
 
 function files_normalize_file_name_parts(args: {
@@ -1517,9 +1546,9 @@ export function files_get_normalized_node_path_segments(args: {
 	nameOrPath: string;
 	/**
 	 * How a file leaf's extension is handled. The default keeps the Markdown-only UI rule for
-	 * the sidebar's "New Markdown file" flow. "keep_extension" cleans characters only: renames
-	 * and agent-created files keep the extension the caller typed, because the extension never
-	 * decides the stored content type. Folder segments ignore this.
+	 * the sidebar's "New Markdown file" flow. With "keep_extension", renames
+	 * and agent-created files keep the typed extension, except bare README becomes README.md.
+	 * Renames never change the stored content type. Folder segments ignore this.
 	 */
 	fileNamePolicy?: "markdown" | "keep_extension";
 }) {
@@ -1598,15 +1627,16 @@ function files_is_name_input_separator(kind: app_convex_Doc<"files_nodes">["kind
 }
 
 function files_apply_special_file_name_case(name: string) {
-	// Compare only the basename so the extension policy stays independent of special casing.
+	// Bare README is Markdown at every new file destination.
 	const extensionSeparatorIndex = name.lastIndexOf(".");
-	const baseName = extensionSeparatorIndex === -1 ? name : name.slice(0, extensionSeparatorIndex);
+	const baseName = (extensionSeparatorIndex === -1 ? name : name.slice(0, extensionSeparatorIndex)).toLowerCase();
+	if (baseName === "readme" && extensionSeparatorIndex === -1) return "README.md";
 	if (!FILES_SPECIAL_UPPERCASE_FILE_BASE_NAMES.has(baseName)) {
 		return name;
 	}
 
 	// Preserve the normalized extension and uppercase only the special basename.
-	const extension = extensionSeparatorIndex === -1 ? "" : name.slice(extensionSeparatorIndex);
+	const extension = extensionSeparatorIndex === -1 ? "" : name.slice(extensionSeparatorIndex).toLowerCase();
 	return `${baseName.toUpperCase()}${extension}`;
 }
 // #endregion file name normalization

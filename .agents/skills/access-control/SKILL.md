@@ -441,6 +441,10 @@ product decision, so record the answer here before changing the behaviour. An en
   can `cat` it, and every workspace member with `content.read` then sees those bytes in the shared
   thread. Comments solved the same problem by putting one `fileNodeId` on the row, but a thread can
   touch many files, so the fix is either per-tool-result filtering at read time or private threads.
+  Skill tool parts are a narrow exception: their stored inputs and outputs contain only IDs, versions,
+  and status. Source labels recheck the current reader's access. Skill bodies and results stay in the
+  request's system context. Ordinary file-tool output and generated assistant prose still follow the
+  shared-thread rule above. See the [workspace skills spec](../ai-chat-skills/SKILL.md).
 - **The public API refuses a grant-only user.** Each file scope maps to an app permission, which
   `has_workspace_content_permission` answers about the *workspace*.
   Somebody whose only access is a direct grant on one restricted file gets 403 before any per-file

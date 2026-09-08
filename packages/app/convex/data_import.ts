@@ -15,6 +15,7 @@ import {
 	files_INVALID_CONTENT_TYPE_MESSAGE,
 	files_normalize_content_type,
 	files_normalize_name,
+	files_normalize_special_node_path,
 	files_normalize_upload_file_name,
 } from "../shared/files.ts";
 import { files_metadata_FRONTMATTER_FIELD_PREFIX } from "../shared/files-metadata.ts";
@@ -89,10 +90,9 @@ export const create_upload_targets = internalMutation({
 			size: number;
 			collidingNodeId: Id<"files_nodes"> | null;
 		}> = [];
-		for (const item of args.items) {
-			// Require already-canonical paths, like the public API write route: the CLI runs the
-			// app normalizer up front, and accepting near-canonical input here would create nodes
-			// the app's own creation flows would reject.
+		for (const rawItem of args.items) {
+			const item = { ...rawItem, path: files_normalize_special_node_path("file", rawItem.path) };
+			// Conventional names are cased above. Every other path must already be canonical.
 			if (!item.path.startsWith("/") || item.path === "/" || server_path_normalize(item.path) !== item.path) {
 				return Result({ _nay: { message: "Path must be absolute and normalized", data: { path: item.path } } });
 			}

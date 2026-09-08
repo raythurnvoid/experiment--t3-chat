@@ -36,6 +36,7 @@ import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
 import {
 	files_normalize_file_rename_name,
 	files_normalize_name,
+	files_normalize_special_node_path,
 	files_normalize_upload_file_name,
 } from "../shared/files.ts";
 import {
@@ -43,6 +44,7 @@ import {
 	files_MAX_TEXT_CONTENT_BYTES,
 	files_MAX_UPLOADS_BYTES,
 	files_ROOT_ID,
+	files_db_get_visible_node_by_path,
 	files_default_text_shape_for_name,
 	files_editable_text_content_type_of,
 	files_editable_text_shape_of,
@@ -3897,9 +3899,13 @@ export const create_file_upload_targets = internalMutation({
 			collidingNodeId: Id<"files_nodes"> | null;
 			writePolicy?: Doc<"files_nodes">["writePolicy"];
 		}> = [];
-		for (const item of args.items) {
-			// Require already-canonical paths, like the Markdown write route: accepting
-			// near-canonical input here would create nodes the app's own creation flows reject.
+		for (const rawItem of args.items) {
+			// Existing literal targets win, including hidden files. Only missing paths are cased.
+			let existingNode = await files_db_get_visible_node_by_path(ctx, {
+				organizationId: args.organizationId, workspaceId: args.workspaceId, path: rawItem.path,
+			});
+			const item = { ...rawItem, path: existingNode ? rawItem.path : files_normalize_special_node_path("file", rawItem.path) };
+			// New conventional names are cased above. Other cleanup remains invalid.
 			if (!item.path.startsWith("/") || item.path === "/" || server_path_normalize(item.path) !== item.path) {
 				return Result({ _nay: { message: "Path must be absolute and normalized", data: { path: item.path } } });
 			}
@@ -3907,12 +3913,12 @@ export const create_file_upload_targets = internalMutation({
 			// Upload names, not Markdown names: files_normalize_name("file", ...) only accepts .md,
 			// while uploaded binaries keep their real extensions like the app's upload flow.
 			const name = path_name_of(item.path);
-			if (files_normalize_upload_file_name(name) !== name) {
+			if (files_normalize_upload_file_name(name) !== files_normalize_special_node_path("file", name)) {
 				return Result({ _nay: { message: "Path ends in an invalid file name", data: { path: item.path } } });
 			}
 			for (const segment of path_extract_segments_from(item.path).slice(0, -1)) {
 				const normalizedSegment = files_normalize_name("folder", segment);
-				if (normalizedSegment._nay || normalizedSegment._yay !== segment) {
+				if (normalizedSegment._nay || normalizedSegment._yay !== files_normalize_special_node_path("folder", segment)) {
 					return Result({ _nay: { message: "Path contains an invalid folder name", data: { path: item.path } } });
 				}
 			}
@@ -3926,16 +3932,11 @@ export const create_file_upload_targets = internalMutation({
 			}
 			leafPaths.add(item.path);
 
-			const existingNode = await ctx.db
-				.query("files_nodes")
-				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-					q
-						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId)
-						.eq("path", item.path)
-						.eq("archiveOperationId", null),
-				)
-				.first();
+			if (item.path !== rawItem.path) {
+				existingNode = await files_db_get_visible_node_by_path(ctx, {
+					organizationId: args.organizationId, workspaceId: args.workspaceId, path: item.path,
+				});
+			}
 			if (existingNode) {
 				// This lookup is raw on purpose, like publish_file_write: a path holds one active
 				// node, so a restricted file the caller cannot see still has to block the create, or
@@ -5314,11 +5315,12 @@ const write_file_body_validator = z.object({
 export type public_api_http_write_file_Body = z.infer<typeof write_file_body_validator>;
 
 /**
- * The file name rule of the public write routes. A `.md` name follows the Markdown name rule
- * (README casing), any other name must already be a valid normalized file name. The name never
- * decides the stored content type.
+ * Public writes accept existing special-name spellings. Other names must already be normalized.
+ * This check only validates spelling; content-type selection happens at the write door.
  */
 function public_api_is_valid_write_file_name(name: string) {
+	// Existing special names keep their spelling; validate the canonical spelling only.
+	name = files_normalize_special_node_path("file", name);
 	const normalized = name.toLowerCase().endsWith(".md")
 		? files_normalize_name("file", name)
 		: files_normalize_file_rename_name(name);
@@ -5376,7 +5378,11 @@ export async function public_api_http_write_file(ctx: ActionCtx, request: Reques
 			body: await fail({ status: 400, message: "Path must be absolute.", errorCode: "invalid_input" }),
 		} as const;
 	}
-	const requestedPath = server_path_normalize(body._yay.path);
+	const literalPath = server_path_normalize(body._yay.path);
+	const requestedPath = await ctx.runQuery(internal.files_nodes.resolve_new_node_path, {
+		organizationId: principal.organizationId, workspaceId: principal.workspaceId,
+		path: literalPath, normalizedPath: files_normalize_special_node_path("file", literalPath),
+	});
 	if (requestedPath === "/") {
 		return {
 			status: 400,
@@ -5412,7 +5418,7 @@ export async function public_api_http_write_file(ctx: ActionCtx, request: Reques
 	// own creation flows would reject.
 	for (const segment of path_extract_segments_from(requestedPath).slice(0, -1)) {
 		const normalizedSegment = files_normalize_name("folder", segment);
-		if (normalizedSegment._nay || normalizedSegment._yay !== segment) {
+		if (normalizedSegment._nay || normalizedSegment._yay !== files_normalize_special_node_path("folder", segment)) {
 			return {
 				status: 400,
 				body: await fail({
@@ -5676,7 +5682,11 @@ export async function public_api_http_write_many(ctx: ActionCtx, request: Reques
 		if (!file.path.startsWith("/")) {
 			return { status: 400, body: { message: "Path must be absolute.", path: file.path } } as const;
 		}
-		const requestedPath = server_path_normalize(file.path);
+		const literalPath = server_path_normalize(file.path);
+		const requestedPath = await ctx.runQuery(internal.files_nodes.resolve_new_node_path, {
+			organizationId: principal.organizationId, workspaceId: principal.workspaceId,
+			path: literalPath, normalizedPath: files_normalize_special_node_path("file", literalPath),
+		});
 		if (requestedPath === "/") {
 			return { status: 400, body: { message: "Path must point to a file.", path: file.path } } as const;
 		}
@@ -5698,7 +5708,7 @@ export async function public_api_http_write_many(ctx: ActionCtx, request: Reques
 		// names so a write cannot materialize folders the app's own flows would reject.
 		for (const segment of path_extract_segments_from(requestedPath).slice(0, -1)) {
 			const normalizedSegment = files_normalize_name("folder", segment);
-			if (normalizedSegment._nay || normalizedSegment._yay !== segment) {
+			if (normalizedSegment._nay || normalizedSegment._yay !== files_normalize_special_node_path("folder", segment)) {
 				return {
 					status: 400,
 					body: { message: "Path contains an invalid folder name.", path: file.path },
@@ -5890,7 +5900,11 @@ export async function public_api_http_touch_files(ctx: ActionCtx, request: Reque
 				body: await fail({ status: 400, message: "Path must be absolute.", errorCode: "invalid_input" }),
 			} as const;
 		}
-		const requestedPath = server_path_normalize(rawPath);
+		const literalPath = server_path_normalize(rawPath);
+		const requestedPath = await ctx.runQuery(internal.files_nodes.resolve_new_node_path, {
+			organizationId: principal.organizationId, workspaceId: principal.workspaceId,
+			path: literalPath, normalizedPath: files_normalize_special_node_path("file", literalPath),
+		});
 		if (requestedPath === "/") {
 			return {
 				status: 400,
@@ -5919,7 +5933,7 @@ export async function public_api_http_touch_files(ctx: ActionCtx, request: Reque
 		// own creation flows would reject.
 		for (const segment of path_extract_segments_from(requestedPath).slice(0, -1)) {
 			const normalizedSegment = files_normalize_name("folder", segment);
-			if (normalizedSegment._nay || normalizedSegment._yay !== segment) {
+			if (normalizedSegment._nay || normalizedSegment._yay !== files_normalize_special_node_path("folder", segment)) {
 				return {
 					status: 400,
 					body: await fail({

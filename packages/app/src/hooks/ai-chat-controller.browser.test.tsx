@@ -136,6 +136,10 @@ function RuntimeStreamProbe() {
 			<div data-testid="error">{controller.error?.message ?? "null"}</div>
 			<div data-testid="queue-paused">{controller.isMessageQueuePaused ? "yes" : "no"}</div>
 			<div data-testid="queued">{controller.queuedUserMessages.length}</div>
+			<div data-testid="selected-skills">{controller.selectedSkillIds.join(",")}</div>
+			<button type="button" onClick={() => controller.setSelectedSkillIds(["skill_first"])}>
+				select skill
+			</button>
 			<div data-testid="assistant-text">
 				{(assistantMessage?.parts ?? []).map((part) => (part.type === "text" ? part.text : "")).join("")}
 			</div>
@@ -240,6 +244,20 @@ describe("AiChatController streaming against the real AI SDK", () => {
 		});
 		expect(screen.getByTestId("assistant-text").textContent).toBe("Hello world");
 		expect(screen.getByTestId("error").textContent).toBe("null");
+	});
+
+	test("sends selected root skills through the real transport and clears the next draft", async () => {
+		hookMocks.responses.push(() => sseResponse([{ type: "start" }, { type: "finish" }]));
+		renderRuntime();
+		await userEvent.click(screen.getByRole("button", { name: "select skill" }));
+		await userEvent.click(screen.getByRole("button", { name: "new chat" }));
+		await userEvent.click(screen.getByRole("button", { name: "send" }));
+		await waitFor(() => expect(hookMocks.requestBodies).toHaveLength(1));
+		expect(hookMocks.requestBodies[0]).toMatchObject({
+			skillIds: ["skill_first"],
+			messages: [{ metadata: { skillIds: ["skill_first"] } }],
+		});
+		expect(screen.getByTestId("selected-skills").textContent).toBe("");
 	});
 
 	test("moves a tool part from input-streaming to output-available", async () => {
