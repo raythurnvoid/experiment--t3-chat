@@ -51,7 +51,9 @@ import {
 } from "../../../shared/access-control.ts";
 
 // #region principal value
-/** Who one share row is about. */
+/**
+ * Who one share row is about.
+ */
 type FilesSharePrincipal =
 	| { kind: "user"; userId: app_convex_Id<"users"> }
 	| { kind: "role"; role: access_control_RoleRef }

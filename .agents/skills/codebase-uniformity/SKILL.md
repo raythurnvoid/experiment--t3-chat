@@ -63,7 +63,7 @@ Use this checklist before accepting a patch.
 - **Errors:** Match the local boundary. Use Result `_nay` where the surrounding code does; use structured `console.error(errorMessage, errorData)` plus `should_never_happen(errorMessage, errorData)` for impossible Convex invariants.
 - **Indexes:** Name Convex indexes from the indexed fields in order. If the full name is too long, abbreviate the least domain-important field consistently and keep the main domain term readable.
 - **Comments:** Add comments only for non-obvious intent, gotchas, or external-system behavior. Do not narrate obvious code. Use concrete nouns from the code instead of vague abstractions. Use JSDoc only when the comment documents the symbol immediately below it. For module-level notes, file overview comments, and section headers, use ordinary `//` comments instead of orphan `/** ... */` blocks.
-- **JSDoc layout:** Use multi-line JSDoc by default, including one-sentence docs. Keep a single-line JSDoc only for a very short label when the compact form makes a tight group of small symbols easier to scan. Reasons, lifecycles, constraints, warnings, wrapped text, and tags always use the multi-line form. When unsure, use multi-line JSDoc.
+- **JSDoc layout:** Always use multi-line JSDoc, including one-sentence docs and short labels. Put `/**`, the comment text, and `*/` on separate lines. Do not compact JSDoc into one line.
 - **Comment placement:** Put comments that explain a branch or loop before the `if`, `else if`, `else`, `for`, or `while` block so the intent remains visible when the block is collapsed in the IDE. Keep comments inside the block only when they explain a specific statement inside it.
 - **Vertical spacing:** Use one empty line between different logical chunks, such as configuration, validation, reads, calculations, writes, and the final result. Keep the statements that complete one small step together. Do not add an empty line after every statement.
 - **Retry helpers:** When an option changes retry acceptance, add a short JSDoc to the helper. Name the exact value being waited for, why a weaker condition is insufficient, and which external system can return stale data.
@@ -191,7 +191,7 @@ Before finishing a uniformity pass, answer these questions:
 - Did it add an abstraction the file would not normally add?
 - Did it move code away from the nearest similar pattern?
 - Did tests prove behavior rather than private implementation details?
-- Are JSDoc blocks multi-line by default, with every single-line exception clearly helping scanability?
+- Is every new or changed JSDoc block multi-line, including short labels?
 - Do empty lines show the logical chunks without splitting statements that belong to one step?
 - Did the vocabulary audit warn about terms that should be replaced?
 - Did verification cover the edited surface without running unnecessary suites?

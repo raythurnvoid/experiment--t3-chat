@@ -664,7 +664,9 @@ const app_convex_schema = defineSchema({
 			v.literal(organizations_GLOBAL_PLUGINS_WORKSPACE_ID),
 		),
 		// Tree identity
-		/** "root" for root items, otherwise the parent folder id. */
+		/**
+		 * "root" for root items, otherwise the parent folder id.
+		 */
 		parentId: v.union(v.id("files_nodes"), v.literal("root")),
 		kind: v.union(v.literal("folder"), v.literal("file")),
 		name: v.string(),
@@ -707,9 +709,13 @@ const app_convex_schema = defineSchema({
 		 * Keep this preference when live Yjs pointers are cleared, so replacing content preserves it.
 		 */
 		collaborationEnabled: v.union(v.boolean(), v.null()),
-		/** Current compacted Yjs snapshot, or null without a live document. */
+		/**
+		 * Current compacted Yjs snapshot, or null without a live document.
+		 */
 		yjsSnapshotId: v.union(v.id("files_yjs_snapshots"), v.null()),
-		/** Current Yjs sequence doc, or null without a live document. */
+		/**
+		 * Current Yjs sequence doc, or null without a live document.
+		 */
 		yjsLastSequenceId: v.union(v.id("files_yjs_docs_last_sequences"), v.null()),
 		/**
 		 * Content counts are kept separately so materialization does not invalidate node queries.
@@ -783,7 +789,9 @@ const app_convex_schema = defineSchema({
 			}),
 		),
 		// Lifecycle and authorship
-		/** Archive operation UUID, or null for an active node. */
+		/**
+		 * Archive operation UUID, or null for an active node.
+		 */
 		archiveOperationId: v.union(v.string(), v.null()),
 		/** Created by user ID. SYSTEM is the pseudo user ID for reserved global-organization content. */
 		createdBy: v.union(v.id("users"), v.literal(users_SYSTEM_AUTHOR)),
@@ -1219,7 +1227,9 @@ const app_convex_schema = defineSchema({
 		 * successful delete and delete again later. Leave it empty when no later upload can arrive.
 		 */
 		putMayArriveUntil: v.optional(v.number()),
-		/** Failed deletes in the current generation. */
+		/**
+		 * Failed deletes in the current generation.
+		 */
 		failureCount: v.number(),
 		nextAttemptAt: v.number(),
 	})

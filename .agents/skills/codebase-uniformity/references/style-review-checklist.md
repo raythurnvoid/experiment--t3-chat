@@ -27,7 +27,7 @@ Use this before finalizing a broad implementation or PR plan.
 ## Comments And Docs
 
 - Do comments explain non-obvious intent, invariants, or external-system behavior?
-- Is JSDoc multi-line by default, with single-line JSDoc used only when a short label is clearer in a tight group?
+- Is every new or changed JSDoc multi-line, including one-sentence docs and short labels?
 - Do empty lines separate logical chunks without splitting statements that complete one step?
 - Can any abstract term be replaced by concrete code nouns?
 - Do Convex comments and guidance use `doc/docs` for table entries?
