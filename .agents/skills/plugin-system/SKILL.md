@@ -574,6 +574,22 @@ Git submodule with its own repo (`raythurnvoid/bonobo-plugin-chitchat`), scaffol
 
 # Releases (SDK + Gallery)
 
+SDK 0.20.0 and Chitchat 0.7.8 shipped to dev on 2026-09-08. The reviewed host commit is
+`728b7dba00101dbbd109de0ff6dd6f74719d1542`; the equal SDK mirror is
+`5e7cdcb4c0e2420aebcd93720fd313ba9b90df51`. Chitchat pins it in both package and lock files.
+Its published commit is `02b93081853288a18986d8185c715d1e102a54b7`, version doc
+`hn7py2fw70j4rxk0mwaerfqg4d8e1xjv`. All four served files match. All four active installations
+updated with their service accounts, grants, settings, and usage preserved. The disabled,
+cleanup-fenced 0.6.0 installation stays untouched.
+
+The strict runner is Worker version `51484660-72a5-40c9-b0d1-a4ca61c02d0a`. Native checks
+passed complete encoded 16 MiB ASCII and Unicode replies, plugin error bodies, empty events,
+saved writes after failure, the 35-second invoke deadline, and Chitchat send/reply persistence.
+All 426 baseline store/scope docs kept their IDs and hashes. This entry and the gitlink record
+the published release. The final error-code check is still open: the deployed edge replaces
+host 502 bodies, so the size-error code does not reach Chitchat. Do not report it as verified. See
+`../app-playwriter-harness/references/plugin-backend-execution.md` for the native checks.
+
 SDK 0.19.1 and Chitchat 0.7.7 shipped to dev on 2026-09-07. The reviewed host is
 `814d617570351e8941548814d1849a16e5434c98`; the SDK mirror is
 `ed27f96f0d5f735672f7f91bf5da59b033fae655`. Chitchat pins that SDK in its package and lock files.

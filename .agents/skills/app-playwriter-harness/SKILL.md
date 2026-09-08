@@ -119,6 +119,7 @@ Do not store secrets, cookies, tokens, user-private payloads, run diaries, raw c
 - Read `references/clerk-test-accounts.md` when a check needs a specific signed-in account: how to log in and out as the seeded `+clerk_test` QA accounts in an isolated scratch browser, and the hard rules around it.
 - Read `references/plugin-gallery.md` for driving the Gallery plugin page inside its sandboxed iframe.
 - Read `references/plugin-marketplace.md` for installing, updating, and uninstalling plugins from the catalog and detail pages, and for embedding upload fixtures in runners.
+- Read `references/plugin-backend-execution.md` for complete response limits, empty events, saved writes after failure, and live runner/Convex checks.
 - Read `references/plugin-configuration.md` for saving upload-folder YAML and proving matched and unmatched automatic runs.
 - Read `references/chitchat.md` for driving the Chitchat plugin page: its selectors, seeding history, loading older messages through the paginated Convex door, injecting axe past the frame CSP, the private-channel checks that need a second identity, and the public and private transcript files the plugin's backend writes under `/chitchat` in Files. It also carries the break-on-purpose recipe that proves the browser runs your Convex working tree.
 - Read `references/council-room.md` for driving the Council meeting room on the local Worker and the Council dashboard preview.
