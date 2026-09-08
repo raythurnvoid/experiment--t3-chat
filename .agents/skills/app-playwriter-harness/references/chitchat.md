@@ -655,6 +655,47 @@ the stylesheet, and compare the name's right edge with the link's content box to
 
 ## Channel transcript files (`/chitchat` in Files) — 0.6.0 backend flow
 
+### Current service-account permission checks
+
+Verified 2026-09-08 with installed Chitchat 0.7.7 and the service-account file policy model.
+Keep this check on a unique private channel. Do not unlock a shared transcript root to make QA pass.
+
+- Read the installed version on the detail page. The catalog version may be newer.
+- Read `projection/__root__` through the frame's plugin client before finding files. The saved
+  `rootPath` may be `/chitchat-<digest>`, while an unrelated `/chitchat` folder also exists.
+- A selected service account in a file policy still needs access grants. An exact grant on an
+  unrestricted folder covers that item only. It does not grant manage access on a new child.
+  Creating the private parent can succeed, then creating the channel folder can return 403 because
+  that parent has no manage grant. This is a setup refusal, not a failed schema migration.
+- If scoped setup is authorized, use the Service accounts grant dialog to add temporary Can manage
+  access on the exact private parent. After the unique channel folder exists, add its own account
+  grant on that restricted scope. Remove the temporary parent grant. Record the original grants and
+  compare their IDs after setup and cleanup. Do not add workspace Can manage just for this test.
+- Establish a positive transcript through the public reader before changing policy. Keep its bytes
+  in memory and record only SHA-256, byte size, and message-marker counts. Then use Properties to set
+  the unique channel folder to Read-only. A native send must keep its source message and return
+  `transcriptUpdated: false`. Replay the same `clientRequestId`: the message key must stay the same,
+  the source count must not grow, and the transcript hash must stay unchanged.
+- For private reads, use a separate anonymous browser identity invited through the normal membership
+  door. The channel must be hidden before People membership, readable after adding that person, and
+  hidden after removal. Pair the hidden UI with an empty scoped message query. The owner alone
+  cannot prove this refusal. Check that reader refresh keeps explicit service-account grant IDs.
+- Test the reader's write limit separately: restore the selected-account policy, prove the reader
+  can read the transcript, then send from that person's native composer. The source must persist
+  while the mirror returns `transcriptUpdated: false` and keeps the same file hash. This proves the
+  actor's read grant cannot borrow the plugin account's write grant.
+- Cleanup removes the reader membership and the unique account grant through normal app doors.
+  A protected ancestor can still refuse archive. Report retained QA files instead of changing a
+  shared parent policy to remove them. Keep the existing account and its original grants.
+
+Keep invoke headers and tokens in memory only. A frame fetch recorder must preserve the native
+receiver: `Reflect.apply(originalFetch, window, args)`. Calling an original fetch stored as a property
+on a scratch object can fail before sending any request. Chitchat then keeps retrying the same send,
+which looks like a stuck backend. Capture the request body before waiting for the response, and do
+not print its headers. Keep the request body in the Playwriter session too, so HMR cannot lose the
+replay identity. After an HMR blank or a lost frame handle, reload only the owned tab and re-read
+saved state before retrying a mutation.
+
 Since Chitchat 0.6.0 the plugin's own backend writes the channel transcript files during its invoke
 runs (message send/edit/delete, reply, reaction, channel manage), through the plugin file doors. The
 host projection engine, its 2s debounce, its sync runs, and its hourly cron are gone from the app —
@@ -802,8 +843,8 @@ channel's scope. Before the fix that table was empty across the whole deployment
 >
 > Defect 1 hid defect 2: while the call refused, nobody could see that the folder would not have been
 > locked anyway. Fixing only the refusal produces a private folder that is NOT read-only — a worse
-> outcome than the 409. If you touch this door, assert the folder's own `readOnlyScopeNodeId`, not
-> just the status code.
+> outcome than the 409. For the current model, assert the folder's `writePolicyScopeNodeId` and
+> local `writePolicy`, including the selected account, as well as the status code.
 
 Two things that will mislead you while setting this up, both hit 2026-09-01:
 

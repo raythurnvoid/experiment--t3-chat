@@ -1740,6 +1740,27 @@ Then sum `assertionResults.length` per entry in `testResults`. A ready script is
 read the current summary line rather than these numbers, and check that the two agree — a JSON
 report written by a crashed run still parses.
 
+## Vitest browser tests hang when the checkout path contains `+`
+
+Verified 2026-09-08 with Vitest 4.1.10 and Vite 8.1.5. The browser runner puts the raw test path
+into the `iframeId` query parameter. The test frame reads it with `URL.searchParams`, which changes
+`+` to a space. Its ready message then has the wrong ID, so the runner waits without starting tests.
+This affects checkout paths such as `+personal/+ai`. The last normal log can say "bundling
+dependencies" even though bundling finished. A fresh cache does not fix the ID mismatch.
+
+Run **one browser test file per process** with `--no-isolate`. This uses a fixed frame ID. Separate
+processes keep the files isolated from each other:
+
+```powershell
+vp env exec pnpm --dir packages/app run test:once --project browser src/lib/my-focus.browser.test.ts --no-isolate
+vp env exec pnpm --dir packages/app run test:once --project browser src/hooks/ai-chat-controller.browser.test.tsx --no-isolate
+```
+
+Do not apply `--no-isolate` to the whole browser project. Keep the normal isolation setting in
+unaffected checkout paths. Supply the test environment values too: the chat suite needs both
+`VITE_CONVEX_URL` and `VITE_CONVEX_HTTP_URL` even though it mocks network calls. Do not change app
+source or patch the installed Vitest package for this workaround.
+
 ## A script `focus()` never matches `:focus-visible`, so every ring probe reads `none`
 
 `:focus-visible` follows the last input modality. When a probe focuses an element from

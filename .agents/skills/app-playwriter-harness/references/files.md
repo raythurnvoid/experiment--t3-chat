@@ -255,7 +255,7 @@ Use this after changing `files_nodes.unarchive_nodes`, `authorize_leaving_restri
 - The owner bypasses every permission check, so owner-only runs prove **no over-refusal**, never that the refusal works. The refusal needs a second member holding a `content.write` grant on the folder. Get that member without any sign-in by following `references/second-user-fixtures.md`: an anonymous user in a scratch browser, invited by `userIdToAdd` into a throwaway non-default org. Verified end to end — a `member` with only `write` archives the folder fine, is refused on restoring the child alone with `You need Can manage on the shared folder to move this out of it.`, and still restores the scope-carrying folder itself.
 - A `write`-only member **can** archive the restricted folder. The hole this guards is the pair: archive the folder, then restore one file out of it. With the leaving check removed, that same click succeeds and clears the child's `restrictedScopeNodeId` to `null` at root — the file becomes readable by the whole workspace. Count that pointer, not the toast, when proving the guard.
 
-### Read-Only File And Folder Locks
+### File And Folder Write Policies
 
 Use a throwaway non-default organization and follow `second-user-fixtures.md` for a normal member who
 does not hold `content.permissions.manage`. Keep owner and member sessions open together so live races
@@ -264,11 +264,11 @@ do not depend on signing in or out.
 - Fixture: one directly locked file, one locked folder with rich/plain/nested descendants, one free
   folder, and one unlocked outer folder with a locked child plus writable sibling. Create one pending
   content proposal before locking.
-- Drive the lock through the Properties modal's `Protection` checkbox (`.FilesPropertiesModalReadOnly-checkbox`);
-  under an inherited lock it also offers `Manage /<path>` and `Also lock here`. There are no
-  `Make read-only` / `Make writable` / `Add direct lock` / `Remove direct lock` controls. The member must not get management controls. Query `list_tree` as each identity
-  and assert projected `readOnlyState` and source visibility; never inspect the raw pointer from
-  a public result.
+- In Properties, use `.FilesPropertiesModalWritePolicy`: choose `Read-only` in the `Local write policy`
+  radio group, then click `Save policy`. `Inherit` clears only the local policy. A readable inherited
+  source offers `Open parent policy`. A member without management rights gets disabled policy controls.
+  Query `list_tree` as each identity and assert `canWrite`, `writeBlockedReason`, `writePolicyState`,
+  and source visibility. Policy presence alone does not mean that the current writer is blocked.
 - Assert the exact accessible row descriptions for a direct lock, a visible inherited lock, a hidden
   inherited lock, and an unlocked folder that contains read-only items. Locked rows must still open,
   expand, search, and expose safe Copy and Share actions.
@@ -286,6 +286,51 @@ do not depend on signing in or out.
 - Run `auditAccessibility({ selector: "body", minTargetSize: 24 })`, then separately audit the lock
   modal and Pending panel. Also check keyboard focus, Escape/focus return, 200% zoom, 360 px width,
   contrast, target sizes, and reduced motion.
+
+### Service Account Key And Protected Log
+
+Verified through native UI and HTTP on 2026-09-08. This checks a script account without creating
+plugin installations, runs, service grants, or upload targets. Use only a unique QA folder, two new
+accounts, and their own keys. Keep the existing signed-in identity.
+
+1. Create and rename the QA folder through Files. Restrict it through Share → `Restrict access`.
+   On `/w/<org>/<workspace>/service-accounts`, use `Create account`, textbox `Name`, and `Save account`.
+   Confirm new accounts have no grants. Scope repeated row actions with `data-service-account-id`.
+2. On account A, choose `Manage grants`. In `Access for <name>`, select Resource `File or folder`,
+   enter `File or folder path`, and choose Access level `Can manage`. Confirm `This restricted scope`
+   before `Save grant`. A normal folder's `This item only` grant does not grant its descendants access.
+3. Use A's `Create API key` link. It preselects Identity. Bound accounts offer only `List files`,
+   `Read file content`, `Download files`, `Write files`, and `Manage file policies`. Click checkbox
+   labels, not their covered 1px inputs. After creation or rotation, keep the revealed key only in
+   memory. Read `.RouteApiKeysRevealModal [aria-label="New API key"]`, then close with `I saved the key`
+   before any snapshot or screenshot. For `Test key`, read only `.RouteApiKeysVerificationStatus`,
+   never the reveal dialog's full text.
+4. In folder Properties, save Selected writer → Writer type `Service account` → A. With A's key,
+   POST `/api/v1/files/write` twice to create and update a short `<QA path>/run.md` log. Pair this with
+   `/files/read`, `/files/list`, and `/files/download-urls` under `/api/v1`. Download into memory;
+   save only expected bytes, length, MIME, and hash. `/api/v1/auth/verify` shows account and sponsor IDs.
+5. Change A's grant to `Can view`: read succeeds, write returns 403. Remove its grant: read returns
+   404 and write 403. Restore `Can manage` and prove the same write succeeds. Give B the same QA grant
+   and a key with `Write files` only. B's write to A's protected log returns 409. B's policy setter
+   returns 403 without `files:permissions`; A's same setter succeeds. Check unchanged bytes after each
+   refusal. Selecting Read-only also refuses A's write with 409.
+6. Select the current human through Properties and save one native editor change. Read it after
+   reload, then restore A's policy. Native `Rotate <key name>` → `Rotate key` keeps account, sponsor,
+   and scopes. The old key must return 401; the new key must update and read the same log successfully.
+   Account `Revoke` → `Revoke account` then makes the new key return 401 while the policy stays set.
+7. Read state through fresh public queries: `access_control.get_service_account`,
+   `list_service_account_grants`, `public_api.api_credentials_list` (a Result with `_yay` array), and
+   `files_nodes.get_node_write_policy_management_state`. Keep all created IDs in a safe manifest.
+   A no-plugin claim needs a separate complete, paged database check for references to those IDs.
+8. Clear only the QA policy with Inherit → `Save policy`; remove A/B's grants, revoke their keys and
+   accounts, then archive the QA folder. Revoked accounts still offer `Manage grants` and `Remove`.
+   Confirm every created key is revoked, both grant pages are empty and complete, and both nodes have
+   no policy and share an archive operation. Clear secrets from memory and close only the owned tab.
+
+Wait for saved UI state before fresh readback. A click can return before its mutation; after a timeout
+or HMR, read state before retrying. For the grant dialog's quick accessibility screen, the 1px
+`Dismiss popup` button is a visually hidden library control. Check the visible controls separately.
+Keep desktop/narrow screenshots away from key reveals and do not claim a full focus-trap audit.
 
 ### Non-Collaborative File Fixture
 
@@ -309,7 +354,7 @@ To build a writable one, follow the UI steps below.
 1. Create a `.md` file from the sidebar. A new file is collaborative.
 2. Open it, switch to the **Markdown** view, and give it a body that carries a real Markdown escape, for example a line holding `2026\-08\-30`. Save.
 3. Open the breadcrumb Properties dialog (see "File Properties Modal" below for its two click hazards) and uncheck `Collaboration` by clicking its label, `.FilesPropertiesModalCollaboration-checkbox`. Focusing the 1px input and pressing Space does NOT toggle it (tried 2026-08-31: the input stayed `checked`), so use the label. The confirmation is not a separate dialog — it appears INSIDE the properties modal as a `Turn collaboration off` / `Cancel` pair, so do not wait for a new `[role=dialog]` to show up.
-4. For a read-only variant, tick `Protection` in the same dialog by clicking its label, `.FilesPropertiesModalReadOnly-checkbox`.
+4. For a read-only variant, choose `Read-only` in the `Local write policy` radio group, then click `Save policy`.
 5. Reopen the dialog and read both states back before you start the checks.
 
 The rich view must then render the content un-escaped (`2026-08-30`) while the Markdown view shows the raw bytes. Selectors and behaviors of the non-collaborative rich and diff editors are in `file-node-view.md` under "Non-Collaborative Editors (No Yjs)".
@@ -509,8 +554,8 @@ Selectors and a proven flow for the media embeds in the rich text editor (verifi
 
 ### File Properties Modal
 
-One dialog holding the file's facts, its read-only lock, and the flat key-value map edited as YAML
-(verified 2026-08-18). Spec: `.agents/skills/file-metadata/SKILL.md` and
+One dialog holding the file's facts, its write policy, and the flat key-value map edited as YAML
+(write policy verified 2026-09-08). Spec: `.agents/skills/file-metadata/SKILL.md` and
 `.agents/skills/files-read-only/SKILL.md`. It replaced both the sidebar `Metadata` tab and the old
 `Read-only settings` modal, so a recipe that clicks either of those is out of date.
 
@@ -520,17 +565,13 @@ One dialog holding the file's facts, its read-only lock, and the flat key-value 
   and its `data-files-properties-modal` attribute at `display: none`. Scope every query to
   `[data-files-properties-modal][data-open="true"]`. A plain `.FilesPropertiesModal` resolves to the
   hidden one first, and `waitForSelector` then times out on a dialog that is plainly on screen.
-- The read-only control is a `MyCheckboxButton`, whose real `input` is 1px and covered. Clicking
-  `getByRole("checkbox")` fails with `<div class="FilesPropertiesModalReadOnly"> intercepts pointer
-  events`. Click `.FilesPropertiesModalReadOnly-checkbox` (the label) and read the state from the
-  input.
 - The dialog holds four sections, reachable by their region names: `General` (a `<dl>` of facts),
-  `Protection` (the read-only checkbox), `Collaboration` (the collaborative-editing checkbox), and
+  `Protection` (the write policy), `Collaboration` (the collaborative-editing checkbox), and
   `Metadata` (the YAML editor). A folder gets General, Protection, and Metadata.
   `Collaboration` renders only for an editable text file, so an image also shows three sections
   and no empty strip.
-- The `Collaboration` checkbox is another `MyCheckboxButton`, so the same 1px-input rule applies:
-  click `.FilesPropertiesModalCollaboration-checkbox`, or `focus()` the input and press `Space`.
+- The `Collaboration` checkbox is a `MyCheckboxButton` with a covered 1px input:
+  click its label, `.FilesPropertiesModalCollaboration-checkbox`.
   Both directions open an inline confirm step inside the same section —
   `getByRole("button", { name: "Turn collaboration off" })` or `Turn collaboration on`, next to
   `Cancel` — and nothing is written until that button is clicked (the ON confirm is newer than the
@@ -541,20 +582,19 @@ One dialog holding the file's facts, its read-only lock, and the flat key-value 
   directions every time. Use the keyboard for the confirm step. Read the state from
   `.FilesPropertiesModalCollaboration-description`, not from the tick: the Metadata section repeats
   the same "read-only" and "no permission" sentences, so `getByText` finds several matches.
-- Read-only is one checkbox, but the dialog holds two (Protection and Collaboration), so a bare
-  `getByRole("checkbox")` is a strict-mode violation — scope it to `.FilesPropertiesModalReadOnly`. It writes as soon as it
-  is clicked; there is no Save for it. The line under the label says which lock is in force, and it
-  is the only thing that distinguishes the four states, so assert on that text, not on the tick
-  alone. Under an inherited lock the box is `disabled` and two buttons appear instead:
-  `Manage /<path>` and `Also lock here` — but only when the caller can manage the lock. A member
-  without `content.permissions.manage` gets the disabled box and no buttons at all.
-- The checkbox row is a `.MyButton`-styled `<label>`, so it inherits `justify-content: center` and
-  `white-space: nowrap`. Only `white-space` is overridden. `justify-content: center` is still in
-  force and is made harmless by `flex: 1` on `.FilesPropertiesModalReadOnly-text`, which makes the
-  text fill the row so there is no free space left to centre. A regression shows as
-  the checkbox and its text floating in the middle of the outlined card: measure
-  `.MyCheckboxButton-box` left minus `.FilesPropertiesModalReadOnly-checkbox` left, which must equal
-  the 12px padding and not roughly half the row.
+- Scope policy controls to `.FilesPropertiesModalWritePolicy`. The `Local write policy` radio group
+  offers `Inherit`, `Read-only`, and `Selected writer`. Click the visible label. For a selected writer,
+  choose `Writer type` (`Person` or `Service account`), then the matching picker. Only active accounts
+  appear in the account picker. Nothing is saved until `Save policy` is clicked.
+- Read `files_nodes.get_node_write_policy_management_state({ membershipId, nodeId })` through a fresh
+  `ConvexHttpClient`. Check `localPolicy`, `canWrite`, `canManage`, and the inherited source separately.
+  After a native click, wait for the saved UI state before readback; the click can finish before its
+  mutation. A selected human can edit when their access permits it. Revoking a selected account keeps
+  the file protected and shows `Protected file. The selected writer is unavailable.`
+- For screenshots and hit-target checks, scroll the policy block into view first. Tabbing to footer
+  controls can leave radios above the scroll area. At 512×768 the dialog scrolls and keeps its footer
+  visible. The quick audit counts 18px radio inputs; inspect their clickable labels before treating
+  these size warnings as accessibility failures. Escape returns focus to the Properties trigger.
 - The editor is Monaco. Synthetic keyboard input does not reach it. Set the text through the editor
   handle from page context:
   `monaco.editor.getEditors().find((e) => e.getRawOptions().ariaLabel === "Metadata YAML").setValue(yaml)`.
