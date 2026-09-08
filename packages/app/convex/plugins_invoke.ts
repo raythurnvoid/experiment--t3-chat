@@ -169,7 +169,8 @@ export async function plugins_invoke_http_invoke(
 			runId,
 			outcome: { kind: "failed", errorMessage: "Plugin backend is missing" },
 		});
-		return { status: 502, body: { message: "Plugin backend failed", runId: String(runId), code: undefined } } as const;
+		// Use 500 to avoid the deployed edge replacing 502 JSON error bodies.
+		return { status: 500, body: { message: "Plugin backend failed", runId: String(runId), code: undefined } } as const;
 	}
 
 	let configuration: plugins_ConfigurationValue = null;
@@ -184,7 +185,7 @@ export async function plugins_invoke_http_invoke(
 				outcome: { kind: "failed", errorMessage: parsed._nay.message },
 			});
 			return {
-				status: 502,
+				status: 500,
 				body: { message: "Plugin backend failed", runId: String(runId), code: undefined },
 			} as const;
 		}
@@ -257,7 +258,7 @@ export async function plugins_invoke_http_invoke(
 		if (runnerResult._nay || finished._nay || !finished._yay.canRelayResponse || runnerResult._yay.kind !== "invoke") {
 			const code = runnerResult._nay?.code === "response_too_large" ? ("response_too_large" as const) : undefined;
 			return {
-				status: 502,
+				status: 500,
 				body: {
 					message: code ? "Plugin backend response was too large" : "Plugin backend failed",
 					runId: String(runId),
@@ -287,6 +288,6 @@ export async function plugins_invoke_http_invoke(
 				errorMessage: timedOut ? "Plugin runner request timed out" : "Plugin runner request failed",
 			},
 		});
-		return { status: 502, body: { message: "Plugin backend failed", runId: String(runId), code: undefined } } as const;
+		return { status: 500, body: { message: "Plugin backend failed", runId: String(runId), code: undefined } } as const;
 	}
 }

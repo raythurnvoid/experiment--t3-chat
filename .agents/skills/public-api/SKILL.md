@@ -169,7 +169,7 @@ The runner builds the JSON bytes once; Convex validates metadata, reads the whol
 and forwards the same bytes only after `finish_event_run` allows relay. The route overrides only
 its derived public `200.body` type; errors remain handler-derived.
 
-Host execution, stream, expiry, and unfinished-work failures answer 502. A response-size failure
+Host execution, stream, expiry, and unfinished-work failures answer 500. A response-size failure
 also carries `code: "response_too_large"`; earlier side effects may already be saved. Clients must
 stop automatic size-error retries and keep the same request ID for manual retry. A complete plugin
 non-2xx may relay with a failed run outcome. Clean events may succeed with no file writes.

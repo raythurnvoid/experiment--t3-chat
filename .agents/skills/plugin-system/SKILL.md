@@ -155,7 +155,7 @@ and deadline are required: 35 seconds for invoke, 180 seconds for event. Wire de
 order live in `packages/plugin-runner/README.md`. Keep the old stored output counters and metrics;
 new `runnerOutputBytes` counts raw bytes consumed, and new `runnerOutputTruncated` is false.
 
-Host 502 with `code: "response_too_large"` is a deterministic response failure, but earlier writes
+Host 500 with `code: "response_too_large"` is a deterministic response failure, but earlier writes
 may be saved. Chitchat retains its pending entry and request ID for manual Retry and does not
 retry that error automatically. Plugin 5xx and uncertain transport results reuse the same ID.
 The plugin-data transaction keeps `credentialRef.runId` and checks the original run's status,

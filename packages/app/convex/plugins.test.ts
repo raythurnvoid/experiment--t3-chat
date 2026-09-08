@@ -12230,7 +12230,7 @@ describe("plugins backend invoke runs", () => {
 		});
 
 		const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
-		expect(response.status).toBe(502);
+		expect(response.status).toBe(500);
 		expect(await response.json()).toMatchObject({ message: "Plugin backend failed", runId: expect.any(String) });
 		expect(canceled).toHaveBeenCalledOnce();
 		expect(await t.run((ctx) => ctx.db.query("plugins_event_runs").first())).toMatchObject({
@@ -12272,7 +12272,7 @@ describe("plugins backend invoke runs", () => {
 			});
 
 			const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
-			expect(response.status).toBe(502);
+			expect(response.status).toBe(500);
 			expect(await response.json()).toEqual({ message: "Plugin backend failed", runId: expect.any(String) });
 			const run = await t.run((ctx) => ctx.db.query("plugins_event_runs").first());
 			expect(run?.status).toBe("failed");
@@ -12341,7 +12341,7 @@ describe("plugins backend invoke runs", () => {
 			});
 			over = true;
 			const refused = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
-			expect(refused.status).toBe(502);
+			expect(refused.status).toBe(500);
 			expect(await refused.json()).toMatchObject({ code: "response_too_large" });
 			expect(canceled).toHaveBeenCalledOnce();
 		},
@@ -12447,7 +12447,7 @@ describe("plugins backend invoke runs", () => {
 		});
 
 		const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
-		expect(response.status).toBe(502);
+		expect(response.status).toBe(500);
 		expect(await response.json()).toEqual({ message: "Plugin backend failed", runId: expect.any(String) });
 		expect(await t.run((ctx) => ctx.db.query("plugins_event_runs").first())).toMatchObject({
 			status: "failed",
@@ -12500,7 +12500,7 @@ describe("plugins backend invoke runs", () => {
 		});
 
 		const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
-		expect(response.status).toBe(502);
+		expect(response.status).toBe(500);
 		const run = await t.run((ctx) => ctx.db.query("plugins_event_runs").first());
 		expect(run?.errorMessage).toBe(
 			kind === "oversized envelope" ? "Plugin response was too large" : "Plugin runner returned an invalid response",
@@ -12523,7 +12523,7 @@ describe("plugins backend invoke runs", () => {
 			return new Response(response.body, { status, headers: response.headers });
 		});
 		const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
-		expect(response.status).toBe(502);
+		expect(response.status).toBe(500);
 		expect(await response.json()).toEqual({ message: "Plugin backend failed", runId: expect.any(String) });
 	});
 
@@ -12553,13 +12553,14 @@ describe("plugins backend invoke runs", () => {
 		});
 
 		const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
-		expect(response.status).toBe(502);
+		expect(response.status).toBe(500);
+		const run = (await t.run((ctx) => ctx.db.query("plugins_event_runs").first()))!;
 		expect(await response.json()).toEqual({
 			code: "response_too_large",
 			message: "Plugin backend response was too large",
-			runId: expect.any(String),
+			runId: String(run._id),
 		});
-		expect(await t.run((ctx) => ctx.db.query("plugins_event_runs").first())).toMatchObject({
+		expect(run).toMatchObject({
 			status: "failed",
 			runnerOutputBytes: 16 * 1024 * 1024,
 		});
@@ -12600,7 +12601,7 @@ describe("plugins backend invoke runs", () => {
 			});
 
 			const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
-			expect(response.status).toBe(502);
+			expect(response.status).toBe(500);
 			expect(await response.json()).toEqual({ message: "Plugin backend failed", runId: expect.any(String) });
 			const run = await t.run((ctx) => ctx.db.query("plugins_event_runs").first());
 			expect(run?.status).toBe("failed");
@@ -12796,7 +12797,32 @@ describe("plugins backend invoke runs", () => {
 		expect(runnerBodySizes).toHaveLength(2);
 	});
 
-	test("answers 502 with a curated message when the plugin backend fails", async () => {
+	test.each(["network", "timeout", "configuration"] as const)("answers 500 for a %s failure", async (kind) => {
+		const t = test_convex();
+		const fixture = await install_invoke_plugin(t);
+		const token = await seed_invoke_session(t, fixture);
+		vi.mocked(fetch)
+			.mockClear()
+			.mockRejectedValueOnce(
+				kind === "timeout" ? new DOMException("Runner timed out", "TimeoutError") : new Error("Runner socket failed"),
+			);
+		if (kind === "configuration") {
+			await t.run((ctx) =>
+				ctx.db.patch("plugins_workspace_installations", fixture.installationId, { configurationYaml: "[" }),
+			);
+		}
+
+		const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
+		expect(response.status).toBe(500);
+		const run = (await t.run((ctx) => ctx.db.query("plugins_event_runs").first()))!;
+		expect(await response.json()).toEqual({ message: "Plugin backend failed", runId: String(run._id) });
+		expect(run).toMatchObject({ status: "failed", errorMessage: expect.any(String), outputWriteCount: 0 });
+		expect(run.apiTokenHash).toBeUndefined();
+		if (kind === "configuration") expect(fetch).not.toHaveBeenCalled();
+		else expect(fetch).toHaveBeenCalledOnce();
+	});
+
+	test("answers 500 with a curated message when the plugin backend fails", async () => {
 		const t = test_convex();
 		const fixture = await install_invoke_plugin(t);
 		const token = await seed_invoke_session(t, fixture);
@@ -12815,13 +12841,13 @@ describe("plugins backend invoke runs", () => {
 		});
 
 		const response = await post_invoke(t, token, invoke_request_body({ endpoint: "echo" }));
-		expect(response.status).toBe(502);
+		expect(response.status).toBe(500);
 		const responseBody = (await response.json()) as Record<string, unknown>;
-		expect(responseBody.message).toBe("Plugin backend failed");
 
 		// The run record keeps the detail the response left out.
 		const run = await t.run(async (ctx) => await ctx.db.query("plugins_event_runs").first());
 		expect(run).toMatchObject({ status: "failed", errorMessage: "Plugin threw before responding" });
+		expect(responseBody).toEqual({ message: "Plugin backend failed", runId: String(run?._id) });
 	});
 	// #endregion invoke route transport
 });
