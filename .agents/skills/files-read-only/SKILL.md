@@ -144,7 +144,9 @@ idempotent success. Management stays separate from effective content write acces
 - Reach `none` passes no policy. Reach `ancestors` may match every applicable selected-writer rule.
   Reach `direct` may match only an existing target's own local rule; any outer policy refuses. During
   creation, the existing parent is not the new target, so even a matching parent policy refuses direct
-  reach. Sealed service doors use direct reach and preserve their destination and target limits.
+  reach. Generic sealed service doors use direct reach and preserve their destination and target limits.
+  The external own-file bridge may use ancestor reach only after its sealed destination, current
+  service secret, `workspace.files.own-write`, actor/account ACL, labels, and pinned output scope pass.
 - Generic account keys use account permissions and their validated resource scope. Invoke plugins
   also keep accepted capability, editable label, source, and current installation checks. UI sessions
   keep their read-only backend contract. The generic helper adds no integration bypass.
@@ -161,9 +163,26 @@ idempotent success. Management stays separate from effective content write acces
 - Plugin policy changes use common management checks. A requested `readOnly: true` maps to a local
   selected-account policy, including below a matching account parent. Ensure keeps existing folders'
   access unchanged. Policy changes never restore removed account grants.
+  External ensure may recover only the IDs of an exact empty, attached private setup while its account
+  awaits a file grant. Live credentials, pinned scope, labels, and sponsor read access still apply.
+  This metadata-only path changes no files or grants; all write and policy doors stay unchanged.
 - Service archive may clear an allowed direct policy only through the common managed setter in the
   same transaction. It still checks each swept node and refuses parent policy. Reader binding edits
   preserve independently managed account grants; ordinary reader refreshes cannot add them back.
+- External transcript writes keep their writer generation and expected content/reader revisions in
+  the trusted file stage. The final transaction repeats these checks and saves the write receipt
+  with publication. A worker abort or a receipt stored only in the external app cannot replace this.
+  File archive can also pin `expectedContentRevision`, checked in its final transaction.
+- The external `rollback-readers` door is a narrow ACL undo after a failed native private change.
+  Its saved receipt, original credential proof, live service/account binding, and exact current reader
+  revision/generation replace sponsor write authority only for restoring the recorded previous readers.
+  The saved service writer still checks the current target and every ancestor policy before an undo.
+  A new lock returns the normal `read_only` conflict and leaves the native change blocked.
+  It changes no content or policy, preserves account grants, filters stale lifetimes, and leaves manual
+  or newer sharing untouched. It is not a general file or sharing permission bypass.
+  If the original HTTP result was lost, the worker can name the original operation ID. An unapplied
+  operation is cancelled with a durable receipt before success is returned; late reader calls refuse.
+  This cancellation changes no sharing and requires a recognized sealed grant for the pinned root.
 - Eager-created cleanup checks the proposer's current policy access on the file and every created
   ancestor before deleting any node. If one refuses, remove pending docs but keep the committed tree.
   The existing untouched-node checks still apply. Bash `/tmp` stays writable; copy-out stays allowed.

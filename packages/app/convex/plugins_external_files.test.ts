@@ -939,6 +939,7 @@ describe("rollback_readers", () => {
 				if (rotated._nay) throw new Error(rotated._nay.message);
 				const unknown = await t.fetch("/api/internal/plugins/files/rollback-readers", options);
 				expect(unknown.status, await unknown.clone().text()).toBe(401);
+				expect(await unknown.json()).toEqual({ message: "Unauthenticated", code: "reader_proof_mismatch" });
 				headers.Authorization = `Bearer ${rotated._yay.token}`;
 			} else if (condition === "policy") {
 				expect(
@@ -1003,6 +1004,9 @@ describe("rollback_readers", () => {
 		"newer-writer",
 		"wrong-token",
 		"wrong-secret",
+		"wrong-token-and-secret",
+		"revoked-account",
+		"uninstalled",
 		"old-lifetime",
 		"target-policy",
 		"ancestor-policy",
@@ -1094,6 +1098,24 @@ describe("rollback_readers", () => {
 			await t.run(
 				async (ctx) => await ctx.db.patch("plugins_chitchat_memberships", reader.lifetimeId, { lifetime: 2 }),
 			);
+		} else if (change === "revoked-account") {
+			expect(
+				(
+					await owner.mutation(api.access_control.revoke_service_account, {
+						membershipId: fixture.membershipId,
+						serviceAccountId: fixture.serviceAccountId,
+					})
+				)._nay,
+			).toBeUndefined();
+		} else if (change === "uninstalled") {
+			expect(
+				(
+					await owner.mutation(api.plugins.uninstall_version, {
+						membershipId: fixture.membershipId,
+						installationId: fixture.installationId,
+					})
+				)._nay,
+			).toBeUndefined();
 		} else if (change === "target-policy" || change === "ancestor-policy") {
 			expect(
 				(
@@ -1109,8 +1131,8 @@ describe("rollback_readers", () => {
 		const result = await t.fetch("/api/internal/plugins/files/rollback-readers", {
 			method: "POST",
 			headers: {
-				Authorization: `Bearer ${change === "wrong-token" ? "psg_wrong" : token}`,
-				"X-Bonobo-Service-Authorization": `Bearer ${change === "wrong-secret" ? "wrong" : SECRET}`,
+				Authorization: `Bearer ${change.startsWith("wrong-token") ? "psg_wrong" : token}`,
+				"X-Bonobo-Service-Authorization": `Bearer ${change.endsWith("secret") ? "wrong" : SECRET}`,
 				"Content-Type": "application/json",
 			},
 			body: JSON.stringify({
@@ -1121,8 +1143,17 @@ describe("rollback_readers", () => {
 			}),
 		});
 		const expectedStatus =
-			change === "manual" || change === "old-lifetime" ? 200 : change.startsWith("wrong-") ? 401 : 409;
+			change === "manual" || change === "old-lifetime"
+				? 200
+				: change.startsWith("wrong-") || change === "revoked-account" || change === "uninstalled"
+					? 401
+					: 409;
 		expect(result.status, await result.clone().text()).toBe(expectedStatus);
+		if (expectedStatus === 401)
+			expect(await result.json()).toEqual({
+				message: "Unauthenticated",
+				...(change === "wrong-token" ? { code: "reader_proof_mismatch" } : {}),
+			});
 		if (change === "manual") expect(await result.json()).toMatchObject({ restored: false, detached: true, _id: null });
 		if (change === "old-lifetime") expect(await result.json()).toMatchObject({ restored: true, detached: false });
 		if (change === "target-policy" || change === "ancestor-policy")

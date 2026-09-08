@@ -93,6 +93,10 @@ Canonical access-control details live in `../access-control/SKILL.md`.
 
 # Active memberships
 
+Chitchat mirrors current Press workspace people through its separate backend. Invite, removal, role change, ownership transfer and tenant deletion save ordered Chitchat access events in the source mutation. This adds no remote wait to Press mutations. The native app can retain old access for at most its 30-second lease; pushes usually shorten that window. See [auth-system](../auth-system/SKILL.md#chitchat-in-its-own-backend).
+
+`plugins_chitchat_memberships` keeps a lifetime per workspace and canonical user. Removal advances it before publishing the event. Re-invite keeps the advanced lifetime, so native private-channel membership and attached Files reader grants from the old lifetime remain invalid. Do not delete this marker as part of ordinary member removal.
+
 - **Fields:** `organizations_workspaces_users.active` is required. `false` keeps a membership non-effective during account-deletion retention or a bounded organization-removal drain. `pendingOrganizationRemoval` is optional for rollout compatibility and is `true` only for the second case. Account recovery reactivates ordinary inactive rows and skips marked rows.
 - **Indexes:** `by_workspace_user_active`, `by_user_organization_workspace_active`, `by_active_organization_workspace_user`, `by_active_user_organization_workspace` — prefix with `eq("active", true)` so hot paths avoid post-query filtering.
 

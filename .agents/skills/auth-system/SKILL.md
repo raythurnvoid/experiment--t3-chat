@@ -65,6 +65,18 @@ Convex consumes the auth source via `ConvexProviderWithAuth` using `useAuth={App
 
 `auth.config.ts` verifies three providers: Clerk, the anonymous custom JWT, and the plugin-session custom JWT. Only the first two are member identities; the third is deliberately refused by member functions.
 
+### Chitchat in its own backend
+
+Chitchat uses Press accounts and workspace membership. It has no separate login. Its backend accepts a dedicated Press-signed ES256 JWT: issuer `${VITE_CONVEX_HTTP_URL}/plugins/chitchat`, audience `chitchat`, subject the Press plugin UI session id. Press itself does not accept this fourth token type. The existing JWKS publishes the signing key.
+
+`plugins_chitchat.ts` validates the page token, registered Chitchat service proof, current account, workspace membership, content permissions, installation version, consent and pinned service account in one mutation. `/api/internal/plugins/chitchat/lease` signs those facts. The absolute deadline is the earliest of the proxy's request-start deadline, validation time plus 30 seconds, and host page-session expiry. A late reply must never extend it. The flat custom `exchangeId` claim is required: Convex does not expose the JWT's housekeeping `jti` to application auth checks.
+
+Press access changes complete as local transactions. They save scoped events in `plugins_chitchat_access_events`; background pushes wake Chitchat, and lease renewal pulls the ordered ledger. A network outage may leave previous Chitchat access usable for up to 30 seconds. It must fail closed at the deadline. This is not immediate cross-database revocation. Ordinary Press file operations still check live authority on each call. The receipt-specific reader rollback exception is documented in the public API skill; it grants no new file-write authority.
+
+The event helpers run after authority writes, sequentially within the same mutation. Never run two ledger-appending helper calls in parallel in one mutation. Membership removal advances a stored lifetime, and restoration or re-invite cannot restore private-channel access from an earlier lifetime. Profile display-name changes emit a member refresh; email stays out of the mirror.
+
+Push settings on Press are `CHITCHAT_HTTP_URL` and `CHITCHAT_ACCESS_PUSH_SECRET`. Push failure is retried by the 30-second cron. Chitchat uses the same secret as `PRESS_ACCESS_PUSH_SECRET`; its trusted pull uses `PRESS_CHITCHAT_SERVICE_SECRET`. No event history is compacted yet.
+
 ### Clerk (signed-in)
 
 - The frontend requests a Clerk JWT with `template: "convex"`.

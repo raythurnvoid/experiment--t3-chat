@@ -1,6 +1,6 @@
 ---
 name: goal-driven-planning-execution
-description: Goal-driven research, planning, and implementation workflow for complex repo work. Use when a user asks for a robust plan, implementation plan, end-to-end execution workflow, subagent organization or fan-out ("fan out subagents"), multi-pass verification, uniformity or code-style review passes inside a larger implementation, or explicit goal-setting before planning or coding. Also use when the request attaches a quality bar instead of a spec — "make it perfect", "AAA quality", "production quality", "make it beautiful", "loop until", "don't stop until", "keep going until it's great" — which switches on the skill's iterate-to-a-bar loop. Not for small single-file edits with a clear spec.
+description: Goal-driven research, planning, implementation, and verification for complex repo work. Use by default for substantial implementations across schema, backend, UI, or repository boundaries. Also use for robust plans, subagent work, multi-pass verification, uniformity reviews inside larger implementations, or explicit goal-setting. Requests such as "make it perfect", "AAA quality", "production quality", "make it beautiful", "loop until", "don't stop until", and "keep going until it's great" start the iterate-to-a-bar loop. Not for small, clear edits.
 ---
 
 # Separate Planning From Implementation
@@ -79,6 +79,8 @@ Before coding, finish the planning workflow. A goal requested for the whole task
 
 When you create the implementation plan or todo list, copy closing steps 6–10 below into it as literal items, including what the final report must contain. Remembered obligations do not survive context compaction; todo items do.
 
+Keep evidence beside each closing item: commands and results, live checks, reviewed revision, and accepted or rejected findings. A plan review does not replace a review of the completed code. Required work without evidence remains open; do not report it as verified or mark a requested goal complete.
+
 Execute iteratively:
 
 1. Implement the smallest coherent slice.
@@ -88,7 +90,7 @@ Execute iteratively:
 5. Repeat for the next slice.
 6. Run broader scoped lint/typecheck/tests after all slices pass, per the verification standard below.
 7. Verify in the running app when the repo has one and the change reaches it, per the verification standard's running-app and deployment rules below. Not only for UI work: backend changes the app can reach deserve the same check. When nothing runnable exists or the change does not reach the app, skip this step and say so.
-8. Run the uniformity pass below, including its vocabulary audit on broad or multi-file diffs.
+8. For broad or security-sensitive work, finish independent subagent correctness reviews of the completed code and separate uniformity reviews. A slice's author must not be its only correctness reviewer. Follow the uniformity pass below, including its vocabulary audit on broad or multi-file diffs. Resolve findings and repeat affected checks after fixes.
 9. Re-read the final diff.
 10. Report what changed, what passed, what was not verified, docs updated, and security/accessibility considerations. The report must also settle every open question the plan listed: each one resolved, or deferred with a reason — an open question nobody noticed surviving to the end is a report defect.
 
@@ -99,7 +101,7 @@ Recommended implementation subagent lanes:
 - **Domain implementation:** schema, backend, runtime, frontend, or migration slices.
 - **Security review:** the planning lane's threat surface checked in the diff, plus token/key handling, revocation, and secret exposure.
 - **Test/QA review:** missing positive/negative cases, focused commands, whether broad suites are justified, and running-app checks when the change reaches a running app.
-- **Uniformity review:** placement and test ownership; comments, logs, and docs wording; names and whole-diff vocabulary — split into one auditor each when the diff is broad.
+- **Uniformity review:** grouping, placement, regions, empty lines, and test ownership; comments, logs, and docs wording; names and whole-diff vocabulary — split into one auditor each when the diff is broad.
 - **Over-strictness review:** the mirror of the security lane — does a check refuse an action that would have granted nothing?
 
 Give each reviewer one lens and nothing else. A generalist stops at the first thing it notices and never reaches the fourth. `references/attack-lenses.md` is the lens catalog for reviewing existing work — slice reviews here, and attack rounds in the bar loop below.
@@ -129,7 +131,7 @@ Verification should match risk and blast radius.
 - For tooling or infrastructure packages: focused tests first, then package-scoped typecheck and tests when the change's blast radius justifies them.
 - For anything a running app can reach, UI or backend: verify in the app itself, not only in tests — exercise it through its native interface (browser for web apps, HTTP for services, the command line for CLIs), prefer the user's existing session where one exists, and assert observable output (for web apps, DOM state over screenshots) plus, when the change persists anything, persisted state (stored-data readback). Use the repo's QA or browser-automation skill when it has one; without a runnable app, this bullet does not apply.
 - Prove every fix by breaking it on purpose first. A check that still passes with the fix removed did not test the fix. This applies to tests and to running-app checks. Read *how* it fails, not only that it failed: a test that goes red on a fixture error instead of your assertion was never exercising the code. `references/proof-gaps.md` expands this rule and adds the rest: positive controls, asserting the side effect and not just the return value, and the ways a test passes without testing anything.
-- For broad changes: decide which broader scoped checks are justified by the affected surface. Always use focused checks first. Run checks broader than the affected surface only when the user explicitly requested broad verification; a package suite over a surface that spans the whole package is within the surface, not beyond it. On broad or multi-file diffs in a git repo, run `git diff --check`; the vocabulary audit belongs to implementation step 8.
+- For broad changes: decide which broader checks are justified by the affected surface. Always use focused checks first, then follow the repo's full lint and test rules. Run full lint whenever running a broad test pass. On broad or multi-file diffs in a git repo, run `git diff --check`; the vocabulary audit belongs to implementation step 8.
 
 Always say which checks ran and which were intentionally skipped.
 

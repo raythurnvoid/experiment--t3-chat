@@ -60,6 +60,8 @@ Use this reference for `packages/app/src/**` React components and frontend lib u
 
 ## Tests
 
+When building a conditional class string, keep complete class names in each branch. The root Tailwind Prettier plugin can remove the leading space inside a nested template expression, turning `view-row` plus `mention-self` into `view-rowmention-self`. Use `condition ? "view-row mention-self" : "view-row"` and check the class after formatting. This occurred in the Chitchat rebuild even though those classes are plain CSS.
+
 - Co-locate frontend lib tests next to the module, such as `files.test.ts` beside `files.ts`.
 - Group utility tests by public function with `describe("<public_function>", ...)`.
 - Test public behavior rather than private helpers.

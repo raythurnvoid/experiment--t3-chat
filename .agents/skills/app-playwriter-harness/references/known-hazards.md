@@ -20,6 +20,8 @@ Before the first attempt at a new interaction type (upload, download, screenshot
 
 ## Playwriter Availability
 
+- **A new headless session may have a separate browser context.** After compaction, first list sessions and inspect the exact owned fixture's current account and workspace. Do not assume a fresh headless session shares its anonymous account. A surviving owned fixture can be reused after that check; delete only an unused session you just created. Keep fixture IDs in the task notes so cleanup cannot target another account.
+- **Large console values can be truncated before the shell saves them.** Redirecting CLI output to a file does not make a large JSON log complete. For preservation checks, print bounded pages or a compact ID/path/hash list and verify its entry count. A truncated full-row log is not a complete baseline.
 - **Assertions in runners:** Playwriter 0.5.0 allows `require("assert")` but refuses the `node:assert/strict` subpath. Also, `deepStrictEqual` can reject equal arrays returned by `page.evaluate` because the sandbox and browser results have different prototypes. For a fixed JSON result, compare `JSON.stringify` values with `strictEqual`, or assert each scalar field. Neither harness failure counts as a failed product assertion. Fix the assertion and rerun the check.
 - The global `playwriter` command may not exist on this machine. Run it through Vite Plus: `vp env exec pnpx playwriter`.
 - Create sessions from the repo root so the scoped Playwriter filesystem can read harness files and resolve repo-relative paths. Propose documentation memories through the harness, then edit them outside Playwriter with the agent's targeted edit tool.

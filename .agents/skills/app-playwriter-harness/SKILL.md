@@ -14,7 +14,7 @@ Use Playwriter directly, add only reusable primitives to the installed harness, 
 
 # Start
 
-Run this section again after a context compaction or when resuming an old conversation. Previous session ids are dead, every new session starts with an empty `state` (`{}`), and leftover runners from the old context may target tabs, accounts, or org routes that no longer exist. Read `references/known-hazards.md` before the first Playwriter command — it answers most first failures (empty `state`, bare `context` global, the 10s default `--timeout`, the sandbox filesystem, always-mounted dialogs).
+Run this section again after a context compaction or when resuming an old conversation. Do not assume an old session is still usable. List sessions and tabs again; every new session starts with an empty `state` (`{}`). Prefer a fresh session. An owned session may survive compaction, and an isolated account fixture can belong to its browser context. Reuse that fixture only after checking its current tab, account, and workspace. Leftover runners may target a different surface. Read `references/known-hazards.md` before the first Playwriter command — it answers most first failures (empty `state`, bare `context` global, the 10s default `--timeout`, the sandbox filesystem, always-mounted dialogs).
 
 1. Read the installed `playwriter` skill. Before the first Playwriter command in this session, run the CLI documentation through Vite Plus and read its full output. Do not truncate it:
 

@@ -57,24 +57,16 @@ export const rollback = internalMutation({
 					(receipt.operation !== "readers" && receipt.operation !== "cancel_readers")))
 		)
 			return Result({ _nay: { message: "Unauthenticated" } });
-		const grant = change
-			? await ctx.db.get("plugin_service_grants", change.grantId)
-			: await ctx.db
-					.query("plugin_service_grants")
-					.withIndex("by_tokenHash", (q) => q.eq("tokenHash", args.tokenHash))
-					.first();
-		const proof = change ?? grant;
-		if (!proof || (!change && (!grant || grant.phase !== "processing" || !grant.scopes.includes("files:write"))))
-			return Result({ _nay: { message: "Unauthenticated" } });
-		const installation = await ctx.db.get("plugins_workspace_installations", proof.installationId);
-		// An old bearer proves only this undo. It cannot authorize new Files work.
+		const writer = await ctx.db.get("plugins_external_file_writers", args.writerId);
+		if (!writer) return Result({ _nay: { message: "Unauthenticated" } });
+		const installation = await ctx.db.get("plugins_workspace_installations", writer.installationId);
 		if (
-			(!crypto_timing_safe_equal(proof.tokenHash, args.tokenHash) &&
-				!(grant && crypto_timing_safe_equal(grant.tokenHash, args.tokenHash))) ||
 			!installation ||
 			installation.status !== "enabled" ||
-			installation.pluginVersionId !== proof.pluginVersionId ||
-			!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: proof.serviceAccountId })) ||
+			!(await plugins_db_get_live_service_account(ctx, {
+				installation,
+				serviceAccountId: installation.serviceAccountId,
+			})) ||
 			![
 				"plugin.service.connect",
 				"workspace.files.write",
@@ -84,25 +76,50 @@ export const rollback = internalMutation({
 		) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
-		const [workspace, registration, writer] = await Promise.all([
+		const [workspace, registration] = await Promise.all([
 			ctx.db.get("organizations_workspaces", installation.workspaceId),
 			ctx.db
 				.query("plugins_service_registrations")
 				.withIndex("by_pluginName", (q) => q.eq("pluginName", installation.pluginName))
 				.first(),
-			ctx.db.get("plugins_external_file_writers", args.writerId),
 		]);
 		if (
 			!workspace ||
 			workspace.organizationId !== installation.organizationId ||
 			workspace.pluginDataPurgeStartedAt !== undefined ||
 			!registration?.scopes.includes("files:write") ||
-			!crypto_timing_safe_equal(registration.exchangeSecretHash, args.serviceSecretHash) ||
-			!writer ||
-			writer.installationId !== installation._id ||
-			(!change && grant?.destinationPathPrefix !== writer.rootPath)
+			!crypto_timing_safe_equal(registration.exchangeSecretHash, args.serviceSecretHash)
 		)
 			return Result({ _nay: { message: "Unauthenticated" } });
+		const grant = change
+			? await ctx.db.get("plugin_service_grants", change.grantId)
+			: await ctx.db
+					.query("plugin_service_grants")
+					.withIndex("by_tokenHash", (q) => q.eq("tokenHash", args.tokenHash))
+					.first();
+		const proof = change ?? grant;
+		// Report a proof mismatch only to the current registered service.
+		if (
+			!proof ||
+			proof.installationId !== installation._id ||
+			(!change &&
+				(!grant ||
+					grant.phase !== "processing" ||
+					!grant.scopes.includes("files:write") ||
+					grant.destinationPathPrefix !== writer.rootPath))
+		)
+			return Result({ _nay: { name: "reader_proof_mismatch", message: "Unauthenticated" } });
+		if (
+			installation.pluginVersionId !== proof.pluginVersionId ||
+			installation.serviceAccountId !== proof.serviceAccountId
+		)
+			return Result({ _nay: { message: "Unauthenticated" } });
+		// An old bearer proves only this undo. It cannot authorize new Files work.
+		if (
+			!crypto_timing_safe_equal(proof.tokenHash, args.tokenHash) &&
+			!(grant && crypto_timing_safe_equal(grant.tokenHash, args.tokenHash))
+		)
+			return Result({ _nay: { name: "reader_proof_mismatch", message: "Unauthenticated" } });
 		const rateLimit = await rate_limiter_limit_by_key(ctx, {
 			name: "public_api_principal",
 			key: `${installation._id}:rollback-readers`,
@@ -285,7 +302,13 @@ export async function plugins_external_file_readers_http_rollback(ctx: ActionCtx
 			key: `${rate_limiter_http_client_key(request)}:rollback-readers`,
 		});
 		if (rateLimit) return { status: 429, body: { message: rateLimit.message } } as const;
-		return { status: 401, body: { message: result._nay.message } } as const;
+		return {
+			status: 401,
+			body: {
+				message: result._nay.message,
+				...(result._nay.name === "reader_proof_mismatch" ? { code: "reader_proof_mismatch" } : {}),
+			},
+		} as const;
 	}
 	if (result._nay.name === "rate_limit") return { status: 429, body: { message: result._nay.message } } as const;
 	return {

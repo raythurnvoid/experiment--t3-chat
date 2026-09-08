@@ -1,5 +1,37 @@
 # Chitchat plugin page
 
+## Current rebuild contract (2026-09-08)
+
+Chitchat now uses its own Convex backend. Read the current
+`plugins/bonobo-plugin-chitchat/README.md` and verify the installed version before QA.
+The Press page route is still `/w/:organizationName/:workspaceName/plugins/chitchat/pages/chat`.
+An older installed bundle may still use the old backend even when the working tree has changed.
+
+- Use the installed frame and normal UI actions to create fresh test channels. Confirm messages in
+  Chitchat's own deployment, not `plugins_data_documents` on Press. The SDK client still targets Press;
+  native chat subscriptions use the separate Chitchat Convex client.
+- Keep two workspace members in separate authorized QA sessions for live messages, private access,
+  member removal/reinvite, and read-only behavior. Do not sign the user's QA profile in or out.
+- Check ordinary token renewal, a brief disconnect, and a lease that expires while the frame is idle.
+  Drafts and uncertain request IDs must stay. New sends must stop without a live lease and socket.
+  Permission changes may take up to the 30-second lease to close native access; delivered events close it sooner.
+- Use the new transcript status controls. Read the exact fresh `/chitchat-<generation>` root shown in
+  Transcript details. Verify raw Markdown markers, edits, replies, reactions, and rollover bytes there.
+  Leave all old `/chitchat` output untouched. Inspect separate channel-copy and README-index status.
+- Test Files sharing takeover, removed account grants, human/parent locks, and a lost reader result.
+  A blocked copy must not be shown as saved. A cancelled original reader operation cannot apply later.
+  A message already saved in native chat remains saved when Files sync is blocked.
+- Re-check accessible names and current frame selectors before using a selector from the older
+  recipes below. The current React tests are the starting map, not a substitute for live QA.
+
+This section states the current source contract. Record actual live evidence separately; it does not
+claim that the new installed frame has passed these checks.
+
+## Historical recipes through 0.7.x
+
+The remaining recipes preserve earlier observations. Old store/invoke API calls, cached root paths,
+and data-repair steps are not instructions for the native rebuild. Revalidate selectors before reuse.
+
 Driving `plugins/bonobo-plugin-chitchat` in its real frame. Read
 `references/plugin-marketplace.md` first for the bundle-swap background, and the plugin-frame
 section of `references/known-hazards.md` before the first frame command — `snapshot()` answers about

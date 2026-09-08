@@ -29,6 +29,24 @@ Membership says where you are. Access control says what you may do there.
   human/role grants and keeps independent service grants at their stored node.
 - Plugin reader refreshes preserve service-account grants. Editable metadata and plugin names
   never grant authority.
+- New external transcript grants may carry `externalPluginMembershipLifetime`. The human grant
+  lookup accepts that grant only while the matching Press membership lifetime is active. Removing
+  and reinviting an account does not restore its old private Files access. A real manual sharing
+  change detaches `plugins_external_file_bindings` and clears these tags on remaining grants.
+  Account grant edits and uninstall preserve the tags; old untagged grants keep their rules.
+  A role change that removes workspace chat read permission does not remove a separate Files
+  grant while workspace and channel membership remain active. Files grants are allow-only.
+  An attached external binding with 50 tagged human readers reserves one additional slot for its
+  own live installation account. Normal Files management and grant ceilings still apply. Other
+  accounts and a 51st human stay refused. Manual detachment restores the normal cap and keeps
+  existing grants; it does not remove an account that was already granted access.
+  If a native private change cannot commit after its Files readers were applied, the dedicated
+  `rollback-readers` door may restore the journaled previous readers without the lost sponsor ACL.
+  It requires the original reader receipt or operation ID and bearer proof, plus live
+  installation/version/account/service checks. Restoring applied readers checks the exact attached
+  revision and writer generation. An unapplied operation may be cancelled without changing readers.
+  Only current membership lifetimes are restored. Manual or newer sharing is never overwritten,
+  and account grants stay independent.
 
 ## Service accounts
 

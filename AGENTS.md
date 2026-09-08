@@ -194,6 +194,8 @@ For version-sensitive work, compare the local source or submodule version with `
 
 At the start of every implementation, review, or investigation task, decide whether the task should also update durable project knowledge or verification surfaces. This is a required evaluation step, not a requirement to add churn to every diff.
 
+For substantial implementations across schema, backend, UI, or repository boundaries, load [.agents/skills/goal-driven-planning-execution/SKILL.md](.agents/skills/goal-driven-planning-execution/SKILL.md) by default. Prefer this repo copy over a personal copy with the same name. The user does not need to repeat the workflow request. Keep its closing checks in the task plan: live Playwriter checks for affected app flows, independent correctness review, separate codebase-uniformity reviews, required checks, and updated docs. Create a goal only when the user explicitly asks for one. Small, clear edits do not need the full workflow.
+
 Consider whether the work needs:
 
 - Skill or README updates: update relevant `.agents/skills/**/SKILL.md`, skill references, `packages/**/README.md`, or playbooks when behavior, architecture, commands, workflows, integration details, or agent-facing guidance changes.
