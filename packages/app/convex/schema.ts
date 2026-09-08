@@ -1292,7 +1292,7 @@ const app_convex_schema = defineSchema({
 	}).index("by_name", ["name"]),
 	// #endregion files
 
-	// #region plugins
+	// #region plugins core
 	plugins_publisher_repositories: defineTable({
 		ownerUserId: v.id("users"),
 		repositoryUrl: v.string(),
@@ -1343,22 +1343,6 @@ const app_convex_schema = defineSchema({
 	})
 		.index("by_repository_name", ["repositoryId", "name"])
 		.index("by_ownerUser", ["ownerUserId"]),
-
-	/**
-	 * One doc per plugin name that registered an outside service for the service-grant exchange.
-	 * The host generates the `pse_` secret and stores only its hash; rotating writes a new hash and
-	 * the old secret stops working immediately. The exchange requires the accepted capability for
-	 * each registered scope, plus `plugin.service.connect`.
-	 */
-	plugins_service_registrations: defineTable({
-		pluginName: v.string(),
-		exchangeSecretHash: v.string(),
-		scopes: v.array(
-			v.union(v.literal("plugin_data:read"), v.literal("plugin_data:write"), v.literal("files:write")),
-		),
-		createdBy: v.id("users"),
-		updatedAt: v.number(),
-	}).index("by_pluginName", ["pluginName"]),
 
 	plugins_versions: defineTable({
 		name: v.string(),
@@ -1672,6 +1656,33 @@ const app_convex_schema = defineSchema({
 		.index("by_installation_name", ["installationId", "name"])
 		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
 
+	/**
+	 * One doc per publish, created before the publish uploads anything: it lists the keys the
+	 * publish is about to write, and a cleanup run is scheduled together with it. A successful
+	 * publish removes it after registering the version. A doc still here past `cleanupAt` means
+	 * the publish was interrupted: cleanup deletes its keys in bounded batches, keeping any key a
+	 * registered `(name, version, artifactHash)` version owns.
+	 */
+	plugins_publish_artifact_cleanup_attempts: defineTable({
+		repositoryId: v.id("plugins_publisher_repositories"),
+		pluginName: v.string(),
+		version: v.string(),
+		artifactHash: v.string(),
+		/** Fresh id embedded in every key, making one attempt's uploads impossible to share or delete from another. */
+		uploadId: v.string(),
+		/** At most 65 object keys: 64 manifest-capped files plus dist/bonobo.plugin.json. */
+		r2Keys: v.array(v.string()),
+		/** Cleanup never runs before this deadline, giving the owning publish action time to finish. */
+		cleanupAt: v.number(),
+		updatedAt: v.number(),
+	})
+		.index("by_cleanupAt", ["cleanupAt"])
+		.index("by_repository_cleanupAt", ["repositoryId", "cleanupAt"])
+		.index("by_pluginName_cleanupAt", ["pluginName", "cleanupAt"])
+		.index("by_pluginName", ["pluginName"]),
+	// #endregion plugins core
+
+	// #region plugins runtime
 	plugins_workspace_event_handlers: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
@@ -1833,32 +1844,9 @@ const app_convex_schema = defineSchema({
 		.index("by_installation", ["installationId"])
 		.index("by_organization_workspace_user", ["organizationId", "workspaceId", "userId"])
 		.index("by_user", ["userId"]),
+	// #endregion plugins runtime
 
-	/**
-	 * One doc per publish, created before the publish uploads anything: it lists the keys the
-	 * publish is about to write, and a cleanup run is scheduled together with it. A successful
-	 * publish removes it after registering the version. A doc still here past `cleanupAt` means
-	 * the publish was interrupted: cleanup deletes its keys in bounded batches, keeping any key a
-	 * registered `(name, version, artifactHash)` version owns.
-	 */
-	plugins_publish_artifact_cleanup_attempts: defineTable({
-		repositoryId: v.id("plugins_publisher_repositories"),
-		pluginName: v.string(),
-		version: v.string(),
-		artifactHash: v.string(),
-		/** Fresh id embedded in every key, making one attempt's uploads impossible to share or delete from another. */
-		uploadId: v.string(),
-		/** At most 65 object keys: 64 manifest-capped files plus dist/bonobo.plugin.json. */
-		r2Keys: v.array(v.string()),
-		/** Cleanup never runs before this deadline, giving the owning publish action time to finish. */
-		cleanupAt: v.number(),
-		updatedAt: v.number(),
-	})
-		.index("by_cleanupAt", ["cleanupAt"])
-		.index("by_repository_cleanupAt", ["repositoryId", "cleanupAt"])
-		.index("by_pluginName_cleanupAt", ["pluginName", "cleanupAt"])
-		.index("by_pluginName", ["pluginName"]),
-
+	// #region plugins data
 	/**
 	 * Plugin-owned document store. A plugin keeps its structured data here instead of adding tables
 	 * to the core app schema, the same way installation configuration keeps plugin settings out of
@@ -2320,6 +2308,25 @@ const app_convex_schema = defineSchema({
 		.index("by_node", ["nodeId"])
 		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
 
+	// #endregion plugins data
+
+	// #region plugins services
+	/**
+	 * One doc per plugin name that registered an outside service for the service-grant exchange.
+	 * The host generates the `pse_` secret and stores only its hash; rotating writes a new hash and
+	 * the old secret stops working immediately. The exchange requires the accepted capability for
+	 * each registered scope, plus `plugin.service.connect`.
+	 */
+	plugins_service_registrations: defineTable({
+		pluginName: v.string(),
+		exchangeSecretHash: v.string(),
+		scopes: v.array(
+			v.union(v.literal("plugin_data:read"), v.literal("plugin_data:write"), v.literal("files:write")),
+		),
+		createdBy: v.id("users"),
+		updatedAt: v.number(),
+	}).index("by_pluginName", ["pluginName"]),
+
 	/**
 	 * Bearer grant for a service that acts for one installation (`psg_` tokens, stored hashed). It is
 	 * bound to the installation, not to a user session, so an external worker can finish work the
@@ -2530,7 +2537,7 @@ const app_convex_schema = defineSchema({
 		])
 		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
 
-	// #endregion plugins
+	// #endregion plugins services
 
 	// #region activities
 	/**
