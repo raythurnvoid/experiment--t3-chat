@@ -11,6 +11,7 @@ import {
 import { v } from "convex/values";
 import { exportJWK, importPKCS8, importSPKI, SignJWT } from "jose";
 import { internal } from "./_generated/api.js";
+import { plugins_chitchat_db_record_events, plugins_chitchat_db_record_memberships } from "./plugins_chitchat.ts";
 import { type RegisteredMutation } from "convex/server";
 import app_convex_schema from "./schema.ts";
 import { doc } from "convex-helpers/validators";
@@ -314,25 +315,36 @@ async function db_upsert_anagraphic(
 		now: number;
 	},
 ) {
+	const previous = args.anagraphicId ? await ctx.db.get("users_anagraphics", args.anagraphicId) : null;
 	if (args.anagraphicId) {
 		await ctx.db.patch("users_anagraphics", args.anagraphicId, {
 			displayName: args.displayName,
 			email: args.email,
 			updatedAt: args.now,
 		});
-		return;
+	} else {
+		const anagraphicId = await ctx.db.insert("users_anagraphics", {
+			userId: args.userId,
+			displayName: args.displayName,
+			email: args.email,
+			updatedAt: args.now,
+		});
+		await ctx.db.patch("users", args.userId, { anagraphic: anagraphicId });
 	}
-
-	const anagraphicId = await ctx.db.insert("users_anagraphics", {
-		userId: args.userId,
-		displayName: args.displayName,
-		email: args.email,
-		updatedAt: args.now,
-	});
-
-	await ctx.db.patch("users", args.userId, {
-		anagraphic: anagraphicId,
-	});
+	if (previous?.displayName !== args.displayName) {
+		const member = await ctx.db
+			.query("plugins_chitchat_memberships")
+			.withIndex("by_user", (q) => q.eq("userId", args.userId))
+			.first();
+		if (member) {
+			await plugins_chitchat_db_record_events(ctx, [
+				{
+					scope: { kind: "user", userId: args.userId },
+					event: { kind: "refresh", reason: "members" },
+				},
+			]);
+		}
+	}
 }
 
 function users_resolve_user_is_bad_request_message(message: string) {
@@ -780,6 +792,10 @@ export const resolve_user = internalMutation({
 				now,
 			});
 
+			await plugins_chitchat_db_record_memberships(
+				ctx,
+				reactivatedMemberships.map((membership) => ({ membership, active: true })),
+			);
 			return Result({ _yay: { userId: deletedUser._id, restoredDeletedAccount: true } });
 		}
 

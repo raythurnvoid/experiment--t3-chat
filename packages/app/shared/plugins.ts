@@ -361,7 +361,7 @@ export function plugins_data_is_valid_name(raw: string) {
 
 const MAX_OUTBOUND_ORIGIN_LENGTH = 255;
 
-export function plugins_validate_origin(raw: string) {
+export function plugins_validate_origin(raw: string, allowWebSocket = false) {
 	const trimmed = raw.trim();
 	if (trimmed.length > MAX_OUTBOUND_ORIGIN_LENGTH) {
 		return Result({
@@ -374,18 +374,18 @@ export function plugins_validate_origin(raw: string) {
 	} catch {
 		return Result({ _nay: { message: "Origin must be a valid URL" } });
 	}
-	if (url.protocol !== "https:") {
-		return Result({ _nay: { message: "Origin must use https" } });
+	if (url.protocol !== "https:" && !(allowWebSocket && url.protocol === "wss:")) {
+		return Result({ _nay: { message: allowWebSocket ? "Origin must use https or wss" : "Origin must use https" } });
 	}
 	if (url.username || url.password) {
 		return Result({ _nay: { message: "Origin must not include credentials" } });
 	}
 	if (url.pathname !== "/" || url.search || url.hash) {
-		return Result({ _nay: { message: "Origin must be a bare https origin without path, query, or hash" } });
+		return Result({ _nay: { message: "Origin must be a bare origin without path, query, or hash" } });
 	}
 	const lowered = trimmed.toLowerCase();
 	if (lowered !== url.origin && lowered !== `${url.origin}/`) {
-		return Result({ _nay: { message: "Origin must be a bare https origin without path, query, or hash" } });
+		return Result({ _nay: { message: "Origin must be a bare origin without path, query, or hash" } });
 	}
 	return Result({ _yay: url.origin });
 }
@@ -1034,7 +1034,8 @@ export function plugins_validate_manifest(input: unknown) {
 
 	const uiOutboundOrigins = new Set<string>();
 	for (const origin of parsed.data.uiOutboundOrigins) {
-		const validated = plugins_validate_origin(origin);
+		// Live UI subscriptions need their own declared secure WebSocket origin.
+		const validated = plugins_validate_origin(origin, true);
 		if (validated._nay) {
 			return Result({ _nay: { message: validated._nay.message } });
 		}

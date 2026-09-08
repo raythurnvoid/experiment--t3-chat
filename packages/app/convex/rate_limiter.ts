@@ -160,6 +160,7 @@ const rate_limiter_CONFIG = {
 	//
 	// Both frame kinds exchange here: a plugin page and a file view. Keyed by session id, and only a
 	// token that resolved to a live session reaches the charge — a garbage token is refused before it.
+	// Chitchat also uses this rate for its 30-second leases, under a separate session-key prefix.
 	plugins_ui_session_jwt_exchange: {
 		kind: "token bucket",
 		rate: 12,

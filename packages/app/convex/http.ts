@@ -9,6 +9,8 @@ import { plugins_data_http_routes } from "./plugins_data_http_routes.ts";
 import { plugins_invoke_http_routes } from "./plugins_invoke_http_routes.ts";
 import { plugins_runtime_http_routes } from "./plugins_runtime_http_routes.ts";
 import { plugins_service_http_routes } from "./plugins_service_http_routes.ts";
+import { plugins_chitchat_http_routes } from "./plugins_chitchat_http_routes.ts";
+import { plugins_external_files_http_routes } from "./plugins_external_files_http_routes.ts";
 import { plugins_ui_http_routes } from "./plugins_ui_http_routes.ts";
 import { public_api_files_list_http_routes } from "./public_api_files_list_http.ts";
 import { public_api_http_routes } from "./public_api_http_routes.ts";
@@ -42,6 +44,8 @@ plugins_invoke_http_routes(appCors);
 r2_http_routes(appCors);
 plugins_runtime_http_routes(appCors);
 plugins_service_http_routes(appCors);
+plugins_chitchat_http_routes(appCors);
+plugins_external_files_http_routes(appCors);
 plugins_ui_http_routes(http);
 billing_http_routes(http);
 

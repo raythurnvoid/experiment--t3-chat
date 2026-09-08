@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import { internal } from "./_generated/api.js";
+import { plugins_chitchat_db_record_events, plugins_chitchat_db_record_memberships } from "./plugins_chitchat.ts";
 import {
 	internalMutation,
 	internalQuery,
@@ -1254,6 +1255,26 @@ export const invite_user_to_organization_workspace = mutation({
 			}),
 		]);
 
+		const joinedWorkspaceIds =
+			isDefaultWorkspace || existingHomeMembership ? [workspace._id] : [defaultWorkspaceId, workspace._id];
+		const joinedMemberships = await Promise.all(
+			joinedWorkspaceIds.map((workspaceId) =>
+				ctx.db
+					.query("organizations_workspaces_users")
+					.withIndex("by_active_user_organization_workspace", (q) =>
+						q
+							.eq("active", true)
+							.eq("userId", userIdToAdd)
+							.eq("organizationId", organization._id)
+							.eq("workspaceId", workspaceId),
+					)
+					.first(),
+			),
+		);
+		await plugins_chitchat_db_record_memberships(
+			ctx,
+			joinedMemberships.flatMap((membership) => (membership ? [{ membership, active: true }] : [])),
+		);
 		return Result({ _yay: null });
 	},
 });
@@ -1536,6 +1557,11 @@ export const remove_user_from_organization = mutation({
 				.collect()
 				.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)))),
 		]);
+
+		await plugins_chitchat_db_record_memberships(
+			ctx,
+			memberships.map((membership) => ({ membership, active: false })),
+		);
 
 		if (cleanupPending) {
 			// Keep the marked memberships until every grant is gone. Invite can use the marker to
@@ -2066,6 +2092,12 @@ export const delete_organization = mutation({
 				.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_roles", doc._id)))),
 		]);
 
+		await plugins_chitchat_db_record_events(ctx, [
+			{
+				scope: { kind: "organization", organizationId: organization._id },
+				event: { kind: "revoked", reason: "organization_deleted" },
+			},
+		]);
 		const affectedUserIds = new Set<Id<"users">>(userIdsPerWorkspace.flat());
 
 		const quota = await quotas_db_get(ctx, {
@@ -2245,6 +2277,12 @@ export const delete_workspace = mutation({
 		// The missing workspace and memberships revoke access now.
 		// Grant counts grow with file shares, so the worker drains them in batches.
 		await ctx.db.delete("organizations_workspaces", workspace._id);
+		await plugins_chitchat_db_record_events(ctx, [
+			{
+				scope: { kind: "workspace", organizationId: organization._id, workspaceId: workspace._id },
+				event: { kind: "revoked", reason: "workspace_deleted" },
+			},
+		]);
 		for (const userId of affectedUserIds) {
 			await organizations_db_ensure_default_organization_and_workspace_for_user(ctx, {
 				userId,

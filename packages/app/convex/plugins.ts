@@ -21,6 +21,7 @@ import {
 	type MutationCtx,
 } from "./_generated/server.js";
 import { components, internal } from "./_generated/api.js";
+import { plugins_chitchat_db_record_events } from "./plugins_chitchat.ts";
 import app_convex_schema from "./schema.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import type { ai_chat_ModelId } from "../shared/ai-chat.ts";
@@ -3477,6 +3478,11 @@ export const set_plugin_service_registration = mutation({
 			});
 		}
 
+		if (args.pluginName === "chitchat") {
+			await plugins_chitchat_db_record_events(ctx, [
+				{ scope: { kind: "all" }, event: { kind: "refresh", reason: "installation" } },
+			]);
+		}
 		return Result({ _yay: { exchangeSecret } });
 	},
 });
@@ -3518,6 +3524,11 @@ export const remove_plugin_service_registration = mutation({
 			.first();
 		if (existing) {
 			await ctx.db.delete("plugins_service_registrations", existing._id);
+			if (args.pluginName === "chitchat") {
+				await plugins_chitchat_db_record_events(ctx, [
+					{ scope: { kind: "all" }, event: { kind: "refresh", reason: "installation" } },
+				]);
+			}
 		}
 		return Result({ _yay: null });
 	},
@@ -3863,6 +3874,14 @@ export const install_version = mutation({
 			),
 		);
 
+		if (pluginVersion.name === "chitchat") {
+			await plugins_chitchat_db_record_events(ctx, [
+				{
+					scope: { kind: "installation", installationId },
+					event: { kind: "refresh", reason: "installation" },
+				},
+			]);
+		}
 		return Result({ _yay: { installationId } });
 	},
 });
@@ -3950,6 +3969,12 @@ export const set_installation_service_account = mutation({
 		});
 		if (installation.serviceAccountId !== account._id) {
 			await ctx.db.patch("plugins_workspace_installations", installation._id, { serviceAccountId: account._id });
+			await plugins_chitchat_db_record_events(ctx, [
+				{
+					scope: { kind: "installation", installationId: installation._id },
+					event: { kind: "refresh", reason: "account" },
+				},
+			]);
 		}
 
 		return Result({ _yay: null });
@@ -4083,6 +4108,12 @@ export const uninstall_version = mutation({
 			workspaceId: installation.workspaceId,
 			installationId: installation._id,
 		});
+		await plugins_chitchat_db_record_events(ctx, [
+			{
+				scope: { kind: "installation", installationId: installation._id },
+				event: { kind: "revoked", reason: "uninstalled" },
+			},
+		]);
 
 		return Result({ _yay: null });
 	},
@@ -5635,6 +5666,11 @@ export const hard_delete_plugin_from_registry = internalMutation({
 				pluginName: args.pluginName,
 				createdAt: Date.now(),
 			});
+			if (args.pluginName === "chitchat") {
+				await plugins_chitchat_db_record_events(ctx, [
+					{ scope: { kind: "all" }, event: { kind: "revoked", reason: "uninstalled" } },
+				]);
+			}
 		}
 		// Stop every producer before the first drain pass. The disabled status is durable, and every
 		// page, run, and service door reads it in the same transaction as its write. Keep this phase

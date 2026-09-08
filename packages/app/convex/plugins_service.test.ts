@@ -237,6 +237,72 @@ async function exchange_token(
 }
 
 describe("/api/internal/plugins/service-grants/exchange", () => {
+	test("a files-only service can exchange, seal, and recover a lost renewal response", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t, {
+			pluginName: "chitchat", acceptedCapabilities: ["plugin.service.connect", "workspace.files.write"],
+			registration: { scopes: ["files:write"] },
+		});
+		const pageToken = await seed_page_token(t, fixture);
+		const exchanged = await t.fetch(EXCHANGE_PATH, { method: "POST", headers: service_headers(pageToken), body: JSON.stringify({ requestId: "connect-1" }) });
+		expect(exchanged.status, await exchanged.clone().text()).toBe(200);
+		const original = await exchanged.json() as { token: string; scopes: string[] };
+		expect(original.scopes).toEqual([]);
+		const duplicate = await t.fetch(EXCHANGE_PATH, { method: "POST", headers: service_headers(pageToken), body: JSON.stringify({ requestId: "connect-1" }) });
+		expect(duplicate.status).toBe(200);
+		expect(await duplicate.json()).toEqual(original);
+		expect(await read_grants(t)).toHaveLength(1);
+		const sealed = await t.fetch(SEAL_PROCESSING_PATH, { method: "POST", headers: service_headers(original.token),
+			body: JSON.stringify({ requestId: "seal-1", destinationPathPrefix: "/chitchat-fresh" }) });
+		expect(sealed.status, await sealed.clone().text()).toBe(200);
+		const processing = await sealed.json() as { token: string; expiresAt: number };
+		const renewed = await t.fetch(RENEW_PATH, { method: "POST", headers: service_headers(processing.token), body: JSON.stringify({ requestId: "renew-1" }) });
+		expect(renewed.status).toBe(200);
+		const rotated = await renewed.json() as { token: string; expiresAt: number };
+		expect(rotated.expiresAt).toBe(processing.expiresAt);
+		expect(rotated.token).not.toBe(processing.token);
+		const ordinaryOldToken = await t.fetch(RENEW_PATH, { method: "POST", headers: service_headers(processing.token), body: JSON.stringify({ requestId: "another-renewal" }) });
+		expect(ordinaryOldToken.status).toBe(401);
+		const recovered = await t.fetch("/api/internal/plugins/service-grants/recover", { method: "POST", headers: service_headers(processing.token),
+			body: JSON.stringify({ operation: "renew", requestId: "renew-1" }) });
+		expect(recovered.status, await recovered.clone().text()).toBe(200);
+		expect(await recovered.json()).toMatchObject(rotated);
+		const receipts = await t.run(async (ctx) => await ctx.db.query("plugin_service_grant_requests").collect());
+		expect(receipts).toHaveLength(3);
+		expect(JSON.stringify(receipts)).not.toContain(rotated.token);
+		await t.run(async (ctx) => {
+			const grant = await ctx.db.query("plugin_service_grants").withIndex("by_tokenHash", (q) => q.eq("tokenHash", receipts[2]!.responseTokenHash)).first();
+			await ctx.db.patch("plugin_service_grants", grant!._id, { revokedAt: Date.now() });
+		});
+		const revoked = await t.fetch("/api/internal/plugins/service-grants/recover", { method: "POST", headers: service_headers(processing.token),
+			body: JSON.stringify({ operation: "renew", requestId: "renew-1" }) });
+		expect(revoked.status).toBe(401);
+	});
+
+	test("a lost grant response requires the same request and current service secret", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const pageToken = await seed_page_token(t, fixture);
+		const exchanged = await t.fetch(EXCHANGE_PATH, { method: "POST", headers: service_headers(pageToken), body: JSON.stringify({ requestId: "connect" }) });
+		expect(exchanged.status).toBe(200);
+		const wrongSecret = await t.fetch("/api/internal/plugins/service-grants/recover", { method: "POST", headers: service_headers(pageToken, { secret: "wrong" }),
+			body: JSON.stringify({ operation: "exchange", requestId: "connect" }) });
+		expect(wrongSecret.status).toBe(401);
+		await t.run(async (ctx) => {
+			const receipt = (await ctx.db.query("plugin_service_grant_requests").first())!;
+			await ctx.db.patch("plugin_service_grant_requests", receipt._id, { expiresAt: Date.now() - 1 });
+		});
+		await t.mutation(internal.plugins_service_grant_requests.cleanup, {});
+		const expired = await t.fetch("/api/internal/plugins/service-grants/recover", { method: "POST", headers: service_headers(pageToken),
+			body: JSON.stringify({ operation: "exchange", requestId: "connect" }) });
+		expect(expired.status).toBe(400);
+		expect(await expired.json()).toEqual({ message: "Reconnect Files sync" });
+		const duplicate = await t.fetch(EXCHANGE_PATH, { method: "POST", headers: service_headers(pageToken), body: JSON.stringify({ requestId: "connect" }) });
+		expect(duplicate.status).toBe(400);
+		expect(await read_grants(t)).toHaveLength(1);
+		expect(await t.run(async (ctx) => (await ctx.db.query("plugin_service_grant_requests").first())?.ciphertext)).toBeNull();
+	});
+
 	test("trades a live page token for a grant the service can really write with", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);

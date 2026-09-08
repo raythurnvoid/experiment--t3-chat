@@ -12,7 +12,6 @@ import {
 } from "./plugins_runtime.ts";
 import * as activities from "./activities.ts";
 import plugin_runner, { type Env as PluginRunnerEnv } from "../../plugin-runner/src/index.ts";
-import { chat_invoke_backend } from "../../../plugins/bonobo-plugin-chitchat/src/chat-invoke.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import {
@@ -12091,7 +12090,7 @@ describe("plugins backend invoke runs", () => {
 	});
 
 	test.each([200, 400, 409, 500, "too large"] as const)(
-		"passes an actual runner %s reply through Convex and the Chitchat parser",
+		"passes an actual runner %s reply through the Convex HTTP route",
 		async (outcome) => {
 			const t = test_convex();
 			const fixture = await install_invoke_plugin(t, {
@@ -12143,33 +12142,17 @@ describe("plugins backend invoke runs", () => {
 					expect(request.url).toBe(`${process.env.PLUGIN_RUNNER_URL}/internal/plugin-runner/run`);
 					return await plugin_runner.fetch(request, env, context);
 				});
-			const fetchJson = vi.fn(async (_path: string, body: Record<string, unknown>) => {
-				const response = await post_invoke(t, token, JSON.stringify(body));
-				return { status: response.status, body: await response.json() };
-			});
-			const client = { fetchJson } as unknown as Parameters<typeof chat_invoke_backend>[0];
 			const input = { clientRequestId: "same-request", text: "message" };
-			const result = await chat_invoke_backend(client, "message-send", input);
-			expect(fetchJson).toHaveBeenCalledExactlyOnceWith("/api/v1/plugin-backend/invoke", {
-				endpoint: "message-send",
-				input,
-			});
+			const response = await post_invoke(t, token, JSON.stringify({ endpoint: "message-send", input }));
+			const result: unknown = await response.json();
 			expect(runnerFetch).toHaveBeenCalledOnce();
-			if (outcome === 200) expect(result).toEqual({ _yay: { messageId: "saved" } });
-			else if (outcome === "too large")
-				expect(result).toEqual({
-					_nay: {
-						name: "response_too_large",
-						message: "The backend response was too large. Your changes may already be saved.",
-					},
-				});
-			else
-				expect(result).toEqual({
-					_nay: {
-						name: outcome === 409 ? "conflict" : outcome === 500 ? "unavailable" : "refused",
-						message: "Specific plugin refusal",
-					},
-				});
+			if (outcome === "too large") {
+				expect(response.status).toBe(500);
+				expect(result).toMatchObject({ code: "response_too_large", runId: expect.any(String) });
+			} else {
+				expect(response.status).toBe(200);
+				expect(result).toEqual({ runId: expect.any(String), pluginStatus: outcome, output });
+			}
 			expect(await t.run((ctx) => ctx.db.query("plugins_event_runs").first())).toMatchObject({
 				status: outcome === 200 ? "succeeded" : "failed",
 			});

@@ -12,6 +12,8 @@ import { internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { RegisteredMutation, RegisteredQuery } from "convex/server";
 import { z } from "zod";
+import { doc } from "convex-helpers/validators";
+import app_convex_schema from "./schema.ts";
 import { access_control_db_can_act_on_file_node, access_control_db_has_permission } from "./access_control.ts";
 import {
 	ACTIVITIES_TIMEOUT_MAX_MS,
@@ -108,6 +110,15 @@ import {
 } from "./public_api_http_auth.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { public_api_service_uploads_db_validate_node_target } from "./public_api_service_uploads.ts";
+import {
+	plugins_external_files_db_check_write,
+	plugins_external_files_db_record_write,
+} from "./plugins_external_files_access.ts";
+import {
+	plugins_service_grant_requests_db_recover,
+	plugins_service_grant_requests_db_save,
+	plugins_service_grant_requests_db_source,
+} from "./plugins_service_grant_requests.ts";
 
 /**
  * Local structural mirror of `stage_trusted_yjs_update`'s Result. Keep it local instead of
@@ -554,6 +565,7 @@ export const create_plugin_service_grant = internalMutation({
 		requireAllRequestedScopes: v.optional(v.boolean()),
 		destinationPathPrefix: v.union(v.string(), v.null()),
 		phase: v.union(v.literal("interactive"), v.literal("processing")),
+		lifecycle: v.optional(v.object({ presented: v.string(), requestId: v.string(), serviceSecretHash: v.string() })),
 		now: v.number(),
 	},
 	returns: v_result({
@@ -566,6 +578,31 @@ export const create_plugin_service_grant = internalMutation({
 		}),
 	}),
 	handler: async (ctx, args) => {
+		const lifecycle = args.lifecycle
+			? {
+					...args.lifecycle,
+					operation: args.phase === "interactive" ? ("exchange" as const) : ("seal" as const),
+					fingerprint:
+						args.phase === "interactive" ? "{}" : JSON.stringify({ destinationPathPrefix: args.destinationPathPrefix }),
+				}
+			: null;
+		if (lifecycle) {
+			const prior = await plugins_service_grant_requests_db_recover(ctx, lifecycle);
+			if (prior._nay) return prior;
+			if (prior._yay) {
+				const { token, grantId, principalKey, scopes, expiresAt } = prior._yay;
+				return Result({ _yay: { token, grantId, principalKey, scopes, expiresAt } });
+			}
+			const source = await plugins_service_grant_requests_db_source(ctx, lifecycle);
+			if (
+				!source ||
+				source.installation._id !== args.installationId ||
+				source.actorUserId !== args.actorUserId ||
+				args.requestedScopes.some((scope) => !source.registeredScopes.includes(scope))
+			) {
+				return Result({ _nay: { message: "Unauthenticated" } });
+			}
+		}
 		const [installation, workspace] = await Promise.all([
 			ctx.db.get("plugins_workspace_installations", args.installationId),
 			ctx.db.get("organizations_workspaces", args.workspaceId),
@@ -632,7 +669,18 @@ export const create_plugin_service_grant = internalMutation({
 		}
 
 		if (scopes.length === 0) {
-			return Result({ _nay: { message: "At least one scope is required" } });
+			const registration = await ctx.db
+				.query("plugins_service_registrations")
+				.withIndex("by_pluginName", (q) => q.eq("pluginName", installation.pluginName))
+				.first();
+			if (
+				args.phase !== "interactive" ||
+				args.requestedScopes.length !== 0 ||
+				!registration?.scopes.includes("files:write") ||
+				!installation.acceptedCapabilities.includes("workspace.files.write")
+			) {
+				return Result({ _nay: { message: "At least one scope is required" } });
+			}
 		}
 		if (args.requireAllRequestedScopes && scopes.length !== requested.size) {
 			return Result({ _nay: { message: "Permission denied" } });
@@ -674,6 +722,13 @@ export const create_plugin_service_grant = internalMutation({
 			expiresAt,
 			updatedAt: args.now,
 		});
+		if (lifecycle) {
+			await plugins_service_grant_requests_db_save(ctx, {
+				...lifecycle,
+				grant: (await ctx.db.get("plugin_service_grants", grantId))!,
+				token,
+			});
+		}
 
 		return Result({
 			_yay: {
@@ -706,6 +761,7 @@ export const create_plugin_service_grant = internalMutation({
 export const rotate_plugin_service_grant = internalMutation({
 	args: {
 		presented: v.string(),
+		lifecycle: v.optional(v.object({ requestId: v.string(), serviceSecretHash: v.string() })),
 		now: v.number(),
 	},
 	returns: v_result({
@@ -718,6 +774,19 @@ export const rotate_plugin_service_grant = internalMutation({
 		}),
 	}),
 	handler: async (ctx, args) => {
+		const lifecycle = args.lifecycle
+			? { ...args.lifecycle, presented: args.presented, operation: "renew" as const, fingerprint: "{}" }
+			: null;
+		if (lifecycle) {
+			const prior = await plugins_service_grant_requests_db_recover(ctx, lifecycle);
+			if (prior._nay) return prior;
+			if (prior._yay) {
+				const { token, grantId, principalKey, scopes, expiresAt } = prior._yay;
+				return Result({ _yay: { token, grantId, principalKey, scopes, expiresAt } });
+			}
+			if (!(await plugins_service_grant_requests_db_source(ctx, lifecycle)))
+				return Result({ _nay: { message: "Unauthenticated" } });
+		}
 		const presentedHash = await crypto_sha256_hex(args.presented);
 		const grant = await ctx.db
 			.query("plugin_service_grants")
@@ -789,6 +858,13 @@ export const rotate_plugin_service_grant = internalMutation({
 			expiresAt,
 			updatedAt: args.now,
 		});
+		if (lifecycle) {
+			await plugins_service_grant_requests_db_save(ctx, {
+				...lifecycle,
+				grant: (await ctx.db.get("plugin_service_grants", grant._id))!,
+				token,
+			});
+		}
 
 		return Result({
 			_yay: {
@@ -2080,9 +2156,30 @@ export async function public_api_db_revalidate_file_write_principal(
 		principalRef: Infer<typeof file_write_principal_ref_validator>;
 		path: string;
 		expectedParentNodeId?: Id<"files_nodes">;
+		externalFileWrite?: Doc<"public_api_file_write_stages">["externalFileWrite"];
 		now: number;
 	},
 ) {
+	if (args.externalFileWrite !== undefined) {
+		if (args.principalRef.kind !== "plugin_service" || !args.expectedParentNodeId) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+		const checked = await plugins_external_files_db_check_write(ctx, {
+			grantId: args.principalRef.grantId,
+			path: args.path,
+			expectedParentNodeId: args.expectedParentNodeId,
+			write: args.externalFileWrite,
+		});
+		if (checked._nay) return checked;
+		if (
+			checked._yay.serviceGrant.actorUserId !== args.userId ||
+			checked._yay.serviceGrant.organizationId !== args.organizationId ||
+			checked._yay.serviceGrant.workspaceId !== args.workspaceId
+		) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+		return checked;
+	}
 	const targetNode = await db_get_active_node_at_path(ctx, args);
 	const ancestorNode = targetNode ?? (await db_get_deepest_existing_ancestor(ctx, args));
 	const resourceScope: files_nodes_WriteContext["resourceScope"] = targetNode
@@ -2654,6 +2751,7 @@ export const prepare_file_write = internalMutation({
 		principalRef: file_write_principal_ref_validator,
 		path: v.string(),
 		expectedParentNodeId: v.optional(v.string()),
+		externalFileWrite: doc(app_convex_schema, "public_api_file_write_stages").fields.externalFileWrite,
 		overwrite: v.union(v.literal("replace"), v.literal("fail")),
 		contentSize: v.number(),
 		yjsSnapshotSize: v.number(),
@@ -2688,12 +2786,17 @@ export const prepare_file_write = internalMutation({
 			principalRef: args.principalRef,
 			path: args.path,
 			expectedParentNodeId,
+			externalFileWrite: args.externalFileWrite,
 			now,
 		});
 		if (revalidated._nay) {
 			return revalidated;
 		}
-		if (expectedParentNodeId !== undefined && revalidated._yay.pluginRun?.event !== "ui.invoke.requested") {
+		if (
+			expectedParentNodeId !== undefined &&
+			args.externalFileWrite === undefined &&
+			revalidated._yay.pluginRun?.event !== "ui.invoke.requested"
+		) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
@@ -2739,6 +2842,7 @@ export const prepare_file_write = internalMutation({
 					: { credentialId: args.principalRef.credentialId }),
 			path: args.path,
 			expectedParentNodeId,
+			externalFileWrite: args.externalFileWrite,
 			overwrite: args.overwrite,
 			contentType: args.contentType,
 			yjsRootKind: args.yjsRootKind,
@@ -2810,6 +2914,7 @@ export const publish_file_write = internalMutation({
 			principalRef,
 			path: stage.path,
 			expectedParentNodeId: stage.expectedParentNodeId,
+			externalFileWrite: stage.externalFileWrite,
 			now,
 		});
 		if (revalidated._nay) {
@@ -2831,6 +2936,18 @@ export const publish_file_write = internalMutation({
 			ctx.db.get("files_r2_assets", stage.yjsSnapshotAssetId),
 			ctx.db.get("files_r2_assets", stage.contentSnapshotAssetId),
 		]);
+		if ("receipt" in revalidated._yay && revalidated._yay.receipt) {
+			await db_abandon_file_write_stage_conflict(ctx, {
+				stage,
+				putAssetIds:
+					args.nonCollaborative === true
+						? [stage.contentSnapshotAssetId]
+						: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
+				refusalMessage: "This write was already published",
+				deletionReason: "failed_create",
+			});
+			return Result({ _yay: { nodeId: revalidated._yay.receipt.nodeId } });
+		}
 		if (!yjsSnapshotAsset || !contentSnapshotAsset) {
 			// Unreachable while the stage exists: cleanup deletes the asset docs and the stage together.
 			throw should_never_happen("public_api_file_write_stages doc with missing asset docs", {
@@ -3124,6 +3241,14 @@ export const publish_file_write = internalMutation({
 		});
 
 		await ctx.db.delete("public_api_file_write_stages", stage._id);
+		if (stage.externalFileWrite && "fingerprint" in revalidated._yay) {
+			const node = await ctx.db.get("files_nodes", created._yay);
+			await plugins_external_files_db_record_write(ctx, {
+				stage,
+				node: node!,
+				fingerprint: revalidated._yay.fingerprint,
+			});
+		}
 
 		return Result({ _yay: { nodeId: created._yay } });
 	},
@@ -3187,6 +3312,7 @@ export const publish_file_fill = internalMutation({
 			principalRef,
 			path: stage.path,
 			expectedParentNodeId: stage.expectedParentNodeId,
+			externalFileWrite: stage.externalFileWrite,
 			now,
 		});
 		if (revalidated._nay) {
@@ -3201,6 +3327,15 @@ export const publish_file_fill = internalMutation({
 			return revalidated;
 		}
 
+		if ("receipt" in revalidated._yay && revalidated._yay.receipt) {
+			await db_abandon_file_write_stage_conflict(ctx, {
+				stage,
+				putAssetIds: [stage.contentSnapshotAssetId],
+				refusalMessage: "This write was already published",
+				deletionReason: "failed_create",
+			});
+			return Result({ _yay: { nodeId: revalidated._yay.receipt.nodeId } });
+		}
 		const writeContext = revalidated._yay.writeContext;
 		const serviceAccountId =
 			writeContext.writer.kind === "service_account" ? writeContext.writer.serviceAccountId : undefined;
@@ -3356,6 +3491,14 @@ export const publish_file_fill = internalMutation({
 
 		await ctx.db.delete("public_api_file_write_stages", stage._id);
 
+		if (stage.externalFileWrite && "fingerprint" in revalidated._yay) {
+			const node = await ctx.db.get("files_nodes", fileNode._id);
+			await plugins_external_files_db_record_write(ctx, {
+				stage,
+				node: node!,
+				fingerprint: revalidated._yay.fingerprint,
+			});
+		}
 		return Result({ _yay: { nodeId: fileNode._id } });
 	},
 });
@@ -3904,9 +4047,14 @@ export const create_file_upload_targets = internalMutation({
 		for (const rawItem of args.items) {
 			// Existing literal targets win, including hidden files. Only missing paths are cased.
 			let existingNode = await files_db_get_visible_node_by_path(ctx, {
-				organizationId: args.organizationId, workspaceId: args.workspaceId, path: rawItem.path,
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				path: rawItem.path,
 			});
-			const item = { ...rawItem, path: existingNode ? rawItem.path : files_normalize_special_node_path("file", rawItem.path) };
+			const item = {
+				...rawItem,
+				path: existingNode ? rawItem.path : files_normalize_special_node_path("file", rawItem.path),
+			};
 			// New conventional names are cased above. Other cleanup remains invalid.
 			if (!item.path.startsWith("/") || item.path === "/" || server_path_normalize(item.path) !== item.path) {
 				return Result({ _nay: { message: "Path must be absolute and normalized", data: { path: item.path } } });
@@ -3936,7 +4084,9 @@ export const create_file_upload_targets = internalMutation({
 
 			if (item.path !== rawItem.path) {
 				existingNode = await files_db_get_visible_node_by_path(ctx, {
-					organizationId: args.organizationId, workspaceId: args.workspaceId, path: item.path,
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					path: item.path,
 				});
 			}
 			if (existingNode) {
@@ -4346,7 +4496,7 @@ export const cleanup_expired_file_write_stages = internalMutation({
  * (which settles the plugin call), and success-path plugin settlement lives inside the publish
  * mutations.
  */
-async function write_one_text_file(
+export async function public_api_write_one_text_file(
 	ctx: ActionCtx,
 	args: {
 		organizationId: Id<"organizations">;
@@ -4360,6 +4510,7 @@ async function write_one_text_file(
 		principalRef: Infer<typeof file_write_principal_ref_validator>;
 		path: string;
 		expectedParentNodeId?: string;
+		externalFileWrite?: Doc<"public_api_file_write_stages">["externalFileWrite"];
 		content: string;
 		contentBytes: number;
 		overwrite: "replace" | "fail";
@@ -4483,6 +4634,7 @@ async function write_one_text_file(
 			principalRef: args.principalRef,
 			path: args.path,
 			expectedParentNodeId: args.expectedParentNodeId,
+			externalFileWrite: args.externalFileWrite,
 			overwrite: args.overwrite,
 			contentSize: args.contentBytes,
 			// This path never uploads a Yjs snapshot object; publish_file_fill drops the staged
@@ -4684,6 +4836,7 @@ async function write_one_text_file(
 				principalRef: args.principalRef,
 				path: args.path,
 				expectedParentNodeId: args.expectedParentNodeId,
+				externalFileWrite: args.externalFileWrite,
 				overwrite: args.overwrite,
 				contentSize: args.contentBytes,
 				// The fill path never uploads a Yjs snapshot object; publish_file_fill drops
@@ -4864,6 +5017,7 @@ async function write_one_text_file(
 		principalRef: args.principalRef,
 		path: args.path,
 		expectedParentNodeId: args.expectedParentNodeId,
+		externalFileWrite: args.externalFileWrite,
 		overwrite: args.overwrite,
 		contentSize: args.contentBytes,
 		yjsSnapshotSize: snapshotUpdate?.byteLength ?? 0,
@@ -5320,7 +5474,7 @@ export type public_api_http_write_file_Body = z.infer<typeof write_file_body_val
  * Public writes accept existing special-name spellings. Other names must already be normalized.
  * This check only validates spelling; content-type selection happens at the write door.
  */
-function is_valid_write_file_name(name: string) {
+export function public_api_is_valid_write_file_name(name: string) {
 	// Existing special names keep their spelling; validate the canonical spelling only.
 	name = files_normalize_special_node_path("file", name);
 	const normalized = name.toLowerCase().endsWith(".md")
@@ -5379,8 +5533,10 @@ export async function public_api_http_write_file(ctx: ActionCtx, request: Reques
 	}
 	const literalPath = server_path_normalize(body._yay.path);
 	const requestedPath = await ctx.runQuery(internal.files_nodes.resolve_new_node_path, {
-		organizationId: principal.organizationId, workspaceId: principal.workspaceId,
-		path: literalPath, normalizedPath: files_normalize_special_node_path("file", literalPath),
+		organizationId: principal.organizationId,
+		workspaceId: principal.workspaceId,
+		path: literalPath,
+		normalizedPath: files_normalize_special_node_path("file", literalPath),
 	});
 	if (requestedPath === "/") {
 		return {
@@ -5391,7 +5547,7 @@ export async function public_api_http_write_file(ctx: ActionCtx, request: Reques
 	// Segment-aware: a raw lastIndexOf("/") would split inside an escaped-slash segment and
 	// validate a different name than the segment the node is created with.
 	const name = path_name_of(requestedPath);
-	if (!is_valid_write_file_name(name)) {
+	if (!public_api_is_valid_write_file_name(name)) {
 		return {
 			status: 400,
 			body: await fail({
@@ -5519,7 +5675,7 @@ export async function public_api_http_write_file(ctx: ActionCtx, request: Reques
 		principalRef = { kind: "user_api_key", credentialId: principal.credentialId };
 	}
 
-	const written = await write_one_text_file(ctx, {
+	const written = await public_api_write_one_text_file(ctx, {
 		organizationId: principal.organizationId,
 		workspaceId: principal.workspaceId,
 		userId: public_api_visibility_user_id(principal),
@@ -5683,14 +5839,16 @@ export async function public_api_http_write_many(ctx: ActionCtx, request: Reques
 		}
 		const literalPath = server_path_normalize(file.path);
 		const requestedPath = await ctx.runQuery(internal.files_nodes.resolve_new_node_path, {
-			organizationId: principal.organizationId, workspaceId: principal.workspaceId,
-			path: literalPath, normalizedPath: files_normalize_special_node_path("file", literalPath),
+			organizationId: principal.organizationId,
+			workspaceId: principal.workspaceId,
+			path: literalPath,
+			normalizedPath: files_normalize_special_node_path("file", literalPath),
 		});
 		if (requestedPath === "/") {
 			return { status: 400, body: { message: "Path must point to a file.", path: file.path } } as const;
 		}
 		const name = path_name_of(requestedPath);
-		if (!is_valid_write_file_name(name)) {
+		if (!public_api_is_valid_write_file_name(name)) {
 			return {
 				status: 400,
 				body: { message: INVALID_WRITE_FILE_NAME_MESSAGE, path: file.path },
@@ -5791,7 +5949,7 @@ export async function public_api_http_write_many(ctx: ActionCtx, request: Reques
 		errorCode: "permission_denied" | "conflict" | "storage_failure";
 	}> = [];
 	for (const file of validatedFiles) {
-		const result = await write_one_text_file(ctx, {
+		const result = await public_api_write_one_text_file(ctx, {
 			organizationId: principal.organizationId,
 			workspaceId: principal.workspaceId,
 			userId: principal.userId,
@@ -5901,8 +6059,10 @@ export async function public_api_http_touch_files(ctx: ActionCtx, request: Reque
 		}
 		const literalPath = server_path_normalize(rawPath);
 		const requestedPath = await ctx.runQuery(internal.files_nodes.resolve_new_node_path, {
-			organizationId: principal.organizationId, workspaceId: principal.workspaceId,
-			path: literalPath, normalizedPath: files_normalize_special_node_path("file", literalPath),
+			organizationId: principal.organizationId,
+			workspaceId: principal.workspaceId,
+			path: literalPath,
+			normalizedPath: files_normalize_special_node_path("file", literalPath),
 		});
 		if (requestedPath === "/") {
 			return {
@@ -5917,7 +6077,7 @@ export async function public_api_http_touch_files(ctx: ActionCtx, request: Reque
 		// Segment-aware: a raw lastIndexOf("/") would split inside an escaped-slash segment and
 		// validate a different name than the segment the node is created with.
 		const name = path_name_of(requestedPath);
-		if (!is_valid_write_file_name(name)) {
+		if (!public_api_is_valid_write_file_name(name)) {
 			return {
 				status: 400,
 				body: await fail({
@@ -6497,6 +6657,11 @@ export async function public_api_http_download_urls(
 			body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
 		} as const;
 	}
+	const authorizedItems = items.map((item, index) => ({
+		...item,
+		name: revalidatedFiles[index]!.fileNode.name,
+		contentType: revalidatedFiles[index]!.fileNode.contentType,
+	}));
 
 	await public_api_settle_plugin_call_best_effort(ctx, {
 		callId: pluginCallId,
@@ -6514,7 +6679,7 @@ export async function public_api_http_download_urls(
 
 	return {
 		status: 200,
-		body: { items, errors, truncated },
+		body: { items: authorizedItems, errors, truncated },
 		headers: { "Cache-Control": "no-store" },
 	} as const;
 }

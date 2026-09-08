@@ -292,13 +292,13 @@ describe("plugins_validate_origin", () => {
 			_nay: { message: "Origin must not include credentials" },
 		});
 		expect(plugins_validate_origin("https://api.openai.com/v1")).toMatchObject({
-			_nay: { message: "Origin must be a bare https origin without path, query, or hash" },
+			_nay: { message: "Origin must be a bare origin without path, query, or hash" },
 		});
 		expect(plugins_validate_origin("https://api.openai.com?x=1")).toMatchObject({
-			_nay: { message: "Origin must be a bare https origin without path, query, or hash" },
+			_nay: { message: "Origin must be a bare origin without path, query, or hash" },
 		});
 		expect(plugins_validate_origin("https://api.openai.com#frag")).toMatchObject({
-			_nay: { message: "Origin must be a bare https origin without path, query, or hash" },
+			_nay: { message: "Origin must be a bare origin without path, query, or hash" },
 		});
 		expect(plugins_validate_origin("not a url")).toMatchObject({
 			_nay: { message: "Origin must be a valid URL" },
@@ -682,7 +682,7 @@ describe("plugins_validate_manifest", () => {
 					uiOutboundOrigins: ["http://council.example.com"],
 				}),
 			),
-		).toEqual({ _nay: { message: "Origin must use https" } });
+		).toEqual({ _nay: { message: "Origin must use https or wss" } });
 		expect(
 			plugins_validate_manifest(
 				manifest_json({
@@ -701,6 +701,36 @@ describe("plugins_validate_manifest", () => {
 		).toEqual({
 			_nay: { message: 'Plugin manifest has duplicate UI outbound origin "https://council.example.com"' },
 		});
+	});
+
+	test("permits secure WebSocket origins only for UI connections", () => {
+		const origin = "wss://chat.convex.cloud";
+		expect(
+			plugins_validate_manifest(
+				manifest_json({
+					capabilities: ["plugin.secrets.read", "ui.outbound.fetch"],
+					uiOutboundOrigins: [origin],
+				}),
+			)._yay?.uiOutboundOrigins,
+		).toEqual([origin]);
+		expect(plugins_validate_manifest(manifest_json({ outboundOrigins: [origin] }))._nay).toBeDefined();
+		for (const invalid of [
+			"ws://chat.convex.cloud",
+			`${origin}/api`,
+			`${origin}?x=1`,
+			`${origin}#x`,
+			"wss://user:pass@chat.convex.cloud",
+			"wss://CHAT.convex.cloud/",
+		]) {
+			expect(
+				plugins_validate_manifest(
+					manifest_json({
+						capabilities: ["plugin.secrets.read", "ui.outbound.fetch"],
+						uiOutboundOrigins: [invalid],
+					}),
+				)._nay,
+			).toBeDefined();
+		}
 	});
 
 	test("keeps the ui.outbound.fetch capability and UI outbound origins together", () => {
@@ -1088,22 +1118,21 @@ describe("plugins_validate_manifest", () => {
 		}
 	});
 
-	test.each([
-		"/x/%2e%2e/__bonobo_senate/run",
-		"/x/%2E%2E/__bonobo_senate/run",
-		"/x/.%2e/__bonobo_senate/run",
-	])("refuses encoded dot segments in %s", (path) => {
-		expect(
-			plugins_validate_manifest({
-				...manifest_json({ capabilities: ["plugin.backend.invoke"] }),
-				backend: { ...backend_json, endpoints: [{ id: "echo", path }] },
-			}),
-		).toEqual({
-			_nay: {
-				message: "Backend endpoint paths must be / or slash-separated lowercase letters, digits, and dashes",
-			},
-		});
-	});
+	test.each(["/x/%2e%2e/__bonobo_senate/run", "/x/%2E%2E/__bonobo_senate/run", "/x/.%2e/__bonobo_senate/run"])(
+		"refuses encoded dot segments in %s",
+		(path) => {
+			expect(
+				plugins_validate_manifest({
+					...manifest_json({ capabilities: ["plugin.backend.invoke"] }),
+					backend: { ...backend_json, endpoints: [{ id: "echo", path }] },
+				}),
+			).toEqual({
+				_nay: {
+					message: "Backend endpoint paths must be / or slash-separated lowercase letters, digits, and dashes",
+				},
+			});
+		},
+	);
 
 	test("refuses rewritten URLs, decoded reserved prefixes, and invalid percent escapes", () => {
 		for (const path of [

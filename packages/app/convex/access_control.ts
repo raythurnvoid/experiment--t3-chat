@@ -28,6 +28,8 @@ import { quotas_db_get } from "./quotas.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
+import { plugins_chitchat_db_record_events } from "./plugins_chitchat.ts";
+import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import app_convex_schema from "./schema.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 
@@ -462,7 +464,7 @@ export async function access_control_db_resolve_effective_permissions(
 
 // #region Grant lookups
 
-function db_get_user_permission_grant(
+async function db_get_user_permission_grant(
 	ctx: QueryCtx | MutationCtx,
 	args: {
 		organizationId: Id<"organizations">;
@@ -473,7 +475,7 @@ function db_get_user_permission_grant(
 		permission: access_control_Permission;
 	},
 ) {
-	return ctx.db
+	const grant = await ctx.db
 		.query("access_control_permission_grants")
 		.withIndex("by_organization_workspace_resource_user_permission", (q) =>
 			q
@@ -486,6 +488,16 @@ function db_get_user_permission_grant(
 				.eq("permission", args.permission),
 		)
 		.first();
+	if (grant?.externalPluginMembershipLifetime !== undefined) {
+		const membership = await ctx.db
+			.query("plugins_chitchat_memberships")
+			.withIndex("by_workspace_user", (q) => q.eq("workspaceId", args.workspaceId).eq("userId", args.userId))
+			.first();
+		if (!membership?.active || membership.lifetime !== grant.externalPluginMembershipLifetime) {
+			return null;
+		}
+	}
+	return grant;
 }
 
 function db_get_public_permission_grant(
@@ -590,9 +602,9 @@ export async function access_control_db_set_service_account_grant(
 					.eq("resourceKind", "file")
 					.eq("resourceId", resourceId),
 			)
-			.take(151);
+			.take(154);
 
-		// Sharing reads at most 50 principals. Account controls must keep that same bound.
+		// Include the reserved own-account slot when reading existing grants.
 		if (
 			args.level !== null &&
 			!grants.some(
@@ -605,9 +617,30 @@ export async function access_control_db_set_service_account_grant(
 				),
 			);
 			if (principals.size >= 50) {
-				return Result({
-					_nay: { message: "One file or folder can be shared with at most 50 people, roles, and service accounts" },
-				});
+				// An attached transcript reserves one extra slot for its own account after all 50
+				// human readers are set. This never adds a grant without the normal manager checks.
+				const binding = await ctx.db
+					.query("plugins_external_file_bindings")
+					.withIndex("by_node", (q) => q.eq("nodeId", node._id))
+					.first();
+				const installation =
+					binding?.detachedAt === null
+						? await ctx.db.get("plugins_workspace_installations", binding.installationId)
+						: null;
+				const reservedAccountSlot =
+					principals.size === 50 &&
+					grants.every(
+						(grant) => grant.principalKind === "user" && grant.externalPluginMembershipLifetime !== undefined,
+					) &&
+					installation?.status === "enabled" &&
+					installation.organizationId === args.organizationId &&
+					installation.workspaceId === args.workspaceId &&
+					(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: args.serviceAccountId }));
+				if (!reservedAccountSlot) {
+					return Result({
+						_nay: { message: "One file or folder can be shared with at most 50 people, roles, and service accounts" },
+					});
+				}
 			}
 		}
 	}
@@ -2060,6 +2093,12 @@ export const revoke_service_account = mutation({
 		if (account.revokedAt === null) {
 			const now = Date.now();
 			await ctx.db.patch("access_control_service_accounts", account._id, { revokedAt: now, updatedAt: now });
+			await plugins_chitchat_db_record_events(ctx, [
+				{
+					scope: { kind: "service_account", serviceAccountId: account._id },
+					event: { kind: "refresh", reason: "account" },
+				},
+			]);
 		}
 
 		return Result({ _yay: null });
@@ -2615,6 +2654,14 @@ export const update_role = mutation({
 		}
 
 		await ctx.db.patch("access_control_roles", role._id, patch);
+		if (args.permissions != null) {
+			await plugins_chitchat_db_record_events(ctx, [
+				{
+					scope: { kind: "organization", organizationId: organization._id },
+					event: { kind: "refresh", reason: "permissions" },
+				},
+			]);
+		}
 
 		return Result({ _yay: null });
 	},
@@ -2776,6 +2823,12 @@ export const delete_role = mutation({
 			),
 		);
 		await ctx.db.delete("access_control_roles", role._id);
+		await plugins_chitchat_db_record_events(ctx, [
+			{
+				scope: { kind: "organization", organizationId: organization._id },
+				event: { kind: "refresh", reason: "permissions" },
+			},
+		]);
 
 		return Result({ _yay: null });
 	},
@@ -2904,6 +2957,12 @@ export const set_user_role = mutation({
 			});
 			if (assignment) {
 				await ctx.db.delete("access_control_role_assignments", assignment._id);
+				await plugins_chitchat_db_record_events(ctx, [
+					{
+						scope: { kind: "workspace", organizationId: organization._id, workspaceId: args.workspaceId },
+						event: { kind: "refresh", reason: "permissions" },
+					},
+				]);
 			}
 
 			return Result({ _yay: null });
@@ -3036,6 +3095,14 @@ export const set_user_role = mutation({
 			role: args.role,
 			now: Date.now(),
 		});
+		await plugins_chitchat_db_record_events(ctx, [
+			{
+				scope: isDefaultWorkspace
+					? { kind: "organization", organizationId: organization._id }
+					: { kind: "workspace", organizationId: organization._id, workspaceId: args.workspaceId },
+				event: { kind: "refresh", reason: "permissions" },
+			},
+		]);
 
 		return Result({ _yay: null });
 	},
@@ -3158,6 +3225,12 @@ export const transfer_organization_ownership = mutation({
 			}),
 		]);
 
+		await plugins_chitchat_db_record_events(ctx, [
+			{
+				scope: { kind: "organization", organizationId: organization._id },
+				event: { kind: "refresh", reason: "permissions" },
+			},
+		]);
 		return Result({ _yay: null });
 	},
 });

@@ -244,6 +244,23 @@ const app_convex_schema = defineSchema({
 		 * Present only for plugin_service writes; publication revalidates the sealed grant.
 		 */
 		grantId: v.optional(v.id("plugin_service_grants")),
+		/**
+		 * Trusted own-file service preconditions, checked again with publication and its receipt.
+		 */
+		externalFileWrite: v.optional(
+			v.object({
+				writerId: v.id("plugins_external_file_writers"),
+				writerGeneration: v.number(),
+				operationId: v.string(),
+				sequence: v.number(),
+				contentHash: v.string(),
+				expectedNodeId: v.union(v.id("files_nodes"), v.null()),
+				expectedContentRevision: v.union(v.string(), v.null()),
+				expectedReaderRevision: v.union(v.number(), v.null()),
+				serviceSecretHash: v.string(),
+				tokenHash: v.string(),
+			}),
+		),
 		/** Normalized absolute target path; parents are resolved again at publication. */
 		path: v.string(),
 		/**
@@ -617,12 +634,7 @@ const app_convex_schema = defineSchema({
 			"fileNodeId",
 			"fieldPath",
 		])
-		.index("by_organization_workspace_fileNode_fieldPath", [
-			"organizationId",
-			"workspaceId",
-			"fileNodeId",
-			"fieldPath",
-		])
+		.index("by_organization_workspace_fileNode_fieldPath", ["organizationId", "workspaceId", "fileNodeId", "fieldPath"])
 		.index("by_pendingUpdate_fieldPath", ["pendingUpdateId", "fieldPath"])
 		.index("by_org_workspace_archive_docKind_fieldPath_tree", [
 			"organizationId",
@@ -2002,12 +2014,7 @@ const app_convex_schema = defineSchema({
 		memberUsageId: v.optional(v.id("plugins_data_member_usage")),
 		expiresAt: v.number(),
 	})
-		.index("by_installation_collection_createdBy_requestId", [
-			"installationId",
-			"collection",
-			"createdBy",
-			"requestId",
-		])
+		.index("by_installation_collection_createdBy_requestId", ["installationId", "collection", "createdBy", "requestId"])
 		.index("by_createdBy", ["createdBy"])
 		.index("by_expiresAt", ["expiresAt"])
 		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
@@ -2246,10 +2253,7 @@ const app_convex_schema = defineSchema({
 		 * Durable last accepted append in this collection. Optional while old rows are backfilled.
 		 */
 		lastAppend: v.optional(
-			v.union(
-				v.null(),
-				v.object({ at: v.number(), key: v.string(), createdByUserId: v.id("users") }),
-			),
+			v.union(v.null(), v.object({ at: v.number(), key: v.string(), createdByUserId: v.id("users") })),
 		),
 		/**
 		 * Count accepted appends in this collection. Optional while old rows are backfilled.
@@ -2311,6 +2315,190 @@ const app_convex_schema = defineSchema({
 	// #endregion plugins data
 
 	// #region plugins services
+	plugins_chitchat_access_state: defineTable({
+		key: v.literal("main"),
+		revision: v.number(),
+		oldestRevision: v.number(),
+		lastPushedRevision: v.number(),
+	}).index("by_key", ["key"]),
+	plugins_chitchat_access_events: defineTable({
+		revision: v.number(),
+		createdAt: v.number(),
+		scope: v.union(
+			v.object({ kind: v.literal("all") }),
+			v.object({ kind: v.literal("organization"), organizationId: v.id("organizations") }),
+			v.object({
+				kind: v.literal("workspace"),
+				organizationId: v.id("organizations"),
+				workspaceId: v.id("organizations_workspaces"),
+			}),
+			v.object({ kind: v.literal("installation"), installationId: v.id("plugins_workspace_installations") }),
+			v.object({ kind: v.literal("user"), userId: v.id("users") }),
+			v.object({ kind: v.literal("service_account"), serviceAccountId: v.id("access_control_service_accounts") }),
+		),
+		event: v.union(
+			v.object({
+				kind: v.literal("refresh"),
+				reason: v.union(
+					v.literal("permissions"),
+					v.literal("installation"),
+					v.literal("account"),
+					v.literal("members"),
+				),
+			}),
+			v.object({
+				kind: v.literal("member"),
+				member: v.object({
+					hostUserId: v.string(),
+					hostMembershipId: v.union(v.string(), v.null()),
+					membershipLifetime: v.number(),
+					displayName: v.union(v.string(), v.null()),
+					active: v.boolean(),
+					canRead: v.boolean(),
+					canWrite: v.boolean(),
+					isOwner: v.boolean(),
+				}),
+			}),
+			v.object({ kind: v.literal("session_revoked"), hostSessionId: v.string() }),
+			v.object({
+				kind: v.literal("revoked"),
+				reason: v.union(v.literal("uninstalled"), v.literal("workspace_deleted"), v.literal("organization_deleted")),
+			}),
+		),
+	})
+		.index("by_revision", ["revision"])
+		.index("by_createdAt", ["createdAt"]),
+	plugins_chitchat_memberships: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		membershipId: v.union(v.id("organizations_workspaces_users"), v.null()),
+		lifetime: v.number(),
+		active: v.boolean(),
+	})
+		.index("by_workspace_user", ["workspaceId", "userId"])
+		.index("by_user", ["userId"]),
+	plugins_chitchat_connections: defineTable({
+		installationId: v.id("plugins_workspace_installations"),
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		createdAt: v.number(),
+	}).index("by_installation", ["installationId"]),
+
+	/**
+	 * One new output scope for an external plugin dataset. Pinned nodes prevent old work from
+	 * adopting a moved or replaced folder. A higher generation closes every older writer.
+	 */
+	plugins_external_file_writers: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		datasetGeneration: v.string(),
+		channelId: v.string(),
+		rootNodeId: v.id("files_nodes"),
+		folderNodeId: v.id("files_nodes"),
+		rootPath: v.string(),
+		path: v.string(),
+		generation: v.number(),
+		updatedAt: v.number(),
+	})
+		.index("by_installation_datasetGeneration_channelId", ["installationId", "datasetGeneration", "channelId"])
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
+
+	/**
+	 * Reader sync is attached until a real human sharing change takes control of this folder.
+	 * Keep a detached doc so an ensure retry cannot silently attach it again.
+	 */
+	plugins_external_file_bindings: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		writerId: v.id("plugins_external_file_writers"),
+		nodeId: v.id("files_nodes"),
+		revision: v.number(),
+		detachedAt: v.union(v.number(), v.null()),
+		updatedAt: v.number(),
+	})
+		.index("by_writer", ["writerId"])
+		.index("by_node", ["nodeId"])
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
+
+	/**
+	 * Compact results commit with the file change. They hold no transcript text.
+	 */
+	plugins_external_file_receipts: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		writerId: v.id("plugins_external_file_writers"),
+		operationId: v.string(),
+		operation: v.union(
+			v.literal("write"),
+			v.literal("fence"),
+			v.literal("readers"),
+			v.literal("archive"),
+			v.literal("rollback_readers"),
+			v.literal("cancel_readers"),
+		),
+		fingerprint: v.string(),
+		path: v.string(),
+		sequence: v.number(),
+		writerGeneration: v.number(),
+		nodeId: v.id("files_nodes"),
+		contentRevision: v.union(v.string(), v.null()),
+		readerRevision: v.union(v.number(), v.null()),
+		createdAt: v.number(),
+	})
+		.index("by_writer_operationId", ["writerId", "operationId"])
+		.index("by_writer_path_writerGeneration_sequence", ["writerId", "path", "writerGeneration", "sequence"])
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
+
+	/**
+	 * Private proof for undoing or cancelling one reader change after its sponsor loses access.
+	 */
+	plugins_external_file_reader_changes: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		writerId: v.id("plugins_external_file_writers"),
+		receiptId: v.id("plugins_external_file_receipts"),
+		grantId: v.id("plugin_service_grants"),
+		tokenHash: v.string(),
+		pluginVersionId: v.id("plugins_versions"),
+		serviceAccountId: v.id("access_control_service_accounts"),
+		actorUserId: v.id("users"),
+		previousReaders: v.array(v.object({ userId: v.id("users"), membershipLifetime: v.number() })),
+		nextReaders: v.array(v.object({ userId: v.id("users"), membershipLifetime: v.number() })),
+		rollbackReceiptId: v.union(v.id("plugins_external_file_receipts"), v.null()),
+	})
+		.index("by_receipt", ["receiptId"])
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
+
+	/**
+	 * Lost lifecycle responses can recover one exact credential for at most 24 hours.
+	 * The old bearer only locates this receipt; it never authorizes ordinary service work.
+	 */
+	plugin_service_grant_requests: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		installationId: v.id("plugins_workspace_installations"),
+		credentialHash: v.string(),
+		operation: v.union(v.literal("exchange"), v.literal("renew"), v.literal("seal")),
+		requestId: v.string(),
+		fingerprint: v.string(),
+		grantId: v.id("plugin_service_grants"),
+		responseTokenHash: v.string(),
+		responseAvailable: v.boolean(),
+		ciphertext: v.union(v.bytes(), v.null()),
+		nonce: v.union(v.bytes(), v.null()),
+		expiresAt: v.number(),
+		createdAt: v.number(),
+	})
+		.index("by_credentialHash_operation_requestId", ["credentialHash", "operation", "requestId"])
+		.index("by_responseAvailable_expiresAt", ["responseAvailable", "expiresAt"])
+		.index("by_expiresAt", ["expiresAt"])
+		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
+
 	/**
 	 * One doc per plugin name that registered an outside service for the service-grant exchange.
 	 * The host generates the `pse_` secret and stores only its hash; rotating writes a new hash and
@@ -2320,9 +2508,7 @@ const app_convex_schema = defineSchema({
 	plugins_service_registrations: defineTable({
 		pluginName: v.string(),
 		exchangeSecretHash: v.string(),
-		scopes: v.array(
-			v.union(v.literal("plugin_data:read"), v.literal("plugin_data:write"), v.literal("files:write")),
-		),
+		scopes: v.array(v.union(v.literal("plugin_data:read"), v.literal("plugin_data:write"), v.literal("files:write"))),
 		createdBy: v.id("users"),
 		updatedAt: v.number(),
 	}).index("by_pluginName", ["pluginName"]),
@@ -2747,6 +2933,11 @@ const app_convex_schema = defineSchema({
 		resourceId: v.string(),
 		principalKind: v.union(v.literal("role"), v.literal("user"), v.literal("public"), v.literal("service_account")),
 		userId: v.optional(v.id("users")),
+		/**
+		 * Attached external transcript readers must belong to this exact membership lifetime.
+		 * A human sharing change removes the tag when it takes over the reader list.
+		 */
+		externalPluginMembershipLifetime: v.optional(v.number()),
 		role: v.optional(access_control_role_ref_validator),
 		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
 		permission: access_control_permission_validator,

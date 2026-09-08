@@ -13,6 +13,38 @@ import type {
 export function plugins_service_http_routes(router: { route: HttpRouter["route"] }) {
 	return {
 		...((
+			/* iife */ path = "/api/internal/plugins/service-grants/recover" as const satisfies api_schemas_Main_Path,
+		) => ({
+			[path]: {
+				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
+					[method]: ((/* iife */) => {
+						type SearchParams = never;
+						type PathParams = never;
+						type Headers = { Authorization: string; "X-Bonobo-Service-Authorization": string };
+						type Body = import("./plugins_service.ts").plugins_service_http_recover_Body;
+						router.route({
+							path,
+							method,
+							handler: httpAction(async (ctx, request) => {
+								const { plugins_service_http_recover } = await import("./plugins_service.ts");
+								const result = await plugins_service_http_recover(ctx, request);
+								return Response.json(result.body, result);
+							}),
+						});
+						return {} as {
+							pathParams: PathParams;
+							searchParams: SearchParams;
+							headers: Headers;
+							body: Body;
+							response: api_schemas_BuildResponseSpecFromHandler<
+								typeof import("./plugins_service.ts").plugins_service_http_recover
+							>;
+						};
+					})(),
+				}))(),
+			},
+		}))(),
+		...((
 			/* iife */ path = "/api/internal/plugins/service-grants/exchange" as const satisfies api_schemas_Main_Path,
 		) => ({
 			[path]: {

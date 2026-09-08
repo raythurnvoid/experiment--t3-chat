@@ -95,6 +95,8 @@ import type { public_api_service_uploads_http_routes } from "../convex/public_ap
 import type { r2_http_routes } from "../convex/r2_http_routes.ts";
 import type { plugins_runtime_http_routes } from "../convex/plugins_runtime_http_routes.ts";
 import type { plugins_service_http_routes } from "../convex/plugins_service_http_routes.ts";
+import type { plugins_chitchat_http_routes } from "../convex/plugins_chitchat_http_routes.ts";
+import type { plugins_external_files_http_routes } from "../convex/plugins_external_files_http_routes.ts";
 import type { plugins_ui_http_routes } from "../convex/plugins_ui_http_routes.ts";
 import type { users_http_routes } from "../convex/users_http_routes.ts";
 
@@ -237,9 +239,20 @@ export interface api_schemas_Main {
 		typeof plugins_runtime_http_routes
 	>["/api/internal/plugins/host/secret-get"];
 
+	"/api/internal/plugins/chitchat/lease": ReturnType<typeof plugins_chitchat_http_routes>["/api/internal/plugins/chitchat/lease"];
+	"/api/internal/plugins/chitchat/snapshot": ReturnType<typeof plugins_chitchat_http_routes>["/api/internal/plugins/chitchat/snapshot"];
+	"/api/internal/plugins/chitchat/events": ReturnType<typeof plugins_chitchat_http_routes>["/api/internal/plugins/chitchat/events"];
+	"/api/internal/plugins/files/ensure": ReturnType<typeof plugins_external_files_http_routes>["/api/internal/plugins/files/ensure"];
+	"/api/internal/plugins/files/prepare": ReturnType<typeof plugins_external_files_http_routes>["/api/internal/plugins/files/prepare"];
+	"/api/internal/plugins/files/write": ReturnType<typeof plugins_external_files_http_routes>["/api/internal/plugins/files/write"];
+	"/api/internal/plugins/files/readers": ReturnType<typeof plugins_external_files_http_routes>["/api/internal/plugins/files/readers"];
+	"/api/internal/plugins/files/rollback-readers": ReturnType<typeof plugins_external_files_http_routes>["/api/internal/plugins/files/rollback-readers"];
+	"/api/internal/plugins/files/archive": ReturnType<typeof plugins_external_files_http_routes>["/api/internal/plugins/files/archive"];
+	"/api/internal/plugins/files/fence": ReturnType<typeof plugins_external_files_http_routes>["/api/internal/plugins/files/fence"];
 	"/api/internal/plugins/service-grants/exchange": ReturnType<
 		typeof plugins_service_http_routes
 	>["/api/internal/plugins/service-grants/exchange"];
+	"/api/internal/plugins/service-grants/recover": ReturnType<typeof plugins_service_http_routes>["/api/internal/plugins/service-grants/recover"];
 
 	"/api/internal/plugins/service-grants/renew": ReturnType<
 		typeof plugins_service_http_routes

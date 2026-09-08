@@ -22,6 +22,7 @@ import type {
 	public_api_rotate_plugin_service_grant_Result,
 } from "./public_api.ts";
 import app_convex_schema from "./schema.ts";
+import { rate_limiter_http_client_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { crypto_sha256_hex, crypto_timing_safe_equal } from "../server/crypto-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
@@ -152,6 +153,7 @@ async function authorize_service_request<Body>(
 			pluginName: installation._yay.pluginName,
 			acceptedCapabilities: installation._yay.acceptedCapabilities,
 			registeredScopes: installation._yay.registration.scopes,
+			serviceSecretHash: installation._yay.registration.hash,
 		},
 	});
 }
@@ -270,11 +272,11 @@ function grant_failure(message: string) {
 // #region exchange
 
 /**
- * Nothing is taken from the body on purpose. The tenant, the installation, the plugin, the scopes,
+ * Only an optional retry ID comes from the body. The tenant, installation, plugin, scopes,
  * and the destination all come from the live installation the UI token points at, so a service
  * that asked for more than its workspace agreed to would be asking a field that does not exist.
  */
-const exchange_body_validator = z.object({}).strict();
+const exchange_body_validator = z.object({ requestId: z.string().min(1).max(128).optional() }).strict();
 
 export type plugins_service_http_exchange_Body = z.infer<typeof exchange_body_validator>;
 
@@ -331,6 +333,13 @@ export async function plugins_service_http_exchange(ctx: ActionCtx, request: Req
 			// The service holds this one while a member is watching the frame. A `processing` grant is
 			// what outlives them, and it is minted by the seal flow, not by an exchange.
 			phase: "interactive",
+			lifecycle: auth._yay.body.requestId
+				? {
+						presented: auth._yay.presentedToken,
+						requestId: auth._yay.body.requestId,
+						serviceSecretHash: auth._yay.serviceSecretHash,
+					}
+				: undefined,
 			now,
 		},
 	);
@@ -358,9 +367,9 @@ export async function plugins_service_http_exchange(ctx: ActionCtx, request: Req
 // #region renew
 
 /**
- * Renewal reads its whole answer from the presented grant, so it has nothing to say in a body.
+ * Renewal takes only an optional retry ID. Authority still comes from the presented grant.
  */
-const renew_body_validator = z.object({}).strict();
+const renew_body_validator = z.object({ requestId: z.string().min(1).max(128).optional() }).strict();
 
 export type plugins_service_http_renew_Body = z.infer<typeof renew_body_validator>;
 
@@ -399,6 +408,9 @@ export async function plugins_service_http_renew(ctx: ActionCtx, request: Reques
 		internal.public_api.rotate_plugin_service_grant,
 		{
 			presented: auth._yay.presentedToken,
+			lifecycle: auth._yay.body.requestId
+				? { requestId: auth._yay.body.requestId, serviceSecretHash: auth._yay.serviceSecretHash }
+				: undefined,
 			now,
 		},
 	);
@@ -427,6 +439,7 @@ export async function plugins_service_http_renew(ctx: ActionCtx, request: Reques
 const seal_processing_body_validator = z
 	.object({
 		destinationPathPrefix: z.string().min(1),
+		requestId: z.string().min(1).max(128).optional(),
 	})
 	.strict();
 
@@ -522,6 +535,13 @@ export async function plugins_service_http_seal_processing(ctx: ActionCtx, reque
 			requireAllRequestedScopes: true,
 			destinationPathPrefix,
 			phase: "processing",
+			lifecycle: auth._yay.body.requestId
+				? {
+						presented: auth._yay.presentedToken,
+						requestId: auth._yay.body.requestId,
+						serviceSecretHash: auth._yay.serviceSecretHash,
+					}
+				: undefined,
 			now,
 		},
 	);
@@ -546,6 +566,57 @@ export async function plugins_service_http_seal_processing(ctx: ActionCtx, reque
 }
 
 // #endregion seal processing
+
+// #region recover
+
+const recover_body_validator = z
+	.object({
+		operation: z.enum(["exchange", "renew", "seal"]),
+		requestId: z.string().min(1).max(128),
+		destinationPathPrefix: z.string().optional(),
+	})
+	.strict();
+export type plugins_service_http_recover_Body = z.infer<typeof recover_body_validator>;
+
+/**
+ * The old bearer can recover only its exact saved response. It cannot authorize another operation.
+ */
+export async function plugins_service_http_recover(ctx: ActionCtx, request: Request) {
+	const limited = await rate_limiter_limit_by_key(ctx, {
+		name: "public_api_auth",
+		key: `${rate_limiter_http_client_key(request)}:service-grant-recovery`,
+	});
+	if (limited) return { status: 429, body: { message: limited.message, retryAfterMs: limited.retryAfterMs } } as const;
+	const presented = get_bearer_token(request);
+	const secret = get_service_secret(request);
+	if (
+		!presented ||
+		!secret ||
+		(!public_api_PLUGIN_SERVICE_TOKEN_REGEX.test(presented) && !public_api_PLUGIN_UI_TOKEN_REGEX.test(presented))
+	) {
+		return { status: 401, body: { message: "Unauthorized" } } as const;
+	}
+	const body = await server_request_json_parse_and_validate(request, recover_body_validator);
+	if (body._nay) return { status: 400, body: { message: body._nay.message } } as const;
+	if ((body._yay.operation === "seal") !== (body._yay.destinationPathPrefix !== undefined)) {
+		return { status: 400, body: { message: "Only seal recovery needs a destination" } } as const;
+	}
+	const result = await ctx.runMutation(internal.plugins_service_grant_requests.recover, {
+		presented,
+		operation: body._yay.operation,
+		requestId: body._yay.requestId,
+		fingerprint:
+			body._yay.operation === "seal"
+				? JSON.stringify({ destinationPathPrefix: body._yay.destinationPathPrefix })
+				: "{}",
+		serviceSecretHash: await crypto_sha256_hex(secret),
+	});
+	if (result._nay) return grant_failure(result._nay.message);
+	if (!result._yay) return { status: 404, body: { message: "No saved grant response" } } as const;
+	return { status: 200, body: result._yay, headers: { "Cache-Control": "no-store" } } as const;
+}
+
+// #endregion recover
 
 // #region verify live
 

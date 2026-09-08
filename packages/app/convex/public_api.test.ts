@@ -1661,7 +1661,8 @@ describe("public files API", () => {
 			body: JSON.stringify({ fileNodeIds: [writtenBody.nodeId], expiresInSeconds: 60 }),
 		});
 		expect(download.status).toBe(200);
-		const downloadBody = (await download.json()) as { items: Array<{ url: string }> };
+		const downloadBody = (await download.json()) as { items: Array<{ url: string; fileNodeId: string; name: string; contentType: string }> };
+		expect(downloadBody.items[0]).toMatchObject({ fileNodeId: writtenBody.nodeId, name: "report.md", contentType: "text/markdown;charset=utf-8" });
 		const downloaded = await fetch(downloadBody.items[0]!.url);
 		expect(await downloaded.text()).toBe(normalizedContent);
 

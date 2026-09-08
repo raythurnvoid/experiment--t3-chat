@@ -67,7 +67,7 @@ const MAX_FILE_SHARE_PRINCIPALS = 50;
  * principal cap with room to spare. It exists so a single query can never read an unbounded number
  * of docs, not as a second limit users can hit.
  */
-const MAX_FILE_SHARE_GRANT_DOCS = MAX_FILE_SHARE_PRINCIPALS * 3 + 1;
+const MAX_FILE_SHARE_GRANT_DOCS = (MAX_FILE_SHARE_PRINCIPALS + 1) * 3 + 1;
 
 /**
  * Most restricted files and folders that one role may be named on.
@@ -187,6 +187,34 @@ async function db_detach_file_access_binding(ctx: MutationCtx, nodeId: Id<"files
 		.first();
 	if (binding) {
 		await ctx.db.delete("plugins_file_access_bindings", binding._id);
+	}
+	const externalBinding = await ctx.db
+		.query("plugins_external_file_bindings")
+		.withIndex("by_node", (q) => q.eq("nodeId", nodeId))
+		.first();
+	if (externalBinding && externalBinding.detachedAt === null) {
+		await ctx.db.patch("plugins_external_file_bindings", externalBinding._id, {
+			detachedAt: Date.now(),
+			revision: externalBinding.revision + 1,
+			updatedAt: Date.now(),
+		});
+		const grants = await ctx.db
+			.query("access_control_permission_grants")
+			.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+				q
+					.eq("organizationId", externalBinding.organizationId)
+					.eq("workspaceId", externalBinding.workspaceId)
+					.eq("resourceKind", "file")
+					.eq("resourceId", String(nodeId)),
+			)
+			.take(MAX_FILE_SHARE_GRANT_DOCS);
+		for (const grant of grants) {
+			if (grant.externalPluginMembershipLifetime !== undefined) {
+				await ctx.db.patch("access_control_permission_grants", grant._id, {
+					externalPluginMembershipLifetime: undefined,
+				});
+			}
+		}
 	}
 }
 
