@@ -432,8 +432,8 @@ const SKILL_TOOL_NAMES = ["load_skill", "read_skill_resource", "run_skill_script
 function create_skill_tool_transform(skillCalls: Map<string, string>) {
 	return new TransformStream<InferUIMessageChunk<ai_chat_UiMessage>, InferUIMessageChunk<ai_chat_UiMessage>>({
 		transform(chunk, controller) {
+			// Track skill calls before argument deltas, including names the SDK will repair later.
 			if ("toolName" in chunk && SKILL_TOOL_NAMES.some((name) => name === chunk.toolName.toLowerCase())) {
-				// Redact before argument deltas, including names the SDK will repair later.
 				skillCalls.set(chunk.toolCallId, chunk.toolName.toLowerCase());
 			}
 			const name = "toolCallId" in chunk ? skillCalls.get(chunk.toolCallId) : undefined;
@@ -1791,11 +1791,11 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 		}
 
 		const requestMessages = body.messages as ai_chat_UiMessage[];
-		const lastRequestUser = requestMessages.findLast((message) => message.role === "user");
-		if (lastRequestUser && body.skillIds !== undefined) {
-			lastRequestUser.metadata = {
-				...lastRequestUser.metadata,
-				parentClientGeneratedId: lastRequestUser.metadata?.parentClientGeneratedId ?? null,
+		const lastRequestUserMessage = requestMessages.findLast((message) => message.role === "user");
+		if (lastRequestUserMessage && body.skillIds !== undefined) {
+			lastRequestUserMessage.metadata = {
+				...lastRequestUserMessage.metadata,
+				parentClientGeneratedId: lastRequestUserMessage.metadata?.parentClientGeneratedId ?? null,
 				skillIds: body.skillIds,
 			};
 		}

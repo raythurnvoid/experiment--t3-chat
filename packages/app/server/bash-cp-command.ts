@@ -180,8 +180,8 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 					const normalizedDestSegments = files_get_normalized_node_path_segments({
 						kind: "file",
 						nameOrPath: rawDestDbFilesPath,
-						// cp keeps the name the agent typed. The destination's type comes from the
-						// source, never from the name.
+						// Keep the typed extension, except bare README becomes README.md.
+						// The destination's stored type comes from the source.
 						fileNamePolicy: "keep_extension",
 					});
 					if (!normalizedDestSegments || "validationMessage" in normalizedDestSegments) {
@@ -231,8 +231,8 @@ export function bash_cp_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 								path: destPath,
 								overlayUserId: userId,
 							})) as files_nodes_get_by_path_Result);
+				// Preserve an exact child first. Only a new child gets special-name normalization.
 				if (!occupant && destNode?.kind === "folder") {
-					// Preserve an exact child first. Only a new child gets special-name casing.
 					const name = files_normalize_special_node_path("file", path_name_of(sourceDbFilesPath));
 					if (name !== path_name_of(sourceDbFilesPath)) {
 						const selectedPath = await ctx.runQuery(internal.files_nodes.resolve_new_node_path, {

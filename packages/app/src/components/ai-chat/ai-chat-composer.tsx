@@ -414,13 +414,13 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 		syncAttachments(attachmentsRef.current.filter((item) => item.key !== key));
 		// A pointer removal returns to typing. A keyboard removal keeps focus in
 		// the chip row (MyChipRow moves it to a neighbor chip and falls back to
-		// handleAttachmentsFocusExit).
+		// handleChipFocusExit).
 		if (focusEditor) {
 			editorRef.current?.commands.focus();
 		}
 	};
 
-	const handleAttachmentsFocusExit = () => {
+	const handleChipFocusExit = () => {
 		editorRef.current?.commands.focus();
 	};
 
@@ -844,7 +844,7 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 				>
 					{hasAttachments && (
 						<div className={"AiChatComposer-attachments" satisfies AiChatComposer_ClassNames}>
-							<MyChipRow aria-label="Image attachments" onFocusExit={handleAttachmentsFocusExit}>
+							<MyChipRow aria-label="Image attachments" onFocusExit={handleChipFocusExit}>
 								{attachments.map((item) => {
 									const attachmentName = item.part.filename ?? "Image";
 									return (
@@ -874,7 +874,7 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 							<AiChatSkillChips
 								skillIds={skillIds}
 								onRemove={handleSkillRemove}
-								onFocusExit={handleAttachmentsFocusExit}
+								onFocusExit={handleChipFocusExit}
 							/>
 						</div>
 					)}

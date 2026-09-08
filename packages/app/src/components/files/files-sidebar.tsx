@@ -370,9 +370,8 @@ type FilesImportPlanItem = {
 };
 
 /**
- * Normalize every path, pre-filter the files the server would reject, and dedupe target paths.
- * The server treats a non-normalized path as a caller bug and fails the whole call, so this
- * step is what turns messy real folder names into an importable batch.
+ * Normalize ordinary import paths, skip invalid files, and dedupe target paths.
+ * Skill resources must keep their paths. A changed or rejected bundle path stops the whole import.
  */
 function build_import_plan(entries: FilesImportEntry[]) {
 	const items: FilesImportPlanItem[] = [];
@@ -6351,9 +6350,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		test("build_import_plan keeps special-cased markdown names server-acceptable", () => {
 			// The browser and server use the same spelling for instruction files.
 			const readme = test_file_with_path("readme", "/docs/readme", "text/markdown");
-
 			const agents = test_file_with_path("agents.md", "/docs/agents.md", "text/markdown");
 			const skill = test_file_with_path("skill.md", "/.agents/skills/one/skill.md", "text/markdown");
+
 			const plan = build_import_plan(get_import_file_entries([readme, agents, skill]));
 
 			expect(plan.items.map((item) => item.normalizedPath)).toEqual([
@@ -6369,7 +6368,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const skill = test_file_with_path("SKILL.md", "/one/SKILL.md", "text/markdown");
 			const reference = test_file_with_path("Output_Format.md", "/one/references/Output_Format.md", "text/markdown");
 			const readme = test_file_with_path("readme.md", "/one/references/readme.md", "text/markdown");
+
 			const plan = build_import_plan(get_import_file_entries([skill, reference, readme]));
+
 			expect(plan.items).toEqual([]);
 			expect(plan.invalidSkillPaths).toEqual(["one/references/Output_Format.md", "one/references/readme.md"]);
 		});

@@ -1486,6 +1486,7 @@ describe("skill tool history", () => {
 		expect(ai_chat_skill_tool_parts_are_safe([{ ...part, type: "tool-RUN_SKILL_SCRIPT" }])).toBe(false);
 		expect(ai_chat_skill_tool_parts_are_safe([{ ...part, type: "tool-Run_Skill_Script", input: { input: "PRIVATE" } }])).toBe(false);
 	});
+
 	test("accepts a Stop during argument streaming only while input is empty", () => {
 		const partial = { type: "tool-run_skill_script", toolCallId: "script-call", state: "input-streaming" };
 		expect(ai_chat_skill_tool_parts_are_safe([partial])).toBe(true);

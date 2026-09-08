@@ -39,13 +39,16 @@ async function get_scope(
 	args: { membershipId: Id<"organizations_workspaces_users">; userId: Id<"users"> },
 ) {
 	if (!ai_chat_context_ENABLED) return null;
+
 	const membership = await organizations_db_get_membership(ctx, args);
 	if (!membership) return null;
+
 	const allowed = await access_control_db_authorize_membership(ctx, {
 		userAuth: { id: args.userId },
 		membership,
 		permission: "content.read",
 	});
+
 	return allowed._nay ? null : membership;
 }
 
@@ -53,6 +56,7 @@ async function get_current_user_id(ctx: QueryCtx) {
 	const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
 	const user = userAuth ? await ctx.db.get("users", userAuth.id) : null;
 	if (!user || user.deletedAt != null) throw convex_error({ message: "Unauthenticated" });
+
 	return user._id;
 }
 
@@ -72,6 +76,7 @@ async function get_saved_state(
 		(node.name !== "AGENTS.md" && !RESOURCE_PATH_REGEX.test(node.path))
 	)
 		return null;
+
 	const [readable] = await access_control_db_filter_readable_file_nodes(ctx, {
 		organizationId: membership.organizationId,
 		workspaceId: membership.workspaceId,
@@ -79,6 +84,7 @@ async function get_saved_state(
 		nodes: [node],
 	});
 	if (!readable) return null;
+
 	const [asset, snapshot, lastSequence, proposals] = await Promise.all([
 		node.assetId ? ctx.db.get("files_r2_assets", node.assetId) : null,
 		node.yjsSnapshotId ? ctx.db.get("files_yjs_snapshots", node.yjsSnapshotId) : null,
@@ -88,7 +94,7 @@ async function get_saved_state(
 			.withIndex("by_fileNode", (q) => q.eq("fileNodeId", nodeId))
 			.take(101),
 	]);
-	// Eager creates belong to their author until a real saved edit moves the creation stamp.
+	// Exclude eager-created sources from every author until a save advances past the creation sequence.
 	if (
 		proposals.length > 100 ||
 		proposals.some(
@@ -98,6 +104,7 @@ async function get_saved_state(
 		)
 	)
 		return null;
+
 	const maximum = node.name === "AGENTS.md" ? ai_chat_skills_LIMITS.instruction : ai_chat_skills_LIMITS.resource;
 	let status: ai_chat_context_SavedSource["status"] = "ready";
 	if (
@@ -111,6 +118,7 @@ async function get_saved_state(
 		status = "unavailable";
 	else if (asset.size > maximum || node.contentTooLargeByteSize !== null) status = "too_large";
 	else if (lastSequence && snapshot && lastSequence.lastSequence > snapshot.sequence) status = "updating";
+
 	const source: ai_chat_context_SavedSource = {
 		nodeId,
 		path: node.path,
@@ -130,12 +138,14 @@ async function get_saved_state(
 			]),
 		),
 	};
+
 	return { source, node, asset, snapshot, lastSequence };
 }
 
 async function read_saved_chunks(ctx: QueryCtx, state: NonNullable<Awaited<ReturnType<typeof get_saved_state>>>) {
 	if (state.source.status !== "ready")
 		return Result({ _nay: { name: "unavailable", message: "This source has no current saved text." } });
+
 	const chunks = await ctx.db
 		.query("files_text_chunks")
 		.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
@@ -152,6 +162,7 @@ async function read_saved_chunks(ctx: QueryCtx, state: NonNullable<Awaited<Retur
 		});
 	if (chunks.length > 0 && chunks[0].startIndex !== 0)
 		return Result({ _nay: { name: "unavailable", message: "This source has no current saved text." } });
+
 	const content = chunks.length ? files_merge_contiguous_chunks(chunks) : state.source.size === 0 ? "" : null;
 	return content !== null && files_get_utf8_byte_size(content) === state.source.size
 		? Result({ _yay: content })
@@ -195,12 +206,14 @@ async function discover(ctx: QueryCtx, membership: Doc<"organizations_workspaces
 	if (instructionNodes.length > MAX_SCANNED_NODES || folders.length > MAX_SCANNED_NODES) {
 		return Result({ _nay: { name: "limit", message: "There are too many instruction or skill sources to inspect." } });
 	}
+
 	const readableFolders = await access_control_db_filter_readable_file_nodes(ctx, {
 		organizationId: membership.organizationId,
 		workspaceId: membership.workspaceId,
 		userId: membership.userId,
 		nodes: folders.filter((folder) => folder.kind === "folder"),
 	});
+
 	const instructions: ai_chat_context_SavedSource[] = [];
 	const skills: ai_chat_context_SavedSource[] = [];
 	for (const node of instructionNodes) {
@@ -208,6 +221,7 @@ async function discover(ctx: QueryCtx, membership: Doc<"organizations_workspaces
 		if (state) instructions.push(state.source);
 	}
 	instructions.sort((a, b) => a.path.split("/").length - b.path.split("/").length || a.path.localeCompare(b.path));
+
 	for (const folder of readableFolders) {
 		const node = await ctx.db
 			.query("files_nodes")
@@ -221,12 +235,14 @@ async function discover(ctx: QueryCtx, membership: Doc<"organizations_workspaces
 			)
 			.first();
 		if (!node || !SKILL_PATH_REGEX.test(node.path)) continue;
+
 		const state = await get_saved_state(ctx, membership, node._id);
 		if (state) skills.push(state.source);
 		if (skills.length > ai_chat_skills_LIMITS.discovered) {
 			return Result({ _nay: { name: "limit", message: "Keep the workspace catalog at or below 100 skills." } });
 		}
 	}
+
 	return Result({ _yay: { instructions, skills } });
 }
 
@@ -237,6 +253,7 @@ export const discover_sources = internalQuery({
 		const membership = await get_scope(ctx, args);
 		if (!membership)
 			return Result({ _nay: { name: "unavailable", message: "Instructions and skills are unavailable." } });
+
 		return await discover(ctx, membership);
 	},
 });
@@ -257,11 +274,13 @@ export const check_sources = internalQuery({
 			MAX_SCANNED_NODES + ai_chat_skills_LIMITS.discovered + ai_chat_skills_LIMITS.resourcesPerTurn
 		)
 			return Result({ _nay: { name: "limit", message: "Too many sources." } });
+
 		const sources: ai_chat_context_SavedSource[] = [];
 		for (const source of args.sources) {
 			const state = await get_saved_state(ctx, membership, source.nodeId);
 			if (state) sources.push(state.source);
 		}
+
 		// Saved edits do not replace a body already pinned for this turn. Callers compare versions for new reads.
 		return Result({ _yay: sources });
 	},
@@ -282,6 +301,7 @@ export const get_skill_resources = internalQuery({
 			return Result({ _nay: { name: "unavailable", message: "This skill is unavailable." } });
 		if (skill.source.version !== args.version)
 			return Result({ _nay: { name: "changed", message: "This skill changed. Load it again." } });
+
 		const prefix = skill.source.path.slice(0, -"SKILL.md".length);
 		const nodes = await ctx.db
 			.query("files_nodes")
@@ -296,6 +316,7 @@ export const get_skill_resources = internalQuery({
 			.take(MAX_SCANNED_NODES + 1);
 		if (nodes.length > MAX_SCANNED_NODES)
 			return Result({ _nay: { name: "limit", message: "This skill has too many resources to inspect." } });
+
 		const resources: ai_chat_context_SavedSource[] = [];
 		for (const node of nodes) {
 			if (node._id === args.skillId || node.kind !== "file") continue;
@@ -304,6 +325,7 @@ export const get_skill_resources = internalQuery({
 			if (resources.length > ai_chat_skills_LIMITS.resourcesPerSkill)
 				return Result({ _nay: { name: "limit", message: "Keep a skill at or below 200 resource files." } });
 		}
+
 		return Result({ _yay: resources });
 	},
 });
@@ -337,10 +359,12 @@ export const get_read_state = internalQuery({
 			args.maxBytes < 0
 		)
 			return Result({ _nay: { name: "too_large", message: "This source exceeds the text limit." } });
+
 		const content = await read_saved_chunks(ctx, state);
 		if (!content._nay)
 			return Result({ _yay: { source: state.source, content: content._yay, materializationState: null } });
 		if (content._nay.name === "limit") return content;
+
 		const { node, asset, snapshot, lastSequence } = state;
 		if (
 			!asset ||
@@ -350,6 +374,7 @@ export const get_read_state = internalQuery({
 			state.source.status !== "updating"
 		)
 			return Result({ _nay: { name: "unavailable", message: "This source has no current saved text." } });
+
 		const snapshotAsset = await ctx.db.get("files_r2_assets", snapshot.assetId);
 		// Counters bound the query before fetching update docs, each of which can be large.
 		if (
@@ -361,6 +386,7 @@ export const get_read_state = internalQuery({
 			return Result({
 				_nay: { name: "limit", message: "This source is still updating. Try again after it is saved." },
 			});
+
 		const updates = await ctx.db
 			.query("files_yjs_updates")
 			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
@@ -376,6 +402,7 @@ export const get_read_state = internalQuery({
 			return Result({
 				_nay: { name: "limit", message: "This source is still updating. Try again after it is saved." },
 			});
+
 		return Result({
 			_yay: {
 				source: state.source,
@@ -392,7 +419,7 @@ export const get_read_state = internalQuery({
 	},
 });
 
-type ReadState =
+type get_read_state_Result =
 	typeof get_read_state extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
@@ -414,8 +441,9 @@ export const read_source = internalAction({
 			{ _yay: { source: ai_chat_context_SavedSource; content: string } } | { _nay: { name: string; message: string } }
 		>
 	> => {
-		const before = (await ctx.runQuery(internal.ai_chat_context.get_read_state, args)) as ReadState;
+		const before = (await ctx.runQuery(internal.ai_chat_context.get_read_state, args)) as get_read_state_Result;
 		if (before._nay) return before;
+
 		let content = "content" in before._yay ? before._yay.content : undefined;
 		if (content === undefined && before._yay.materializationState) {
 			try {
@@ -434,6 +462,7 @@ export const read_source = internalAction({
 			return Result({ _nay: { name: "unavailable", message: "This source has no readable saved text." } });
 		if (files_get_utf8_byte_size(content) > args.maxBytes)
 			return Result({ _nay: { name: "too_large", message: "This source exceeds the text limit." } });
+
 		const after = await ctx.runQuery(internal.ai_chat_context.check_sources, {
 			membershipId: args.membershipId,
 			userId: args.userId,
@@ -443,6 +472,7 @@ export const read_source = internalAction({
 			return Result({ _nay: { name: "unavailable", message: "This source is no longer available." } });
 		if (after._yay[0].version !== args.version)
 			return Result({ _nay: { name: "changed", message: "This source changed. Load it again." } });
+
 		return Result({ _yay: { source: before._yay.source, content } });
 	},
 });
@@ -485,10 +515,13 @@ export const get_catalog = query({
 	handler: async (ctx, args) => {
 		const userId = await get_current_user_id(ctx);
 		if (!ai_chat_context_ENABLED) return { enabled: false, status: "complete" as const, instructions: [], skills: [] };
+
 		const membership = await get_scope(ctx, { ...args, userId });
 		if (!membership) return null;
+
 		const discovered = await discover(ctx, membership);
 		if (discovered._nay) return { enabled: true, status: "limit" as const, instructions: [], skills: [] };
+
 		const instructions = discovered._yay.instructions.map(({ nodeId, path, status }) => ({ nodeId, path, status }));
 		const skills: Array<{
 			skillId: Id<"files_nodes">;
@@ -500,9 +533,11 @@ export const get_catalog = query({
 			status: "available" | "invalid" | "updating" | "unavailable" | "too_large";
 			message?: string;
 		}> = [];
+
 		for (const source of discovered._yay.skills) {
 			const state = await get_saved_state(ctx, membership, source.nodeId);
 			if (!state) continue;
+
 			const entry = { skillId: source.nodeId, path: source.path, name: source.path.split("/").at(-2)!, description: "" };
 			if (source.status !== "ready") {
 				skills.push({ ...entry, status: source.status, ...(source.status === "updating" ? {} : {
@@ -510,6 +545,7 @@ export const get_catalog = query({
 				}) });
 				continue;
 			}
+
 			const content = await read_saved_chunks(ctx, state);
 			if (content._nay) {
 				skills.push({
@@ -519,6 +555,7 @@ export const get_catalog = query({
 				});
 				continue;
 			}
+
 			const parsed = ai_chat_skills_parse(content._yay, entry.name);
 			if (parsed._nay) {
 				skills.push({
@@ -528,6 +565,7 @@ export const get_catalog = query({
 				});
 				continue;
 			}
+
 			const runtime = parsed._yay.metadata?.["bonobo-script-runtime"];
 			const scriptStatus = runtime === undefined ? undefined : runtime === "worker-async-body-v1" ? "supported" : "unsupported";
 			skills.push({
@@ -540,8 +578,10 @@ export const get_catalog = query({
 				status: "available",
 			});
 		}
+
 		if (ai_chat_skills_catalog(skills).bytes > ai_chat_skills_LIMITS.catalog)
 			return { enabled: true, status: "limit" as const, instructions, skills: [] };
+
 		return { enabled: true, status: "complete" as const, instructions, skills };
 	},
 });

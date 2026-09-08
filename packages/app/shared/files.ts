@@ -1424,7 +1424,7 @@ export function files_normalize_markdown_name(name: string) {
 			return files_invalid_name_result("file");
 		}
 
-		return Result({ _yay: files_apply_special_file_name_case(`${fileNameParts.baseName}.md`) });
+		return Result({ _yay: files_normalize_special_file_name(`${fileNameParts.baseName}.md`) });
 	}
 
 	const fileNameParts = files_normalize_file_name_parts({
@@ -1436,7 +1436,7 @@ export function files_normalize_markdown_name(name: string) {
 		return files_invalid_name_result("file");
 	}
 
-	return Result({ _yay: files_apply_special_file_name_case(`${fileNameParts.baseName}.md`) });
+	return Result({ _yay: files_normalize_special_file_name(`${fileNameParts.baseName}.md`) });
 }
 
 /**
@@ -1461,7 +1461,7 @@ export function files_normalize_file_rename_name(name: string) {
 		fallbackBaseName: "untitled",
 	});
 	return Result({
-		_yay: files_apply_special_file_name_case(
+		_yay: files_normalize_special_file_name(
 			fileNameParts.extension ? `${fileNameParts.baseName}.${fileNameParts.extension}` : fileNameParts.baseName,
 		),
 	});
@@ -1474,7 +1474,7 @@ export function files_normalize_upload_file_name(fileName: string) {
 		pathSeparators: "leaf",
 		fallbackBaseName: "upload",
 	});
-	return files_apply_special_file_name_case(
+	return files_normalize_special_file_name(
 		fileNameParts.extension ? `${fileNameParts.baseName}.${fileNameParts.extension}` : fileNameParts.baseName,
 	);
 }
@@ -1488,7 +1488,7 @@ export function files_normalize_special_node_path(kind: "file" | "folder", path:
 	return segments
 		.map((segment, index) =>
 			kind === "file" && index === segments.length - 1
-				? files_apply_special_file_name_case(segment)
+				? files_normalize_special_file_name(segment)
 				: segment.toLowerCase() === ".agents"
 					? ".agents"
 					: segment,
@@ -1626,10 +1626,10 @@ function files_is_name_input_separator(kind: app_convex_Doc<"files_nodes">["kind
 		: FILES_FOLDER_NAME_INPUT_SEPARATOR_REGEX.test(character);
 }
 
-function files_apply_special_file_name_case(name: string) {
-	// Bare README is Markdown at every new file destination.
+function files_normalize_special_file_name(name: string) {
 	const extensionSeparatorIndex = name.lastIndexOf(".");
 	const baseName = (extensionSeparatorIndex === -1 ? name : name.slice(0, extensionSeparatorIndex)).toLowerCase();
+	// Give bare README the .md extension at new file destinations.
 	if (baseName === "readme" && extensionSeparatorIndex === -1) return "README.md";
 	if (!FILES_SPECIAL_UPPERCASE_FILE_BASE_NAMES.has(baseName)) {
 		return name;

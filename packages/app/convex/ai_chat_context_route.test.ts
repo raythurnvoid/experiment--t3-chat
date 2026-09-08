@@ -33,13 +33,19 @@ beforeEach(() => {
 	vi.stubGlobal("fetch", vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
 		const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
 		const key = url.searchParams.get("key") ?? "";
-		if (init?.method === "PUT") { objects.set(key, init.body ?? ""); return new Response(null, { status: 200 }); }
+		if (init?.method === "PUT") {
+			objects.set(key, init.body ?? "");
+			return new Response(null, { status: 200 });
+		}
 		const body = objects.get(key);
 		return new Response(body ?? null, { status: body === undefined ? 404 : 200 });
 	}));
 });
 
-afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
+afterEach(() => {
+	vi.restoreAllMocks();
+	vi.unstubAllGlobals();
+});
 
 async function setup() {
 	const t = test_convex();
@@ -52,7 +58,7 @@ async function setup() {
 	return { t, asUser, membership, threadId: thread._yay.threadId };
 }
 
-	describe("/api/chat workspace instructions", () => {
+describe("/api/chat workspace instructions", () => {
 	test("sends saved root and nested guidance and catalog first, then delivers a loaded body in prepareStep", async () => {
 		const { t, asUser, membership, threadId } = await setup();
 		const { organizationId, workspaceId, userId } = membership;
@@ -64,6 +70,7 @@ async function setup() {
 			textContent: "---\nname: summarize-invoices\ndescription: CATALOG_DESCRIPTION_273\n---\n\nSECRET_SKILL_BODY_274",
 		});
 		if (root._nay || nested._nay || skill._nay) throw new Error("Fixture files must be created");
+
 		const batch = await t.mutation(internal.files_pending_updates.create_file_pending_update_operation_batch_internal, { ...scope, nodeId: root._yay.nodeId });
 		if (batch._nay) throw new Error(batch._nay.message);
 		const staged = await t.mutation(internal.files_pending_updates.stage_file_pending_update_text_input_internal, {
@@ -85,6 +92,7 @@ async function setup() {
 		const body = await response.text();
 		expect(response.status, body).toBe(200);
 		expect(model.streamText).toHaveBeenCalledTimes(1);
+
 		const call = model.streamText.mock.calls[0][0] as Parameters<typeof streamText>[0];
 		expect(call.system).toContain("ROOT_GUIDANCE_271");
 		expect(call.system).toContain("NESTED_GUIDANCE_272");
@@ -94,15 +102,19 @@ async function setup() {
 		expect(call.system).not.toContain("SECRET_SKILL_BODY_274");
 		expect(call.experimental_context).toBeDefined();
 		if (!call.prepareStep || !call.tools?.load_skill?.execute) throw new Error("Expected live skill tool and prepareStep");
+
 		await t.run(async () => {
 			const first = await call.prepareStep!({ model: call.model, messages: call.messages ?? [], steps: [], stepNumber: 0, experimental_context: call.experimental_context });
 			expect(first?.system).not.toContain("SECRET_SKILL_BODY_274");
+
 			const output = await call.tools!.load_skill.execute!({ skillId: skill._yay.nodeId }, { toolCallId: "load", messages: [], experimental_context: call.experimental_context });
 			expect(output).toEqual({ skillId: skill._yay.nodeId, version: expect.stringMatching(/^[a-f0-9]{64}$/u), status: "loaded" });
+
 			const second = await call.prepareStep!({ model: call.model, messages: call.messages ?? [], steps: [], stepNumber: 1, experimental_context: call.experimental_context });
 			expect(second?.system).toContain("SECRET_SKILL_BODY_274");
 			expect(second?.experimental_context).toBe(call.experimental_context);
 			expect(JSON.stringify(output)).not.toContain("SECRET_SKILL_BODY_274");
+
 			const final = await call.prepareStep!({ model: call.model, messages: call.messages ?? [], steps: [], stepNumber: 9, experimental_context: call.experimental_context });
 			expect(final?.activeTools).toEqual([]);
 			expect(final?.system).toContain("last step");
@@ -117,6 +129,7 @@ async function setup() {
 			textContent: "---\nname: check-list\ndescription: Check a list\n---\n\nEXPLICIT_BODY_276",
 		});
 		if (skill._nay) throw new Error(skill._nay.message);
+
 		const response = await asUser.fetch("/api/chat", {
 			method: "POST", headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ messages: [{ id: "selected-message", role: "user", parts: [{ type: "text", text: "Use this skill." }] }],
@@ -125,6 +138,7 @@ async function setup() {
 		const body = await response.text();
 		expect(response.status, body).toBe(200);
 		expect(model.streamText.mock.calls[0][0].system).toContain("EXPLICIT_BODY_276");
+
 		const messages = await t.run(ctx => ctx.db.query("ai_chat_threads_messages_aisdk_5").collect());
 		expect(messages.find(message => message.clientGeneratedMessageId === "selected-message")?.content.metadata).toMatchObject({ skillIds: [skill._yay.nodeId] });
 		expect(JSON.stringify(messages)).not.toContain("EXPLICIT_BODY_276");
@@ -136,13 +150,16 @@ async function setup() {
 			id: "stored-skill", role: "assistant", parts: [{ type: "tool-load_skill", toolCallId: "load", state: "output-available",
 				input: { skillId: "a".repeat(32) }, output: { skillId: "a".repeat(32), version: "b".repeat(64), status: "loaded" } }],
 		};
+
 		const accepted = await asUser.mutation(api.ai_chat.thread_messages_add, { membershipId: membership.membershipId, threadId, parentId: null, messages: [{ clientGeneratedMessageId: "safe", content: safe }] });
 		expect(accepted._nay).toBeUndefined();
+
 		const refused = await asUser.mutation(api.ai_chat.thread_messages_add, {
 			membershipId: membership.membershipId, threadId, parentId: null,
 			messages: [{ clientGeneratedMessageId: "unsafe", content: { ...safe, parts: [{ ...safe.parts[0], output: { ...safe.parts[0].output, body: "PRIVATE_SKILL_BODY" } }] } }],
 		});
 		expect(refused._nay?.message).toBe("Invalid skill tool message");
+
 		const docs = await t.run(ctx => ctx.db.query("ai_chat_threads_messages_aisdk_5").collect());
 		expect(docs.map(doc => doc.clientGeneratedMessageId)).toEqual(["safe"]);
 		expect(JSON.stringify(docs)).not.toContain("PRIVATE_SKILL_BODY");
