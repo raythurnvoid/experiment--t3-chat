@@ -18,6 +18,9 @@ An older installed bundle may still use the old backend even when the working tr
 - Use the new transcript status controls. Read the exact fresh `/chitchat-<generation>` root shown in
   Transcript details. Verify raw Markdown markers, edits, replies, reactions, and rollover bytes there.
   Leave all old `/chitchat` output untouched. Inspect separate channel-copy and README-index status.
+- After selecting a channel, wait for its exact heading before clicking Connect or Reconnect Files.
+  That shared control can still belong to the previous channel while the new selection is loading.
+  Read back the chosen channel's grant and status; clicking an identical button is not enough.
 - Test Files sharing takeover, removed account grants, human/parent locks, and a lost reader result.
   A blocked copy must not be shown as saved. A cancelled original reader operation cannot apply later.
   A message already saved in native chat remains saved when Files sync is blocked.
@@ -26,6 +29,52 @@ An older installed bundle may still use the old backend even when the working tr
 
 This section states the current source contract. Record actual live evidence separately; it does not
 claim that the new installed frame has passed these checks.
+
+### Native permission readbacks
+
+Verified with the published 0.8.1 frame on 2026-09-08:
+
+- Use an owned frame's `/auth/lease` response to keep its current JWT in session memory. Renewals replace it about every 15 seconds. Never log the JWT, plugin bearer, request headers, or response body. A captured JWT expires after at most 30 seconds; it is not a durable QA credential.
+- For a fresh native read, create `ConvexHttpClient` from the app's `convex/browser` module in the owned page, point it at the configured Chitchat deployment, set that JWT, and query the public native function. The host's `app_convex` still targets Press. Reading its subscription cache does not prove a fresh native result.
+- Compare `sessions.current.hostUserId` with the Press membership's `userId`. After public Press removal/reinvite, require a new `membershipLifetime`, no old private channel in `channels.list_mine`, and null old message/file reads. A removed member's Press route may unmount the frame before the plugin can show its own denial.
+- Query `files_sharing.get_node_share_state` with the member's current Press membership. An explicit human grant on the new transcript folder can make the copy readable while native private chat remains denied. Confirm a later chat update reaches that manual copy. Use only owned QA content for this check.
+- Native channel buttons still gain unread text. Scope by the observed `data-channel-key`, then use the channel button's starting name; an exact whole-name match can stop matching after a new unread.
+- A Viewer may keep typing a local draft while Send and Attach are disabled. Restoring Member must keep the draft. Test new sends through the public native mutation too; disabled UI alone does not prove permission enforcement.
+- Delete only the exact owned anonymous fixture through `users.delete_current_user_account`, then close its owned tabs promptly. A successful deletion leaves a tombstoned user and inactive memberships until retention cleanup; it need not remove the user document at once.
+
+### Native rollover readback
+
+- Create a new public channel, send a baseline message, and connect Files through the installed UI first. Keep stress messages inside that channel and its new transcript root.
+- Keep the current native JWT from the owned frame's `/auth/lease` response in session memory. The corresponding Press bearer is in that request's JSON `pressToken` field, not its Authorization header. Never print or save either credential or the complete request/response.
+- For repeated public `messages.send` calls, save each request ID and its exact input before sending. Keep that same request across a lease `refresh_required` result or a transient network/concurrency failure. Save only non-secret receipt IDs and test markers in the QA journal. `messages.latest_roots` gives the bounded live page and its latest sequence.
+- Wait until transcript status is `ready` and `appliedSequence === desiredSequence` before claiming the copy is complete. Check `indexStatus` separately. Do not force internal worker checkpoints to make a live check pass.
+- Read the exact root through the current Press `/api/v1/files/list` route, follow its cursor when needed, and filter to this test channel. Use `/api/v1/files/read` with `maxBytes: 100000` for each part. Compare the listed byte size with the UTF-8 byte count of the returned Markdown; require both to stay at or below 100,000.
+- Check all numbered paths for gaps, every expected test marker exactly once, and every `chitchat:msg` marker exactly once. Numbered parts hold older messages; the unnumbered file is the current tail. Edit the baseline through the public chat mutation and prove the correct old part changes while other part hashes stay the same.
+- Keep raw test Markdown and compact hash manifests in the personal QA artifact folder. Leave the test files and all old transcript roots alone unless cleanup is explicitly requested.
+
+### Manual transcript edits and rebuild
+
+- Use only the new owned QA transcript. Save its original Markdown and policy first. Keep other transcript writers idle while testing manual changes.
+- Read the node's collaboration mode. When it is off, `files_nodes_content.replace_file_content` is the public action used by Files Save. Call it through the existing authenticated Press client. Do not patch file docs directly or extract a service credential to bypass its policy.
+- A selected service writer also blocks the owner. Coordinate any temporary parent-policy change with the other QA lanes, then restore the exact captured policy in `finally` after each manual save. Check the restored policy before triggering the next chat change.
+- Add a separate manual note, edit the owned chat message, and verify the note remains in the downloaded Markdown. Then duplicate that message's generated block and edit the source again. Chat must stay saved, Files sync must show the plain refusal, and the ambiguous file's bytes must stay unchanged.
+- Open **Rebuild copies** and check that it is disabled before the replace-edits checkbox is selected. Confirm it, then require one copy of the latest message, no duplicate markers, and removal of the manual note. Read the actual download through the normal signed-download action and compare it with the editor content. Never save signed URLs in the QA artifacts.
+
+### Current UI and outage checks
+
+- The channel and thread composers use Ariakit mentions and have `role="combobox"`. Use their observed accessible names, such as `Message #<channel>` and `Reply in thread`; a `textbox` locator does not match them. The inline message editor is a separate textbox named `Edit message`.
+- A channel returned by `channels.get` is a document. Pass `state.channel._id` as `channelId` when using that saved object. Use `messages.latest_roots` for the current message page.
+- In a long file picker, scroll to a lower file, hover it if needed, then click it normally. Check that it is selected and the picker closes. Focus repair must not jump back to Cancel and undo the pointer action. Do not use force clicks or DOM click calls to make this check pass.
+- For attachment downloads, use a stored readable text file and an image. The Files URL request must carry `download: true`; click the resulting normal anchor and wait for the browser's real download event. Check its filename and bytes, that no popup opened, and that the same chat frame is still usable. A successful URL response alone does not prove a download. Never print or save signed URLs; browser errors can include them, so sanitize the log before reporting it.
+- Anonymous Free-plan upload refusal is expected. Use an existing readable image or a normal upload by an authorized owner whose plan allows it. Do not change billing or insert a fake file record to make a download check pass.
+- Leave an inline edit, channel row menu, active mention option, and open Transcript details through two successful `/auth/lease` responses. Keep DOM references and the focused element in memory. Normal renewal must keep those same nodes and choices; a genuine denial or expired lease must hide protected results. Do not count a popup that closed and reopened as preserved.
+- Scope history controls to `.message-log` or `.thread-replies`. Both have **Load older**, **Newer messages**, and **Latest messages**; the last name may include a newer-message count. Visit more than 20 pages and count the rendered rows after each settled page. DOM counts and real-hook subscription tests prove those bounds; they are not a heap measurement.
+- With a thread open, narrow below 720 CSS pixels. Covered channel, sidebar, and app controls must be inert. Check Shift+Tab from **Back to messages**, then close back to the message log. Open a main-pane Attach/Delete/Rebuild dialog before narrowing too: the same modal must remain usable above the thread, and closing it must focus a visible thread control. Resize must not discard either composer draft.
+- Use `getCDPSession({ page })` for `Input.imeSetComposition`, and inspect the actual key event's `isComposing` field before claiming an IME check. Composition Enter must not send. `Input.insertText` ends composition; explicit Send can then save the committed text. This exercises browser IME events, not a full operating-system candidate window.
+- Run the frame-specific accessibility screen in wide, narrow, and active-modal states. Use a 512×384 CSS viewport as the layout equivalent of a 1024×768 display at 200% zoom, and label it that way. Verify actual `innerWidth`/`innerHeight` after screenshot failures: a timed-out capture can restore old metrics while Playwright's cached viewport reports the new size. Reapply a different explicit size before continuing.
+- Check reduced motion with `page.emulateMedia({ reducedMotion: "reduce" })`, then restore it. For theme checks, follow the palette recipe below: the host's root `light` class can still send dark surfaces. A local light-fallback preview must remove all host `--color-*` scales, then restore the saved frame style and class. Never call a partial two-colour override a light-theme screenshot.
+- Keep outage tests separate. Refusing only the owned frame's `/auth/lease` route checks Chitchat access renewal while Press stays online; it is not a whole-network outage. Check that drafts stay and new sends stop once the lease expires.
+- To test a message already submitted when the network fails, use an isolated QA browser context. Click Send first, then take only that context offline, wait through lease expiry, and restore it. Require one saved message and automatic confirmation with the same request ID. Do not take the user's shared owner context offline or call the lease-only test proof of this send-recovery flow.
 
 ## Historical recipes through 0.7.x
 

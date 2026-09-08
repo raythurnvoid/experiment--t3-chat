@@ -104,6 +104,7 @@ await cx.mutation(api.organizations.invite_user_to_organization_workspace, {
 - The invitee lands with the `member` system role: `content.read` and `content.write`, and **no** `content.permissions.manage`. That is exactly the shape most permission refusals need.
 - Each side reads its own membership with `organizations.get_membership_by_organization_workspace_name({ organizationName, workspaceName })`.
 - Confirm the granted level per permission with `access_control.get_current_user_workspace_permission({ membershipId, permission })` — it takes the membership id, not org/workspace ids.
+- The role display query has different args: `access_control.get_current_user_role({ organizationId, workspaceId })`. Passing `membershipId` there fails argument validation.
 
 ## 4. Content the second user can act on
 

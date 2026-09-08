@@ -158,8 +158,9 @@ order live in `packages/plugin-runner/README.md`. Keep the old stored output cou
 new `runnerOutputBytes` counts raw bytes consumed, and new `runnerOutputTruncated` is false.
 
 Host 500 with `code: "response_too_large"` is a deterministic response failure, but earlier writes
-may be saved. Chitchat retains its pending entry and request ID for manual Retry and does not
-retry that error automatically. Plugin 5xx and uncertain transport results reuse the same ID.
+may be saved. The former store-based Chitchat client kept its pending entry and request ID for
+manual Retry on that error. Native Chitchat no longer uses this invoke path. Invoke clients must
+reuse the same request ID after plugin 5xx and uncertain transport results.
 The plugin-data transaction keeps `credentialRef.runId` and checks the original run's status,
 deadline, token expiry, actor, version, tenant, and pinned service account before a write commits.
 
@@ -194,12 +195,12 @@ Practical note, unchanged by the authorization: `publish_version` requires a `si
 Use the signed-in browser or the existing Convex CLI identity recipe in
 `../app-playwriter-harness/references/plugin-marketplace.md`. Do not sign in or out.
 
-For the editable-label cutover, pause old Chitchat writers until the host/data steps finish and the
-updated installation is active. Generate and verify the SDK HTTP types before pinning its real mirror
-commit in Chitchat. Build both plugin bundles and the manifest, publish the exact reviewed commit,
-update the installation, and read back the served version and bytes. Publish alone does not upgrade
-an installation. Release the page's privacy text and generated transcript/README text together.
-Keep the task's approved data scope and preservation choices; this release adds no cleanup authority.
+The editable-label cutover used the former Chitchat worker and page bundles. Current native
+Chitchat deploys its separate Convex backend and builds only the frontend assets and manifest.
+Generate and verify SDK types before pinning the real mirror commit. Publish the exact reviewed
+plugin commit, update the installation, and read back the served version and bytes. Publish alone
+does not upgrade an installation. Keep page privacy text and generated transcript/README text in
+step. The task's data scope still controls preservation; a release adds no cleanup authority.
 
 Publishing behavior in `publish_version_from_github` (`packages/app/convex/plugins.ts`):
 
@@ -593,13 +594,61 @@ The manifest has no generic store or invoke capability and no backend runner art
 
 Use bounded indexed queries for channels, history, per-thread replies, and overview pages. Keep truthful reply summaries and unread counts. No generic document-key parsers, whole-channel companion scans, or timestamp change-feed workarounds remain. Private channel controls distinguish read, write, and manage access. The organization owner can read private channels; lists only show joined private channels.
 
+Ordinary lease renewal must keep open menus, mention choices, dialogs, and transcript details stable.
+The native `use_chat_query` keeps one bounded result only during a verified token swap, keyed by
+query, arguments, account, installation, generation, and membership lifetime. Real denial, expiry,
+and a changed key clear it. Send and permission checks still require current authority.
+
+Attachment links request `download: true` from the existing Files URL route and use a normal
+download anchor without opening a popup. Expired links must offer refresh before navigation can
+replace the chat frame. File access and signed URL lifetime checks remain in Press.
+
 A fresh dataset uses a new `/chitchat-<generation>` Files root. Old Files and store data are left alone. Keep the existing inner layout, Markdown markers, UTC times, author snapshots, reply indentation, and 100,000-byte rollover. Durable ordered transcript jobs publish through the external Files bridge. Current account/actor access, labels, locks, pinned paths and IDs, content revision, writer generation, and operation receipts are checked at publication. Explicit rebuild replaces manual edits only after its UI confirmation.
 
 Once Files setup has started, private reader changes wait for its acknowledgement and use recorded compensation if the native change cannot complete. Before any Files connection exists, they may complete locally. An uncertain reader call is either rolled back by its saved receipt or cancelled under its original operation ID before a late apply can land. Current file policies still apply. Real Files sharing changes detach automatic readers. Membership lifetime tags stop removal/reinvite from restoring old grants. Uninstall retires writer authority and leaves output and sharing intact. The owning host contracts are in the auth, access-control, Files, and public-api skills.
 
 Live QA must use the installed frame and read back stored chat and raw transcript text. Unit mocks cannot prove CSP, lease refresh, Markdown marker survival, or cross-backend permissions. Publish the exact reviewed commit, update the installation, and verify served version and bytes before committing the parent gitlink.
 
-# Releases (SDK + Gallery)
+# Releases
+
+Chitchat 0.8.5 shipped the reconnect correction on 2026-09-09. Its commit is
+`ff1d6c5a57a2117c80ec990b378ea94561828034`, version doc
+`hn7th9vse0akfcqheysd2bfjf98e1hms`. It fixes reconnect leaving a fully synced channel on
+Updating Files. An existing destination with equal source sequences and no unfinished file or
+reader run stays ready; queued work and active rebuilds stay pending. Independent correctness
+and separate uniformity reviews passed, along with 270 tests, both TypeScript projects, formatting,
+and two stable builds. The three frontend files are byte-identical to 0.8.4, so its completed
+live UI checks still apply. All four enabled installations use 0.8.5 with preserved accounts,
+bindings, grants, and settings; the disabled installation is unchanged.
+
+Final installed owner reconnects returned ready for public, private, and ten-part rollover copies,
+with matching applied/source sequences and no errors. The README index also reached ready.
+Manual private Files sharing stayed detached. The temporary member was removed through the public
+account flow; both backends confirmed its access was inactive.
+
+SDK 0.20.3 and native Chitchat 0.8.4 are the 2026-09-08 rebuild release. The reviewed host
+checkpoints are `e03edd4538edf859e9775bf547e9b653e184930a`,
+`2db16634be77826332d1201d965d6117cf41ec06`, and
+`b50ee1b4ef5990385a36ed0d90d9ad778f02b7d8`. The last owns the download contract and SDK.
+SDK mirror `4b7d0ee3a83d8348de1b04c9587ba5ba3cdfad4e` has the same tree,
+`e855091b16e22cfce1f8505d31b2f47410d3aee1`, as the root SDK.
+Chitchat pins that SHA in package and lock files. Its published commit is
+`4fd4a2bef8d0894edd0bf24ca34c053388b71ed4`, version doc
+`hn7j0gz71jnb94dh86mjaw9gfh8e0bjs`. Review passed and all three served assets match.
+That release updated all four enabled installations. Account, binding, grant, and settings hashes
+matched before and after each update. The disabled 0.6.0 installation stayed unchanged.
+
+Press remains on `grand-finch-267`; native chat uses the separate `chitchat` project's development
+deployment `exuberant-hippopotamus-790`. No old chat data was migrated or deleted. New transcripts
+use a fresh root. After an update, use **Reconnect Files** for existing transcript connections;
+updates revoke prior service grants. Reconnection still requires the current actor and account
+permissions and does not restore removed grants.
+
+Verification passed full Press lint and its 6,366-test baseline, followed by focused checks and
+full lint for later host changes; SDK TypeScript and 48 tests; native TypeScript, formatting,
+266 tests, and two identical builds. Installed-browser evidence and the final gitlink checkpoint
+belong to the same release record. Historical store/invoke releases below describe their own
+versioned behavior, not the current native chat backend.
 
 SDK 0.20.1 and Chitchat 0.7.9 shipped to dev on 2026-09-08. The host commit is
 `bbe9683ebe2531c91fa519574f094fcf002f1084`; the SDK mirror is

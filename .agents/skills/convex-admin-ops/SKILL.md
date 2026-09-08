@@ -48,6 +48,19 @@ Use `--push` only when you intentionally need to deploy local Convex source chan
 
 For a one-shot push in this repo, run `convex dev --once` with `--typecheck disable` after the normal repo lint/type check has passed. There is no `convex/tsconfig.json`; `--typecheck enable` prints that it skipped type checking and can exit successfully before it pushes anything. Require the final `Convex functions ready!` message, then verify the new schema or function with a readback.
 
+# Failed Deployment Lookup
+
+If `convex dev --once` fails before upload at `team_and_project` with HTTP 500, the installed CLI
+may still resolve `--deployment <team>:<project>:dev` through its supported `run` command. Use the
+known team and project, then run a read-only inline query returning only `process.env.CONVEX_CLOUD_URL`.
+Require that URL to match the already approved development deployment before any push.
+
+After required checks, the same `run` command can use `--push --codegen enable` and the same final
+readback. Do not reconfigure the project or switch to the production-default `convex deploy`.
+This host has no `convex/tsconfig.json`, so its TypeScript gate is the full app lint; use
+`--typecheck disable` for that CLI push only after that gate passes. Do not use it to hide a real
+TypeScript failure. Verify the installed CLI supports these options before using this recovery.
+
 # JSON Args Pattern
 
 For generated args, pass a PowerShell string variable as the final argument:

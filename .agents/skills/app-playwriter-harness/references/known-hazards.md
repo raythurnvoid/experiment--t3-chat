@@ -26,6 +26,7 @@ Before the first attempt at a new interaction type (upload, download, screenshot
 - The global `playwriter` command may not exist on this machine. Run it through Vite Plus: `vp env exec pnpx playwriter`.
 - Create sessions from the repo root so the scoped Playwriter filesystem can read harness files and resolve repo-relative paths. Propose documentation memories through the harness, then edit them outside Playwriter with the agent's targeted edit tool.
 - In this repo, run Playwriter through Vite Plus, for example `vp env exec pnpx playwriter browser list`.
+- When a nested CLI's `--help` shows Vite Plus help, pass the command after `vp env exec -- ... --help`. Check the printed command name before treating that output as the nested tool's documentation.
 - Do not use Vite Plus package-filtered execution when the flow needs `.agents/skills/**`; that changes the session cwd to `packages/app` and prevents repo-root harness reads.
 - Use extension mode by default. Use direct CDP only when the user asks or when the documented Edge/Playwriter recovery flow requires it. Load the Edge remote-debugging skill before that recovery.
 - This repo forbids Bun and `bunx`; translate any Playwriter docs that mention `npx`/`bunx` to `vp env exec pnpx playwriter`.
