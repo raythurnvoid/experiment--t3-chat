@@ -6804,7 +6804,7 @@ describe("non-collaborative files", () => {
 			};
 		});
 
-		// Objective 1: a non-collaborative file carries no Yjs state of any kind.
+		// A non-collaborative file carries no Yjs state of any kind.
 		expect(written.collaborationEnabled).toBe(false);
 		expect(written.yjsSnapshotId).toBeNull();
 		expect(written.yjsLastSequenceId).toBeNull();
@@ -6813,7 +6813,7 @@ describe("non-collaborative files", () => {
 		expect(written.yjsUpdates).toBe(0);
 		expect(written.yjsSnapshotAssets).toBe(0);
 
-		// Objective 2: it keeps every committed representation, including the frontmatter index.
+		// It keeps every committed representation, including the frontmatter index.
 		// The shape stays `rich_text`, so the Markdown chunker ran and frontmatter was indexed —
 		// this is what the read-only mount branch would have destroyed by forcing plain text.
 		expect(written.textKind).toBe("rich_text");
@@ -6913,7 +6913,7 @@ describe("non-collaborative files", () => {
 		});
 		expect(available).toMatchObject({ content: markdown });
 
-		// Workspace search already read committed chunks with no Yjs term. Objective 20.
+		// Workspace search reads committed chunks without requiring Yjs.
 		const search = await t.query(internal.files_nodes.text_search_files, {
 			...readScope,
 			userId: db.userId,
@@ -7006,7 +7006,7 @@ describe("non-collaborative files", () => {
 			};
 		});
 
-		// Objective 3: the replace landed and the file is still non-collaborative.
+		// The replacement landed and the file is still non-collaborative.
 		expect(after.collaborationEnabled).toBe(false);
 		expect(after.assetId).not.toBe(assetId);
 		expect(saved._yay).toBeNull();
@@ -7145,7 +7145,7 @@ describe("non-collaborative files", () => {
 				mode: { kind: "full", maxBytes: 100_000 },
 			});
 
-		// Objective 16: over-cap text is refused before anything is written, with a plain message —
+		// Text over the size limit is refused before anything is written, with a plain message —
 		// not by a late throw from the chunk insert.
 		const tooBig = await asUser.action(api.files_nodes_content.replace_file_content, {
 			membershipId: db.membershipId,
@@ -7154,7 +7154,7 @@ describe("non-collaborative files", () => {
 		});
 		expect(tooBig._nay?.message).toContain("exceeds");
 
-		// Objective 16, second half: over-cap frontmatter is refused the same way.
+		// Frontmatter over the field limit is refused the same way.
 		const tooManyFields = Array.from(
 			{ length: files_metadata_MAX_FRONTMATTER_FIELDS + 5 },
 			(_, index) => `field${index}: value${index}`,
@@ -7168,7 +7168,7 @@ describe("non-collaborative files", () => {
 		// can shorten it after reading the message.
 		expect(fatFrontmatter._nay?.message).toBe("Too many frontmatter fields");
 
-		// Objective 5: the read-only lock blocks this write door like every other one.
+		// The read-only lock blocks this write door like every other one.
 		const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
 			writePolicy: { mode: "read_only" },
 			membershipId: db.membershipId,
@@ -7487,7 +7487,7 @@ describe("non-collaborative files", () => {
 		expect(off._nay).toBeUndefined();
 		await drain_scheduled_continuations(t);
 
-		// Objective 4, first half: the whole Yjs document is gone and the text survived it.
+		// The whole Yjs document is gone and the text survived it.
 		const afterOff = await collaborative_doc_counts();
 		expect(afterOff.collaborationEnabled).toBe(false);
 		expect(afterOff.hasPointers).toBe(false);
@@ -7512,7 +7512,7 @@ describe("non-collaborative files", () => {
 		});
 		expect(on._nay).toBeUndefined();
 
-		// Objective 4, second half: one fresh document, and the same visible text again.
+		// Turning collaboration back on creates one fresh document with the same visible text.
 		const afterOn = await collaborative_doc_counts();
 		expect(afterOn.collaborationEnabled).toBe(true);
 		expect(afterOn.hasPointers).toBe(true);
@@ -7859,7 +7859,7 @@ describe("non-collaborative files", () => {
 		const markdown = "# Guarded toggle\n\nbody\n";
 		const nodeId = await test_materialize_markdown_file(t, asUser, db, "/guarded-toggle.md", markdown);
 
-		// Objective 5: a destructive toggle without the acknowledgement is refused before any read.
+		// A destructive toggle without the acknowledgement is refused before any read.
 		const unacknowledged = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
 			membershipId: db.membershipId,
 			nodeId,
@@ -8133,7 +8133,7 @@ describe("non-collaborative files", () => {
 		// pass on an empty table and prove nothing.
 		expect(await count_materialization_jobs()).toBe(1);
 
-		// Objective 17: refuse with a wait, not a dead end. Materialization is automatic and quick.
+		// Ask the user to wait while the background worker saves the current text.
 		const stillSaving = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
 			membershipId: db.membershipId,
 			nodeId,
@@ -8171,7 +8171,7 @@ describe("non-collaborative files", () => {
 		});
 		expect(marked._nay).toBeUndefined();
 
-		// Objective 19: the toggle stops the materialization worker and forgets its job doc in its
+		// The toggle stops the materialization worker and removes its job doc in its
 		// own transaction, before any continuation runs. A worker left pointing at a file whose Yjs
 		// document is gone writes the snapshot object back into the bucket after the toggle deleted
 		// it, and nothing tracks that key afterwards.
@@ -14060,7 +14060,7 @@ describe("plain text file stats and delete-all", () => {
 		});
 	}
 
-	// Objective 18's oracle: the sentinel before the first materialization, exact counts after.
+	// Counts stay at -1 until the first materialization, then hold the exact values.
 	test("file_stats keeps the -1 sentinel until a plain-text materialization writes exact counts", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));

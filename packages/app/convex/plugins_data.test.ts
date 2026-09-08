@@ -12749,7 +12749,7 @@ async function read_node_read_grants(
 	);
 }
 
-async function read_binding_rows(
+async function read_bindings(
 	t: ReturnType<typeof test_convex>,
 	fixture: Awaited<ReturnType<typeof seed_binding_fixture>>,
 ) {
@@ -12797,7 +12797,7 @@ describe("plugins_data_db_apply_file_access_binding", () => {
 		expect(await read_node_read_grants(t, fixture, folderId)).toEqual(
 			[`${fixture.userId}:content.read`, `${bob.userId}:content.read`].sort(),
 		);
-		expect(await read_binding_rows(t, fixture)).toMatchObject([{ scopeId: "p/room", nodeId: folderId }]);
+		expect(await read_bindings(t, fixture)).toMatchObject([{ scopeId: "p/room", nodeId: folderId }]);
 		const softwareGrant = await t.run(async (ctx) => {
 			const now = Date.now();
 			const serviceAccountId = await ctx.db.insert("access_control_service_accounts", {
@@ -12833,7 +12833,7 @@ describe("plugins_data_db_apply_file_access_binding", () => {
 
 		const released = await apply_binding(t, fixture, { nodeId: folderId, readScopeId: null });
 		expect(released._nay).toBeUndefined();
-		expect(await read_binding_rows(t, fixture)).toEqual([]);
+		expect(await read_bindings(t, fixture)).toEqual([]);
 		expect(await read_node_read_grants(t, fixture, folderId)).toEqual(
 			[`${fixture.userId}:content.read`, `${bob.userId}:content.read`].sort(),
 		);
@@ -12868,7 +12868,7 @@ describe("plugins_data_db_apply_file_access_binding", () => {
 		expect(fifth._nay?.message).toBe("One private space can be bound to at most 4 files or folders.");
 		// A node already bound to the scope is not a fifth binding, so re-applying it still works.
 		expect((await apply_binding(t, fixture, { nodeId: nodeIds[3]!, readScopeId: "p/cap" }))._nay).toBeUndefined();
-		expect(await read_binding_rows(t, fixture)).toHaveLength(4);
+		expect(await read_bindings(t, fixture)).toHaveLength(4);
 	});
 });
 
@@ -12885,7 +12885,7 @@ describe("files_sharing.set_node_share_grant", () => {
 		});
 		const nodeId = await insert_binding_node(t, fixture, { name: "shared.md", kind: "file" });
 		expect((await apply_binding(t, fixture, { nodeId, readScopeId: "p/share" }))._nay).toBeUndefined();
-		const bindings = await read_binding_rows(t, fixture);
+		const bindings = await read_bindings(t, fixture);
 		const grants = await read_node_read_grants(t, fixture, nodeId);
 
 		const unchanged = await fixture.asUser.mutation(api.files_sharing.set_node_share_grant, {
@@ -12902,7 +12902,7 @@ describe("files_sharing.set_node_share_grant", () => {
 			level: "write",
 		});
 		expect(denied._nay).toBeDefined();
-		expect(await read_binding_rows(t, fixture)).toEqual(bindings);
+		expect(await read_bindings(t, fixture)).toEqual(bindings);
 		expect(await read_node_read_grants(t, fixture, nodeId)).toEqual(grants);
 	});
 
@@ -12933,7 +12933,7 @@ describe("files_sharing.set_node_share_grant", () => {
 			level: "write",
 		});
 		expect(shared._nay).toBeUndefined();
-		expect(await read_binding_rows(t, fixture)).toEqual([]);
+		expect(await read_bindings(t, fixture)).toEqual([]);
 		const grants = [
 			`${fixture.userId}:content.read`,
 			`${bob.userId}:content.read`,
@@ -12971,7 +12971,7 @@ describe("files_sharing.remove_node_share_grant", () => {
 		});
 		const nodeId = await insert_binding_node(t, fixture, { name: "remove.md", kind: "file" });
 		expect((await apply_binding(t, fixture, { nodeId, readScopeId: "p/remove" }))._nay).toBeUndefined();
-		const bindings = await read_binding_rows(t, fixture);
+		const bindings = await read_bindings(t, fixture);
 		const grants = await read_node_read_grants(t, fixture, nodeId);
 
 		const unchanged = await fixture.asUser.mutation(api.files_sharing.remove_node_share_grant, {
@@ -12986,7 +12986,7 @@ describe("files_sharing.remove_node_share_grant", () => {
 			principal: { kind: "user", userId: bob.userId },
 		});
 		expect(denied._nay).toBeDefined();
-		expect(await read_binding_rows(t, fixture)).toEqual(bindings);
+		expect(await read_bindings(t, fixture)).toEqual(bindings);
 		expect(await read_node_read_grants(t, fixture, nodeId)).toEqual(grants);
 
 		const removed = await fixture.asUser.mutation(api.files_sharing.remove_node_share_grant, {
@@ -12995,7 +12995,7 @@ describe("files_sharing.remove_node_share_grant", () => {
 			principal: { kind: "user", userId: bob.userId },
 		});
 		expect(removed._nay).toBeUndefined();
-		expect(await read_binding_rows(t, fixture)).toEqual([]);
+		expect(await read_bindings(t, fixture)).toEqual([]);
 		expect(await read_node_read_grants(t, fixture, nodeId)).toEqual([`${fixture.userId}:content.read`]);
 	});
 });
@@ -13015,7 +13015,7 @@ describe("files_sharing.restrict_node", () => {
 			parentPath: "/restricted",
 		});
 		expect((await apply_binding(t, fixture, { nodeId: folderId, readScopeId: "p/restrict" }))._nay).toBeUndefined();
-		const bindings = await read_binding_rows(t, fixture);
+		const bindings = await read_bindings(t, fixture);
 		const grants = await read_node_read_grants(t, fixture, folderId);
 
 		for (const nodeId of [folderId, childId]) {
@@ -13025,7 +13025,7 @@ describe("files_sharing.restrict_node", () => {
 			});
 			expect(restricted._nay).toBeUndefined();
 		}
-		expect(await read_binding_rows(t, fixture)).toEqual(bindings);
+		expect(await read_bindings(t, fixture)).toEqual(bindings);
 		expect(await read_node_read_grants(t, fixture, folderId)).toEqual(grants);
 		expect(await t.run(async (ctx) => (await ctx.db.get("files_nodes", childId))?.restrictedScopeNodeId)).toBe(childId);
 	});
@@ -13066,7 +13066,7 @@ describe("files_sharing.unrestrict_node", () => {
 			nodeId: innerId,
 		});
 		expect(unrestricted._nay).toBeUndefined();
-		expect(await read_binding_rows(t, fixture)).toEqual([]);
+		expect(await read_bindings(t, fixture)).toEqual([]);
 		expect(await read_node_read_grants(t, fixture, innerId)).toEqual([]);
 		for (const nodeId of [innerId, childId]) {
 			expect(await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))?.restrictedScopeNodeId)).toBe(
@@ -13145,7 +13145,7 @@ describe("plugins_data_db_sync_file_access_bindings", () => {
 		expect(deleted._nay).toBeUndefined();
 
 		expect(await read_node_read_grants(t, fixture, nodeId)).toEqual([]);
-		expect(await read_binding_rows(t, fixture)).toEqual([]);
+		expect(await read_bindings(t, fixture)).toEqual([]);
 		// The reader list is gone, so the node fails closed: restricted with zero readers.
 		expect(await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))?.restrictedScopeNodeId)).toBe(nodeId);
 	});
@@ -13189,7 +13189,7 @@ describe("plugins_data_db_sync_file_access_bindings", () => {
 		});
 
 		expect(await read_node_read_grants(t, fixture, nodeId)).toEqual([]);
-		expect(await read_binding_rows(t, fixture)).toEqual([]);
+		expect(await read_bindings(t, fixture)).toEqual([]);
 		expect(await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))?.restrictedScopeNodeId)).toBe(nodeId);
 	});
 
@@ -13236,7 +13236,7 @@ describe("plugins_data_db_sync_file_access_bindings", () => {
 		});
 
 		expect(await read_node_read_grants(t, fixture, nodeId)).toEqual([]);
-		expect(await read_binding_rows(t, fixture)).toEqual([]);
+		expect(await read_bindings(t, fixture)).toEqual([]);
 	});
 });
 

@@ -126,19 +126,29 @@ describe("bash_run_command", () => {
 		kind?: "folder" | "file";
 		content?: string;
 		contentType?: string;
-		/** false skips chunk materialization: reads fall back to the bounded R2 window paths. */
+		/**
+		 * false skips chunk materialization: reads fall back to the bounded R2 window paths.
+		 */
 		materialized?: boolean;
-		/** Break chunk tiling contiguity (materialization anomaly) so chunk readers bail to the window fallback. */
+		/**
+		 * Break chunk tiling contiguity (materialization anomaly) so chunk readers bail to the window fallback.
+		 */
 		brokenChunks?: boolean;
-		/** Upload-style node without editable yjs state (binary uploads, PDFs). */
+		/**
+		 * Upload-style node without editable yjs state (binary uploads, PDFs).
+		 */
 		withoutYjsState?: boolean;
 		/**
 		 * Editable text file with collaboration turned off: committed chunks only, no Yjs docs.
 		 */
 		nonCollaborative?: boolean;
-		/** Store a real yjs snapshot in mock R2 so action-side base-state fetches work (pending upserts). */
+		/**
+		 * Store a real yjs snapshot in mock R2 so action-side base-state fetches work (pending upserts).
+		 */
 		withRealYjsSnapshot?: boolean;
-		/** Committed asset byte size override; defaults to the utf8 size of `content`. */
+		/**
+		 * Committed asset byte size override; defaults to the utf8 size of `content`.
+		 */
 		size?: number;
 		updatedAt?: number;
 	};
@@ -387,7 +397,9 @@ describe("bash_run_command", () => {
 		initialCwd?: string;
 		allowDbFilesMkdir?: boolean;
 		extraFiles?: BashSeedSpec[];
-		/** Reuse another runner's database (fresh thread, no default tree re-seed). */
+		/**
+		 * Reuse another runner's database (fresh thread, no default tree re-seed).
+		 */
 		shared?: {
 			t: unknown;
 			seeded: {
@@ -397,9 +409,13 @@ describe("bash_run_command", () => {
 				membershipId: Id<"organizations_workspaces_users">;
 			};
 		};
-		/** Acting user override for the action args (scoping tests). */
+		/**
+		 * Acting user override for the action args (scoping tests).
+		 */
 		userId?: Id<"users">;
-		/** Attach to an existing thread instead of creating one (tmp-scope tests). */
+		/**
+		 * Attach to an existing thread instead of creating one (tmp-scope tests).
+		 */
 		threadId?: Id<"ai_chat_threads">;
 	}) {
 		test_runner_counter += 1;

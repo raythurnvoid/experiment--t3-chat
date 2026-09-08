@@ -514,7 +514,9 @@ export async function files_pending_updates_db_mark_content_for_rebase(
 	);
 }
 
-/** Whole-file replacement removes old text proposals and keeps their move or delete intent. */
+/**
+ * Whole-file replacement removes old text proposals and keeps their move or delete intent.
+ */
 export async function files_pending_updates_db_drop_content_for_node(
 	ctx: MutationCtx,
 	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces">; nodeId: Id<"files_nodes"> },
@@ -1479,7 +1481,9 @@ export const seal_file_pending_update_state_internal = internalMutation({
 		_yay: v.object({
 			stateId: v.id("files_pending_update_yjs_states"),
 			digest: v.string(),
-			/** `null` for a state of a file with collaboration off, which has no lineage. */
+			/**
+			 * `null` for a state of a file with collaboration off, which has no lineage.
+			 */
 			lineageGeneration: v.union(v.number(), v.null()),
 		}),
 	}),
@@ -2603,7 +2607,9 @@ async function db_validate_batch_states_for_commit(
 	args: {
 		batch: app_convex_Doc<"files_pending_update_operation_batches">;
 		phase: "input" | "output";
-		/** `null` for a file with collaboration off: its sealed states carry no lineage. */
+		/**
+		 * `null` for a file with collaboration off: its sealed states carry no lineage.
+		 */
 		baseLineageGeneration: number | null;
 		states: Array<{
 			role: "base" | "staged" | "unstaged";
@@ -5058,6 +5064,7 @@ async function prepare_pending_update(
 		return Result({ _nay: { message: "Not found" } });
 	}
 	if (!pendingUpdate) return Result({ _yay: { pendingUpdate: null } });
+
 	const writable = (await ctx.runQuery(internal.files_nodes.get_user_file_write_access, {
 		organizationId: data.fileNode.organizationId,
 		workspaceId: data.fileNode.workspaceId,
@@ -5065,8 +5072,10 @@ async function prepare_pending_update(
 		userId: args.userId,
 	})) as files_nodes_get_user_file_write_access_Result;
 	if (writable._nay) return writable;
+
 	const content = files_pending_update_content_of(pendingUpdate);
 	if (!content) return Result({ _yay: { pendingUpdate } });
+
 	const yjsContent = files_pending_update_yjs_content_of(pendingUpdate);
 	const liveChanged =
 		data.base.kind === "yjs" &&
@@ -5075,6 +5084,7 @@ async function prepare_pending_update(
 			yjsContent.baseLineageGeneration !== data.base.lineageGeneration);
 	if (!files_pending_update_content_is_stale(pendingUpdate, data.fileNode) && !liveChanged)
 		return Result({ _yay: { pendingUpdate } });
+
 	const batch = (await ctx.runMutation(
 		internal.files_pending_updates.create_file_pending_update_operation_batch_internal,
 		{
@@ -5085,6 +5095,7 @@ async function prepare_pending_update(
 		},
 	)) as create_file_pending_update_operation_batch_internal_Result;
 	if (batch._nay) return Result({ _nay: { message: batch._nay.message } });
+
 	const operationBatchId = batch._yay.operationBatchId;
 	let committed = false;
 	try {
@@ -5098,6 +5109,7 @@ async function prepare_pending_update(
 				}),
 			),
 		);
+
 		const rootKind = data.fileNode.textKind;
 		const sourceTexts: string[] = [];
 		for (const bytes of sourceBytes) {
@@ -5116,6 +5128,7 @@ async function prepare_pending_update(
 			if (text._nay) return Result({ _nay: { message: text._nay.message } });
 			sourceTexts.push(text._yay);
 		}
+
 		let baseDoc: YDoc;
 		if (data.base.kind === "yjs") {
 			const live = await files_pending_update_action_get_latest_file_yjs_state(ctx, {
@@ -5131,30 +5144,36 @@ async function prepare_pending_update(
 			if ("_nay" in built) return Result({ _nay: { message: built._nay.message } });
 			baseDoc = built;
 		}
+
 		const current = files_yjs_doc_get_text({ yjsDoc: baseDoc, rootKind });
 		if (current._nay) return Result({ _nay: { message: current._nay.message } });
+
 		const staged = files_pending_text_merge({
 			baseText: sourceTexts[0]!,
 			proposedText: sourceTexts[1]!,
 			currentText: current._yay,
 		});
 		if (staged._nay) return Result({ _nay: { message: staged._nay.message } });
+
 		const unstaged = files_pending_text_merge({
 			baseText: sourceTexts[0]!,
 			proposedText: sourceTexts[2]!,
 			currentText: current._yay,
 		});
 		if (unstaged._nay) return Result({ _nay: { message: unstaged._nay.message } });
+
 		const stagedDoc = files_yjs_doc_clone({ yjsDoc: baseDoc });
-		const stagedProjection = files_yjs_doc_update_from_text({ mut_yjsDoc: stagedDoc, text: staged._yay, rootKind });
-		if (stagedProjection._nay) return Result({ _nay: { message: stagedProjection._nay.message } });
+		const stagedUpdate = files_yjs_doc_update_from_text({ mut_yjsDoc: stagedDoc, text: staged._yay, rootKind });
+		if (stagedUpdate._nay) return Result({ _nay: { message: stagedUpdate._nay.message } });
+
 		const unstagedDoc = files_yjs_doc_clone({ yjsDoc: stagedDoc });
-		const unstagedProjection = files_yjs_doc_update_from_text({
+		const unstagedUpdate = files_yjs_doc_update_from_text({
 			mut_yjsDoc: unstagedDoc,
 			text: unstaged._yay,
 			rootKind,
 		});
-		if (unstagedProjection._nay) return Result({ _nay: { message: unstagedProjection._nay.message } });
+		if (unstagedUpdate._nay) return Result({ _nay: { message: unstagedUpdate._nay.message } });
+
 		const outputs = [
 			{ role: "base" as const, yjsDoc: baseDoc },
 			{ role: "staged" as const, yjsDoc: stagedDoc },
@@ -5172,11 +5191,13 @@ async function prepare_pending_update(
 				return Result({ _nay: { message: `Text content exceeds ${files_MAX_TEXT_CONTENT_BYTES}-byte limit` } });
 			const frontmatter = files_pending_update_check_frontmatter_caps({ fileNode: data.fileNode, text: text._yay });
 			if (frontmatter) return frontmatter;
+
 			texts.set(output.role, text._yay);
 			const bytes = new Uint8Array(files_pending_update_encode_yjs_state_update({ yjsDoc: output.yjsDoc }));
 			output.yjsDoc.destroy();
 			if (bytes.byteLength > files_MAX_YJS_RECONSTRUCTED_STATE_BYTES)
 				return Result({ _nay: { message: `State exceeds ${files_MAX_YJS_RECONSTRUCTED_STATE_BYTES}-byte limit` } });
+
 			for (let pageIndex = 0; pageIndex * files_MAX_YJS_WIRE_BYTES < bytes.byteLength; pageIndex++) {
 				const page = (await ctx.runMutation(
 					internal.files_pending_updates.stage_file_pending_update_state_page_internal,
@@ -5195,6 +5216,7 @@ async function prepare_pending_update(
 				)) as stage_file_pending_update_state_page_internal_Result;
 				if (page._nay) return Result({ _nay: { message: page._nay.message } });
 			}
+
 			const sealed = (await ctx.runMutation(internal.files_pending_updates.seal_file_pending_update_state_internal, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
@@ -5207,6 +5229,7 @@ async function prepare_pending_update(
 			if (sealed._nay) return Result({ _nay: { message: sealed._nay.message } });
 			sealedByRole.set(output.role, sealed._yay);
 		}
+
 		const baseState = sealedByRole.get("base")!;
 		const stagedState = sealedByRole.get("staged")!;
 		const unstagedState = sealedByRole.get("unstaged")!;
@@ -5273,8 +5296,10 @@ export const prepare_file_pending_update_for_review = action({
 		if (!userAuth || !user || (userAuth.kind === "anonymous" && user.deletedAt !== undefined)) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
+
 		const membership = await ctx.runQuery(api.organizations.get_membership, { membershipId: args.membershipId });
 		if (!membership || membership.userId !== userAuth.id) return Result({ _nay: { message: "Unauthorized" } });
+
 		const allowed = (await ctx.runQuery(internal.files_nodes.get_user_file_write_access, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -5284,6 +5309,7 @@ export const prepare_file_pending_update_for_review = action({
 		if (allowed._nay) {
 			return allowed;
 		}
+
 		return prepare_pending_update(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -5830,7 +5856,9 @@ export const save_file_pending_update_in_db = internalMutation({
 		baseYjsSequence: v.number(),
 		baseLineageGeneration: v.number(),
 		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
-		/** The staged accept diff to publish through door 1; absent when nothing staged changed. */
+		/**
+		 * The staged accept diff to publish through door 1; absent when nothing staged changed.
+		 */
 		trustedStageId: v.optional(v.id("files_yjs_trusted_update_stages")),
 		/**
 		 * Present when unstaged edits survive the save: the sealed output family that replaces
@@ -6313,7 +6341,9 @@ export const save_file_pending_update_non_collaborative_in_db = internalMutation
 		nodeId: v.id("files_nodes"),
 		pendingUpdateId: v.id("files_pending_updates"),
 		expectedUpdatedAt: v.number(),
-		/** The staged text, already uploaded under the version snapshot asset. */
+		/**
+		 * The staged text, already uploaded under the version snapshot asset.
+		 */
 		publish: v.union(
 			v.object({
 				text: v.string(),
@@ -7539,9 +7569,13 @@ export const stage_file_pending_replacement_internal_action = internalAction({
 		userId: v.id("users"),
 		nodeId: v.id("files_nodes"),
 		source: v.object({ nodeId: v.id("files_nodes"), path: v.string() }),
-		/** The source's content asset the caller read. The stage refuses when the source moved on. */
+		/**
+		 * The source's content asset the caller read. The stage refuses when the source moved on.
+		 */
 		expectedSourceAssetId: v.id("files_r2_assets"),
-		/** The source text the caller read, for an editable text source. Absent for stored bytes. */
+		/**
+		 * The source text the caller read, for an editable text source. Absent for stored bytes.
+		 */
 		sourceText: v.optional(v.string()),
 		eagerCreatedCommittedSequence: v.optional(v.number()),
 		eagerCreatedAncestorIds: v.optional(v.array(v.id("files_nodes"))),
@@ -7695,7 +7729,9 @@ export const commit_file_pending_replacement_in_db = internalMutation({
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
 		nodeId: v.id("files_nodes"),
-		/** `null` means the action saw no doc. A number is the read doc's `updatedAt` race guard. */
+		/**
+		 * `null` means the action saw no doc. A number is the read doc's `updatedAt` race guard.
+		 */
 		expectedUpdatedAt: v.union(v.number(), v.null()),
 		replacement: v.object({
 			assetId: v.id("files_r2_assets"),
@@ -7705,7 +7741,9 @@ export const commit_file_pending_replacement_in_db = internalMutation({
 			nonCollaborative: v.optional(v.boolean()),
 			baseAssetId: v.id("files_r2_assets"),
 		}),
-		/** The staged text of a text copy, for the pending chunks the agent's readers overlay. */
+		/**
+		 * The staged text of a text copy, for the pending chunks the agent's readers overlay.
+		 */
 		text: v.optional(v.string()),
 		copiedFrom: v.object({ nodeId: v.id("files_nodes"), path: v.string() }),
 		eagerCreatedCommittedSequence: v.optional(v.number()),

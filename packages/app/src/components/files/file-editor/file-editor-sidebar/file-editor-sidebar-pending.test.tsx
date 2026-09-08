@@ -172,7 +172,9 @@ function makePendingUpdate(args: {
 	eagerCreated?: { committedSequence: number };
 	pendingArchive?: { fromPath: string };
 	threadIds?: string[];
-	/** Set for a proposal on a file with collaboration off: the content asset it was built from. */
+	/**
+	 * Set for a proposal on a file with collaboration off: the content asset it was built from.
+	 */
 	baseAssetId?: string;
 	contentNeedsRebase?: true;
 }): app_convex_Doc<"files_pending_updates"> {

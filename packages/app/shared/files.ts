@@ -306,7 +306,9 @@ const FILES_CONTENT_TYPE_HINT_BY_EXTENSION = new Map<string, files_ContentType>(
 	["sql", "application/sql"],
 ]);
 
-/** Monaco language id per canonical editable text type. Anything unmapped renders as plain text. */
+/**
+ * Monaco language id per canonical editable text type. Anything unmapped renders as plain text.
+ */
 const FILES_MONACO_LANGUAGE_ID_BY_CONTENT_TYPE = new Map<files_ContentType, string>([
 	["text/markdown;charset=utf-8", "markdown"],
 	["application/json", "json"],

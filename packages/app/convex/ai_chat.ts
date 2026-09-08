@@ -2679,35 +2679,71 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	const { describe, test, expect, vi } = import.meta.vitest;
 
 	describe("create_skill_tool_transform", () => {
-		test.each(["run_skill_script", "RUN_SKILL_SCRIPT", "Run_Skill_Script"])("removes private streamed data from %s before UI persistence", async (toolName) => {
-			const { readUIMessageStream } = await import("ai");
-			const skillId = "a".repeat(32);
-			const resourceId = "b".repeat(32);
-			const chunks: InferUIMessageChunk<ai_chat_UiMessage>[] = [
-				{ type: "start", messageId: "skills" },
-				{ type: "tool-input-start", toolCallId: "run", toolName },
-				{ type: "tool-input-delta", toolCallId: "run", inputTextDelta: '{"input":"PRIVATE_PARAMS"' },
-				{ type: "tool-input-available", toolCallId: "run", toolName: "run_skill_script", input: { skillId, resourceId, input: "PRIVATE_PARAMS" }, providerMetadata: { vendor: { private: "PRIVATE_METADATA" } } },
-				{ type: "tool-output-available", toolCallId: "run", output: { skillId, resourceId, status: "completed", body: "PRIVATE_SKILL_BODY" } },
-				{ type: "tool-input-start", toolCallId: "failed", toolName },
-				{ type: "tool-input-error", toolCallId: "failed", toolName: "run_skill_script", input: "PRIVATE_RAW_INPUT", errorText: "PRIVATE_PROVIDER_ERROR" },
-				{ type: "tool-input-start", toolCallId: "stopped", toolName },
-				{ type: "tool-input-delta", toolCallId: "stopped", inputTextDelta: '{"input":"PRIVATE_PARTIAL"' },
-				{ type: "finish" },
-			];
-			const stream = new ReadableStream<InferUIMessageChunk<ai_chat_UiMessage>>({ start(controller) { for (const chunk of chunks) controller.enqueue(chunk); controller.close(); } }).pipeThrough(create_skill_tool_transform(new Map()));
-			let finalMessage: ai_chat_UiMessage | undefined;
-			const partials: string[] = [];
-			for await (const message of readUIMessageStream<ai_chat_UiMessage>({ stream })) {
-				partials.push(JSON.stringify(message));
-				finalMessage = message;
-			}
-			for (const partial of partials) expect(partial).not.toContain("PRIVATE_");
-			expect(finalMessage?.parts).toHaveLength(3);
-			expect(ai_chat_skill_tool_parts_are_safe(finalMessage!.parts), JSON.stringify(finalMessage!.parts)).toBe(true);
-			expect(finalMessage?.parts[0]).toMatchObject({ type: "tool-run_skill_script", state: "output-error", input: { skillId, resourceId }, errorText: "Skill operation failed." });
-			expect(finalMessage?.parts[2]).toMatchObject({ type: "tool-run_skill_script", state: "input-streaming" });
-		});
+		test.each(["run_skill_script", "RUN_SKILL_SCRIPT", "Run_Skill_Script"])(
+			"removes private streamed data from %s before UI persistence",
+			async (toolName) => {
+				const { readUIMessageStream } = await import("ai");
+				const skillId = "a".repeat(32);
+				const resourceId = "b".repeat(32);
+				const chunks: InferUIMessageChunk<ai_chat_UiMessage>[] = [
+					{ type: "start", messageId: "skills" },
+					{ type: "tool-input-start", toolCallId: "run", toolName },
+					{ type: "tool-input-delta", toolCallId: "run", inputTextDelta: '{"input":"PRIVATE_PARAMS"' },
+					{
+						type: "tool-input-available",
+						toolCallId: "run",
+						toolName: "run_skill_script",
+						input: { skillId, resourceId, input: "PRIVATE_PARAMS" },
+						providerMetadata: { vendor: { private: "PRIVATE_METADATA" } },
+					},
+					{
+						type: "tool-output-available",
+						toolCallId: "run",
+						output: { skillId, resourceId, status: "completed", body: "PRIVATE_SKILL_BODY" },
+					},
+					{ type: "tool-input-start", toolCallId: "failed", toolName },
+					{
+						type: "tool-input-error",
+						toolCallId: "failed",
+						toolName: "run_skill_script",
+						input: "PRIVATE_RAW_INPUT",
+						errorText: "PRIVATE_PROVIDER_ERROR",
+					},
+					{ type: "tool-input-start", toolCallId: "stopped", toolName },
+					{ type: "tool-input-delta", toolCallId: "stopped", inputTextDelta: '{"input":"PRIVATE_PARTIAL"' },
+					{ type: "finish" },
+				];
+
+				const stream = new ReadableStream<InferUIMessageChunk<ai_chat_UiMessage>>({
+					start(controller) {
+						for (const chunk of chunks) {
+							controller.enqueue(chunk);
+						}
+						controller.close();
+					},
+				}).pipeThrough(create_skill_tool_transform(new Map()));
+
+				let finalMessage: ai_chat_UiMessage | undefined;
+				const partials: string[] = [];
+				for await (const message of readUIMessageStream<ai_chat_UiMessage>({ stream })) {
+					partials.push(JSON.stringify(message));
+					finalMessage = message;
+				}
+
+				for (const partial of partials) {
+					expect(partial).not.toContain("PRIVATE_");
+				}
+				expect(finalMessage?.parts).toHaveLength(3);
+				expect(ai_chat_skill_tool_parts_are_safe(finalMessage!.parts), JSON.stringify(finalMessage!.parts)).toBe(true);
+				expect(finalMessage?.parts[0]).toMatchObject({
+					type: "tool-run_skill_script",
+					state: "output-error",
+					input: { skillId, resourceId },
+					errorText: "Skill operation failed.",
+				});
+				expect(finalMessage?.parts[2]).toMatchObject({ type: "tool-run_skill_script", state: "input-streaming" });
+			},
+		);
 	});
 
 	type build_agent_configuration_test_user_identity = NonNullable<

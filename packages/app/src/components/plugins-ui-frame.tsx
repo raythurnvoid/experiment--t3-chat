@@ -227,7 +227,9 @@ export type PluginsUiFrame_Props = {
 	pluginVersionId: Id<"plugins_versions">;
 	entry: string;
 	title: string;
-	/** Human label used inside frame error messages. */
+	/**
+	 * Human label used inside frame error messages.
+	 */
 	kindLabel: "plugin page" | "plugin view";
 	/**
 	 * Mints this frame's session. Called once while the iframe loads, and again when a token

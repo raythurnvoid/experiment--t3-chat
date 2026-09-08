@@ -935,7 +935,9 @@ function review_truncate_tool_result(text: string) {
 	return fatal_review_text_decoder.decode(bytes.subarray(0, end)) + suffix;
 }
 
-/** Resolve a quotation from Bash output to the exact stored UTF-8 range. */
+/**
+ * Resolve a quotation from Bash output to the exact stored UTF-8 range.
+ */
 function review_find_source_quote(source: string, quote: string) {
 	if (fatal_review_text_decoder.decode(new TextEncoder().encode(quote)) !== quote) return null;
 	// Bash displays CRLF and CR as LF. Only line endings may differ from the stored source.

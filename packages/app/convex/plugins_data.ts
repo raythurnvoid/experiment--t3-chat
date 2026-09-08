@@ -847,7 +847,7 @@ function check_capacity(
 	return Result({ _yay: null });
 }
 
-async function db_get_member_usage_row(
+async function db_get_member_usage_doc(
 	ctx: QueryCtx,
 	args: { installationId: Id<"plugins_workspace_installations">; userId: Id<"users"> },
 ) {
@@ -861,7 +861,7 @@ async function db_get_member_usage(
 	ctx: QueryCtx,
 	args: { installationId: Id<"plugins_workspace_installations">; userId: Id<"users"> },
 ) {
-	const usage = await db_get_member_usage_row(ctx, args);
+	const usage = await db_get_member_usage_doc(ctx, args);
 	return usage?.generation === "document_bound" ? usage : null;
 }
 
@@ -894,7 +894,7 @@ async function db_patch_member_usage(
 
 	let existing =
 		args.targetUsageId === "current"
-			? await db_get_member_usage_row(ctx, { installationId: args.installation._id, userId: args.userId })
+			? await db_get_member_usage_doc(ctx, { installationId: args.installation._id, userId: args.userId })
 			: await ctx.db.get("plugins_data_member_usage", args.targetUsageId);
 	if (existing && (existing.installationId !== args.installation._id || existing.userId !== args.userId)) {
 		const errorMessage = "Plugin document points at the wrong member usage row";
@@ -966,7 +966,7 @@ async function db_patch_member_usage(
 }
 
 /**
- * Remove a collection the installation just dropped from every member row of the installation.
+ * Remove a collection the installation just dropped from every member usage doc of the installation.
  *
  * The installation's list shrinks when a collection stops holding documents and reservations. The
  * per-member lists have to shrink with it, or a member who created a collection and then emptied it
@@ -986,26 +986,31 @@ async function db_drop_member_collection(
 		return;
 	}
 
-	const rows = await ctx.db
+	const memberUsageDocs = await ctx.db
 		.query("plugins_data_member_usage")
 		.withIndex("by_installation_user", (q) => q.eq("installationId", args.installationId))
 		.collect();
 
-	for (const row of rows) {
-		if (!row.collectionNames.includes(args.collection)) {
+	for (const memberUsage of memberUsageDocs) {
+		if (!memberUsage.collectionNames.includes(args.collection)) {
 			continue;
 		}
 
-		const collectionNames = row.collectionNames.filter((name) => name !== args.collection);
-		// Re-check the delete condition on this row too. The shrink can bring a member who holds no
+		const collectionNames = memberUsage.collectionNames.filter((name) => name !== args.collection);
+		// Re-check the delete condition on this doc too. The shrink can bring a member who holds no
 		// documents down to fully empty, and that member has nothing left that would ever make
-		// another write look at their row again.
-		if (row.usedBytes === 0 && row.usedDocuments === 0 && row.machineBytes === 0 && collectionNames.length === 0) {
-			await ctx.db.delete("plugins_data_member_usage", row._id);
+		// another write look at their usage doc again.
+		if (
+			memberUsage.usedBytes === 0 &&
+			memberUsage.usedDocuments === 0 &&
+			memberUsage.machineBytes === 0 &&
+			collectionNames.length === 0
+		) {
+			await ctx.db.delete("plugins_data_member_usage", memberUsage._id);
 			continue;
 		}
 
-		await ctx.db.patch("plugins_data_member_usage", row._id, { collectionNames });
+		await ctx.db.patch("plugins_data_member_usage", memberUsage._id, { collectionNames });
 	}
 }
 
@@ -1055,12 +1060,12 @@ function member_usage_deltas(args: {
 	}
 
 	const deltas = [];
-	const writerHeldIt =
+	const writerOwnsCharge =
 		storedChargedTo === args.writer &&
 		args.currentMemberUsageId !== undefined &&
 		args.existing?.chargedToMemberUsageId === args.currentMemberUsageId;
-	// Credit the exact old generation unless this writer's current generation already owns it.
-	if (storedChargedTo !== null && !writerHeldIt) {
+	// Credit the exact old generation unless this writer's current generation already owns the charge.
+	if (storedChargedTo !== null && !writerOwnsCharge) {
 		deltas.push({
 			userId: storedChargedTo,
 			targetUsageId: args.existing?.chargedToMemberUsageId ?? null,
@@ -1074,10 +1079,10 @@ function member_usage_deltas(args: {
 	deltas.push({
 		userId: args.writer,
 		targetUsageId: "current" as const,
-		addedBytes: args.byteSize - (writerHeldIt ? storedBytes : 0),
-		addedSlots: writerHeldIt ? 0 : 1,
+		addedBytes: args.byteSize - (writerOwnsCharge ? storedBytes : 0),
+		addedSlots: writerOwnsCharge ? 0 : 1,
 		// The member composed the value that is now stored, so the document's machine share is gone.
-		addedMachineBytes: writerHeldIt ? -storedMachineBytes : 0,
+		addedMachineBytes: writerOwnsCharge ? -storedMachineBytes : 0,
 		// A member's list holds the collections they introduced to the installation, so a member who
 		// only writes into somebody else's collection never spends a share slot for it.
 		addedCollections: args.addsCollection ? [args.collection] : [],
@@ -1101,15 +1106,15 @@ function member_capacity_change(args: {
 	addsCollection: boolean;
 	byteSize: number;
 }) {
-	const writerHeldIt =
+	const writerOwnsCharge =
 		(args.existing?.chargedTo ?? null) === args.writer &&
 		args.currentMemberUsageId !== undefined &&
 		args.existing?.chargedToMemberUsageId === args.currentMemberUsageId;
-	const heldOwnBytes = writerHeldIt ? (args.existing?.byteSize ?? 0) - (args.existing?.machineBytes ?? 0) : 0;
+	const heldOwnBytes = writerOwnsCharge ? (args.existing?.byteSize ?? 0) - (args.existing?.machineBytes ?? 0) : 0;
 
 	return {
 		addedBytes: args.byteSize - heldOwnBytes,
-		addedSlots: writerHeldIt ? 0 : 1,
+		addedSlots: writerOwnsCharge ? 0 : 1,
 		addedCollections: args.addsCollection ? 1 : 0,
 	};
 }
@@ -2360,18 +2365,16 @@ export type plugins_data_delete_document_Result =
 
 // #region user writes
 
-/**
- * Member writes from a plugin frame. Both frame kinds reach these doors: a plugin page and a file
- * view. Only a file-view session sets `fileNodeId`, and nothing in this module reads that field, so
- * a file view writes here exactly as a page does.
- *
- * These are public mutations: the plugin iframe calls them directly, authenticated with its
- * plugin-session JWT (see plugins_ui.ts). The JWT's subject is a `plugins_ui_sessions` id, and
- * the session doc names the member, installation, and version the frame was minted for. Member
- * functions refuse that identity and these doors refuse every other identity, so each side of
- * the boundary answers only its own callers. An invited anonymous member mints frame sessions
- * like any other member, so it may write here too.
- */
+// Member writes from a plugin frame. Both frame kinds reach these doors: a plugin page and a file
+// view. Only a file-view session sets `fileNodeId`, and nothing in this module reads that field, so
+// a file view writes here exactly as a page does.
+//
+// These are public mutations: the plugin iframe calls them directly, authenticated with its
+// plugin-session JWT (see plugins_ui.ts). The JWT's subject is a `plugins_ui_sessions` id, and
+// the session doc names the member, installation, and version the frame was minted for. Member
+// functions refuse that identity and these doors refuse every other identity, so each side of
+// the boundary answers only its own callers. An invited anonymous member mints frame sessions
+// like any other member, so it may write here too.
 
 /**
  * Prove the frame's member may write this plugin's documents, inside the same transaction as the
@@ -3998,23 +4001,23 @@ export async function plugins_data_db_prepare_file_access_binding(
 	// The scope must be live in this installation. A released or foreign scope id answers the
 	// same way as a missing one.
 	const readScopeId = args.readScopeId;
-	const scopeRow = await ctx.db
+	const scope = await ctx.db
 		.query("plugins_data_scopes")
 		.withIndex("by_installation_scope", (q) => q.eq("installationId", args.installation._id).eq("scopeId", readScopeId))
 		.first();
-	if (!scopeRow) {
+	if (!scope) {
 		return Result({ _nay: { message: "Not found" } });
 	}
 
 	// The cap keeps the synchronous grant work of every later membership change small.
-	const boundRows = await ctx.db
+	const bindings = await ctx.db
 		.query("plugins_file_access_bindings")
 		.withIndex("by_installation_scopeId", (q) =>
 			q.eq("installationId", args.installation._id).eq("scopeId", readScopeId),
 		)
 		.take(MAX_ACCESS_BINDINGS_PER_SCOPE + 1);
-	const alreadyBoundHere = boundRows.some((row) => row.nodeId === nodeId);
-	if (!alreadyBoundHere && boundRows.length >= MAX_ACCESS_BINDINGS_PER_SCOPE) {
+	const alreadyBoundHere = bindings.some((binding) => binding.nodeId === nodeId);
+	if (!alreadyBoundHere && bindings.length >= MAX_ACCESS_BINDINGS_PER_SCOPE) {
 		return Result({
 			_nay: { message: `One private space can be bound to at most ${MAX_ACCESS_BINDINGS_PER_SCOPE} files or folders.` },
 		});
@@ -5193,38 +5196,38 @@ export const watch_my_scopes = query({
 
 		const scopes = await Promise.all(
 			[...levels].map(async ([scopeId, level]) => {
-				const rows = await ctx.db
+				const scopeDocs = await ctx.db
 					.query("plugins_data_scopes")
 					.withIndex("by_installation_scope", (q) => q.eq("installationId", installation._id).eq("scopeId", scopeId))
 					.take(MAX_COLLECTIONS);
-				const [first] = rows;
+				const [first] = scopeDocs;
 				if (!first) {
-					// The list starts from grants. Supported cleanup either removes grants and rows together or
-					// removes grants first, so no supported flow leaves a grant without its scope rows.
+					// The list starts from grants. Supported cleanup either removes grants and scope docs together or
+					// removes grants first, so no supported flow leaves a grant without its scope docs.
 					return null;
 				}
 
-				// Every row of one scope carries the same prefix, so the first row answers for all of them.
+				// Every doc of one scope carries the same prefix, so the first doc answers for all of them.
 				return {
 					scopeId,
 					keyPrefix: first.keyPrefix,
-					collections: rows.map((row) => row.collection).sort(),
-					appendActivity: rows
-						.flatMap((row) =>
-							row.lastAppend === null || row.lastAppend === undefined
+					collections: scopeDocs.map((scopeDoc) => scopeDoc.collection).sort(),
+					appendActivity: scopeDocs
+						.flatMap((scopeDoc) =>
+							scopeDoc.lastAppend === null || scopeDoc.lastAppend === undefined
 								? []
 								: [
 										{
-											collection: row.collection,
-											at: row.lastAppend.at,
-											createdByUserId: String(row.lastAppend.createdByUserId),
-											sequence: row.appendSequence ?? 1,
+											collection: scopeDoc.collection,
+											at: scopeDoc.lastAppend.at,
+											createdByUserId: String(scopeDoc.lastAppend.createdByUserId),
+											sequence: scopeDoc.appendSequence ?? 1,
 										},
 									],
 						)
 						.sort((left, right) => left.collection.localeCompare(right.collection)),
 					level,
-					membershipRevision: Math.max(...rows.map((row) => row.updatedAt)),
+					membershipRevision: Math.max(...scopeDocs.map((scopeDoc) => scopeDoc.updatedAt)),
 				};
 			}),
 		);

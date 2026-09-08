@@ -1264,10 +1264,14 @@ type FileNodeViewPluginViewFrame_ClassNames =
 	| "FileNodeViewPluginViewFrame-error";
 
 type FileNodeViewPluginViewFrame_Props = {
-	/** The `<section>` the view above renders. The focus move below asks whether focus is still in it. */
+	/**
+	 * The `<section>` the view above renders. The focus move below asks whether focus is still in it.
+	 */
 	regionRef: RefObject<HTMLElement | null>;
 	node: FileNodeViewResolvedNode;
-	/** The file's content type that matched the view's declared list. Sent to the plugin in bonobo:init. */
+	/**
+	 * The file's content type that matched the view's declared list. Sent to the plugin in bonobo:init.
+	 */
 	contentType: string;
 	pluginName: string;
 	pluginVersionId: app_convex_Id<"plugins_versions">;

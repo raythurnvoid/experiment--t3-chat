@@ -249,7 +249,9 @@ type FileEditorDiffStaleToolbarActions_ClassNames =
 	| "FileEditorDiffStaleToolbarActions-icon";
 
 type FileEditorDiffStaleToolbarActions_Props = {
-	/** Id of the status line that explains why the proposal cannot be accepted. */
+	/**
+	 * Id of the status line that explains why the proposal cannot be accepted.
+	 */
 	describedById: string;
 	isBusy: boolean;
 	isPreparing?: boolean;
@@ -775,7 +777,9 @@ export type FileEditorDiff_Props = {
 	 * the nullable content fetch, which has no value in exactly the refused case.
 	 */
 	rootKind: files_YjsRootKind;
-	/** Monaco language for the node, derived from its content type via `files_monaco_language_id_of_content_type`. */
+	/**
+	 * Monaco language for the node, derived from its content type via `files_monaco_language_id_of_content_type`.
+	 */
 	monacoLanguageId: string;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	/**
@@ -811,7 +815,9 @@ type FileEditorDiffInner_Props = FileEditorDiff_Props & {
 	isSaving: boolean;
 	isSyncing: boolean;
 	isSyncDisabled: boolean;
-	/** See `isBranchReloading` in `FileEditorDiff`: the panes still show the old branches. */
+	/**
+	 * See `isBranchReloading` in `FileEditorDiff`: the panes still show the old branches.
+	 */
 	isBranchReloading: boolean;
 	/**
 	 * The incoming branches use another document, base asset, or lineage.

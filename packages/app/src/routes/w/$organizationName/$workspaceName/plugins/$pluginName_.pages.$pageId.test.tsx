@@ -325,7 +325,7 @@ describe("RoutePluginsPluginPage", () => {
 		expect((await screen.findByRole("alert")).textContent).toContain("Not found");
 	});
 
-	test("the wait in that sentence is rounded up, reads as one second, and survives a missing delay", async () => {
+	test("rounds retry delays up and handles one second and missing delays", async () => {
 		const refuse_mint_with = (data: { retryAfterMs: number } | undefined) =>
 			mutationMock.mockImplementation(async (reference: string) =>
 				reference === "plugins_ui.mint_page_session"

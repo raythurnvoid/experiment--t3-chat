@@ -7,32 +7,23 @@ import { fileURLToPath } from "url";
 
 import * as ts from "typescript";
 
-/**
- * Writes the two generated files the SDK ships: `convex-api.d.ts`, which a plugin type-checks its
- * direct Convex calls against, and `http-api.d.ts`, which types the host HTTP routes it may call.
- * Run with `--check` to compare fresh results with the committed files instead of writing them;
- * the app lint runs that mode and names the file that is stale.
- *
- * How it works: each entry under `scripts/` exports one value whose type is the whole surface.
- * This script builds the app's own TypeScript program (`tsconfig.app.json`) with that entry added,
- * asks the compiler for the entry's declaration file, and then inlines the few app-owned type
- * aliases the compiler still prints by name. The result imports only from `convex/server` and
- * `convex/values`.
- *
- * The Convex target emits one type. The HTTP target emits three: the route table itself, the union
- * of its paths, and `BonoboHttpResponse<P>`, the `{ status, body }` union one route can answer. The
- * last two are written by the render step, not by the compiler, because they are one line each over
- * the table the compiler already printed.
- *
- * The two entries reach a plain structure by different routes. The doors are values, so the
- * compiler already prints their types in full. The route schema is built from `typeof` and the
- * inliner refuses that, so `plugin-sdk-http-api-entry.ts` wraps it in an `Expand` mapped type that
- * makes the compiler resolve the shape before it prints. That file's docblock says why.
- *
- * The compiler is used directly instead of a d.ts bundler. A bundler roots its own program at the
- * entry and stops on any diagnostic, and this app only type-checks cleanly under `tsc-silent`
- * with the vendor errors suppressed.
- */
+// Generates `convex-api.d.ts` for direct Convex calls and `http-api.d.ts` for host HTTP routes.
+// The app lint uses `--check` to report stale files without writing them.
+//
+// Each entry under `scripts/` exports one value. This script adds those entries to the app's
+// TypeScript program, emits their declarations, and inlines app-owned type aliases. The result
+// imports only from `convex/server` and `convex/values`.
+//
+// The Convex output contains one API type. The HTTP output also includes a path union and
+// `BonoboHttpResponse<P>`, the `{ status, body }` union for a route. The render step adds those
+// last two types from the route table emitted by the compiler.
+//
+// The compiler prints the Convex function types in full. The HTTP schema uses `typeof`, which
+// the alias inliner cannot copy. `plugin-sdk-http-api-entry.ts` uses `Expand` to make the compiler
+// resolve that schema first; its JSDoc explains the type rules.
+//
+// Use the compiler directly so declaration emit can proceed despite vendor diagnostics.
+// A declaration bundler checks its own program, while app lint uses `tsc-silent` to suppress them.
 
 const CHECK_FLAG = "--check";
 

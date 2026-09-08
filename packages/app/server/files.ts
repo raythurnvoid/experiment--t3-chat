@@ -461,7 +461,9 @@ export async function files_db_insert_pending_update_yjs_state(
 		pendingUpdateId: Id<"files_pending_updates">;
 		role: "base" | "staged" | "unstaged";
 		update: ArrayBuffer;
-		/** Absent for a state built for a file with collaboration off, which has no lineage. */
+		/**
+		 * Absent for a state built for a file with collaboration off, which has no lineage.
+		 */
 		lineageGeneration?: number;
 	},
 ) {

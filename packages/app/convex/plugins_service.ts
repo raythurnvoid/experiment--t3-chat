@@ -1,23 +1,13 @@
-/**
- * The `/api/internal/plugins/service-grants/*` routes.
- *
- * A plugin frame runs in the browser and holds a short read-only `plu_` token. A page and a file view
- * both get one from the same table, and nothing in this module can tell the two apart. A plugin that
- * also has a server of its own cannot use that token: it belongs to one iframe and dies with it.
- * These routes are how such a server trades the frame's token for a `psg_` grant of its own, keeps
- * that grant alive, and asks whether it is still allowed to act before it does something the user
- * will see.
- *
- * Two credentials are needed, the same way the runner host routes work. The bearer says which
- * installation and which member the call is for, and the shared secret proves the call comes from
- * the service the plugin's publisher registered — its hash lives in `plugins_service_registrations`,
- * keyed by the plugin name the bearer's installation resolves to. A frame holding only its own
- * token still gets nothing here: without the registered secret every call answers `Unauthorized`.
- *
- * `public_api.ts` owns the grant table, the token format, and the resolver. This module owns only the
- * lifecycle: who may trade a UI token for a grant, when a grant may be renewed, and what a service
- * is told when it asks whether its grant is still live.
- */
+// The `/api/internal/plugins/service-grants/*` routes.
+//
+// A service exchanges a plugin frame's short-lived `plu_` token for its own `psg_` grant, renews
+// that grant, and checks whether it may still act. Plugin pages and file views use the same flow.
+//
+// Each call needs the bearer token and the publisher's registered service secret. The bearer names
+// the installation and member. The secret is checked against its hash in `plugins_service_registrations`
+// for that plugin name. A frame token alone cannot authorize a service call.
+//
+// `public_api.ts` owns grant storage, token formats, and resolution. This module owns the grant lifecycle.
 import type { RegisteredQuery } from "convex/server";
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";

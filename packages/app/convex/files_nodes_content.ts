@@ -1445,7 +1445,9 @@ async function action_create_file_node(
 		parentId: Doc<"files_nodes">["parentId"];
 		path: string;
 		textContent: string;
-		/** The stored content type and its document shape; the caller resolved both together. */
+		/**
+		 * The stored content type and its document shape; the caller resolved both together.
+		 */
 		contentType: files_ContentType;
 		rootKind: files_YjsRootKind;
 		archiveOperationId?: Doc<"files_nodes">["archiveOperationId"];
@@ -2393,7 +2395,9 @@ export const create_file_by_path = internalAction({
 		userId: v.id("users"),
 		path: v.string(),
 		textContent: v.optional(v.string()),
-		/** Must be an editable text type. Omit to take the hint from the file name. */
+		/**
+		 * Must be an editable text type. Omit to take the hint from the file name.
+		 */
 		contentType: v.optional(v.string()),
 	},
 	returns: v_result({
@@ -4105,15 +4109,23 @@ async function db_install_file_content_replacement(
 		backup?: { assetId: Id<"files_r2_assets">; size: number };
 		contentAssetId: Id<"files_r2_assets">;
 		contentSize: number;
-		/** False when the content asset is already published (a staged copy's own object). */
+		/**
+		 * False when the content asset is already published (a staged copy's own object).
+		 */
 		publishContentAsset: boolean;
 		contentType: string;
-		/** Absent for stored bytes. Then `text` and `yjsSnapshot` are absent too. */
+		/**
+		 * Absent for stored bytes. Then `text` and `yjsSnapshot` are absent too.
+		 */
 		yjsRootKind?: "rich_text" | "plain_text";
 		nonCollaborative?: boolean;
-		/** The new document. Present only for a collaborative text result. */
+		/**
+		 * The new document. Present only for a collaborative text result.
+		 */
 		yjsSnapshot?: { assetId: Id<"files_r2_assets">; size: number };
-		/** The committed text of a text result. */
+		/**
+		 * The committed text of a text result.
+		 */
 		text?: string;
 	},
 ) {
@@ -4483,21 +4495,31 @@ export const finalize_file_pending_replacement = internalMutation({
 		pendingUpdateId: v.id("files_pending_updates"),
 		expectedUpdatedAt: v.number(),
 		stagedAssetId: v.id("files_r2_assets"),
-		/** The document's last-sequence token the action read. Present for a collaborative file. */
+		/**
+		 * The document's last-sequence token the action read. Present for a collaborative file.
+		 */
 		expectedYjsLastSequence: v.optional(
 			v.object({ id: v.id("files_yjs_docs_last_sequences"), lastSequence: v.number() }),
 		),
-		/** The latest text of a collaborative file, kept as a version. See `db_install_file_content_replacement`. */
+		/**
+		 * The latest text of a collaborative file, kept as a version. See `db_install_file_content_replacement`.
+		 */
 		backup: v.optional(v.object({ assetId: v.id("files_r2_assets"), size: v.number() })),
 		contentAssetId: v.id("files_r2_assets"),
 		contentSize: v.number(),
 		contentType: v.string(),
-		/** Absent for stored bytes. Then `text` and `yjsSnapshot` are absent too. */
+		/**
+		 * Absent for stored bytes. Then `text` and `yjsSnapshot` are absent too.
+		 */
 		yjsRootKind: v.optional(v.union(v.literal("rich_text"), v.literal("plain_text"))),
 		nonCollaborative: v.optional(v.boolean()),
-		/** The new document. Present only for a collaborative text result. */
+		/**
+		 * The new document. Present only for a collaborative text result.
+		 */
 		yjsSnapshot: v.optional(v.object({ assetId: v.id("files_r2_assets"), size: v.number() })),
-		/** The committed text of a text result. */
+		/**
+		 * The committed text of a text result.
+		 */
 		text: v.optional(v.string()),
 	},
 	returns: v_result({ _yay: v.null() }),
@@ -5058,13 +5080,19 @@ export const finalize_snapshot_restore_replacement = internalMutation({
 		membershipId: v.id("organizations_workspaces_users"),
 		nodeId: v.id("files_nodes"),
 		snapshotId: v.id("files_snapshots"),
-		/** Omitted when the source has collaboration off. Other sources keep their asset check. */
+		/**
+		 * Omitted when the source has collaboration off. Other sources keep their asset check.
+		 */
 		expectedAssetId: v.optional(v.id("files_r2_assets")),
-		/** The document's last-sequence token the action read. Present for a collaborative file. */
+		/**
+		 * The document's last-sequence token the action read. Present for a collaborative file.
+		 */
 		expectedYjsLastSequence: v.optional(
 			v.object({ id: v.id("files_yjs_docs_last_sequences"), lastSequence: v.number() }),
 		),
-		/** A fresh copy of the current text, made for a collaborative file. See `db_install_file_content_replacement`. */
+		/**
+		 * A fresh copy of the current text, made for a collaborative file. See `db_install_file_content_replacement`.
+		 */
 		backup: v.optional(v.object({ assetId: v.id("files_r2_assets"), size: v.number() })),
 		contentAssetId: v.id("files_r2_assets"),
 		contentSize: v.number(),
@@ -5781,7 +5809,9 @@ export const repair_file_yjs_state_from_visible_text = internalAction({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		nodeId: v.id("files_nodes"),
-		/** Recorded as the author of the repair's new version; must be a member of the tenant. */
+		/**
+		 * Recorded as the author of the repair's new version; must be a member of the tenant.
+		 */
 		authorUserId: v.id("users"),
 		/**
 		 * `latest_state` (default) reconstructs the current document under the repair-only 16 MiB
@@ -6033,7 +6063,9 @@ export const finalize_file_yjs_repair = internalMutation({
 		acknowledgeDiscardUnmaterialized: v.boolean(),
 		targetSequence: v.number(),
 		expectedYjsLastSequenceId: v.id("files_yjs_docs_last_sequences"),
-		/** One bounded text value; every other input travels as ids/scalars. */
+		/**
+		 * One bounded text value; every other input travels as ids/scalars.
+		 */
 		text: v.string(),
 		textByteSize: v.number(),
 		yjsSnapshotAssetId: v.id("files_r2_assets"),

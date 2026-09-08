@@ -273,7 +273,9 @@ type FileEditorPlainTextInner_Props = {
 	editable: boolean;
 	/** The node's document shape, resolved by the snapshot fetch; Save/Sync dispatch on it. */
 	rootKind: files_YjsRootKind;
-	/** The Monaco language id derived from the node's content type (`files_monaco_language_id_of_content_type`). */
+	/**
+	 * The Monaco language id derived from the node's content type (`files_monaco_language_id_of_content_type`).
+	 */
 	monacoLanguageId: string;
 	initialData: FileEditorPlainText_LoadedContent;
 	topSafeArea?: number;
@@ -929,7 +931,9 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 export type FileEditorPlainText_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
 	editable: boolean;
-	/** The Monaco language id derived from the node's content type (`files_monaco_language_id_of_content_type`). */
+	/**
+	 * The Monaco language id derived from the node's content type (`files_monaco_language_id_of_content_type`).
+	 */
 	monacoLanguageId: string;
 	/**
 	 * Collaboration is off for this file: it has no Yjs document, so Save replaces the whole text.

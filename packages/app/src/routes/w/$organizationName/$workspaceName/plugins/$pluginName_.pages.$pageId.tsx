@@ -197,7 +197,9 @@ type RoutePluginsPluginPageFrame_ClassNames =
 	| "RoutePluginsPluginPageFrame-error";
 
 type RoutePluginsPluginPageFrame_Props = {
-	/** The `<main>` the route renders. The focus move below asks whether focus is still inside it. */
+	/**
+	 * The `<main>` the route renders. The focus move below asks whether focus is still inside it.
+	 */
 	regionRef: RefObject<HTMLElement | null>;
 	pluginName: string;
 	pluginVersionId: PluginsUiFrame_Props["pluginVersionId"];

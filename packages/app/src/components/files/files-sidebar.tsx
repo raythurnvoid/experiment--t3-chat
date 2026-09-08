@@ -302,7 +302,9 @@ type FilesImportStoreState = {
 	total: number;
 	/** How many files finished uploading. */
 	done: number;
-	/** Existing upload objects still waiting for server confirmation. */
+	/**
+	 * Existing upload objects still waiting for server confirmation.
+	 */
 	pendingConfirmation: number;
 	/** Client-side and server-side skips, merged for the final report. */
 	skipped: Array<{ relativePath: string; reason: FilesImportSkipReason }>;
@@ -3107,7 +3109,9 @@ type FilesSidebarUploadDraft = {
 	parentId: app_convex_Id<"files_nodes"> | typeof files_ROOT_ID;
 	filename: string;
 	contentType?: string;
-	/** The document shape the picked content type gives `filename`: rich text, plain text, or null for a stored upload. */
+	/**
+	 * The document shape the picked content type gives `filename`: rich text, plain text, or null for a stored upload.
+	 */
 	rootKind: files_YjsRootKind | null;
 	reason: "path_conflict" | "missing_extension";
 	conflict?: {

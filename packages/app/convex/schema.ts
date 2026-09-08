@@ -246,7 +246,9 @@ const app_convex_schema = defineSchema({
 		grantId: v.optional(v.id("plugin_service_grants")),
 		/** Normalized absolute target path; parents are resolved again at publication. */
 		path: v.string(),
-		/** Invoke-only immediate parent identity, checked again at publication. */
+		/**
+		 * Invoke-only immediate parent identity, checked again at publication.
+		 */
 		expectedParentNodeId: v.optional(v.id("files_nodes")),
 		overwrite: v.union(v.literal("replace"), v.literal("fail")),
 		/**
@@ -338,7 +340,9 @@ const app_convex_schema = defineSchema({
 				fromPath: v.string(),
 			}),
 		),
-		/** Copy provenance for the destination node of a pending copy (`cp`). Display metadata only. */
+		/**
+		 * Copy provenance for the destination node of a pending copy (`cp`). Display metadata only.
+		 */
 		copiedFrom: v.optional(
 			v.object({
 				nodeId: v.id("files_nodes"),
@@ -361,9 +365,13 @@ const app_convex_schema = defineSchema({
 				assetId: v.id("files_r2_assets"),
 				size: v.number(),
 				contentType: v.string(),
-				/** Absent for stored bytes: accepting turns the destination into a stored file. */
+				/**
+				 * Absent for stored bytes: accepting turns the destination into a stored file.
+				 */
 				yjsRootKind: v.optional(v.union(v.literal("rich_text"), v.literal("plain_text"))),
-				/** Text only. Absent means the destination becomes collaborative when accepted. */
+				/**
+				 * Text only. Absent means the destination becomes collaborative when accepted.
+				 */
 				nonCollaborative: v.optional(v.boolean()),
 				/**
 				 * The destination's content asset when the proposal was made. Accept refuses when
@@ -2534,18 +2542,26 @@ const app_convex_schema = defineSchema({
 	activities: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
-		/** Who triggered the work. Activities are workspace-shared, not a per-user inbox. */
+		/**
+		 * Who triggered the work. Activities are workspace-shared, not a per-user inbox.
+		 */
 		userId: v.id("users"),
-		/** "timeout" = the deadline cron closed it because the producer never finished it in time. */
+		/**
+		 * "timeout" = the deadline cron closed it because the producer never finished it in time.
+		 */
 		status: v.union(v.literal("running"), v.literal("succeeded"), v.literal("failed"), v.literal("timeout")),
-		/** What produced this activity. Wrap in v.union(...) when a second producer variant lands. */
+		/**
+		 * What produced this activity. Wrap in v.union(...) when a second producer variant lands.
+		 */
 		source: v.object({
 			type: v.literal("plugin_run"),
 			id: v.id("plugins_event_runs"),
 			installationId: v.id("plugins_workspace_installations"),
 			pluginName: v.string(),
 		}),
-		/** Status-neutral display text, e.g. "Video plugin · speakers.mp4". */
+		/**
+		 * Status-neutral display text, e.g. "Video plugin · speakers.mp4".
+		 */
 		title: v.string(),
 		errorMessage: v.union(v.string(), v.null()),
 		/**
@@ -2557,14 +2573,20 @@ const app_convex_schema = defineSchema({
 				type: v.literal("file_node"),
 				id: v.id("files_nodes"),
 				path: v.string(),
-				/** Per-target display text (e.g. "Writing the transcript"); "" = none, UIs fall back to the activity title. */
+				/**
+				 * Per-target display text (e.g. "Writing the transcript"); "" = none, UIs fall back to the activity title.
+				 */
 				message: v.string(),
 			}),
 		),
-		/** Caller-set deadline (at most 5 minutes after start); past it, the cron closes the activity as "timeout". */
+		/**
+		 * Caller-set deadline (at most 5 minutes after start); past it, the cron closes the activity as "timeout".
+		 */
 		timeoutAt: v.number(),
 		finishedAt: v.optional(v.number()),
-		/** 0 = not archived; the dismiss time once a user dismisses a finished activity. Archived items stay for producers. */
+		/**
+		 * 0 = not archived; the dismiss time once a user dismisses a finished activity. Archived items stay for producers.
+		 */
 		archivedAt: v.number(),
 		updatedAt: v.number(),
 	})

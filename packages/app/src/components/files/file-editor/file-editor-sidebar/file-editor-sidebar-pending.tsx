@@ -1733,7 +1733,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		copiedFrom?: { nodeId: string; path: string };
 		eagerCreated?: { committedSequence: number };
 		pendingArchive?: { fromPath: string };
-		/** A proposal on a file with collaboration off stores the asset it was built from. */
+		/**
+		 * A proposal on a file with collaboration off stores the asset it was built from.
+		 */
 		baseAssetId?: string;
 	}) =>
 		({
@@ -1767,7 +1769,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		path: string;
 		kind?: "file" | "folder";
 		parentId?: string;
-		/** A text file with collaboration off, like `list_tree` returns it, with the asset `asset_<id>`. */
+		/**
+		 * A text file with collaboration off, like `list_tree` returns it, with the asset `asset_<id>`.
+		 */
 		nonCollaborative?: boolean;
 		textKind?: "rich_text" | "plain_text";
 	}) =>

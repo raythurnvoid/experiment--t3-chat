@@ -440,7 +440,6 @@ describe("plugins_validate_manifest", () => {
 		).toEqual({ _nay: { message: "Compatibility flags must be at most 64 characters" } });
 	});
 
-
 	test("holds each event to what it can carry: a file event needs content types, the account event refuses them", () => {
 		// An account deletion has no file, so a content type could never match one. Refusing it at
 		// publish time is the difference between an author fixing a manifest and an author waiting for

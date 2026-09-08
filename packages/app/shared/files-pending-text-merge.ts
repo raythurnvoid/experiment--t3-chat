@@ -9,6 +9,7 @@ function collect_edits(changes: Array<{ value: string; added?: boolean; removed?
 	let sourceOffset = 0;
 	let targetOffset = 0;
 	let edit: TextEdit | undefined;
+
 	for (const change of changes) {
 		if (!change.added && !change.removed) {
 			if (edit) edits.push(edit);
@@ -27,7 +28,9 @@ function collect_edits(changes: Array<{ value: string; added?: boolean; removed?
 			edit.targetEnd = targetOffset;
 		}
 	}
+
 	if (edit) edits.push(edit);
+
 	return edits;
 }
 
@@ -44,16 +47,19 @@ export function files_pending_text_merge(args: { baseText: string; proposedText:
 	const proposedChanges = diffLines(baseText, proposedText, { timeout: 30_000 });
 	const currentChanges = diffLines(baseText, currentText, { timeout: Math.max(0, deadline - Date.now()) });
 	if (!proposedChanges || !currentChanges) return Result({ _nay: { message: files_text_diff_TOO_LARGE_MESSAGE } });
+
 	const currentDiff = files_text_diff_compute({
 		sourceText: baseText,
 		targetText: currentText,
 		deadlineMs: Math.max(0, deadline - Date.now()),
 	});
 	if (currentDiff._nay) return Result({ _nay: { message: currentDiff._nay.message } });
+
 	const currentEdits = collect_edits(
 		currentDiff._yay.map(([kind, value]) => ({ value, added: kind === 1, removed: kind === -1 })),
 	);
 	const currentLineEdits = collect_edits(currentChanges);
+
 	const proposedEdits = collect_edits(proposedChanges).flatMap((edit) => {
 		const oldLines = baseText.slice(edit.start, edit.end).split(/(?<=\n)/);
 		const newLines = edit.text.split(/(?<=\n)/);
@@ -70,6 +76,7 @@ export function files_pending_text_merge(args: { baseText: string; proposedText:
 			return lineEdit;
 		});
 	});
+
 	const mappedEdits: Array<{ start: number; end: number; text: string; baseStart: number; beforeNewlines?: number }> =
 		[];
 
@@ -108,6 +115,7 @@ export function files_pending_text_merge(args: { baseText: string; proposedText:
 			);
 			const point = map_boundary(edit.start, "insert");
 			if (point === null) return Result({ _nay: { message: "Could not match the proposed lines to the saved text" } });
+
 			let text = edit.text;
 			if (currentInsert) {
 				// Match each saved line once, keeping proposal order and repeated-line counts.
@@ -120,6 +128,7 @@ export function files_pending_text_merge(args: { baseText: string; proposedText:
 					savedLines.set(key, saved);
 					offset += line.length;
 				}
+
 				let matchedEnd = currentInsert.targetStart;
 				const proposedLines = edit.text.split(/(?<=\n)/);
 				text = "";
@@ -150,6 +159,7 @@ export function files_pending_text_merge(args: { baseText: string; proposedText:
 					}
 				}
 			}
+
 			if (text) {
 				if (point > 0 && currentText[point - 1] !== "\n") text = "\n" + text;
 				mappedEdits.push({ start: point, end: point, text, baseStart: edit.start });
@@ -186,6 +196,7 @@ export function files_pending_text_merge(args: { baseText: string; proposedText:
 		if (start === null || end === null || start > end) {
 			return Result({ _nay: { message: "Could not match the proposed lines to the saved text" } });
 		}
+
 		// More saved lines leave no clear target; shared words can belong to an unrelated note.
 		if (
 			!hasExactRange &&
@@ -199,6 +210,7 @@ export function files_pending_text_merge(args: { baseText: string; proposedText:
 		) {
 			return Result({ _nay: { message: "Could not match the proposed lines to the saved text" } });
 		}
+
 		let text = edit.text;
 		// A longer replacement can include a prefix already inserted at this base boundary.
 		const savedPrefix = currentLineEdits.find(
@@ -210,6 +222,7 @@ export function files_pending_text_merge(args: { baseText: string; proposedText:
 			text.split(/(?<=\n)/).length > oldText.split(/(?<=\n)/).length
 		)
 			text = text.slice(savedPrefix.text.length);
+
 		let beforeNewlines = 0;
 		if (text && start === end) {
 			// Restore only the missing paragraph separators around a deleted range.
@@ -229,6 +242,7 @@ export function files_pending_text_merge(args: { baseText: string; proposedText:
 	mappedEdits.sort((left, right) => left.start - right.start || left.baseStart - right.baseStart);
 	let result = "";
 	let offset = 0;
+
 	for (let index = 0; index < mappedEdits.length; ) {
 		const first = mappedEdits[index]!;
 		let end = first.end;
@@ -242,6 +256,7 @@ export function files_pending_text_merge(args: { baseText: string; proposedText:
 			end = Math.max(end, next.end);
 			overlapping.push(next);
 		}
+
 		overlapping.sort((left, right) => left.baseStart - right.baseStart);
 		result += currentText.slice(offset, first.start);
 		for (const edit of overlapping) {
@@ -253,5 +268,6 @@ export function files_pending_text_merge(args: { baseText: string; proposedText:
 		}
 		offset = end;
 	}
+
 	return Result({ _yay: result + currentText.slice(offset) });
 }

@@ -1645,7 +1645,9 @@ export async function files_nodes_db_create_node_recursively_at_path(
 		 * discarding the proposal would leave the empty file behind forever.
 		 */
 		metadata?: files_metadata_Entry[];
-		/** Initial metadata on each new node. Reused nodes keep their existing maps. */
+		/**
+		 * Initial metadata on each new node. Reused nodes keep their existing maps.
+		 */
 		createdNodesMetadata?: files_metadata_Entry[];
 		now: number;
 		/**
@@ -8351,7 +8353,9 @@ const text_search_args = {
 	query: v.string(),
 	/** Optional subtree scope: keep only matches whose file path is under this folder prefix. */
 	pathPrefix: v.optional(v.string()),
-	/** Files matching the structured filters. This only narrows the existing access checks. */
+	/**
+	 * Files matching the structured filters. This only narrows the existing access checks.
+	 */
 	nodeIds: v.optional(v.array(v.id("files_nodes"))),
 };
 
@@ -8779,7 +8783,9 @@ export const get_data_for_create_file_snapshot_content_url = internalQuery({
 			asset: doc(app_convex_schema, "files_r2_assets"),
 			snapshotId: v.id("files_snapshots"),
 			_creationTime: v.number(),
-			/** The version's own content type. The signer pins the served type from it. */
+			/**
+			 * The version's own content type. The signer pins the served type from it.
+			 */
 			contentType: doc(app_convex_schema, "files_snapshots").fields.contentType,
 			yjsRootKind: doc(app_convex_schema, "files_snapshots").fields.yjsRootKind,
 			collaborationEnabled: doc(app_convex_schema, "files_snapshots").fields.collaborationEnabled,

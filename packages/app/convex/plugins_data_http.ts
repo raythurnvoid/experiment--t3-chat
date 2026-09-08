@@ -1,11 +1,7 @@
-/**
- * The `/api/v1/plugin-data/*` routes.
- *
- * They are the only way into `plugins_data.ts` from outside Convex. An external service cannot call a
- * Convex internal mutation, so every store operation needs a route here. The route proves who is
- * calling and shapes the body; the mutation it calls re-checks the installation, the capability, and
- * the caller's live permissions, because a role can be taken away between the token check and the write.
- */
+// The `/api/v1/plugin-data/*` routes for external store calls.
+// External services cannot call Convex internal mutations. These routes check the caller and request
+// body, then the mutations recheck the installation, capability, and live permissions before writing.
+// Plugin frames also use the public queries and member-write mutations in `plugins_data.ts` directly.
 import { z } from "zod";
 
 import { internal } from "./_generated/api.js";

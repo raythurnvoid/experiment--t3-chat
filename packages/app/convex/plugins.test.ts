@@ -7257,7 +7257,7 @@ describe("plugins publish_version", () => {
 		});
 	});
 
-	test("left policy 6 behind when the reviewer's file-read exemption stopped being page-only", () => {
+	test("does not reuse policy 6 for reviews that include file views", () => {
 		// Policy 6 is the last version whose verdict prompt exempted only "frontend pages" from the
 		// file-read finding. A file-view-only plugin reviewed under it could be flagged or rejected for a
 		// call the host authorizes, and that verdict blocks the install. Reusing one of those verdicts
@@ -7266,7 +7266,7 @@ describe("plugins publish_version", () => {
 		expect(plugins_REVIEW_POLICY_VERSION).not.toBe("6");
 	});
 
-	test("left policy 7 behind when backend endpoints and invoke became reviewable surface", () => {
+	test("does not reuse policy 7 for reviews that include backend endpoints", () => {
 		// Policy 7 verdicts never saw backend endpoint declarations, the invoke capability, or the
 		// owned-files and service-scope rules, so a cached policy-7 verdict must not authorize a
 		// publish that declares them.

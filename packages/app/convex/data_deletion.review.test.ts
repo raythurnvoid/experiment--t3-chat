@@ -31,7 +31,7 @@ afterEach(() => {
 	vi.useRealTimers();
 });
 
-// These fixtures are copied from data_deletion.test.ts. The review owns only this new file.
+// These fixtures match data_deletion.test.ts.
 async function data_deletion_test_bootstrap_user(
 	ctx: MutationCtx,
 	args: { clerkUserId: string | null; displayName: string; avatarUrl?: string; email?: string },
@@ -2022,10 +2022,6 @@ describe("anonymous auth finalization", () => {
 	});
 });
 
-// Controls for attack items 5, 6, 8, 9, 10, and 20.
-// Uses the existing data_deletion_test_* helpers named in the parent review file.
-// These are expected to pass. No assertion below is claimed as a bug reproduction.
-
 describe("ordering review controls", () => {
 	test("makes each tenant request eligible once as time moves forward", async () => {
 		const t = test_convex({ transactionLimits: true });
@@ -2304,10 +2300,6 @@ describe("ordering review controls", () => {
 	});
 });
 
-// Proposed additions to data_deletion.review.test.ts. Root owns that file.
-// These are cleared-item probes. No assertion is expected to fail on current code.
-// Use the original file's beforeEach/afterEach fake timers and imported helpers.
-
 describe("review: notification producer during account deletion", () => {
 	test("refuses a new invite after the recipient notification drain", async () => {
 		const t = test_convex({ transactionLimits: true });
@@ -2369,7 +2361,7 @@ describe("review: notification producer during account deletion", () => {
 		expect(await asOwner.mutation(api.organizations.invite_user_to_organization_workspace, inviteArgs)).toEqual({
 			_nay: { message: "User to add not found" },
 		});
-		// Named assertion if the producer tombstone guard were absent: expected [] but gets an invite.
+		// A deleted recipient must not receive a new invite after their notifications were drained.
 		expect(
 			await t.run((ctx) =>
 				ctx.db
@@ -2478,7 +2470,7 @@ describe("review: account event producer during workspace purge", () => {
 				"enabled",
 			);
 			await t.mutation(internal.plugins_runtime.enqueue_account_deleted_runs, { userId: user.userId });
-			// Named side effect: the unfenced control gets one run, the fenced case gets none.
+			// The purge fence stops new runs while the installation is still enabled.
 			expect(await t.run((ctx) => ctx.db.query("plugins_event_runs").collect())).toHaveLength(beginPurge ? 0 : 1);
 		}
 	});
@@ -2550,7 +2542,7 @@ describe("review: upload guard survives workspace purge", () => {
 			generation: job.generation,
 			deletedAt: guard - 1,
 		});
-		// Named side effect: pre-expiry success must keep the job for a possible later PUT.
+		// Keep the job while another PUT may still arrive.
 		expect(await t.run((ctx) => ctx.db.get("files_r2_object_deletion_jobs", job._id))).toMatchObject({
 			failureCount: 12,
 			putMayArriveUntil: guard,
@@ -2565,9 +2557,7 @@ describe("review: upload guard survives workspace purge", () => {
 	});
 });
 
-// Reachable admin/retention overlap. Expected to pass under the current spec.
-// Account recovery keeps resource requests, including this implicit request.
-// This captures a product risk, not a confirmed violation of the current contract.
+// Account recovery keeps organization and workspace purge requests, including implicit requests.
 describe("overlapping account deletion review", () => {
 	test("keeps the implicit organization purge after a member recovers during retention", async () => {
 		const t = test_convex({ transactionLimits: true });
@@ -2620,7 +2610,7 @@ describe("overlapping account deletion review", () => {
 			});
 		});
 
-		// B starts ordinary account deletion while A still owns the shared organization.
+		// The member starts account deletion while the owner still owns the shared organization.
 		const memberDeletion = await memberClient.action(api.users.delete_current_user_account, {});
 		expect(memberDeletion._nay).toBeUndefined();
 		const memberRequest = await t.run((ctx) =>
@@ -2634,7 +2624,7 @@ describe("overlapping account deletion review", () => {
 		expect(memberRequest.eligibleAt).toBeGreaterThan(Date.now());
 
 		// The admin account-removal path keeps a shared organization only if another
-		// active member exists. B is temporarily inactive during retention.
+		// active member exists. This member is inactive during retention.
 		await t.action(internal.users.hard_delete_user_now, {
 			userId: owner.userId,
 			purgeUserMod: "data_and_auth",

@@ -1611,15 +1611,15 @@ async function db_drain_user_finalization_batch(
 		return pendingUpdateCount;
 	}
 
-	const lastSequenceRows = await ctx.db
+	const lastSequenceDocs = await ctx.db
 		.query("files_pending_updates_last_sequence_saved")
 		.withIndex("by_user_fileNode", (q) => q.eq("userId", String(args.userId)))
 		.take(args.batchSize);
-	if (lastSequenceRows.length > 0) {
+	if (lastSequenceDocs.length > 0) {
 		await Promise.all(
-			lastSequenceRows.map((doc) => ctx.db.delete("files_pending_updates_last_sequence_saved", doc._id)),
+			lastSequenceDocs.map((doc) => ctx.db.delete("files_pending_updates_last_sequence_saved", doc._id)),
 		);
-		return lastSequenceRows.length;
+		return lastSequenceDocs.length;
 	}
 
 	const yjsStateCount = await db_drain_user_pending_yjs_states_batch(ctx, args);
@@ -1674,13 +1674,13 @@ async function db_drain_user_finalization_batch(
 		return pluginMemberUsage.length;
 	}
 
-	const quotaRows = await ctx.db
+	const quotaDocs = await ctx.db
 		.query("quotas")
 		.withIndex("by_user_quotaName", (q) => q.eq("userId", args.userId))
 		.take(args.batchSize);
-	if (quotaRows.length > 0) {
-		await Promise.all(quotaRows.map((doc) => ctx.db.delete("quotas", doc._id)));
-		return quotaRows.length;
+	if (quotaDocs.length > 0) {
+		await Promise.all(quotaDocs.map((doc) => ctx.db.delete("quotas", doc._id)));
+		return quotaDocs.length;
 	}
 
 	const apiCredentials = await ctx.db

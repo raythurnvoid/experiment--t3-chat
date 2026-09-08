@@ -1,11 +1,5 @@
-/**
- * Markdown fixtures for the GFM table round trip.
- *
- * Both `packages/app/shared/files.test.ts` and the browser suite in
- * `packages/app/src/components/files/file-editor/file-editor-rich-text/extensions.test.ts` import
- * these, so the two suites cannot drift apart. Keep the backslash counts exactly as written: a
- * wrong count turns a fixture into a different test that still passes.
- */
+// Markdown fixtures shared by `shared/files.test.ts` and the rich text editor's `extensions.test.ts`.
+// Keep the backslash counts exactly as written: changing a count changes what the test covers.
 
 export const table_canonical_2x2 = "| A | B |\n| --- | --- |\n| 1 | 2 |\n";
 export const table_alignments = "| L | C | R |\n| :--- | :---: | ---: |\n| 1 | 2 | 3 |\n";

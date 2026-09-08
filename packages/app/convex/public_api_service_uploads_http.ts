@@ -1,16 +1,11 @@
-/**
- * The `/api/v1/files/service-uploads/*` routes.
- *
- * They are the only file surface a plugin service grant reaches. The generic `/api/v1/files/*`
- * routes never list `plugin_service` in their `allowedKinds`, so a service cannot write, touch, or
- * list files; it can only run this narrow create-target → upload → finalize pipeline — plus the delete
- * route for the files it stored and the archive route for its own destination folder — and only
- * with a sealed processing-phase grant bound to one destination prefix.
- *
- * The route proves who is calling and shapes the body; the mutation it calls re-checks the grant,
- * the installation, the capabilities, and the actor's live permissions, because any of them can be
- * taken away between the token check and the write.
- */
+// The `/api/v1/files/service-uploads/*` routes.
+//
+// A sealed processing grant may create upload targets, finalize uploads, delete its stored files,
+// and archive its destination folder within one destination prefix. Services may also use
+// `/api/v1/files/write` and `/api/v1/files/plugin-archive`; the other generic file routes refuse them.
+//
+// These routes check the caller and request body. The mutations recheck the grant, installation,
+// capabilities, and actor's live permissions before writing, since any of them may have changed.
 import { z } from "zod";
 
 import { internal } from "./_generated/api.js";

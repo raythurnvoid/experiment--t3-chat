@@ -147,6 +147,8 @@ const FILES_UPLOAD_URL_TTL_MS = 15 * 60 * 1000;
 const FILES_WRITE_MANY_MAX_ITEMS = 20;
 // Whole-request byte cap: 20 files near the per-file content limit plus JSON overhead.
 const FILES_WRITE_MANY_MAX_REQUEST_BYTES = 8_000_000;
+const INVALID_WRITE_FILE_NAME_MESSAGE = "Path must end in a valid file name.";
+const INVALID_WRITE_CONTENT_TYPE_MESSAGE = "contentType must be an editable text type.";
 const ACTIVITIES_TITLE_MAX_CHARS = 120;
 
 const TEXT_ENCODER = new TextEncoder();
@@ -5318,7 +5320,7 @@ export type public_api_http_write_file_Body = z.infer<typeof write_file_body_val
  * Public writes accept existing special-name spellings. Other names must already be normalized.
  * This check only validates spelling; content-type selection happens at the write door.
  */
-function public_api_is_valid_write_file_name(name: string) {
+function is_valid_write_file_name(name: string) {
 	// Existing special names keep their spelling; validate the canonical spelling only.
 	name = files_normalize_special_node_path("file", name);
 	const normalized = name.toLowerCase().endsWith(".md")
@@ -5326,9 +5328,6 @@ function public_api_is_valid_write_file_name(name: string) {
 		: files_normalize_file_rename_name(name);
 	return !normalized._nay && normalized._yay === name;
 }
-
-const PUBLIC_API_INVALID_WRITE_FILE_NAME_MESSAGE = "Path must end in a valid file name.";
-const PUBLIC_API_INVALID_WRITE_CONTENT_TYPE_MESSAGE = "contentType must be an editable text type.";
 
 export async function public_api_http_write_file(ctx: ActionCtx, request: Request, path: "/api/v1/files/write") {
 	const auth = await public_api_authorize_request(ctx, request, {
@@ -5392,12 +5391,12 @@ export async function public_api_http_write_file(ctx: ActionCtx, request: Reques
 	// Segment-aware: a raw lastIndexOf("/") would split inside an escaped-slash segment and
 	// validate a different name than the segment the node is created with.
 	const name = path_name_of(requestedPath);
-	if (!public_api_is_valid_write_file_name(name)) {
+	if (!is_valid_write_file_name(name)) {
 		return {
 			status: 400,
 			body: await fail({
 				status: 400,
-				message: PUBLIC_API_INVALID_WRITE_FILE_NAME_MESSAGE,
+				message: INVALID_WRITE_FILE_NAME_MESSAGE,
 				errorCode: "invalid_input",
 			}),
 		} as const;
@@ -5408,7 +5407,7 @@ export async function public_api_http_write_file(ctx: ActionCtx, request: Reques
 			status: 400,
 			body: await fail({
 				status: 400,
-				message: PUBLIC_API_INVALID_WRITE_CONTENT_TYPE_MESSAGE,
+				message: INVALID_WRITE_CONTENT_TYPE_MESSAGE,
 				errorCode: "invalid_input",
 			}),
 		} as const;
@@ -5691,17 +5690,17 @@ export async function public_api_http_write_many(ctx: ActionCtx, request: Reques
 			return { status: 400, body: { message: "Path must point to a file.", path: file.path } } as const;
 		}
 		const name = path_name_of(requestedPath);
-		if (!public_api_is_valid_write_file_name(name)) {
+		if (!is_valid_write_file_name(name)) {
 			return {
 				status: 400,
-				body: { message: PUBLIC_API_INVALID_WRITE_FILE_NAME_MESSAGE, path: file.path },
+				body: { message: INVALID_WRITE_FILE_NAME_MESSAGE, path: file.path },
 			} as const;
 		}
 		const shape = file.contentType === undefined ? null : files_editable_text_shape_of(file.contentType);
 		if (file.contentType !== undefined && shape === null) {
 			return {
 				status: 400,
-				body: { message: PUBLIC_API_INVALID_WRITE_CONTENT_TYPE_MESSAGE, path: file.path },
+				body: { message: INVALID_WRITE_CONTENT_TYPE_MESSAGE, path: file.path },
 			} as const;
 		}
 		// Intermediate folders are created verbatim on publish; require already-canonical
@@ -5918,12 +5917,12 @@ export async function public_api_http_touch_files(ctx: ActionCtx, request: Reque
 		// Segment-aware: a raw lastIndexOf("/") would split inside an escaped-slash segment and
 		// validate a different name than the segment the node is created with.
 		const name = path_name_of(requestedPath);
-		if (!public_api_is_valid_write_file_name(name)) {
+		if (!is_valid_write_file_name(name)) {
 			return {
 				status: 400,
 				body: await fail({
 					status: 400,
-					message: PUBLIC_API_INVALID_WRITE_FILE_NAME_MESSAGE,
+					message: INVALID_WRITE_FILE_NAME_MESSAGE,
 					errorCode: "invalid_input",
 				}),
 			} as const;
