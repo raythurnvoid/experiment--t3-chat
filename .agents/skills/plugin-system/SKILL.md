@@ -574,6 +574,23 @@ Git submodule with its own repo (`raythurnvoid/bonobo-plugin-chitchat`), scaffol
 
 # Releases (SDK + Gallery)
 
+SDK 0.20.1 and Chitchat 0.7.9 shipped to dev on 2026-09-08. The host commit is
+`bbe9683ebe2531c91fa519574f094fcf002f1084`; the SDK mirror is
+`59c4b2ecd0f39726851217fe3601a31941d36f18`. Their SDK trees both equal
+`5fa59521a15f337c0c29e9abef45f4487877618b`. Chitchat pins that SHA in package and lock files.
+Its published commit is `7d6491ae593d2a50976454bb5f427358b9c4e306`, version doc
+`hn7y0fscsp2psd0wk7ea2we6j18e1gmy`. All four served files match the reviewed build. All four
+active installations updated with accounts, settings, grants, bindings, and usage unchanged.
+The disabled 0.6.0 installation stays untouched. This entry and the gitlink record the release.
+
+Host execution errors now use HTTP 500. The deployed edge replaced 502 bodies and hid the
+size-error code. Native checks prove that 500 keeps the message, run ID, and size code.
+Complete plugin 400/409/500 responses still use outer 200. Exact encoded 16 MiB ASCII and
+Unicode replies, empty 204, saved writes after failure, and the 35-second deadline passed.
+Chitchat 0.7.9 send/reply checks each saved one revision-1 document and completed the run.
+Full shared app lint and 6,323 tests passed; SDK tests/typecheck and all 434 Chitchat tests
+also passed. The runner is unchanged from the strict version recorded below.
+
 SDK 0.20.0 and Chitchat 0.7.8 shipped to dev on 2026-09-08. The reviewed host commit is
 `728b7dba00101dbbd109de0ff6dd6f74719d1542`; the equal SDK mirror is
 `5e7cdcb4c0e2420aebcd93720fd313ba9b90df51`. Chitchat pins it in both package and lock files.
@@ -585,9 +602,9 @@ cleanup-fenced 0.6.0 installation stays untouched.
 The strict runner is Worker version `51484660-72a5-40c9-b0d1-a4ca61c02d0a`. Native checks
 passed complete encoded 16 MiB ASCII and Unicode replies, plugin error bodies, empty events,
 saved writes after failure, the 35-second invoke deadline, and Chitchat send/reply persistence.
-All 426 baseline store/scope docs kept their IDs and hashes. This entry and the gitlink record
-the published release. The final error-code check is still open: the deployed edge replaces
-host 502 bodies, so the size-error code does not reach Chitchat. Do not report it as verified. See
+All 426 baseline store/scope docs kept their IDs and hashes at that checkpoint. Its native
+error-code check found that the deployed edge replaced host 502 bodies. The 0.20.1/0.7.9
+release above fixes that failure. See
 `../app-playwriter-harness/references/plugin-backend-execution.md` for the native checks.
 
 SDK 0.19.1 and Chitchat 0.7.7 shipped to dev on 2026-09-07. The reviewed host is

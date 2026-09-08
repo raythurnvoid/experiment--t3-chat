@@ -45,6 +45,11 @@ can receive the same upload; check the Data Probe run by installation and asset 
 Clean up only task-created files and records. Never uninstall a preserved installation
 to remove test records: uninstall deletes its store.
 
+The plugin detail page's Uninstall button runs directly; do not wait for a confirmation
+dialog. Wait for Install to appear, then verify the normal store/usage drain. For Chitchat
+cleanup, open an existing thread through `.message-thread-summary`; a root with replies
+does not have the separate Reply in thread button. Delete replies before their parent.
+
 ## Known tool and platform limits
 
 - HMR can replace a frame between calls. Reacquire it from `page.frames()` before acting.
@@ -66,8 +71,10 @@ to remove test records: uninstall deletes its store.
   `redirect: "error"` host request is refused, and its promise with no future event fails
   immediately as hung. Version 0.2.1 uses manual redirects with a non-2xx check and a
   cancellable 60-second timer. Browser-side SDK fetches have a different runtime.
-- The current `convex.site` edge replaces origin 502 bodies. A local test of the host's
-  JSON error is insufficient: check the actual page result and Convex completion logs.
+- Host execution errors use HTTP 500 because the deployed `convex.site` edge replaces
+  origin 502 bodies. Native checks confirmed that 500 preserves the message, run ID, and
+  `response_too_large` code. Still check the actual page result when this path changes;
+  a local JSON-response test cannot prove edge behavior.
   Cloudflare's [zone settings API](https://developers.cloudflare.com/api/resources/zones/subresources/settings/methods/get/)
   documents `origin_error_page_pass_thru` for keeping origin 502/504 bodies. Convex controls
   that zone. Do not claim the size-error code reached the page when it received a
