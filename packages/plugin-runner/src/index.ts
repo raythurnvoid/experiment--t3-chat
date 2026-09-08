@@ -363,12 +363,13 @@ function create_deadline(timeoutMs: number) {
 		clear: () => clearTimeout(timer),
 		async wait<T>(operation: Promise<T>) {
 			let onAbort = () => {};
+			// Each wait gets its own abort promise and removes its listener afterward.
+			// This avoids retaining a promise reaction for every completed read.
 			const aborted = new Promise<never>((_resolve, reject) => {
 				onAbort = () => reject(error);
 				controller.signal.addEventListener("abort", onAbort, { once: true });
 			});
 			try {
-				// One listener per current read, not one retained reaction per chunk on a shared promise.
 				if (controller.signal.aborted) onAbort();
 				const value = await Promise.race([operation, aborted]);
 				check();
@@ -418,6 +419,7 @@ async function read_plugin_response(
 				}
 			}
 		}
+
 		if (keepText) parts.push(decoder.decode(block.subarray(0, filled)));
 		return parts.join("");
 	} finally {

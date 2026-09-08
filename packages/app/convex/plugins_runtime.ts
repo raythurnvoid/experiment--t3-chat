@@ -1,9 +1,8 @@
-// Plugin run execution. Life of a run: enqueued (upload event or manual request) → picked up by
-// the workpool executor → claimed by start_event_run, which issues a per-run `plr_` API token →
-// executed by POSTing to the plugin runner → settled by finish_event_run. While running, the
-// plugin authenticates against the public `/api/v1/*` machine API as a `plugin_run` service
-// principal (resolved in public_api.ts) to call its allowed file and plugin-data APIs. A clean
-// response may succeed without writing a file.
+// Event runs enter the workpool and are claimed by start_event_run.
+// Invoke runs start directly in the HTTP request through start_invoke_run.
+// Both call the plugin runner and settle through finish_event_run. During a run,
+// the plugin uses its per-run `plr_` token to call allowed file and plugin-data APIs.
+// A clean response may succeed without writing a file.
 //
 // Three credentials: PLUGIN_RUNNER_SECRET authenticates Convex → runner requests; the per-run
 // `plr_` token (stored hashed on the run) authenticates plugin → public API calls; and the
@@ -1172,6 +1171,7 @@ async function read_runner_response(
 			data: undefined,
 		},
 	} as const;
+
 	const reader = response.body?.getReader();
 	const cancel = () => {
 		if (reader) void reader.cancel().catch(() => {});
@@ -1242,6 +1242,7 @@ async function read_runner_response(
 		}
 		complete = true;
 		if (byteLength !== metadata.bodyBytes) return invalidResponse;
+
 		if (used > 0) blocks.push(block.subarray(0, used));
 		const bytes = new Uint8Array(byteLength);
 		let offset = 0;
@@ -1267,6 +1268,7 @@ async function read_runner_response(
 				},
 			});
 		}
+
 		let json: unknown;
 		try {
 			json = JSON.parse(new TextDecoder().decode(bytes));
@@ -1277,31 +1279,32 @@ async function read_runner_response(
 		if (!parsed.success) return invalidResponse;
 		if (parsed.data._nay) {
 			if (metadata.kind !== "error") return invalidResponse;
-			const facts = parsed.data._nay.data;
+			const bodyMetrics = parsed.data._nay.data;
 			if (
-				facts?.pluginRunId !== metadata.runId ||
-				facts?.pluginStatus !== metadata.pluginStatus ||
-				facts?.elapsedMs !== metadata.elapsedMs ||
-				facts?.outputBytes !== metadata.outputBytes
+				bodyMetrics?.pluginRunId !== metadata.runId ||
+				bodyMetrics?.pluginStatus !== metadata.pluginStatus ||
+				bodyMetrics?.elapsedMs !== metadata.elapsedMs ||
+				bodyMetrics?.outputBytes !== metadata.outputBytes
 			)
 				return invalidResponse;
 			return { _yay: undefined, _nay: parsed.data._nay };
 		}
-		const facts = parsed.data._yay;
+
+		const bodyMetrics = parsed.data._yay;
 		if (
 			metadata.kind !== "event" ||
-			facts.pluginRunId !== metadata.runId ||
-			facts.pluginStatus !== metadata.pluginStatus ||
-			facts.elapsedMs !== metadata.elapsedMs ||
-			facts.outputBytes !== metadata.outputBytes
+			bodyMetrics.pluginRunId !== metadata.runId ||
+			bodyMetrics.pluginStatus !== metadata.pluginStatus ||
+			bodyMetrics.elapsedMs !== metadata.elapsedMs ||
+			bodyMetrics.outputBytes !== metadata.outputBytes
 		)
 			return invalidResponse;
 		return Result({
 			_yay: {
 				kind: "event" as const,
-				pluginStatus: facts.pluginStatus,
-				elapsedMs: facts.elapsedMs,
-				outputBytes: facts.outputBytes,
+				pluginStatus: bodyMetrics.pluginStatus,
+				elapsedMs: bodyMetrics.elapsedMs,
+				outputBytes: bodyMetrics.outputBytes,
 				body: null,
 			},
 		});

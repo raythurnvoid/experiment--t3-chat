@@ -3754,7 +3754,7 @@ describe("plugins Phase 0", () => {
 		},
 	);
 
-	test("refuses completion with an unpublished stage and schedules its cleanup once", async () => {
+	test("fails a run with an unpublished write stage and schedules cleanup once", async () => {
 		const t = test_convex();
 		const fixture = await start_running_plugin_run(t);
 		const claimed = await t.mutation(internal.plugins_runtime.consume_run_api_call, {
@@ -4541,7 +4541,7 @@ describe("plugins Phase 0", () => {
 	});
 
 	describe("start_event_run", () => {
-		test("settles queued code from an older installation version without calling the runner", async () => {
+		test("settles a queued run from an older installation version without calling the runner", async () => {
 			const t = test_convex();
 			const fixture = await install_plugin_with_upload_asset(t);
 			const runId = await insert_event_run(t, fixture, {

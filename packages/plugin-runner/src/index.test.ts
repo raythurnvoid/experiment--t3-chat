@@ -1378,7 +1378,7 @@ describe("secret masking", () => {
 		}
 	});
 
-	it("refuses an oversized raw invoke body even when masking would make the reply fit", async () => {
+	it("refuses an oversized raw plugin response even when masking would make the invoke reply fit", async () => {
 		const secret = "super-secret-value-123";
 		const { fetchSpy } = fetch_secret_during_run(secret);
 		try {

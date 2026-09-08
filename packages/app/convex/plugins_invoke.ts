@@ -1,15 +1,14 @@
-/**
- * The `/api/v1/plugin-backend/invoke` route.
- *
- * A plugin frame (page or file view) asks the host to run one of the plugin's declared backend
- * endpoints and waits for the answer in the same request. The route proves the `plu_` session and
- * its `backend:invoke` scope; `start_invoke_run` re-checks the installation, the capability, the
- * endpoint, and the member's live membership in one transaction, because any of them can change
- * between the token check and the run.
- *
- * The run record created there is also the endpoint's serialization lock, and the per-run `plr_`
- * token minted here is what the plugin uses to call back into `/api/v1/*` while it runs.
- */
+// The `/api/v1/plugin-backend/invoke` route.
+//
+// A plugin frame (page or file view) asks the host to run one of the plugin's declared backend
+// endpoints and waits for the answer in the same request. The route proves the `plu_` session and
+// its `backend:invoke` scope; `start_invoke_run` re-checks the installation, the capability, the
+// endpoint, and the member's live membership in one transaction, because any of them can change
+// between the token check and the run.
+//
+// The run doc created there is also the endpoint's serialization lock, and the per-run `plr_`
+// token minted here is what the plugin uses to call back into `/api/v1/*` while it runs.
+
 import { z } from "zod";
 
 import { internal } from "./_generated/api.js";
@@ -32,8 +31,8 @@ import type { public_api_Scope } from "../shared/public-api.ts";
 // backslash-heavy 16 KiB configuration), so the exact wire body is still measured before the
 // fetch. Do not raise this cap.
 const INVOKE_REQUEST_MAX_BYTES = 32 * 1024;
-// 35 seconds: under the 60-second invoke run TTL, so the runner answer (or this timeout) always
-// lands while the run record is still live and this action settles it instead of the expiry cron.
+// The 35-second runner budget leaves room within the 60-second run TTL.
+// The finalizer still checks expiry before allowing a reply.
 const INVOKE_RUNNER_TIMEOUT_MS = 35_000;
 
 /**
@@ -163,8 +162,8 @@ export async function plugins_invoke_http_invoke(
 
 	const runId = started._yay.pluginRun._id;
 	const backendEntrypointFile = started._yay.version.backendEntrypointFile;
+	// Unreachable: start_invoke_run already required the backend. Settle the run it created.
 	if (!backendEntrypointFile) {
-		// Unreachable: start_invoke_run already required the backend. Settle the run it created.
 		await ctx.runMutation(internal.plugins_runtime.finish_event_run, {
 			runId,
 			outcome: { kind: "failed", errorMessage: "Plugin backend is missing" },
@@ -223,10 +222,10 @@ export async function plugins_invoke_http_invoke(
 				},
 			},
 		});
+		// Only body_too_large: the request never reached the runner. The route cap alone cannot
+		// prove the wrapper fits, because the configuration's JSON form can outgrow its YAML
+		// byte limit.
 		if (runner._nay) {
-			// Only body_too_large: the request never reached the runner. The route cap alone cannot
-			// prove the wrapper fits, because the configuration's JSON form can outgrow its YAML
-			// byte limit.
 			const message = "Invoke request is too large for this plugin configuration";
 			await ctx.runMutation(internal.plugins_runtime.finish_event_run, {
 				runId,
