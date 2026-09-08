@@ -137,6 +137,12 @@ The classifier in [server-utils.ts](../../../packages/app/server/server-utils.ts
 
 The host mints this JWT together with the UI session token (`plu_...`, for a page and for a file view alike) and delivers both to the frame in one bridge message; the JWT's `exp` is the session expiry, so both credentials die together. `POST /plugins-ui/session-jwt` remains as a fallback that trades a live `plu_` token for the same JWT (a frame on an SDK older than 0.11.0 uses it; the exchange never extends the session). Full contract and door model: `../plugin-system/SKILL.md`.
 
+Each plugin UI session, run, and service grant stores a required `serviceAccountId`. It must still match the installation's account and its exact trusted plugin binding: tenant, plugin name, publisher user, and source repository URL. The account must be active in that tenant. Mint, refresh, principal resolution, and final writes check this through `plugins_db_get_live_service_account`; the helper never repairs or rebinds anything. Rebinding an installation does not rewrite old sessions, runs, or grants. Those old credentials fail closed. Revoked account docs stay so history and file policies keep their original identity.
+
+Plugin-session JWT store doors also check that saved account pin before applying the existing member and plugin-store rules. File grants do not grant or remove access to plugin-store records. File operations instead intersect the human actor's current access with the account's own grants, plus the original credential, capability, path, and write-policy limits. Accounts never inherit their sponsor's owner or admin rights.
+
+Personal API keys store `serviceAccountId: null`. Bound API keys store an active account in the same workspace and retain their human sponsor. Binding is fixed when the key is created and survives rotation. Bound keys allow only file scopes, including the separate `files:permissions` scope; that scope permits a policy request but grants no file authority. See `../access-control/SKILL.md` and `../public-api/SKILL.md` for the account controls and final per-resource checks.
+
 ### `GET /.well-known/jwks.json`
 
 Exposes public JWK(s) for the shared ES256 signing key so JWT verifiers can validate anonymous and plugin-session tokens.

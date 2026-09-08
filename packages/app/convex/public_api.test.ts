@@ -237,6 +237,8 @@ async function seed_markdown_file(args: {
 					throw new Error("Expected a parent folder path");
 				}
 				parentId = await ctx.db.insert("files_nodes", {
+					writePolicy: null,
+					writePolicyScopeNodeId: null,
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
 					path: parentPath,
@@ -262,9 +264,6 @@ async function seed_markdown_file(args: {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
-					readOnlyScopeNodeId: null,
-					readOnlyPluginName: null,
-					readOnlyPluginServiceTargetId: null,
 					archiveOperationId: null,
 				});
 			}
@@ -329,6 +328,8 @@ async function seed_markdown_file(args: {
 		r2Objects.set(yjsSnapshotAssetKey, yjsSnapshotUpdate);
 
 		const fileNodeId = await ctx.db.insert("files_nodes", {
+			writePolicy: null,
+			writePolicyScopeNodeId: null,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			path: args.path,
@@ -354,9 +355,6 @@ async function seed_markdown_file(args: {
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
-			readOnlyScopeNodeId: null,
-			readOnlyPluginName: null,
-			readOnlyPluginServiceTargetId: null,
 			archiveOperationId: null,
 		});
 		const yjsSnapshotId = await ctx.db.insert("files_yjs_snapshots", {
@@ -431,6 +429,418 @@ afterEach(() => {
 	vi.unstubAllGlobals();
 });
 
+describe("file write policy API", () => {
+	test("a manager can change policy without content read or write permission", async () => {
+		const t = test_convex();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-policy-owner" });
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const folder = await asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "managed",
+		});
+		if (folder._nay) throw new Error(folder._nay.message);
+		const nodeId = folder._yay.nodeId;
+		expect(await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId })).toEqual({
+			_yay: null,
+		});
+		const manager = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-policy-manager" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				active: true,
+			});
+			await quotas_db_ensure(ctx, {
+				quotaName: "active_api_credentials",
+				userId,
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				now: Date.now(),
+			});
+			const grantId = await ctx.db.insert("access_control_permission_grants", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				resourceKind: "file",
+				resourceId: nodeId,
+				principalKind: "user",
+				userId,
+				permission: "content.permissions.manage",
+				createdAt: 1,
+				updatedAt: 1,
+			});
+			return { userId, membershipId, grantId };
+		});
+		const asManager = t.withIdentity({ issuer: "https://clerk.test", external_id: manager.userId });
+		const key = await asManager.mutation(api.public_api.api_credential_create, {
+			membershipId: manager.membershipId,
+			serviceAccountId: null,
+			name: "Policy only",
+			scopes: ["files:permissions"],
+		});
+		if (key._nay) throw new Error(key._nay.message);
+		expect(
+			await asManager.mutation(api.files_nodes.set_node_write_policy, {
+				membershipId: manager.membershipId,
+				nodeId,
+				writePolicy: { mode: "read_only" },
+			}),
+		).toEqual({ _yay: null });
+		const request = () =>
+			t.fetch("/api/v1/files/write-policy/set", {
+				method: "POST",
+				headers: auth_headers(key._yay.credential),
+				body: JSON.stringify({ nodeId, writePolicy: null }),
+			});
+		expect((await request()).status).toBe(200);
+		const before = await t.run((ctx) => ctx.db.get("files_nodes", nodeId));
+		expect(before?.writePolicy).toBeNull();
+		await t.run((ctx) => ctx.db.delete("access_control_permission_grants", manager.grantId));
+		expect((await request()).status).toBe(404);
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toEqual(before);
+	});
+});
+
+describe("service-bound API credentials", () => {
+	test("maintains protected logs through a key without plugin records", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-script-logs" });
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			path: "logs",
+		});
+		if (folder._nay) throw new Error(folder._nay.message);
+		const nodeId = folder._yay.nodeId;
+		expect(
+			(await asUser.mutation(api.files_sharing.restrict_node, { membershipId: db.membershipId, nodeId }))._nay,
+		).toBeUndefined();
+		const account = await asUser.mutation(api.access_control.create_service_account, {
+			membershipId: db.membershipId,
+			name: "Log writer",
+		});
+		if (account._nay) throw new Error(account._nay.message);
+		const serviceAccountId = account._yay.serviceAccountId;
+		expect(
+			(
+				await asUser.mutation(api.access_control.set_service_account_grant, {
+					membershipId: db.membershipId,
+					serviceAccountId,
+					resource: { kind: "file", nodeId },
+					level: "manage",
+				})
+			)._nay,
+		).toBeUndefined();
+		const key = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			serviceAccountId,
+			name: "Logs",
+			scopes: ["files:read", "files:write", "files:permissions"],
+		});
+		if (key._nay) throw new Error(key._nay.message);
+		const headers = auth_headers(key._yay.credential);
+		const writePolicy = { mode: "writer", writer: { kind: "service_account", serviceAccountId } };
+		const policy = await t.fetch("/api/v1/files/write-policy/set", {
+			method: "POST",
+			headers,
+			body: JSON.stringify({ nodeId, writePolicy }),
+		});
+		expect(policy.status).toBe(200);
+		for (const content of ["First run\n", "Second run\n"]) {
+			const written = await t.fetch("/api/v1/files/write", {
+				method: "POST",
+				headers,
+				body: JSON.stringify({ path: "/logs/run.md", content }),
+			});
+			expect(written.status).toBe(200);
+		}
+		const read = await t.fetch("/api/v1/files/read", {
+			method: "POST",
+			headers,
+			body: JSON.stringify({ path: "/logs/run.md" }),
+		});
+		expect(read.status).toBe(200);
+		expect(await read.json()).toMatchObject({ content: expect.stringContaining("Second run") });
+		const personal = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			serviceAccountId: null,
+			name: "Human",
+			scopes: ["files:write"],
+		});
+		if (personal._nay) throw new Error(personal._nay.message);
+		const humanWrite = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers: auth_headers(personal._yay.credential),
+			body: JSON.stringify({ path: "/logs/run.md", content: "Human overwrite" }),
+		});
+		expect(humanWrite.status).toBe(409);
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000);
+		const writeOnly = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			serviceAccountId,
+			name: "Write only",
+			scopes: ["files:write"],
+		});
+		if (writeOnly._nay) throw new Error(writeOnly._nay.message);
+		const refusedPolicy = await t.fetch("/api/v1/files/write-policy/set", {
+			method: "POST",
+			headers: auth_headers(writeOnly._yay.credential),
+			body: JSON.stringify({ nodeId, writePolicy: null }),
+		});
+		expect(refusedPolicy.status).toBe(403);
+		expect(
+			(
+				await t.fetch("/api/v1/files/write-policy/set", {
+					method: "POST",
+					headers,
+					body: JSON.stringify({ nodeId, writePolicy: { mode: "read_only" } }),
+				})
+			).status,
+		).toBe(200);
+		const blocked = await t.fetch("/api/v1/files/write", {
+			method: "POST",
+			headers,
+			body: JSON.stringify({ path: "/logs/run.md", content: "Blocked overwrite" }),
+		});
+		expect(blocked.status).toBe(409);
+		const stored = await t.run(async (ctx) => ({
+			node: await ctx.db.get("files_nodes", nodeId),
+			installations: await ctx.db.query("plugins_workspace_installations").collect(),
+			runs: await ctx.db.query("plugins_event_runs").collect(),
+			targets: await ctx.db.query("plugin_service_storage_targets").collect(),
+		}));
+		expect(stored.node?.writePolicy).toEqual({ mode: "read_only" });
+		expect(stored.installations).toEqual([]);
+		expect(stored.runs).toEqual([]);
+		expect(stored.targets).toEqual([]);
+	});
+
+	test("does not return a signed URL after its account file grant is removed", async () => {
+		const t = test_convex();
+		install_r2_object_reads();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-service-download" });
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const nodeId = await seed_markdown_file({ t, ...db, path: "/download.md", committedMarkdown: "Private download" });
+		const account = await asUser.mutation(api.access_control.create_service_account, {
+			membershipId: db.membershipId,
+			name: "Downloader",
+		});
+		if (account._nay) throw new Error(account._nay.message);
+		const serviceAccountId = account._yay.serviceAccountId;
+		expect(
+			(
+				await asUser.mutation(api.access_control.set_service_account_grant, {
+					membershipId: db.membershipId,
+					serviceAccountId,
+					resource: { kind: "file", nodeId },
+					level: "read",
+				})
+			)._nay,
+		).toBeUndefined();
+		const key = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			serviceAccountId,
+			name: "Download",
+			scopes: ["files:download"],
+		});
+		if (key._nay) throw new Error(key._nay.message);
+		const request = () =>
+			t.fetch("/api/v1/files/download-urls", {
+				method: "POST",
+				headers: auth_headers(key._yay.credential),
+				body: JSON.stringify({ fileNodeIds: [nodeId] }),
+			});
+		const allowed = await request();
+		expect(allowed.status).toBe(200);
+		expect(await allowed.json()).toMatchObject({ items: [{ fileNodeId: nodeId, url: expect.any(String) }] });
+		const signing = defer_download_url();
+		const pending = request();
+		await signing.started;
+		expect(
+			(
+				await asUser.mutation(api.access_control.remove_service_account_grant, {
+					membershipId: db.membershipId,
+					serviceAccountId,
+					resource: { kind: "file", nodeId },
+				})
+			)._nay,
+		).toBeUndefined();
+		signing.release();
+		const refused = await pending;
+		expect(refused.status).toBe(403);
+		expect(await refused.json()).toEqual({ message: "Permission denied" });
+	});
+
+	test("keeps the account and sponsor when rotating, then refuses a revoked account", async () => {
+		const t = test_convex();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-service-key" });
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const account = await asUser.mutation(api.access_control.create_service_account, {
+			membershipId: db.membershipId,
+			name: "Log writer",
+		});
+		if (account._nay) throw new Error(account._nay.message);
+		const serviceAccountId = account._yay.serviceAccountId;
+		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			serviceAccountId,
+			name: "Logs",
+			scopes: ["files:read", "files:permissions"],
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const inspected = await t.fetch("/api/v1/auth/verify", {
+			method: "POST",
+			headers: auth_headers(created._yay.credential),
+		});
+		expect(inspected.status).toBe(200);
+		expect(await inspected.json()).toMatchObject({
+			serviceAccountId,
+			sponsorUserId: db.userId,
+			scopes: ["files:read", "files:permissions"],
+		});
+		const rotated = await asUser.mutation(api.public_api.api_credential_rotate, {
+			membershipId: db.membershipId,
+			credentialId: created._yay.credentialId,
+		});
+		if (rotated._nay) throw new Error(rotated._nay.message);
+		const listed = await asUser.query(api.public_api.api_credentials_list, { membershipId: db.membershipId });
+		expect(listed._yay).toHaveLength(2);
+		for (const key of listed._yay!)
+			expect(key).toMatchObject({ serviceAccountId, serviceAccountName: "Log writer", sponsorUserId: db.userId });
+		const stored = await t.run(async (ctx) => ({
+			oldKey: await ctx.db.get("api_credentials", created._yay.credentialId),
+			newKey: await ctx.db.get("api_credentials", rotated._yay.credentialId),
+			grants: await ctx.db.query("access_control_permission_grants").collect(),
+		}));
+		expect(stored.oldKey?.revokedAt).not.toBeNull();
+		expect(stored.newKey).toMatchObject({ serviceAccountId, userId: db.userId, revokedAt: null });
+		expect(stored.grants.filter((grant) => grant.serviceAccountId === serviceAccountId)).toEqual([]);
+		expect(
+			(await t.query(internal.public_api.resolve_principal, { presented: created._yay.credential }))._nay?.message,
+		).toBe("Unauthenticated");
+		expect(
+			(await t.query(internal.public_api.resolve_principal, { presented: rotated._yay.credential }))._yay,
+		).toMatchObject({ serviceAccountId });
+		const revoked = await asUser.mutation(api.access_control.revoke_service_account, {
+			membershipId: db.membershipId,
+			serviceAccountId,
+		});
+		expect(revoked._nay).toBeUndefined();
+		expect(
+			(await t.query(internal.public_api.resolve_principal, { presented: rotated._yay.credential }))._nay?.message,
+		).toBe("Unauthenticated");
+		const failedRotation = await asUser.mutation(api.public_api.api_credential_rotate, {
+			membershipId: db.membershipId,
+			credentialId: rotated._yay.credentialId,
+		});
+		expect(failedRotation._nay).toBeDefined();
+		expect(await t.run(async (ctx) => await ctx.db.get("api_credentials", rotated._yay.credentialId))).toEqual(
+			stored.newKey,
+		);
+	});
+
+	test.each(["plugin_data:read", "plugin_data:write"] as const)(
+		"refuses %s at creation, authentication, and rotation",
+		async (scope) => {
+			const t = test_convex();
+			const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-service-key-scopes" });
+			const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+			const account = await asUser.mutation(api.access_control.create_service_account, {
+				membershipId: db.membershipId,
+				name: "Files only",
+			});
+			if (account._nay) throw new Error(account._nay.message);
+			const serviceAccountId = account._yay.serviceAccountId;
+			const refused = await asUser.mutation(api.public_api.api_credential_create, {
+				membershipId: db.membershipId,
+				serviceAccountId,
+				name: "Bad scopes",
+				scopes: [scope],
+			});
+			expect(refused._nay?.message).toBe("Choose an active service account and file scopes only");
+			expect(await t.run(async (ctx) => await ctx.db.query("api_credentials").collect())).toEqual([]);
+			const personal = await asUser.mutation(api.public_api.api_credential_create, {
+				membershipId: db.membershipId,
+				serviceAccountId: null,
+				name: "Personal",
+				scopes: [scope],
+			});
+			if (personal._nay) throw new Error(personal._nay.message);
+			expect(
+				(await t.query(internal.public_api.resolve_principal, { presented: personal._yay.credential }))._yay?.scopes,
+			).toContain(scope);
+			// Check the stored-data boundary too; account keys may never carry plugin-data scopes.
+			await t.run(
+				async (ctx) => await ctx.db.patch("api_credentials", personal._yay.credentialId, { serviceAccountId }),
+			);
+			const before = await t.run(async (ctx) => await ctx.db.query("api_credentials").collect());
+			expect(
+				(await t.query(internal.public_api.resolve_principal, { presented: personal._yay.credential }))._nay?.message,
+			).toBe("Unauthenticated");
+			expect(
+				(
+					await asUser.mutation(api.public_api.api_credential_rotate, {
+						membershipId: db.membershipId,
+						credentialId: personal._yay.credentialId,
+					})
+				)._nay,
+			).toBeDefined();
+			expect(await t.run(async (ctx) => await ctx.db.query("api_credentials").collect())).toEqual(before);
+		},
+	);
+
+	test("requires account management and refuses a foreign account", async () => {
+		const t = test_convex();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-service-key-owner" });
+		const foreign = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-service-key-foreign" });
+			return await test_mocks_fill_db_with.membership(ctx, { userId, organizationName: "foreign-keys" });
+		});
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const asForeign = t.withIdentity({ issuer: "https://clerk.test", external_id: foreign.userId });
+		const account = await asUser.mutation(api.access_control.create_service_account, {
+			membershipId: db.membershipId,
+			name: "Private writer",
+		});
+		if (account._nay) throw new Error(account._nay.message);
+		const member = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-service-key-member" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				active: true,
+			});
+			return { userId, membershipId };
+		});
+		const asMember = t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId });
+		expect(
+			(
+				await asMember.mutation(api.public_api.api_credential_create, {
+					membershipId: member.membershipId,
+					serviceAccountId: account._yay.serviceAccountId,
+					name: "No management",
+					scopes: ["files:read"],
+				})
+			)._nay?.message,
+		).toBe("Permission denied");
+		expect(
+			(
+				await asForeign.mutation(api.public_api.api_credential_create, {
+					membershipId: foreign.membershipId,
+					serviceAccountId: account._yay.serviceAccountId,
+					name: "Foreign",
+					scopes: ["files:read"],
+				})
+			)._nay,
+		).toBeDefined();
+		expect(await t.run(async (ctx) => await ctx.db.query("api_credentials").collect())).toEqual([]);
+	});
+});
+
 describe("public files API", () => {
 	test.each(["😀", "\uffff"])("lists %s descendants and content type suffixes", async (suffix) => {
 		const t = test_convex();
@@ -454,6 +864,7 @@ describe("public files API", () => {
 		});
 		if (upload._nay) throw new Error(upload._nay.message);
 		const key = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: db.membershipId,
 			name: "Prefix reader",
 			scopes: ["files:list"],
@@ -483,6 +894,7 @@ describe("public files API", () => {
 			external_id: db.userId,
 		});
 		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: db.membershipId,
 			name: "Validation key",
 			scopes: ["files:list", "files:read", "files:write", "files:download"],
@@ -546,6 +958,7 @@ describe("public files API", () => {
 			external_id: db.userId,
 		});
 		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: db.membershipId,
 			name: "Files reader",
 			scopes: ["files:list", "files:read"],
@@ -591,6 +1004,7 @@ describe("public files API", () => {
 			return await ctx.db.get("api_credentials", created._yay!.credentialId);
 		});
 		expect(afterUse?.lastUsedAt).toEqual(expect.any(Number));
+		expect(afterUse?.serviceAccountId).toBeNull();
 
 		const listed = await asUser.query(api.public_api.api_credentials_list, {
 			membershipId: db.membershipId,
@@ -636,6 +1050,7 @@ describe("public files API", () => {
 			external_id: db.userId,
 		});
 		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: db.membershipId,
 			name: "Files writer",
 			scopes: ["files:list", "files:read", "files:write", "files:download"],
@@ -736,6 +1151,7 @@ describe("public files API", () => {
 			external_id: db.userId,
 		});
 		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: db.membershipId,
 			name: "Files writer",
 			scopes: ["files:list", "files:read", "files:write"],
@@ -762,9 +1178,7 @@ describe("public files API", () => {
 				yjsLastSequences: (await ctx.db.query("files_yjs_docs_last_sequences").collect()).length,
 				yjsUpdates: (await ctx.db.query("files_yjs_updates").collect()).length,
 				assetKinds: (await ctx.db.query("files_r2_assets").collect()).map((asset) => asset.kind),
-				metadataFields: (await ctx.db.query("files_metadata_docs").collect())
-					.map((entry) => entry.fieldPath)
-					.sort(),
+				metadataFields: (await ctx.db.query("files_metadata_docs").collect()).map((entry) => entry.fieldPath).sort(),
 				stages: (await ctx.db.query("public_api_file_write_stages").collect()).length,
 			};
 		});
@@ -1044,6 +1458,7 @@ describe("public files API", () => {
 			external_id: db.userId,
 		});
 		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: db.membershipId,
 			name: "Stamp writer",
 			scopes: ["files:read", "files:write"],
@@ -1096,6 +1511,7 @@ describe("public files API", () => {
 			external_id: db.userId,
 		});
 		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: db.membershipId,
 			name: "LF writer",
 			scopes: ["files:read", "files:write", "files:download"],
@@ -1167,6 +1583,7 @@ describe("public files API", () => {
 			external_id: db.userId,
 		});
 		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: db.membershipId,
 			name: "Attachment checker",
 			scopes: ["files:write", "files:download"],
@@ -1210,6 +1627,7 @@ describe("public files API", () => {
 			external_id: db.userId,
 		});
 		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: db.membershipId,
 			name: "Skip writer",
 			scopes: ["files:read", "files:write"],
@@ -1282,6 +1700,7 @@ describe("public files API", () => {
 			external_id: db.userId,
 		});
 		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: db.membershipId,
 			name: "Skip writer",
 			scopes: ["files:read", "files:write"],
@@ -1352,6 +1771,8 @@ describe("public files API", () => {
 		const seeded = await t.run(async (ctx) => {
 			const now = Date.now();
 			const outerId = await ctx.db.insert("files_nodes", {
+				writePolicy: null,
+				writePolicyScopeNodeId: null,
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				parentId: files_ROOT_ID,
@@ -1377,12 +1798,11 @@ describe("public files API", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
 				archiveOperationId: null,
 			});
 			const innerId = await ctx.db.insert("files_nodes", {
+				writePolicy: null,
+				writePolicyScopeNodeId: null,
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				parentId: outerId,
@@ -1408,9 +1828,6 @@ describe("public files API", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
 				archiveOperationId: null,
 			});
 			await ctx.db.patch("files_nodes", outerId, { restrictedScopeNodeId: outerId });
@@ -1462,6 +1879,7 @@ describe("public files API", () => {
 			// Inserted rather than created through `api_credential_create`: publication only reads the
 			// doc's owner and revocation, and the real mutation drags in the credential quota.
 			const credentialId = await ctx.db.insert("api_credentials", {
+				serviceAccountId: null,
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: seeded.writerId,
@@ -1528,6 +1946,8 @@ describe("public files API", () => {
 		const sharedId = await t.run(async (ctx) => {
 			const now = Date.now();
 			const folderId = await ctx.db.insert("files_nodes", {
+				writePolicy: null,
+				writePolicyScopeNodeId: null,
 				organizationId: owner.organizationId,
 				workspaceId: owner.workspaceId,
 				parentId: files_ROOT_ID,
@@ -1553,9 +1973,6 @@ describe("public files API", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
 				archiveOperationId: null,
 			});
 			await ctx.db.patch("files_nodes", folderId, { restrictedScopeNodeId: folderId });
@@ -1580,6 +1997,8 @@ describe("public files API", () => {
 			// and sitting at the root, so its own check is the only gate — inside a restricted folder
 			// the ancestor walk refuses the write before that check is ever reached.
 			const nodeId = await ctx.db.insert("files_nodes", {
+				writePolicy: null,
+				writePolicyScopeNodeId: null,
 				organizationId: owner.organizationId,
 				workspaceId: owner.workspaceId,
 				parentId: files_ROOT_ID,
@@ -1605,9 +2024,6 @@ describe("public files API", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
 				archiveOperationId: null,
 			});
 			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
@@ -1679,6 +2095,7 @@ describe("public files API", () => {
 			const created = await t
 				.withIdentity({ issuer: "https://clerk.test", subject: args.subject, external_id: member.userId })
 				.mutation(api.public_api.api_credential_create, {
+					serviceAccountId: null,
 					membershipId: member.membershipId,
 					name: args.subject,
 					scopes: ["files:read", "files:write"],
@@ -1780,6 +2197,7 @@ describe("public files API", () => {
 			external_id: db.userId,
 		});
 		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: db.membershipId,
 			name: "Files toucher",
 			scopes: ["files:read", "files:write"],
@@ -1922,6 +2340,7 @@ describe("public files API", () => {
 			external_id: db.userId,
 		});
 		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: db.membershipId,
 			name: "Signing revoke",
 			scopes: ["files:download"],
@@ -2044,6 +2463,7 @@ describe("public files API", () => {
 			external_id: db.userId,
 		});
 		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: db.membershipId,
 			name: "Rotating key",
 			scopes: ["files:list"],
@@ -2057,6 +2477,13 @@ describe("public files API", () => {
 		expect(rotated._nay).toBeUndefined();
 		expect(rotated._yay!.credentialId).not.toBe(created._yay!.credentialId);
 		expect(rotated._yay!.credential).not.toBe(created._yay!.credential);
+		const storedCredentials = await t.run(async (ctx) =>
+			Promise.all([
+				ctx.db.get("api_credentials", created._yay!.credentialId),
+				ctx.db.get("api_credentials", rotated._yay!.credentialId),
+			]),
+		);
+		expect(storedCredentials.map((credential) => credential?.serviceAccountId)).toEqual([null, null]);
 		const quotaAfterRotate = await asUser.query(api.quotas.get, {
 			quotaName: "active_api_credentials",
 			membershipId: db.membershipId,
@@ -2113,6 +2540,7 @@ describe("public files API", () => {
 		});
 
 		const created = await asMember.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: member.membershipId,
 			name: "  Member key  ",
 			scopes: ["files:list"],
@@ -2165,6 +2593,7 @@ describe("public files API", () => {
 		});
 
 		const created = await asMember.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: member.membershipId,
 			name: "Member key",
 			scopes: ["files:list"],
@@ -2206,6 +2635,7 @@ describe("public files API", () => {
 			external_id: blankDb.userId,
 		});
 		const blank = await asBlankUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: blankDb.membershipId,
 			name: "   ",
 			scopes: ["files:list"],
@@ -2223,6 +2653,7 @@ describe("public files API", () => {
 			external_id: lengthDb.userId,
 		});
 		const maximumLength = await asLengthUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: lengthDb.membershipId,
 			name: "a".repeat(80),
 			scopes: ["files:list"],
@@ -2230,6 +2661,7 @@ describe("public files API", () => {
 		expect(maximumLength._nay).toBeUndefined();
 
 		const tooLong = await asLengthUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: lengthDb.membershipId,
 			name: "a".repeat(81),
 			scopes: ["files:list"],
@@ -2244,6 +2676,7 @@ describe("public files API", () => {
 			for (let index = 0; index < 19; index += 1) {
 				const keyId = `pk_${index.toString(16).padStart(32, "0")}`;
 				await ctx.db.insert("api_credentials", {
+					serviceAccountId: null,
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
 					userId: db.userId,
@@ -2276,6 +2709,7 @@ describe("public files API", () => {
 		});
 
 		const twentieth = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: db.membershipId,
 			name: "Active 20",
 			scopes: ["files:list"],
@@ -2283,6 +2717,7 @@ describe("public files API", () => {
 		expect(twentieth._nay).toBeUndefined();
 
 		const overLimit = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: db.membershipId,
 			name: "Active 21",
 			scopes: ["files:list"],
@@ -2345,6 +2780,7 @@ describe("public files API", () => {
 		});
 
 		const created = await asAdmin.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: admin.membershipId,
 			name: "Admin key",
 			scopes: ["files:list"],
@@ -2363,6 +2799,7 @@ describe("public files API", () => {
 			external_id: db.userId,
 		});
 		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: db.membershipId,
 			name: "List only",
 			scopes: ["files:list"],
@@ -2412,6 +2849,7 @@ describe("public files API", () => {
 			external_id: db.userId,
 		});
 		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: db.membershipId,
 			name: "Read only",
 			scopes: ["files:list", "files:read"],
@@ -2462,6 +2900,7 @@ describe("public files API", () => {
 				active: true,
 			});
 			await ctx.db.insert("api_credentials", {
+				serviceAccountId: null,
 				organizationId: owner.organizationId,
 				workspaceId: owner.workspaceId,
 				userId,
@@ -2549,6 +2988,7 @@ describe("public files API", () => {
 		// because of the permission check made on every request, shown below. So this test also checks
 		// that creating the key succeeds.
 		const created = await asViewer.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: viewer.membershipId,
 			name: "Viewer key",
 			scopes: ["files:list", "files:read", "files:write"],
@@ -2580,6 +3020,7 @@ describe("public files API", () => {
 			for (let index = 0; index < 101; index += 1) {
 				const keyId = `pk_${index.toString(16).padStart(32, "0")}`;
 				await ctx.db.insert("api_credentials", {
+					serviceAccountId: null,
 					organizationId: db.organizationId,
 					workspaceId: db.workspaceId,
 					userId: db.userId,
@@ -2594,6 +3035,7 @@ describe("public files API", () => {
 				});
 			}
 			await ctx.db.insert("api_credentials", {
+				serviceAccountId: null,
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: db.userId,
@@ -2607,6 +3049,7 @@ describe("public files API", () => {
 				lastUsedAt: null,
 			});
 			await ctx.db.insert("api_credentials", {
+				serviceAccountId: null,
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				userId: db.userId,
@@ -2648,6 +3091,7 @@ describe("public files API", () => {
 			external_id: db.userId,
 		});
 		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: db.membershipId,
 			name: "Valid after bad tokens",
 			scopes: ["files:list"],
@@ -2715,6 +3159,7 @@ describe("files upload-urls", () => {
 			external_id: args.db.userId,
 		});
 		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: args.db.membershipId,
 			name: "Uploader",
 			scopes: ["files:list", "files:write"],
@@ -2901,6 +3346,7 @@ describe("files upload-urls", () => {
 			external_id: db.userId,
 		});
 		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: db.membershipId,
 			name: "Upload reader",
 			scopes: ["files:read", "files:write"],
@@ -2983,6 +3429,7 @@ describe("files upload-urls", () => {
 			external_id: db.userId,
 		});
 		const readOnly = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: db.membershipId,
 			name: "Reader",
 			scopes: ["files:list", "files:read"],
@@ -3152,6 +3599,8 @@ describe("files upload-urls", () => {
 		const writer = await t.run(async (ctx) => {
 			const now = Date.now();
 			const outerId = await ctx.db.insert("files_nodes", {
+				writePolicy: null,
+				writePolicyScopeNodeId: null,
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
 				parentId: files_ROOT_ID,
@@ -3177,9 +3626,6 @@ describe("files upload-urls", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
 				archiveOperationId: null,
 			});
 			await ctx.db.patch("files_nodes", outerId, { restrictedScopeNodeId: outerId });
@@ -3219,6 +3665,7 @@ describe("files upload-urls", () => {
 			external_id: writer.userId,
 		});
 		const created = await asWriter.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: writer.membershipId,
 			name: "Member uploader",
 			scopes: ["files:write"],
@@ -3517,6 +3964,7 @@ describe("files write-many", () => {
 			external_id: args.db.userId,
 		});
 		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: args.db.membershipId,
 			name: "Bulk writer",
 			scopes: ["files:read", "files:write"],
@@ -3773,6 +4221,7 @@ describe("files write-many", () => {
 			external_id: db.userId,
 		});
 		const readOnly = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: db.membershipId,
 			name: "Read only",
 			scopes: ["files:list", "files:read"],
@@ -3917,6 +4366,7 @@ describe("files write billing", () => {
 			external_id: db.userId,
 		});
 		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: db.membershipId,
 			name: "Billing writer",
 			scopes: ["files:list", "files:read", "files:write"],
@@ -4237,6 +4687,7 @@ describe("files read-only locks", () => {
 			external_id: db.userId,
 		});
 		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: db.membershipId,
 			name: "Lock writer",
 			scopes: ["files:read", "files:write"],
@@ -4282,6 +4733,7 @@ describe("files read-only locks", () => {
 			external_id: member.userId,
 		});
 		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: member.membershipId,
 			name: "Lock race writer",
 			scopes: ["files:write"],
@@ -4326,11 +4778,13 @@ describe("files read-only locks", () => {
 		locked: boolean;
 	}) {
 		const result = args.locked
-			? await args.writer.asUser.mutation(api.files_nodes.set_node_read_only, {
+			? await args.writer.asUser.mutation(api.files_nodes.set_node_write_policy, {
+					writePolicy: { mode: "read_only" },
 					membershipId: args.writer.db.membershipId,
 					nodeId: args.nodeId,
 				})
-			: await args.writer.asUser.mutation(api.files_nodes.set_node_writable, {
+			: await args.writer.asUser.mutation(api.files_nodes.set_node_write_policy, {
+					writePolicy: null,
 					membershipId: args.writer.db.membershipId,
 					nodeId: args.nodeId,
 				});
@@ -4383,6 +4837,8 @@ describe("files read-only locks", () => {
 		return await args.t.run(async (ctx) => {
 			const now = Date.now();
 			const nodeId = await ctx.db.insert("files_nodes", {
+				writePolicy: null,
+				writePolicyScopeNodeId: null,
 				organizationId: args.db.organizationId,
 				workspaceId: args.db.workspaceId,
 				parentId: files_ROOT_ID,
@@ -4408,9 +4864,6 @@ describe("files read-only locks", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
 				archiveOperationId: null,
 			});
 			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
@@ -5130,6 +5583,8 @@ describe("files read-only locks", () => {
 		const midId = await t.run(async (ctx) => {
 			const now = Date.now();
 			return await ctx.db.insert("files_nodes", {
+				writePolicy: null,
+				writePolicyScopeNodeId: null,
 				organizationId: writer.db.organizationId,
 				workspaceId: writer.db.workspaceId,
 				parentId: folder!._id,
@@ -5155,9 +5610,6 @@ describe("files read-only locks", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
 				archiveOperationId: null,
 			});
 		});
@@ -5279,6 +5731,8 @@ describe("files read-only locks", () => {
 		const outerId = await t.run(async (ctx) => {
 			const now = Date.now();
 			const nodeId = await ctx.db.insert("files_nodes", {
+				writePolicy: null,
+				writePolicyScopeNodeId: null,
 				organizationId: writer.db.organizationId,
 				workspaceId: writer.db.workspaceId,
 				parentId: files_ROOT_ID,
@@ -5304,9 +5758,6 @@ describe("files read-only locks", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
 				archiveOperationId: null,
 			});
 			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
@@ -5349,6 +5800,8 @@ describe("files read-only locks", () => {
 			}
 			const now = Date.now();
 			const nodeId = await ctx.db.insert("files_nodes", {
+				writePolicy: null,
+				writePolicyScopeNodeId: null,
 				organizationId: writer.db.organizationId,
 				workspaceId: writer.db.workspaceId,
 				parentId: outerId,
@@ -5374,9 +5827,6 @@ describe("files read-only locks", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
 				archiveOperationId: null,
 			});
 			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
@@ -5402,12 +5852,14 @@ describe("files read-only locks", () => {
 			committedMarkdown: "# Winner\n",
 		});
 		await t.run(async (ctx) => ctx.db.patch("files_nodes", targetId, { restrictedScopeNodeId: innerId }));
-		const locked = await writer.owner.mutation(api.files_nodes.set_node_read_only, {
+		const locked = await writer.owner.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: writer.db.membershipId,
 			nodeId: outerId,
 		});
 		expect(locked._nay).toBeUndefined();
-		const unlocked = await writer.owner.mutation(api.files_nodes.set_node_writable, {
+		const unlocked = await writer.owner.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: null,
 			membershipId: writer.db.membershipId,
 			nodeId: outerId,
 		});
@@ -5688,6 +6140,37 @@ describe("service file writes", () => {
 			const now = Date.now();
 			const capabilities = args.acceptedCapabilities ?? SERVICE_CAPABILITIES;
 			const pluginName = args.pluginName ?? "council";
+			const binding = await ctx.db
+				.query("plugins_service_account_bindings")
+				.withIndex("by_organization_workspace_pluginName_publisher_source", (q) =>
+					q
+						.eq("organizationId", args.db.organizationId)
+						.eq("workspaceId", args.db.workspaceId)
+						.eq("pluginName", pluginName)
+						.eq("publisherUserId", args.db.userId)
+						.eq("sourceRepositoryUrl", "https://github.com/bonobo/council-plugin"),
+				)
+				.first();
+			const serviceAccountId =
+				binding?.serviceAccountId ??
+				(await ctx.db.insert("access_control_service_accounts", {
+					organizationId: args.db.organizationId,
+					workspaceId: args.db.workspaceId,
+					name: pluginName,
+					createdBy: args.db.userId,
+					createdAt: now,
+					updatedAt: now,
+					revokedAt: null,
+				}));
+			if (!binding)
+				await ctx.db.insert("plugins_service_account_bindings", {
+					organizationId: args.db.organizationId,
+					workspaceId: args.db.workspaceId,
+					pluginName,
+					publisherUserId: args.db.userId,
+					sourceRepositoryUrl: "https://github.com/bonobo/council-plugin",
+					serviceAccountId,
+				});
 			const pluginVersionId = await ctx.db.insert("plugins_versions", {
 				name: pluginName,
 				displayName: "Council",
@@ -5719,6 +6202,7 @@ describe("service file writes", () => {
 			const installationId = await ctx.db.insert("plugins_workspace_installations", {
 				organizationId: args.db.organizationId,
 				workspaceId: args.db.workspaceId,
+				serviceAccountId,
 				pluginVersionId,
 				pluginName,
 				status: "enabled",
@@ -5735,6 +6219,7 @@ describe("service file writes", () => {
 			const grantId = await ctx.db.insert("plugin_service_grants", {
 				organizationId: args.db.organizationId,
 				workspaceId: args.db.workspaceId,
+				serviceAccountId,
 				installationId,
 				pluginVersionId,
 				pluginName,
@@ -5747,8 +6232,16 @@ describe("service file writes", () => {
 				expiresAt: now + 60 * 60 * 1000,
 				updatedAt: now,
 			});
-			return { pluginVersionId, installationId, grantId };
+			return { pluginVersionId, installationId, grantId, serviceAccountId };
 		});
+		const asOwner = args.t.withIdentity({ issuer: "https://clerk.test", external_id: args.db.userId });
+		const granted = await asOwner.mutation(api.access_control.set_service_account_grant, {
+			membershipId: args.db.membershipId,
+			serviceAccountId: seeded.serviceAccountId,
+			resource: { kind: "workspace" },
+			level: "manage",
+		});
+		if (granted._nay) throw new Error(granted._nay.message);
 		return { token, ...seeded };
 	}
 
@@ -6061,9 +6554,14 @@ describe("service file writes", () => {
 		});
 		expect(written.status).toBe(200);
 		const node = await find_active_node({ t, db, path: "/meetings/meeting-1/transcript.md" });
+		const installation = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", service.installationId));
+		expect(installation?.serviceAccountId).toEqual(expect.any(String));
 		expect(node).toMatchObject({
-			readOnlyScopeNodeId: node!._id,
-			readOnlyPluginName: "council",
+			writePolicyScopeNodeId: node!._id,
+			writePolicy: {
+				mode: "writer",
+				writer: { kind: "service_account", serviceAccountId: installation?.serviceAccountId },
+			},
 		});
 
 		// The plugin's own named lock does not lock the plugin out.
@@ -6081,14 +6579,15 @@ describe("service file writes", () => {
 			subject: "clerk-service-write-lock",
 			external_id: db.userId,
 		});
-		const unlocked = await asUser.mutation(api.files_nodes.set_node_writable, {
+		const unlocked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: null,
 			membershipId: db.membershipId,
 			nodeId: node!._id,
 		});
 		expect(unlocked._nay).toBeUndefined();
 		const afterUnlock = await find_active_node({ t, db, path: "/meetings/meeting-1/transcript.md" });
-		expect(afterUnlock?.readOnlyScopeNodeId).toBeNull();
-		expect(afterUnlock?.readOnlyPluginName).toBeNull();
+		expect(afterUnlock?.writePolicyScopeNodeId).toBeNull();
+		expect(afterUnlock?.writePolicy).toBeNull();
 		expect(
 			(
 				await service_write({
@@ -6101,11 +6600,12 @@ describe("service file writes", () => {
 			).status,
 		).toBe(200);
 		expect(
-			(await find_active_node({ t, db, path: "/meetings/meeting-1/transcript.md" }))?.readOnlyScopeNodeId,
+			(await find_active_node({ t, db, path: "/meetings/meeting-1/transcript.md" }))?.writePolicyScopeNodeId,
 		).toBeNull();
 
 		// A member re-lock carries no plugin name, so the service cannot pass it.
-		const relocked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+		const relocked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: db.membershipId,
 			nodeId: node!._id,
 		});
@@ -6190,6 +6690,7 @@ describe("service file writes", () => {
 			external_id: db.userId,
 		});
 		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: db.membershipId,
 			name: "Files writer",
 			scopes: ["files:write"],
@@ -6274,7 +6775,8 @@ describe("service file writes", () => {
 			} else {
 				expect(
 					(
-						await asUser.mutation(api.files_nodes.set_node_read_only, {
+						await asUser.mutation(api.files_nodes.set_node_write_policy, {
+							writePolicy: { mode: "read_only" },
 							membershipId: db.membershipId,
 							nodeId: folder!._id,
 						})
@@ -6340,8 +6842,8 @@ describe("service file writes", () => {
 		enqueueActionSpy.mockRestore();
 		const storedNode = await find_active_node({ t, db, path: "/meetings/meeting-1/notes.md" });
 		expect(storedNode).toMatchObject({
-			readOnlyScopeNodeId: storedNode!._id,
-			readOnlyPluginServiceTargetId: target._id,
+			writePolicyScopeNodeId: storedNode!._id,
+			writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId: service.serviceAccountId } },
 		});
 
 		// The created file has the plugin label, and the live upload target lets this service pass its lock.
@@ -6373,13 +6875,23 @@ describe("service file writes", () => {
 			{ key: "plugin-name", value: "council" },
 		]);
 
-		// A lock naming another plugin is not this service's to pass.
-		await t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", replacedNode!._id, {
-				readOnlyScopeNodeId: replacedNode!._id,
-				readOnlyPluginName: "other-plugin",
-			});
+		const other = await asUser.mutation(api.access_control.create_service_account, {
+			membershipId: db.membershipId,
+			name: "Other writer",
 		});
+		if (other._nay) throw new Error(other._nay.message);
+		expect(
+			(
+				await asUser.mutation(api.files_nodes.set_node_write_policy, {
+					membershipId: db.membershipId,
+					nodeId: replacedNode!._id,
+					writePolicy: {
+						mode: "writer",
+						writer: { kind: "service_account", serviceAccountId: other._yay.serviceAccountId },
+					},
+				})
+			)._nay,
+		).toBeUndefined();
 		const refused = await service_write({
 			t,
 			token: service.token,
@@ -6431,12 +6943,8 @@ describe("service file writes", () => {
 		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", lockedNode!._id))).toMatchObject({
 			archiveOperationId: expect.any(String),
 		});
-		expect(
-			(await t.run(async (ctx) => ctx.db.get("files_nodes", lockedNode!._id)))?.readOnlyScopeNodeId,
-		).toBeNull();
-		expect(
-			(await t.run(async (ctx) => ctx.db.get("files_nodes", lockedNode!._id)))?.readOnlyPluginName,
-		).toBeNull();
+		expect((await t.run(async (ctx) => ctx.db.get("files_nodes", lockedNode!._id)))?.writePolicyScopeNodeId).toBeNull();
+		expect((await t.run(async (ctx) => ctx.db.get("files_nodes", lockedNode!._id)))?.writePolicy).toBeNull();
 
 		// Archiving an absent path is satisfied by doing nothing.
 		const absent = await archive("/meetings/meeting-1/never-existed.md");
@@ -6484,7 +6992,8 @@ describe("service file writes", () => {
 			subject: "clerk-service-archive-refusals",
 			external_id: db.userId,
 		});
-		const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+		const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: db.membershipId,
 			nodeId: node!._id,
 		});
@@ -6546,8 +7055,8 @@ describe("service file writes", () => {
 		// exception that lets the service pass it, so a member restore gets writable files back.
 		const after = await t.run(async (ctx) => ctx.db.get("files_nodes", node!._id));
 		expect(after?.archiveOperationId).toEqual(expect.any(String));
-		expect(after?.readOnlyScopeNodeId).toBeNull();
-		expect(after?.readOnlyPluginName).toBeNull();
+		expect(after?.writePolicyScopeNodeId).toBeNull();
+		expect(after?.writePolicy).toBeNull();
 		expect(await find_active_node({ t, db, path: "/meetings" })).toBeNull();
 
 		// A file that kept its lock would make this whole restore refuse, so the restore is the
@@ -6571,7 +7080,7 @@ describe("service file writes", () => {
 		});
 		expect(restored).toEqual({ _yay: null });
 		const restoredFile = await find_active_node({ t, db, path: "/meetings/meeting-1/transcript.md" });
-		expect(restoredFile?.readOnlyScopeNodeId).toBeNull();
+		expect(restoredFile?.writePolicyScopeNodeId).toBeNull();
 	});
 
 	test("another plugin's grant cannot archive through the lock this plugin created", async () => {
@@ -6661,7 +7170,8 @@ describe("service file writes", () => {
 			subject: "clerk-service-member-lock-above",
 			external_id: db.userId,
 		});
-		const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+		const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: db.membershipId,
 			nodeId: meetingFolder!._id,
 		});

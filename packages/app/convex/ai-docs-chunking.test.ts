@@ -58,9 +58,8 @@ test("db_replace_file_chunks replaces existing chunk rows for a page", async () 
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
-			readOnlyScopeNodeId: null,
-			readOnlyPluginName: null,
-			readOnlyPluginServiceTargetId: null,
+			writePolicyScopeNodeId: null,
+			writePolicy: null,
 		});
 		const snapshotId = await ctx.db.insert("files_yjs_snapshots", {
 			organizationId: db.organizationId,

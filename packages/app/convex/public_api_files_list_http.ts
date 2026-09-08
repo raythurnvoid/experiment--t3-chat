@@ -93,6 +93,7 @@ export function public_api_files_list_http_routes(router: { route: HttpRouter["r
 								organizationId: principal.organizationId,
 								workspaceId: principal.workspaceId,
 								visibilityUserId: public_api_visibility_user_id(principal),
+								serviceAccountId: principal.serviceAccountId ?? undefined,
 								folderPath: requestedPath,
 								numItems,
 								cursor: body._yay.cursor ?? null,

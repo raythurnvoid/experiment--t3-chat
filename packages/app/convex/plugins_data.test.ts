@@ -4,6 +4,7 @@ import { compareValues } from "convex/values";
 import { access_control_db_ensure_role_assignment, access_control_db_has_permission } from "./access_control.ts";
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel";
+import type { MutationCtx } from "./_generated/server";
 import type { billing_PRODUCTS } from "../shared/billing.ts";
 import { organizations_db_create_workspace } from "./organizations.ts";
 import {
@@ -20,7 +21,42 @@ import { test_convex, test_mocks, test_mocks_fill_db_with } from "./setup.test.t
 import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import type { access_control_SystemRole } from "../shared/access-control.ts";
 import { public_api_PLUGIN_SERVICE_TOKEN_REGEX } from "../shared/public-api.ts";
+import * as public_api_http_auth from "./public_api_http_auth.ts";
 import type { plugins_Capability } from "../shared/plugins.ts";
+
+/**
+ * Test identities start with no file grants and bind to the exact saved plugin version.
+ */
+async function seed_service_account(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		pluginVersionId: Id<"plugins_versions">;
+		createdBy: Id<"users">;
+	},
+) {
+	const version = (await ctx.db.get("plugins_versions", args.pluginVersionId))!;
+	const now = Date.now();
+	const serviceAccountId = await ctx.db.insert("access_control_service_accounts", {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		name: version.displayName,
+		createdBy: args.createdBy,
+		createdAt: now,
+		updatedAt: now,
+		revokedAt: null,
+	});
+	await ctx.db.insert("plugins_service_account_bindings", {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		pluginName: version.name,
+		publisherUserId: version.createdBy,
+		sourceRepositoryUrl: version.sourceRepositoryUrl,
+		serviceAccountId,
+	});
+	return serviceAccountId;
+}
 
 /**
  * Insert a ready plugin version and one enabled installation directly. The publish pipeline is not
@@ -73,7 +109,13 @@ async function seed_installation(
 			createdBy: membership.userId,
 			updatedAt: now,
 		});
+		const serviceAccountId = await seed_service_account(ctx, {
+			...membership,
+			pluginVersionId,
+			createdBy: membership.userId,
+		});
 		const installationId = await ctx.db.insert("plugins_workspace_installations", {
+			serviceAccountId,
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			pluginVersionId,
@@ -93,7 +135,7 @@ async function seed_installation(
 			updatedBy: membership.userId,
 			updatedAt: now,
 		});
-		return { ...membership, pluginVersionId, installationId } as const;
+		return { ...membership, pluginVersionId, installationId, serviceAccountId } as const;
 	});
 }
 
@@ -381,6 +423,13 @@ describe("resolve_principal", () => {
 				acceptedCapabilities: ["workspace.files.own-write", "workspace.files.read"],
 			});
 		});
+		const unaccepted = await t.query(internal.public_api.resolve_principal, { presented: run.apiToken });
+		expect(unaccepted._yay?.scopes).toEqual(["activities:write"]);
+		await t.run((ctx) =>
+			ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
+				acceptedCapabilities: ["workspace.files.own-write", "workspace.files.read"],
+			}),
+		);
 		const withConsent = await t.query(internal.public_api.resolve_principal, { presented: run.apiToken });
 		if (withConsent._nay) {
 			throw new Error(withConsent._nay.message);
@@ -405,6 +454,9 @@ describe("resolve_principal", () => {
 		// same way an invoke run does.
 		await t.run(async (ctx) => {
 			await ctx.db.patch("plugins_event_runs", run.runId, { acceptedCapabilities: ["workspace.files.read"] });
+			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
+				acceptedCapabilities: ["workspace.files.read"],
+			});
 		});
 		const withRead = await t.query(internal.public_api.resolve_principal, { presented: run.apiToken });
 		if (withRead._nay) {
@@ -536,6 +588,9 @@ async function start_plugin_run(
 ) {
 	const runId = await t.run(async (ctx) => {
 		const now = Date.now();
+		await ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
+			acceptedCapabilities: args.acceptedCapabilities,
+		});
 		// Only a version with a backend can run an event, and the shared seed declares no backend.
 		await ctx.db.patch("plugins_versions", fixture.pluginVersionId, {
 			backendEntrypointFile: {
@@ -582,13 +637,11 @@ async function start_plugin_run(
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
-			readOnlyScopeNodeId: null,
-			readOnlyPluginName: null,
-			readOnlyPluginServiceTargetId: null,
 			archiveOperationId: null,
 		});
 
 		return await ctx.db.insert("plugins_event_runs", {
+			serviceAccountId: fixture.serviceAccountId,
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.workspaceId,
 			assetId,
@@ -775,7 +828,7 @@ describe("public API routes", () => {
 
 		// A pre-door doc: written interactively with no stored ownership, so it reads back as shared.
 		await t.mutation(internal.plugins_data.write_document, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "meetings",
 			key: "meeting-1",
 			value: { title: "Weekly sync" },
@@ -831,7 +884,7 @@ describe("public API routes", () => {
 		}
 
 		await t.mutation(internal.plugins_data.write_documents_batch, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			documents: [
 				{ collection: "meetings", key: "meeting:1", value: { n: 1 } },
 				{ collection: "meetings", key: "note:1", value: { n: 2 } },
@@ -884,7 +937,7 @@ describe("public API routes", () => {
 		}
 
 		await t.mutation(internal.plugins_data.write_documents_batch, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			documents: [
 				{ collection: "meetings", key: "meeting:1", value: { n: 1 } },
 				{ collection: "meetings", key: "meeting:2", value: { n: 2 } },
@@ -942,7 +995,7 @@ describe("public API routes", () => {
 		}
 
 		await t.mutation(internal.plugins_data.write_documents_batch, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			documents: [
 				{ collection: "meetings", key: "meeting:1", value: { n: 1 } },
 				{ collection: "meetings", key: "meeting:2", value: { n: 2 } },
@@ -1009,7 +1062,7 @@ describe("public API routes", () => {
 		}
 
 		await t.mutation(internal.plugins_data.write_documents_batch, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			documents: [
 				{ collection: "meetings", key: "meeting:1", value: { n: 1 } },
 				{ collection: "meetings", key: "meeting:2", value: { n: 2 } },
@@ -1189,6 +1242,7 @@ describe("public API routes", () => {
 		const t = test_convex();
 		const fixture = await seed_installation_with_key_owner(t, "plugin-data-routes");
 		const created = await fixture.asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: fixture.membershipId,
 			name: "Plugin data key",
 			scopes: ["plugin_data:read", "plugin_data:write"],
@@ -1327,7 +1381,7 @@ describe("public API routes", () => {
 			});
 		});
 		await t.mutation(internal.plugins_data.write_document, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "meetings",
 			key: "meeting-1",
 			value: { title: "Weekly sync" },
@@ -1441,6 +1495,7 @@ describe("public API routes", () => {
 		const fixture = await seed_installation_with_key_owner(t, "plugin-data-cross-tenant");
 		const otherFixture = await seed_installation(t, { organizationName: "other-organization" });
 		const created = await fixture.asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: fixture.membershipId,
 			name: "Plugin data key",
 			scopes: ["plugin_data:write"],
@@ -1744,6 +1799,14 @@ describe("invoke file write preconditions", () => {
 			}),
 		);
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", subject: "invoke-file-writer", external_id: userId });
+		expect(
+			await asUser.mutation(api.access_control.set_service_account_grant, {
+				membershipId: fixture.membershipId,
+				serviceAccountId: fixture.serviceAccountId,
+				resource: { kind: "workspace" },
+				level: "manage",
+			}),
+		).toEqual({ _yay: null });
 		const folder = await t.mutation(internal.public_api_plugin_files.ensure_plugin_folder, {
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.workspaceId,
@@ -1836,6 +1899,14 @@ describe("invoke file write preconditions", () => {
 				await test_mocks_fill_db_with.plan(ctx, { userId: member.userId, plan: "Pay As You Go" });
 				await ctx.db.patch("plugins_event_runs", fixture.runId, { actorUserId: member.userId });
 			});
+			expect(
+				await fixture.asUser.mutation(api.access_control.set_service_account_grant, {
+					membershipId: fixture.membershipId,
+					serviceAccountId: fixture.serviceAccountId,
+					resource: { kind: "file", nodeId: restrictedNodeId },
+					level: "write",
+				}),
+			).toEqual({ _yay: null });
 			const parent = await t.run((ctx) => ctx.db.get("files_nodes", fixture.parentId));
 			if (!parent || parent.parentId === files_ROOT_ID) throw new Error("Expected a nested folder");
 			const request = () =>
@@ -2163,7 +2234,8 @@ describe("invoke file write preconditions", () => {
 		if (!parent || parent.parentId === files_ROOT_ID) throw new Error("Expected a nested folder");
 		expect(
 			(
-				await fixture.asUser.mutation(api.files_nodes.set_node_read_only, {
+				await fixture.asUser.mutation(api.files_nodes.set_node_write_policy, {
+					writePolicy: { mode: "read_only" },
 					membershipId: fixture.membershipId,
 					nodeId: parent.parentId,
 				})
@@ -2178,6 +2250,7 @@ describe("/api/v1/auth/verify", () => {
 		const t = test_convex();
 		const fixture = await seed_installation_with_key_owner(t, "plugin-data-verify");
 		const created = await fixture.asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: fixture.membershipId,
 			name: "Plugin data key",
 			scopes: ["plugin_data:read"],
@@ -2195,6 +2268,8 @@ describe("/api/v1/auth/verify", () => {
 		expect(await verified.json()).toEqual({
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.workspaceId,
+			sponsorUserId: fixture.userId,
+			serviceAccountId: null,
 			scopes: ["plugin_data:read"],
 		});
 
@@ -2222,6 +2297,7 @@ describe("/api/v1/auth/verify", () => {
 		// scope the person cannot use is meant to be filtered at request time instead. That makes this
 		// the place where "a key can never do more than the person who owns it" is either true or not.
 		const created = await viewer.asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: viewer.membershipId,
 			name: "Viewer key",
 			scopes: ["plugin_data:read", "plugin_data:write"],
@@ -2238,6 +2314,8 @@ describe("/api/v1/auth/verify", () => {
 		expect(await verified.json()).toEqual({
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.workspaceId,
+			sponsorUserId: viewer.userId,
+			serviceAccountId: null,
 			scopes: ["plugin_data:read"],
 		});
 
@@ -2281,7 +2359,211 @@ describe("/api/v1/auth/verify", () => {
 	});
 });
 
-function store_principal(
+describe("plugin-data credential revalidation", () => {
+	async function mint_store_token(
+		t: ReturnType<typeof test_convex>,
+		fixture: Awaited<ReturnType<typeof seed_installation_with_key_owner>>,
+		kind: "user_api_key" | "plugin_run" | "plugin_ui" | "plugin_service",
+	) {
+		if (kind === "user_api_key") {
+			const minted = await fixture.asUser.mutation(api.public_api.api_credential_create, {
+				membershipId: fixture.membershipId,
+				serviceAccountId: null,
+				name: "Store credential",
+				scopes: ["plugin_data:read", "plugin_data:write"],
+			});
+			if (minted._nay) throw new Error(minted._nay.message);
+			return minted._yay.credential;
+		}
+		if (kind === "plugin_run") {
+			return (
+				await start_plugin_run(t, fixture, {
+					acceptedCapabilities: ["plugin.data.read", "plugin.data.write", "plugin.service.connect"],
+					tokenSeed: "a",
+				})
+			).apiToken;
+		}
+		if (kind === "plugin_ui") {
+			await t.run((ctx) =>
+				ctx.db.patch("plugins_versions", fixture.pluginVersionId, {
+					pages: [{ id: "meetings", title: "Meetings", entry: "pages/meetings.js", navItem: null }],
+				}),
+			);
+			const minted = await fixture.asUser.action(api.plugins_ui.mint_page_session, {
+				membershipId: fixture.membershipId,
+				pluginName: "council",
+			});
+			if (minted._nay) throw new Error(minted._nay.message);
+			return minted._yay.token;
+		}
+		const minted = await mint_service_grant(t, fixture);
+		if (minted._nay) throw new Error(minted._nay.message);
+		return minted._yay.token;
+	}
+
+	test.each(["user_api_key", "plugin_run", "plugin_ui", "plugin_service"] as const)(
+		"keeps %s store access independent of account file grants",
+		async (kind) => {
+			const t = test_convex();
+			const fixture = await seed_installation_with_key_owner(t, `store-empty-grants-${kind}`);
+			const token = await mint_store_token(t, fixture, kind);
+			expect(await t.run((ctx) => ctx.db.query("access_control_permission_grants").collect())).toEqual([]);
+			const body = {
+				...(kind === "user_api_key" ? { installationId: fixture.installationId } : {}),
+				collection: "meetings",
+				key: "saved",
+			};
+			if (kind === "plugin_ui") {
+				expect(
+					(
+						await t.mutation(internal.plugins_data.write_document, {
+							principal: await store_principal(t, fixture),
+							collection: body.collection,
+							key: body.key,
+							value: { text: "saved" },
+						})
+					)._nay,
+				).toBeUndefined();
+			} else {
+				expect(
+					(
+						await t.fetch("/api/v1/plugin-data/write", {
+							method: "POST",
+							headers: service_headers(token),
+							body: JSON.stringify({ ...body, value: { text: "saved" } }),
+						})
+					).status,
+				).toBe(200);
+			}
+			const read = await t.fetch("/api/v1/plugin-data/read", {
+				method: "POST",
+				headers: service_headers(token),
+				body: JSON.stringify(body),
+			});
+			expect(read.status).toBe(200);
+			expect(await read.json()).toMatchObject({ document: { value: { text: "saved" } } });
+		},
+	);
+
+	test.each([
+		["plugin_run", "revoke", "read"],
+		["plugin_run", "revoke", "write"],
+		["plugin_run", "rebind", "read"],
+		["plugin_run", "rebind", "write"],
+		["plugin_run", "end", "read"],
+		["plugin_run", "end", "write"],
+		["plugin_run", "expire", "read"],
+		["plugin_run", "expire", "write"],
+		["plugin_ui", "revoke", "read"],
+		["plugin_ui", "rebind", "read"],
+		["plugin_ui", "end", "read"],
+		["plugin_ui", "expire", "read"],
+		["plugin_service", "revoke", "read"],
+		["plugin_service", "revoke", "write"],
+		["plugin_service", "rebind", "read"],
+		["plugin_service", "rebind", "write"],
+		["plugin_service", "end", "read"],
+		["plugin_service", "end", "write"],
+		["plugin_service", "expire", "read"],
+		["plugin_service", "expire", "write"],
+		["user_api_key", "revoke", "read"],
+		["user_api_key", "revoke", "write"],
+		["user_api_key", "rotate", "read"],
+		["user_api_key", "rotate", "write"],
+	] as const)("rechecks %s after %s before HTTP %s", async (kind, change, operation) => {
+		const t = test_convex();
+		const fixture = await seed_installation_with_key_owner(t, `store-race-${kind}-${change}-${operation}`);
+		const token = await mint_store_token(t, fixture, kind);
+		const saved = await t.mutation(internal.plugins_data.write_document, {
+			principal: await store_principal(t, fixture),
+			collection: "meetings",
+			key: "saved",
+			value: { text: "saved" },
+		});
+		expect(saved._nay).toBeUndefined();
+		const before = await read_documents(t, fixture);
+		const authorize = public_api_http_auth.public_api_authorize_request;
+		const paused = vi
+			.spyOn(public_api_http_auth, "public_api_authorize_request")
+			.mockImplementationOnce(async (...args) => {
+				const auth = await authorize(...args);
+				if (auth._nay) throw new Error(`Initial auth failed: ${auth._nay.status}`);
+				const principal = auth._yay.principal;
+				if (change === "end" || change === "expire") {
+					await t.run(async (ctx) => {
+						if (principal.kind === "plugin_run") {
+							await ctx.db.patch(
+								"plugins_event_runs",
+								principal.runId,
+								change === "end" ? { status: "succeeded" } : { apiTokenExpiresAt: Date.now() - 1 },
+							);
+						} else if (principal.kind === "plugin_ui") {
+							if (change === "end") await ctx.db.delete("plugins_ui_sessions", principal.sessionId);
+							else await ctx.db.patch("plugins_ui_sessions", principal.sessionId, { expiresAt: Date.now() - 1 });
+						} else if (principal.kind === "plugin_service") {
+							await ctx.db.patch(
+								"plugin_service_grants",
+								principal.grantId,
+								change === "end" ? { revokedAt: Date.now() } : { expiresAt: Date.now() - 1 },
+							);
+						} else throw new Error("Expected a plugin credential");
+					});
+				} else if (principal.kind === "user_api_key") {
+					const result = await fixture.asUser.mutation(
+						change === "rotate" ? api.public_api.api_credential_rotate : api.public_api.api_credential_revoke,
+						{ membershipId: fixture.membershipId, credentialId: principal.credentialId },
+					);
+					expect(result._nay).toBeUndefined();
+				} else if (change === "revoke") {
+					expect(
+						(
+							await fixture.asUser.mutation(api.access_control.revoke_service_account, {
+								membershipId: fixture.membershipId,
+								serviceAccountId: fixture.serviceAccountId,
+							})
+						)._nay,
+					).toBeUndefined();
+				} else {
+					const created = await fixture.asUser.mutation(api.access_control.create_service_account, {
+						membershipId: fixture.membershipId,
+						name: "Replacement",
+					});
+					if (created._nay) throw new Error(created._nay.message);
+					expect(
+						(
+							await fixture.asUser.mutation(api.plugins.set_installation_service_account, {
+								membershipId: fixture.membershipId,
+								installationId: fixture.installationId,
+								serviceAccountId: created._yay.serviceAccountId,
+							})
+						)._nay,
+					).toBeUndefined();
+				}
+				return auth;
+			});
+		try {
+			const response = await t.fetch(`/api/v1/plugin-data/${operation}`, {
+				method: "POST",
+				headers: service_headers(token),
+				body: JSON.stringify({
+					...(kind === "user_api_key" ? { installationId: fixture.installationId } : {}),
+					collection: "meetings",
+					key: "saved",
+					...(operation === "write" ? { value: { text: "changed" } } : {}),
+				}),
+			});
+			expect(paused).toHaveBeenCalledTimes(1);
+			expect(response.status).toBe(401);
+			expect(await response.json()).toEqual({ message: "Unauthenticated" });
+			expect(await read_documents(t, fixture)).toEqual(before);
+		} finally {
+			paused.mockRestore();
+		}
+	});
+});
+
+async function store_principal(
+	t: ReturnType<typeof test_convex>,
 	fixture: Awaited<ReturnType<typeof seed_installation>>,
 	args: {
 		kind?: "user_api_key" | "plugin_run" | "plugin_ui" | "plugin_service";
@@ -2293,24 +2575,100 @@ function store_principal(
 	} = {},
 ) {
 	const kind = args.kind ?? "plugin_run";
+	const actorUserId = args.actorUserId ?? fixture.userId;
+	const credential = await t.run(async (ctx) => {
+		const now = Date.now();
+		const tokenHash = crypto.randomUUID();
+		if (kind === "user_api_key") {
+			const principalKey = `pk_${tokenHash}`;
+			const credentialId = await ctx.db.insert("api_credentials", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				userId: actorUserId,
+				serviceAccountId: null,
+				name: "Store test",
+				keyId: principalKey,
+				obfuscatedValue: "pk_test",
+				secretHash: tokenHash,
+				scopes: ["plugin_data:read", "plugin_data:write"],
+				createdAt: now,
+				revokedAt: null,
+				lastUsedAt: null,
+			});
+			return { principalKey, credentialRef: { kind, credentialId } } as const;
+		}
+		const pin = {
+			organizationId: fixture.organizationId,
+			workspaceId: fixture.workspaceId,
+			installationId: fixture.installationId,
+			pluginVersionId: fixture.pluginVersionId,
+			serviceAccountId: fixture.serviceAccountId,
+		};
+		if (kind === "plugin_run") {
+			const runId = await ctx.db.insert("plugins_event_runs", {
+				...pin,
+				actorUserId,
+				event: "ui.invoke.requested",
+				eventId: tokenHash,
+				status: "running",
+				apiTokenHash: tokenHash,
+				apiTokenExpiresAt: now + 30 * 60_000,
+				acceptedCapabilities: ["plugin.data.read", "plugin.data.write"],
+				expiresAt: now + 30 * 60_000,
+				apiCallCount: 0,
+				outputWriteCount: 0,
+				errorMessage: null,
+				updatedAt: now,
+			});
+			return { principalKey: `plugin_run:${runId}`, credentialRef: { kind, runId } } as const;
+		}
+		if (kind === "plugin_ui") {
+			const sessionId = await ctx.db.insert("plugins_ui_sessions", {
+				...pin,
+				userId: actorUserId,
+				tokenHash,
+				createdAt: now,
+				expiresAt: now + 30 * 60_000,
+			});
+			return {
+				principalKey: `plugin_ui:${pin.organizationId}:${pin.workspaceId}:${actorUserId}:${pin.installationId}`,
+				credentialRef: { kind, sessionId },
+			} as const;
+		}
+		const principalKey = args.principalKey ?? `plugin_service:${fixture.installationId}`;
+		const grantId = await ctx.db.insert("plugin_service_grants", {
+			...pin,
+			actorUserId,
+			pluginName: "council",
+			tokenHash,
+			scopes: ["plugin_data:read", "plugin_data:write"],
+			principalKey,
+			phase: "interactive",
+			destinationPathPrefix: null,
+			expiresAt: now + 30 * 60_000,
+			updatedAt: now,
+		});
+		return { principalKey, credentialRef: { kind, grantId } } as const;
+	});
 	return {
 		kind,
 		organizationId: fixture.organizationId,
 		workspaceId: fixture.workspaceId,
 		installationId: args.installationId ?? fixture.installationId,
-		actorUserId: args.actorUserId ?? fixture.userId,
-		principalKey: args.principalKey ?? `${kind}:${fixture.installationId}`,
+		actorUserId,
+		...credential,
 	} as const;
 }
 
 /**
  * One external producer. Ordered writes bind a key to this exact principal key for good.
  */
-function service_principal(
+async function service_principal(
+	t: ReturnType<typeof test_convex>,
 	fixture: Awaited<ReturnType<typeof seed_installation>>,
 	args: { principalKey?: string } = {},
 ) {
-	return store_principal(fixture, { kind: "plugin_service", principalKey: args.principalKey });
+	return await store_principal(t, fixture, { kind: "plugin_service", principalKey: args.principalKey });
 }
 
 async function read_reservations(
@@ -2362,7 +2720,7 @@ describe("write_document", () => {
 		const fixture = await seed_installation(t);
 
 		const written = await t.mutation(internal.plugins_data.write_document, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "meetings",
 			key: "meeting-1",
 			value: { title: "Weekly sync", participants: 3 },
@@ -2402,7 +2760,7 @@ describe("write_document", () => {
 		});
 
 		const read = await t.query(internal.plugins_data.read_document, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "meetings",
 			key: "meeting-1",
 		});
@@ -2412,7 +2770,7 @@ describe("write_document", () => {
 	test("prices a replacement by the byte difference and keeps one slot", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = store_principal(fixture);
+		const principal = await store_principal(t, fixture);
 
 		await t.mutation(internal.plugins_data.write_document, {
 			principal,
@@ -2438,7 +2796,7 @@ describe("write_document", () => {
 	test("adds a collection with its first document and drops it with its last", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = store_principal(fixture);
+		const principal = await store_principal(t, fixture);
 
 		await t.mutation(internal.plugins_data.write_document, {
 			principal,
@@ -2475,7 +2833,7 @@ describe("write_document", () => {
 	test("refuses the seventeenth collection but still writes into the sixteen it has", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = store_principal(fixture);
+		const principal = await store_principal(t, fixture);
 
 		await t.mutation(internal.plugins_data.write_document, {
 			principal,
@@ -2524,7 +2882,7 @@ describe("write_document", () => {
 	test("refuses the slot after the last one, and still replaces an existing document", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = store_principal(fixture);
+		const principal = await store_principal(t, fixture);
 
 		await t.mutation(internal.plugins_data.write_document, {
 			principal,
@@ -2575,7 +2933,7 @@ describe("write_document", () => {
 	test("a paid plan buys ten times the slots, read off the payer's synced product", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t, { plan: "Pro" });
-		const principal = store_principal(fixture);
+		const principal = await store_principal(t, fixture);
 
 		await t.mutation(internal.plugins_data.write_document, {
 			principal,
@@ -2613,7 +2971,7 @@ describe("write_document", () => {
 	test("downgrade keeps stored data usable but refuses new documents at the smaller ceiling", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t, { plan: "Pro" });
-		const principal = store_principal(fixture);
+		const principal = await store_principal(t, fixture);
 
 		// Documents stored while the payer is on Pro. The downgrade below moves usage past the Free
 		// ceiling without deleting anything, which is what a real downgrade must do to data.
@@ -2660,7 +3018,7 @@ describe("write_document", () => {
 	test("a workspace with no billing state at all gets the Free ceiling", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t, { plan: null });
-		const principal = store_principal(fixture);
+		const principal = await store_principal(t, fixture);
 
 		await t.mutation(internal.plugins_data.write_document, {
 			principal,
@@ -2693,7 +3051,7 @@ describe("write_document", () => {
 		// A Pro member writes. Their own plan must not raise the installation's ceiling.
 		const member = await join_member_with_role(t, fixture, { clerkUserId: "ceiling-pro-member", role: "member" });
 		await t.run(async (ctx) => test_mocks_fill_db_with.plan(ctx, { userId: member.userId, plan: "Pro" }));
-		const principal = store_principal(fixture, { actorUserId: member.userId });
+		const principal = await store_principal(t, fixture, { actorUserId: member.userId });
 
 		const firstWrite = await t.mutation(internal.plugins_data.write_document, {
 			principal,
@@ -2723,7 +3081,7 @@ describe("write_document", () => {
 	test("refuses the byte after the last one, and counts reserved bytes toward the same ceiling", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = store_principal(fixture);
+		const principal = await store_principal(t, fixture);
 
 		await t.mutation(internal.plugins_data.write_document, {
 			principal,
@@ -2766,7 +3124,7 @@ describe("write_document", () => {
 	test("refuses a value over the size limit and accepts one exactly at it", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = store_principal(fixture);
+		const principal = await store_principal(t, fixture);
 
 		const atLimit = await t.mutation(internal.plugins_data.write_document, {
 			principal,
@@ -2792,7 +3150,7 @@ describe("write_document", () => {
 	test("refuses empty, overlong, padded, and control-character names", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = store_principal(fixture);
+		const principal = await store_principal(t, fixture);
 
 		for (const [collection, key, message] of [
 			["", "a", "Collection names must not be empty"],
@@ -2834,7 +3192,7 @@ describe("write_documents_batch", () => {
 		const fixture = await seed_installation(t);
 
 		const refused = await t.mutation(internal.plugins_data.write_documents_batch, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			documents: [
 				{ collection: "meetings", key: "good", value: { n: 1 } },
 				{ collection: "meetings", key: "oversized", value: value_of_bytes(16 * 1024 + 1) },
@@ -2850,7 +3208,7 @@ describe("write_documents_batch", () => {
 	test("refuses an empty batch, an over-sized batch, and a repeated document", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = store_principal(fixture);
+		const principal = await store_principal(t, fixture);
 
 		expect(
 			(await t.mutation(internal.plugins_data.write_documents_batch, { principal, documents: [] }))._nay?.message,
@@ -2881,7 +3239,7 @@ describe("write_documents_batch", () => {
 		const fixture = await seed_installation(t);
 
 		const written = await t.mutation(internal.plugins_data.write_documents_batch, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			documents: Array.from({ length: 50 }, (_, index) => ({
 				collection: "meetings",
 				key: `key-${index}`,
@@ -2902,7 +3260,7 @@ describe("list_documents", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		await t.mutation(internal.plugins_data.write_documents_batch, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			documents: [
 				{ collection: "meetings", key: "meeting:1", value: { n: 1 } },
 				{ collection: "meetings", key: "note:1", value: { n: 2 } },
@@ -2913,7 +3271,7 @@ describe("list_documents", () => {
 		// bounds cross. That page is finished, not merely empty: an unfinished one makes the route
 		// echo a cursor and the caller asks for the same nothing forever.
 		const crossed = await t.query(internal.plugins_data.list_documents, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "meetings",
 			keyPrefix: "meeting:",
 			keyStartExclusive: "note:1",
@@ -2928,7 +3286,7 @@ describe("list_documents", () => {
 		// A bad bound bubbles the store's own refusal, which the route maps to 400 — the same answer
 		// the prefix rules already give.
 		const refused = await t.query(internal.plugins_data.list_documents, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "meetings",
 			keyEndInclusive: " leading space",
 			paginationOpts: { numItems: 10, cursor: null },
@@ -2964,7 +3322,7 @@ describe("list_documents", () => {
 		// The route validator already caps the number a caller may ask for, but the query is also
 		// reachable from inside the backend. Asking for everything must still answer one page.
 		const listed = await t.query(internal.plugins_data.list_documents, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "meetings",
 			paginationOpts: { numItems: 1000, cursor: null },
 		});
@@ -2975,7 +3333,7 @@ describe("list_documents", () => {
 		expect(listed._yay.isDone).toBe(false);
 
 		const rest = await t.query(internal.plugins_data.list_documents, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "meetings",
 			paginationOpts: { numItems: 1000, cursor: listed._yay.continueCursor },
 		});
@@ -3018,7 +3376,7 @@ describe("list_documents", () => {
 		});
 
 		const firstPage = await t.query(internal.plugins_data.list_documents, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "messages",
 			keyPrefix: "msg:",
 			paginationOpts: { numItems: 100, cursor: null },
@@ -3033,7 +3391,7 @@ describe("list_documents", () => {
 		// The second page picks up inside the narrowed range: only the 20 remaining prefixed docs,
 		// never the 30 `note:` docs that follow them in the index.
 		const secondPage = await t.query(internal.plugins_data.list_documents, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "messages",
 			keyPrefix: "msg:",
 			paginationOpts: { numItems: 100, cursor: firstPage._yay.continueCursor },
@@ -3073,7 +3431,7 @@ describe("list_documents", () => {
 
 		const list = async (keyPrefix: string) => {
 			const listed = await t.query(internal.plugins_data.list_documents, {
-				principal: store_principal(fixture),
+				principal: await store_principal(t, fixture),
 				collection: "rooms",
 				keyPrefix,
 				paginationOpts: { numItems: 100, cursor: null },
@@ -3098,7 +3456,7 @@ describe("reserve_document", () => {
 	test("holds capacity before the value exists and answers a replayed request", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 		const expiresAt = Date.now() + 60_000;
 
 		const reserved = await t.mutation(internal.plugins_data.reserve_document, {
@@ -3143,7 +3501,7 @@ describe("reserve_document", () => {
 	test("answers a replay with what the reservation holds now, not with its first answer", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 		const expiresAt = Date.now() + 60_000;
 
 		const request = {
@@ -3175,7 +3533,7 @@ describe("reserve_document", () => {
 	test("refuses a different request under the same idempotency key", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 		const expiresAt = Date.now() + 60_000;
 
 		await t.mutation(internal.plugins_data.reserve_document, {
@@ -3202,7 +3560,7 @@ describe("reserve_document", () => {
 	test("refuses a replay of a reservation that was already released", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 		const expiresAt = Date.now() + 60_000;
 
 		await t.mutation(internal.plugins_data.reserve_document, {
@@ -3241,7 +3599,7 @@ describe("reserve_document", () => {
 	test("refuses a new reservation while the service delete tombstone still owns the key", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 
 		await t.mutation(internal.plugins_data.write_versioned_document, {
 			principal,
@@ -3277,7 +3635,7 @@ describe("reserve_document", () => {
 	test("still sees the live reservation after a key collects many released retry records", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 
 		// Each reserve/release cycle leaves a released retry record behind, and one key can collect a
 		// lot of them. A lookup that read the key's docs and filtered afterwards would stop before the
@@ -3337,7 +3695,7 @@ describe("reserve_document", () => {
 	test("keeps the collection name while a reservation on another key still holds it", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 
 		const written = await t.mutation(internal.plugins_data.write_versioned_document, {
 			principal,
@@ -3382,7 +3740,7 @@ describe("reserve_document", () => {
 	test("starts the retry horizon at the release, not at the reservation's own expiry", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 
 		// A meeting reservation may run for days. Releasing it after a minute must give its document
 		// slot back a day later, not a day after the deadline it never reached.
@@ -3418,7 +3776,7 @@ describe("reserve_document", () => {
 	test("refuses a second live reservation and a key another writer owns", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 		const expiresAt = Date.now() + 60_000;
 
 		await t.mutation(internal.plugins_data.reserve_document, {
@@ -3441,7 +3799,7 @@ describe("reserve_document", () => {
 
 		// A key the plugin already writes interactively cannot be taken over by a producer.
 		await t.mutation(internal.plugins_data.write_document, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "meetings",
 			key: "meeting-2",
 			value: { n: 1 },
@@ -3464,7 +3822,7 @@ describe("reserve_document", () => {
 		const expiresAt = Date.now() + 60_000;
 
 		const notAService = await t.mutation(internal.plugins_data.reserve_document, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "meetings",
 			key: "meeting-1",
 			maximumBytes: 1000,
@@ -3473,7 +3831,7 @@ describe("reserve_document", () => {
 		});
 		expect(notAService._nay?.message).toBe("Permission denied");
 
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 		for (const [maximumBytes, message] of [
 			[0, "A reservation holds 1 to 16384 bytes"],
 			[16 * 1024 + 1, "A reservation holds 1 to 16384 bytes"],
@@ -3527,7 +3885,7 @@ describe("reserve_document", () => {
 	test("accepts the eight-day horizon a meeting reservation needs", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = store_principal(fixture, { kind: "plugin_service" });
+		const principal = await store_principal(t, fixture, { kind: "plugin_service" });
 
 		// The longest supported reservation runs until eight days after a meeting closes: the seven
 		// days the recording provider keeps the URL, plus one. A shorter ceiling would refuse it.
@@ -3550,7 +3908,7 @@ describe("release_reservation", () => {
 	test("gives back everything an unused reservation held and answers a replayed release", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 
 		await t.mutation(internal.plugins_data.reserve_document, {
 			principal,
@@ -3588,7 +3946,7 @@ describe("release_reservation", () => {
 	test("keeps the bytes a stored value already spent and leaves that value alone", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 
 		await t.mutation(internal.plugins_data.reserve_document, {
 			principal,
@@ -3630,7 +3988,7 @@ describe("release_reservation", () => {
 		const fixture = await seed_installation(t);
 
 		const refused = await t.mutation(internal.plugins_data.release_reservation, {
-			principal: service_principal(fixture),
+			principal: await service_principal(t, fixture),
 			collection: "meetings",
 			key: "meeting-1",
 			idempotencyKey: "reserve-1",
@@ -3643,7 +4001,7 @@ describe("write_versioned_document", () => {
 	test("a resent versioned delete replays its answer instead of deleting twice", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 
 		const written = await t.mutation(internal.plugins_data.write_versioned_document, {
 			principal,
@@ -3689,7 +4047,7 @@ describe("write_versioned_document", () => {
 	test("binds the key to its producer and keeps every other writer out", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 
 		const written = await t.mutation(internal.plugins_data.write_versioned_document, {
 			principal,
@@ -3710,7 +4068,7 @@ describe("write_versioned_document", () => {
 
 		// Another producer, the interactive write route, and the interactive delete route are all refused.
 		const otherProducer = await t.mutation(internal.plugins_data.write_versioned_document, {
-			principal: service_principal(fixture, { principalKey: "plugin_service:other" }),
+			principal: await service_principal(t, fixture, { principalKey: "plugin_service:other" }),
 			collection: "meetings",
 			key: "meeting-1",
 			revision: 2,
@@ -3719,7 +4077,7 @@ describe("write_versioned_document", () => {
 		expect(otherProducer._nay?.message).toBe("This document belongs to another writer");
 
 		const interactiveWrite = await t.mutation(internal.plugins_data.write_document, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "meetings",
 			key: "meeting-1",
 			value: { n: 5 },
@@ -3727,7 +4085,7 @@ describe("write_versioned_document", () => {
 		expect(interactiveWrite._nay?.message).toBe("This document is written by a service and cannot be changed here");
 
 		const interactiveDelete = await t.mutation(internal.plugins_data.delete_document, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "meetings",
 			key: "meeting-1",
 		});
@@ -3741,7 +4099,7 @@ describe("write_versioned_document", () => {
 	test("resolves the plan-driven slot ceiling on this door too", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t, { plan: "Pro" });
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 
 		await t.mutation(internal.plugins_data.write_versioned_document, {
 			principal,
@@ -3785,13 +4143,13 @@ describe("write_versioned_document", () => {
 		const fixture = await seed_installation(t);
 
 		await t.mutation(internal.plugins_data.write_document, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "meetings",
 			key: "meeting-1",
 			value: { n: 1 },
 		});
 		const refused = await t.mutation(internal.plugins_data.write_versioned_document, {
-			principal: service_principal(fixture),
+			principal: await service_principal(t, fixture),
 			collection: "meetings",
 			key: "meeting-1",
 			revision: 1,
@@ -3806,7 +4164,7 @@ describe("write_versioned_document", () => {
 	test("accepts only the next revision and replays an exact duplicate", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 
 		// Nothing is stored yet, so only revision 1 can start the sequence.
 		const skippedStart = await t.mutation(internal.plugins_data.write_versioned_document, {
@@ -3874,7 +4232,7 @@ describe("write_versioned_document", () => {
 	test("moves reserved bytes into used bytes, and gives them back when the value shrinks", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 
 		await t.mutation(internal.plugins_data.reserve_document, {
 			principal,
@@ -3911,7 +4269,7 @@ describe("write_versioned_document", () => {
 	test("the first write of a reserved key still succeeds when every other slot is spent", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 
 		await t.mutation(internal.plugins_data.reserve_document, {
 			principal,
@@ -3974,7 +4332,7 @@ describe("delete_versioned_document", () => {
 	test("keeps a normal write off a key its service tombstoned", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 
 		await t.mutation(internal.plugins_data.write_versioned_document, {
 			principal,
@@ -3997,7 +4355,7 @@ describe("delete_versioned_document", () => {
 		// key. Without it the key would look free, a page write would take it as a normal document, and
 		// the service that owns the key could never write it again.
 		const seized = await t.mutation(internal.plugins_data.write_document, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "meetings",
 			key: "meeting-1",
 			value: { n: 2 },
@@ -4021,7 +4379,7 @@ describe("delete_versioned_document", () => {
 	test("refuses a tombstone for a key that never existed once the slots are gone", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 
 		await t.run(async (ctx) => {
 			const usage = await ctx.db
@@ -4066,7 +4424,7 @@ describe("delete_versioned_document", () => {
 	test("a reserved never-stored key can still be tombstoned when every other slot is spent", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 
 		await t.mutation(internal.plugins_data.reserve_document, {
 			principal,
@@ -4101,7 +4459,7 @@ describe("delete_versioned_document", () => {
 	test("a last-slot never-stored reservation still tombstones after its producer released it", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 
 		await t.mutation(internal.plugins_data.reserve_document, {
 			principal,
@@ -4147,7 +4505,7 @@ describe("delete_versioned_document", () => {
 	test("a last-slot never-stored reservation still tombstones after the cron released it", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 
 		await t.mutation(internal.plugins_data.reserve_document, {
 			principal,
@@ -4196,7 +4554,7 @@ describe("delete_versioned_document", () => {
 	test("removes the value, refuses late writes, and answers a replayed delete", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 
 		await t.mutation(internal.plugins_data.write_versioned_document, {
 			principal,
@@ -4253,7 +4611,7 @@ describe("delete_versioned_document", () => {
 	test("releases the producer's reservation in the same transaction", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 
 		await t.mutation(internal.plugins_data.reserve_document, {
 			principal,
@@ -4294,7 +4652,7 @@ describe("delete_versioned_document", () => {
 	test("keeps the document slot when a converted reservation was released before delete", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 
 		await t.mutation(internal.plugins_data.reserve_document, {
 			principal,
@@ -4335,7 +4693,7 @@ describe("delete_versioned_document", () => {
 	test("refuses another producer and a non-service principal", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 
 		await t.mutation(internal.plugins_data.write_versioned_document, {
 			principal,
@@ -4346,7 +4704,7 @@ describe("delete_versioned_document", () => {
 		});
 
 		const otherProducer = await t.mutation(internal.plugins_data.delete_versioned_document, {
-			principal: service_principal(fixture, { principalKey: "plugin_service:other" }),
+			principal: await service_principal(t, fixture, { principalKey: "plugin_service:other" }),
 			collection: "meetings",
 			key: "meeting-1",
 			revision: 2,
@@ -4354,7 +4712,7 @@ describe("delete_versioned_document", () => {
 		expect(otherProducer._nay?.message).toBe("This document belongs to another writer");
 
 		const notAService = await t.mutation(internal.plugins_data.delete_versioned_document, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "meetings",
 			key: "meeting-1",
 			revision: 2,
@@ -4370,7 +4728,7 @@ describe("db_authorize", () => {
 		const fixture = await seed_installation(t, {
 			acceptedCapabilities: ["plugin.data.read", "plugin.service.connect"],
 		});
-		const principal = store_principal(fixture);
+		const principal = await store_principal(t, fixture);
 
 		const written = await t.mutation(internal.plugins_data.write_document, {
 			principal,
@@ -4398,7 +4756,7 @@ describe("db_authorize", () => {
 	test("refuses a page principal that reaches a write mutation directly", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = store_principal(fixture, { kind: "plugin_ui" });
+		const principal = await store_principal(t, fixture, { kind: "plugin_ui" });
 
 		// The routes already leave `plugin_ui` out of every write allowlist, and a page token never
 		// carries the write scope. This is the second barrier, for a caller inside the backend that
@@ -4438,10 +4796,10 @@ describe("db_authorize", () => {
 			clerkUserId: "plugin-data-viewer",
 			role: "viewer",
 		});
-		const principal = store_principal(fixture, { actorUserId: viewer.userId });
+		const principal = await store_principal(t, fixture, { actorUserId: viewer.userId });
 
 		await t.mutation(internal.plugins_data.write_document, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "meetings",
 			key: "a",
 			value: { n: 1 },
@@ -4482,14 +4840,14 @@ describe("db_authorize", () => {
 		// A `pk_` key writes as the member holding it, so the list gates it like the page door.
 		// Deletes are gated too, or a member could remove a backend-owned document with their key.
 		const keyWrite = await t.mutation(internal.plugins_data.write_document, {
-			principal: store_principal(fixture, { kind: "user_api_key" }),
+			principal: await store_principal(t, fixture, { kind: "user_api_key" }),
 			collection: "meetings",
 			key: "a",
 			value: { n: 1 },
 		});
 		expect(keyWrite._nay?.message).toBe("This collection is not user-writable");
 		const keyDelete = await t.mutation(internal.plugins_data.delete_document, {
-			principal: store_principal(fixture, { kind: "user_api_key" }),
+			principal: await store_principal(t, fixture, { kind: "user_api_key" }),
 			collection: "meetings",
 			key: "a",
 		});
@@ -4498,7 +4856,7 @@ describe("db_authorize", () => {
 		// The list exists so the backend can own some collections alone: the plugin's own run and
 		// its service write the unlisted collection freely.
 		const runWrite = await t.mutation(internal.plugins_data.write_document, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "meetings",
 			key: "a",
 			value: { n: 1 },
@@ -4507,7 +4865,7 @@ describe("db_authorize", () => {
 			throw new Error(runWrite._nay.message);
 		}
 		const serviceWrite = await t.mutation(internal.plugins_data.write_document, {
-			principal: service_principal(fixture),
+			principal: await service_principal(t, fixture),
 			collection: "meetings",
 			key: "b",
 			value: { n: 2 },
@@ -4518,7 +4876,7 @@ describe("db_authorize", () => {
 
 		// The listed collection accepts the key.
 		const listed = await t.mutation(internal.plugins_data.write_document, {
-			principal: store_principal(fixture, { kind: "user_api_key" }),
+			principal: await store_principal(t, fixture, { kind: "user_api_key" }),
 			collection: "channels",
 			key: "general",
 			value: { n: 1 },
@@ -4538,7 +4896,7 @@ describe("db_authorize", () => {
 		// The installation names its version doc, so a missing doc is a server-side break. The gate
 		// must refuse, not fall open into "no list declared, every collection writable".
 		const keyWrite = await t.mutation(internal.plugins_data.write_document, {
-			principal: store_principal(fixture, { kind: "user_api_key" }),
+			principal: await store_principal(t, fixture, { kind: "user_api_key" }),
 			collection: "meetings",
 			key: "a",
 			value: { n: 1 },
@@ -4553,7 +4911,7 @@ describe("db_authorize", () => {
 		// A user API key names its installation in the request body, so this value comes from outside
 		// the application. It must be refused, not throw at the argument validator.
 		const refused = await t.query(internal.plugins_data.read_document, {
-			principal: store_principal(fixture, { installationId: "not-an-id" }),
+			principal: await store_principal(t, fixture, { installationId: "not-an-id" }),
 			collection: "meetings",
 			key: "a",
 		});
@@ -4566,7 +4924,7 @@ describe("db_authorize", () => {
 		const otherFixture = await seed_installation(t, { organizationName: "other-organization" });
 
 		const crossTenant = await t.query(internal.plugins_data.read_document, {
-			principal: store_principal(fixture, { installationId: otherFixture.installationId }),
+			principal: await store_principal(t, fixture, { installationId: otherFixture.installationId }),
 			collection: "meetings",
 			key: "a",
 		});
@@ -4576,7 +4934,7 @@ describe("db_authorize", () => {
 			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, { status: "disabled" });
 		});
 		const disabled = await t.query(internal.plugins_data.read_document, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "meetings",
 			key: "a",
 		});
@@ -4604,6 +4962,11 @@ describe("db_authorize", () => {
 			}
 
 			return await ctx.db.insert("plugins_workspace_installations", {
+				serviceAccountId: await seed_service_account(ctx, {
+					...fixture,
+					workspaceId: siblingWorkspace._yay.workspaceId,
+					createdBy: fixture.userId,
+				}),
 				organizationId: fixture.organizationId,
 				workspaceId: siblingWorkspace._yay.workspaceId,
 				pluginVersionId: fixture.pluginVersionId,
@@ -4622,7 +4985,7 @@ describe("db_authorize", () => {
 		});
 
 		const crossWorkspace = await t.mutation(internal.plugins_data.write_document, {
-			principal: store_principal(fixture, { installationId: siblingInstallationId }),
+			principal: await store_principal(t, fixture, { installationId: siblingInstallationId }),
 			collection: "meetings",
 			key: "a",
 			value: { n: 1 },
@@ -4638,7 +5001,7 @@ describe("db_authorize", () => {
 		const fixture = await seed_installation(t);
 
 		await t.mutation(internal.plugins_data.write_document, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "meetings",
 			key: "a",
 			value: { n: 1 },
@@ -4659,20 +5022,20 @@ describe("db_authorize", () => {
 		});
 
 		const refusedRead = await t.query(internal.plugins_data.read_document, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "meetings",
 			key: "a",
 		});
 		expect(refusedRead._nay?.message).toBe("Unauthenticated");
 		const refusedWrite = await t.mutation(internal.plugins_data.write_document, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "meetings",
 			key: "b",
 			value: { n: 2 },
 		});
 		expect(refusedWrite._nay?.message).toBe("Unauthenticated");
 		const refusedDelete = await t.mutation(internal.plugins_data.delete_document, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "meetings",
 			key: "a",
 		});
@@ -4682,7 +5045,7 @@ describe("db_authorize", () => {
 		// door takes no phase at all, so a sealed `processing` grant reaches this same check: the seal
 		// bounds where a grant writes, not whether its member may still write.
 		const service = await t.query(internal.plugins_data.read_document, {
-			principal: store_principal(fixture, { kind: "plugin_service" }),
+			principal: await store_principal(t, fixture, { kind: "plugin_service" }),
 			collection: "meetings",
 			key: "a",
 		});
@@ -4716,6 +5079,7 @@ async function seed_page_session(
 	const sessionId = await t.run(async (ctx) => {
 		const now = Date.now();
 		return await ctx.db.insert("plugins_ui_sessions", {
+			serviceAccountId: (await ctx.db.get("plugins_workspace_installations", args.installationId))!.serviceAccountId,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			installationId: args.installationId,
@@ -5253,7 +5617,7 @@ describe("user_append_document", () => {
 		}
 
 		const deleted = await t.mutation(internal.plugins_data.delete_document, {
-			principal: store_principal(fixture, { kind: "user_api_key" }),
+			principal: await store_principal(t, fixture, { kind: "user_api_key" }),
 			collection: "messages",
 			key: first._yay.key,
 		});
@@ -5618,7 +5982,7 @@ describe("user_put_document", () => {
 		const t = test_convex();
 		const fixture = await seed_user_write_door(t);
 		await t.mutation(internal.plugins_data.write_versioned_document, {
-			principal: service_principal(fixture),
+			principal: await service_principal(t, fixture),
 			collection: "messages",
 			key: "outbox",
 			revision: 1,
@@ -6005,7 +6369,7 @@ describe("user_put_owned_document", () => {
 		expect(overflow._nay?.message).toBe("Keys must be at most 128 characters after the writer id is appended");
 
 		await t.mutation(internal.plugins_data.write_versioned_document, {
-			principal: service_principal(fixture),
+			principal: await service_principal(t, fixture),
 			collection: "reactions",
 			key: `service-poll:${fixture.userId}`,
 			revision: 1,
@@ -6098,6 +6462,62 @@ describe("user_put_owned_document", () => {
 });
 
 describe("db_authorize_page_write", () => {
+	test.each(["revoked", "rebound"] as const)(
+		"closes the JWT read and write doors when its account is %s",
+		async (change) => {
+			const t = test_convex();
+			const fixture = await seed_user_write_door(t);
+			const write = { collection: "messages", value: { text: "Preserve" }, clientRequestId: "account-before" };
+			expect((await fixture.asPage.mutation(api.plugins_data.user_append_document, write))._nay).toBeUndefined();
+			const watched = await fixture.asPage.query(api.plugins_data.watch_documents, {
+				collection: "messages",
+				limit: 10,
+			});
+			expect(watched?.docs).toHaveLength(1);
+			const before = await read_documents(t, fixture);
+			const session = await t.run((ctx) => ctx.db.get("plugins_ui_sessions", fixture.sessionId));
+			expect(await t.run((ctx) => ctx.db.query("access_control_permission_grants").collect())).toEqual([]);
+			if (change === "revoked") {
+				expect(
+					(
+						await fixture.asUser.mutation(api.access_control.revoke_service_account, {
+							membershipId: fixture.membershipId,
+							serviceAccountId: fixture.serviceAccountId,
+						})
+					)._nay,
+				).toBeUndefined();
+			} else {
+				const replacement = await fixture.asUser.mutation(api.access_control.create_service_account, {
+					membershipId: fixture.membershipId,
+					name: "Replacement",
+				});
+				if (replacement._nay) throw new Error(replacement._nay.message);
+				expect(
+					(
+						await fixture.asUser.mutation(api.plugins.set_installation_service_account, {
+							membershipId: fixture.membershipId,
+							installationId: fixture.installationId,
+							serviceAccountId: replacement._yay.serviceAccountId,
+						})
+					)._nay,
+				).toBeUndefined();
+			}
+			expect(
+				await fixture.asPage.query(api.plugins_data.watch_documents, { collection: "messages", limit: 10 }),
+			).toBeNull();
+			expect(
+				(
+					await fixture.asPage.mutation(api.plugins_data.user_append_document, {
+						...write,
+						clientRequestId: "account-after",
+					})
+				)._nay,
+			).toBeDefined();
+			expect(await read_documents(t, fixture)).toEqual(before);
+			expect(await t.run((ctx) => ctx.db.get("plugins_ui_sessions", fixture.sessionId))).toEqual(session);
+		},
+	);
+
 	test("refuses non-page identities and dead sessions, and keeps tenants apart", async () => {
 		const t = test_convex();
 		const fixture = await seed_user_write_door(t);
@@ -6357,7 +6777,7 @@ describe("watch_documents", () => {
 		// allows non-control Unicode.
 		const unicodeKey = "general:\u{10FFFF}late";
 		const written = await t.mutation(internal.plugins_data.write_document, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "messages",
 			key: unicodeKey,
 			value: { n: 3 },
@@ -6379,7 +6799,7 @@ describe("watch_documents", () => {
 		const fixture = await seed_user_write_door(t);
 		for (const key of ["a:", "a:1", "a:2", "a:3", "a:4", "b:1"]) {
 			const written = await t.mutation(internal.plugins_data.write_document, {
-				principal: store_principal(fixture),
+				principal: await store_principal(t, fixture),
 				collection: "messages",
 				key,
 				value: { key },
@@ -6423,7 +6843,7 @@ describe("watch_documents", () => {
 		const fixture = await seed_user_write_door(t);
 		for (const key of ["a:1", "a:2", "a:3"]) {
 			const written = await t.mutation(internal.plugins_data.write_document, {
-				principal: store_principal(fixture),
+				principal: await store_principal(t, fixture),
 				collection: "messages",
 				key,
 				value: { key },
@@ -6450,7 +6870,7 @@ describe("watch_documents", () => {
 		const fixture = await seed_user_write_door(t);
 		for (const key of ["a:1", "a:2", "a:3"]) {
 			const written = await t.mutation(internal.plugins_data.write_document, {
-				principal: store_principal(fixture),
+				principal: await store_principal(t, fixture),
 				collection: "messages",
 				key,
 				value: { key },
@@ -6488,7 +6908,7 @@ describe("watch_documents", () => {
 		const t = test_convex();
 		const fixture = await seed_user_write_door(t);
 		const written = await t.mutation(internal.plugins_data.write_document, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "messages",
 			key: "k\u{10FFFF}",
 			value: { n: 1 },
@@ -6700,7 +7120,7 @@ describe("watch_documents_page", () => {
 		const keys = Array.from({ length: 120 }, (_, index) => `a:${String(index).padStart(3, "0")}`);
 		for (const key of keys) {
 			const written = await t.mutation(internal.plugins_data.write_document, {
-				principal: store_principal(fixture),
+				principal: await store_principal(t, fixture),
 				collection: "messages",
 				key,
 				value: { key },
@@ -6740,7 +7160,7 @@ describe("watch_documents_page", () => {
 		const keys = ["a:1", "a:2", "a:3"];
 		for (const key of keys) {
 			const written = await t.mutation(internal.plugins_data.write_document, {
-				principal: store_principal(fixture),
+				principal: await store_principal(t, fixture),
 				collection: "messages",
 				key,
 				value: { key },
@@ -6770,7 +7190,7 @@ describe("watch_documents_page", () => {
 		const t = test_convex();
 		const fixture = await seed_user_write_door(t);
 		const written = await t.mutation(internal.plugins_data.write_document, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "messages",
 			key: "a:1",
 			value: { key: "a:1" },
@@ -6831,7 +7251,7 @@ describe("watch_documents_page", () => {
 		const fixture = await seed_user_write_door(t);
 		for (const key of ["a:1", "a:2", "a:3"]) {
 			const written = await t.mutation(internal.plugins_data.write_document, {
-				principal: store_principal(fixture),
+				principal: await store_principal(t, fixture),
 				collection: "messages",
 				key,
 				value: { key },
@@ -6872,7 +7292,7 @@ describe("watch_documents_page", () => {
 		const t = test_convex();
 		const fixture = await seed_user_write_door(t);
 		const written = await t.mutation(internal.plugins_data.write_document, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "messages",
 			key: "a:1",
 			value: { text: "one" },
@@ -7242,7 +7662,7 @@ describe("watch_changes", () => {
 		const now = Date.now();
 		const dateNow = vi.spyOn(Date, "now").mockReturnValue(now);
 		const written = await t.mutation(internal.plugins_data.write_documents_batch, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			documents: [
 				{ collection: "messages", key: "batch:a", value: { n: 1 } },
 				{ collection: "messages", key: "batch:b", value: { n: 2 } },
@@ -7271,7 +7691,7 @@ describe("watch_changes", () => {
 		const dateNow = vi.spyOn(Date, "now").mockReturnValue(now);
 		for (const offset of [0, 50]) {
 			const written = await t.mutation(internal.plugins_data.write_documents_batch, {
-				principal: store_principal(fixture),
+				principal: await store_principal(t, fixture),
 				documents: Array.from({ length: 50 }, (_, index) => ({
 					collection: "messages",
 					key: `fullpage:${offset + index}`,
@@ -7284,7 +7704,7 @@ describe("watch_changes", () => {
 		}
 		dateNow.mockReturnValue(now + 1);
 		const later = await t.mutation(internal.plugins_data.write_documents_batch, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			documents: [{ collection: "messages", key: "fullpage:later", value: { n: 100 } }],
 		});
 		dateNow.mockRestore();
@@ -7633,7 +8053,7 @@ describe("storage-layer ownership", () => {
 		// grant acting for someone else are all refused on the member's owned doc.
 		for (const kind of ["user_api_key", "plugin_run", "plugin_service"] as const) {
 			const written = await t.mutation(internal.plugins_data.write_document, {
-				principal: store_principal(fixture, { kind, actorUserId: other.userId }),
+				principal: await store_principal(t, fixture, { kind, actorUserId: other.userId }),
 				collection: "messages",
 				key,
 				value: { text: "overwritten" },
@@ -7641,7 +8061,7 @@ describe("storage-layer ownership", () => {
 			expect(written._nay?.message).toBe("This document belongs to another writer");
 		}
 		const batched = await t.mutation(internal.plugins_data.write_documents_batch, {
-			principal: store_principal(fixture, { kind: "user_api_key", actorUserId: other.userId }),
+			principal: await store_principal(t, fixture, { kind: "user_api_key", actorUserId: other.userId }),
 			documents: [
 				{ collection: "messages", key: "fresh", value: { n: 1 } },
 				{ collection: "messages", key, value: { text: "overwritten" } },
@@ -7649,7 +8069,7 @@ describe("storage-layer ownership", () => {
 		});
 		expect(batched._nay?.message).toBe("This document belongs to another writer");
 		const removed = await t.mutation(internal.plugins_data.delete_document, {
-			principal: store_principal(fixture, { kind: "user_api_key", actorUserId: other.userId }),
+			principal: await store_principal(t, fixture, { kind: "user_api_key", actorUserId: other.userId }),
 			collection: "messages",
 			key,
 		});
@@ -7662,7 +8082,7 @@ describe("storage-layer ownership", () => {
 
 		// The creator is the one actor an interactive writer may act for on this doc.
 		const ownWrite = await t.mutation(internal.plugins_data.write_document, {
-			principal: store_principal(fixture, { kind: "user_api_key", actorUserId: fixture.userId }),
+			principal: await store_principal(t, fixture, { kind: "user_api_key", actorUserId: fixture.userId }),
 			collection: "messages",
 			key,
 			value: { text: "edited by its creator" },
@@ -7715,7 +8135,7 @@ describe("db_patch_usage", () => {
 	test("warns once when a write crosses 80% of a ceiling, on the aggregate and never on a refusal", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 
 		// The first write creates the accounting doc the seeds below move.
 		const seeded = await t.mutation(internal.plugins_data.write_document, {
@@ -7903,7 +8323,7 @@ describe("per-member capacity", () => {
 
 		// The API-key doors attribute too, so they must give the same row back.
 		const written = await t.mutation(internal.plugins_data.write_document, {
-			principal: store_principal(fixture, { kind: "user_api_key" }),
+			principal: await store_principal(t, fixture, { kind: "user_api_key" }),
 			collection: "meetings",
 			key: "by-key",
 			value: { n: 1 },
@@ -7912,7 +8332,7 @@ describe("per-member capacity", () => {
 		expect(await read_member_usage(t, fixture, fixture.userId)).toMatchObject({ usedDocuments: 1 });
 
 		const deleted = await t.mutation(internal.plugins_data.delete_document, {
-			principal: store_principal(fixture, { kind: "user_api_key" }),
+			principal: await store_principal(t, fixture, { kind: "user_api_key" }),
 			collection: "meetings",
 			key: "by-key",
 		});
@@ -7989,7 +8409,7 @@ describe("per-member capacity", () => {
 		expect(newGeneration).toMatchObject({ usedBytes: 10, usedDocuments: 1 });
 		expect(newGeneration?._id).not.toBe(oldGeneration!._id);
 		const backendPatch = await t.mutation(internal.plugins_data.write_document, {
-			principal: store_principal(fixture),
+			principal: await store_principal(t, fixture),
 			collection: "messages",
 			key: oldAppend._yay.key,
 			value: value_of_bytes(200),
@@ -8115,7 +8535,7 @@ describe("per-member capacity", () => {
 		});
 
 		const written = await t.mutation(internal.plugins_data.write_document, {
-			principal: store_principal(fixture, { kind: "user_api_key" }),
+			principal: await store_principal(t, fixture, { kind: "user_api_key" }),
 			collection: "messages",
 			key: appended._yay.key,
 			value: value_of_bytes(50),
@@ -8133,11 +8553,13 @@ describe("per-member capacity", () => {
 		const fixture = await seed_user_write_door(t);
 		const memberB = await join_member_with_role(t, fixture, { clerkUserId: "key-member-b", role: "member" });
 		const keyA = await fixture.asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: fixture.membershipId,
 			name: "Member A key",
 			scopes: ["plugin_data:write"],
 		});
 		const keyB = await memberB.asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: memberB.membershipId,
 			name: "Member B key",
 			scopes: ["plugin_data:write"],
@@ -8175,6 +8597,7 @@ describe("per-member capacity", () => {
 		const fixture = await seed_user_write_door(t);
 		const memberB = await join_member_with_role(t, fixture, { clerkUserId: "collections-member-b", role: "member" });
 		const keyA = await fixture.asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: fixture.membershipId,
 			name: "Member A key",
 			scopes: ["plugin_data:write"],
@@ -8254,6 +8677,7 @@ describe("per-member capacity", () => {
 		const fixture = await seed_user_write_door(t);
 		const granted = await mint_service_grant(t, fixture);
 		const keyA = await fixture.asUser.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: fixture.membershipId,
 			name: "Member A key",
 			scopes: ["plugin_data:write"],
@@ -8464,9 +8888,9 @@ async function seed_full_store(
 	t: ReturnType<typeof test_convex>,
 	fixture: Awaited<ReturnType<typeof seed_installation>>,
 ) {
-	const principal = service_principal(fixture);
+	const principal = await service_principal(t, fixture);
 	await t.mutation(internal.plugins_data.write_document, {
-		principal: store_principal(fixture),
+		principal: await store_principal(t, fixture),
 		collection: "meetings",
 		key: "kept",
 		value: { n: 1 },
@@ -8474,7 +8898,7 @@ async function seed_full_store(
 	// An API key writes as the member who minted it, so this is the one write in the seed that
 	// creates a per-member usage row. Without it the drain's member pass has nothing to delete.
 	await t.mutation(internal.plugins_data.write_document, {
-		principal: store_principal(fixture, { kind: "user_api_key" }),
+		principal: await store_principal(t, fixture, { kind: "user_api_key" }),
 		collection: "meetings",
 		key: "charged",
 		value: { n: 2 },
@@ -8528,7 +8952,6 @@ async function seed_full_store(
 			expiresAt: Date.now() + 60_000,
 		});
 	});
-	await mint_service_grant(t, fixture);
 }
 
 /**
@@ -8664,7 +9087,7 @@ describe("plugins_data_db_drain_batch", () => {
 	test("deletes at most one batch per pass and keeps going until nothing is left", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 		for (let index = 0; index < 5; index += 1) {
 			await t.mutation(internal.plugins_data.write_document, {
 				principal,
@@ -8674,9 +9097,9 @@ describe("plugins_data_db_drain_batch", () => {
 			});
 		}
 
-		// Five documents and one usage doc: one pass for each table, then one that finds nothing left.
+		// Documents, usage, and the producer grant each need a pass, followed by an empty pass.
 		const passes = await drain_until_done(t, fixture);
-		expect(passes).toBe(3);
+		expect(passes).toBe(4);
 		expect(await read_all_store_tables(t, fixture)).toEqual({
 			documents: 0,
 			reservations: 0,
@@ -8770,9 +9193,6 @@ describe("plugins_data_db_drain_batch", () => {
 				contentYjsStateTooLargeByteSize: null,
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
 				archiveOperationId: null,
 			});
 			await ctx.db.insert("plugins_file_access_bindings", {
@@ -8832,10 +9252,13 @@ describe("plugins_data_db_drain_batch", () => {
 		const fixture = await seed_installation(t);
 		const otherInstallationId = await t.run(async (ctx) => {
 			const now = Date.now();
+			const { _id, _creationTime, ...version } = (await ctx.db.get("plugins_versions", fixture.pluginVersionId))!;
+			const pluginVersionId = await ctx.db.insert("plugins_versions", { ...version, name: "council-other" });
 			const installationId = await ctx.db.insert("plugins_workspace_installations", {
+				serviceAccountId: await seed_service_account(ctx, { ...fixture, pluginVersionId, createdBy: fixture.userId }),
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.workspaceId,
-				pluginVersionId: fixture.pluginVersionId,
+				pluginVersionId,
 				pluginName: "council-other",
 				status: "enabled",
 				configurationYaml: null,
@@ -8970,10 +9393,18 @@ describe("plugins_data_db_drain_batch", () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const other = await t.run(async (ctx) => {
+			const { _id, _creationTime, ...version } = (await ctx.db.get("plugins_versions", fixture.pluginVersionId))!;
+			const pluginVersionId = await ctx.db.insert("plugins_versions", { ...version, name: "council-two" });
+			const serviceAccountId = await seed_service_account(ctx, {
+				...fixture,
+				pluginVersionId,
+				createdBy: fixture.userId,
+			});
 			const installationId = await ctx.db.insert("plugins_workspace_installations", {
+				serviceAccountId,
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.workspaceId,
-				pluginVersionId: fixture.pluginVersionId,
+				pluginVersionId,
 				pluginName: "council-two",
 				status: "enabled",
 				configurationYaml: null,
@@ -8986,7 +9417,7 @@ describe("plugins_data_db_drain_batch", () => {
 				updatedBy: fixture.userId,
 				updatedAt: Date.now(),
 			});
-			return { ...fixture, installationId } as const;
+			return { ...fixture, pluginVersionId, installationId, serviceAccountId } as const;
 		});
 		await seed_full_store(t, fixture);
 		await seed_full_store(t, other);
@@ -9036,7 +9467,7 @@ describe("cleanup_expired_plugin_data", () => {
 	test("releases a reservation its producer never released and gives the bytes back", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 		const expiresAt = Date.now() + 60_000;
 
 		await t.mutation(internal.plugins_data.reserve_document, {
@@ -9085,7 +9516,7 @@ describe("cleanup_expired_plugin_data", () => {
 	test("deletes retry records, tombstones, and grants past their horizon and returns their slots", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 
 		await t.mutation(internal.plugins_data.reserve_document, {
 			principal,
@@ -9114,7 +9545,6 @@ describe("cleanup_expired_plugin_data", () => {
 			key: "gone",
 			revision: 2,
 		});
-		await mint_service_grant(t, fixture);
 		expect(await read_usage(t, fixture)).toMatchObject({ tombstoneDocuments: 2 });
 
 		// Move every horizon into the past, as if a day had gone by.
@@ -9160,7 +9590,7 @@ describe("cleanup_expired_plugin_data", () => {
 	test("expiring a converted-release retry does not return the revision tombstone's slot", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 
 		await t.mutation(internal.plugins_data.reserve_document, {
 			principal,
@@ -9220,7 +9650,7 @@ describe("cleanup_expired_plugin_data", () => {
 	test("returns an old never-stored retry slot after a fresh reservation writes the key", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 
 		await t.mutation(internal.plugins_data.reserve_document, {
 			principal,
@@ -9285,14 +9715,13 @@ describe("cleanup_expired_plugin_data", () => {
 		const fixture = await seed_installation(t);
 
 		await t.mutation(internal.plugins_data.reserve_document, {
-			principal: service_principal(fixture),
+			principal: await service_principal(t, fixture),
 			collection: "meetings",
 			key: "meeting-1",
 			maximumBytes: 1000,
 			idempotencyKey: "reserve-1",
 			expiresAt: Date.now() + 60_000,
 		});
-		await mint_service_grant(t, fixture);
 
 		expect(
 			await t.mutation(internal.plugins_data.cleanup_expired_plugin_data, { _test_disableReschedule: true }),
@@ -9325,6 +9754,7 @@ describe("plugins_data_db_count_installation_docs", () => {
 			const now = Date.now();
 			for (let index = 0; index < 150; index += 1) {
 				await ctx.db.insert("plugin_service_grants", {
+					serviceAccountId: fixture.serviceAccountId,
 					organizationId: fixture.organizationId,
 					workspaceId: fixture.workspaceId,
 					installationId: fixture.installationId,
@@ -9388,9 +9818,6 @@ describe("plugins_data_db_count_installation_docs", () => {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
-					readOnlyScopeNodeId: null,
-					readOnlyPluginName: null,
-					readOnlyPluginServiceTargetId: null,
 					archiveOperationId: null,
 				});
 				await ctx.db.insert("plugins_file_access_bindings", {
@@ -9438,10 +9865,13 @@ describe("plugins_data_db_count_installation_docs", () => {
 		const fixture = await seed_installation(t);
 		const otherInstallationId = await t.run(async (ctx) => {
 			const now = Date.now();
+			const { _id, _creationTime, ...version } = (await ctx.db.get("plugins_versions", fixture.pluginVersionId))!;
+			const pluginVersionId = await ctx.db.insert("plugins_versions", { ...version, name: "preview-sibling" });
 			const installationId = await ctx.db.insert("plugins_workspace_installations", {
+				serviceAccountId: await seed_service_account(ctx, { ...fixture, pluginVersionId, createdBy: fixture.userId }),
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.workspaceId,
-				pluginVersionId: fixture.pluginVersionId,
+				pluginVersionId,
 				pluginName: "preview-sibling",
 				status: "enabled",
 				configurationYaml: null,
@@ -9780,7 +10210,7 @@ describe("user_manage_scope", () => {
 		const t = test_convex();
 		const fixture = await seed_user_write_door(t, { clerkUserId: "atomic-scope-reservation-owner" });
 		const reserved = await t.mutation(internal.plugins_data.reserve_document, {
-			principal: service_principal(fixture),
+			principal: await service_principal(t, fixture),
 			collection: "messages",
 			key: "p/reserved/later",
 			maximumBytes: 1000,
@@ -9815,7 +10245,7 @@ describe("user_manage_scope", () => {
 	test("refuses a scope over a different key held by a service tombstone", async () => {
 		const t = test_convex();
 		const fixture = await seed_user_write_door(t, { clerkUserId: "atomic-scope-tombstone-owner" });
-		const principal = service_principal(fixture);
+		const principal = await service_principal(t, fixture);
 		await t.mutation(internal.plugins_data.write_versioned_document, {
 			principal,
 			collection: "messages",
@@ -9870,7 +10300,7 @@ describe("user_manage_scope", () => {
 				},
 			}),
 			t.mutation(internal.plugins_data.reserve_document, {
-				principal: store_principal(fixture, {
+				principal: await store_principal(t, fixture, {
 					kind: "plugin_service",
 					actorUserId: serviceActor.userId,
 					principalKey: `plugin_service:${fixture.installationId}:range-race`,
@@ -10434,10 +10864,13 @@ describe("user_manage_scope", () => {
 		const fixture = await seed_user_write_door(t, { clerkUserId: "scope-cap-drain-owner" });
 		const drainedInstallationId = await t.run(async (ctx) => {
 			const now = Date.now();
+			const { _id, _creationTime, ...version } = (await ctx.db.get("plugins_versions", fixture.pluginVersionId))!;
+			const pluginVersionId = await ctx.db.insert("plugins_versions", { ...version, name: "cap-drained" });
 			const installationId = await ctx.db.insert("plugins_workspace_installations", {
+				serviceAccountId: await seed_service_account(ctx, { ...fixture, pluginVersionId, createdBy: fixture.userId }),
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.workspaceId,
-				pluginVersionId: fixture.pluginVersionId,
+				pluginVersionId,
 				pluginName: "cap-drained",
 				status: "enabled",
 				configurationYaml: null,
@@ -10883,7 +11316,7 @@ describe("user_manage_scope", () => {
 
 		expect(
 			await t.query(internal.plugins_data.read_document, {
-				principal: store_principal(fixture, { kind: "plugin_run", actorUserId: alice.userId }),
+				principal: await store_principal(t, fixture, { kind: "plugin_run", actorUserId: alice.userId }),
 				collection: "messages",
 				key: "old/known",
 			}),
@@ -10987,7 +11420,7 @@ describe("user_manage_scope", () => {
 
 		// The service doors act for a person too, so they answer the same way. A private document reads
 		// as absent rather than denied, so the refusal says nothing about what is there.
-		const asBob = { ...store_principal(fixture, { actorUserId: bob.userId }) };
+		const asBob = { ...(await store_principal(t, fixture, { actorUserId: bob.userId })) };
 		const readPrivate = await t.query(internal.plugins_data.read_document, {
 			principal: asBob,
 			collection: "messages",
@@ -11895,7 +12328,7 @@ describe("user_manage_scope", () => {
 		if (owned._nay) {
 			throw new Error(owned._nay.message);
 		}
-		const service = service_principal(fixture);
+		const service = await service_principal(t, fixture);
 		const versioned = await t.mutation(internal.plugins_data.write_versioned_document, {
 			principal: service,
 			collection: "messages",
@@ -11967,7 +12400,7 @@ describe("user_manage_scope", () => {
 		]);
 		expect(staleResults.map((result) => result._nay?.message)).toEqual(Array(5).fill("Permission denied"));
 
-		const backend = store_principal(fixture, { kind: "plugin_run", actorUserId: alice.userId });
+		const backend = await store_principal(t, fixture, { kind: "plugin_run", actorUserId: alice.userId });
 		const backendResults = await Promise.all([
 			t.mutation(internal.plugins_data.write_document, {
 				principal: backend,
@@ -11998,7 +12431,7 @@ describe("user_manage_scope", () => {
 		expect(backendResults.map((result) => result._nay?.message)).toEqual(Array(4).fill("Permission denied"));
 
 		const batch = await t.mutation(internal.plugins_data.write_documents_batch, {
-			principal: store_principal(fixture, { kind: "user_api_key", actorUserId: alice.userId }),
+			principal: await store_principal(t, fixture, { kind: "user_api_key", actorUserId: alice.userId }),
 			documents: [
 				{ collection: "messages", key: "public/not-written", value: { text: "public" } },
 				{ collection: "messages", key: "released/not-written", value: { text: "private" } },
@@ -12099,6 +12532,14 @@ async function seed_binding_fixture(t: ReturnType<typeof test_convex>, args: { c
 	const fixture = await seed_user_write_door(t, { clerkUserId: args.clerkUserId });
 	await t.run(async (ctx) => {
 		await ctx.db.patch("plugins_workspace_installations", fixture.installationId, { pluginName: "data-probe" });
+		await ctx.db.patch("plugins_versions", fixture.pluginVersionId, { name: "data-probe" });
+		const binding = (await ctx.db
+			.query("plugins_service_account_bindings")
+			.withIndex("by_organization_workspace", (q) =>
+				q.eq("organizationId", fixture.organizationId).eq("workspaceId", fixture.workspaceId),
+			)
+			.unique())!;
+		await ctx.db.patch("plugins_service_account_bindings", binding._id, { pluginName: "data-probe" });
 	});
 	return fixture;
 }
@@ -12137,9 +12578,6 @@ async function insert_binding_node(
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
-			readOnlyScopeNodeId: null,
-			readOnlyPluginName: null,
-			readOnlyPluginServiceTargetId: null,
 			archiveOperationId: null,
 		});
 	});
@@ -12215,7 +12653,7 @@ async function read_binding_rows(
 }
 
 describe("plugins_data_db_apply_file_access_binding", () => {
-	test("binds a folder to a live scope, mirrors member grants, and releases on null", async () => {
+	test("mirrors readers and preserves sharing when the binding is detached", async () => {
 		const t = test_convex();
 		const fixture = await seed_binding_fixture(t, { clerkUserId: "binding-owner" });
 		const bob = await join_member_with_role(t, fixture, { clerkUserId: "binding-bob", role: "member" });
@@ -12246,22 +12684,53 @@ describe("plugins_data_db_apply_file_access_binding", () => {
 			[`${fixture.userId}:content.read`, `${bob.userId}:content.read`].sort(),
 		);
 		expect(await read_binding_rows(t, fixture)).toMatchObject([{ scopeId: "p/room", nodeId: folderId }]);
+		const softwareGrant = await t.run(async (ctx) => {
+			const now = Date.now();
+			const serviceAccountId = await ctx.db.insert("access_control_service_accounts", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				name: "Report writer",
+				createdBy: fixture.userId,
+				createdAt: now,
+				updatedAt: now,
+				revokedAt: null,
+			});
+			const grantId = await ctx.db.insert("access_control_permission_grants", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				resourceKind: "file",
+				resourceId: String(folderId),
+				principalKind: "service_account",
+				serviceAccountId,
+				permission: "content.write",
+				createdAt: now,
+				updatedAt: now,
+			});
+			return (await ctx.db.get("access_control_permission_grants", grantId))!;
+		});
 
 		// Re-applying the same binding is a no-op: the kept set leaves one grant per member.
 		const rebound = await apply_binding(t, fixture, { nodeId: folderId, readScopeId: "p/room" });
 		expect(rebound._nay).toBeUndefined();
 		expect(await read_node_read_grants(t, fixture, folderId)).toHaveLength(2);
+		expect(await t.run((ctx) => ctx.db.get("access_control_permission_grants", softwareGrant._id))).toEqual(
+			softwareGrant,
+		);
 
 		const released = await apply_binding(t, fixture, { nodeId: folderId, readScopeId: null });
 		expect(released._nay).toBeUndefined();
 		expect(await read_binding_rows(t, fixture)).toEqual([]);
-		expect(await read_node_read_grants(t, fixture, folderId)).toEqual([]);
+		expect(await read_node_read_grants(t, fixture, folderId)).toEqual(
+			[`${fixture.userId}:content.read`, `${bob.userId}:content.read`].sort(),
+		);
 		const afterRelease = await t.run(async (ctx) => ({
 			folder: await ctx.db.get("files_nodes", folderId),
 			child: await ctx.db.get("files_nodes", childId),
 		}));
-		expect(afterRelease.folder?.restrictedScopeNodeId).toBeNull();
-		expect(afterRelease.child?.restrictedScopeNodeId).toBeNull();
+		expect(afterRelease).toEqual(afterBind);
+		expect(await t.run((ctx) => ctx.db.get("access_control_permission_grants", softwareGrant._id))).toEqual(
+			softwareGrant,
+		);
 	});
 
 	test("refuses a dead scope and caps bound nodes per scope at four", async () => {
@@ -12333,7 +12802,13 @@ describe("files_sharing.set_node_share_grant", () => {
 		const nodeId = await insert_binding_node(t, fixture, { name: "taken-over.md", kind: "file" });
 		expect((await apply_binding(t, fixture, { nodeId, readScopeId: "p/takeover" }))._nay).toBeUndefined();
 		await t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", nodeId, { readOnlyScopeNodeId: nodeId, readOnlyPluginName: "data-probe" });
+			await ctx.db.patch("files_nodes", nodeId, {
+				writePolicyScopeNodeId: nodeId,
+				writePolicy: {
+					mode: "writer",
+					writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId },
+				},
+			});
 		});
 		const before = await t.run(async (ctx) => ctx.db.get("files_nodes", nodeId));
 
@@ -12665,7 +13140,7 @@ describe("scoped writes outside the frame", () => {
 
 		// Bob holds workspace `content.write` and no grant on the scope. He cannot read the private
 		// channel, and this is the other half: he must not be able to put a message in it either.
-		const asBob = store_principal(fixture, { kind: "user_api_key", actorUserId: bob.userId });
+		const asBob = await store_principal(t, fixture, { kind: "user_api_key", actorUserId: bob.userId });
 		const written = await t.mutation(internal.plugins_data.write_document, {
 			principal: asBob,
 			collection: "messages",
@@ -12687,7 +13162,7 @@ describe("scoped writes outside the frame", () => {
 		expect(await t.run(async (ctx) => await ctx.db.query("plugins_data").collect())).toEqual([]);
 
 		const deleted = await t.mutation(internal.plugins_data.delete_document, {
-			principal: store_principal(fixture, { kind: "plugin_run", actorUserId: bob.userId }),
+			principal: await store_principal(t, fixture, { kind: "plugin_run", actorUserId: bob.userId }),
 			collection: "messages",
 			key: "dm/dm-10/m1",
 		});
@@ -12695,7 +13170,7 @@ describe("scoped writes outside the frame", () => {
 
 		// Alice is in the scope, so the same door writes for her, and the document is stamped.
 		const allowed = await t.mutation(internal.plugins_data.write_document, {
-			principal: store_principal(fixture, { kind: "user_api_key", actorUserId: alice.userId }),
+			principal: await store_principal(t, fixture, { kind: "user_api_key", actorUserId: alice.userId }),
 			collection: "messages",
 			key: "dm/dm-10/m1",
 			value: { text: "hello" },

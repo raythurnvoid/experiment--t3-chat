@@ -128,6 +128,12 @@ Before the first bounded workspace content purge step, it sets the optional `org
 
 This purge includes activities; pending updates; AI files, threads, messages, and thread-state docs; public API credentials, grants, and write stages; plugin runs, handlers, installations, secrets, and UI sessions; chat messages; file metadata, chunks, Yjs state, snapshots, stats, materialization jobs, R2 assets and objects; file permission grants; and file nodes last. Treat [data-deletion: Workspace Content Purge Coverage](../data-deletion/SKILL.md#workspace-content-purge-coverage) as the ordered list.
 
+After files, assets, and accepted service records drain, the worker deletes plugin service-account
+bindings and then workspace service accounts in bounded tenant-indexed passes. This preserves identity
+until its credentials, grants, installations, and protected files are gone. Upload budgets drain last.
+The same order applies when data-only reset preserves the default workspace. Plugin uninstall alone
+keeps the account and binding; it is not a workspace purge.
+
 **Not present in Convex schema:** there is no `human_thread_messages` table; comments/human threads are not a separate purge target in this codebase today.
 
 **Scale note:** Workspace content purge must use indexed limited reads (`take(batchSize)`) or one-parent-at-a-time child deletion. Do not reintroduce tenant-sized `.collect()` reads in purge paths.

@@ -66,6 +66,8 @@ async function seed_markdown_file(args: {
 					throw new Error("Expected a parent folder path");
 				}
 				parentId = await ctx.db.insert("files_nodes", {
+					writePolicy: null,
+					writePolicyScopeNodeId: null,
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
 					path: parentPath,
@@ -91,9 +93,6 @@ async function seed_markdown_file(args: {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
-					readOnlyScopeNodeId: null,
-					readOnlyPluginName: null,
-					readOnlyPluginServiceTargetId: null,
 					archiveOperationId: null,
 				});
 			}
@@ -118,6 +117,8 @@ async function seed_markdown_file(args: {
 			updatedAt: now,
 		});
 		const fileNodeId = await ctx.db.insert("files_nodes", {
+			writePolicy: null,
+			writePolicyScopeNodeId: null,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			path: args.path,
@@ -143,9 +144,6 @@ async function seed_markdown_file(args: {
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
-			readOnlyScopeNodeId: null,
-			readOnlyPluginName: null,
-			readOnlyPluginServiceTargetId: null,
 			archiveOperationId: null,
 		});
 		const yjsSnapshotId = await ctx.db.insert("files_yjs_snapshots", {
@@ -197,7 +195,10 @@ async function seed_markdown_file(args: {
 	if (batch._nay) {
 		throw new Error(batch._nay.message);
 	}
-	const sealedByRole = new Map<"base" | "staged" | "unstaged", { stateId: Id<"files_pending_update_yjs_states">; digest: string }>();
+	const sealedByRole = new Map<
+		"base" | "staged" | "unstaged",
+		{ stateId: Id<"files_pending_update_yjs_states">; digest: string }
+	>();
 	for (const role of ["base", "staged", "unstaged"] as const) {
 		const roleYjsUpdate = role === "unstaged" ? unstagedYjsUpdate : baseYjsUpdate;
 		const staged = await args.t.mutation(internal.files_pending_updates.stage_file_pending_update_state_page_internal, {

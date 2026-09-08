@@ -361,9 +361,9 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 									// The lock icon already shows whether the file is locked, so the tooltip says what
 									// the button opens instead of repeating that. Keep the word "read-only" in the
 									// tooltip of a locked file, because on a locked file the icon is the warning.
-									tooltip={currentNode?.readOnlyState === "writable" ? "Properties" : "Read-only. Open properties"}
+									tooltip={currentNode?.canWrite ? "Properties" : "Read-only. Open properties"}
 									aria-label={`Properties of ${currentNode?.name}`}
-									data-file-read-only={currentNode?.readOnlyState ?? undefined}
+									data-file-write-policy={currentNode?.writePolicyState ?? undefined}
 									onClick={handlePropertiesClick}
 								>
 									<MyIconButtonIcon>
@@ -686,7 +686,7 @@ const FileNodeViewTopFloating = memo(function FileNodeViewTopFloating(props: Fil
 // #region file editor
 type FileNodeViewFileEditor_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
-	readOnlyState: files_VisibleTreeNode["readOnlyState"];
+	writeBlockedReason: files_VisibleTreeNode["writeBlockedReason"];
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	rootKind: FileEditor_Props["rootKind"];
 	monacoLanguageId: FileEditor_Props["monacoLanguageId"];
@@ -707,7 +707,7 @@ type FileNodeViewFileEditor_Props = {
 const FileNodeViewFileEditor = memo(function FileNodeViewFileEditor(props: FileNodeViewFileEditor_Props) {
 	const {
 		nodeId,
-		readOnlyState,
+		writeBlockedReason,
 		pendingUpdateId,
 		rootKind,
 		monacoLanguageId,
@@ -728,7 +728,7 @@ const FileNodeViewFileEditor = memo(function FileNodeViewFileEditor(props: FileN
 	return (
 		<FileEditor
 			nodeId={nodeId}
-			readOnlyState={readOnlyState}
+			writeBlockedReason={writeBlockedReason}
 			pendingUpdateId={pendingUpdateId}
 			rootKind={rootKind}
 			monacoLanguageId={monacoLanguageId}
@@ -807,7 +807,7 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 			/>
 			<FileNodeViewFileEditor
 				nodeId={editorNodeId ?? node._id}
-				readOnlyState={node.readOnlyState}
+				writeBlockedReason={node.writeBlockedReason}
 				pendingUpdateId={pendingUpdateId}
 				rootKind={node.textKind}
 				monacoLanguageId={files_monaco_language_id_of_content_type(node.contentType)}
@@ -1458,9 +1458,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		membershipId,
 		nodeId: folderItemId,
 	});
-	const folderNode = fileNodesList?.find((node) => node._id === folderItemId);
-	const folderCanReceiveChildren =
-		canWriteFolder === true && (folderItemId === files_ROOT_ID || folderNode?.readOnlyState === "writable");
+	const folderCanReceiveChildren = canWriteFolder === true;
 	// Moving a child out of a restricted folder needs Can manage on its source scope.
 	// Keep manual `useMemo` in this group. Convex `useQueries` re-subscribes with a
 	// render-phase setState whenever the queries object identity changes, and the React
@@ -1593,9 +1591,9 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 			// a source with a read-only child, or a read-only destination.
 			if (
 				!sourceNode ||
-				sourceNode.readOnlyState !== "writable" ||
+				!sourceNode.canWrite ||
 				readOnlyAncestorIds.has(sourceNode._id) ||
-				(args.targetParentId !== files_ROOT_ID && targetNode?.readOnlyState !== "writable")
+				(args.targetParentId !== files_ROOT_ID && targetNode?.canWrite !== true)
 			) {
 				return false;
 			}
@@ -1692,7 +1690,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 	const readmeEditor = readmeNodeId ? (
 		<FileNodeViewFolderReadmeEditor
 			readmeNodeId={readmeNodeId}
-			readOnlyState={readmeNode?.readOnlyState ?? "writable"}
+			writeBlockedReason={readmeNode?.writeBlockedReason ?? null}
 			pendingUpdateId={pendingUpdateId}
 			// The README node owns its shape: a README.md created by copying a plain text file is
 			// plain text, and the embed must open it the same way the file view does.
@@ -2211,14 +2209,13 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 		folderItemId ? { membershipId, nodeId: folderItemId } : "skip",
 	);
 	const folderNode = fileNodesList?.find((node) => node._id === folderItemId);
-	const canReceiveChildren =
-		canWrite === true && (folderItemId === files_ROOT_ID || folderNode?.readOnlyState === "writable");
+	const canReceiveChildren = canWrite === true;
 	const createUnavailableMessage =
 		canWrite === false
-			? "You don't have permission to create files here."
-			: folderItemId !== files_ROOT_ID && folderNode && folderNode.readOnlyState !== "writable"
-				? "This folder is read-only."
-				: null;
+			? folderNode?.writeBlockedReason === "read_only"
+				? "A file policy blocks creating files here."
+				: "You don't have permission to create files here."
+			: null;
 
 	const createNodeModalRef = useRef<FileNodeViewFolderCreateNodeModal_Ref | null>(null);
 	const [isCreatingNode, setIsCreatingNode] = useState(false);
@@ -2399,12 +2396,11 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 	});
 	const capabilities = files_get_read_only_capabilities({
 		canWrite: canWrite === true,
-		readOnlyState: child.readOnlyState,
 		hasVisibleReadOnlyDescendant,
 	});
 	const readOnlyLabels = files_get_read_only_row_labels({
-		readOnlyState: child.readOnlyState,
-		readOnlySourcePath: child.readOnlySourcePath,
+		canWrite: child.canWrite,
+		writeBlockedReason: child.writeBlockedReason,
 		hasVisibleReadOnlyDescendant,
 	});
 
@@ -2798,7 +2794,7 @@ type FileNodeViewFolderReadmeEditor_ClassNames = "FileNodeViewFolderReadmeEditor
 
 type FileNodeViewFolderReadmeEditor_Props = {
 	readmeNodeId: app_convex_Id<"files_nodes">;
-	readOnlyState: files_VisibleTreeNode["readOnlyState"];
+	writeBlockedReason: files_VisibleTreeNode["writeBlockedReason"];
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	rootKind: files_YjsRootKind;
 	monacoLanguageId: string;
@@ -2820,7 +2816,7 @@ const FileNodeViewFolderReadmeEditor = memo(function FileNodeViewFolderReadmeEdi
 ) {
 	const {
 		readmeNodeId,
-		readOnlyState,
+		writeBlockedReason,
 		pendingUpdateId,
 		rootKind,
 		monacoLanguageId,
@@ -2842,7 +2838,7 @@ const FileNodeViewFolderReadmeEditor = memo(function FileNodeViewFolderReadmeEdi
 			<FileNodeViewFileEditor
 				key={readmeNodeId}
 				nodeId={readmeNodeId}
-				readOnlyState={readOnlyState}
+				writeBlockedReason={writeBlockedReason}
 				pendingUpdateId={pendingUpdateId}
 				rootKind={rootKind}
 				monacoLanguageId={monacoLanguageId}
@@ -3220,17 +3216,14 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		? `${activePendingUpdateIndex + 1} of ${pendingUpdates.length}`
 		: "Review pending updates";
 
-	// The server hides the lock source path when the user cannot read that folder.
 	const readOnlyMessage = resolvedNode
-		? resolvedNode.readOnlyState === "self"
-			? `This ${resolvedNode.kind} is read-only.`
-			: resolvedNode.readOnlyState === "inherited"
-				? resolvedNode.readOnlySourcePath
-					? `Read-only because ${resolvedNode.readOnlySourcePath} is locked.`
-					: "Read-only from a protected folder."
-				: resolvedNode.kind === "folder" && readOnlyAncestorIds.has(resolvedNode._id)
-					? "This folder contains read-only items. It cannot be renamed, moved, or archived."
-					: null
+		? !resolvedNode.canWrite
+			? resolvedNode.writeBlockedReason === "read_only"
+				? `A file policy blocks editing this ${resolvedNode.kind}.`
+				: `You don't have permission to edit this ${resolvedNode.kind}.`
+			: resolvedNode.kind === "folder" && readOnlyAncestorIds.has(resolvedNode._id)
+				? "This folder contains read-only items. It cannot be renamed, moved, or archived."
+				: null
 		: null;
 
 	const handleReviewPendingUpdates = useFn(() => {

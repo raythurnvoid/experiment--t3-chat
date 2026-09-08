@@ -192,23 +192,9 @@ type TreeItems = {
 	itemById: Map<string, files_TreeItem>;
 };
 
-// Permission can load or change live. Require true so edit controls fail closed.
-//
-// The workspace answer stands in for unrestricted nodes only while nothing writes a
-// `resourceKind: "workspace"` grant. The node check ignores such a grant for a file, the
-// workspace check honours it, so the day one is written this would report writable on
-// unrestricted rows that the server then refuses. No production code writes one today —
-// only a test fixture does — so if you add one, go back to asking per node.
-function can_write_item(args: {
-	item: files_TreeItem;
-	workspaceWritePermission: boolean | undefined;
-	restrictedScopeWritePermissions: Readonly<Record<string, boolean | Error | undefined>>;
-}) {
-	if (!files_is_node(args.item) || !args.item.restrictedScopeNodeId) {
-		return args.workspaceWritePermission === true;
-	}
-
-	return args.restrictedScopeWritePermissions[args.item.restrictedScopeNodeId] === true;
+// Every real node has its own policy answer. The synthetic root uses workspace permission.
+function can_write_item(args: { item: files_TreeItem; workspaceWritePermission: boolean | undefined }) {
+	return files_is_node(args.item) ? args.item.canWrite : args.workspaceWritePermission === true;
 }
 
 function can_rename_item(args: {
@@ -220,7 +206,6 @@ function can_rename_item(args: {
 		files_is_node(args.item) &&
 		files_get_read_only_capabilities({
 			canWrite: args.canWriteItem(args.item),
-			readOnlyState: args.item.readOnlyState,
 			hasVisibleReadOnlyDescendant: args.readOnlyAncestorIds.has(args.item._id),
 		}).canRelocateOrRename
 	);
@@ -1859,7 +1844,6 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 
 	const capabilities = files_get_read_only_capabilities({
 		canWrite,
-		readOnlyState: itemData.readOnlyState,
 		hasVisibleReadOnlyDescendant,
 	});
 	const canRename = files_is_node(itemData) && capabilities.canRelocateOrRename;
@@ -1869,7 +1853,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 			item.getTree().abortRenaming();
 			queueMicrotask(() => wrapperElementRef.current?.focus());
 
-			if (itemData.readOnlyState !== "writable") {
+			if (!itemData.canWrite) {
 				toast.info(`Rename canceled. ${itemData.name} is read-only.`);
 			} else if (hasVisibleReadOnlyDescendant) {
 				toast.info(`Rename canceled. ${itemData.name} contains read-only items.`);
@@ -1877,7 +1861,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 				toast.info("You no longer have permission to edit this");
 			}
 		}
-	}, [canRename, hasVisibleReadOnlyDescendant, isRenaming, item, itemData.name, itemData.readOnlyState]);
+	}, [canRename, hasVisibleReadOnlyDescendant, isRenaming, item, itemData.name, itemData.canWrite]);
 	// The synthetic root is not a real node, so there is nothing to share it with. Not gated on
 	// `canWrite`: `get_node_share_state` answers for anybody who may read the node, on purpose, so a
 	// reader can see who else can open it. Gating here would only make this disagree with the header
@@ -1885,8 +1869,8 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 	const canShare = files_is_node(itemData);
 
 	const readOnlyLabels = files_get_read_only_row_labels({
-		readOnlyState: itemData.readOnlyState,
-		readOnlySourcePath: files_is_node(itemData) ? itemData.readOnlySourcePath : undefined,
+		canWrite,
+		writeBlockedReason: itemData.writeBlockedReason,
 		hasVisibleReadOnlyDescendant,
 	});
 	const label = `${itemData.name}${isAddedFile ? " added" : ""}${isRestricted ? " restricted" : ""}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}${isArchived ? " archived" : ""}`;
@@ -3099,7 +3083,7 @@ type FilesSidebarUploadDraft = {
 		nodeId: app_convex_Id<"files_nodes">;
 		kind: files_TreeItem["kind"];
 		name: string;
-		readOnlyState: files_VisibleTreeNode["readOnlyState"];
+		canWrite: boolean;
 	};
 };
 
@@ -3144,7 +3128,7 @@ function get_upload_conflict_modal_state(args: { draft: FilesSidebarUploadDraft 
 			: undefined;
 	const helperText =
 		invalidFilenameMessage ??
-		(args.draft?.conflict?.readOnlyState !== "writable" && pathConflictMessage
+		(args.draft?.conflict?.canWrite !== true && pathConflictMessage
 			? "The existing file is read-only. Choose a different filename."
 			: pathConflictMessage) ??
 		"This file will be uploaded with the specified filename.";
@@ -3298,7 +3282,7 @@ const FilesSidebarUploadConflictModal = memo(function FilesSidebarUploadConflict
 							<MyButton
 								type="button"
 								variant="destructive"
-								disabled={isUploading || draft.conflict?.readOnlyState !== "writable"}
+								disabled={isUploading || draft.conflict?.canWrite !== true}
 								onClick={onReplace}
 							>
 								Replace
@@ -3836,21 +3820,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		],
 		[treeItemsList],
 	);
-	const restrictedScopeWritePermissions = useQueries(
-		useMemo(
-			() =>
-				Object.fromEntries(
-					restrictedScopeNodeIds.map((nodeId) => [
-						nodeId,
-						{
-							query: app_convex_api.files_nodes.get_current_user_file_write_permission,
-							args: { membershipId, nodeId },
-						},
-					]),
-				),
-			[membershipId, restrictedScopeNodeIds],
-		),
-	);
 	const restrictedScopeShareStates = useQueries(
 		useMemo(
 			() =>
@@ -3866,14 +3835,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			[membershipId, restrictedScopeNodeIds],
 		),
 	);
-	// Use one permission answer for row menus, keyboard rename, and drag/drop. Query each restricted
-	// scope once for its write answer and share state, which tells cross-scope moves whether the user
-	// has Can manage.
+	// Use the node's effective answer for row menus, keyboard rename, and drag/drop.
 	const canWriteItem = useFn((item: files_TreeItem) =>
 		can_write_item({
 			item,
 			workspaceWritePermission,
-			restrictedScopeWritePermissions,
 		}),
 	);
 	// Render-time twin of `canWriteItem`. Do not call the useFn above while rendering: its
@@ -3885,13 +3851,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		can_write_item({
 			item,
 			workspaceWritePermission,
-			restrictedScopeWritePermissions,
 		});
 
 	const getItemCapabilities = useFn((item: files_TreeItem) =>
 		files_get_read_only_capabilities({
 			canWrite: canWriteItem(item),
-			readOnlyState: item.readOnlyState,
 			hasVisibleReadOnlyDescendant: files_is_node(item) && readOnlyAncestorIds.has(item._id),
 		}),
 	);
@@ -3900,7 +3864,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const getItemCapabilitiesInRender = (item: files_TreeItem) =>
 		files_get_read_only_capabilities({
 			canWrite: canWriteItemInRender(item),
-			readOnlyState: item.readOnlyState,
 			hasVisibleReadOnlyDescendant: files_is_node(item) && readOnlyAncestorIds.has(item._id),
 		});
 
@@ -4292,7 +4255,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 								nodeId: existingNode.nodeId,
 								kind: existingNode.kind,
 								name: existingNode.name,
-								readOnlyState: existingItem.readOnlyState,
+								canWrite: existingItem.canWrite,
 							},
 						});
 						return;
@@ -5529,11 +5492,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	});
 
 	const handleUploadDraftReplace = useFn(() => {
-		if (
-			!uploadDraft?.conflict ||
-			uploadDraft.conflict.kind !== "file" ||
-			uploadDraft.conflict.readOnlyState !== "writable"
-		) {
+		if (!uploadDraft?.conflict || uploadDraft.conflict.kind !== "file" || uploadDraft.conflict.canWrite !== true) {
 			return;
 		}
 
@@ -5791,7 +5750,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		archiveOperationId?: string;
 		restrictedScopeNodeId?: string;
 		updatedAt?: number;
-		readOnlyState?: files_VisibleTreeNode["readOnlyState"];
+		canWrite?: boolean;
 	}): files_VisibleTreeNode => {
 		const id = args.id as app_convex_Id<"files_nodes">;
 		const path = args.path ?? `/${args.name}`;
@@ -5828,7 +5787,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			createdBy: "test-user" as app_convex_Id<"users">,
 			updatedAt: args.updatedAt ?? 1,
 			updatedBy: "test-user" as app_convex_Id<"users">,
-			readOnlyState: args.readOnlyState ?? "writable",
+			canWrite: args.canWrite ?? true,
+			writeBlockedReason: args.canWrite === false ? "read_only" : null,
+			writePolicyState: args.canWrite === false ? "self" : "none",
 		};
 	};
 
@@ -5857,7 +5818,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 							nodeId: "conflict_node" as app_convex_Id<"files_nodes">,
 							kind: args?.conflictKind ?? "file",
 							name: args?.conflictName ?? filename,
-							readOnlyState: "writable",
+							canWrite: true,
 						},
 					}
 				: {}),
@@ -5865,27 +5826,26 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	};
 
 	describe("can_write_item", () => {
-		test("uses the workspace answer for root and unrestricted nodes", () => {
+		test("uses workspace permission only for the synthetic root", () => {
 			const unrestricted = test_node({
 				id: "file",
 				parentId: files_ROOT_ID,
 				kind: "file",
 				name: "file.md",
 			});
-			const args = { workspaceWritePermission: true, restrictedScopeWritePermissions: {} };
+			const args = { workspaceWritePermission: true };
 
 			expect(can_write_item({ ...args, item: files_SYNTHETIC_ROOT_FOLDER })).toBe(true);
 			expect(can_write_item({ ...args, item: unrestricted })).toBe(true);
 			expect(
 				can_write_item({
-					item: unrestricted,
+					item: files_SYNTHETIC_ROOT_FOLDER,
 					workspaceWritePermission: undefined,
-					restrictedScopeWritePermissions: {},
 				}),
 			).toBe(false);
 		});
 
-		test("uses the restricted scope answer instead of workspace write", () => {
+		test("uses each node's effective answer instead of workspace write", () => {
 			const restricted = test_node({
 				id: "file",
 				parentId: "scope",
@@ -5896,16 +5856,14 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(
 				can_write_item({
-					item: restricted,
+					item: { ...restricted, canWrite: false },
 					workspaceWritePermission: true,
-					restrictedScopeWritePermissions: { scope: false },
 				}),
 			).toBe(false);
 			expect(
 				can_write_item({
 					item: restricted,
 					workspaceWritePermission: false,
-					restrictedScopeWritePermissions: { scope: true },
 				}),
 			).toBe(true);
 		});
@@ -5930,13 +5888,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				parentId: files_ROOT_ID,
 				kind: "file",
 				name: "file.md",
-				readOnlyState: "self",
+				canWrite: false,
 			});
 			const folder = test_node({ id: "folder", parentId: files_ROOT_ID, kind: "folder", name: "folder" });
 
-			expect(can_rename_item({ item: lockedFile, canWriteItem: () => true, readOnlyAncestorIds: new Set() })).toBe(
-				false,
-			);
+			expect(
+				can_rename_item({ item: lockedFile, canWriteItem: (item) => item.canWrite, readOnlyAncestorIds: new Set() }),
+			).toBe(false);
 			expect(
 				can_rename_item({
 					item: folder,
@@ -7406,7 +7364,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					itemById: new Map(treeItems.itemById).set(archivedFolder._id, archivedFolder),
 				},
 				searchQuery,
-				metadataNodeIds: new Map([[searchQuery, new Set(searchQuery === "status:open" ? [archivedFolder._id] : ["task"])]]),
+				metadataNodeIds: new Map([
+					[searchQuery, new Set(searchQuery === "status:open" ? [archivedFolder._id] : ["task"])],
+				]),
 			});
 			expect(result.visibleFileIds.has(archivedFolder._id)).toBe(false);
 		});

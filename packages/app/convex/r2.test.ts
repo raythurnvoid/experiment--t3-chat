@@ -398,6 +398,7 @@ async function install_upload_plugin(
 		acceptedCapabilities: ["plugin.secrets.read", "outbound.fetch"],
 		acceptedOutboundOrigins: [],
 		acceptedUiOutboundOrigins: [],
+		serviceAccountGrants: [{ resource: { kind: "workspace" }, level: "write" }],
 	});
 	if (installed._nay) {
 		throw new Error(installed._nay.message);
@@ -2403,7 +2404,7 @@ describe("r2 asset content", () => {
 	test("archives active generated output name conflicts before plugin writes", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		await install_upload_plugin(t, {
+		const installationId = await install_upload_plugin(t, {
 			userId: db.userId,
 			membershipId: db.membershipId,
 			name: "pdf",
@@ -2453,12 +2454,23 @@ describe("r2 asset content", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
+
 				archiveOperationId: null,
 			}),
 		);
+		const installation = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", installationId));
+		if (!installation) throw new Error("Expected plugin installation");
+		// Replacing an existing plugin output also changes its access state.
+		expect(
+			await asUser.mutation(api.access_control.set_service_account_grant, {
+				membershipId: db.membershipId,
+				serviceAccountId: installation.serviceAccountId,
+				resource: { kind: "file", nodeId: existingGeneratedId },
+				level: "manage",
+			}),
+		).toEqual({ _yay: null });
 		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
 		if (!asset) {
 			throw new Error("Expected upload asset");
@@ -2723,9 +2735,9 @@ describe("cleanup_expired_unfinalized_assets", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
+
 				archiveOperationId: null,
 			});
 			await ctx.db.insert("files_yjs_snapshots", {
@@ -2907,7 +2919,8 @@ describe("cleanup_expired_unfinalized_assets", () => {
 		const now = Date.now() + 8 * DAY_MS + 16 * 60 * 1000;
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", upload.nodeId, {
-				readOnlyScopeNodeId: upload.nodeId,
+				writePolicyScopeNodeId: upload.nodeId,
+				writePolicy: { mode: "read_only" },
 			});
 			await ctx.db.patch("files_r2_assets", upload.assetId, {
 				unfinalizedExpiresAt: now - 1,
@@ -2934,7 +2947,8 @@ describe("cleanup_expired_unfinalized_assets", () => {
 		const now = Date.now() + 8 * DAY_MS + 16 * 60 * 1000;
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", upload.nodeId, {
-				readOnlyScopeNodeId: upload.nodeId,
+				writePolicyScopeNodeId: upload.nodeId,
+				writePolicy: { mode: "read_only" },
 			});
 			await ctx.db.patch("files_r2_assets", upload.assetId, {
 				unfinalizedExpiresAt: now - 1,
@@ -2953,7 +2967,8 @@ describe("cleanup_expired_unfinalized_assets", () => {
 		// a failed placeholder and its R2 object alive forever.
 		await t.run(async (ctx) =>
 			ctx.db.patch("files_nodes", upload.nodeId, {
-				readOnlyScopeNodeId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
 			}),
 		);
 		const swept = await t.mutation(internal.r2.cleanup_expired_unfinalized_assets, {
@@ -3037,9 +3052,9 @@ describe("cleanup_expired_unfinalized_assets", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
+
 				archiveOperationId: null,
 			});
 		});
@@ -3380,9 +3395,9 @@ describe("content pipeline crash orphans", () => {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
-					readOnlyScopeNodeId: null,
-					readOnlyPluginName: null,
-					readOnlyPluginServiceTargetId: null,
+					writePolicyScopeNodeId: null,
+					writePolicy: null,
+
 					archiveOperationId: null,
 				});
 				return { committedAssetId, committedKey: "test/restore-committed" };
@@ -3505,9 +3520,9 @@ describe("content pipeline crash orphans", () => {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
-					readOnlyScopeNodeId: null,
-					readOnlyPluginName: null,
-					readOnlyPluginServiceTargetId: null,
+					writePolicyScopeNodeId: null,
+					writePolicy: null,
+
 					archiveOperationId: null,
 				});
 				await ctx.db.insert("files_yjs_snapshots", {
@@ -3756,7 +3771,12 @@ describe("process_uploaded_asset_event accepted upload", () => {
 			).status,
 		).toBe(204);
 
-		await t.run(async (ctx) => ctx.db.patch("files_nodes", upload.nodeId, { readOnlyScopeNodeId: upload.nodeId }));
+		await t.run(async (ctx) =>
+			ctx.db.patch("files_nodes", upload.nodeId, {
+				writePolicyScopeNodeId: upload.nodeId,
+				writePolicy: { mode: "read_only" },
+			}),
+		);
 		expect((await fetch(upload.url, { method: "PUT", headers: upload.headers, body: "late-version" })).status).toBe(
 			412,
 		);
@@ -3799,7 +3819,12 @@ describe("process_uploaded_asset_event accepted upload", () => {
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", locked.assetId))?.r2Bucket ?? "");
 
 		// The scope locks after the signed PUT target was minted, before its event arrives.
-		await t.run(async (ctx) => ctx.db.patch("files_nodes", locked.nodeId, { readOnlyScopeNodeId: locked.nodeId }));
+		await t.run(async (ctx) =>
+			ctx.db.patch("files_nodes", locked.nodeId, {
+				writePolicyScopeNodeId: locked.nodeId,
+				writePolicy: { mode: "read_only" },
+			}),
+		);
 		r2Objects.set(locked.key, new TextEncoder().encode("locked-bytes"));
 		r2Objects.set(control.key, new TextEncoder().encode("control-bytes"));
 
@@ -3833,7 +3858,7 @@ describe("process_uploaded_asset_event accepted upload", () => {
 		// Publication does not change the lock or replace the node.
 		expect(lockedNode?.archiveOperationId).toBeNull();
 		expect(lockedNode?.assetId).toBe(locked.assetId);
-		expect(lockedNode?.readOnlyScopeNodeId).toBe(locked.nodeId);
+		expect(lockedNode?.writePolicyScopeNodeId).toBe(locked.nodeId);
 		expect(controlAsset?.r2Key).toBe(control.key);
 		expect(controlAsset?.unfinalizedExpiresAt).toBeUndefined();
 
@@ -3870,6 +3895,16 @@ describe("process_uploaded_asset_event accepted upload", () => {
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
 
 		// Locking and then unlocking after acceptance does not cancel this upload.
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		for (const writePolicy of [{ mode: "read_only" } as const, null]) {
+			expect(
+				await asUser.mutation(api.files_nodes.set_node_write_policy, {
+					membershipId: db.membershipId,
+					nodeId: upload.nodeId,
+					writePolicy,
+				}),
+			).toEqual({ _yay: null });
+		}
 		r2Objects.set(upload.key, new TextEncoder().encode("lock-cycle-bytes"));
 
 		const response = await post_r2_put_event(t, {
@@ -3969,6 +4004,9 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		});
 		return await t.run(async (ctx) => {
 			const now = Date.now();
+			const installation = await ctx.db.get("plugins_workspace_installations", installationId);
+			if (!installation) throw new Error("Expected plugin installation");
+			const serviceAccountId = installation.serviceAccountId;
 			await ctx.db.insert("quotas", {
 				quotaName: "plugin_service_storage_bytes",
 				organizationId: db.organizationId,
@@ -4010,10 +4048,10 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 				assetId: upload.assetId,
 			});
 			await ctx.db.patch("files_nodes", upload.nodeId, {
-				readOnlyScopeNodeId: upload.nodeId,
-				readOnlyPluginServiceTargetId: targetId,
+				writePolicyScopeNodeId: upload.nodeId,
+				writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId } },
 			});
-			return targetId;
+			return { targetId, serviceAccountId };
 		});
 	}
 
@@ -4067,7 +4105,12 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		// The lock lands between the event and the conversion action run.
 		const locked = await create_upload_fixture(t, db, "locked.md", "text/markdown;charset=utf-8");
 		await confirm_upload_put(t, locked, "# Locked\n\nbody", "message_locked_md");
-		await t.run(async (ctx) => ctx.db.patch("files_nodes", locked.nodeId, { readOnlyScopeNodeId: locked.nodeId }));
+		await t.run(async (ctx) =>
+			ctx.db.patch("files_nodes", locked.nodeId, {
+				writePolicyScopeNodeId: locked.nodeId,
+				writePolicy: { mode: "read_only" },
+			}),
+		);
 		await t.action(internal.r2.finalize_uploaded_text_file, {
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -4086,7 +4129,7 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		expect(docs.node?.yjsSnapshotId).toEqual(expect.any(String));
 		expect(docs.node?.yjsLastSequenceId).toEqual(expect.any(String));
 		expect(docs.node?.textKind).toBe("rich_text");
-		expect(docs.node?.readOnlyScopeNodeId).toBe(locked.nodeId);
+		expect(docs.node?.writePolicyScopeNodeId).toBe(locked.nodeId);
 		expect(docs.asset?.processingWorkId).toBeNull();
 		expect(docs.asset?.r2Key).toBe(locked.key);
 		expect(r2Objects.has(locked.key)).toBe(true);
@@ -4097,7 +4140,7 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const upload = await create_upload_fixture(t, db, "service-transcript.md", "text/markdown;charset=utf-8");
-		const targetId = await seed_non_collaborative_service_target(t, db, upload);
+		const { targetId, serviceAccountId } = await seed_non_collaborative_service_target(t, db, upload);
 		await confirm_upload_put(t, upload, "# Service transcript\n\nbody", "message_service_non_collaborative");
 
 		await t.action(internal.r2.finalize_uploaded_text_file, {
@@ -4109,6 +4152,7 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 
 		const published = await t.run(async (ctx) => ({
 			node: await ctx.db.get("files_nodes", upload.nodeId),
+			target: await ctx.db.get("plugin_service_storage_targets", targetId),
 			sourceAsset: await ctx.db.get("files_r2_assets", upload.assetId),
 			assets: await ctx.db.query("files_r2_assets").collect(),
 			yjsSnapshots: await ctx.db.query("files_yjs_snapshots").collect(),
@@ -4120,9 +4164,10 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		expect(published.node).toMatchObject({
 			collaborationEnabled: false,
 			textKind: "rich_text",
-			readOnlyScopeNodeId: upload.nodeId,
-			readOnlyPluginServiceTargetId: targetId,
+			writePolicyScopeNodeId: upload.nodeId,
+			writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId } },
 		});
+		expect(published.target).toMatchObject({ _id: targetId, nodeId: upload.nodeId, state: "committed" });
 		expect(published.node?.yjsSnapshotId).toBeNull();
 		expect(published.node?.yjsLastSequenceId).toBeNull();
 		expect(published.node?.assetId).not.toBe(upload.assetId);
@@ -4140,11 +4185,11 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		expect(published.chunks.length).toBeGreaterThan(0);
 	});
 
-	test("keeps the service lock and provenance when non-collaborative conversion falls back", async () => {
+	test("keeps the selected service writer and target when non-collaborative conversion falls back", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const upload = await create_upload_fixture(t, db, "service-invalid.md", "text/markdown;charset=utf-8");
-		const targetId = await seed_non_collaborative_service_target(t, db, upload);
+		const { targetId, serviceAccountId } = await seed_non_collaborative_service_target(t, db, upload);
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
 		r2Objects.set(upload.key, new Uint8Array([0x48, 0xff, 0xfe]));
 		expect(
@@ -4166,14 +4211,16 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		});
 		const settled = await t.run(async (ctx) => ({
 			node: await ctx.db.get("files_nodes", upload.nodeId),
+			target: await ctx.db.get("plugin_service_storage_targets", targetId),
 			asset: await ctx.db.get("files_r2_assets", upload.assetId),
 			yjsSnapshots: await ctx.db.query("files_yjs_snapshots").collect(),
 		}));
 		expect(settled.node).toMatchObject({
 			assetId: upload.assetId,
-			readOnlyScopeNodeId: upload.nodeId,
-			readOnlyPluginServiceTargetId: targetId,
+			writePolicyScopeNodeId: upload.nodeId,
+			writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId } },
 		});
+		expect(settled.target).toMatchObject({ _id: targetId, nodeId: upload.nodeId, state: "committed" });
 		expect(settled.node?.collaborationEnabled).toBeNull();
 		expect(settled.node?.yjsSnapshotId).toBeNull();
 		expect(settled.asset?.processingWorkId).toBeNull();
@@ -4217,7 +4264,8 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 				lockApplied = true;
 				await t.run(async (ctx) =>
 					ctx.db.patch("files_nodes", upload.nodeId, {
-						readOnlyScopeNodeId: upload.nodeId,
+						writePolicyScopeNodeId: upload.nodeId,
+						writePolicy: { mode: "read_only" },
 					}),
 				);
 			}
@@ -4344,7 +4392,8 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		await run_conversion_with_mid_put_change(t, db, upload, async () => {
 			await t.run(async (ctx) => {
 				await ctx.db.patch("files_nodes", upload.nodeId, {
-					readOnlyScopeNodeId: upload.nodeId,
+					writePolicyScopeNodeId: upload.nodeId,
+					writePolicy: { mode: "read_only" },
 				});
 			});
 		});
@@ -4362,7 +4411,7 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		expect(published.node?.yjsSnapshotId).toEqual(expect.any(String));
 		expect(published.node?.yjsLastSequenceId).toEqual(expect.any(String));
 		expect(published.node?.textKind).toBe("rich_text");
-		expect(published.node?.readOnlyScopeNodeId).toBe(upload.nodeId);
+		expect(published.node?.writePolicyScopeNodeId).toBe(upload.nodeId);
 		expect(published.sourceAsset?.processingWorkId).toBeNull();
 		expect(published.sourceAsset?.r2Key).toBe(upload.key);
 		expect(published.assets).toHaveLength(3);
@@ -4426,7 +4475,18 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		const upload = await create_upload_fixture(t, db, "lock-cycle.md", "text/markdown;charset=utf-8");
 		await confirm_upload_put(t, upload, "# Lock cycle\n\nbody", "message_lock_cycle_md");
 
-		await run_conversion_with_mid_put_change(t, db, upload, async () => {});
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		await run_conversion_with_mid_put_change(t, db, upload, async () => {
+			for (const writePolicy of [{ mode: "read_only" } as const, null]) {
+				expect(
+					await asUser.mutation(api.files_nodes.set_node_write_policy, {
+						membershipId: db.membershipId,
+						nodeId: upload.nodeId,
+						writePolicy,
+					}),
+				).toEqual({ _yay: null });
+			}
+		});
 
 		const published = await t.run(async (ctx) => ({
 			node: await ctx.db.get("files_nodes", upload.nodeId),
@@ -4435,6 +4495,8 @@ describe("finalize_uploaded_text_file accepted upload", () => {
 		}));
 		expect(published.node?.yjsSnapshotId).toEqual(expect.any(String));
 		expect(published.node?.textKind).toBe("rich_text");
+		expect(published.node?.writePolicyScopeNodeId).toBeNull();
+		expect(published.node?.writePolicy).toBeNull();
 		expect(published.sourceAsset?.processingWorkId).toBeNull();
 		expect(published.jobs).toEqual([]);
 	});
@@ -4516,7 +4578,8 @@ describe("materialize_file_content on a locked node", () => {
 		// content, so materialization is derived completion and must NOT be gated by the lock.
 		await t.run(async (ctx) =>
 			ctx.db.patch("files_nodes", created._yay.nodeId, {
-				readOnlyScopeNodeId: created._yay.nodeId,
+				writePolicyScopeNodeId: created._yay.nodeId,
+				writePolicy: { mode: "read_only" },
 			}),
 		);
 
@@ -5074,7 +5137,12 @@ describe("get_asset", () => {
 
 		const upload = await create_upload_fixture(t, db, "locked-query.png");
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
-		await t.run(async (ctx) => ctx.db.patch("files_nodes", upload.nodeId, { readOnlyScopeNodeId: upload.nodeId }));
+		await t.run(async (ctx) =>
+			ctx.db.patch("files_nodes", upload.nodeId, {
+				writePolicyScopeNodeId: upload.nodeId,
+				writePolicy: { mode: "read_only" },
+			}),
+		);
 		r2Objects.set(upload.key, new TextEncoder().encode("locked-bytes"));
 		expect(
 			(await post_r2_put_event(t, { bucket, key: upload.key, size: 12, messageId: "message_get_asset_locked" })).status,
@@ -5087,6 +5155,6 @@ describe("get_asset", () => {
 		]);
 		expect(asset?.r2Key).toBe(upload.key);
 		expect(asset?.unfinalizedExpiresAt).toBeUndefined();
-		expect(node?.readOnlyScopeNodeId).toBe(upload.nodeId);
+		expect(node?.writePolicyScopeNodeId).toBe(upload.nodeId);
 	});
 });

@@ -16,8 +16,12 @@ import { api, components, internal } from "./_generated/api.js";
 import {
 	files_db_yjs_push_update,
 	files_line_range_from_text,
-	files_node_require_writable,
+	files_nodes_db_require_writable,
+	files_nodes_db_set_write_policy,
+	files_nodes_db_get_write_policy_management_state,
+	type files_nodes_WriteContext,
 	files_nodes_db_apply_pending_move,
+	files_nodes_db_create_node_recursively_at_path,
 	files_nodes_db_hard_delete_node,
 	files_tail_lines_from_text,
 	yjs_reserve_and_increment_last_sequence,
@@ -1180,9 +1184,9 @@ test("home file can be renamed and moved like any file", async () => {
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
-			readOnlyScopeNodeId: null,
-			readOnlyPluginName: null,
-			readOnlyPluginServiceTargetId: null,
+			writePolicyScopeNodeId: null,
+			writePolicy: null,
+
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			createdBy: db.userId,
@@ -1249,9 +1253,9 @@ test("home file can be archived like any file", async () => {
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
-			readOnlyScopeNodeId: null,
-			readOnlyPluginName: null,
-			readOnlyPluginServiceTargetId: null,
+			writePolicyScopeNodeId: null,
+			writePolicy: null,
+
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
 			createdBy: db.userId,
@@ -3118,7 +3122,10 @@ describe("files_nodes.create_upload_nodes", () => {
 			headers: { "Content-Type": "application/pdf" },
 		});
 		// No declared type: the file is stored as plain bytes, and the signed PUT pins that type.
-		expect(imported._yay.created[2]!.headers).toEqual({ "Content-Type": "application/octet-stream", "If-None-Match": "*" });
+		expect(imported._yay.created[2]!.headers).toEqual({
+			"Content-Type": "application/octet-stream",
+			"If-None-Match": "*",
+		});
 
 		const docs = await t.run(async (ctx) => {
 			const report = await ctx.db.get("files_nodes", imported._yay.created[0]!.nodeId);
@@ -4101,9 +4108,7 @@ describe("files_nodes_db_hard_delete_node", () => {
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 		test_setup_r2_capture();
-		const nodeId = await test_materialize_markdown_file(
-			t, asUser, db, "/delete-cleanup.md", "# Kept until deletion\n",
-		);
+		const nodeId = await test_materialize_markdown_file(t, asUser, db, "/delete-cleanup.md", "# Kept until deletion\n");
 
 		// Hold the scheduled worker so deletion must take ownership of its asset.
 		vi.useFakeTimers();
@@ -5889,9 +5894,9 @@ async function test_insert_searchable_markdown_file(
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
-			readOnlyScopeNodeId: null,
-			readOnlyPluginName: null,
-			readOnlyPluginServiceTargetId: null,
+			writePolicyScopeNodeId: null,
+			writePolicy: null,
+
 			archiveOperationId: null,
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -6420,9 +6425,9 @@ async function test_insert_committed_external_markdown(
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
-			readOnlyScopeNodeId: null,
-			readOnlyPluginName: null,
-			readOnlyPluginServiceTargetId: null,
+			writePolicyScopeNodeId: null,
+			writePolicy: null,
+
 			archiveOperationId: null,
 			organizationId: organizations_GLOBAL_ORGANIZATION_ID,
 			workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
@@ -6721,9 +6726,9 @@ describe("non-collaborative files", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
+
 				archiveOperationId: null,
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
@@ -6780,9 +6785,7 @@ describe("non-collaborative files", () => {
 					(asset) => asset.kind === "yjs_snapshot",
 				).length,
 				textChunks: (await ctx.db.query("files_text_chunks").collect()).length,
-				metadataFields: (await ctx.db.query("files_metadata_docs").collect())
-					.map((entry) => entry.fieldPath)
-					.sort(),
+				metadataFields: (await ctx.db.query("files_metadata_docs").collect()).map((entry) => entry.fieldPath).sort(),
 			};
 		});
 
@@ -7089,7 +7092,9 @@ describe("non-collaborative files", () => {
 		expect(readBack._yay?.text).toBe(winnerText);
 		const history = await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", nodeId);
-			const versions = (await ctx.db.query("files_snapshots").collect()).filter((snapshot) => snapshot.fileNodeId === nodeId);
+			const versions = (await ctx.db.query("files_snapshots").collect()).filter(
+				(snapshot) => snapshot.fileNodeId === nodeId,
+			);
 			const assets = await Promise.all(versions.map((snapshot) => ctx.db.get("files_r2_assets", snapshot.assetId)));
 			return { assetId: node?.assetId, versions, assets };
 		});
@@ -7149,7 +7154,8 @@ describe("non-collaborative files", () => {
 		expect(fatFrontmatter._nay?.message).toBe("Too many frontmatter fields");
 
 		// Objective 5: the read-only lock blocks this write door like every other one.
-		const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+		const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: db.membershipId,
 			nodeId,
 		});
@@ -7192,7 +7198,7 @@ describe("non-collaborative files", () => {
 			userId: db.userId,
 			nodeId,
 		});
-		expect(preflight?.readOnlyScopeNodeId).toBeNull();
+		expect(preflight?.canWrite).toBe(true);
 		const versionSnapshotAssetId = await t.run(async (ctx) => {
 			const now = Date.now();
 			return await ctx.db.insert("files_r2_assets", {
@@ -7209,7 +7215,8 @@ describe("non-collaborative files", () => {
 
 		// The action already passed its cheap check and uploaded. A lock added now must still stop
 		// the final transaction before it publishes the asset or changes the committed text.
-		const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+		const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: db.membershipId,
 			nodeId,
 		});
@@ -7662,13 +7669,20 @@ describe("non-collaborative files", () => {
 		expect(on._nay).toBeUndefined();
 		const enabledNode = await t.run(async (ctx) => ctx.db.get("files_nodes", nodeId));
 		expect(enabledNode?.collaborationEnabled).toBe(true);
-		expect(await t.run(async (ctx) =>
-			ctx.db.query("files_yjs_cleanup_tasks")
-				.withIndex("by_organization_workspace_fileNode_historyPending", (q) =>
-					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId)
-						.eq("fileNodeId", nodeId).eq("historyPending", true),
-				).first(),
-		)).toBeNull();
+		expect(
+			await t.run(async (ctx) =>
+				ctx.db
+					.query("files_yjs_cleanup_tasks")
+					.withIndex("by_organization_workspace_fileNode_historyPending", (q) =>
+						q
+							.eq("organizationId", db.organizationId)
+							.eq("workspaceId", db.workspaceId)
+							.eq("fileNodeId", nodeId)
+							.eq("historyPending", true),
+					)
+					.first(),
+			),
+		).toBeNull();
 		expect(enabledNode?.yjsLastSequenceId).toBeDefined();
 	});
 
@@ -7717,11 +7731,18 @@ describe("non-collaborative files", () => {
 		);
 		expect(r2Writes.size).toBe(writesBeforeBlockedOn);
 
-		const cleanupTask = await t.run(async (ctx) => ctx.db.query("files_yjs_cleanup_tasks")
-			.withIndex("by_organization_workspace_fileNode_historyPending", (q) =>
-				q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId)
-					.eq("fileNodeId", nodeId).eq("historyPending", true),
-			).first());
+		const cleanupTask = await t.run(async (ctx) =>
+			ctx.db
+				.query("files_yjs_cleanup_tasks")
+				.withIndex("by_organization_workspace_fileNode_historyPending", (q) =>
+					q
+						.eq("organizationId", db.organizationId)
+						.eq("workspaceId", db.workspaceId)
+						.eq("fileNodeId", nodeId)
+						.eq("historyPending", true),
+				)
+				.first(),
+		);
 		if (!cleanupTask) throw new Error("Missing cleanup task");
 		await t.mutation(internal.files_nodes_content.cleanup_file_yjs_task, { taskId: cleanupTask._id });
 		const on = await asUser.action(api.files_nodes_content.set_file_collaborative, {
@@ -7831,7 +7852,8 @@ describe("non-collaborative files", () => {
 		});
 		expect(unacknowledged._nay?.message).toContain("acknowledgement flag");
 
-		const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+		const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: db.membershipId,
 			nodeId,
 		});
@@ -7850,7 +7872,11 @@ describe("non-collaborative files", () => {
 		// direction can be checked on a locked non-collaborative file.
 		expect(await t.run(async (ctx) => (await ctx.db.query("files_yjs_docs_last_sequences").collect()).length)).toBe(1);
 
-		await asUser.mutation(api.files_nodes.set_node_writable, { membershipId: db.membershipId, nodeId });
+		await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: null,
+			membershipId: db.membershipId,
+			nodeId,
+		});
 		const off = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
 			membershipId: db.membershipId,
 			nodeId,
@@ -7859,7 +7885,11 @@ describe("non-collaborative files", () => {
 		expect(off._nay).toBeUndefined();
 		await drain_scheduled_continuations(t);
 
-		await asUser.mutation(api.files_nodes.set_node_read_only, { membershipId: db.membershipId, nodeId });
+		await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
+			membershipId: db.membershipId,
+			nodeId,
+		});
 		const objectsBeforeOn = r2Writes.size;
 		const onWhileLocked = await asUser.action(api.files_nodes_content.set_file_collaborative, {
 			membershipId: db.membershipId,
@@ -7899,13 +7929,14 @@ describe("non-collaborative files", () => {
 			nodeId,
 			userId: db.userId,
 		});
-		expect(preflight?.readOnlyScopeNodeId).toBeNull();
+		expect(preflight?.canWrite).toBe(true);
 		expect(preflight?.alreadyCollaborative).toBe(false);
 		const assets = await seed_unpublished_asset_pair(t, db);
 
 		// The action already passed its cheap check and uploaded both objects. A lock added now must
 		// still stop the final transaction before it creates or publishes a new Yjs lineage.
-		const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+		const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: db.membershipId,
 			nodeId,
 		});
@@ -8460,70 +8491,76 @@ describe("non-collaborative files", () => {
 		expect(movedNode?.contentType).toBe("application/json");
 	});
 
-	test.each([false, true])("snapshot replacement keeps mode-change guards (source collaboration off: %s)", async (sourceOff) => {
-		const t = test_convex();
-		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: db.userId,
-			name: "Restore Mode Guard User",
-		});
-		test_setup_r2_capture();
-		const text = "# Restore guard\n";
-		const nodeId = await test_materialize_markdown_file(t, asUser, db, "/restore-mode.md", text);
-		const before = await t.run(async (ctx) => ({
-			node: await ctx.db.get("files_nodes", nodeId),
-			snapshot: await ctx.db.query("files_snapshots").filter((q) => q.eq(q.field("fileNodeId"), nodeId)).first(),
-		}));
-		if (!before.node?.assetId || !before.snapshot) throw new Error("Expected a file and version");
-		const off = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
-			membershipId: db.membershipId,
-			nodeId,
-			acknowledgeDropCollaborativeHistory: true,
-		});
-		expect(off._nay).toBeUndefined();
-		await drain_scheduled_continuations(t);
+	test.each([false, true])(
+		"snapshot replacement keeps mode-change guards (source collaboration off: %s)",
+		async (sourceOff) => {
+			const t = test_convex();
+			const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+			await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+			const asUser = t.withIdentity({
+				issuer: "https://clerk.test",
+				external_id: db.userId,
+				name: "Restore Mode Guard User",
+			});
+			test_setup_r2_capture();
+			const text = "# Restore guard\n";
+			const nodeId = await test_materialize_markdown_file(t, asUser, db, "/restore-mode.md", text);
+			const before = await t.run(async (ctx) => ({
+				node: await ctx.db.get("files_nodes", nodeId),
+				snapshot: await ctx.db
+					.query("files_snapshots")
+					.filter((q) => q.eq(q.field("fileNodeId"), nodeId))
+					.first(),
+			}));
+			if (!before.node?.assetId || !before.snapshot) throw new Error("Expected a file and version");
+			const off = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+				membershipId: db.membershipId,
+				nodeId,
+				acknowledgeDropCollaborativeHistory: true,
+			});
+			expect(off._nay).toBeUndefined();
+			await drain_scheduled_continuations(t);
 
-		if (sourceOff) {
-			// A restore that started with collaboration off must not replace a new live document.
-			const enabled = await asUser.action(api.files_nodes_content.set_file_collaborative, {
+			if (sourceOff) {
+				// A restore that started with collaboration off must not replace a new live document.
+				const enabled = await asUser.action(api.files_nodes_content.set_file_collaborative, {
+					membershipId: db.membershipId,
+					nodeId,
+				});
+				expect(enabled._nay).toBeUndefined();
+			} else {
+				// A restore that started collaborative keeps its asset check even after the mode changes.
+				const saved = await asUser.action(api.files_nodes_content.replace_file_content, {
+					membershipId: db.membershipId,
+					nodeId,
+					text: "# Saved after disabling collaboration\n",
+				});
+				expect(saved._nay).toBeUndefined();
+			}
+			const currentAssetId = await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))?.assetId);
+			const contentAssetId = await t.mutation(internal.r2.insert_asset, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				kind: "content_snapshot",
+				size: files_get_utf8_byte_size(text),
+				createdBy: db.userId,
+			});
+			const refused = await asUser.mutation(internal.files_nodes_content.finalize_snapshot_restore_replacement, {
 				membershipId: db.membershipId,
 				nodeId,
+				snapshotId: before.snapshot._id,
+				expectedAssetId: sourceOff ? undefined : before.node.assetId,
+				contentAssetId,
+				contentSize: files_get_utf8_byte_size(text),
+				contentType: "text/markdown;charset=utf-8",
+				yjsRootKind: "rich_text",
+				nonCollaborative: true,
+				text,
 			});
-			expect(enabled._nay).toBeUndefined();
-		} else {
-			// A restore that started collaborative keeps its asset check even after the mode changes.
-			const saved = await asUser.action(api.files_nodes_content.replace_file_content, {
-				membershipId: db.membershipId,
-				nodeId,
-				text: "# Saved after disabling collaboration\n",
-			});
-			expect(saved._nay).toBeUndefined();
-		}
-		const currentAssetId = await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))?.assetId);
-		const contentAssetId = await t.mutation(internal.r2.insert_asset, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			kind: "content_snapshot",
-			size: files_get_utf8_byte_size(text),
-			createdBy: db.userId,
-		});
-		const refused = await asUser.mutation(internal.files_nodes_content.finalize_snapshot_restore_replacement, {
-			membershipId: db.membershipId,
-			nodeId,
-			snapshotId: before.snapshot._id,
-			expectedAssetId: sourceOff ? undefined : before.node.assetId,
-			contentAssetId,
-			contentSize: files_get_utf8_byte_size(text),
-			contentType: "text/markdown;charset=utf-8",
-			yjsRootKind: "rich_text",
-			nonCollaborative: true,
-			text,
-		});
-		expect(refused._nay?.message).toBe("This file changed while the snapshot was being restored. Try again.");
-		expect(await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))?.assetId)).toBe(currentAssetId);
-	});
+			expect(refused._nay?.message).toBe("This file changed while the snapshot was being restored. Try again.");
+			expect(await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeId))?.assetId)).toBe(currentAssetId);
+		},
+	);
 
 	test("last write wins when a snapshot restore finishes after another save", async () => {
 		const t = test_convex();
@@ -9438,9 +9475,9 @@ test("metadata search updates indexed scope when files are renamed and moved", a
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
-			readOnlyScopeNodeId: null,
-			readOnlyPluginName: null,
-			readOnlyPluginServiceTargetId: null,
+			writePolicyScopeNodeId: null,
+			writePolicy: null,
+
 			archiveOperationId: null,
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -9598,9 +9635,9 @@ test("file metadata is searchable next to frontmatter and survives a content sav
 	expect((await search({ op: "eq", fieldPath: "metadata.title", value: "From metadata" })).items).toMatchObject([
 		{ path, nodeId },
 	]);
-	expect(
-		(await search({ op: "eq", fieldPath: "frontmatter.title", value: "From frontmatter" })).items,
-	).toMatchObject([{ path, nodeId }]);
+	expect((await search({ op: "eq", fieldPath: "frontmatter.title", value: "From frontmatter" })).items).toMatchObject([
+		{ path, nodeId },
+	]);
 	expect((await search({ op: "eq", fieldPath: "metadata.title", value: "From frontmatter" })).items).toEqual([]);
 
 	expect((await search({ op: "exists", fieldPath: "metadata.slack:message-id" })).items).toMatchObject([
@@ -9734,9 +9771,7 @@ test("file metadata stays visible while a pending content edit hides committed f
 		});
 
 	// The pending edit replaces what the file's own frontmatter says.
-	expect(
-		(await search({ op: "eq", fieldPath: "frontmatter.from", value: "committed@example.com" })).items,
-	).toEqual([]);
+	expect((await search({ op: "eq", fieldPath: "frontmatter.from", value: "committed@example.com" })).items).toEqual([]);
 	// It says nothing about the metadata written next to the file, so that stays findable.
 	expect((await search({ op: "eq", fieldPath: "metadata.source", value: "slack" })).items).toMatchObject([
 		{ path, nodeId },
@@ -9801,7 +9836,8 @@ test("set_entries accepts folders and refuses bad YAML and read-only nodes", asy
 			fileNodeId: folder._yay.nodeId,
 		}),
 	).toEqual([{ key: "title", value: "on a folder" }]);
-	const lockedFolder = await asUser.mutation(api.files_nodes.set_node_read_only, {
+	const lockedFolder = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+		writePolicy: { mode: "read_only" },
 		membershipId: db.membershipId,
 		nodeId: folder._yay.nodeId,
 	});
@@ -9810,7 +9846,8 @@ test("set_entries accepts folders and refuses bad YAML and read-only nodes", asy
 		_nay: { name: "read_only", message: "This item is read-only." },
 	});
 
-	const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+	const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+		writePolicy: { mode: "read_only" },
 		membershipId: db.membershipId,
 		nodeId,
 	});
@@ -9912,7 +9949,8 @@ test("update_entries_by_path lets the agent set and remove keys on an uploaded f
 		_nay: { message: expect.stringContaining("may contain only letters") },
 	});
 
-	const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+	const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+		writePolicy: { mode: "read_only" },
 		membershipId: db.membershipId,
 		nodeId,
 	});
@@ -10005,7 +10043,8 @@ describe("folder metadata", () => {
 			const lockId = lockKind === "direct" ? nestedId : folderId;
 			expect(
 				(
-					await asOwner.mutation(api.files_nodes.set_node_read_only, {
+					await asOwner.mutation(api.files_nodes.set_node_write_policy, {
+						writePolicy: { mode: "read_only" },
 						membershipId: db.membershipId,
 						nodeId: lockId,
 					})
@@ -10034,7 +10073,8 @@ describe("folder metadata", () => {
 			).toEqual([]);
 			expect(
 				(
-					await asOwner.mutation(api.files_nodes.set_node_writable, {
+					await asOwner.mutation(api.files_nodes.set_node_write_policy, {
+						writePolicy: null,
 						membershipId: db.membershipId,
 						nodeId: lockId,
 					})
@@ -10437,16 +10477,16 @@ describe("search box doors", () => {
 		expect(chipPlans("priority:3")).toHaveLength(4);
 		expect(await search(chipPlans("priority:3"))).toEqual(new Set([seeded.openTaskId]));
 		expect(await search(chipPlans("regression:true"))).toEqual(new Set([seeded.openTaskId]));
-		expect(
-			await search([{ op: "range", fieldPath: "frontmatter.priority", valueKind: "number", gte: 2 }]),
-		).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId]));
+		expect(await search([{ op: "range", fieldPath: "frontmatter.priority", valueKind: "number", gte: 2 }])).toEqual(
+			new Set([seeded.openTaskId, seeded.fixedTaskId]),
+		);
 		// Each bound has its own index line, so every comparator gets a case.
 		expect(await search([{ op: "range", fieldPath: "frontmatter.priority", valueKind: "number", gt: 2 }])).toEqual(
 			new Set([seeded.openTaskId]),
 		);
-		expect(
-			await search([{ op: "range", fieldPath: "frontmatter.priority", valueKind: "number", lte: 2 }]),
-		).toEqual(new Set([seeded.fixedTaskId, seeded.archivedTaskId]));
+		expect(await search([{ op: "range", fieldPath: "frontmatter.priority", valueKind: "number", lte: 2 }])).toEqual(
+			new Set([seeded.fixedTaskId, seeded.archivedTaskId]),
+		);
 		expect(await search([{ op: "range", fieldPath: "frontmatter.priority", valueKind: "number", lt: 2 }])).toEqual(
 			new Set([seeded.archivedTaskId]),
 		);
@@ -10476,9 +10516,7 @@ describe("search box doors", () => {
 			new Set([seeded.openTaskId]),
 		);
 		// A nested map is a key of its own, without a value.
-		expect(await search([{ op: "exists", fieldPath: "frontmatter.source" }])).toEqual(
-			new Set([seeded.openTaskId]),
-		);
+		expect(await search([{ op: "exists", fieldPath: "frontmatter.source" }])).toEqual(new Set([seeded.openTaskId]));
 		expect(await search([{ op: "exists", fieldPath: "metadata.slack:message-id" }])).toEqual(
 			new Set([seeded.fixedTaskId]),
 		);
@@ -10574,9 +10612,9 @@ describe("search box doors", () => {
 			new Set([seeded.openTaskId, seeded.fixedTaskId, emojiTaskId]),
 		);
 		expect(await search(statusOpenPlans, "/tasks/😀 media")).toEqual(new Set([emojiTaskId]));
-		expect(
-			await search([{ op: "prefix", fieldPath: "frontmatter.status", value: "op" }], "/tasks/😀 media"),
-		).toEqual(new Set([emojiTaskId]));
+		expect(await search([{ op: "prefix", fieldPath: "frontmatter.status", value: "op" }], "/tasks/😀 media")).toEqual(
+			new Set([emojiTaskId]),
+		);
 	});
 
 	test("search_nodes answers a prefix value of any length", async () => {
@@ -11149,9 +11187,7 @@ describe("search box doors", () => {
 			member.asMember
 				.query(api.files_metadata.search_nodes, { membershipId: member.membershipId, plans })
 				.then((found) => new Set(found.nodeIds));
-		expect(await searchAsMember([{ op: "eq", fieldPath: "frontmatter.status", value: "triaging" }])).toEqual(
-			new Set(),
-		);
+		expect(await searchAsMember([{ op: "eq", fieldPath: "frontmatter.status", value: "triaging" }])).toEqual(new Set());
 		expect(await searchAsMember(statusOpenPlans)).toEqual(new Set([seeded.openTaskId, seeded.fixedTaskId]));
 		expect(
 			await member.asMember.query(api.files_metadata.list_search_values, {
@@ -11619,9 +11655,9 @@ test("text_search_files updates unified search scope when files are renamed and 
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
-			readOnlyScopeNodeId: null,
-			readOnlyPluginName: null,
-			readOnlyPluginServiceTargetId: null,
+			writePolicyScopeNodeId: null,
+			writePolicy: null,
+
 			archiveOperationId: null,
 			organizationId: db.organizationId,
 			workspaceId: db.workspaceId,
@@ -12412,101 +12448,110 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 		expect(readResult?.content).toBe("plain version\n");
 	});
 
-	test.each(["saved", "edited"])("a refused restore keeps live edits and cleans up uploads (%s file)", async (state) => {
-		const t = test_convex();
-		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: db.userId,
-			name: "Restore Race User",
-			email: "restore-race-user@example.com",
-		});
-		const r2Objects = test_setup_r2_capture();
-		const nodeId = await test_materialize_markdown_file(t, asUser, db, "/notes.md", "# Saved\n");
-		if (state === "edited") {
-			await push_unsaved_edit(t, asUser, db, nodeId, "# Earlier unsaved edit");
-			// Leave time between edits so the public edit rate limit can refill.
-			vi.spyOn(Date, "now").mockReturnValue(Date.now() + 10_000);
-		}
-		const version = await seed_version(t, r2Objects, db, {
-			nodeId,
-			body: "plain version\n",
-			kind: "content_snapshot",
-			contentType: "text/plain;charset=utf-8",
-			yjsRootKind: "plain_text",
-			collaborationEnabled: true,
-		});
-
-		const versionsBefore = await read_versions(t, nodeId);
-		const assetsBefore = await t.run(async (ctx) => ctx.db.query("files_r2_assets").collect());
-		const keysBefore = new Set(r2Objects.keys());
-
-		// Edit while the version downloads, after any backup upload has finished.
-		const fetchMock = vi.mocked(globalThis.fetch);
-		const baseFetch = fetchMock.getMockImplementation();
-		if (baseFetch == null) {
-			throw new Error("expected the fetch stub to have an implementation");
-		}
-		let raced = false;
-		fetchMock.mockImplementation(async (input, init) => {
-			const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-			if (!raced && href === `https://r2.test/object?key=${encodeURIComponent(version.r2Key)}`) {
-				raced = true;
-				await push_unsaved_edit(t, asUser, db, nodeId, "# Edit during restore");
+	test.each(["saved", "edited"])(
+		"a refused restore keeps live edits and cleans up uploads (%s file)",
+		async (state) => {
+			const t = test_convex();
+			const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+			await t.run(async (ctx) => seed_billing_snapshot_for_user(ctx, db.userId));
+			const asUser = t.withIdentity({
+				issuer: "https://clerk.test",
+				external_id: db.userId,
+				name: "Restore Race User",
+				email: "restore-race-user@example.com",
+			});
+			const r2Objects = test_setup_r2_capture();
+			const nodeId = await test_materialize_markdown_file(t, asUser, db, "/notes.md", "# Saved\n");
+			if (state === "edited") {
+				await push_unsaved_edit(t, asUser, db, nodeId, "# Earlier unsaved edit");
+				// Leave time between edits so the public edit rate limit can refill.
+				vi.spyOn(Date, "now").mockReturnValue(Date.now() + 10_000);
 			}
-			return await baseFetch(input, init);
-		});
-		const refused = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
-			membershipId: db.membershipId,
-			nodeId,
-			snapshotId: version.snapshotId,
-			sessionId: "restore-race-session",
-		});
-		fetchMock.mockImplementation(baseFetch);
-		expect(raced).toBe(true);
-		expect(refused._nay?.message).toBe("This file changed while the snapshot was being restored. Try again.");
+			const version = await seed_version(t, r2Objects, db, {
+				nodeId,
+				body: "plain version\n",
+				kind: "content_snapshot",
+				contentType: "text/plain;charset=utf-8",
+				yjsRootKind: "plain_text",
+				collaborationEnabled: true,
+			});
 
-		const liveContent = await asUser.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			path: "/notes.md",
-		});
-		expect(liveContent?.content).toContain("Edit during restore");
-		if (state === "edited") {
-			expect(liveContent?.content).toContain("Earlier unsaved edit");
-		}
-		expect(await read_versions(t, nodeId)).toEqual(versionsBefore);
+			const versionsBefore = await read_versions(t, nodeId);
+			const assetsBefore = await t.run(async (ctx) => ctx.db.query("files_r2_assets").collect());
+			const keysBefore = new Set(r2Objects.keys());
 
-		// Only the refused restore's uploads should be queued for deletion.
-		const uploadedKeys = Array.from(r2Objects.keys()).filter((key) => !keysBefore.has(key));
-		expect(uploadedKeys.length).toBeGreaterThan(0);
-		const cleanupJobs = (await read_deletion_jobs(t)).filter((job) => job.reason === "failed_create");
-		expect(cleanupJobs.map((job) => job.r2Key).sort()).toEqual(uploadedKeys.sort());
-		expect(await t.run(async (ctx) => ctx.db.query("files_r2_assets").collect())).toEqual(assetsBefore);
+			// Edit while the version downloads, after any backup upload has finished.
+			const fetchMock = vi.mocked(globalThis.fetch);
+			const baseFetch = fetchMock.getMockImplementation();
+			if (baseFetch == null) {
+				throw new Error("expected the fetch stub to have an implementation");
+			}
+			let raced = false;
+			fetchMock.mockImplementation(async (input, init) => {
+				const href = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+				if (!raced && href === `https://r2.test/object?key=${encodeURIComponent(version.r2Key)}`) {
+					raced = true;
+					await push_unsaved_edit(t, asUser, db, nodeId, "# Edit during restore");
+				}
+				return await baseFetch(input, init);
+			});
+			const refused = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
+				membershipId: db.membershipId,
+				nodeId,
+				snapshotId: version.snapshotId,
+				sessionId: "restore-race-session",
+			});
+			fetchMock.mockImplementation(baseFetch);
+			expect(raced).toBe(true);
+			expect(refused._nay?.message).toBe("This file changed while the snapshot was being restored. Try again.");
 
-		// The next restore reads the document again, so the edit becomes a version.
-		const restored = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
-			membershipId: db.membershipId,
-			nodeId,
-			snapshotId: version.snapshotId,
-			sessionId: "restore-race-session-2",
-		});
-		expect(restored._nay).toBeUndefined();
-		const versions = await read_versions(t, nodeId);
-		const backup = versions.find(
-			(row) => row.r2Key !== undefined && String(r2Objects.get(row.r2Key)).includes("Edit during restore"),
-		);
-		expect(backup).toMatchObject({ contentType: "text/markdown;charset=utf-8", yjsRootKind: "rich_text" });
-		const readResult = await asUser.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			userId: db.userId,
-			path: "/notes.md",
-		});
-		expect(readResult?.content).toBe("plain version\n");
-	});
+			const liveContent = await asUser.action(
+				internal.files_nodes_content.get_file_last_available_text_content_by_path,
+				{
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId: db.userId,
+					path: "/notes.md",
+				},
+			);
+			expect(liveContent?.content).toContain("Edit during restore");
+			if (state === "edited") {
+				expect(liveContent?.content).toContain("Earlier unsaved edit");
+			}
+			expect(await read_versions(t, nodeId)).toEqual(versionsBefore);
+
+			// Only the refused restore's uploads should be queued for deletion.
+			const uploadedKeys = Array.from(r2Objects.keys()).filter((key) => !keysBefore.has(key));
+			expect(uploadedKeys.length).toBeGreaterThan(0);
+			const cleanupJobs = (await read_deletion_jobs(t)).filter((job) => job.reason === "failed_create");
+			expect(cleanupJobs.map((job) => job.r2Key).sort()).toEqual(uploadedKeys.sort());
+			expect(await t.run(async (ctx) => ctx.db.query("files_r2_assets").collect())).toEqual(assetsBefore);
+
+			// The next restore reads the document again, so the edit becomes a version.
+			const restored = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
+				membershipId: db.membershipId,
+				nodeId,
+				snapshotId: version.snapshotId,
+				sessionId: "restore-race-session-2",
+			});
+			expect(restored._nay).toBeUndefined();
+			const versions = await read_versions(t, nodeId);
+			const backup = versions.find(
+				(row) => row.r2Key !== undefined && String(r2Objects.get(row.r2Key)).includes("Edit during restore"),
+			);
+			expect(backup).toMatchObject({ contentType: "text/markdown;charset=utf-8", yjsRootKind: "rich_text" });
+			const readResult = await asUser.action(
+				internal.files_nodes_content.get_file_last_available_text_content_by_path,
+				{
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId: db.userId,
+					path: "/notes.md",
+				},
+			);
+			expect(readResult?.content).toBe("plain version\n");
+		},
+	);
 
 	test("a stored version of a stored file comes back as a byte copy with its own type", async () => {
 		const t = test_convex();
@@ -12558,9 +12603,9 @@ describe("restore_snapshot_r2 whole-file restore", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
+
 				archiveOperationId: null,
 				organizationId: db.organizationId,
 				workspaceId: db.workspaceId,
@@ -15621,68 +15666,78 @@ function read_lock_node(t: ReturnType<typeof test_convex>, nodeId: Id<"files_nod
 	return t.run(async (ctx) => ctx.db.get("files_nodes", nodeId));
 }
 
-describe("files_nodes.set_node_read_only", () => {
+describe("files_nodes.set_node_write_policy", () => {
 	test("locks a folder and cascades over active and archived descendants", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId, innerId, deepId, siblingId, frozenId } = await seed_read_only_lock_tree(t);
 
-		const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+		const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: db.membershipId,
 			nodeId: outerId,
 		});
 		expect(locked._nay).toBeUndefined();
 
 		const outer = await read_lock_node(t, outerId);
-		expect(outer?.readOnlyScopeNodeId).toBe(outerId);
+		expect(outer?.writePolicyScopeNodeId).toBe(outerId);
+		expect(outer).toMatchObject({ writePolicy: { mode: "read_only" }, writePolicyScopeNodeId: outerId });
 
 		for (const nodeId of [innerId, deepId, siblingId]) {
 			const node = await read_lock_node(t, nodeId);
-			expect(node?.readOnlyScopeNodeId).toBe(outerId);
+			expect(node?.writePolicyScopeNodeId).toBe(outerId);
+			expect(node).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: outerId });
 		}
 
 		// The archived child is repointed too: a folder lock covers archived descendants (RO-05).
 		const frozen = await read_lock_node(t, frozenId);
 		expect(frozen?.archiveOperationId).toBeDefined();
-		expect(frozen?.readOnlyScopeNodeId).toBe(outerId);
+		expect(frozen?.writePolicyScopeNodeId).toBe(outerId);
+		expect(frozen).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: outerId });
 	});
 
 	test("a nested explicit lock keeps its own pointer and the cascade stops there", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId, innerId, deepId, siblingId } = await seed_read_only_lock_tree(t);
 
-		const innerLocked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+		const innerLocked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: db.membershipId,
 			nodeId: innerId,
 		});
 		expect(innerLocked._nay).toBeUndefined();
-		const outerLocked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+		const outerLocked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: db.membershipId,
 			nodeId: outerId,
 		});
 		expect(outerLocked._nay).toBeUndefined();
 
 		const outer = await read_lock_node(t, outerId);
-		expect(outer?.readOnlyScopeNodeId).toBe(outerId);
+		expect(outer?.writePolicyScopeNodeId).toBe(outerId);
 		const sibling = await read_lock_node(t, siblingId);
-		expect(sibling?.readOnlyScopeNodeId).toBe(outerId);
+		expect(sibling?.writePolicyScopeNodeId).toBe(outerId);
 
 		// The nested explicit root and its subtree keep their own pointer.
 		const inner = await read_lock_node(t, innerId);
-		expect(inner?.readOnlyScopeNodeId).toBe(innerId);
+		expect(inner?.writePolicyScopeNodeId).toBe(innerId);
+		expect(inner).toMatchObject({ writePolicy: { mode: "read_only" }, writePolicyScopeNodeId: innerId });
 		const deep = await read_lock_node(t, deepId);
-		expect(deep?.readOnlyScopeNodeId).toBe(innerId);
+		expect(deep?.writePolicyScopeNodeId).toBe(innerId);
+		expect(deep).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: innerId });
 	});
 
 	test("an inherited node may take its own explicit lock that survives the outer unlock", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId, innerId, deepId, siblingId } = await seed_read_only_lock_tree(t);
 
-		const outerLocked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+		const outerLocked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: db.membershipId,
 			nodeId: outerId,
 		});
 		expect(outerLocked._nay).toBeUndefined();
-		const innerLocked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+		const innerLocked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: db.membershipId,
 			nodeId: innerId,
 		});
@@ -15690,47 +15745,54 @@ describe("files_nodes.set_node_read_only", () => {
 
 		// The inherited node's pointer becomes itself, and its subtree repoints at it.
 		const innerAfterLock = await read_lock_node(t, innerId);
-		expect(innerAfterLock?.readOnlyScopeNodeId).toBe(innerId);
+		expect(innerAfterLock?.writePolicyScopeNodeId).toBe(innerId);
+		expect(innerAfterLock).toMatchObject({ writePolicy: { mode: "read_only" }, writePolicyScopeNodeId: innerId });
 		const deepAfterLock = await read_lock_node(t, deepId);
-		expect(deepAfterLock?.readOnlyScopeNodeId).toBe(innerId);
+		expect(deepAfterLock?.writePolicyScopeNodeId).toBe(innerId);
+		expect(deepAfterLock).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: innerId });
 
-		const outerUnlocked = await asUser.mutation(api.files_nodes.set_node_writable, {
+		const outerUnlocked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: null,
 			membershipId: db.membershipId,
 			nodeId: outerId,
 		});
 		expect(outerUnlocked._nay).toBeUndefined();
 
 		const outer = await read_lock_node(t, outerId);
-		expect(outer?.readOnlyScopeNodeId).toBeNull();
+		expect(outer?.writePolicyScopeNodeId).toBeNull();
 		const sibling = await read_lock_node(t, siblingId);
-		expect(sibling?.readOnlyScopeNodeId).toBeNull();
+		expect(sibling?.writePolicyScopeNodeId).toBeNull();
 
 		// The direct lock survives the outer unlock.
 		const inner = await read_lock_node(t, innerId);
-		expect(inner?.readOnlyScopeNodeId).toBe(innerId);
+		expect(inner?.writePolicyScopeNodeId).toBe(innerId);
+		expect(inner).toMatchObject({ writePolicy: { mode: "read_only" }, writePolicyScopeNodeId: innerId });
 		const deep = await read_lock_node(t, deepId);
-		expect(deep?.readOnlyScopeNodeId).toBe(innerId);
+		expect(deep?.writePolicyScopeNodeId).toBe(innerId);
+		expect(deep).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: innerId });
 	});
 
 	test("locking is idempotent", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId, innerId } = await seed_read_only_lock_tree(t);
 
-		const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+		const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: db.membershipId,
 			nodeId: outerId,
 		});
 		expect(locked._nay).toBeUndefined();
-		const lockedAgain = await asUser.mutation(api.files_nodes.set_node_read_only, {
+		const lockedAgain = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: db.membershipId,
 			nodeId: outerId,
 		});
 		expect(lockedAgain._nay).toBeUndefined();
 
 		const outer = await read_lock_node(t, outerId);
-		expect(outer?.readOnlyScopeNodeId).toBe(outerId);
+		expect(outer?.writePolicyScopeNodeId).toBe(outerId);
 		const inner = await read_lock_node(t, innerId);
-		expect(inner?.readOnlyScopeNodeId).toBe(outerId);
+		expect(inner?.writePolicyScopeNodeId).toBe(outerId);
 	});
 
 	test("locks an archived explicit root", async () => {
@@ -15756,14 +15818,16 @@ describe("files_nodes.set_node_read_only", () => {
 		});
 		expect(archived._nay).toBeUndefined();
 
-		const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+		const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: db.membershipId,
 			nodeId: cold._yay.nodeId,
 		});
 		expect(locked._nay).toBeUndefined();
 
 		const coldNode = await read_lock_node(t, cold._yay.nodeId);
-		expect(coldNode?.readOnlyScopeNodeId).toBe(cold._yay.nodeId);
+		expect(coldNode?.writePolicyScopeNodeId).toBe(cold._yay.nodeId);
+		expect(coldNode).toMatchObject({ writePolicy: { mode: "read_only" }, writePolicyScopeNodeId: cold._yay.nodeId });
 	});
 
 	test("locking a new active folder ignores a restricted archived tree with the same path", async () => {
@@ -15805,28 +15869,28 @@ describe("files_nodes.set_node_read_only", () => {
 			name: "Read Only Path Reuse Manager",
 		});
 
-		const locked = await asManager.mutation(api.files_nodes.set_node_read_only, {
+		const locked = await asManager.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: manager.membershipId,
 			nodeId: activeRootId,
 		});
 		expect(locked._nay).toBeUndefined();
-		expect((await read_lock_node(t, activeRootId))?.readOnlyScopeNodeId).toBe(activeRootId);
-		expect((await read_lock_node(t, activeChildId))?.readOnlyScopeNodeId).toBe(activeRootId);
-		expect((await read_lock_node(t, archivedChildId))?.readOnlyScopeNodeId).toBe(archivedChildId);
+		expect((await read_lock_node(t, activeRootId))?.writePolicyScopeNodeId).toBe(activeRootId);
+		expect((await read_lock_node(t, activeChildId))?.writePolicyScopeNodeId).toBe(activeRootId);
+		expect((await read_lock_node(t, archivedChildId))?.writePolicyScopeNodeId).toBe(archivedChildId);
 	});
-});
-
-describe("files_nodes.set_node_writable", () => {
 	test("unlocks an explicit root and clears the subtree", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId, innerId, deepId, siblingId, frozenId } = await seed_read_only_lock_tree(t);
 
-		const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+		const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: db.membershipId,
 			nodeId: outerId,
 		});
 		expect(locked._nay).toBeUndefined();
-		const unlocked = await asUser.mutation(api.files_nodes.set_node_writable, {
+		const unlocked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: null,
 			membershipId: db.membershipId,
 			nodeId: outerId,
 		});
@@ -15835,7 +15899,8 @@ describe("files_nodes.set_node_writable", () => {
 		// Every affected node, including the archived child, is writable again.
 		for (const nodeId of [outerId, innerId, deepId, siblingId, frozenId]) {
 			const node = await read_lock_node(t, nodeId);
-			expect(node?.readOnlyScopeNodeId).toBeNull();
+			expect(node?.writePolicyScopeNodeId).toBeNull();
+			expect(node).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: null });
 		}
 	});
 
@@ -15844,13 +15909,15 @@ describe("files_nodes.set_node_writable", () => {
 		const { db, asUser, outerId, innerId, deepId } = await seed_read_only_lock_tree(t);
 
 		for (const nodeId of [outerId, innerId]) {
-			const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+			const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+				writePolicy: { mode: "read_only" },
 				membershipId: db.membershipId,
 				nodeId,
 			});
 			expect(locked._nay).toBeUndefined();
 		}
-		const unlocked = await asUser.mutation(api.files_nodes.set_node_writable, {
+		const unlocked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: null,
 			membershipId: db.membershipId,
 			nodeId: innerId,
 		});
@@ -15859,32 +15926,37 @@ describe("files_nodes.set_node_writable", () => {
 		// The direct lock is gone, but the outer lock still covers the subtree, so the node stays
 		// effectively read-only through the inherited pointer.
 		const inner = await read_lock_node(t, innerId);
-		expect(inner?.readOnlyScopeNodeId).toBe(outerId);
+		expect(inner?.writePolicyScopeNodeId).toBe(outerId);
+		expect(inner).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: outerId });
 		const deep = await read_lock_node(t, deepId);
-		expect(deep?.readOnlyScopeNodeId).toBe(outerId);
+		expect(deep?.writePolicyScopeNodeId).toBe(outerId);
+		expect(deep).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: outerId });
 	});
 
-	test("unlocking an inherited node is refused and changes nothing", async () => {
+	test("setting Inherit on an inherited node leaves the outer rule in place", async () => {
 		const t = test_convex();
 		const { db, asUser, outerId, innerId } = await seed_read_only_lock_tree(t);
 
-		const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+		const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: db.membershipId,
 			nodeId: outerId,
 		});
 		expect(locked._nay).toBeUndefined();
 
-		const refused = await asUser.mutation(api.files_nodes.set_node_writable, {
+		const refused = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: null,
 			membershipId: db.membershipId,
 			nodeId: innerId,
 		});
-		expect(refused._nay?.message).toBe("This is not directly read-only");
+		expect(refused._nay).toBeUndefined();
 
 		const inner = await read_lock_node(t, innerId);
-		expect(inner?.readOnlyScopeNodeId).toBe(outerId);
+		expect(inner?.writePolicyScopeNodeId).toBe(outerId);
 
 		// Use the same path to prove the direct lock can be removed.
-		const unlocked = await asUser.mutation(api.files_nodes.set_node_writable, {
+		const unlocked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: null,
 			membershipId: db.membershipId,
 			nodeId: outerId,
 		});
@@ -15895,14 +15967,15 @@ describe("files_nodes.set_node_writable", () => {
 		const t = test_convex();
 		const { db, asUser, siblingId } = await seed_read_only_lock_tree(t);
 
-		const unlocked = await asUser.mutation(api.files_nodes.set_node_writable, {
+		const unlocked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: null,
 			membershipId: db.membershipId,
 			nodeId: siblingId,
 		});
 		expect(unlocked._nay).toBeUndefined();
 
 		const sibling = await read_lock_node(t, siblingId);
-		expect(sibling?.readOnlyScopeNodeId).toBeNull();
+		expect(sibling?.writePolicyScopeNodeId).toBeNull();
 	});
 
 	test("locks and unlocks an archived root", async () => {
@@ -15928,39 +16001,44 @@ describe("files_nodes.set_node_writable", () => {
 		});
 		expect(archived._nay).toBeUndefined();
 
-		const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+		const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: db.membershipId,
 			nodeId: cold._yay.nodeId,
 		});
 		expect(locked._nay).toBeUndefined();
-		const unlocked = await asUser.mutation(api.files_nodes.set_node_writable, {
+		const unlocked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: null,
 			membershipId: db.membershipId,
 			nodeId: cold._yay.nodeId,
 		});
 		expect(unlocked._nay).toBeUndefined();
 
 		const coldNode = await read_lock_node(t, cold._yay.nodeId);
-		expect(coldNode?.readOnlyScopeNodeId).toBeNull();
+		expect(coldNode?.writePolicyScopeNodeId).toBeNull();
 	});
 });
 
-describe("files_nodes.get_node_read_only_management_state", () => {
+describe("files_nodes.get_node_write_policy_management_state", () => {
 	test("a node with no lock above it reports the writable state", async () => {
 		const t = test_convex();
 		const { db, asUser, siblingId } = await seed_read_only_lock_tree(t);
 
-		// The Properties dialog draws its checkbox and its description line from this result, so a
-		// node nobody locked must report no lock, no parent lock, and no source to name.
-		const state = await asUser.query(api.files_nodes.get_node_read_only_management_state, {
+		// Properties shows the local choice, parent policy, and effective access separately.
+		// An open node has no local or parent policy and no source to name.
+		const state = await asUser.query(api.files_nodes.get_node_write_policy_management_state, {
 			membershipId: db.membershipId,
 			nodeId: siblingId,
 		});
 		expect(state).toEqual({
 			nodeId: siblingId,
 			canManage: true,
-			readOnlyState: "writable",
-			hasInheritedParentLock: false,
-			source: null,
+			canWrite: true,
+			writeBlockedReason: null,
+			localPolicy: null,
+			hasInheritedPolicy: false,
+			inheritedSource: null,
+			blockedByAncestor: false,
 		});
 	});
 
@@ -15970,30 +16048,410 @@ describe("files_nodes.get_node_read_only_management_state", () => {
 		await set_read_only_or_throw(asUser, db.membershipId, outerId);
 
 		// For a direct lock the source means "a lock above this node", never the node itself.
-		// `/outer` sits at the root, so unticking the box here makes it writable at once and the
+		// `/outer` sits at the root, so choosing Inherit makes it writable at once and the
 		// dialog must not offer to manage another folder.
-		const state = await asUser.query(api.files_nodes.get_node_read_only_management_state, {
+		const state = await asUser.query(api.files_nodes.get_node_write_policy_management_state, {
 			membershipId: db.membershipId,
 			nodeId: outerId,
 		});
 		expect(state).toEqual({
 			nodeId: outerId,
 			canManage: true,
-			readOnlyState: "self",
-			hasInheritedParentLock: false,
-			source: null,
+			canWrite: false,
+			writeBlockedReason: "read_only",
+			localPolicy: { mode: "read_only" },
+			hasInheritedPolicy: false,
+			inheritedSource: null,
+			blockedByAncestor: false,
 		});
 	});
 });
 
-describe("files_node_require_writable", () => {
-	test("a node with no pointer is writable", () => {
-		expect(files_node_require_writable({ readOnlyScopeNodeId: null })._nay).toBeUndefined();
+describe("selected file writers", () => {
+	async function seed_account(t: ReturnType<typeof test_convex>) {
+		const fixture = await seed_read_only_lock_tree(t);
+		const created = await fixture.asUser.mutation(api.access_control.create_service_account, {
+			membershipId: fixture.db.membershipId,
+			name: "File Writer",
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const serviceAccountId = created._yay.serviceAccountId;
+		const writeContext: files_nodes_WriteContext = {
+			writer: { kind: "service_account", serviceAccountId },
+			actorUserId: fixture.db.userId,
+			resourceScope: { kind: "workspace" },
+			policyReach: "direct",
+		};
+		return { ...fixture, serviceAccountId, writeContext };
+	}
+
+	test("a selected human needs ACL permission and every parent rule must match", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId, innerId, deepId } = await seed_read_only_lock_tree(t);
+		const member = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "selected-writer" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				active: true,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				role: "viewer",
+				now: Date.now(),
+			});
+			return { userId, membershipId };
+		});
+		const asMember = t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId });
+		const selected = { mode: "writer", writer: { kind: "user", userId: member.userId } } as const;
+		expect(
+			(
+				await asUser.mutation(api.files_nodes.set_node_write_policy, {
+					membershipId: db.membershipId,
+					nodeId: innerId,
+					writePolicy: selected,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			await asMember.query(api.files_nodes.get_current_user_file_write_permission, {
+				membershipId: member.membershipId,
+				nodeId: deepId,
+			}),
+		).toBe(false);
+		expect(
+			(
+				await asUser.mutation(api.access_control.set_user_role, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId: member.userId,
+					role: "member",
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			await asMember.query(api.files_nodes.get_current_user_file_write_permission, {
+				membershipId: member.membershipId,
+				nodeId: deepId,
+			}),
+		).toBe(true);
+		expect(
+			(
+				await asMember.mutation(api.files_metadata.set_entries, {
+					membershipId: member.membershipId,
+					fileNodeId: deepId,
+					metadataYaml: "writer: selected",
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			(
+				await asUser.mutation(api.files_metadata.set_entries, {
+					membershipId: db.membershipId,
+					fileNodeId: deepId,
+					metadataYaml: "writer: owner",
+				})
+			)._nay?.name,
+		).toBe("read_only");
+
+		expect(
+			(
+				await asUser.mutation(api.files_nodes.set_node_write_policy, {
+					membershipId: db.membershipId,
+					nodeId: outerId,
+					writePolicy: { mode: "writer", writer: { kind: "user", userId: db.userId } },
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			await asMember.query(api.files_nodes.get_current_user_file_write_permission, {
+				membershipId: member.membershipId,
+				nodeId: deepId,
+			}),
+		).toBe(false);
+		expect(
+			await asUser.query(api.files_nodes.get_current_user_file_write_permission, {
+				membershipId: db.membershipId,
+				nodeId: deepId,
+			}),
+		).toBe(false);
+		expect(
+			(
+				await asUser.mutation(api.files_nodes.set_node_write_policy, {
+					membershipId: db.membershipId,
+					nodeId: outerId,
+					writePolicy: selected,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			await asMember.query(api.files_nodes.get_current_user_file_write_permission, {
+				membershipId: member.membershipId,
+				nodeId: deepId,
+			}),
+		).toBe(true);
+		const tree = await asMember.query(api.files_nodes.list_tree, { membershipId: member.membershipId });
+		expect(tree.find((node) => node._id === innerId)).toMatchObject({ canWrite: true, writePolicyState: "self" });
+		expect(tree.find((node) => node._id === deepId)).toMatchObject({ canWrite: true, writePolicyState: "inherited" });
 	});
 
-	test("a locked node refuses with the stable read_only classification", () => {
-		const refused = files_node_require_writable({
-			readOnlyScopeNodeId: "read_only_scope_node" as Id<"files_nodes">,
+	test("direct account reach cannot match a parent rule during creation", async () => {
+		const t = test_convex();
+		const f = await seed_account(t);
+		expect(
+			(
+				await f.asUser.mutation(api.access_control.set_service_account_grant, {
+					membershipId: f.db.membershipId,
+					serviceAccountId: f.serviceAccountId,
+					resource: { kind: "file", nodeId: f.outerId },
+					level: "manage",
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			(
+				await f.asUser.mutation(api.files_nodes.set_node_write_policy, {
+					membershipId: f.db.membershipId,
+					nodeId: f.outerId,
+					writePolicy: { mode: "writer", writer: f.writeContext.writer },
+				})
+			)._nay,
+		).toBeUndefined();
+		const result = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", f.outerId);
+			if (!node) throw new Error("Missing folder");
+			const direct = await files_nodes_db_require_writable(ctx, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				writeContext: f.writeContext,
+				target: { kind: "node", node },
+			});
+			const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
+				organizationId: f.db.organizationId,
+				workspaceId: f.db.workspaceId,
+				userId: f.db.userId,
+				parentId: f.outerId,
+				path: "new/deep",
+				kind: "folder",
+				now: Date.now(),
+				writeContext: {
+					...f.writeContext,
+					resourceScope: { kind: "create", parentNodeId: f.outerId, path: "/outer/new/deep" },
+				},
+			});
+			return { direct, created, paths: (await ctx.db.query("files_nodes").collect()).map((item) => item.path) };
+		});
+		expect(result.direct._nay).toBeUndefined();
+		expect(result.created._nay?.name).toBe("read_only");
+		expect(result.paths).not.toContain("/outer/new");
+		expect(result.paths).not.toContain("/outer/new/deep");
+	});
+
+	test("exact folder management covers open children but refuses a nested restricted scope", async () => {
+		const t = test_convex();
+		const f = await seed_account(t);
+		const policy = { mode: "writer", writer: f.writeContext.writer } as const;
+		expect(
+			(
+				await f.asUser.mutation(api.access_control.set_service_account_grant, {
+					membershipId: f.db.membershipId,
+					serviceAccountId: f.serviceAccountId,
+					resource: { kind: "file", nodeId: f.outerId },
+					level: "manage",
+				})
+			)._nay,
+		).toBeUndefined();
+		const setPolicy = async (writePolicy: typeof policy | null) =>
+			await t.run(async (ctx) => {
+				const node = await ctx.db.get("files_nodes", f.outerId);
+				if (!node) throw new Error("Missing folder");
+				return await files_nodes_db_set_write_policy(ctx, { node, writeContext: f.writeContext, writePolicy });
+			});
+		expect((await setPolicy(policy))._nay).toBeUndefined();
+		expect(await read_lock_node(t, f.deepId)).toMatchObject({ writePolicyScopeNodeId: f.outerId, writePolicy: null });
+		expect(
+			(
+				await f.asUser.mutation(api.files_sharing.restrict_node, {
+					membershipId: f.db.membershipId,
+					nodeId: f.frozenId,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect((await setPolicy(null))._nay?.message).toBe("Permission denied");
+		expect(await read_lock_node(t, f.outerId)).toMatchObject({ writePolicy: policy });
+		expect(
+			(
+				await f.asUser.mutation(api.access_control.set_service_account_grant, {
+					membershipId: f.db.membershipId,
+					serviceAccountId: f.serviceAccountId,
+					resource: { kind: "file", nodeId: f.frozenId },
+					level: "manage",
+				})
+			)._nay,
+		).toBeUndefined();
+		expect((await setPolicy(null))._nay).toBeUndefined();
+	});
+
+	test("creating a local policy uses parent management and adds no child grant", async () => {
+		const t = test_convex();
+		const f = await seed_account(t);
+		expect(
+			(
+				await f.asUser.mutation(api.access_control.set_service_account_grant, {
+					membershipId: f.db.membershipId,
+					serviceAccountId: f.serviceAccountId,
+					resource: { kind: "file", nodeId: f.outerId },
+					level: "write",
+				})
+			)._nay,
+		).toBeUndefined();
+		const create = async () =>
+			await t.run(
+				async (ctx) =>
+					await files_nodes_db_create_node_recursively_at_path(ctx, {
+						organizationId: f.db.organizationId,
+						workspaceId: f.db.workspaceId,
+						userId: f.db.userId,
+						parentId: f.outerId,
+						path: "new/deep",
+						kind: "folder",
+						now: Date.now(),
+						writeContext: {
+							...f.writeContext,
+							resourceScope: { kind: "create", parentNodeId: f.outerId, path: "/outer/new/deep" },
+						},
+						writePolicy: { mode: "writer", writer: f.writeContext.writer },
+					}),
+			);
+		expect((await create())._nay?.message).toBe("Permission denied");
+		expect(
+			await t.run(async (ctx) =>
+				(await ctx.db.query("files_nodes").collect()).some((node) => node.path.startsWith("/outer/new")),
+			),
+		).toBe(false);
+		expect(
+			(
+				await f.asUser.mutation(api.access_control.set_service_account_grant, {
+					membershipId: f.db.membershipId,
+					serviceAccountId: f.serviceAccountId,
+					resource: { kind: "file", nodeId: f.outerId },
+					level: "manage",
+				})
+			)._nay,
+		).toBeUndefined();
+		const created = await create();
+		if (created._nay) throw new Error(created._nay.message);
+		const result = await t.run(async (ctx) => {
+			const node = await ctx.db.get("files_nodes", created._yay);
+			if (!node) throw new Error("Missing created folder");
+			return {
+				node,
+				grants: (await ctx.db.query("access_control_permission_grants").collect()).filter(
+					(grant) => grant.principalKind === "service_account",
+				),
+				state: await files_nodes_db_get_write_policy_management_state(ctx, { node, writeContext: f.writeContext }),
+			};
+		});
+		expect(result.node).toMatchObject({
+			writePolicyScopeNodeId: created._yay,
+			writePolicy: { mode: "writer", writer: f.writeContext.writer },
+		});
+		expect(result.grants.every((grant) => grant.resourceId === f.outerId)).toBe(true);
+		expect(result.state).toMatchObject({ canWrite: false, canManage: false, writeBlockedReason: "permission" });
+	});
+
+	test("a moved node no longer belongs to the sealed subtree", async () => {
+		const t = test_convex();
+		const f = await seed_account(t);
+		const check = async () =>
+			await t.run(async (ctx) => {
+				const node = await ctx.db.get("files_nodes", f.deepId);
+				if (!node) throw new Error("Missing moved folder");
+				return await files_nodes_db_require_writable(ctx, {
+					organizationId: f.db.organizationId,
+					workspaceId: f.db.workspaceId,
+					writeContext: { ...f.writeContext, resourceScope: { kind: "subtree", nodeId: f.innerId } },
+					target: { kind: "node", node },
+				});
+			});
+		expect((await check())._nay).toBeUndefined();
+		expect(
+			(
+				await f.asUser.mutation(api.files_nodes.move_nodes, {
+					membershipId: f.db.membershipId,
+					itemIds: [f.deepId],
+					targetParentId: files_ROOT_ID,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect((await check())._nay?.message).toBe("Permission denied");
+	});
+
+	test("a revoked selected writer is redacted and a manager can replace it", async () => {
+		const t = test_convex();
+		const f = await seed_account(t);
+		const args = { membershipId: f.db.membershipId, nodeId: f.innerId };
+		expect(
+			(
+				await f.asUser.mutation(api.files_nodes.set_node_write_policy, {
+					...args,
+					writePolicy: { mode: "writer", writer: f.writeContext.writer },
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			(
+				await f.asUser.mutation(api.access_control.revoke_service_account, {
+					membershipId: f.db.membershipId,
+					serviceAccountId: f.serviceAccountId,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(await f.asUser.query(api.files_nodes.get_node_write_policy_management_state, args)).toMatchObject({
+			canManage: true,
+			canWrite: false,
+			localPolicy: { mode: "writer", writer: null },
+		});
+		expect(
+			(
+				await f.asUser.mutation(api.files_nodes.set_node_write_policy, {
+					...args,
+					writePolicy: { mode: "read_only" },
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(await read_lock_node(t, f.innerId)).toMatchObject({ writePolicy: { mode: "read_only" } });
+	});
+});
+
+describe("files_nodes.get_user_file_write_access", () => {
+	test("a node with no policy is writable", async () => {
+		const t = test_convex();
+		const { db, siblingId } = await seed_read_only_lock_tree(t);
+		expect(
+			(
+				await t.query(internal.files_nodes.get_user_file_write_access, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId: db.userId,
+					nodeId: siblingId,
+				})
+			)._nay,
+		).toBeUndefined();
+	});
+
+	test("a read-only policy keeps the stable refusal classification", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId } = await seed_read_only_lock_tree(t);
+		await set_read_only_or_throw(asUser, db.membershipId, outerId);
+		const refused = await t.query(internal.files_nodes.get_user_file_write_access, {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			userId: db.userId,
+			nodeId: outerId,
 		});
 		expect(refused._nay?.name).toBe("read_only");
 		expect(refused._nay?.message).toBe("This item is read-only.");
@@ -16019,10 +16477,41 @@ describe("new-node read-only inheritance", () => {
 			throw new Error(folder._nay.message);
 		}
 
-		// Normal tenant creation starts unlocked: only a named migration/repair caller may opt
-		// into inheriting a lock pointer at insert time.
+		// A root child has no local or inherited rule.
 		const node = await read_lock_node(t, folder._yay.nodeId);
-		expect(node?.readOnlyScopeNodeId).toBeNull();
+		expect(node?.writePolicyScopeNodeId).toBeNull();
+		expect(node).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: null });
+	});
+
+	test("trusted creation inherits the parent policy for every missing segment", async () => {
+		const t = test_convex();
+		const { db, asUser, outerId } = await seed_read_only_lock_tree(t);
+		await set_read_only_or_throw(asUser, db.membershipId, outerId);
+
+		const created = await t.run(async (ctx) => {
+			return await files_nodes_db_create_node_recursively_at_path(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId: users_SYSTEM_AUTHOR,
+				parentId: outerId,
+				path: "new/deep",
+				kind: "folder",
+
+				now: Date.now(),
+			});
+		});
+		expect(created._nay).toBeUndefined();
+		const parent = await read_active_child(t, db, outerId, "new");
+		if (!parent) {
+			throw new Error("Expected new parent folder");
+		}
+		const child = await read_active_child(t, db, parent._id, "deep");
+		for (const node of [parent, child]) {
+			expect(node).toMatchObject({
+				writePolicy: null,
+				writePolicyScopeNodeId: outerId,
+			});
+		}
 	});
 });
 
@@ -16032,7 +16521,11 @@ async function set_read_only_or_throw(
 	membershipId: Id<"organizations_workspaces_users">,
 	nodeId: Id<"files_nodes">,
 ) {
-	const locked = await asUser.mutation(api.files_nodes.set_node_read_only, { membershipId, nodeId });
+	const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+		writePolicy: { mode: "read_only" },
+		membershipId,
+		nodeId,
+	});
 	if (locked._nay) {
 		throw new Error(locked._nay.message);
 	}
@@ -16044,7 +16537,11 @@ async function set_writable_or_throw(
 	membershipId: Id<"organizations_workspaces_users">,
 	nodeId: Id<"files_nodes">,
 ) {
-	const unlocked = await asUser.mutation(api.files_nodes.set_node_writable, { membershipId, nodeId });
+	const unlocked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+		writePolicy: null,
+		membershipId,
+		nodeId,
+	});
 	if (unlocked._nay) {
 		throw new Error(unlocked._nay.message);
 	}
@@ -16483,6 +16980,7 @@ describe("files_nodes.move_nodes read-only gates", () => {
 		});
 		expect(movedSibling._nay).toBeUndefined();
 		expect((await read_lock_node(t, siblingId))?.path).toBe("/sibling");
+		expect(await read_lock_node(t, siblingId)).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: null });
 	});
 
 	test("a locked archived descendant blocks moving the folder", async () => {
@@ -16726,7 +17224,7 @@ describe("files_nodes.unarchive_nodes read-only gates", () => {
 		const firstChild = await read_lock_node(t, archivedChildId);
 		expect(firstRoot?.archiveOperationId).toBeDefined();
 		expect(firstChild?.archiveOperationId).toBeDefined();
-		expect(firstChild?.readOnlyScopeNodeId).toBe(archivedChildId);
+		expect(firstChild?.writePolicyScopeNodeId).toBe(archivedChildId);
 	});
 
 	test("a locked node anywhere in the restored subtree blocks the restore until unlock", async () => {
@@ -17667,12 +18165,12 @@ describe("files_nodes public read-only view", () => {
 		// Only the granted scope is listed; the outer lock root itself never appears.
 		expect(memberTree.map((node) => node.path).sort()).toEqual(["/outer/inner", "/outer/inner/secret.md"]);
 		for (const node of memberTree) {
-			expect(node.readOnlyState).toBe("inherited");
-			expect(node.readOnlySourceNodeId).toBeUndefined();
-			expect(node.readOnlySourcePath).toBeUndefined();
+			expect(node.writePolicyState).toBe("inherited");
+			expect(node.writePolicySourceNodeId).toBeUndefined();
+			expect(node.writePolicySourcePath).toBeUndefined();
 			// The raw pointer must not leave the backend: it would name the hidden outer folder.
-			expect("readOnlyScopeNodeId" in node).toBe(false);
-			expect("readOnlyPluginServiceTargetId" in node).toBe(false);
+			expect("writePolicyScopeNodeId" in node).toBe(false);
+			expect("writePolicy" in node).toBe(false);
 		}
 
 		// The owner can read the lock root, so each returned node may name it.
@@ -17680,14 +18178,14 @@ describe("files_nodes public read-only view", () => {
 		const outerRow = ownerTree.find((node) => node._id === f.outerId);
 		const innerRow = ownerTree.find((node) => node._id === f.innerId);
 		expect(outerRow).toMatchObject({
-			readOnlyState: "self",
-			readOnlySourceNodeId: f.outerId,
-			readOnlySourcePath: "/outer",
+			writePolicyState: "self",
+			writePolicySourceNodeId: f.outerId,
+			writePolicySourcePath: "/outer",
 		});
 		expect(innerRow).toMatchObject({
-			readOnlyState: "inherited",
-			readOnlySourceNodeId: f.outerId,
-			readOnlySourcePath: "/outer",
+			writePolicyState: "inherited",
+			writePolicySourceNodeId: f.outerId,
+			writePolicySourcePath: "/outer",
 		});
 	});
 
@@ -17699,20 +18197,20 @@ describe("files_nodes public read-only view", () => {
 			membershipId: f.memberMembershipId,
 			fileNodeId: f.fileId,
 		});
-		expect(memberView).toMatchObject({ readOnlyState: "inherited" });
-		expect(memberView?.readOnlySourceNodeId).toBeUndefined();
-		expect(memberView?.readOnlySourcePath).toBeUndefined();
-		expect(memberView !== null && "readOnlyScopeNodeId" in memberView).toBe(false);
-		expect(memberView !== null && "readOnlyPluginServiceTargetId" in memberView).toBe(false);
+		expect(memberView).toMatchObject({ writePolicyState: "inherited" });
+		expect(memberView?.writePolicySourceNodeId).toBeUndefined();
+		expect(memberView?.writePolicySourcePath).toBeUndefined();
+		expect(memberView).not.toHaveProperty("writePolicyScopeNodeId");
+		expect(memberView).not.toHaveProperty("writePolicy");
 
 		const ownerView = await f.asOwner.query(api.files_nodes.get_file_node_for_membership, {
 			membershipId: f.db.membershipId,
 			fileNodeId: f.fileId,
 		});
 		expect(ownerView).toMatchObject({
-			readOnlyState: "inherited",
-			readOnlySourceNodeId: f.outerId,
-			readOnlySourcePath: "/outer",
+			writePolicyState: "inherited",
+			writePolicySourceNodeId: f.outerId,
+			writePolicySourcePath: "/outer",
 		});
 
 		// A self-locked node names itself as the source.
@@ -17721,9 +18219,9 @@ describe("files_nodes public read-only view", () => {
 			fileNodeId: f.outerId,
 		});
 		expect(outerView).toMatchObject({
-			readOnlyState: "self",
-			readOnlySourceNodeId: f.outerId,
-			readOnlySourcePath: "/outer",
+			writePolicyState: "self",
+			writePolicySourceNodeId: f.outerId,
+			writePolicySourcePath: "/outer",
 		});
 	});
 
@@ -17752,19 +18250,22 @@ describe("files_nodes public read-only view", () => {
 				metadataYaml: "plugin-name: data-probe",
 			}),
 		).toEqual({ _yay: null });
-		await t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", nodeId, {
-				readOnlyScopeNodeId: nodeId,
-				readOnlyPluginName: "data-probe",
-			});
-		});
+		expect(
+			(
+				await asUser.mutation(api.files_nodes.set_node_write_policy, {
+					membershipId: db.membershipId,
+					nodeId,
+					writePolicy: { mode: "read_only" },
+				})
+			)._nay,
+		).toBeUndefined();
 
 		const view = await asUser.query(api.files_nodes.get_file_node_for_membership, {
 			membershipId: db.membershipId,
 			fileNodeId: nodeId,
 		});
-		expect(view).toMatchObject({ readOnlyState: "self" });
-		expect(view !== null && "readOnlyPluginName" in view).toBe(false);
+		expect(view).toMatchObject({ writePolicyState: "self" });
+		expect(view !== null && "writePolicy" in view).toBe(false);
 		expect(
 			await asUser.query(api.files_metadata.get_entries, {
 				membershipId: db.membershipId,
@@ -17794,9 +18295,9 @@ describe("files_nodes public read-only view", () => {
 			membershipId: db.membershipId,
 			fileNodeId: folder._yay.nodeId,
 		});
-		expect(view).toMatchObject({ readOnlyState: "writable" });
-		expect(view?.readOnlySourceNodeId).toBeUndefined();
-		expect(view?.readOnlySourcePath).toBeUndefined();
+		expect(view).toMatchObject({ writePolicyState: "none" });
+		expect(view?.writePolicySourceNodeId).toBeUndefined();
+		expect(view?.writePolicySourcePath).toBeUndefined();
 	});
 });
 
@@ -17851,23 +18352,20 @@ describe("member controls on plugin-labeled nodes", () => {
 			canRestrict: true,
 			canShareWithRoles: true,
 		});
-		expect(await f.asOwner.query(api.files_nodes.get_node_read_only_management_state, args)).toMatchObject({
+		expect(await f.asOwner.query(api.files_nodes.get_node_write_policy_management_state, args)).toMatchObject({
 			canManage: true,
-			readOnlyState: "writable",
+			canWrite: true,
+			localPolicy: null,
 		});
 		expect(
 			(
-				await f.asOwner.mutation(api.files_nodes.set_node_read_only, {
+				await f.asOwner.mutation(api.files_nodes.set_node_write_policy, {
+					writePolicy: { mode: "read_only" },
 					membershipId: f.db.membershipId,
 					nodeId: f.folderId,
 				})
 			)._nay,
 		).toBeUndefined();
-		await t.run(async (ctx) => {
-			for (const id of [f.folderId, f.childId, f.leafId]) {
-				await ctx.db.patch("files_nodes", id, { readOnlyPluginName: "chitchat" });
-			}
-		});
 		expect((await f.asOwner.mutation(api.files_sharing.restrict_node, args))._nay).toBeUndefined();
 		expect(
 			(
@@ -17888,23 +18386,28 @@ describe("member controls on plugin-labeled nodes", () => {
 		).toBeUndefined();
 		expect((await f.asOwner.mutation(api.files_sharing.unrestrict_node, args))._nay).toBeUndefined();
 		if (kind === "inherited") {
-			expect((await f.asOwner.mutation(api.files_nodes.set_node_writable, args))._nay?.message).toBe(
-				"This is not directly read-only",
-			);
+			expect(
+				(await f.asOwner.mutation(api.files_nodes.set_node_write_policy, { ...args, writePolicy: null }))._nay,
+			).toBeUndefined();
 		}
 		expect(
 			(
-				await f.asOwner.mutation(api.files_nodes.set_node_writable, {
+				await f.asOwner.mutation(api.files_nodes.set_node_write_policy, {
+					writePolicy: null,
 					membershipId: f.db.membershipId,
 					nodeId: f.folderId,
 				})
 			)._nay,
 		).toBeUndefined();
-		expect(await f.asOwner.query(api.files_nodes.get_node_read_only_management_state, args)).toMatchObject({
+		expect(await f.asOwner.query(api.files_nodes.get_node_write_policy_management_state, args)).toMatchObject({
 			canManage: true,
-			readOnlyState: "writable",
+			canWrite: true,
+			localPolicy: null,
 		});
-		expect((await f.asOwner.mutation(api.files_nodes.set_node_read_only, args))._nay).toBeUndefined();
+		expect(
+			(await f.asOwner.mutation(api.files_nodes.set_node_write_policy, { ...args, writePolicy: { mode: "read_only" } }))
+				._nay,
+		).toBeUndefined();
 	});
 
 	test("a writer can edit the label but cannot use manager sharing or lock controls", async () => {
@@ -17934,7 +18437,7 @@ describe("member controls on plugin-labeled nodes", () => {
 			canRestrict: false,
 			canShareWithRoles: false,
 		});
-		expect(await f.asMember.query(api.files_nodes.get_node_read_only_management_state, args)).toMatchObject({
+		expect(await f.asMember.query(api.files_nodes.get_node_write_policy_management_state, args)).toMatchObject({
 			canManage: false,
 		});
 		expect((await f.asMember.mutation(api.files_sharing.restrict_node, args))._nay).toBeDefined();
@@ -17956,45 +18459,39 @@ describe("member controls on plugin-labeled nodes", () => {
 				})
 			)._nay,
 		).toBeDefined();
-		expect((await f.asMember.mutation(api.files_nodes.set_node_read_only, args))._nay).toBeDefined();
-		expect((await f.asMember.mutation(api.files_nodes.set_node_writable, args))._nay).toBeDefined();
+		expect(
+			(
+				await f.asMember.mutation(api.files_nodes.set_node_write_policy, {
+					...args,
+					writePolicy: { mode: "read_only" },
+				})
+			)._nay,
+		).toBeDefined();
+		expect(
+			(await f.asMember.mutation(api.files_nodes.set_node_write_policy, { ...args, writePolicy: null }))._nay,
+		).toBeDefined();
 	});
 
-	test("a no-op lock preserves plugin origins; unlock and relock clear inherited origins", async () => {
+	test("changing a selected writer keeps descriptive plugin metadata", async () => {
 		const t = test_convex();
 		const f = await seed_labeled_folders(t);
 		const args = { membershipId: f.db.membershipId, nodeId: f.folderId };
-		expect((await f.asOwner.mutation(api.files_nodes.set_node_read_only, args))._nay).toBeUndefined();
-		await t.run(async (ctx) => {
-			for (const nodeId of [f.folderId, f.childId, f.leafId]) {
-				await ctx.db.patch("files_nodes", nodeId, { readOnlyPluginName: "chitchat" });
-			}
-		});
-		expect((await f.asOwner.mutation(api.files_nodes.set_node_read_only, args))._nay).toBeUndefined();
-		await t.run(async (ctx) => {
-			for (const nodeId of [f.folderId, f.childId, f.leafId]) {
-				expect(await ctx.db.get("files_nodes", nodeId)).toMatchObject({
-					readOnlyScopeNodeId: f.folderId,
-					readOnlyPluginName: "chitchat",
-				});
-			}
-		});
-		expect((await f.asOwner.mutation(api.files_nodes.set_node_writable, args))._nay).toBeUndefined();
-		await t.run(async (ctx) => {
-			for (const nodeId of [f.folderId, f.childId, f.leafId]) {
-				const node = await ctx.db.get("files_nodes", nodeId);
-				expect(node?.readOnlyScopeNodeId).toBeNull();
-				expect(node?.readOnlyPluginName).toBeNull();
-			}
-		});
-		expect((await f.asOwner.mutation(api.files_nodes.set_node_read_only, args))._nay).toBeUndefined();
-		await t.run(async (ctx) => {
-			for (const nodeId of [f.folderId, f.childId, f.leafId]) {
-				const node = await ctx.db.get("files_nodes", nodeId);
-				expect(node?.readOnlyScopeNodeId).toBe(f.folderId);
-				expect(node?.readOnlyPluginName).toBeNull();
-			}
-		});
+		const writePolicy = { mode: "writer", writer: { kind: "user", userId: f.member.userId } } as const;
+		for (let i = 0; i < 2; i += 1) {
+			expect(
+				(await f.asOwner.mutation(api.files_nodes.set_node_write_policy, { ...args, writePolicy }))._nay,
+			).toBeUndefined();
+		}
+		expect(await read_lock_node(t, f.folderId)).toMatchObject({ writePolicy, writePolicyScopeNodeId: f.folderId });
+		for (const nodeId of [f.childId, f.leafId]) {
+			expect(await read_lock_node(t, nodeId)).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: f.folderId });
+		}
+		expect(
+			(await f.asOwner.mutation(api.files_nodes.set_node_write_policy, { ...args, writePolicy: null }))._nay,
+		).toBeUndefined();
+		for (const nodeId of [f.folderId, f.childId, f.leafId]) {
+			expect(await read_lock_node(t, nodeId)).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: null });
+		}
 		expect(
 			await f.asOwner.query(api.files_metadata.get_entries, {
 				membershipId: f.db.membershipId,
@@ -18006,70 +18503,61 @@ describe("member controls on plugin-labeled nodes", () => {
 		]);
 	});
 
-	test("a member direct lock under a plugin lock clears origins when added and removed", async () => {
+	test("removing a local writer inherits the outer writer", async () => {
 		const t = test_convex();
 		const f = await seed_labeled_folders(t);
+		const outerPolicy = { mode: "writer", writer: { kind: "user", userId: f.db.userId } } as const;
 		expect(
 			(
-				await f.asOwner.mutation(api.files_nodes.set_node_read_only, {
+				await f.asOwner.mutation(api.files_nodes.set_node_write_policy, {
 					membershipId: f.db.membershipId,
 					nodeId: f.folderId,
+					writePolicy: outerPolicy,
 				})
 			)._nay,
 		).toBeUndefined();
-		await t.run(async (ctx) => {
-			for (const nodeId of [f.folderId, f.childId, f.leafId]) {
-				await ctx.db.patch("files_nodes", nodeId, { readOnlyPluginName: "chitchat" });
-			}
-		});
 		const args = { membershipId: f.db.membershipId, nodeId: f.childId };
-		expect((await f.asOwner.mutation(api.files_nodes.set_node_read_only, args))._nay).toBeUndefined();
-		await t.run(async (ctx) => {
-			for (const nodeId of [f.childId, f.leafId]) {
-				const node = await ctx.db.get("files_nodes", nodeId);
-				expect(node?.readOnlyScopeNodeId).toBe(f.childId);
-				expect(node?.readOnlyPluginName).toBeNull();
-			}
+		const innerPolicy = { mode: "writer", writer: { kind: "user", userId: f.member.userId } } as const;
+		expect(
+			(await f.asOwner.mutation(api.files_nodes.set_node_write_policy, { ...args, writePolicy: innerPolicy }))._nay,
+		).toBeUndefined();
+		expect(await read_lock_node(t, f.childId)).toMatchObject({
+			writePolicy: innerPolicy,
+			writePolicyScopeNodeId: f.childId,
 		});
-		expect((await f.asOwner.mutation(api.files_nodes.set_node_writable, args))._nay).toBeUndefined();
-		await t.run(async (ctx) => {
-			expect((await ctx.db.get("files_nodes", f.folderId))?.readOnlyPluginName).toBe("chitchat");
-			for (const nodeId of [f.childId, f.leafId]) {
-				const node = await ctx.db.get("files_nodes", nodeId);
-				expect(node?.readOnlyScopeNodeId).toBe(f.folderId);
-				expect(node?.readOnlyPluginName).toBeNull();
-			}
-		});
+		expect(
+			(await f.asOwner.mutation(api.files_nodes.set_node_write_policy, { ...args, writePolicy: null }))._nay,
+		).toBeUndefined();
+		expect(await read_lock_node(t, f.folderId)).toMatchObject({ writePolicy: outerPolicy });
+		for (const nodeId of [f.childId, f.leafId]) {
+			expect(await read_lock_node(t, nodeId)).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: f.folderId });
+		}
 	});
 
-	test("changing an outer lock preserves a nested direct plugin lock", async () => {
+	test("changing the outer policy preserves a nested selected writer", async () => {
 		const t = test_convex();
 		const f = await seed_labeled_folders(t);
+		const writePolicy = { mode: "writer", writer: { kind: "user", userId: f.member.userId } } as const;
 		expect(
 			(
-				await f.asOwner.mutation(api.files_nodes.set_node_read_only, {
+				await f.asOwner.mutation(api.files_nodes.set_node_write_policy, {
 					membershipId: f.db.membershipId,
 					nodeId: f.childId,
+					writePolicy,
 				})
 			)._nay,
 		).toBeUndefined();
-		await t.run(async (ctx) => {
-			for (const nodeId of [f.childId, f.leafId]) {
-				await ctx.db.patch("files_nodes", nodeId, { readOnlyPluginName: "chitchat" });
-			}
-		});
 		const args = { membershipId: f.db.membershipId, nodeId: f.folderId };
-		expect((await f.asOwner.mutation(api.files_nodes.set_node_read_only, args))._nay).toBeUndefined();
-		expect((await f.asOwner.mutation(api.files_nodes.set_node_writable, args))._nay).toBeUndefined();
-		await t.run(async (ctx) => {
-			expect((await ctx.db.get("files_nodes", f.folderId))?.readOnlyScopeNodeId).toBeNull();
-			for (const nodeId of [f.childId, f.leafId]) {
-				expect(await ctx.db.get("files_nodes", nodeId)).toMatchObject({
-					readOnlyScopeNodeId: f.childId,
-					readOnlyPluginName: "chitchat",
-				});
-			}
-		});
+		expect(
+			(await f.asOwner.mutation(api.files_nodes.set_node_write_policy, { ...args, writePolicy: { mode: "read_only" } }))
+				._nay,
+		).toBeUndefined();
+		expect(
+			(await f.asOwner.mutation(api.files_nodes.set_node_write_policy, { ...args, writePolicy: null }))._nay,
+		).toBeUndefined();
+		expect(await read_lock_node(t, f.folderId)).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: null });
+		expect(await read_lock_node(t, f.childId)).toMatchObject({ writePolicy, writePolicyScopeNodeId: f.childId });
+		expect(await read_lock_node(t, f.leafId)).toMatchObject({ writePolicy: null, writePolicyScopeNodeId: f.childId });
 	});
 });
 
@@ -19088,7 +19576,7 @@ describe("files_nodes_content.cleanup_file_yjs_covered_rows", () => {
 		});
 		expect((await read_deletion_jobs(t))[0]).toMatchObject({
 			r2Key: superseded.key,
-			attempts: 1,
+			failureCount: 1,
 		});
 
 		confirmedDeleteSpy.mockResolvedValue(undefined);

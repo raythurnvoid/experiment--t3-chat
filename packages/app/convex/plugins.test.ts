@@ -7,6 +7,7 @@ import { api, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel.js";
 import { plugins_ai_review } from "./plugins.ts";
 import { plugins_runtime_db_enqueue_upload_completed_runs } from "./plugins_runtime.ts";
+import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
 import {
 	plugins_REVIEW_POLICY_VERSION,
@@ -242,10 +243,13 @@ const media_plugin_consent: {
 	acceptedCapabilities: plugins_Capability[];
 	acceptedOutboundOrigins: string[];
 	acceptedUiOutboundOrigins: string[];
+	serviceAccountGrants: Array<{ resource: { kind: "workspace" }; level: "manage" }>;
 } = {
 	acceptedCapabilities: ["plugin.secrets.read", "outbound.fetch"],
 	acceptedOutboundOrigins: [],
 	acceptedUiOutboundOrigins: [],
+	// File runtime fixtures explicitly authorize their test account's content operations.
+	serviceAccountGrants: [{ resource: { kind: "workspace" }, level: "manage" }],
 };
 
 async function sha256_text(value: string) {
@@ -284,6 +288,344 @@ async function drain_plugin_registry_delete(
 	}
 	throw new Error(`Hard delete of plugin "${pluginName}" did not finish`);
 }
+
+describe("install_version service accounts", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	test("keeps grants removed across update and reinstall, and requires an explicit revoked-account replacement", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const firstVersion = await register_media_plugin(t, membership.userId, { events: [] });
+		const nextVersion = await register_media_plugin(t, membership.userId, { version: "0.2.0", events: [] });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const first = await asOwner.mutation(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: firstVersion.pluginVersionId,
+			...media_plugin_consent,
+			serviceAccountGrants: [{ resource: { kind: "workspace" }, level: "write" }],
+		});
+		if (first._nay) throw new Error(first._nay.message);
+		const installation = (await t.run((ctx) =>
+			ctx.db.get("plugins_workspace_installations", first._yay.installationId),
+		))!;
+		const serviceAccountId = installation.serviceAccountId;
+		expect(
+			(
+				await asOwner.mutation(api.access_control.remove_service_account_grant, {
+					membershipId: membership.membershipId,
+					serviceAccountId,
+					resource: { kind: "workspace" },
+				})
+			)._nay,
+		).toBeUndefined();
+		const updated = await asOwner.mutation(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: nextVersion.pluginVersionId,
+			...media_plugin_consent,
+			serviceAccountGrants: [],
+		});
+		expect(updated).toEqual(first);
+		expect(await t.run((ctx) => ctx.db.query("access_control_permission_grants").collect())).toEqual([]);
+		await asOwner.mutation(api.access_control.revoke_service_account, {
+			membershipId: membership.membershipId,
+			serviceAccountId,
+		});
+		const beforeRebind = (await t.run((ctx) => ctx.db.get("plugins_workspace_installations", installation._id)))!;
+		const revoked = await t.run((ctx) => ctx.db.get("access_control_service_accounts", serviceAccountId));
+		vi.advanceTimersByTime(60_000);
+		expect(
+			(
+				await asOwner.mutation(api.plugins.install_version, {
+					membershipId: membership.membershipId,
+					pluginVersionId: nextVersion.pluginVersionId,
+					...media_plugin_consent,
+					serviceAccountGrants: [],
+				})
+			)._nay?.message,
+		).toBe("Choose an active service account");
+		expect(await t.run((ctx) => ctx.db.get("plugins_workspace_installations", installation._id))).toEqual(beforeRebind);
+		const replacement = await asOwner.mutation(api.access_control.create_service_account, {
+			membershipId: membership.membershipId,
+			name: "Replacement",
+		});
+		if (replacement._nay) throw new Error(replacement._nay.message);
+		expect(
+			(
+				await asOwner.mutation(api.plugins.set_installation_service_account, {
+					membershipId: membership.membershipId,
+					installationId: installation._id,
+					serviceAccountId: replacement._yay.serviceAccountId,
+				})
+			)._nay,
+		).toBeUndefined();
+		const rebound = (await t.run((ctx) => ctx.db.get("plugins_workspace_installations", installation._id)))!;
+		expect(rebound).toEqual({ ...beforeRebind, serviceAccountId: replacement._yay.serviceAccountId });
+		expect(
+			await t.run((ctx) => plugins_db_get_live_service_account(ctx, { installation: rebound, serviceAccountId })),
+		).toBeNull();
+		expect(await t.run((ctx) => ctx.db.get("access_control_service_accounts", serviceAccountId))).toEqual(revoked);
+		vi.advanceTimersByTime(60_000);
+		await asOwner.mutation(api.plugins.uninstall_version, {
+			membershipId: membership.membershipId,
+			installationId: installation._id,
+		});
+		const reinstalled = await asOwner.mutation(api.plugins.install_version, {
+			membershipId: membership.membershipId,
+			pluginVersionId: nextVersion.pluginVersionId,
+			...media_plugin_consent,
+			serviceAccountGrants: [],
+		});
+		if (reinstalled._nay) throw new Error(reinstalled._nay.message);
+		expect(
+			await t.run((ctx) => ctx.db.get("plugins_workspace_installations", reinstalled._yay.installationId)),
+		).toMatchObject({ serviceAccountId: replacement._yay.serviceAccountId });
+		expect(await t.run((ctx) => ctx.db.query("access_control_permission_grants").collect())).toEqual([]);
+	});
+
+	test("plugin management alone cannot create accounts or grants but can update an existing binding", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const version = await register_media_plugin(t, membership.userId, { events: [] });
+		const operator = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-plugin-operator" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId,
+				active: true,
+			});
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				resourceKind: "workspace",
+				resourceId: membership.workspaceId,
+				principalKind: "user",
+				userId,
+				permission: "workspace.plugins.manage",
+				createdAt: 1,
+				updatedAt: 1,
+			});
+			return { userId, membershipId };
+		});
+		const asOperator = t.withIdentity(user_identity(operator.userId));
+		const args = {
+			membershipId: operator.membershipId,
+			pluginVersionId: version.pluginVersionId,
+			...media_plugin_consent,
+			serviceAccountGrants: [],
+		};
+		expect((await asOperator.mutation(api.plugins.install_version, args))._nay?.message).toBe("Permission denied");
+		expect(await t.run((ctx) => ctx.db.query("access_control_service_accounts").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("plugins_service_account_bindings").collect())).toEqual([]);
+		const installed = await t.withIdentity(user_identity(membership.userId)).mutation(api.plugins.install_version, {
+			...args,
+			membershipId: membership.membershipId,
+			serviceAccountGrants: [{ resource: { kind: "workspace" }, level: "write" }],
+		});
+		if (installed._nay) throw new Error(installed._nay.message);
+		expect(await asOperator.mutation(api.plugins.install_version, args)).toEqual(installed);
+		vi.advanceTimersByTime(60_000);
+		const before = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", installed._yay.installationId));
+		expect(
+			(
+				await asOperator.mutation(api.plugins.install_version, {
+					...args,
+					serviceAccountGrants: [{ resource: { kind: "workspace" }, level: "read" }],
+				})
+			)._nay?.message,
+		).toBe("Permission denied");
+		expect(
+			(
+				await asOperator.mutation(api.plugins.set_installation_service_account, {
+					membershipId: operator.membershipId,
+					installationId: installed._yay.installationId,
+					serviceAccountId: before!.serviceAccountId,
+				})
+			)._nay?.message,
+		).toBe("Permission denied");
+		expect(await t.run((ctx) => ctx.db.get("plugins_workspace_installations", installed._yay.installationId))).toEqual(
+			before,
+		);
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		expect(
+			await asOwner.mutation(api.plugins.uninstall_version, {
+				membershipId: membership.membershipId,
+				installationId: installed._yay.installationId,
+			}),
+		).toEqual({ _yay: null });
+		const retained = await t.run(async (ctx) => ({
+			accounts: await ctx.db.query("access_control_service_accounts").collect(),
+			bindings: await ctx.db.query("plugins_service_account_bindings").collect(),
+			grants: await ctx.db.query("access_control_permission_grants").collect(),
+		}));
+		vi.advanceTimersByTime(60_000);
+		expect((await asOperator.mutation(api.plugins.install_version, args))._nay?.message).toBe("Permission denied");
+		expect(await t.run((ctx) => ctx.db.query("plugins_workspace_installations").collect())).toEqual([]);
+		expect(
+			await t.run(async (ctx) => ({
+				accounts: await ctx.db.query("access_control_service_accounts").collect(),
+				bindings: await ctx.db.query("plugins_service_account_bindings").collect(),
+				grants: await ctx.db.query("access_control_permission_grants").collect(),
+			})),
+		).toEqual(retained);
+		const reinstalled = await asOwner.mutation(api.plugins.install_version, {
+			...args,
+			membershipId: membership.membershipId,
+		});
+		expect(reinstalled._nay).toBeUndefined();
+		expect(
+			await t.run((ctx) => ctx.db.get("plugins_workspace_installations", reinstalled._yay!.installationId)),
+		).toMatchObject({ serviceAccountId: before!.serviceAccountId });
+		expect(await t.run((ctx) => ctx.db.query("access_control_permission_grants").collect())).toEqual(retained.grants);
+	});
+
+	test("checks every explicit grant before writing and supports a file-only account setup", async () => {
+		const t = test_convex();
+		const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const version = await register_media_plugin(t, membership.userId, { events: [] });
+		const asOwner = t.withIdentity(user_identity(membership.userId));
+		const folder = await asOwner.mutation(api.files_nodes.create_folder_node, {
+			membershipId: membership.membershipId,
+			parentId: files_ROOT_ID,
+			path: "private",
+		});
+		if (folder._nay) throw new Error(folder._nay.message);
+		const nodeId = folder._yay.nodeId;
+		await asOwner.mutation(api.files_sharing.restrict_node, { membershipId: membership.membershipId, nodeId });
+		const operator = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk-account-operator" });
+			const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				userId,
+				active: true,
+			});
+			for (const permission of [
+				"workspace.plugins.manage",
+				"workspace.service_accounts.manage",
+				"content.read",
+				"content.permissions.manage",
+			] as const) {
+				const fileGrant = permission === "content.read" || permission === "content.permissions.manage";
+				await ctx.db.insert("access_control_permission_grants", {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					resourceKind: fileGrant ? "file" : "workspace",
+					resourceId: fileGrant ? nodeId : membership.workspaceId,
+					principalKind: "user",
+					userId,
+					permission,
+					createdAt: 1,
+					updatedAt: 1,
+				});
+			}
+			return { userId, membershipId };
+		});
+		const asOperator = t.withIdentity(user_identity(operator.userId));
+		const args = {
+			membershipId: operator.membershipId,
+			pluginVersionId: version.pluginVersionId,
+			...media_plugin_consent,
+		};
+		const before = await t.run((ctx) => ctx.db.query("access_control_permission_grants").collect());
+		expect(
+			(
+				await asOperator.mutation(api.plugins.install_version, {
+					...args,
+					serviceAccountGrants: [{ resource: { kind: "file", nodeId }, level: "write" }],
+				})
+			)._nay?.message,
+		).toContain("Edit workspace content");
+		expect(await t.run((ctx) => ctx.db.query("access_control_permission_grants").collect())).toEqual(before);
+		expect(await t.run((ctx) => ctx.db.query("access_control_service_accounts").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("plugins_service_account_bindings").collect())).toEqual([]);
+		expect(await t.run((ctx) => ctx.db.query("plugins_workspace_installations").collect())).toEqual([]);
+		const installed = await asOperator.mutation(api.plugins.install_version, {
+			...args,
+			serviceAccountGrants: [{ resource: { kind: "file", nodeId }, level: "read" }],
+		});
+		if (installed._nay) throw new Error(installed._nay.message);
+		expect(
+			(await t.run((ctx) => ctx.db.query("access_control_permission_grants").collect())).filter(
+				(grant) => grant.principalKind === "service_account",
+			),
+		).toMatchObject([{ resourceKind: "file", resourceId: nodeId, permission: "content.read" }]);
+	});
+
+	test.each(["publisher", "source", "tenant"] as const)(
+		"does not reuse an account after the %s changes",
+		async (changed) => {
+			const t = test_convex();
+			const membership = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+			const firstVersion = await register_media_plugin(t, membership.userId);
+			const asOwner = t.withIdentity(user_identity(membership.userId));
+			const first = await asOwner.mutation(api.plugins.install_version, {
+				membershipId: membership.membershipId,
+				pluginVersionId: firstVersion.pluginVersionId,
+				...media_plugin_consent,
+			});
+			if (first._nay) throw new Error(first._nay.message);
+			const firstInstallation = await t.run((ctx) =>
+				ctx.db.get("plugins_workspace_installations", first._yay.installationId),
+			);
+			if (!firstInstallation?.serviceAccountId) throw new Error("Expected first account");
+			const targetMembership =
+				changed === "tenant"
+					? await t.run((ctx) => test_mocks_fill_db_with.membership(ctx, { organizationName: "other-organization" }))
+					: membership;
+			if (changed !== "tenant") {
+				expect(
+					await asOwner.mutation(api.plugins.uninstall_version, {
+						membershipId: membership.membershipId,
+						installationId: first._yay.installationId,
+					}),
+				).toEqual({ _yay: null });
+				vi.advanceTimersByTime(60_000);
+			}
+			const publisherId =
+				changed === "publisher"
+					? await t.run((ctx) => ctx.db.insert("users", { clerkUserId: null }))
+					: membership.userId;
+			if (changed === "publisher") {
+				// A new publisher can claim the name only after its old registry versions are removed.
+				await drain_plugin_registry_delete(t, "media");
+				await t.mutation(internal.plugins.clear_plugin_registry_deletion_fence, { pluginName: "media" });
+			}
+			const replacementVersion =
+				changed === "tenant"
+					? firstVersion
+					: await register_media_plugin(t, publisherId, {
+							version: "0.2.0",
+							...(changed === "source"
+								? {
+										sourceRepositoryUrl: "https://github.com/other/media-plugin",
+										sourceOwner: "other",
+										sourceRepo: "media-plugin",
+									}
+								: {}),
+						});
+			const replacement = await t
+				.withIdentity(user_identity(targetMembership.userId))
+				.mutation(api.plugins.install_version, {
+					membershipId: targetMembership.membershipId,
+					pluginVersionId: replacementVersion.pluginVersionId,
+					...media_plugin_consent,
+				});
+			if (replacement._nay) throw new Error(replacement._nay.message);
+			const nextInstallation = await t.run((ctx) =>
+				ctx.db.get("plugins_workspace_installations", replacement._yay.installationId),
+			);
+			expect(nextInstallation?.serviceAccountId).toBeDefined();
+			expect(nextInstallation?.serviceAccountId).not.toBe(firstInstallation.serviceAccountId);
+			expect(await t.run((ctx) => ctx.db.query("plugins_service_account_bindings").collect())).toHaveLength(2);
+		},
+	);
+});
 
 describe("plugins Phase 0", () => {
 	async function install_plugin_with_upload_asset(t: ReturnType<typeof test_convex>) {
@@ -327,8 +669,10 @@ describe("plugins Phase 0", () => {
 			finishedAt?: number;
 		},
 	) {
-		return t.run((ctx) =>
+		return t.run(async (ctx) =>
 			ctx.db.insert("plugins_event_runs", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", fixture.installationId))!
+					.serviceAccountId,
 				organizationId: fixture.membership.organizationId,
 				workspaceId: fixture.membership.workspaceId,
 				assetId: fixture.upload.assetId,
@@ -383,8 +727,10 @@ describe("plugins Phase 0", () => {
 		if (upload._nay) {
 			throw new Error(upload._nay.message);
 		}
-		const runId = await t.run((ctx) =>
+		const runId = await t.run(async (ctx) =>
 			ctx.db.insert("plugins_event_runs", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
+					.serviceAccountId,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				assetId: upload._yay.assetId,
@@ -868,6 +1214,8 @@ describe("plugins Phase 0", () => {
 				throw new Error("Expected installation");
 			}
 			return await ctx.db.insert("plugins_event_runs", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
+					.serviceAccountId,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				assetId: upload._yay.assetId,
@@ -958,6 +1306,8 @@ describe("plugins Phase 0", () => {
 				throw new Error("Expected installation");
 			}
 			return await ctx.db.insert("plugins_event_runs", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
+					.serviceAccountId,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				assetId: upload._yay.assetId,
@@ -1211,6 +1561,7 @@ describe("plugins Phase 0", () => {
 		// Credential management requires a Clerk-backed user; the base membership mock leaves it null.
 		await t.run((ctx) => ctx.db.patch("users", membership.userId, { clerkUserId: `clerk-${membership.userId}` }));
 		const created = await asOwner.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: membership.membershipId,
 			name: "Files key",
 			scopes: ["files:read"],
@@ -1304,9 +1655,8 @@ describe("plugins Phase 0", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
 				archiveOperationId: null,
 			});
 		});
@@ -1459,6 +1809,11 @@ describe("plugins Phase 0", () => {
 		expect(runs).toHaveLength(2);
 		expect(runs.every((run) => run.workId !== undefined)).toBe(true);
 		expect(new Set(runs.map((run) => run.installationId)).size).toBe(2);
+		for (const run of runs) {
+			const installation = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", run.installationId));
+			expect(run.serviceAccountId).toBeDefined();
+			expect(run.serviceAccountId).toBe(installation?.serviceAccountId);
+		}
 
 		await drain_scheduled_work(t);
 	});
@@ -1551,8 +1906,10 @@ describe("plugins Phase 0", () => {
 		// Positive control: the same asset dispatches once its service ownership docs are gone, so the
 		// refusal above came from the gate and not from some other eligibility check.
 		await t.run(async (ctx) => {
-			const receipt = await ctx.db.query("plugin_service_storage_attempts")
-				.withIndex("by_asset", (q) => q.eq("assetId", upload._yay.assetId)).first();
+			const receipt = await ctx.db
+				.query("plugin_service_storage_attempts")
+				.withIndex("by_asset", (q) => q.eq("assetId", upload._yay.assetId))
+				.first();
 			await ctx.db.delete("plugin_service_storage_attempts", receipt!._id);
 			await ctx.db.delete("plugin_service_storage_targets", targetId);
 		});
@@ -1847,6 +2204,8 @@ describe("plugins Phase 0", () => {
 				throw new Error("Expected installation");
 			}
 			return await ctx.db.insert("plugins_event_runs", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
+					.serviceAccountId,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				assetId: upload._yay.assetId,
@@ -1952,9 +2311,8 @@ describe("plugins Phase 0", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
 				archiveOperationId: null,
 			});
 		});
@@ -1974,6 +2332,8 @@ describe("plugins Phase 0", () => {
 				throw new Error("Expected installation");
 			}
 			return await ctx.db.insert("plugins_event_runs", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
+					.serviceAccountId,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				assetId: upload._yay.assetId,
@@ -2009,7 +2369,8 @@ describe("plugins Phase 0", () => {
 		});
 		expect(allowed.status).toBe(200);
 
-		const locked = await asOwner.mutation(api.files_nodes.set_node_read_only, {
+		const locked = await asOwner.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: membership.membershipId,
 			nodeId: folderId,
 		});
@@ -2070,7 +2431,8 @@ describe("plugins Phase 0", () => {
 		const fixture = await start_running_plugin_run(t, { tokenSeed: "b", filename: "locked-source.png" });
 
 		// Only the source file is read-only. The destination folder stays writable.
-		const locked = await fixture.asOwner.mutation(api.files_nodes.set_node_read_only, {
+		const locked = await fixture.asOwner.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: fixture.membership.membershipId,
 			nodeId: fixture.upload.nodeId,
 		});
@@ -2140,6 +2502,8 @@ describe("plugins Phase 0", () => {
 				throw new Error("Expected installation");
 			}
 			return await ctx.db.insert("plugins_event_runs", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
+					.serviceAccountId,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				assetId: upload._yay.assetId,
@@ -2255,6 +2619,8 @@ describe("plugins Phase 0", () => {
 				throw new Error("Expected installation");
 			}
 			return await ctx.db.insert("plugins_event_runs", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
+					.serviceAccountId,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				assetId: upload._yay.assetId,
@@ -2382,6 +2748,8 @@ describe("plugins Phase 0", () => {
 				throw new Error("Expected installation");
 			}
 			return await ctx.db.insert("plugins_event_runs", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
+					.serviceAccountId,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				assetId: upload._yay.assetId,
@@ -2497,6 +2865,8 @@ describe("plugins Phase 0", () => {
 				throw new Error("Expected installation");
 			}
 			return await ctx.db.insert("plugins_event_runs", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
+					.serviceAccountId,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				assetId: upload._yay.assetId,
@@ -2583,6 +2953,8 @@ describe("plugins Phase 0", () => {
 				throw new Error("Expected installation");
 			}
 			return await ctx.db.insert("plugins_event_runs", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
+					.serviceAccountId,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				assetId: upload._yay.assetId,
@@ -2690,6 +3062,8 @@ describe("plugins Phase 0", () => {
 				throw new Error("Expected installation");
 			}
 			return await ctx.db.insert("plugins_event_runs", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
+					.serviceAccountId,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				assetId: upload._yay.assetId,
@@ -2901,7 +3275,8 @@ describe("plugins Phase 0", () => {
 		}
 
 		// The race: the lock lands after staging, before publication.
-		const locked = await fixture.asOwner.mutation(api.files_nodes.set_node_read_only, {
+		const locked = await fixture.asOwner.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: fixture.membership.membershipId,
 			nodeId: occupant._yay.nodeId,
 		});
@@ -3225,6 +3600,8 @@ describe("plugins Phase 0", () => {
 				throw new Error("Expected installation");
 			}
 			return await ctx.db.insert("plugins_event_runs", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
+					.serviceAccountId,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				assetId: upload._yay.assetId,
@@ -3355,6 +3732,8 @@ describe("plugins Phase 0", () => {
 				throw new Error("Expected installation");
 			}
 			return await ctx.db.insert("plugins_event_runs", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
+					.serviceAccountId,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				assetId: upload._yay.assetId,
@@ -3401,6 +3780,8 @@ describe("plugins Phase 0", () => {
 				throw new Error("Expected installation");
 			}
 			return await ctx.db.insert("plugins_event_runs", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
+					.serviceAccountId,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				assetId: upload._yay.assetId,
@@ -3976,6 +4357,42 @@ describe("plugins Phase 0", () => {
 
 		const run = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
 		expect(run?.apiTokenExpiresAt).toBe(expiresAt);
+		expect(run?.serviceAccountId).toBe(fixture.installation.serviceAccountId);
+	});
+
+	describe("start_event_run", () => {
+		test("refuses a queued run after account rebind and preserves its original pin", async () => {
+			const t = test_convex();
+			const fixture = await install_plugin_with_upload_asset(t);
+			const runId = await insert_event_run(t, fixture, {
+				eventId: "plugin:original-account",
+				status: "queued",
+				expiresAt: Date.now() + 30 * 60 * 1000,
+			});
+			const before = await t.run((ctx) => ctx.db.get("plugins_event_runs", runId));
+			const asOwner = t.withIdentity(user_identity(fixture.membership.userId));
+			const replacement = await asOwner.mutation(api.access_control.create_service_account, {
+				membershipId: fixture.membership.membershipId,
+				name: "Replacement",
+			});
+			if (replacement._nay) throw new Error(replacement._nay.message);
+			expect(
+				(
+					await asOwner.mutation(api.plugins.set_installation_service_account, {
+						membershipId: fixture.membership.membershipId,
+						installationId: fixture.installationId,
+						serviceAccountId: replacement._yay.serviceAccountId,
+					})
+				)._nay,
+			).toBeUndefined();
+			expect(
+				await t.mutation(internal.plugins_runtime.start_event_run, {
+					runId,
+					apiTokenHash: await crypto_sha256_hex(`plr_${"6".repeat(64)}`),
+				}),
+			).toEqual({ _nay: { message: "Not found" } });
+			expect(await t.run((ctx) => ctx.db.get("plugins_event_runs", runId))).toEqual(before);
+		});
 	});
 
 	test("refuses a queued run after its installation is disabled", async () => {
@@ -5228,8 +5645,10 @@ describe("plugins get_installation_health", () => {
 		function insert_run(args: { status: "queued" | "running" | "succeeded" | "failed"; errorMessage?: string }) {
 			nextUpdatedAt += 1000;
 			const updatedAt = nextUpdatedAt;
-			return t.run((ctx) =>
+			return t.run(async (ctx) =>
 				ctx.db.insert("plugins_event_runs", {
+					serviceAccountId: (await ctx.db.get("plugins_workspace_installations", fixture.installationId))!
+						.serviceAccountId,
 					organizationId: fixture.membership.organizationId,
 					workspaceId: fixture.membership.workspaceId,
 					assetId: uploadedFile.assetId,
@@ -5952,6 +6371,8 @@ describe("plugins outbound origins consent", () => {
 				throw new Error("Expected installation");
 			}
 			return await ctx.db.insert("plugins_event_runs", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
+					.serviceAccountId,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				assetId: upload._yay.assetId,
@@ -6233,9 +6654,9 @@ describe("plugins publish_version", () => {
 				JSON.stringify(options.prompt),
 				...options.prompt.flatMap((message) =>
 					message.role === "tool"
-						? message.content.filter((part) => part.type === "tool-result").map((part) =>
-								part.output.type === "text" ? part.output.value : "",
-							)
+						? message.content
+								.filter((part) => part.type === "tool-result")
+								.map((part) => (part.output.type === "text" ? part.output.value : ""))
 						: [],
 				),
 			])
@@ -10266,6 +10687,8 @@ describe("plugins uninstall_version", () => {
 				throw new Error("Expected installation");
 			}
 			const runId = await ctx.db.insert("plugins_event_runs", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
+					.serviceAccountId,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				assetId: upload._yay.assetId,
@@ -10907,6 +11330,7 @@ describe("plugins run_installation_on_files", () => {
 			installationId,
 			pluginVersionId: installation.pluginVersionId,
 			event: "files.run.requested",
+			serviceAccountId: installation.serviceAccountId,
 			status: "queued",
 			acceptedCapabilities: installation.acceptedCapabilities,
 			apiCallCount: 0,
@@ -10969,6 +11393,9 @@ describe("plugins backend invoke runs", () => {
 			asOwner,
 			installationId: installed._yay.installationId,
 			pluginVersionId: registered.pluginVersionId,
+			serviceAccountId: (await t.run((ctx) =>
+				ctx.db.get("plugins_workspace_installations", installed._yay.installationId),
+			))!.serviceAccountId,
 		};
 	}
 
@@ -10977,6 +11404,7 @@ describe("plugins backend invoke runs", () => {
 		args?: { endpointId?: string; callerSerializationKey?: string | null; apiTokenHash?: string },
 	) {
 		return {
+			serviceAccountId: fixture.serviceAccountId,
 			organizationId: fixture.membership.organizationId,
 			workspaceId: fixture.membership.workspaceId,
 			installationId: fixture.installationId,
@@ -10987,6 +11415,34 @@ describe("plugins backend invoke runs", () => {
 			apiTokenHash: args?.apiTokenHash ?? "invoke-token-hash",
 		};
 	}
+
+	test("rejects an old account pin before claiming a run lock after an explicit rebind", async () => {
+		const t = test_convex();
+		const fixture = await install_invoke_plugin(t);
+		const replacement = await fixture.asOwner.mutation(api.access_control.create_service_account, {
+			membershipId: fixture.membership.membershipId,
+			name: "Replacement",
+		});
+		if (replacement._nay) throw new Error(replacement._nay.message);
+		expect(
+			(
+				await fixture.asOwner.mutation(api.plugins.set_installation_service_account, {
+					membershipId: fixture.membership.membershipId,
+					installationId: fixture.installationId,
+					serviceAccountId: replacement._yay.serviceAccountId,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			(await t.mutation(internal.plugins_runtime.start_invoke_run, start_invoke_args(fixture)))._nay,
+		).toBeDefined();
+		expect(await t.run((ctx) => ctx.db.query("plugins_event_runs").collect())).toEqual([]);
+		const started = await t.mutation(internal.plugins_runtime.start_invoke_run, {
+			...start_invoke_args(fixture),
+			serviceAccountId: replacement._yay.serviceAccountId,
+		});
+		expect(started._yay?.pluginRun.serviceAccountId).toBe(replacement._yay.serviceAccountId);
+	});
 
 	test("claims the lock and creates a running invoke run in one transaction", async () => {
 		const t = test_convex();
@@ -10999,6 +11455,9 @@ describe("plugins backend invoke runs", () => {
 		}
 
 		expect(started._yay.endpointPath).toBe("/echo");
+		const installation = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", fixture.installationId));
+		expect(started._yay.pluginRun.serviceAccountId).toBeDefined();
+		expect(started._yay.pluginRun.serviceAccountId).toBe(installation?.serviceAccountId);
 		expect(started._yay.pluginRun).toMatchObject({
 			event: "ui.invoke.requested",
 			endpointId: "echo",
@@ -11243,6 +11702,8 @@ describe("plugins backend invoke runs", () => {
 		await t.run(async (ctx) => {
 			const now = Date.now();
 			await ctx.db.insert("plugins_ui_sessions", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", fixture.installationId))!
+					.serviceAccountId,
 				organizationId: fixture.membership.organizationId,
 				workspaceId: fixture.membership.workspaceId,
 				installationId: fixture.installationId,
@@ -11484,6 +11945,7 @@ describe("plugins metadata file doors", () => {
 			acceptedCapabilities: capabilities,
 			acceptedOutboundOrigins: [],
 			acceptedUiOutboundOrigins: [],
+			serviceAccountGrants: [{ resource: { kind: "workspace" }, level: "manage" }],
 		});
 		if (installed._nay) {
 			throw new Error(installed._nay.message);
@@ -11493,7 +11955,24 @@ describe("plugins metadata file doors", () => {
 			asOwner,
 			installationId: installed._yay.installationId,
 			pluginVersionId: registered.pluginVersionId,
+			serviceAccountId: (await t.run((ctx) =>
+				ctx.db.get("plugins_workspace_installations", installed._yay.installationId),
+			))!.serviceAccountId,
 		};
+	}
+
+	async function grant_file_account(
+		fixture: Awaited<ReturnType<typeof install_file_doors_plugin>>,
+		nodeId: Id<"files_nodes">,
+	) {
+		expect(
+			await fixture.asOwner.mutation(api.access_control.set_service_account_grant, {
+				membershipId: fixture.membership.membershipId,
+				serviceAccountId: fixture.serviceAccountId,
+				resource: { kind: "file", nodeId },
+				level: "manage",
+			}),
+		).toEqual({ _yay: null });
 	}
 
 	/**
@@ -11509,6 +11988,8 @@ describe("plugins metadata file doors", () => {
 	) {
 		const apiToken = `plr_${(args.tokenSeed ?? "d").repeat(64)}`;
 		const started = await t.mutation(internal.plugins_runtime.start_invoke_run, {
+			serviceAccountId: (await t.run((ctx) => ctx.db.get("plugins_workspace_installations", fixture.installationId)))!
+				.serviceAccountId,
 			organizationId: fixture.membership.organizationId,
 			workspaceId: fixture.membership.workspaceId,
 			installationId: fixture.installationId,
@@ -11583,9 +12064,8 @@ describe("plugins metadata file doors", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
 				archiveOperationId: null,
 				contentType: null,
 			});
@@ -11769,8 +12249,10 @@ describe("plugins metadata file doors", () => {
 			).status,
 		).toBe(200);
 		const node = (await find_active_node(t, fixture, "/probe"))!;
+		await grant_file_account(fixture, node._id);
 		expect(
-			await fixture.asOwner.mutation(api.files_nodes.set_node_writable, {
+			await fixture.asOwner.mutation(api.files_nodes.set_node_write_policy, {
+				writePolicy: null,
 				membershipId: fixture.membership.membershipId,
 				nodeId: node._id,
 			}),
@@ -11823,13 +12305,14 @@ describe("plugins metadata file doors", () => {
 			{ key: "note", value: "keep" },
 		]);
 		expect(
-			await fixture.asOwner.mutation(api.files_nodes.set_node_read_only, {
+			await fixture.asOwner.mutation(api.files_nodes.set_node_write_policy, {
+				writePolicy: { mode: "read_only" },
 				membershipId: fixture.membership.membershipId,
 				nodeId: node._id,
 			}),
 		).toEqual({ _yay: null });
 		const relocked = await find_active_node(t, fixture, "/probe");
-		expect(relocked?.readOnlyPluginName).toBeNull();
+		expect(relocked?.writePolicy).toEqual({ mode: "read_only" });
 		expect(
 			(
 				await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
@@ -11903,6 +12386,7 @@ describe("plugins metadata file doors", () => {
 				})
 			).status,
 		).toBe(200);
+		await grant_file_account(fixture, (await find_active_node(t, fixture, "/probe"))!._id);
 		expect(
 			(
 				await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
@@ -11952,8 +12436,7 @@ describe("plugins metadata file doors", () => {
 		});
 		expect(root.status).toBe(200);
 
-		// The root's lock cascades onto this child, so asking for read-only here changes nothing
-		// the lock above does not already say. It must succeed, not refuse.
+		// Each explicit policy belongs to its own folder. Outer policies still apply to writes.
 		const nested = await door_call(t, "/api/v1/files/plugin-folders/ensure", run.apiToken, {
 			path: "/probe/private",
 			access: { readOnly: true },
@@ -11985,7 +12468,21 @@ describe("plugins metadata file doors", () => {
 
 		const scopedNode = await find_active_node(t, fixture, "/probe/private/channel-a");
 		const rootNode = await find_active_node(t, fixture, "/probe");
-		expect(scopedNode?.readOnlyScopeNodeId).toBe(rootNode?._id);
+		expect(scopedNode?.writePolicyScopeNodeId).toBe(scopedNode?._id);
+		const installation = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", fixture.installationId));
+		const pinnedRun = await t.run((ctx) => ctx.db.get("plugins_event_runs", run.runId));
+		expect(pinnedRun?.serviceAccountId).toBe(installation?.serviceAccountId);
+		expect(rootNode).toMatchObject({
+			writePolicyScopeNodeId: rootNode?._id,
+			writePolicy: {
+				mode: "writer",
+				writer: { kind: "service_account", serviceAccountId: installation?.serviceAccountId },
+			},
+		});
+		expect(scopedNode).toMatchObject({
+			writePolicyScopeNodeId: scopedNode?._id,
+			writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId } },
+		});
 		const binding = await t.run((ctx) => ctx.db.query("plugins_file_access_bindings").first());
 		expect(binding).toMatchObject({ nodeId: scopedNode?._id, scopeId: "scope-a" });
 	});
@@ -12227,7 +12724,7 @@ describe("plugins metadata file doors", () => {
 			expect(await find_active_node(t, fixture, path)).toBeNull();
 		}
 
-		// The access option creates the file already locked under the plugin's own name.
+		// The access option names the installation's account as the writer.
 		const locked = await door_call(t, "/api/v1/files/write", run.apiToken, {
 			path: "/probe/locked.md",
 			content: "# Locked\n",
@@ -12236,8 +12733,8 @@ describe("plugins metadata file doors", () => {
 		expect(locked.status).toBe(200);
 		const lockedNode = await find_active_node(t, fixture, "/probe/locked.md");
 		expect(lockedNode).toMatchObject({
-			readOnlyScopeNodeId: lockedNode!._id,
-			readOnlyPluginName: "probe",
+			writePolicyScopeNodeId: lockedNode!._id,
+			writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId } },
 		});
 	});
 
@@ -12260,7 +12757,7 @@ describe("plugins metadata file doors", () => {
 			expect(written.status).toBe(200);
 		}
 		const lockedNode = await find_active_node(t, fixture, "/probe/a/one.md");
-		expect(lockedNode?.readOnlyScopeNodeId).toBe(lockedNode?._id);
+		expect(lockedNode?.writePolicyScopeNodeId).toBe(lockedNode?._id);
 
 		const archived = await door_call(t, "/api/v1/files/plugin-archive", run.apiToken, { path: "/probe/a" });
 		expect(archived.status).toBe(200);
@@ -12271,8 +12768,8 @@ describe("plugins metadata file doors", () => {
 		// The plugin's own lock was released before the archive, so a member restore gets a
 		// writable file back.
 		const afterArchive = await t.run(async (ctx) => ctx.db.get("files_nodes", lockedNode!._id));
-		expect(afterArchive?.readOnlyScopeNodeId).toBeNull();
-		expect(afterArchive?.readOnlyPluginName).toBeNull();
+		expect(afterArchive?.writePolicyScopeNodeId).toBeNull();
+		expect(afterArchive?.writePolicy).toBeNull();
 
 		// A member's file inside an open plugin folder refuses the whole subtree archive.
 		expect(
@@ -12307,9 +12804,8 @@ describe("plugins metadata file doors", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
 				archiveOperationId: null,
 			});
 		});
@@ -12354,14 +12850,19 @@ describe("plugins metadata file doors", () => {
 		});
 		expect(lock.status).toBe(200);
 		expect(await lock.json()).toEqual({ nodeId: String(reportNode!._id) });
+		const installation = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", fixture.installationId));
 		expect(await find_active_node(t, fixture, "/probe/report.md")).toMatchObject({
-			readOnlyScopeNodeId: reportNode!._id,
-			readOnlyPluginName: "probe",
+			writePolicyScopeNodeId: reportNode!._id,
+			writePolicy: {
+				mode: "writer",
+				writer: { kind: "service_account", serviceAccountId: installation?.serviceAccountId },
+			},
 		});
 
 		// A manager can unlock the file through the ordinary Files control.
 		expect(
-			await fixture.asOwner.mutation(api.files_nodes.set_node_writable, {
+			await fixture.asOwner.mutation(api.files_nodes.set_node_write_policy, {
+				writePolicy: null,
 				membershipId: fixture.membership.membershipId,
 				nodeId: reportNode!._id,
 			}),
@@ -12372,7 +12873,10 @@ describe("plugins metadata file doors", () => {
 			access: { readOnly: false },
 		});
 		expect(unlock.status).toBe(200);
-		expect((await find_active_node(t, fixture, "/probe/report.md"))?.readOnlyScopeNodeId).toBeNull();
+		expect(await find_active_node(t, fixture, "/probe/report.md")).toMatchObject({
+			writePolicyScopeNodeId: null,
+			writePolicy: null,
+		});
 
 		// Locking the plugin's own folder cascades over the subtree, and the plugin still writes
 		// through its own folder lock — the pattern a plugin uses for machine-managed areas.
@@ -12382,7 +12886,10 @@ describe("plugins metadata file doors", () => {
 		});
 		expect(folderLock.status).toBe(200);
 		const probeRoot = await find_active_node(t, fixture, "/probe");
-		expect((await find_active_node(t, fixture, "/probe/report.md"))?.readOnlyScopeNodeId).toBe(probeRoot!._id);
+		expect(await find_active_node(t, fixture, "/probe/report.md")).toMatchObject({
+			writePolicyScopeNodeId: probeRoot!._id,
+			writePolicy: null,
+		});
 		const throughLock = await door_call(t, "/api/v1/files/write", run.apiToken, {
 			path: "/probe/still-mine.md",
 			content: "# Mine\n",
@@ -12476,6 +12983,7 @@ describe("plugins metadata file doors", () => {
 		expect(await bound.json()).toEqual({ nodeId: String(secretNode!._id) });
 		expect((await find_active_node(t, fixture, "/probe/secret.md"))?.restrictedScopeNodeId).toBe(secretNode!._id);
 		expect(await read_binding_rows()).toMatchObject([{ nodeId: secretNode!._id }]);
+		await grant_file_account(fixture, secretNode!._id);
 
 		const deadScope = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
 			path: "/probe/secret.md",
@@ -12484,12 +12992,21 @@ describe("plugins metadata file doors", () => {
 		expect(deadScope.status).toBe(404);
 		expect(await deadScope.json()).toEqual({ message: "Not found" });
 
+		const beforeDetach = await t.run(async (ctx) => ({
+			node: await ctx.db.get("files_nodes", secretNode!._id),
+			grants: await ctx.db.query("access_control_permission_grants").collect(),
+		}));
 		const released = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
 			path: "/probe/secret.md",
 			access: { readScopeId: null },
 		});
 		expect(released.status).toBe(200);
-		expect((await find_active_node(t, fixture, "/probe/secret.md"))?.restrictedScopeNodeId).toBeNull();
+		expect(
+			await t.run(async (ctx) => ({
+				node: await ctx.db.get("files_nodes", secretNode!._id),
+				grants: await ctx.db.query("access_control_permission_grants").collect(),
+			})),
+		).toEqual(beforeDetach);
 		expect(await read_binding_rows()).toEqual([]);
 
 		// Ensure applies both access fields on the folder it creates, in the same call.
@@ -12500,8 +13017,8 @@ describe("plugins metadata file doors", () => {
 		expect(vault.status).toBe(200);
 		const vaultNode = await find_active_node(t, fixture, "/probe/vault");
 		expect(vaultNode).toMatchObject({
-			readOnlyScopeNodeId: vaultNode!._id,
-			readOnlyPluginName: "probe",
+			writePolicyScopeNodeId: vaultNode!._id,
+			writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId } },
 			restrictedScopeNodeId: vaultNode!._id,
 		});
 		expect(await read_binding_rows()).toMatchObject([{ nodeId: vaultNode!._id }]);
@@ -12572,9 +13089,8 @@ describe("plugins metadata file doors", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
 				archiveOperationId: null,
 			});
 		});
@@ -12622,7 +13138,7 @@ describe("plugins metadata file doors", () => {
 				bindings: await ctx.db.query("plugins_file_access_bindings").collect(),
 			}));
 			expect(before.node?.restrictedScopeNodeId).toBeNull();
-			expect(before.node?.readOnlyScopeNodeId).toBeNull();
+			expect(before.node?.writePolicyScopeNodeId).toBeNull();
 			const access = change === "lock" ? { readOnly: true } : { readScopeId: "private" };
 			const refused = await door_call(t, "/api/v1/files/plugin-access/set", run.apiToken, {
 				path: "/member-folder",
@@ -12655,8 +13171,11 @@ describe("plugins metadata file doors", () => {
 			expect(await accepted.json()).toEqual({ nodeId });
 			if (change === "lock") {
 				expect(await t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toMatchObject({
-					readOnlyScopeNodeId: nodeId,
-					readOnlyPluginName: "probe",
+					writePolicyScopeNodeId: nodeId,
+					writePolicy: {
+						mode: "writer",
+						writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId },
+					},
 				});
 			} else {
 				expect(await t.run((ctx) => ctx.db.query("plugins_file_access_bindings").collect())).toEqual([
@@ -12700,6 +13219,7 @@ describe("plugins metadata file doors", () => {
 						level,
 					}),
 				).toEqual({ _yay: null });
+				await grant_file_account(fixture, nodeId);
 			}
 			await t.run((ctx) => ctx.db.patch("plugins_event_runs", ownerRun.runId, { status: "succeeded" }));
 			const run = await start_file_invoke_run(t, fixture, { userId: member.userId, tokenSeed: "e" });
@@ -12767,6 +13287,7 @@ describe("plugins metadata file doors", () => {
 						level,
 					}),
 				).toEqual({ _yay: null });
+				await grant_file_account(fixture, nodeId);
 			}
 			if (noop === "own direct lock") {
 				expect(
@@ -12840,7 +13361,8 @@ describe("plugins metadata file doors", () => {
 		).toBe(200);
 		const outer = (await find_active_node(t, fixture, "/outer"))!;
 		expect(
-			await fixture.asOwner.mutation(api.files_nodes.set_node_read_only, {
+			await fixture.asOwner.mutation(api.files_nodes.set_node_write_policy, {
+				writePolicy: { mode: "read_only" },
 				membershipId: fixture.membership.membershipId,
 				nodeId: outer._id,
 			}),
@@ -12893,7 +13415,8 @@ describe("plugins metadata file doors", () => {
 				).toEqual({ _yay: null });
 			} else if (reason === "lock") {
 				expect(
-					await fixture.asOwner.mutation(api.files_nodes.set_node_read_only, {
+					await fixture.asOwner.mutation(api.files_nodes.set_node_write_policy, {
+						writePolicy: { mode: "read_only" },
 						membershipId: fixture.membership.membershipId,
 						nodeId: blocked._id,
 					}),
@@ -13029,9 +13552,8 @@ describe("plugins metadata file doors", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
 				archiveOperationId: null,
 			});
 		});
@@ -13169,6 +13691,11 @@ describe("plugins users.account.deleted dispatch", () => {
 		// C has the same plugin installed and produced nothing: the fan-out follows the member, not the
 		// installation.
 		expect(accountRuns.map((run) => run.actorUserId)).toEqual([departingUserId, departingUserId]);
+		for (const run of accountRuns) {
+			const installation = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", run.installationId));
+			expect(run.serviceAccountId).toBeDefined();
+			expect(run.serviceAccountId).toBe(installation?.serviceAccountId);
+		}
 		// The event fires on a user, so the run names no file. Every file door reads these two fields.
 		expect(accountRuns.every((run) => run.assetId === undefined && run.fileNodeId === undefined)).toBe(true);
 		expect(runs.filter((run) => run.event !== "users.account.deleted")).toEqual([]);
@@ -13994,6 +14521,15 @@ describe("plugins admin hard delete", () => {
 						updatedAt: Date.now(),
 					});
 					await ctx.db.insert("plugins_workspace_installations", {
+						serviceAccountId: await ctx.db.insert("access_control_service_accounts", {
+							organizationId: membership.organizationId,
+							workspaceId: membership.workspaceId,
+							name: "Large delete",
+							createdBy: membership.userId,
+							createdAt: Date.now(),
+							updatedAt: Date.now(),
+							revokedAt: null,
+						}),
 						organizationId: membership.organizationId,
 						workspaceId: membership.workspaceId,
 						pluginVersionId,
@@ -14276,6 +14812,7 @@ describe("plugins admin hard delete", () => {
 			installationId: installed._yay.installationId,
 			actorUserId: membership.userId,
 			principalKey: serviceGrant._yay.principalKey,
+			credentialRef: { kind: "plugin_service" as const, grantId: serviceGrant._yay.grantId },
 		};
 		const pageWrite = await asPage.mutation(api.plugins_data.user_append_document, {
 			collection: "messages",
@@ -14412,8 +14949,10 @@ describe("plugins admin hard delete", () => {
 		if (upload._nay) {
 			throw new Error(upload._nay.message);
 		}
-		const runId = await t.run((ctx) =>
+		const runId = await t.run(async (ctx) =>
 			ctx.db.insert("plugins_event_runs", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installed._yay.installationId))!
+					.serviceAccountId,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				assetId: upload._yay.assetId,
@@ -14548,6 +15087,8 @@ describe("plugins admin hard delete", () => {
 				updatedAt: now,
 			});
 			await ctx.db.insert("plugins_ui_sessions", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installedMedia._yay.installationId))!
+					.serviceAccountId,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				installationId: installedMedia._yay.installationId,
@@ -14638,6 +15179,8 @@ describe("plugins admin hard delete", () => {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				installationId: installedMedia._yay.installationId,
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installedMedia._yay.installationId))!
+					.serviceAccountId,
 				pluginVersionId: media.pluginVersionId,
 				pluginName: "media",
 				actorUserId: membership.userId,
@@ -14710,6 +15253,8 @@ describe("plugins admin hard delete", () => {
 				keyPrefix: "sibling-released/",
 			});
 			const runId = await ctx.db.insert("plugins_event_runs", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installedMedia._yay.installationId))!
+					.serviceAccountId,
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
 				assetId: upload._yay.assetId,
@@ -15091,11 +15636,14 @@ describe("plugins admin hard delete", () => {
 		// the read is bounded and the preview can only report "this many or more".
 		await t.run(async (ctx) => {
 			const now = Date.now();
+			const installation = await ctx.db.get("plugins_workspace_installations", installed._yay.installationId);
+			if (!installation) throw new Error("Expected installation");
 			for (let index = 0; index < 101; index += 1) {
 				await ctx.db.insert("plugin_service_grants", {
 					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
 					installationId: installed._yay.installationId,
+					serviceAccountId: installation.serviceAccountId,
 					pluginVersionId: media.pluginVersionId,
 					pluginName: "media",
 					actorUserId: membership.userId,

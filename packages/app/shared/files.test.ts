@@ -258,15 +258,11 @@ describe("files_find_file_stem_end_index", () => {
 	});
 });
 
-function read_only_test_node(args: {
-	id: string;
-	parentId?: string;
-	readOnlyState?: files_VisibleTreeNode["readOnlyState"];
-}) {
+function read_only_test_node(args: { id: string; parentId?: string; canWrite?: boolean }) {
 	return {
 		_id: args.id as files_VisibleTreeNode["_id"],
 		parentId: (args.parentId ?? "root") as files_VisibleTreeNode["parentId"],
-		readOnlyState: args.readOnlyState ?? "writable",
+		canWrite: args.canWrite ?? true,
 	};
 }
 
@@ -279,7 +275,7 @@ describe("files_collect_read_only_ancestor_ids", () => {
 		const ancestorIds = files_collect_read_only_ancestor_ids([
 			read_only_test_node({ id: "a" }),
 			read_only_test_node({ id: "b", parentId: "a" }),
-			read_only_test_node({ id: "f", parentId: "b", readOnlyState: "inherited" }),
+			read_only_test_node({ id: "f", parentId: "b", canWrite: false }),
 			read_only_test_node({ id: "c", parentId: "a" }),
 			read_only_test_node({ id: "g", parentId: "c" }),
 		]);
@@ -291,18 +287,16 @@ describe("files_collect_read_only_ancestor_ids", () => {
 		const ancestorIds = files_collect_read_only_ancestor_ids([
 			read_only_test_node({ id: "a" }),
 			read_only_test_node({ id: "b", parentId: "a" }),
-			read_only_test_node({ id: "f1", parentId: "b", readOnlyState: "self" }),
+			read_only_test_node({ id: "f1", parentId: "b", canWrite: false }),
 			read_only_test_node({ id: "c", parentId: "a" }),
-			read_only_test_node({ id: "f2", parentId: "c", readOnlyState: "inherited" }),
+			read_only_test_node({ id: "f2", parentId: "c", canWrite: false }),
 		]);
 
 		expect(ancestorIds).toEqual(new Set([read_only_test_id("a"), read_only_test_id("b"), read_only_test_id("c")]));
 	});
 
 	test("a locked root-level node has no visible ancestors", () => {
-		const ancestorIds = files_collect_read_only_ancestor_ids([
-			read_only_test_node({ id: "d", readOnlyState: "self" }),
-		]);
+		const ancestorIds = files_collect_read_only_ancestor_ids([read_only_test_node({ id: "d", canWrite: false })]);
 
 		expect(ancestorIds).toEqual(new Set());
 	});
@@ -312,7 +306,7 @@ describe("files_collect_read_only_ancestor_ids", () => {
 			read_only_test_node({ id: "a" }),
 			// The locked node's direct parent is not visible to this caller, so the chain above it
 			// cannot be walked. `a` is not related to the locked node here.
-			read_only_test_node({ id: "f", parentId: "hidden", readOnlyState: "inherited" }),
+			read_only_test_node({ id: "f", parentId: "hidden", canWrite: false }),
 		]);
 
 		expect(ancestorIds).toEqual(new Set());
@@ -329,46 +323,41 @@ describe("files_collect_read_only_ancestor_ids", () => {
 });
 
 describe("files_get_read_only_row_labels", () => {
-	test("a direct lock reads read-only and ignores the source fields", () => {
-		// The projection points a self lock's source at the node itself, so the label must not
-		// name it.
+	test("a policy refusal never needs a source identity", () => {
 		expect(
 			files_get_read_only_row_labels({
-				readOnlyState: "self",
-				readOnlySourcePath: "/docs/plan.md",
+				canWrite: false,
+				writeBlockedReason: "read_only",
 				hasVisibleReadOnlyDescendant: false,
 			}),
-		).toEqual({ description: "read-only", tooltip: "Read-only" });
+		).toEqual({ description: "protected", tooltip: "A file policy blocks editing" });
 	});
 
-	test("an inherited lock names its visible source path", () => {
+	test("an ACL refusal explains the missing permission", () => {
 		expect(
 			files_get_read_only_row_labels({
-				readOnlyState: "inherited",
-				readOnlySourcePath: "/docs",
+				canWrite: false,
+				writeBlockedReason: "permission",
 				hasVisibleReadOnlyDescendant: false,
 			}),
-		).toEqual({ description: "read-only from /docs", tooltip: "Read-only from /docs" });
+		).toEqual({ description: "read-only", tooltip: "You don't have permission to edit this item" });
 	});
 
-	test("an inherited lock with a hidden source never names it", () => {
+	test("a selected current writer has no refusal label", () => {
 		expect(
 			files_get_read_only_row_labels({
-				readOnlyState: "inherited",
-				readOnlySourcePath: undefined,
+				canWrite: true,
+				writeBlockedReason: null,
 				hasVisibleReadOnlyDescendant: false,
 			}),
-		).toEqual({
-			description: "read-only from a protected folder",
-			tooltip: "Read-only from a protected folder",
-		});
+		).toBe(null);
 	});
 
 	test("a writable ancestor of a locked node says it contains read-only items", () => {
 		expect(
 			files_get_read_only_row_labels({
-				readOnlyState: "writable",
-				readOnlySourcePath: undefined,
+				canWrite: true,
+				writeBlockedReason: null,
 				hasVisibleReadOnlyDescendant: true,
 			}),
 		).toEqual({ description: "contains read-only items", tooltip: "Contains read-only items" });
@@ -377,8 +366,8 @@ describe("files_get_read_only_row_labels", () => {
 	test("a plain writable row gets no annotation", () => {
 		expect(
 			files_get_read_only_row_labels({
-				readOnlyState: "writable",
-				readOnlySourcePath: undefined,
+				canWrite: true,
+				writeBlockedReason: null,
 				hasVisibleReadOnlyDescendant: false,
 			}),
 		).toBe(null);
@@ -390,7 +379,6 @@ describe("files_get_read_only_capabilities", () => {
 		expect(
 			files_get_read_only_capabilities({
 				canWrite: true,
-				readOnlyState: "writable",
 				hasVisibleReadOnlyDescendant: true,
 			}),
 		).toEqual({
@@ -401,10 +389,8 @@ describe("files_get_read_only_capabilities", () => {
 		});
 	});
 
-	test.each(["self", "inherited"] as const)("an effective %s lock blocks every write capability", (readOnlyState) => {
-		expect(
-			files_get_read_only_capabilities({ canWrite: true, readOnlyState, hasVisibleReadOnlyDescendant: false }),
-		).toEqual({
+	test("an effective refusal blocks every write capability", () => {
+		expect(files_get_read_only_capabilities({ canWrite: false, hasVisibleReadOnlyDescendant: false })).toEqual({
 			canEditContent: false,
 			canReceiveChildren: false,
 			canRelocateOrRename: false,
@@ -416,7 +402,6 @@ describe("files_get_read_only_capabilities", () => {
 		expect(
 			files_get_read_only_capabilities({
 				canWrite: false,
-				readOnlyState: "writable",
 				hasVisibleReadOnlyDescendant: false,
 			}),
 		).toEqual({
@@ -1623,7 +1608,9 @@ describe("media embeds round-trip through Yjs", () => {
 		const markdown = files_headless_tiptap_editor_get_markdown({ mut_editor: editor._yay });
 		editor._yay.destroy();
 
-		expect(markdown).toBe('<video src="bonobo-file://k17abcdef" title="A red circle" width="480" align="center"></video>');
+		expect(markdown).toBe(
+			'<video src="bonobo-file://k17abcdef" title="A red circle" width="480" align="center"></video>',
+		);
 	});
 });
 
@@ -2742,7 +2729,6 @@ describe("files_pending_path_overlay", () => {
 			expect(files_pending_path_overlay_project_committed_path(overlay, "/a.md")).toBe("/docs/b.md");
 			expect(files_pending_path_overlay_project_committed_path(overlay, "/c.md")).toBe("/a.md");
 		});
-
 	});
 
 	describe("pending delete", () => {
@@ -3219,86 +3205,70 @@ describe("files_yjs_doc_update_from_text plain branch", () => {
 	// genuinely pathological near-cap change still refuses. Step counts are deterministic (same
 	// input, same count, on every machine), so these outcomes do not depend on machine speed;
 	// the explicit test timeouts only give slow machines room to finish the compute.
-	test(
-		"applies a full sort of 1,000 lines (~25 KB) within the diff budgets",
-		() => {
-			// The generated hash-key order is deterministically scrambled, so sorting it is a
-			// full permutation of every line. Measured cost: 132M steps (budget 1,000M).
-			const lines = Array.from({ length: 1000 }, (_, i) => `key_${((i * 2654435761) >>> 0).toString(16)} = value_${i}`);
-			const sortedText = [...lines].sort().join("\n");
+	test("applies a full sort of 1,000 lines (~25 KB) within the diff budgets", () => {
+		// The generated hash-key order is deterministically scrambled, so sorting it is a
+		// full permutation of every line. Measured cost: 132M steps (budget 1,000M).
+		const lines = Array.from({ length: 1000 }, (_, i) => `key_${((i * 2654435761) >>> 0).toString(16)} = value_${i}`);
+		const sortedText = [...lines].sort().join("\n");
 
-			const yjsDoc = plain_doc_from(lines.join("\n"));
-			set_plain_text(yjsDoc, sortedText);
-			expect(plain_text_of(yjsDoc)).toBe(sortedText);
-		},
-		60_000,
-	);
+		const yjsDoc = plain_doc_from(lines.join("\n"));
+		set_plain_text(yjsDoc, sortedText);
+		expect(plain_text_of(yjsDoc)).toBe(sortedText);
+	}, 60_000);
 
-	test(
-		"applies a prettify of a ~40 KB minified JSON within the diff budgets",
-		() => {
-			// Measured cost: 313M steps (budget 1,000M) — the heaviest ordinary edit the budgets
-			// must admit.
-			const obj: Record<string, unknown> = {};
-			for (let i = 0; i < 500; i++) {
-				obj[`key_${((i * 2654435761) >>> 0).toString(16)}`] = {
-					id: i,
-					name: `name ${i}`,
-					tags: [`a${i}`, `b${i}`],
-					active: i % 2 === 0,
-				};
-			}
-			const minifiedText = JSON.stringify(obj);
-			const prettyText = JSON.stringify(obj, null, 2);
+	test("applies a prettify of a ~40 KB minified JSON within the diff budgets", () => {
+		// Measured cost: 313M steps (budget 1,000M) — the heaviest ordinary edit the budgets
+		// must admit.
+		const obj: Record<string, unknown> = {};
+		for (let i = 0; i < 500; i++) {
+			obj[`key_${((i * 2654435761) >>> 0).toString(16)}`] = {
+				id: i,
+				name: `name ${i}`,
+				tags: [`a${i}`, `b${i}`],
+				active: i % 2 === 0,
+			};
+		}
+		const minifiedText = JSON.stringify(obj);
+		const prettyText = JSON.stringify(obj, null, 2);
 
-			const yjsDoc = plain_doc_from(minifiedText);
-			set_plain_text(yjsDoc, prettyText);
-			expect(plain_text_of(yjsDoc)).toBe(prettyText);
-		},
-		60_000,
-	);
+		const yjsDoc = plain_doc_from(minifiedText);
+		set_plain_text(yjsDoc, prettyText);
+		expect(plain_text_of(yjsDoc)).toBe(prettyText);
+	}, 60_000);
 
-	test(
-		"applies a replace-all with 1,000 hits in a ~66 KB file within the diff budgets",
-		() => {
-			// Measured cost: 52M steps (budget 1,000M).
-			const lines = Array.from({ length: 2000 }, (_, i) =>
-				i % 2 === 0 ? `const value_${i} = oldName.compute(${i});` : `plain line ${i} with text`,
-			);
-			const sourceText = lines.join("\n");
-			const targetText = sourceText.replaceAll("oldName", "newLongerName");
+	test("applies a replace-all with 1,000 hits in a ~66 KB file within the diff budgets", () => {
+		// Measured cost: 52M steps (budget 1,000M).
+		const lines = Array.from({ length: 2000 }, (_, i) =>
+			i % 2 === 0 ? `const value_${i} = oldName.compute(${i});` : `plain line ${i} with text`,
+		);
+		const sourceText = lines.join("\n");
+		const targetText = sourceText.replaceAll("oldName", "newLongerName");
 
-			const yjsDoc = plain_doc_from(sourceText);
-			set_plain_text(yjsDoc, targetText);
-			expect(plain_text_of(yjsDoc)).toBe(targetText);
-		},
-		60_000,
-	);
+		const yjsDoc = plain_doc_from(sourceText);
+		set_plain_text(yjsDoc, targetText);
+		expect(plain_text_of(yjsDoc)).toBe(targetText);
+	}, 60_000);
 
-	test(
-		"refuses a near-cap high-line-count rewrite instead of degrading",
-		() => {
-			// Two unrelated ~890 KB texts: measured cost is over 2,000M steps, so the 1,000M step
-			// budget trips (after ~19 s of compute on the measuring machine) and the Myers bisect
-			// must refuse, never fall back to a coarse whole-document replacement.
-			const sourceText = Array.from({ length: 68500 }, (_, i) => `src ${((i * 2654435761) >>> 0).toString(16)}`).join(
-				"\n",
-			);
-			const targetText = Array.from({ length: 68500 }, (_, i) => `dst ${((i * 40503) >>> 0).toString(16)}`).join("\n");
+	test("refuses a near-cap high-line-count rewrite instead of degrading", () => {
+		// Two unrelated ~890 KB texts: measured cost is over 2,000M steps, so the 1,000M step
+		// budget trips (after ~19 s of compute on the measuring machine) and the Myers bisect
+		// must refuse, never fall back to a coarse whole-document replacement.
+		const sourceText = Array.from({ length: 68500 }, (_, i) => `src ${((i * 2654435761) >>> 0).toString(16)}`).join(
+			"\n",
+		);
+		const targetText = Array.from({ length: 68500 }, (_, i) => `dst ${((i * 40503) >>> 0).toString(16)}`).join("\n");
 
-			const yjsDoc = plain_doc_from(sourceText);
-			const result = files_yjs_doc_update_from_text({
-				text: targetText,
-				mut_yjsDoc: yjsDoc,
-				rootKind: "plain_text",
-			});
-			expect(result._nay?.message).toBe(files_text_diff_TOO_LARGE_MESSAGE);
+		const yjsDoc = plain_doc_from(sourceText);
+		const result = files_yjs_doc_update_from_text({
+			text: targetText,
+			mut_yjsDoc: yjsDoc,
+			rootKind: "plain_text",
+		});
+		expect(result._nay?.message).toBe(files_text_diff_TOO_LARGE_MESSAGE);
 
-			// The refusal must leave the document untouched.
-			expect(plain_text_of(yjsDoc)).toBe(sourceText);
-		},
-		120_000,
-	);
+		// The refusal must leave the document untouched.
+		expect(plain_text_of(yjsDoc)).toBe(sourceText);
+	}, 120_000);
 });
 
 describe("files_yjs_doc_create_from_text", () => {

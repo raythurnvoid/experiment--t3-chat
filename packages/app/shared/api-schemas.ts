@@ -142,6 +142,10 @@ export interface api_schemas_Main {
 
 	"/api/v1/files/read-many": ReturnType<typeof public_api_http_routes>["/api/v1/files/read-many"];
 
+	"/api/v1/files/write-policy/get": ReturnType<typeof public_api_http_routes>["/api/v1/files/write-policy/get"];
+
+	"/api/v1/files/write-policy/set": ReturnType<typeof public_api_http_routes>["/api/v1/files/write-policy/set"];
+
 	"/api/v1/files/write": ReturnType<typeof public_api_http_routes>["/api/v1/files/write"];
 
 	"/api/v1/files/write-many": ReturnType<typeof public_api_http_routes>["/api/v1/files/write-many"];

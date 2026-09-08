@@ -137,6 +137,7 @@ export async function plugins_invoke_http_invoke(
 		workspaceId: principal.workspaceId,
 		installationId: principal.installationId,
 		pluginVersionId: principal.pluginVersionId,
+		serviceAccountId: principal.serviceAccountId,
 		userId: principal.userId,
 		endpointId: body._yay.endpoint,
 		callerSerializationKey: body._yay.serializationKey ?? null,

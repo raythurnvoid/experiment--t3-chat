@@ -28,6 +28,8 @@ const REQUIRED_APP_PERMISSION_BY_SCOPE = {
 	"files:read": CONTENT_READ_PERMISSION,
 	"files:write": CONTENT_WRITE_PERMISSION,
 	"files:download": CONTENT_READ_PERMISSION,
+	// Policy management is checked on the actual file, including restricted folders.
+	"files:permissions": null,
 	"secrets:read": null,
 	"outbound:fetch": null,
 	"activities:write": null,

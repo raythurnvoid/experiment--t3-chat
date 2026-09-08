@@ -187,6 +187,8 @@ vp env exec pnpm --dir packages/app exec convex run --component migrations lib:g
 - `convex run <module:function> [jsonArgs]` accepts a JSON object for args.
 - Dry-run a risky named migration through the admin-ops direct Node path. A dry run executes one batch and rolls it back:
 
+  Check the installed component's logging before using `dryRun: true`. Version 0.3.5 logs complete before/after documents. Do not use that mode on tables containing credentials, secrets, configuration, or private content. For those tables, add a temporary internal preview mutation that calls only the selected migration with `oneBatchOnly: true`, `dryRun: false`, an explicit cursor, and a bounded batch size, then throws an error containing only counts and the next cursor. The outer failure rolls back the nested writes. Test that rollback, including cross-table inserts, before running it live. Use the normal named component runner for the real migration. Remove the preview with the one-time migration code.
+
 ```powershell
 Push-Location packages/app
 $argsJson = @{ dryRun = $true } | ConvertTo-Json -Compress
@@ -251,6 +253,7 @@ When the user chooses migration but does not need the migration to remain replay
   - Convex args/returns: e.g. `organization_id` -> `organizationId`, `file_id` -> `fileId`.
   - Preserve semantic distinction between client-generated id and Convex doc id.
 - Write migrations to be idempotent and prefer an existing new value during backfill without treating `null` as absent, for example `newField !== undefined ? newField : old_field`.
+- Audit derived pointers against their source relationships, including null pointers. Checking only that non-null references exist can miss a child that wrongly skips its parent's scope. If an old producer left a confirmed gap, resolve its exact mapping before switching readers. Prove the correction with expected full-document hashes and keep unrelated fields unchanged.
 - Strip a legacy field with the Omit-based cast and destructure-plus-`ctx.db.replace` pattern above. Do not rely on assigning `undefined` after the field leaves the schema.
 - Run migration before tightening required fields, then re-check generated types:
   - `vp env exec pnpm --dir packages/app exec convex run "migrations:run_<name>"`

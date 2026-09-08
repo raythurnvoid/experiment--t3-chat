@@ -21,8 +21,8 @@ Load each companion skill that owns the affected boundary:
 - Organization/workspace deletion is also split: UI-facing mutations remove structure/access immediately where needed, then the data deletion worker purges heavy tenant content in batches.
 - Admin data reset is not account deletion. It preserves the account and default tenant while deleting reset-owned content.
 - Large deletes must remain retryable, bounded, and idempotent. Keep limited indexed reads and leave queue docs in place while work remains.
-- Tenant, workspace, and account purge are named read-only bypasses. These flows delete the whole
-  lifecycle scope, so they do not call normal writable guards. They delete locked subtrees like other
+- Tenant, workspace, and account purge are named file-policy exceptions. These flows delete the whole
+  lifecycle scope, so they do not call normal writable guards. They delete protected subtrees like other
   content. See [files-read-only](../files-read-only/SKILL.md).
 - Only these flows hard-delete a member's real file. Everywhere else "delete a file" means archive:
   the UI delete, and the Council delete-meeting workflow, which archives the meeting folder through
@@ -208,9 +208,13 @@ Current purge coverage includes:
 - `files_nodes` after their assets and grants
 - Service destinations, `plugin_service_storage_attempts`, and targets after files and assets, through
   `public_api_service_uploads_db_drain_batch`. Keep receipts while any upload asset exists, so a late
-  service event cannot become an ordinary upload after its attribution was removed. Upload budget
-  docs are removed after these service records. This drain belongs to workspace content cleanup,
+  service event cannot become an ordinary upload after its attribution was removed. This drain belongs to workspace content cleanup,
   not `plugins_data_db_drain_batch`; uninstall leaves service records and files alone.
+- `plugins_service_account_bindings` after service records, then `access_control_service_accounts`.
+  Each family uses its tenant index and a bounded batch. Keep account identities until their files,
+  credentials, grants, installations, and accepted service work are gone. Upload budget docs drain
+  last. A data-only reset removes these workspace-owned accounts too, while preserving the human's
+  default tenant and auth state. Uninstall alone keeps the account and its trusted binding.
 
 The exact-key jobs are the durable handoff. The purge deletes the asset docs after it writes the
 jobs; the scheduled job action then retries R2 independently. An R2 outage must not roll the Convex

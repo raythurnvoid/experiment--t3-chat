@@ -549,7 +549,7 @@ type FileEditor_CssVars = {
 
 type FileEditorInner_Props = {
 	nodeId: app_convex_Id<"files_nodes">;
-	readOnlyState: "writable" | "self" | "inherited";
+	writeBlockedReason: files_yjs_EditBlockReason | null;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	rootKind: files_YjsRootKind;
 	monacoLanguageId: string;
@@ -584,7 +584,7 @@ type FileEditorInner_Props = {
 function FileEditorInner(props: FileEditorInner_Props) {
 	const {
 		nodeId,
-		readOnlyState,
+		writeBlockedReason,
 		pendingUpdateId,
 		rootKind,
 		monacoLanguageId,
@@ -612,17 +612,14 @@ function FileEditorInner(props: FileEditorInner_Props) {
 		rootKind,
 	});
 
-	// Editing needs write permission and a writable node. Keep editing off while permission loads.
+	// Keep editing off while the current user's effective write permission loads.
 	const { membershipId } = AppTenantProvider.useContext();
 	const canWrite = useQuery(app_convex_api.files_nodes.get_current_user_file_write_permission, {
 		membershipId,
 		nodeId,
 	});
-	// Show the permission reason first when permission and the lock both block editing.
-	// This matches the server check order.
-	const editBlockReason: files_yjs_EditBlockReason | null =
-		canWrite === false ? "permission" : readOnlyState === "writable" ? null : "read_only";
-	const editable = canWrite === true && readOnlyState === "writable";
+	const editBlockReason = canWrite === false ? (writeBlockedReason ?? "permission") : null;
+	const editable = canWrite === true;
 
 	// A proposal on a file with collaboration off has no live-file view to fall back to. When its
 	// doc goes away while the diff view shows it (Save or Discard in the toolbar, a pending row
@@ -783,7 +780,7 @@ export type FileEditor_Ref = {
 export type FileEditor_Props = {
 	ref?: Ref<FileEditor_Ref>;
 	nodeId: app_convex_Id<"files_nodes"> | null | undefined;
-	readOnlyState: "writable" | "self" | "inherited";
+	writeBlockedReason: files_yjs_EditBlockReason | null;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	/** The node's document shape, from the route-resolved node the caller already holds. */
 	rootKind: files_YjsRootKind;
@@ -820,7 +817,7 @@ export function FileEditor(props: FileEditor_Props) {
 	const {
 		ref,
 		nodeId,
-		readOnlyState,
+		writeBlockedReason,
 		pendingUpdateId,
 		rootKind,
 		monacoLanguageId,
@@ -850,7 +847,7 @@ export function FileEditor(props: FileEditor_Props) {
 	return nodeId ? (
 		<FileEditorInner
 			nodeId={nodeId}
-			readOnlyState={readOnlyState}
+			writeBlockedReason={writeBlockedReason}
 			pendingUpdateId={pendingUpdateId}
 			rootKind={rootKind}
 			monacoLanguageId={monacoLanguageId}

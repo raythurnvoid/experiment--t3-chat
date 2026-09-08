@@ -5,6 +5,7 @@ import { Doc as YDoc, encodeStateAsUpdate } from "yjs";
 
 import { api, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
+import type { MutationCtx } from "./_generated/server.js";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
 import { files_db_yjs_push_update, files_nodes_db_create_node_recursively_at_path } from "./files_nodes.ts";
 import { r2 } from "./r2_client.ts";
@@ -197,6 +198,7 @@ async function install_gallery_plugin(
 		acceptedCapabilities: args.capabilities ?? ["workspace.files.read"],
 		acceptedOutboundOrigins: [],
 		acceptedUiOutboundOrigins: args.uiOutboundOrigins ?? [],
+		serviceAccountGrants: [{ resource: { kind: "workspace" }, level: "read" }],
 	});
 	if (installed._nay) {
 		throw new Error(installed._nay.message);
@@ -206,6 +208,9 @@ async function install_gallery_plugin(
 		asOwner,
 		pluginVersionId: registered.pluginVersionId,
 		installationId: installed._yay.installationId,
+		serviceAccountId: (await t.run((ctx) =>
+			ctx.db.get("plugins_workspace_installations", installed._yay.installationId),
+		))!.serviceAccountId,
 	};
 }
 
@@ -395,6 +400,31 @@ async function seed_upload_node(
 }
 
 // Direct seeding sidesteps the per-user mint rate limit (capacity 2 per test user).
+async function seed_sibling_gallery_installation(
+	ctx: MutationCtx,
+	fixture: Awaited<ReturnType<typeof install_gallery_plugin>>,
+	name: string,
+) {
+	const { _id, _creationTime, ...version } = (await ctx.db.get("plugins_versions", fixture.pluginVersionId))!;
+	const original = (await ctx.db.get("plugins_workspace_installations", fixture.installationId))!;
+	const { _id: installationId, _creationTime: installationTime, ...installation } = original;
+	const pluginVersionId = await ctx.db.insert("plugins_versions", { ...version, name, isLatest: false });
+	await ctx.db.insert("plugins_service_account_bindings", {
+		organizationId: installation.organizationId,
+		workspaceId: installation.workspaceId,
+		pluginName: name,
+		publisherUserId: version.createdBy,
+		sourceRepositoryUrl: version.sourceRepositoryUrl,
+		serviceAccountId: installation.serviceAccountId,
+	});
+	const id = await ctx.db.insert("plugins_workspace_installations", {
+		...installation,
+		pluginName: name,
+		pluginVersionId,
+	});
+	return (await ctx.db.get("plugins_workspace_installations", id))!;
+}
+
 async function seed_session_token(
 	t: ReturnType<typeof test_convex>,
 	fixture: Awaited<ReturnType<typeof install_gallery_plugin>>,
@@ -405,6 +435,7 @@ async function seed_session_token(
 	await t.run(async (ctx) => {
 		const now = Date.now();
 		await ctx.db.insert("plugins_ui_sessions", {
+			serviceAccountId: fixture.serviceAccountId,
 			organizationId: fixture.membership.organizationId,
 			workspaceId: fixture.membership.workspaceId,
 			installationId: fixture.installationId,
@@ -422,7 +453,10 @@ async function seed_session_token(
 async function exchange_session_jwt(t: ReturnType<typeof test_convex>, token: string, origin?: string) {
 	return await t.fetch("/plugins-ui/session-jwt", {
 		method: "POST",
-		headers: { "Content-Type": "application/json", Origin: origin ?? new URL(process.env.VITE_CONVEX_HTTP_URL!).origin },
+		headers: {
+			"Content-Type": "application/json",
+			Origin: origin ?? new URL(process.env.VITE_CONVEX_HTTP_URL!).origin,
+		},
 		body: JSON.stringify({ token }),
 	});
 }
@@ -720,6 +754,10 @@ describe("plugin ui sessions", () => {
 
 		const session = await mint_session_token(fixture);
 		expect(session.token).toMatch(/^plu_[0-9a-f]{64}$/u);
+		const installation = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", fixture.installationId));
+		const storedSession = await t.run((ctx) => ctx.db.get("plugins_ui_sessions", session.sessionId));
+		expect(storedSession?.serviceAccountId).toBeDefined();
+		expect(storedSession?.serviceAccountId).toBe(installation?.serviceAccountId);
 
 		const listResponse = await t.fetch("/api/v1/files/list", {
 			method: "POST",
@@ -738,10 +776,96 @@ describe("plugin ui sessions", () => {
 		expect(writeResponse.status).toBe(403);
 	});
 
+	test("mint and refresh keep removed grants absent", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		const installation = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", fixture.installationId));
+		if (!installation?.serviceAccountId) throw new Error("Expected installation account");
+		await t.run(async (ctx) => {
+			const grants = await ctx.db.query("access_control_permission_grants").collect();
+			for (const grant of grants) {
+				if (grant.principalKind === "service_account") {
+					await ctx.db.delete("access_control_permission_grants", grant._id);
+				}
+			}
+		});
+
+		const session = await mint_session_token(fixture);
+		expect(
+			(
+				await fixture.asOwner.action(api.plugins_ui.refresh_ui_session, {
+					membershipId: fixture.membership.membershipId,
+					sessionId: session.sessionId,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(await t.run((ctx) => ctx.db.get("plugins_ui_sessions", session.sessionId))).toMatchObject({
+			serviceAccountId: installation.serviceAccountId,
+		});
+		expect(await t.run((ctx) => ctx.db.get("plugins_workspace_installations", fixture.installationId))).toMatchObject({
+			serviceAccountId: installation.serviceAccountId,
+		});
+		expect(await t.run((ctx) => ctx.db.query("access_control_service_accounts").collect())).toHaveLength(1);
+		expect(await t.run((ctx) => ctx.db.query("access_control_permission_grants").collect())).toEqual([]);
+	});
+
+	test("revocation and rebind cannot rotate an old session into the replacement account", async () => {
+		const t = test_convex();
+		const fixture = await install_gallery_plugin(t);
+		const session = await mint_session_token(fixture);
+		const original = await t.run((ctx) => ctx.db.get("plugins_ui_sessions", session.sessionId));
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 10_000);
+		expect(
+			(
+				await fixture.asOwner.mutation(api.access_control.revoke_service_account, {
+					membershipId: fixture.membership.membershipId,
+					serviceAccountId: fixture.serviceAccountId,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			(
+				await fixture.asOwner.action(api.plugins_ui.mint_page_session, {
+					membershipId: fixture.membership.membershipId,
+					pluginName: "gallery",
+				})
+			)._nay?.message,
+		).toBe("Not found");
+		const replacement = await fixture.asOwner.mutation(api.access_control.create_service_account, {
+			membershipId: fixture.membership.membershipId,
+			name: "Replacement",
+		});
+		if (replacement._nay) throw new Error(replacement._nay.message);
+		expect(
+			(
+				await fixture.asOwner.mutation(api.plugins.set_installation_service_account, {
+					membershipId: fixture.membership.membershipId,
+					installationId: fixture.installationId,
+					serviceAccountId: replacement._yay.serviceAccountId,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
+			(
+				await fixture.asOwner.action(api.plugins_ui.refresh_ui_session, {
+					membershipId: fixture.membership.membershipId,
+					sessionId: session.sessionId,
+				})
+			)._nay,
+		).toBeDefined();
+		expect(await t.run((ctx) => ctx.db.get("plugins_ui_sessions", session.sessionId))).toEqual(original);
+		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 10_000);
+		const next = await mint_session_token(fixture);
+		expect(await t.run((ctx) => ctx.db.get("plugins_ui_sessions", next.sessionId))).toMatchObject({
+			serviceAccountId: replacement._yay.serviceAccountId,
+		});
+	});
+
 	test("refreshes one session in place, invalidates the old token, and revokes the current token", async () => {
 		const t = test_convex();
 		const fixture = await install_gallery_plugin(t);
 		const initial = await mint_session_token(fixture);
+		const initialSession = await t.run((ctx) => ctx.db.get("plugins_ui_sessions", initial.sessionId));
 		const list_with = (token: string) =>
 			t.fetch("/api/v1/files/list", {
 				method: "POST",
@@ -764,6 +888,7 @@ describe("plugin ui sessions", () => {
 		const sessionsAfterRefresh = await t.run((ctx) => ctx.db.query("plugins_ui_sessions").collect());
 		expect(sessionsAfterRefresh).toHaveLength(1);
 		expect(sessionsAfterRefresh[0]?._id).toBe(initial.sessionId);
+		expect(sessionsAfterRefresh[0]?.serviceAccountId).toBe(initialSession?.serviceAccountId);
 
 		const revoked = await fixture.asOwner.mutation(api.plugins_ui.revoke_ui_session, {
 			membershipId: fixture.membership.membershipId,
@@ -846,27 +971,14 @@ describe("plugin ui sessions", () => {
 		const isolatedToken = `plu_${"f".repeat(64)}`;
 		await t.run(async (ctx) => {
 			const now = Date.now();
-			const installationId = await ctx.db.insert("plugins_workspace_installations", {
-				organizationId: fixture.membership.organizationId,
-				workspaceId: fixture.membership.workspaceId,
-				pluginVersionId: fixture.pluginVersionId,
-				pluginName: "gallery-copy",
-				status: "enabled",
-				configurationYaml: null,
-				acceptedCapabilities: ["workspace.files.read"],
-				capabilitiesAcceptedAt: now,
-				acceptedOutboundOrigins: [],
-				acceptedUiOutboundOrigins: [],
-				outboundOriginsAcceptedAt: now,
-				installedBy: fixture.membership.userId,
-				updatedBy: fixture.membership.userId,
-				updatedAt: now,
-			});
+			const sibling = await seed_sibling_gallery_installation(ctx, fixture, "gallery-copy");
+			const installationId = sibling._id;
 			await ctx.db.insert("plugins_ui_sessions", {
+				serviceAccountId: sibling.serviceAccountId,
 				organizationId: fixture.membership.organizationId,
 				workspaceId: fixture.membership.workspaceId,
 				installationId,
-				pluginVersionId: fixture.pluginVersionId,
+				pluginVersionId: sibling.pluginVersionId,
 				userId: fixture.membership.userId,
 				tokenHash: await crypto_sha256_hex(isolatedToken),
 				createdAt: now,
@@ -941,9 +1053,8 @@ describe("plugin ui sessions", () => {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
-					readOnlyScopeNodeId: null,
-					readOnlyPluginName: null,
-					readOnlyPluginServiceTargetId: null,
+					writePolicyScopeNodeId: null,
+					writePolicy: null,
 					archiveOperationId: null,
 				});
 			}
@@ -977,9 +1088,8 @@ describe("plugin ui sessions", () => {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
-					readOnlyScopeNodeId: null,
-					readOnlyPluginName: null,
-					readOnlyPluginServiceTargetId: null,
+					writePolicyScopeNodeId: null,
+					writePolicy: null,
 					archiveOperationId: null,
 				});
 			}
@@ -1130,6 +1240,16 @@ describe("plugin ui sessions", () => {
 		const seeded = await seed_upload_node(t, fixture, { filename: "photo.png", contentType: "image/png" });
 		await t.run((ctx) => ctx.db.patch("files_r2_assets", seeded.assetId, { r2Key: "test/photo.png" }));
 		const reader = await mint_reader_session(t, fixture);
+		const positive = await t.fetch("/api/v1/files/download-urls", {
+			method: "POST",
+			headers: auth_headers(reader.session.token),
+			body: JSON.stringify({ fileNodeIds: [seeded.nodeId] }),
+		});
+		expect(positive.status).toBe(200);
+		expect(await positive.json()).toMatchObject({
+			items: [{ fileNodeId: seeded.nodeId, url: expect.any(String) }],
+			errors: [],
+		});
 		const signing = defer_download_urls();
 
 		const responsePromise = t.fetch("/api/v1/files/download-urls", {
@@ -1421,24 +1541,11 @@ describe("plugin ui sessions", () => {
 		const fixture = await install_gallery_plugin(t);
 		const siblingInstallationId = await t.run(async (ctx) => {
 			const now = Date.now();
-			const installationId = await ctx.db.insert("plugins_workspace_installations", {
-				organizationId: fixture.membership.organizationId,
-				workspaceId: fixture.membership.workspaceId,
-				pluginVersionId: fixture.pluginVersionId,
-				pluginName: "gallery-sibling",
-				status: "enabled",
-				configurationYaml: null,
-				acceptedCapabilities: ["workspace.files.read"],
-				capabilitiesAcceptedAt: now,
-				acceptedOutboundOrigins: [],
-				acceptedUiOutboundOrigins: [],
-				outboundOriginsAcceptedAt: now,
-				installedBy: fixture.membership.userId,
-				updatedBy: fixture.membership.userId,
-				updatedAt: now,
-			});
+			const sibling = await seed_sibling_gallery_installation(ctx, fixture, "gallery-sibling");
+			const installationId = sibling._id;
 			for (let index = 0; index < 300; index += 1) {
 				await ctx.db.insert("plugins_ui_sessions", {
+					serviceAccountId: fixture.serviceAccountId,
 					organizationId: fixture.membership.organizationId,
 					workspaceId: fixture.membership.workspaceId,
 					installationId: fixture.installationId,
@@ -1451,10 +1558,11 @@ describe("plugin ui sessions", () => {
 			}
 			for (let index = 0; index < 3; index += 1) {
 				await ctx.db.insert("plugins_ui_sessions", {
+					serviceAccountId: sibling.serviceAccountId,
 					organizationId: fixture.membership.organizationId,
 					workspaceId: fixture.membership.workspaceId,
 					installationId,
-					pluginVersionId: fixture.pluginVersionId,
+					pluginVersionId: sibling.pluginVersionId,
 					userId: fixture.membership.userId,
 					tokenHash: `${"s".repeat(64)}-${index}`,
 					createdAt: now,
@@ -1661,6 +1769,8 @@ describe("plugin ui file view sessions", () => {
 
 		const session = await t.run((ctx) => ctx.db.get("plugins_ui_sessions", minted._yay.sessionId));
 		expect(session?.fileNodeId).toBe(seeded.nodeId);
+		expect(session?.serviceAccountId).toBeDefined();
+		expect(session?.serviceAccountId).toBe(installation?.serviceAccountId);
 
 		// The token is a full plugin_ui principal, so the plugin frame can read workspace files.
 		const listResponse = await t.fetch("/api/v1/files/list", {
@@ -2132,6 +2242,7 @@ describe("plugin session jwt exchange", () => {
 			ctx.db.patch("users", fixture.membership.userId, { clerkUserId: `clerk-${fixture.membership.userId}` }),
 		);
 		const created = await fixture.asOwner.mutation(api.public_api.api_credential_create, {
+			serviceAccountId: null,
 			membershipId: fixture.membership.membershipId,
 			name: "Files key",
 			scopes: ["files:read"],
@@ -2143,9 +2254,7 @@ describe("plugin session jwt exchange", () => {
 		expect(apiKey.status).toBe(401);
 
 		// Expired session: resolve_principal leaves the expiry verdict to this route.
-		await t.run((ctx) =>
-			ctx.db.patch("plugins_ui_sessions", session.sessionId, { expiresAt: Date.now() - 1000 }),
-		);
+		await t.run((ctx) => ctx.db.patch("plugins_ui_sessions", session.sessionId, { expiresAt: Date.now() - 1000 }));
 		const expired = await exchange_session_jwt(t, session.token);
 		expect(expired.status).toBe(401);
 

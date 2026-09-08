@@ -90,34 +90,27 @@
 		gap: 10px;
 	}
 
-	/* `.MyButton` is built for a short centered label on one line. This one carries a sentence, so
-	   allow wrapping. Without it the description only wraps because of its own `text-wrap: pretty`,
-	   and removing that typography property would silently push the text out of the box. */
-	.FilesPropertiesModalReadOnly-checkbox {
-		align-items: start;
-
-		height: auto;
-
-		padding: 12px;
-
-		white-space: normal;
-		text-align: start;
-	}
-
-	.FilesPropertiesModalReadOnly-text {
+	.FilesPropertiesModalReadOnly-choices {
 		display: flex;
-		flex-direction: column;
-		gap: 2px;
+		flex-wrap: wrap;
+		gap: 12px;
+		margin: 0;
+		padding: 0;
+		border: 0;
 
-		/* Fill the line. `.MyButton` centers its content, so a text block narrower than the row is
-		   pushed to the middle, and the description wraps at its own width instead of the row width. */
-		flex: 1;
-		min-width: 0;
-	}
+		legend {
+			margin-bottom: 8px;
+			font-size: 13px;
+			font-weight: 500;
+		}
 
-	.FilesPropertiesModalReadOnly-label {
-		font-size: 13px;
-		font-weight: 500;
+		label {
+			display: flex;
+			align-items: center;
+			gap: 6px;
+			min-height: 32px;
+			font-size: 13px;
+		}
 	}
 
 	.FilesPropertiesModalReadOnly-description {
@@ -150,8 +143,7 @@
 		gap: 10px;
 	}
 
-	/* Same reason as the read-only checkbox: `.MyButton` expects a short centered label, and this one
-	   carries a sentence. */
+	/* `.MyButton` expects a short centered label. This checkbox carries a sentence, so let it wrap. */
 	.FilesPropertiesModalCollaboration-checkbox {
 		align-items: start;
 

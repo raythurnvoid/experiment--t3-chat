@@ -48,6 +48,7 @@ import {
 	server_convex_get_user_fallback_to_anonymous,
 } from "../server/server-utils.ts";
 import { access_control_db_authorize_membership } from "./access_control.ts";
+import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { r2, r2_fetch_object_from_bucket } from "./r2_client.ts";
@@ -67,9 +68,7 @@ async function db_plugin_workspace_is_live(
 	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> },
 ) {
 	const workspace = await ctx.db.get("organizations_workspaces", args.workspaceId);
-	return (
-		workspace?.organizationId === args.organizationId && workspace.pluginDataPurgeStartedAt === undefined
-	);
+	return workspace?.organizationId === args.organizationId && workspace.pluginDataPurgeStartedAt === undefined;
 }
 
 /**
@@ -277,6 +276,13 @@ export const insert_page_session = internalMutation({
 			return Result({ _nay: { message: "Not found" } });
 		}
 
+		if (
+			!(await plugins_db_get_live_service_account(ctx, {
+				installation,
+				serviceAccountId: installation.serviceAccountId,
+			}))
+		)
+			return Result({ _nay: { message: "Not found" } });
 		const now = Date.now();
 		const expiresAt = now + SESSION_TTL_MS;
 		const token = `plu_${crypto_random_hex(32)}`;
@@ -284,6 +290,7 @@ export const insert_page_session = internalMutation({
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			installationId: installation._id,
+			serviceAccountId: installation.serviceAccountId,
 			pluginVersionId: installation.pluginVersionId,
 			userId: userAuth.id,
 			tokenHash: await crypto_sha256_hex(token),
@@ -436,6 +443,13 @@ export const insert_file_view_session = internalMutation({
 			return Result({ _nay: { message: "Not found" } });
 		}
 
+		if (
+			!(await plugins_db_get_live_service_account(ctx, {
+				installation,
+				serviceAccountId: installation.serviceAccountId,
+			}))
+		)
+			return Result({ _nay: { message: "Not found" } });
 		const now = Date.now();
 		const expiresAt = now + SESSION_TTL_MS;
 		const token = `plu_${crypto_random_hex(32)}`;
@@ -443,6 +457,7 @@ export const insert_file_view_session = internalMutation({
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			installationId: installation._id,
+			serviceAccountId: installation.serviceAccountId,
 			pluginVersionId: installation.pluginVersionId,
 			userId: userAuth.id,
 			fileNodeId: fileNode._id,
@@ -569,6 +584,8 @@ export const rotate_ui_session = internalMutation({
 		// Rotating a token creates a new one, so it follows the same rule as the mint that created the
 		// session. A file-view session checks against its file node, so a restriction added after the
 		// mint stops the refresh.
+		if (!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: session.serviceAccountId })))
+			return Result({ _nay: { message: "Not found" } });
 		const fileNode = session.fileNodeId ? await ctx.db.get("files_nodes", session.fileNodeId) : null;
 		if (session.fileNodeId && !fileNode) {
 			return Result({ _nay: { message: "Not found" } });
@@ -1053,7 +1070,11 @@ export async function plugins_ui_http_session_jwt(ctx: ActionCtx, request: Reque
 
 	const body = (await request.json().catch(() => null)) as null | plugins_ui_http_session_jwt_Body;
 	if (typeof body?.token !== "string") {
-		return { status: 400, body: Result({ _nay: { message: "Request body must carry a token" } }), headers: devCorsHeaders } as const;
+		return {
+			status: 400,
+			body: Result({ _nay: { message: "Request body must carry a token" } }),
+			headers: devCorsHeaders,
+		} as const;
 	}
 
 	const principalResult = await ctx.runQuery(internal.public_api.resolve_principal, { presented: body.token });

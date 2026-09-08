@@ -3,7 +3,10 @@ import { Workpool } from "@convex-dev/workpool";
 
 import { api, internal } from "./_generated/api.js";
 import type { Doc } from "./_generated/dataModel";
-import { access_control_db_ensure_role_assignment } from "./access_control.ts";
+import {
+	access_control_db_ensure_role_assignment,
+	access_control_db_set_service_account_grant,
+} from "./access_control.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes.ts";
 import { public_api_service_uploads_db_drain_batch } from "./public_api_service_uploads.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
@@ -64,6 +67,31 @@ async function seed_installation(
 		});
 		const capabilities = args.acceptedCapabilities ?? SERVICE_CAPABILITIES;
 		const pluginName = "council";
+		const serviceAccountId = await ctx.db.insert("access_control_service_accounts", {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			name: "Council worker",
+			createdBy: membership.userId,
+			createdAt: now,
+			updatedAt: now,
+			revokedAt: null,
+		});
+		await ctx.db.insert("plugins_service_account_bindings", {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			pluginName,
+			publisherUserId: membership.userId,
+			sourceRepositoryUrl: "https://github.com/bonobo/council-plugin",
+			serviceAccountId,
+		});
+		const accountGrant = await access_control_db_set_service_account_grant(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			serviceAccountId,
+			resource: { kind: "workspace" },
+			level: "manage",
+		});
+		if (accountGrant._nay) throw new Error(accountGrant._nay.message);
 		const pluginVersionId = await ctx.db.insert("plugins_versions", {
 			name: pluginName,
 			displayName: "Council",
@@ -93,6 +121,7 @@ async function seed_installation(
 			updatedAt: now,
 		});
 		const installationId = await ctx.db.insert("plugins_workspace_installations", {
+			serviceAccountId,
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			pluginVersionId,
@@ -116,7 +145,7 @@ async function seed_installation(
 			createdBy: membership.userId,
 			updatedAt: now,
 		});
-		return { ...membership, pluginVersionId, installationId } as const;
+		return { ...membership, pluginVersionId, installationId, serviceAccountId } as const;
 	});
 
 	return installation;
@@ -131,6 +160,7 @@ async function seed_page_token(
 	const now = Date.now();
 	await t.run(async (ctx) => {
 		await ctx.db.insert("plugins_ui_sessions", {
+			serviceAccountId: fixture.serviceAccountId,
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.workspaceId,
 			installationId: fixture.installationId,
@@ -315,6 +345,7 @@ describe("service upload authorization", () => {
 		await t.run(async (ctx) => {
 			const now = Date.now();
 			await ctx.db.insert("plugin_service_grants", {
+				serviceAccountId: fixture.serviceAccountId,
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.workspaceId,
 				installationId: fixture.installationId,
@@ -363,6 +394,76 @@ describe("service upload authorization", () => {
 		const response = await call(t, CREATE_TARGET_PATH, sealed, target_body());
 		expect(response.status).toBe(401);
 		expect(await read_targets(t)).toHaveLength(0);
+	});
+
+	test.each(["revoked", "rebound"] as const)("refuses every target door after its account is %s", async (change) => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture);
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
+		const targetsBefore = await read_targets(t);
+		await t.run(async (ctx) => {
+			if (change === "revoked") {
+				await ctx.db.patch("access_control_service_accounts", fixture.serviceAccountId, { revokedAt: Date.now() });
+			} else {
+				const replacementId = await ctx.db.insert("access_control_service_accounts", {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					name: "Replacement worker",
+					createdBy: fixture.userId,
+					createdAt: Date.now(),
+					updatedAt: Date.now(),
+					revokedAt: null,
+				});
+				await ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
+					serviceAccountId: replacementId,
+				});
+			}
+		});
+		for (const [path, body] of [
+			[CREATE_TARGET_PATH, target_body()],
+			[REMINT_PATH, { idempotencyKey: "meeting-1", targetKey: "recording" }],
+			[FINALIZE_PATH, { idempotencyKey: "meeting-1", targetKey: "recording" }],
+			[DELETE_PATH, { idempotencyKey: "delete", targetKey: "recording" }],
+			[ARCHIVE_PATH, {}],
+		] as const) {
+			expect((await call(t, path, sealed, body)).status, path).toBe(401);
+		}
+		expect(await read_targets(t)).toEqual(targetsBefore);
+		const grants = await t.run((ctx) => ctx.db.query("plugin_service_grants").collect());
+		expect(grants.every((grant) => grant.serviceAccountId === fixture.serviceAccountId)).toBe(true);
+	});
+
+	test("requires current account write grants but still settles an accepted upload", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture);
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
+		const target = (await read_targets(t))[0]!;
+		await t.run(async (ctx) => {
+			expect(
+				await access_control_db_set_service_account_grant(ctx, {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					serviceAccountId: fixture.serviceAccountId,
+					resource: { kind: "workspace" },
+					level: "read",
+				}),
+			).toMatchObject({ _yay: { changed: true } });
+		});
+		for (const [path, body] of [
+			[CREATE_TARGET_PATH, target_body({ targetKey: "next", path: "/meetings/meeting-1/next.mp4" })],
+			[REMINT_PATH, { idempotencyKey: "meeting-1", targetKey: "recording" }],
+			[FINALIZE_PATH, { idempotencyKey: "meeting-1", targetKey: "recording" }],
+			[DELETE_PATH, { idempotencyKey: "delete", targetKey: "recording" }],
+			[ARCHIVE_PATH, {}],
+		] as const) {
+			expect((await call(t, path, sealed, body)).status, path).toBe(403);
+		}
+		expect(await read_targets(t)).toEqual([target]);
+		await simulate_finalizer(t, fixture, target, { size: 2 * MIB });
+		expect((await read_targets(t))[0]).toMatchObject({ state: "committed", actualBytes: 2 * MIB });
+		expect((await read_quota(t, fixture))?.usedCount).toBe(2 * MIB);
 	});
 
 	test("refuses a processing grant after the actor loses the workspace", async () => {
@@ -829,7 +930,10 @@ describe("service upload drain", () => {
 			200,
 		);
 		await t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", locked.nodeId, { readOnlyScopeNodeId: locked.nodeId });
+			await ctx.db.patch("files_nodes", locked.nodeId, {
+				writePolicyScopeNodeId: locked.nodeId,
+				writePolicy: { mode: "read_only" },
+			});
 		});
 		// Count jobs now so the check below measures only what the drain adds.
 		const jobsBefore = await t.run(async (ctx) => ctx.db.query("files_r2_object_deletion_jobs").collect());
@@ -912,7 +1016,7 @@ describe("service upload targets", () => {
 		expect(await read_targets(t)).toHaveLength(0);
 	});
 
-	test("creates a read-only target with exact provenance and fingerprints both mode flags", async () => {
+	test("creates a target for its selected account and fingerprints both mode flags", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
@@ -922,9 +1026,20 @@ describe("service upload targets", () => {
 
 		const target = (await read_targets(t))[0]!;
 		expect(target).toMatchObject({ readOnly: true, nonCollaborative: false });
+		const installation = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", fixture.installationId));
+		expect(installation?.serviceAccountId).toEqual(expect.any(String));
+		const grants = await t.run((ctx) => ctx.db.query("plugin_service_grants").collect());
+		expect(grants).toHaveLength(2);
+		expect(grants.map((grant) => grant.serviceAccountId)).toEqual([
+			installation?.serviceAccountId,
+			installation?.serviceAccountId,
+		]);
 		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", target.nodeId))).toMatchObject({
-			readOnlyScopeNodeId: target.nodeId,
-			readOnlyPluginServiceTargetId: target._id,
+			writePolicyScopeNodeId: target.nodeId,
+			writePolicy: {
+				mode: "writer",
+				writer: { kind: "service_account", serviceAccountId: installation?.serviceAccountId },
+			},
 		});
 		expect((await call(t, CREATE_TARGET_PATH, sealed, body)).status).toBe(200);
 		await simulate_finalizer(t, fixture, target, { size: 2 * MIB });
@@ -937,35 +1052,132 @@ describe("service upload targets", () => {
 		expect(await read_targets(t)).toHaveLength(1);
 	});
 
-	test("member lock no-ops keep the exact service target and actual changes clear it", async () => {
+	test("uses a restricted destination grant without requiring a workspace account grant", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const destinationId = await t.run(async (ctx) => {
+			const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				userId: fixture.userId,
+				parentId: files_ROOT_ID,
+				path: "/meetings",
+				kind: "folder",
+				now: Date.now(),
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			await ctx.db.patch("files_nodes", created._yay, { restrictedScopeNodeId: created._yay });
+			for (const [resource, level] of [
+				[{ kind: "workspace" }, null],
+				[{ kind: "file", nodeId: created._yay }, "manage"],
+			] as const) {
+				expect(
+					await access_control_db_set_service_account_grant(ctx, {
+						organizationId: fixture.organizationId,
+						workspaceId: fixture.workspaceId,
+						serviceAccountId: fixture.serviceAccountId,
+						resource,
+						level,
+					}),
+				).toMatchObject({ _yay: { changed: true } });
+			}
+			return created._yay;
+		});
+		const sealed = await seal_token(t, fixture);
+		const response = await call(t, CREATE_TARGET_PATH, sealed, target_body({ readOnly: true }));
+		expect(response.status, await response.clone().text()).toBe(200);
+		const target = (await read_targets(t))[0]!;
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId))).toMatchObject({
+			restrictedScopeNodeId: destinationId,
+			writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId } },
+		});
+		expect((await call(t, ARCHIVE_PATH, sealed, {})).status).toBe(200);
+	});
+
+	test("requires account manage to set or clear a policy, but not to write an unprotected file", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture);
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body({ readOnly: true }))).status).toBe(200);
+		const protectedTarget = (await read_targets(t))[0]!;
+		await simulate_finalizer(t, fixture, protectedTarget, { size: MIB });
+		await t.run(async (ctx) => {
+			expect(
+				await access_control_db_set_service_account_grant(ctx, {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					serviceAccountId: fixture.serviceAccountId,
+					resource: { kind: "workspace" },
+					level: "write",
+				}),
+			).toMatchObject({ _yay: { changed: true } });
+		});
+		expect(
+			(
+				await call(
+					t,
+					CREATE_TARGET_PATH,
+					sealed,
+					target_body({
+						targetKey: "protected",
+						path: "/meetings/meeting-1/protected.mp4",
+						readOnly: true,
+					}),
+				)
+			).status,
+		).toBe(403);
+		expect((await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete", targetKey: "recording" })).status).toBe(403);
+		expect((await call(t, ARCHIVE_PATH, sealed, {})).status).toBe(403);
+		expect((await t.run((ctx) => ctx.db.get("files_nodes", protectedTarget.nodeId)))?.writePolicy).not.toBeNull();
+		expect(
+			(
+				await call(
+					t,
+					CREATE_TARGET_PATH,
+					sealed,
+					target_body({
+						targetKey: "plain",
+						path: "/meetings/meeting-1/plain.mp4",
+					}),
+				)
+			).status,
+		).toBe(200);
+		expect((await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete-plain", targetKey: "plain" })).status).toBe(
+			200,
+		);
+	});
+
+	test("member policy changes replace the local writer without changing the service target", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body({ readOnly: true }))).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
-		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: fixture.userId, name: "Test User" });
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: fixture.userId });
 		const args = { membershipId: fixture.membershipId, nodeId: target.nodeId };
 		const before = await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId));
-		expect(before?.readOnlyPluginServiceTargetId).toBe(target._id);
-		expect(await asUser.mutation(api.files_nodes.set_node_read_only, args)).toEqual({ _yay: null });
+		expect(
+			await asUser.mutation(api.files_nodes.set_node_write_policy, {
+				...args,
+				writePolicy: {
+					mode: "writer",
+					writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId },
+				},
+			}),
+		).toEqual({ _yay: null });
 		expect(await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId))).toEqual(before);
-
-		expect(await asUser.mutation(api.files_nodes.set_node_writable, args)).toEqual({ _yay: null });
-		const unlocked = await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId));
-		expect(unlocked?.readOnlyScopeNodeId).toBeNull();
-		expect(unlocked?.readOnlyPluginServiceTargetId).toBeNull();
-		expect(unlocked?.readOnlyPluginName).toBeNull();
-		expect(await asUser.mutation(api.files_nodes.set_node_writable, args)).toEqual({ _yay: null });
-		expect(await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId))).toEqual(unlocked);
-
-		expect(await asUser.mutation(api.files_nodes.set_node_read_only, args)).toEqual({ _yay: null });
-		const relocked = await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId));
-		expect(relocked?.readOnlyScopeNodeId).toBe(target.nodeId);
-		expect(relocked?.readOnlyPluginServiceTargetId).toBeNull();
-		expect(relocked?.readOnlyPluginName).toBeNull();
-		expect(await asUser.mutation(api.files_nodes.set_node_read_only, args)).toEqual({ _yay: null });
-		expect(await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId))).toEqual(relocked);
+		expect(await asUser.mutation(api.files_nodes.set_node_write_policy, { ...args, writePolicy: null })).toEqual({
+			_yay: null,
+		});
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId))).toMatchObject({
+			writePolicy: null,
+			writePolicyScopeNodeId: null,
+		});
+		expect(
+			await asUser.mutation(api.files_nodes.set_node_write_policy, { ...args, writePolicy: { mode: "read_only" } }),
+		).toEqual({ _yay: null });
 		expect((await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete", targetKey: "recording" })).status).toBe(409);
+		expect(await t.run((ctx) => ctx.db.get("plugin_service_storage_targets", target._id))).toEqual(target);
 	});
 
 	test("an accepted upload finishes after label removal and a later member lock", async () => {
@@ -993,7 +1205,8 @@ describe("service upload targets", () => {
 			}),
 		).toEqual({ _yay: null });
 		expect(
-			await asUser.mutation(api.files_nodes.set_node_read_only, {
+			await asUser.mutation(api.files_nodes.set_node_write_policy, {
+				writePolicy: { mode: "read_only" },
 				membershipId: fixture.membershipId,
 				nodeId: target.nodeId,
 			}),
@@ -1008,9 +1221,8 @@ describe("service upload targets", () => {
 		expect((await read_targets(t))[0]).toMatchObject({ state: "committed", actualBytes: 2 * MIB });
 		const node = await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId));
 		expect(node?.assetId).toBe(newest.assetId);
-		expect(node?.readOnlyScopeNodeId).toBe(target.nodeId);
-		expect(node?.readOnlyPluginName).toBeNull();
-		expect(node?.readOnlyPluginServiceTargetId).toBeNull();
+		expect(node?.writePolicyScopeNodeId).toBe(target.nodeId);
+		expect(node?.writePolicy).toEqual({ mode: "read_only" });
 		expect(
 			await asUser.query(api.files_metadata.get_entries, {
 				membershipId: fixture.membershipId,
@@ -1019,7 +1231,8 @@ describe("service upload targets", () => {
 		).toEqual([{ key: "source", value: "member" }]);
 
 		expect(
-			await asUser.mutation(api.files_nodes.set_node_writable, {
+			await asUser.mutation(api.files_nodes.set_node_write_policy, {
+				writePolicy: null,
 				membershipId: fixture.membershipId,
 				nodeId: target.nodeId,
 			}),
@@ -1081,6 +1294,47 @@ describe("service upload targets", () => {
 		expect(missingManage.status).toBe(403);
 		expect(await missingManage.json()).toEqual({ message: "Permission denied" });
 		expect(await read_targets(t)).toHaveLength(1);
+		await t.run(async (ctx) => {
+			await ctx.db.patch("plugins_workspace_installations", fixture.installationId, {
+				acceptedCapabilities: SERVICE_CAPABILITIES.filter(
+					(capability) => capability !== "workspace.files.create-read-only",
+				),
+			});
+		});
+		// Neither management nor the policy capability is needed to delete an unprotected target.
+		expect(
+			(await call(t, DELETE_PATH, memberSealed, { idempotencyKey: "delete", targetKey: "recording" })).status,
+		).toBe(200);
+	});
+
+	test("a selected account on an ancestor does not give a sealed service permission to create below it", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture);
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
+		const target = (await read_targets(t))[0]!;
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: fixture.userId });
+		expect(
+			await asUser.mutation(api.files_nodes.set_node_write_policy, {
+				membershipId: fixture.membershipId,
+				nodeId: target.destinationNodeId,
+				writePolicy: {
+					mode: "writer",
+					writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId },
+				},
+			}),
+		).toEqual({ _yay: null });
+		const refused = await call(
+			t,
+			CREATE_TARGET_PATH,
+			sealed,
+			target_body({
+				targetKey: "next",
+				path: "/meetings/meeting-1/next.mp4",
+			}),
+		);
+		expect(refused.status).toBe(409);
+		expect(await read_targets(t)).toEqual([target]);
 	});
 
 	test("allows 16 targets per upload run, including exact replays, and refuses a seventeenth", async () => {
@@ -1296,71 +1550,77 @@ describe("service upload targets", () => {
 		expect(assets[0]!.uploadUrlExpiresAt).toBeGreaterThanOrEqual(assetBefore!.uploadUrlExpiresAt!);
 	});
 
-	test.each(["before", "after"] as const)("keeps the newer file when the larger old attempt arrives %s it", async (order) => {
-		const t = test_convex();
-		const fixture = await seed_installation(t);
-		const sealed = await seal_token(t, fixture);
-		const body = target_body();
-		expect((await call(t, CREATE_TARGET_PATH, sealed, body)).status).toBe(200);
-		const first = (await read_targets(t))[0]!;
-		const firstAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", first.assetId));
-		const meterBefore = await read_meter(t, fixture);
+	test.each(["before", "after"] as const)(
+		"keeps the newer file when the larger old attempt arrives %s it",
+		async (order) => {
+			const t = test_convex();
+			const fixture = await seed_installation(t);
+			const sealed = await seal_token(t, fixture);
+			const body = target_body();
+			expect((await call(t, CREATE_TARGET_PATH, sealed, body)).status).toBe(200);
+			const first = (await read_targets(t))[0]!;
+			const firstAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", first.assetId));
+			const meterBefore = await read_meter(t, fixture);
 
-		expect((await call(t, CREATE_TARGET_PATH, sealed, body)).status).toBe(200);
-		const newest = (await read_targets(t))[0]!;
-		expect(newest.assetId).not.toBe(first.assetId);
-		const lateEvent = {
-			bucket: firstAsset!.r2Bucket,
-			key: `organizations/${fixture.organizationId}/workspaces/${fixture.workspaceId}/assets/${first.assetId}`,
-			size: 12 * MIB,
-			eventId: "older-service-attempt",
-		};
-		if (order === "before") {
+			expect((await call(t, CREATE_TARGET_PATH, sealed, body)).status).toBe(200);
+			const newest = (await read_targets(t))[0]!;
+			expect(newest.assetId).not.toBe(first.assetId);
+			const lateEvent = {
+				bucket: firstAsset!.r2Bucket,
+				key: `organizations/${fixture.organizationId}/workspaces/${fixture.workspaceId}/assets/${first.assetId}`,
+				size: 12 * MIB,
+				eventId: "older-service-attempt",
+			};
+			if (order === "before") {
+				await t.mutation(internal.r2.record_untracked_asset_event, lateEvent);
+				expect((await read_targets(t))[0]).toMatchObject({
+					state: "pending",
+					assetId: newest.assetId,
+					actualBytes: null,
+					chargedBytes: 12 * MIB,
+				});
+			}
+			await simulate_finalizer(t, fixture, newest, { size: 5 * MIB });
+			if (order === "after") {
+				await t.mutation(internal.r2.record_untracked_asset_event, lateEvent);
+			}
 			await t.mutation(internal.r2.record_untracked_asset_event, lateEvent);
+
 			expect((await read_targets(t))[0]).toMatchObject({
-				state: "pending",
+				_id: first._id,
+				nodeId: first.nodeId,
 				assetId: newest.assetId,
-				actualBytes: null,
+				state: "committed",
+				actualBytes: 5 * MIB,
 				chargedBytes: 12 * MIB,
 			});
-		}
-		await simulate_finalizer(t, fixture, newest, { size: 5 * MIB });
-		if (order === "after") {
-			await t.mutation(internal.r2.record_untracked_asset_event, lateEvent);
-		}
-		await t.mutation(internal.r2.record_untracked_asset_event, lateEvent);
+			expect(await t.run(async (ctx) => ctx.db.get("files_nodes", first.nodeId))).toMatchObject({
+				assetId: newest.assetId,
+			});
+			expect((await read_quota(t, fixture))?.usedCount).toBe(12 * MIB);
+			expect((await read_meter(t, fixture)).balance).toBe(meterBefore.balance - 1);
+			const finalized = await call(t, FINALIZE_PATH, sealed, {
+				idempotencyKey: body.idempotencyKey,
+				targetKey: body.targetKey,
+			});
+			expect(await finalized.json()).toMatchObject({ state: "committed", actualBytes: 5 * MIB });
 
-		expect((await read_targets(t))[0]).toMatchObject({
-			_id: first._id,
-			nodeId: first.nodeId,
-			assetId: newest.assetId,
-			state: "committed",
-			actualBytes: 5 * MIB,
-			chargedBytes: 12 * MIB,
-		});
-		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", first.nodeId))).toMatchObject({
-			assetId: newest.assetId,
-		});
-		expect((await read_quota(t, fixture))?.usedCount).toBe(12 * MIB);
-		expect((await read_meter(t, fixture)).balance).toBe(meterBefore.balance - 1);
-		const finalized = await call(t, FINALIZE_PATH, sealed, {
-			idempotencyKey: body.idempotencyKey,
-			targetKey: body.targetKey,
-		});
-		expect(await finalized.json()).toMatchObject({ state: "committed", actualBytes: 5 * MIB });
-
-		// Deleting the older object cannot retire the target that now owns the newer file.
-		const oldJob = await t.run(async (ctx) =>
-			ctx.db.query("files_r2_object_deletion_jobs").withIndex("by_r2_key", (q) => q.eq("r2Key", lateEvent.key)).first(),
-		);
-		await t.mutation(internal.r2_client.settle_object_deletion_job, {
-			jobId: oldJob!._id,
-			generation: oldJob!.generation,
-			deletedAt: oldJob!.putMayArriveUntil!,
-		});
-		expect((await read_targets(t))[0]).toMatchObject({ state: "committed", assetId: newest.assetId });
-		expect(await t.run(async (ctx) => ctx.db.query("plugin_service_storage_attempts").collect())).toHaveLength(2);
-	});
+			// Deleting the older object cannot retire the target that now owns the newer file.
+			const oldJob = await t.run(async (ctx) =>
+				ctx.db
+					.query("files_r2_object_deletion_jobs")
+					.withIndex("by_r2_key", (q) => q.eq("r2Key", lateEvent.key))
+					.first(),
+			);
+			await t.mutation(internal.r2_client.settle_object_deletion_job, {
+				jobId: oldJob!._id,
+				generation: oldJob!.generation,
+				deletedAt: oldJob!.putMayArriveUntil!,
+			});
+			expect((await read_targets(t))[0]).toMatchObject({ state: "committed", assetId: newest.assetId });
+			expect(await t.run(async (ctx) => ctx.db.query("plugin_service_storage_attempts").collect())).toHaveLength(2);
+		},
+	);
 
 	test("finalize reports the R2 event settlement and replays it without another charge", async () => {
 		const t = test_convex();
@@ -1538,7 +1798,9 @@ describe("service upload targets", () => {
 			generation: oldJob!.generation,
 			deletedAt: Math.max(cleanupNow, oldJob!.putMayArriveUntil ?? 0),
 		});
-		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", targetAfterRemint.assetId))).toEqual(assetAfterRemint);
+		expect(await t.run(async (ctx) => ctx.db.get("files_r2_assets", targetAfterRemint.assetId))).toEqual(
+			assetAfterRemint,
+		);
 
 		// The retry finishes. The stored size R2 confirmed is charged once, here.
 		await simulate_finalizer(t, fixture, targetAfterRemint, { size: 6 * MIB });
@@ -1581,7 +1843,10 @@ describe("service upload targets", () => {
 			throw new Error("Expected a service upload URL deadline");
 		}
 		await t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", target.nodeId, { readOnlyScopeNodeId: target.nodeId });
+			await ctx.db.patch("files_nodes", target.nodeId, {
+				writePolicyScopeNodeId: target.nodeId,
+				writePolicy: { mode: "read_only" },
+			});
 		});
 
 		const recoveryStartedAt = asset.uploadUrlExpiresAt - 15 * 60 * 1000;
@@ -1606,123 +1871,42 @@ describe("service upload targets", () => {
 		expect(newest.assetId).not.toBe(target.assetId);
 		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", target.nodeId))).toMatchObject({
 			assetId: newest.assetId,
-			readOnlyScopeNodeId: target.nodeId,
+			writePolicyScopeNodeId: target.nodeId,
 		});
 	});
 });
 
 describe("service upload delete", () => {
-	test("cleans up its exact read-only lock but refuses member-recreated and wrong-target provenance", async () => {
+	test("validates the exact target and lets a manager select the account again", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
-		for (const [targetKey, path] of [
-			["first", "/meetings/meeting-1/first.txt"],
-			["second", "/meetings/meeting-1/second.txt"],
-		] as const) {
-			expect(
-				(
-					await call(
-						t,
-						CREATE_TARGET_PATH,
-						sealed,
-						target_body({ targetKey, path, contentType: "text/plain", size: 1, readOnly: true }),
-					)
-				).status,
-			).toBe(200);
-		}
-		const [first, second] = await read_targets(t);
-		if (!first || !second) {
-			throw new Error("Expected two service targets");
-		}
-
-		await t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", first.nodeId, { readOnlyPluginServiceTargetId: second._id });
-		});
-		const wrongTarget = await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete", targetKey: "first" });
-		expect(wrongTarget.status).toBe(409);
-		const crossInstallationTargetId = await t.run(async (ctx) => {
-			const now = Date.now();
-			const installationId = await ctx.db.insert("plugins_workspace_installations", {
-				organizationId: fixture.organizationId,
-				workspaceId: fixture.workspaceId,
-				pluginVersionId: fixture.pluginVersionId,
-				pluginName: "council-other-installation",
-				status: "enabled",
-				configurationYaml: null,
-				acceptedCapabilities: SERVICE_CAPABILITIES,
-				capabilitiesAcceptedAt: now,
-				acceptedOutboundOrigins: [],
-				acceptedUiOutboundOrigins: [],
-				outboundOriginsAcceptedAt: now,
-				installedBy: fixture.userId,
-				updatedBy: fixture.userId,
-				updatedAt: now,
-			});
-			return await ctx.db.insert("plugin_service_storage_targets", {
-				organizationId: fixture.organizationId,
-				workspaceId: fixture.workspaceId,
-				installationId,
-				idempotencyKey: "cross-installation",
-				targetKey: "first",
-				requestFingerprint: "cross-installation",
-				readOnly: true,
-				nonCollaborative: false,
-				destinationPath: first.destinationPath,
-				destinationNodeId: first.destinationNodeId,
-				destinationEpoch: first.destinationEpoch,
-				path: first.path,
-				contentType: first.contentType,
-				declaredBytes: first.declaredBytes,
-				actualBytes: null,
-				chargedBytes: 0,
-				nodeId: first.nodeId,
-				assetId: first.assetId,
-				state: "pending",
-				createdBy: fixture.userId,
-				updatedAt: now,
-			});
-		});
-		await t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", first.nodeId, {
-				readOnlyPluginServiceTargetId: crossInstallationTargetId,
-			});
-		});
-		const crossInstallation = await call(t, DELETE_PATH, sealed, {
-			idempotencyKey: "delete",
-			targetKey: "first",
-		});
-		expect(crossInstallation.status).toBe(409);
-
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: fixture.userId,
-			name: "Test User",
-		});
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body({ readOnly: true }))).status).toBe(200);
+		const target = (await read_targets(t))[0]!;
+		await t.run((ctx) =>
+			ctx.db.patch("plugin_service_storage_targets", target._id, { destinationNodeId: target.nodeId }),
+		);
+		expect((await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete", targetKey: "recording" })).status).toBe(409);
+		await t.run((ctx) =>
+			ctx.db.patch("plugin_service_storage_targets", target._id, { destinationNodeId: target.destinationNodeId }),
+		);
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: fixture.userId });
+		const args = { membershipId: fixture.membershipId, nodeId: target.nodeId };
 		expect(
-			await asUser.mutation(api.files_nodes.set_node_writable, {
-				membershipId: fixture.membershipId,
-				nodeId: first.nodeId,
+			await asUser.mutation(api.files_nodes.set_node_write_policy, { ...args, writePolicy: { mode: "read_only" } }),
+		).toEqual({ _yay: null });
+		expect((await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete", targetKey: "recording" })).status).toBe(409);
+		expect(
+			await asUser.mutation(api.files_nodes.set_node_write_policy, {
+				...args,
+				writePolicy: {
+					mode: "writer",
+					writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId },
+				},
 			}),
 		).toEqual({ _yay: null });
-		expect(
-			await asUser.mutation(api.files_nodes.set_node_read_only, {
-				membershipId: fixture.membershipId,
-				nodeId: first.nodeId,
-			}),
-		).toEqual({ _yay: null });
-		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", first.nodeId))).toMatchObject({
-			readOnlyScopeNodeId: first.nodeId,
-		});
-		expect(
-			(await t.run(async (ctx) => ctx.db.get("files_nodes", first.nodeId)))?.readOnlyPluginServiceTargetId,
-		).toBeNull();
-		const memberRelock = await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete", targetKey: "first" });
-		expect(memberRelock.status).toBe(409);
-
-		const exactCleanup = await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete", targetKey: "second" });
-		expect(exactCleanup.status).toBe(200);
-		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", second.nodeId))).toBeNull();
+		expect((await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete", targetKey: "recording" })).status).toBe(200);
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId))).toBeNull();
 	});
 
 	test("refuses the read-only cleanup exception after the capability is removed", async () => {
@@ -1904,8 +2088,8 @@ describe("service upload delete", () => {
 
 		const restored = await t.run(async (ctx) => await ctx.db.get("files_nodes", target.nodeId));
 		expect(restored?.archiveOperationId).toBeNull();
-		expect(restored?.readOnlyScopeNodeId).toBeNull();
-		expect(restored?.readOnlyPluginServiceTargetId).toBeNull();
+		expect(restored?.writePolicyScopeNodeId).toBeNull();
+		expect(restored?.writePolicy).toBeNull();
 	});
 
 	test("a member folder lock above the file refuses the whole delete and releases nothing", async () => {
@@ -1937,7 +2121,8 @@ describe("service upload delete", () => {
 			return destination._id;
 		});
 		expect(
-			await asUser.mutation(api.files_nodes.set_node_read_only, {
+			await asUser.mutation(api.files_nodes.set_node_write_policy, {
+				writePolicy: { mode: "read_only" },
 				membershipId: fixture.membershipId,
 				nodeId: destinationNodeId,
 			}),
@@ -1949,14 +2134,18 @@ describe("service upload delete", () => {
 
 		const kept = await t.run(async (ctx) => await ctx.db.get("files_nodes", target.nodeId));
 		expect(kept?.archiveOperationId).toBeNull();
-		expect(kept?.readOnlyScopeNodeId).toBe(target.nodeId);
-		expect(kept?.readOnlyPluginServiceTargetId).toBe(target._id);
+		expect(kept?.writePolicyScopeNodeId).toBe(target.nodeId);
+		expect(kept?.writePolicy).toEqual({
+			mode: "writer",
+			writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId },
+		});
 		expect((await read_targets(t))[0]!.deleteRequestedAt).toBeUndefined();
 
 		// Positive control: the member unlocks the folder and the same call goes through, so the
 		// refusal came from that folder lock and not from something else about this target.
 		expect(
-			await asUser.mutation(api.files_nodes.set_node_writable, {
+			await asUser.mutation(api.files_nodes.set_node_write_policy, {
+				writePolicy: null,
 				membershipId: fixture.membershipId,
 				nodeId: destinationNodeId,
 			}),
@@ -2194,7 +2383,10 @@ describe("service upload delete", () => {
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		await t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", target.nodeId, { readOnlyScopeNodeId: target.nodeId });
+			await ctx.db.patch("files_nodes", target.nodeId, {
+				writePolicyScopeNodeId: target.nodeId,
+				writePolicy: { mode: "read_only" },
+			});
 		});
 
 		const refused = await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete-1", targetKey: "recording" });
@@ -2207,7 +2399,7 @@ describe("service upload delete", () => {
 		// Positive control: unlock the placeholder and the same call goes through, so the refusal came
 		// from the lock and not from something else about a pending target.
 		await t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", target.nodeId, { readOnlyScopeNodeId: null });
+			await ctx.db.patch("files_nodes", target.nodeId, { writePolicyScopeNodeId: null, writePolicy: null });
 		});
 		expect((await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete-1", targetKey: "recording" })).status).toBe(
 			200,
@@ -2226,7 +2418,10 @@ describe("service upload delete", () => {
 		);
 
 		await t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", target.nodeId, { readOnlyScopeNodeId: target.nodeId });
+			await ctx.db.patch("files_nodes", target.nodeId, {
+				writePolicyScopeNodeId: target.nodeId,
+				writePolicy: { mode: "read_only" },
+			});
 		});
 
 		const laterSealed = await seal_token(t, fixture);
@@ -2596,6 +2791,95 @@ describe("service upload delete", () => {
 });
 
 describe("service upload archive", () => {
+	test("archives the remaining files after a committed target was deleted", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture, "/meetings/meeting-1");
+		for (const targetKey of ["first", "second"]) {
+			expect(
+				(
+					await call(
+						t,
+						CREATE_TARGET_PATH,
+						sealed,
+						target_body({ targetKey, path: `/meetings/meeting-1/${targetKey}.mp4`, readOnly: true }),
+					)
+				).status,
+			).toBe(200);
+		}
+		const targets = await read_targets(t);
+		const first = targets.find((target) => target.targetKey === "first")!;
+		const second = targets.find((target) => target.targetKey === "second")!;
+		for (const target of targets) await simulate_finalizer(t, fixture, target, { size: MIB });
+		expect((await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete-first", targetKey: "first" })).status).toBe(
+			200,
+		);
+		const deleted = await t.run(async (ctx) => ({
+			target: await ctx.db.get("plugin_service_storage_targets", first._id),
+			node: await ctx.db.get("files_nodes", first.nodeId),
+			asset: await ctx.db.get("files_r2_assets", first.assetId),
+			snapshots: await ctx.db.query("files_snapshots").collect(),
+			attempts: await ctx.db.query("plugin_service_storage_attempts").collect(),
+		}));
+		expect(deleted.target).toMatchObject({ state: "released", deleteRequestedAt: expect.any(Number) });
+		expect(deleted.node).toMatchObject({ archiveOperationId: expect.any(String), writePolicy: null });
+		expect(deleted.asset).toMatchObject({ _id: first.assetId, size: MIB });
+		expect(deleted.attempts).toHaveLength(2);
+		const response = await call(t, ARCHIVE_PATH, sealed, {});
+		expect(response.status, await response.clone().text()).toBe(200);
+		expect(await response.json()).toEqual({ archivedNodes: 2 });
+		const after = await t.run(async (ctx) => ({
+			target: await ctx.db.get("plugin_service_storage_targets", first._id),
+			node: await ctx.db.get("files_nodes", first.nodeId),
+			asset: await ctx.db.get("files_r2_assets", first.assetId),
+			snapshots: await ctx.db.query("files_snapshots").collect(),
+			attempts: await ctx.db.query("plugin_service_storage_attempts").collect(),
+		}));
+		expect(after).toEqual(deleted);
+		const archived = await t.run(async (ctx) => ({
+			destination: await ctx.db.get("files_nodes", second.destinationNodeId),
+			remaining: await ctx.db.get("files_nodes", second.nodeId),
+		}));
+		expect(archived.destination?.archiveOperationId).toBeTypeOf("string");
+		expect(archived.remaining).toMatchObject({
+			archiveOperationId: archived.destination?.archiveOperationId,
+			writePolicy: null,
+		});
+		expect(archived.destination?.archiveOperationId).not.toBe(deleted.node?.archiveOperationId);
+	});
+
+	test("refuses an active node with a released target before changing the destination", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture, "/meetings/meeting-1");
+		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body({ readOnly: true }))).status).toBe(200);
+		const target = (await read_targets(t))[0]!;
+		await simulate_finalizer(t, fixture, target, { size: MIB });
+		expect((await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete", targetKey: "recording" })).status).toBe(200);
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: fixture.userId });
+		expect(
+			await asUser.mutation(api.files_nodes.unarchive_nodes, {
+				membershipId: fixture.membershipId,
+				nodeIds: [target.nodeId],
+			}),
+		).toEqual({ _yay: null });
+		const before = await t.run(async (ctx) => ({
+			nodes: await ctx.db.query("files_nodes").collect(),
+			targets: await ctx.db.query("plugin_service_storage_targets").collect(),
+			destinations: await ctx.db.query("plugin_service_storage_destinations").collect(),
+		}));
+		const response = await call(t, ARCHIVE_PATH, sealed, {});
+		expect(response.status).toBe(409);
+		expect(await response.json()).toEqual({ message: "This upload target is no longer available" });
+		expect(
+			await t.run(async (ctx) => ({
+				nodes: await ctx.db.query("files_nodes").collect(),
+				targets: await ctx.db.query("plugin_service_storage_targets").collect(),
+				destinations: await ctx.db.query("plugin_service_storage_destinations").collect(),
+			})),
+		).toEqual(before);
+	});
+
 	test("archives files through only their exact service-created read-only locks", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
@@ -2639,8 +2923,8 @@ describe("service upload archive", () => {
 		const restored = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());
 		expect(restored.every((node) => node.archiveOperationId === null)).toBe(true);
 		const restoredFile = restored.find((node) => node._id === target.nodeId);
-		expect(restoredFile?.readOnlyScopeNodeId).toBeNull();
-		expect(restoredFile?.readOnlyPluginServiceTargetId).toBeNull();
+		expect(restoredFile?.writePolicyScopeNodeId).toBeNull();
+		expect(restoredFile?.writePolicy).toBeNull();
 	});
 
 	test("an inherited lock refuses the whole archive and releases nothing", async () => {
@@ -2667,7 +2951,8 @@ describe("service upload archive", () => {
 			return meetings._id;
 		});
 		expect(
-			await asUser.mutation(api.files_nodes.set_node_read_only, {
+			await asUser.mutation(api.files_nodes.set_node_write_policy, {
+				writePolicy: { mode: "read_only" },
 				membershipId: fixture.membershipId,
 				nodeId: meetingsNodeId,
 			}),
@@ -2680,8 +2965,8 @@ describe("service upload archive", () => {
 		const nodes = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());
 		expect(nodes.every((node) => node.archiveOperationId === null)).toBe(true);
 		expect(nodes.find((node) => node._id === target.nodeId)).toMatchObject({
-			readOnlyScopeNodeId: target.nodeId,
-			readOnlyPluginServiceTargetId: target._id,
+			writePolicyScopeNodeId: target.nodeId,
+			writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId } },
 		});
 	});
 
@@ -3119,9 +3404,8 @@ describe("service upload archive", () => {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
-					readOnlyScopeNodeId: null,
-					readOnlyPluginName: null,
-					readOnlyPluginServiceTargetId: null,
+					writePolicyScopeNodeId: null,
+					writePolicy: null,
 				});
 			}
 		});
@@ -3202,7 +3486,10 @@ describe("service upload archive", () => {
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body())).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
 		await t.run(async (ctx) => {
-			await ctx.db.patch("files_nodes", target.nodeId, { readOnlyScopeNodeId: target.nodeId });
+			await ctx.db.patch("files_nodes", target.nodeId, {
+				writePolicyScopeNodeId: target.nodeId,
+				writePolicy: { mode: "read_only" },
+			});
 		});
 
 		const response = await call(t, ARCHIVE_PATH, sealed, {});

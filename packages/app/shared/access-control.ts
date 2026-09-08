@@ -53,6 +53,8 @@ export const access_control_MAX_ROLE_NAME_LENGTH = 40;
 
 export const access_control_MAX_ROLE_DESCRIPTION_LENGTH = 200;
 
+export const access_control_MAX_SERVICE_ACCOUNT_NAME_LENGTH = 80;
+
 /**
  * Display text and scope for every permission. The permission check reads `scope` from here, and the
  * role editor shows `label`, `description` and `group`. So this list is the one place both read
@@ -133,6 +135,12 @@ export const access_control_PERMISSION_CATALOG = {
 	"workspace.plugins.manage": {
 		label: "Manage plugins",
 		description: "Install, configure, and remove plugins.",
+		group: "Integrations",
+		scope: "workspace",
+	},
+	"workspace.service_accounts.manage": {
+		label: "Manage service accounts",
+		description: "Create service accounts and manage their access.",
 		group: "Integrations",
 		scope: "workspace",
 	},
@@ -257,6 +265,7 @@ export const access_control_SYSTEM_ROLE_MATRIX = {
 			"content.write",
 			"content.permissions.manage",
 			"workspace.plugins.manage",
+			"workspace.service_accounts.manage",
 		],
 	},
 	member: {

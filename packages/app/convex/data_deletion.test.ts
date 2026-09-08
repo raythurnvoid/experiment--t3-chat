@@ -5,7 +5,7 @@ import { api, components, internal } from "./_generated/api.js";
 import type { Id } from "./_generated/dataModel.js";
 import type { MutationCtx } from "./_generated/server.js";
 import { presence } from "./presence.ts";
-import { test_convex, test_mocks_cancel_pending_home_file_seeds } from "./setup.test.ts";
+import { test_convex, test_mocks_cancel_pending_home_file_seeds, test_mocks_fill_db_with } from "./setup.test.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 
 const test = baseTest.sequential;
@@ -118,9 +118,9 @@ async function data_deletion_test_seed_page(
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
-		readOnlyScopeNodeId: null,
-		readOnlyPluginName: null,
-		readOnlyPluginServiceTargetId: null,
+		writePolicyScopeNodeId: null,
+		writePolicy: null,
+
 		archiveOperationId: null,
 	});
 
@@ -184,6 +184,11 @@ async function data_deletion_test_seed_plugin_ui_sessions(
 		updatedAt: now,
 	});
 	const installationId = await ctx.db.insert("plugins_workspace_installations", {
+		serviceAccountId: await test_mocks_fill_db_with.plugin_service_account(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			pluginVersionId: pluginVersionId,
+		}),
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		pluginVersionId,
@@ -201,6 +206,7 @@ async function data_deletion_test_seed_plugin_ui_sessions(
 	});
 	for (let i = 0; i < args.sessionCount; i += 1) {
 		await ctx.db.insert("plugins_ui_sessions", {
+			serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installationId))!.serviceAccountId,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			installationId,
@@ -259,9 +265,9 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
-			readOnlyScopeNodeId: null,
-			readOnlyPluginName: null,
-			readOnlyPluginServiceTargetId: null,
+			writePolicyScopeNodeId: null,
+			writePolicy: null,
+
 			archiveOperationId: null,
 		});
 		const contentR2Key = `content/organizations/${args.organizationId}/workspaces/${args.workspaceId}/nodes/${args.tag}-${i}/markdown`;
@@ -563,6 +569,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				content: `${args.tag} ${i}`,
 			}),
 			ctx.db.insert("api_credentials", {
+				serviceAccountId: null,
 				organizationId: apiOrganizationId,
 				workspaceId: apiWorkspaceId,
 				userId: args.userId,
@@ -1550,6 +1557,11 @@ describe("process_user_deletion_request", () => {
 				updatedAt: now,
 			});
 			const installationId = await ctx.db.insert("plugins_workspace_installations", {
+				serviceAccountId: await test_mocks_fill_db_with.plugin_service_account(ctx, {
+					organizationId: created._yay.organizationId,
+					workspaceId: created._yay.defaultWorkspaceId,
+					pluginVersionId: pluginVersionId,
+				}),
 				organizationId: created._yay.organizationId,
 				workspaceId: created._yay.defaultWorkspaceId,
 				pluginVersionId,
@@ -1566,6 +1578,7 @@ describe("process_user_deletion_request", () => {
 				updatedAt: now,
 			});
 			await ctx.db.insert("plugins_ui_sessions", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installationId))!.serviceAccountId,
 				organizationId: created._yay.organizationId,
 				workspaceId: created._yay.defaultWorkspaceId,
 				installationId,
@@ -1998,6 +2011,11 @@ describe("process_user_deletion_request", () => {
 				});
 				await ctx.db.patch("organizations", organizationId, { defaultWorkspaceId: workspaceId });
 				const installationId = await ctx.db.insert("plugins_workspace_installations", {
+					serviceAccountId: await test_mocks_fill_db_with.plugin_service_account(ctx, {
+						organizationId: organizationId,
+						workspaceId: workspaceId,
+						pluginVersionId: pluginVersionId,
+					}),
 					organizationId,
 					workspaceId,
 					pluginVersionId,
@@ -2180,6 +2198,11 @@ describe("process_user_deletion_request", () => {
 				updatedAt: now,
 			});
 			const installationId = await ctx.db.insert("plugins_workspace_installations", {
+				serviceAccountId: await test_mocks_fill_db_with.plugin_service_account(ctx, {
+					organizationId: deletedUser.defaultOrganizationId,
+					workspaceId: deletedUser.defaultWorkspaceId,
+					pluginVersionId: pluginVersionId,
+				}),
 				organizationId: deletedUser.defaultOrganizationId,
 				workspaceId: deletedUser.defaultWorkspaceId,
 				pluginVersionId,
@@ -2632,6 +2655,26 @@ describe("process_workspace_deletion_request", () => {
 				});
 				if (metadata._nay) throw new Error(metadata._nay.message);
 				metadataFolderIds.push(folder._yay.nodeId);
+				for (let index = 0; index < 6; index += 1) {
+					const now = Date.now();
+					const serviceAccountId = await ctx.db.insert("access_control_service_accounts", {
+						organizationId: user.defaultOrganizationId,
+						workspaceId,
+						name: `Writer ${index}`,
+						createdBy: user.userId,
+						createdAt: now,
+						updatedAt: now,
+						revokedAt: index === 0 ? now : null,
+					});
+					await ctx.db.insert("plugins_service_account_bindings", {
+						organizationId: user.defaultOrganizationId,
+						workspaceId,
+						pluginName: `writer-${index}`,
+						publisherUserId: user.userId,
+						sourceRepositoryUrl: `https://github.com/test/writer-${index}`,
+						serviceAccountId,
+					});
+				}
 			}
 
 			const requestId = await data_deletion_db_request(ctx, {
@@ -2730,6 +2773,14 @@ describe("process_workspace_deletion_request", () => {
 			expect(doc.fileNodeId).toBe(metadataFolderIds[1]);
 			expect(doc.workspaceId).toBe(controlWorkspaceId);
 		}
+		const survivingAccounts = await t.run(async (ctx) => ({
+			accounts: await ctx.db.query("access_control_service_accounts").collect(),
+			bindings: await ctx.db.query("plugins_service_account_bindings").collect(),
+		}));
+		for (const docs of [survivingAccounts.accounts, survivingAccounts.bindings]) {
+			expect(docs).toHaveLength(6);
+			expect(docs.every((doc) => doc.workspaceId === controlWorkspaceId)).toBe(true);
+		}
 	});
 
 	test("purges paged pending-state families and pending-operation scaffolding with the workspace", async () => {
@@ -2781,9 +2832,9 @@ describe("process_workspace_deletion_request", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
+
 				archiveOperationId: null,
 			});
 			const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
@@ -2937,9 +2988,9 @@ describe("process_workspace_deletion_request", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
+
 				archiveOperationId: null,
 			});
 			const requestId = await data_deletion_db_request(ctx, {
@@ -2977,60 +3028,73 @@ describe("process_workspace_deletion_request", () => {
 		expect(await t.run((ctx) => ctx.db.get("files_r2_assets", assetId))).toBeNull();
 	});
 
-	test.each([true, false])("hands off a Yjs cleanup deadline before asset purge when historyPending is %s", async (historyPending) => {
-		const t = test_convex();
-		const seeded = await t.run(async (ctx) => {
-			const user = await data_deletion_test_bootstrap_user(ctx, {
-				clerkUserId: "clerk-yjs-cleanup-purge",
-				displayName: "Yjs Cleanup Purge",
+	test.each([true, false])(
+		"hands off a Yjs cleanup deadline before asset purge when historyPending is %s",
+		async (historyPending) => {
+			const t = test_convex();
+			const seeded = await t.run(async (ctx) => {
+				const user = await data_deletion_test_bootstrap_user(ctx, {
+					clerkUserId: "clerk-yjs-cleanup-purge",
+					displayName: "Yjs Cleanup Purge",
+				});
+				const scope = { organizationId: user.defaultOrganizationId, workspaceId: user.defaultWorkspaceId };
+				const { nodeId } = await data_deletion_test_seed_page(ctx, {
+					...scope,
+					userId: user.userId,
+					tag: "cleanup.md",
+				});
+				await ctx.db.patch("files_nodes", nodeId, { textKind: "rich_text", collaborationEnabled: false });
+				const assetId = await ctx.db.insert("files_r2_assets", {
+					...scope,
+					kind: "yjs_snapshot",
+					r2Bucket: "test-bucket",
+					size: 12,
+					createdBy: user.userId,
+					updatedAt: Date.now(),
+				});
+				const putMayArriveUntil = Date.now() + 60 * 60 * 1000;
+				const taskId = await ctx.db.insert("files_yjs_cleanup_tasks", {
+					...scope,
+					fileNodeId: nodeId,
+					throughSequence: 2,
+					supersededYjsAssetId: assetId,
+					putMayArriveUntil,
+					historyPending,
+				});
+				const requestId = await data_deletion_db_request(ctx, { ...scope, userId: user.userId, scope: "workspace" });
+				return { ...scope, taskId, assetId, requestId, putMayArriveUntil };
 			});
-			const scope = { organizationId: user.defaultOrganizationId, workspaceId: user.defaultWorkspaceId };
-			const { nodeId } = await data_deletion_test_seed_page(ctx, { ...scope, userId: user.userId, tag: "cleanup.md" });
-			await ctx.db.patch("files_nodes", nodeId, { textKind: "rich_text", collaborationEnabled: false });
-			const assetId = await ctx.db.insert("files_r2_assets", {
-				...scope,
-				kind: "yjs_snapshot",
-				r2Bucket: "test-bucket",
-				size: 12,
-				createdBy: user.userId,
-				updatedAt: Date.now(),
+			const r2Key = r2_create_asset_key(seeded);
+			await t.mutation(internal.data_deletion.process_workspace_deletion_request, {
+				requestId: seeded.requestId,
+				_test_batchSize: 1,
 			});
-			const putMayArriveUntil = Date.now() + 60 * 60 * 1000;
-			const taskId = await ctx.db.insert("files_yjs_cleanup_tasks", {
-				...scope,
-				fileNodeId: nodeId,
-				throughSequence: 2,
-				supersededYjsAssetId: assetId,
-				putMayArriveUntil,
-				historyPending,
-			});
-			const requestId = await data_deletion_db_request(ctx, { ...scope, userId: user.userId, scope: "workspace" });
-			return { ...scope, taskId, assetId, requestId, putMayArriveUntil };
-		});
-		const r2Key = r2_create_asset_key(seeded);
-		await t.mutation(internal.data_deletion.process_workspace_deletion_request, {
-			requestId: seeded.requestId,
-			_test_batchSize: 1,
-		});
-		const handedOff = await t.run(async (ctx) => ({
-			task: await ctx.db.get("files_yjs_cleanup_tasks", seeded.taskId),
-			asset: await ctx.db.get("files_r2_assets", seeded.assetId),
-			job: await ctx.db.query("files_r2_object_deletion_jobs").withIndex("by_r2_key", (q) => q.eq("r2Key", r2Key)).first(),
-		}));
-		expect(handedOff.task).toBeNull();
-		expect(handedOff.asset).not.toBeNull();
-		expect(handedOff.job).toMatchObject({ r2Key, putMayArriveUntil: seeded.putMayArriveUntil });
+			const handedOff = await t.run(async (ctx) => ({
+				task: await ctx.db.get("files_yjs_cleanup_tasks", seeded.taskId),
+				asset: await ctx.db.get("files_r2_assets", seeded.assetId),
+				job: await ctx.db
+					.query("files_r2_object_deletion_jobs")
+					.withIndex("by_r2_key", (q) => q.eq("r2Key", r2Key))
+					.first(),
+			}));
+			expect(handedOff.task).toBeNull();
+			expect(handedOff.asset).not.toBeNull();
+			expect(handedOff.job).toMatchObject({ r2Key, putMayArriveUntil: seeded.putMayArriveUntil });
 
-		await data_deletion_test_process_workspace_request_until_done(t, { requestId: seeded.requestId, batchSize: 1 });
-		const purged = await t.run(async (ctx) => ({
-			tasks: await ctx.db.query("files_yjs_cleanup_tasks").collect(),
-			asset: await ctx.db.get("files_r2_assets", seeded.assetId),
-			job: await ctx.db.query("files_r2_object_deletion_jobs").withIndex("by_r2_key", (q) => q.eq("r2Key", r2Key)).first(),
-		}));
-		expect(purged.tasks).toHaveLength(0);
-		expect(purged.asset).toBeNull();
-		expect(purged.job).toMatchObject({ r2Key, putMayArriveUntil: seeded.putMayArriveUntil });
-	});
+			await data_deletion_test_process_workspace_request_until_done(t, { requestId: seeded.requestId, batchSize: 1 });
+			const purged = await t.run(async (ctx) => ({
+				tasks: await ctx.db.query("files_yjs_cleanup_tasks").collect(),
+				asset: await ctx.db.get("files_r2_assets", seeded.assetId),
+				job: await ctx.db
+					.query("files_r2_object_deletion_jobs")
+					.withIndex("by_r2_key", (q) => q.eq("r2Key", r2Key))
+					.first(),
+			}));
+			expect(purged.tasks).toHaveLength(0);
+			expect(purged.asset).toBeNull();
+			expect(purged.job).toMatchObject({ r2Key, putMayArriveUntil: seeded.putMayArriveUntil });
+		},
+	);
 
 	test("keeps service attribution until its files are gone and never recreates it for a late event", async () => {
 		const t = test_convex();
@@ -3247,9 +3311,9 @@ describe("process_workspace_deletion_request", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
+
 				archiveOperationId: null,
 			});
 			const pluginVersionId = await ctx.db.insert("plugins_versions", {
@@ -3288,6 +3352,11 @@ describe("process_workspace_deletion_request", () => {
 				updatedAt: now,
 			});
 			const installationId = await ctx.db.insert("plugins_workspace_installations", {
+				serviceAccountId: await test_mocks_fill_db_with.plugin_service_account(ctx, {
+					organizationId: user.defaultOrganizationId,
+					workspaceId: user.defaultWorkspaceId,
+					pluginVersionId: pluginVersionId,
+				}),
 				organizationId: user.defaultOrganizationId,
 				workspaceId: user.defaultWorkspaceId,
 				pluginVersionId,
@@ -3328,6 +3397,7 @@ describe("process_workspace_deletion_request", () => {
 				updatedAt: now,
 			});
 			await ctx.db.insert("plugins_ui_sessions", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installationId))!.serviceAccountId,
 				organizationId: user.defaultOrganizationId,
 				workspaceId: user.defaultWorkspaceId,
 				installationId,
@@ -3399,6 +3469,7 @@ describe("process_workspace_deletion_request", () => {
 				expiresAt: now + 24 * 60 * 60 * 1000,
 			});
 			await ctx.db.insert("plugin_service_grants", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installationId))!.serviceAccountId,
 				organizationId: user.defaultOrganizationId,
 				workspaceId: user.defaultWorkspaceId,
 				installationId,
@@ -3414,6 +3485,7 @@ describe("process_workspace_deletion_request", () => {
 				updatedAt: now,
 			});
 			const runId = await ctx.db.insert("plugins_event_runs", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installationId))!.serviceAccountId,
 				organizationId: user.defaultOrganizationId,
 				workspaceId: user.defaultWorkspaceId,
 				assetId,
@@ -3746,9 +3818,9 @@ describe("process_workspace_deletion_request", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
+
 				archiveOperationId: null,
 			});
 			const jobDocId = await ctx.db.insert("files_content_materialization_jobs", {
@@ -3840,9 +3912,9 @@ describe("process_workspace_deletion_request", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
+
 				archiveOperationId: null,
 			});
 			const pluginVersionId = await ctx.db.insert("plugins_versions", {
@@ -3881,6 +3953,11 @@ describe("process_workspace_deletion_request", () => {
 				updatedAt: now,
 			});
 			const installationId = await ctx.db.insert("plugins_workspace_installations", {
+				serviceAccountId: await test_mocks_fill_db_with.plugin_service_account(ctx, {
+					organizationId: user.defaultOrganizationId,
+					workspaceId: user.defaultWorkspaceId,
+					pluginVersionId: pluginVersionId,
+				}),
 				organizationId: user.defaultOrganizationId,
 				workspaceId: user.defaultWorkspaceId,
 				pluginVersionId,
@@ -3897,6 +3974,7 @@ describe("process_workspace_deletion_request", () => {
 				updatedAt: now,
 			});
 			const runId = await ctx.db.insert("plugins_event_runs", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installationId))!.serviceAccountId,
 				organizationId: user.defaultOrganizationId,
 				workspaceId: user.defaultWorkspaceId,
 				assetId,
@@ -3984,13 +4062,14 @@ describe("process_workspace_deletion_request", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
+
 				archiveOperationId: null,
 			});
 			await ctx.db.patch("files_nodes", folderId, {
-				readOnlyScopeNodeId: folderId,
+				writePolicyScopeNodeId: folderId,
+				writePolicy: { mode: "read_only" },
 			});
 			const assetId = await ctx.db.insert("files_r2_assets", {
 				organizationId: user.defaultOrganizationId,
@@ -4012,7 +4091,8 @@ describe("process_workspace_deletion_request", () => {
 				kind: "file",
 				lowercaseExtension: "md",
 				parentId: folderId,
-				readOnlyScopeNodeId: folderId,
+				writePolicyScopeNodeId: folderId,
+				writePolicy: null,
 				createdBy: user.userId,
 				updatedBy: user.userId,
 				updatedAt: now,
@@ -4029,8 +4109,7 @@ describe("process_workspace_deletion_request", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+
 				archiveOperationId: null,
 			});
 
@@ -5557,7 +5636,8 @@ describe("hard_delete_user_data", () => {
 				tag: "reset-locked-page",
 			});
 			await ctx.db.patch("files_nodes", page.nodeId, {
-				readOnlyScopeNodeId: page.nodeId,
+				writePolicyScopeNodeId: page.nodeId,
+				writePolicy: { mode: "read_only" },
 			});
 			const node = await ctx.db.get("files_nodes", page.nodeId);
 			return { nodeId: page.nodeId, assetId: node?.assetId ?? null };
@@ -5610,6 +5690,8 @@ describe("finalize_user_deletion_data", () => {
 				}
 				for (let index = 0; index < count; index += 1) {
 					await ctx.db.insert("plugin_service_grants", {
+						serviceAccountId: (await ctx.db.get("plugins_workspace_installations", seeded.installationId))!
+							.serviceAccountId,
 						organizationId: user.defaultOrganizationId,
 						workspaceId: user.defaultWorkspaceId,
 						installationId: seeded.installationId,
@@ -5730,9 +5812,9 @@ describe("finalize_user_deletion_data", () => {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
-					readOnlyScopeNodeId: null,
-					readOnlyPluginName: null,
-					readOnlyPluginServiceTargetId: null,
+					writePolicyScopeNodeId: null,
+					writePolicy: null,
+
 					archiveOperationId: null,
 				});
 				const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
@@ -5914,9 +5996,7 @@ describe("finalize_user_deletion_data", () => {
 		expect(remaining.trustedStages.map((doc) => doc.userId)).toEqual([survivor.userId]);
 		// The victim's plugin storage share goes with them; the survivor's stays.
 		expect(remaining.memberUsage.map((doc) => doc._id)).toEqual([survivorSeed.memberUsageId]);
-		expect(remaining.appendReplayReceipts.map((doc) => doc._id)).toEqual([
-			survivorSeed.appendReplayReceiptId,
-		]);
+		expect(remaining.appendReplayReceipts.map((doc) => doc._id)).toEqual([survivorSeed.appendReplayReceiptId]);
 		expect(
 			remaining.pluginDataUsage
 				.map((doc) => ({ id: doc._id, tombstones: doc.tombstoneDocuments }))

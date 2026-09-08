@@ -41,6 +41,8 @@ vi.mock("convex/react", async () => {
 	const { useEffect, useState } = await import("react");
 
 	return {
+		useQueries: () => ({ user_1: { displayName: "Ada" } }),
+		usePaginatedQuery: () => ({ results: [], status: "Exhausted", loadMore: vi.fn() }),
 		useQuery: (...args: unknown[]) => {
 			const [, forceRender] = useState(0);
 
@@ -60,7 +62,7 @@ vi.mock("convex/react", async () => {
 // Provider boundary: the real useContext throws without an AppTenantProvider mounted above.
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	AppTenantProvider: {
-		useContext: () => ({ membershipId: MEMBERSHIP_ID }),
+		useContext: () => ({ membershipId: MEMBERSHIP_ID, organizationId: "organization_1", workspaceId: "workspace_1" }),
 	},
 }));
 
@@ -80,9 +82,8 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 		files_nodes: {
 			get_file_node_for_membership: "get_file_node_for_membership",
 			get_current_user_file_write_permission: "get_current_user_file_write_permission",
-			get_node_read_only_management_state: "get_node_read_only_management_state",
-			set_node_read_only: "set_node_read_only",
-			set_node_writable: "set_node_writable",
+			get_node_write_policy_management_state: "get_node_write_policy_management_state",
+			set_node_write_policy: "set_node_write_policy",
 		},
 		files_nodes_content: {
 			get_file_collaboration_cleanup_state: "get_file_collaboration_cleanup_state",
@@ -95,6 +96,8 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 		users: {
 			get_anagraphic: "get_anagraphic",
 		},
+		organizations: { list_organization_workspace_users: "list_workspace_users" },
+		access_control: { list_service_accounts: "list_service_accounts", get_service_account: "get_service_account" },
 	},
 }));
 
@@ -152,6 +155,9 @@ const NODE = {
 	createdBy: "user_1",
 	updatedBy: "user_1",
 	updatedAt: 1_700_000_000_000,
+	canWrite: true,
+	writeBlockedReason: null as "read_only" | "permission" | null,
+	writePolicyState: "none" as const,
 };
 
 // A file whose text can be edited. `assetId` plus `textKind` is what marks one, and the plain
@@ -160,9 +166,25 @@ const TEXT_NODE = { ...NODE, assetId: "asset_1", textKind: "rich_text" as const,
 
 type ManagementState = {
 	canManage: boolean;
-	readOnlyState: "writable" | "self" | "inherited";
-	hasInheritedParentLock: boolean;
-	source: { nodeId: app_convex_Id<"files_nodes">; path: string } | null;
+	canWrite: boolean;
+	writeBlockedReason: "read_only" | "permission" | null;
+	localPolicy:
+		| null
+		| { mode: "read_only" }
+		| { mode: "writer"; writer: null | { kind: "user"; userId: string; name: string } };
+	hasInheritedPolicy: boolean;
+	inheritedSource: { nodeId: app_convex_Id<"files_nodes">; path: string } | null;
+	blockedByAncestor: boolean;
+};
+
+const WRITABLE_POLICY: ManagementState = {
+	canManage: true,
+	canWrite: true,
+	writeBlockedReason: null,
+	localPolicy: null,
+	hasInheritedPolicy: false,
+	inheritedSource: null,
+	blockedByAncestor: false,
 };
 
 function mockQueries(args: {
@@ -177,10 +199,8 @@ function mockQueries(args: {
 		if (queryArgs === "skip") {
 			return undefined;
 		}
-		if (query === "get_node_read_only_management_state") {
-			return (
-				args.management ?? { canManage: true, readOnlyState: "writable", hasInheritedParentLock: false, source: null }
-			);
+		if (query === "get_node_write_policy_management_state") {
+			return { nodeId: NODE_ID, ...WRITABLE_POLICY, ...args.management };
 		}
 		if (query === "get_file_node_for_membership") {
 			return args.node ?? NODE;
@@ -194,6 +214,7 @@ function mockQueries(args: {
 		if (query === "get_anagraphic") {
 			return { displayName: "Ada" };
 		}
+		if (query === "list_workspace_users") return ["user_1"];
 		if (query === "get_entries") {
 			return args.entries;
 		}
@@ -347,213 +368,157 @@ describe("FilesPropertiesModalFacts", () => {
 
 describe("FilesPropertiesModalReadOnly", () => {
 	test.each([
+		[WRITABLE_POLICY, "Inherit", "You can edit this file."],
 		[
-			{ canManage: true, readOnlyState: "writable", hasInheritedParentLock: false, source: null },
-			false,
-			"Anyone with permission to edit can change this file.",
-		],
-		[
-			{ canManage: true, readOnlyState: "self", hasInheritedParentLock: false, source: null },
-			true,
-			"Locked here. Unchecking makes this file writable again.",
+			{ ...WRITABLE_POLICY, canWrite: false, writeBlockedReason: "read_only", localPolicy: { mode: "read_only" } },
+			"Read-only",
+			"The local policy blocks editing.",
 		],
 		[
 			{
-				canManage: true,
-				readOnlyState: "self",
-				hasInheritedParentLock: true,
-				source: { nodeId: SOURCE_ID, path: "/outer" },
+				...WRITABLE_POLICY,
+				canWrite: false,
+				writeBlockedReason: "read_only",
+				hasInheritedPolicy: true,
+				blockedByAncestor: true,
+				inheritedSource: { nodeId: SOURCE_ID, path: "/outer" },
 			},
-			true,
-			"Locked here and by /outer. Unchecking removes only the lock set here, so this file stays read-only.",
+			"Inherit",
+			"A policy on a parent folder blocks editing.",
 		],
-		[
-			{
-				canManage: true,
-				readOnlyState: "inherited",
-				hasInheritedParentLock: true,
-				source: { nodeId: SOURCE_ID, path: "/outer" },
-			},
-			true,
-			"Read-only because /outer is locked. Unlock it there to make this file writable.",
-		],
-	] as const)("says which lock is in force in each state", (management, expectedChecked, expectedText) => {
-		mockQueries({ management, entries: [], canWrite: true });
+	] satisfies [ManagementState, string, string][])(
+		"shows the local choice and effective result",
+		(management, choice, description) => {
+			mockQueries({ management, entries: [], canWrite: management.canWrite });
+			renderModal();
+			expect((screen.getByRole("radio", { name: choice }) as HTMLInputElement).checked).toBe(true);
+			expect(screen.getByText(description, { exact: false })).toBeTruthy();
+		},
+	);
 
+	test("disables policy choices until settings arrive", () => {
 		renderModal();
-
-		const checkbox = screen.getByRole("checkbox") as HTMLInputElement;
-		expect(checkbox.checked).toBe(expectedChecked);
-		expect(screen.getByText(expectedText, { exact: false })).toBeTruthy();
+		for (const radio of screen.getAllByRole("radio")) expect((radio as HTMLInputElement).disabled).toBe(true);
+		expect(screen.getByText("Loading write policy…")).toBeTruthy();
 	});
 
-	// Before the state arrives the box would otherwise render enabled and unticked, so one fast
-	// click would write a lock decision against a value the user never saw.
-	test("disables the box until the current lock state has loaded", () => {
-		renderModal();
-
-		const checkbox = screen.getByRole("checkbox") as HTMLInputElement;
-		expect(checkbox.disabled).toBe(true);
-		expect(checkbox.checked).toBe(false);
-		expect(screen.getByText("Loading read-only settings…", { exact: false })).toBeTruthy();
-	});
-
-	// The write is not idempotent, so a second click while the first is still running would send a
-	// second lock mutation.
-	test("ignores a second click while the first lock write is still running", async () => {
-		mockQueries({
-			management: { canManage: true, readOnlyState: "writable", hasInheritedParentLock: false, source: null },
-			entries: [],
-			canWrite: true,
-		});
+	test("saves an explicit policy and ignores a second press while saving", async () => {
+		mockQueries({ entries: [], canWrite: true });
 		let finishMutation: (result: { _yay: null }) => void = () => {};
 		mutationMock.mockReturnValue(
 			new Promise((resolve) => {
 				finishMutation = resolve;
 			}),
 		);
-
 		renderModal();
-		const checkbox = screen.getByRole("checkbox") as HTMLInputElement;
-		checkbox.focus();
-		fireEvent.click(checkbox);
-
-		// The box must stay enabled while the write runs. A browser blurs a focused element as soon as
-		// it becomes disabled, and live QA showed that throws a keyboard user out to <body>.
-		expect(checkbox.disabled).toBe(false);
-		expect(document.activeElement).toBe(checkbox);
-		expect(checkbox.getAttribute("aria-busy")).toBe("true");
-
-		fireEvent.click(checkbox);
+		fireEvent.click(screen.getByRole("radio", { name: "Read-only" }));
+		expect(mutationMock).not.toHaveBeenCalled();
+		const save = screen.getByRole("button", { name: "Save policy" });
+		save.focus();
+		fireEvent.click(save);
+		expect(save.hasAttribute("disabled")).toBe(false);
+		expect(document.activeElement).toBe(save);
+		fireEvent.click(save);
 		expect(mutationMock).toHaveBeenCalledTimes(1);
-
+		expect(mutationMock).toHaveBeenCalledWith("set_node_write_policy", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: NODE_ID,
+			writePolicy: { mode: "read_only" },
+		});
 		await act(async () => {
 			finishMutation({ _yay: null });
 		});
 	});
 
-	test("locks the file when the checkbox is ticked and unlocks it when it is cleared", () => {
-		mockQueries({
-			management: { canManage: true, readOnlyState: "writable", hasInheritedParentLock: false, source: null },
-			entries: [],
-			canWrite: true,
-		});
-		const { unmount } = renderModal();
-
-		fireEvent.click(screen.getByRole("checkbox"));
-		expect(mutationMock).toHaveBeenCalledWith("set_node_read_only", { membershipId: MEMBERSHIP_ID, nodeId: NODE_ID });
-		unmount();
-
-		mutationMock.mockClear();
-		mockQueries({
-			management: { canManage: true, readOnlyState: "self", hasInheritedParentLock: false, source: null },
-			entries: [],
-			canWrite: true,
-		});
-		renderModal();
-
-		fireEvent.click(screen.getByRole("checkbox"));
-		expect(mutationMock).toHaveBeenCalledWith("set_node_writable", { membershipId: MEMBERSHIP_ID, nodeId: NODE_ID });
-	});
-
-	// The node stores a pointer to the folder that owns the lock, not a true/false flag. Clearing the
-	// box under a folder lock removes only the lock set here, and the file stays read-only. It must
-	// still call the unlock mutation.
-	test("clearing the box under an outer lock removes only the direct lock", () => {
+	test("removes only the local policy under a parent policy", () => {
 		mockQueries({
 			management: {
-				canManage: true,
-				readOnlyState: "self",
-				hasInheritedParentLock: true,
-				source: { nodeId: SOURCE_ID, path: "/outer" },
+				...WRITABLE_POLICY,
+				localPolicy: { mode: "read_only" },
+				hasInheritedPolicy: true,
+				blockedByAncestor: true,
+				inheritedSource: { nodeId: SOURCE_ID, path: "/outer" },
+				canWrite: false,
+				writeBlockedReason: "read_only",
 			},
 			entries: [],
-			canWrite: true,
+			canWrite: false,
 		});
-
 		renderModal();
-		fireEvent.click(screen.getByRole("checkbox"));
-
-		expect(mutationMock).toHaveBeenCalledWith("set_node_writable", { membershipId: MEMBERSHIP_ID, nodeId: NODE_ID });
+		fireEvent.click(screen.getByRole("radio", { name: "Inherit" }));
+		fireEvent.click(screen.getByRole("button", { name: "Save policy" }));
+		expect(mutationMock).toHaveBeenCalledWith("set_node_write_policy", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: NODE_ID,
+			writePolicy: null,
+		});
 	});
 
-	// A lock owned by a folder above cannot be released from this node, so the box must not offer it.
-	test("disables the box for an inherited lock and offers the source instead", () => {
+	test("offers a readable parent without disabling local policy management", () => {
 		mockQueries({
 			management: {
-				canManage: true,
-				readOnlyState: "inherited",
-				hasInheritedParentLock: true,
-				source: { nodeId: SOURCE_ID, path: "/outer" },
+				...WRITABLE_POLICY,
+				hasInheritedPolicy: true,
+				blockedByAncestor: true,
+				inheritedSource: { nodeId: SOURCE_ID, path: "/outer" },
+				canWrite: false,
+				writeBlockedReason: "read_only",
 			},
 			entries: [],
-			canWrite: true,
+			canWrite: false,
 		});
 		const onNavigateNode = vi.fn();
 		const onClose = vi.fn();
-
 		renderModal({ onNavigateNode, onClose });
-
-		expect((screen.getByRole("checkbox") as HTMLInputElement).disabled).toBe(true);
-
-		fireEvent.click(screen.getByRole("button", { name: "Manage /outer" }));
+		expect((screen.getByRole("radio", { name: "Read-only" }) as HTMLInputElement).disabled).toBe(false);
+		fireEvent.click(screen.getByRole("button", { name: "Open parent policy" }));
 		expect(onNavigateNode).toHaveBeenCalledWith(SOURCE_ID);
 		expect(onClose).toHaveBeenCalledTimes(1);
 	});
 
-	test("adds a direct lock under an inherited one without touching the box", () => {
+	test("keeps a hidden writer protected without making a write", () => {
+		mockQueries({
+			management: { ...WRITABLE_POLICY, localPolicy: { mode: "writer", writer: null } },
+			entries: [],
+			canWrite: true,
+		});
+		renderModal();
+		expect(screen.getByText("Protected file. The selected writer is unavailable.")).toBeTruthy();
+		expect((screen.getByRole("radio", { name: "Selected writer" }) as HTMLInputElement).checked).toBe(true);
+		expect(screen.getByRole("button", { name: "Save policy" }).hasAttribute("disabled")).toBe(true);
+		expect(mutationMock).not.toHaveBeenCalled();
+	});
+
+	test("allows a selected human to edit while a writer policy exists", () => {
 		mockQueries({
 			management: {
-				canManage: true,
-				readOnlyState: "inherited",
-				hasInheritedParentLock: true,
-				source: { nodeId: SOURCE_ID, path: "/outer" },
+				...WRITABLE_POLICY,
+				localPolicy: { mode: "writer", writer: { kind: "user", userId: "user_1", name: "Ada" } },
 			},
 			entries: [],
 			canWrite: true,
 		});
-
 		renderModal();
-		fireEvent.click(screen.getByRole("button", { name: "Also lock here" }));
-
-		expect(mutationMock).toHaveBeenCalledWith("set_node_read_only", { membershipId: MEMBERSHIP_ID, nodeId: NODE_ID });
+		expect(screen.getByText("You can edit this file.", { exact: false })).toBeTruthy();
+		expect(editorHandle.options.readOnly).toBe(false);
 	});
 
-	test("disables the box and says so when the member cannot manage the lock", () => {
-		mockQueries({
-			management: { canManage: false, readOnlyState: "writable", hasInheritedParentLock: false, source: null },
-			entries: [],
-			canWrite: true,
-		});
-
+	test("separates policy management from content write permission", () => {
+		mockQueries({ management: { ...WRITABLE_POLICY, canManage: false }, entries: [], canWrite: true });
 		renderModal();
-
-		expect((screen.getByRole("checkbox") as HTMLInputElement).disabled).toBe(true);
-		expect(screen.getByText("You cannot change this.", { exact: false })).toBeTruthy();
+		expect((screen.getByRole("radio", { name: "Read-only" }) as HTMLInputElement).disabled).toBe(true);
+		expect(screen.getByText("You cannot change this policy.", { exact: false })).toBeTruthy();
+		expect(editorHandle.options.readOnly).toBe(false);
 	});
 
-	test("reports a refused lock change without closing the dialog", async () => {
-		mockQueries({
-			management: { canManage: true, readOnlyState: "writable", hasInheritedParentLock: false, source: null },
-			entries: [],
-			canWrite: true,
-		});
-		let finishMutation: (result: { _nay: { message: string } }) => void = () => {};
-		mutationMock.mockReturnValue(
-			new Promise((resolve) => {
-				finishMutation = resolve;
-			}),
-		);
+	test("shows a refused policy change without closing", async () => {
+		mockQueries({ entries: [], canWrite: true });
+		mutationMock.mockResolvedValue({ _nay: { message: "The policy changed in another tab" } });
 		const onClose = vi.fn();
-
 		renderModal({ onClose });
-		fireEvent.click(screen.getByRole("checkbox"));
-
-		await act(async () => {
-			finishMutation({ _nay: { message: "The lock changed in another tab" } });
-		});
-
-		expect(screen.getByRole("alert").textContent).toBe("The lock changed in another tab");
+		fireEvent.click(screen.getByRole("radio", { name: "Read-only" }));
+		fireEvent.click(screen.getByRole("button", { name: "Save policy" }));
+		expect((await screen.findByRole("alert")).textContent).toBe("The policy changed in another tab");
 		expect(onClose).not.toHaveBeenCalled();
 	});
 
@@ -590,7 +555,8 @@ describe("FilesPropertiesModalReadOnly", () => {
 });
 
 describe("FilesPropertiesModalCollaboration", () => {
-	const collaborationCheckbox = () => screen.getByRole("checkbox", { name: /Collaborative editing/ }) as HTMLInputElement;
+	const collaborationCheckbox = () =>
+		screen.getByRole("checkbox", { name: /Collaborative editing/ }) as HTMLInputElement;
 
 	// An image has no text to share, so there is no mode to choose. The section must not draw its
 	// divider line for one either.
@@ -598,9 +564,7 @@ describe("FilesPropertiesModalCollaboration", () => {
 		mockQueries({ node: TEXT_NODE, entries: [], canWrite: true });
 		const { unmount } = renderModal();
 		expect(collaborationCheckbox().checked).toBe(true);
-		expect(
-			screen.getByText("Everybody can type in this file at the same time.", { exact: false }),
-		).toBeTruthy();
+		expect(screen.getByText("Everybody can type in this file at the same time.", { exact: false })).toBeTruthy();
 		unmount();
 
 		mockQueries({ entries: [], canWrite: true });
@@ -615,7 +579,9 @@ describe("FilesPropertiesModalCollaboration", () => {
 		renderModal();
 
 		expect(collaborationCheckbox().checked).toBe(false);
-		expect(screen.getByText("The last save wins. Earlier saves stay in File Snapshots.", { exact: false })).toBeTruthy();
+		expect(
+			screen.getByText("The last save wins. Earlier saves stay in File Snapshots.", { exact: false }),
+		).toBeTruthy();
 	});
 
 	// Turning it off cannot be undone, so one click must not write. The warning has to name every
@@ -716,15 +682,12 @@ describe("FilesPropertiesModalCollaboration", () => {
 	// a write that is going to be refused.
 	test.each([
 		[{ canWrite: false, locked: false }, "You don't have permission to edit this file."],
-		[{ canWrite: true, locked: true }, "This file is read-only."],
+		[{ canWrite: false, locked: true }, "A file policy blocks editing this file."],
 	] as const)("disables the box and says why when the server would refuse", (blocked, expectedText) => {
 		mockQueries({
-			node: TEXT_NODE,
+			node: { ...TEXT_NODE, writeBlockedReason: blocked.locked ? "read_only" : "permission" },
 			entries: [],
 			canWrite: blocked.canWrite,
-			management: blocked.locked
-				? { canManage: true, readOnlyState: "self", hasInheritedParentLock: false, source: null }
-				: { canManage: true, readOnlyState: "writable", hasInheritedParentLock: false, source: null },
 		});
 
 		renderModal();
@@ -820,15 +783,15 @@ describe("FilesPropertiesModalMetadata", () => {
 
 	test("blocks saving on a read-only file and says why", () => {
 		mockQueries({
-			management: { canManage: true, readOnlyState: "inherited", hasInheritedParentLock: true, source: null },
+			node: { ...NODE, writeBlockedReason: "read_only" },
 			entries: [],
-			canWrite: true,
+			canWrite: false,
 		});
 
 		renderModal();
 		typeDraft("created-by: agent\n");
 
-		expect(screen.getByRole("status").textContent).toBe("This item is read-only.");
+		expect(screen.getByRole("status").textContent).toBe("A file policy blocks editing this item.");
 		const save = screen.getByRole("button", { name: "Save metadata" });
 		// Native `disabled` drops the button from the tab order, so a keyboard user never reaches
 		// the reason. Keep it focusable with `aria-disabled`, the same way the users page does.
@@ -839,7 +802,7 @@ describe("FilesPropertiesModalMetadata", () => {
 
 	test("blocks saving without write permission and names the permission first", () => {
 		mockQueries({
-			management: { canManage: true, readOnlyState: "inherited", hasInheritedParentLock: true, source: null },
+			node: { ...NODE, writeBlockedReason: "permission" },
 			entries: [],
 			canWrite: false,
 		});
@@ -865,9 +828,9 @@ describe("FilesPropertiesModalMetadata", () => {
 
 	test("makes the editor itself read-only, not only the Save button", () => {
 		mockQueries({
-			management: { canManage: true, readOnlyState: "inherited", hasInheritedParentLock: true, source: null },
+			node: { ...NODE, writeBlockedReason: "read_only" },
 			entries: [],
-			canWrite: true,
+			canWrite: false,
 		});
 
 		renderModal();
@@ -1018,18 +981,18 @@ describe("FilesPropertiesModalMetadata", () => {
 
 	test.each([
 		[{ canWrite: false, locked: false }, "You don't have permission to edit this item."],
-		[{ canWrite: true, locked: true }, "This item is read-only."],
+		[{ canWrite: false, locked: true }, "A file policy blocks editing this item."],
 	] as const)("blocks folder metadata when writing is not allowed", (blocked, expectedText) => {
 		mockQueries({
-			node: { ...NODE, kind: "folder", name: "docs", path: "/docs" },
+			node: {
+				...NODE,
+				kind: "folder",
+				name: "docs",
+				path: "/docs",
+				writeBlockedReason: blocked.locked ? "read_only" : "permission",
+			},
 			entries: [],
 			canWrite: blocked.canWrite,
-			management: {
-				canManage: true,
-				readOnlyState: blocked.locked ? "self" : "writable",
-				hasInheritedParentLock: false,
-				source: null,
-			},
 		});
 		renderModal({ nodeKind: "folder", nodeName: "docs" });
 		typeDraft("plugin-name: chitchat\n");

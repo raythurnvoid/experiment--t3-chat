@@ -2,13 +2,25 @@ import "./files-properties-modal.css";
 
 import { Editor, type EditorProps } from "@monaco-editor/react";
 import { Save } from "lucide-react";
-import { useQuery } from "convex/react";
+import { useQueries, useQuery } from "convex/react";
 import type { editor as monaco_editor } from "monaco-editor";
-import { memo, useEffect, useId, useRef, useState, type RefObject } from "react";
+import { memo, useEffect, useId, useMemo, useRef, useState, type RefObject } from "react";
 import { toast } from "sonner";
 
 import { MyButton, type MyButton_ClassNames } from "@/components/my-button.tsx";
 import { MyCheckboxButton } from "@/components/my-checkbox-button.tsx";
+import { MyRadio } from "@/components/my-radio.tsx";
+import { ServiceAccountSelect } from "@/components/service-account-select.tsx";
+import {
+	MySelect,
+	MySelectItem,
+	MySelectLabel,
+	MySelectOpenIndicator,
+	MySelectPopover,
+	MySelectPopoverContent,
+	MySelectPopoverScrollableArea,
+	MySelectTrigger,
+} from "@/components/my-select.tsx";
 import {
 	MyModal,
 	MyModalCloseTrigger,
@@ -21,7 +33,12 @@ import {
 } from "@/components/my-modal.tsx";
 import { MySkeleton } from "@/components/my-skeleton.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
-import { app_convex, app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
+import {
+	app_convex,
+	app_convex_api,
+	type app_convex_FunctionArgs,
+	type app_convex_Id,
+} from "@/lib/app-convex-client.ts";
 import { app_monaco_THEME_NAME_DARK } from "@/lib/app-monaco-config.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { format_relative_time } from "@/lib/date.ts";
@@ -197,9 +214,7 @@ const FilesPropertiesModalFacts = memo(function FilesPropertiesModalFacts(props:
 // #region read-only
 type FilesPropertiesModalReadOnly_ClassNames =
 	| "FilesPropertiesModalReadOnly"
-	| "FilesPropertiesModalReadOnly-checkbox"
-	| "FilesPropertiesModalReadOnly-text"
-	| "FilesPropertiesModalReadOnly-label"
+	| "FilesPropertiesModalReadOnly-choices"
 	| "FilesPropertiesModalReadOnly-description"
 	| "FilesPropertiesModalReadOnly-actions"
 	| "FilesPropertiesModalReadOnly-error";
@@ -213,163 +228,258 @@ type FilesPropertiesModalReadOnly_Props = {
 };
 
 /**
- * One checkbox for a lock that can be set in more than one place.
- *
- * A node does not store a true/false flag. It stores `readOnlyScopeNodeId`, which points at the node
- * that owns the lock. So a node can be locked here, locked by a folder above it, or locked in both
- * places at once. The checkbox answers the question most people ask: can this be changed? The line
- * under it says which lock is doing it. That matters, because unchecking the box under a folder lock
- * removes only the lock set here, and the node stays read-only.
- *
- * A lock owned by a folder above cannot be released from this node at all. In that case the checkbox
- * is disabled and the two buttons below take over.
+ * Edit the local rule separately from the current user's effective write access.
+ * Clearing this rule leaves every parent policy in force.
  */
 const FilesPropertiesModalReadOnly = memo(function FilesPropertiesModalReadOnly(
 	props: FilesPropertiesModalReadOnly_Props,
 ) {
 	const { nodeId, nodeKind, hasVisibleReadOnlyDescendant, onNavigateNode, onClose } = props;
-	const { membershipId } = AppTenantProvider.useContext();
+	const { membershipId, organizationId, workspaceId } = AppTenantProvider.useContext();
 	const descriptionId = useId();
+	const choicesRef = useRef<HTMLFieldSetElement>(null);
 	const [isRunning, setIsRunning] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const [draft, setDraft] = useState<{
+		mode: "inherit" | "read_only" | "writer";
+		writerKind: "user" | "service_account";
+		userId: app_convex_Id<"users"> | null;
+		serviceAccountId: app_convex_Id<"access_control_service_accounts"> | null;
+	} | null>(null);
 
-	const managementState = useQuery(app_convex_api.files_nodes.get_node_read_only_management_state, {
+	const managementState = useQuery(app_convex_api.files_nodes.get_node_write_policy_management_state, {
 		membershipId,
 		nodeId,
 	});
+	const userIds = useQuery(app_convex_api.organizations.list_organization_workspace_users, {
+		organizationId,
+		workspaceId,
+	});
+	const users = useQueries(
+		useMemo(
+			() =>
+				Object.fromEntries(
+					(userIds ?? []).map((userId) => [
+						userId,
+						{
+							query: app_convex_api.users.get_anagraphic,
+							args: { userId },
+						},
+					]),
+				),
+			[userIds],
+		),
+	);
+	const localPolicy = managementState?.localPolicy;
+	const writer = localPolicy?.mode === "writer" ? localPolicy.writer : null;
+	const choice = draft ?? {
+		mode: localPolicy?.mode ?? "inherit",
+		writerKind: writer?.kind ?? "user",
+		userId: writer?.kind === "user" ? writer.userId : null,
+		serviceAccountId: writer?.kind === "service_account" ? writer.serviceAccountId : null,
+	};
+	const canManage = managementState?.canManage === true;
+	const writerSelected = choice.writerKind === "user" ? choice.userId !== null : choice.serviceAccountId !== null;
+	const description =
+		managementState === undefined
+			? "Loading write policy…"
+			: managementState === null
+				? "Write policy is unavailable."
+				: managementState.canWrite
+					? `You can edit this ${nodeKind}.`
+					: managementState.writeBlockedReason === "permission"
+						? `You don't have permission to edit this ${nodeKind}.`
+						: managementState.blockedByAncestor
+							? "A policy on a parent folder blocks editing."
+							: "The local policy blocks editing.";
 
-	// The server hides the source path when the user cannot read that folder.
-	const sourceLabel = managementState?.source?.path ?? "a protected folder";
-	const isDirectUnderOuterLock = managementState?.readOnlyState === "self" && managementState.hasInheritedParentLock;
-	const isReadOnly = managementState != null && managementState.readOnlyState !== "writable";
-	// An inherited-only lock lives on a folder above, so this node cannot release it. Adding a
-	// direct lock here is still allowed, through the button below rather than the checkbox.
-	const canToggle = managementState?.canManage === true && managementState.readOnlyState !== "inherited";
-
-	const description = ((/* iife */) => {
-		// `undefined` means the query has not answered yet. `null` means this membership may not read
-		// the node, and the facts section above then renders nothing at all. Do not add a second way
-		// to say that here. Show the same loading text for both.
-		if (managementState == null) {
-			return "Loading read-only settings…";
+	const write = () => {
+		if (isRunning || !canManage || !draft || (choice.mode === "writer" && !writerSelected)) return;
+		let writePolicy: app_convex_FunctionArgs<typeof app_convex_api.files_nodes.set_node_write_policy>["writePolicy"] =
+			null;
+		if (choice.mode === "read_only") writePolicy = { mode: "read_only" };
+		if (choice.mode === "writer") {
+			if (choice.writerKind === "user" && choice.userId)
+				writePolicy = { mode: "writer", writer: { kind: "user", userId: choice.userId } };
+			if (choice.writerKind === "service_account" && choice.serviceAccountId)
+				writePolicy = {
+					mode: "writer",
+					writer: { kind: "service_account", serviceAccountId: choice.serviceAccountId },
+				};
 		}
-		if (managementState.readOnlyState === "writable") {
-			return `Anyone with permission to edit can change this ${nodeKind}.`;
-		}
-		if (managementState.readOnlyState === "inherited") {
-			return `Read-only because ${sourceLabel} is locked. Unlock it there to make this ${nodeKind} writable.`;
-		}
-		if (isDirectUnderOuterLock) {
-			return `Locked here and by ${sourceLabel}. Unchecking removes only the lock set here, so this ${nodeKind} stays read-only.`;
-		}
-		return `Locked here. Unchecking makes this ${nodeKind} writable again.`;
-	})();
-
-	// The two mutations do not share a return type, so branch on the call rather than passing the
-	// function reference in.
-	const write = (readOnly: boolean) => {
 		setError(null);
 		setIsRunning(true);
-
-		Promise.try(() =>
-			readOnly
-				? app_convex.mutation(app_convex_api.files_nodes.set_node_read_only, { membershipId, nodeId })
-				: app_convex.mutation(app_convex_api.files_nodes.set_node_writable, { membershipId, nodeId }),
-		)
+		app_convex
+			.mutation(app_convex_api.files_nodes.set_node_write_policy, { membershipId, nodeId, writePolicy })
 			.then((result) => {
 				if (result._nay) {
 					setError(result._nay.message);
+				} else {
+					choicesRef.current?.querySelector<HTMLInputElement>("input:checked")?.focus();
+					setDraft(null);
 				}
 			})
 			.catch((caughtError: unknown) => {
-				console.error("[FilesPropertiesModalReadOnly.write] Failed to change read-only state", {
+				console.error("[FilesPropertiesModalReadOnly.write] Failed to change write policy", {
 					error: caughtError,
 					nodeId,
 				});
-				setError("Failed to change read-only state");
+				setError("Failed to change write policy");
 			})
 			.finally(() => {
 				setIsRunning(false);
 			});
 	};
 
-	const handleCheckedChange = useFn((checked: boolean) => {
-		if (isRunning || !canToggle) {
-			return;
-		}
-
-		write(checked);
-	});
-
-	const handleAddDirectLock = useFn(() => {
-		if (isRunning) {
-			return;
-		}
-
-		write(true);
-	});
-
 	const handleManageSource = useFn(() => {
-		if (!managementState?.source || !onNavigateNode) {
+		if (!managementState?.inheritedSource || !onNavigateNode) {
 			return;
 		}
 
-		onNavigateNode(managementState.source.nodeId);
+		onNavigateNode(managementState.inheritedSource.nodeId);
 		onClose();
 	});
 
 	return (
 		<div className={"FilesPropertiesModalReadOnly" satisfies FilesPropertiesModalReadOnly_ClassNames}>
-			<MyCheckboxButton
-				className={"FilesPropertiesModalReadOnly-checkbox" satisfies FilesPropertiesModalReadOnly_ClassNames}
-				variant="outline"
-				checked={isReadOnly}
-				// Do not disable this while the write runs. A browser blurs a focused element the moment it
-				// becomes disabled, so a keyboard user who pressed Space would be thrown out of the dialog
-				// and land on <body>. `aria-busy` reports the write instead, and `handleCheckedChange`
-				// ignores a second press.
-				//
-				// Only the static reasons below can disable the box, and those are already true before
-				// anybody focuses it.
-				disabled={!canToggle}
+			<fieldset
+				ref={choicesRef}
+				className={"FilesPropertiesModalReadOnly-choices" satisfies FilesPropertiesModalReadOnly_ClassNames}
 				aria-describedby={descriptionId}
-				aria-busy={isRunning || undefined}
-				onCheckedChange={handleCheckedChange}
 			>
-				<span className={"FilesPropertiesModalReadOnly-text" satisfies FilesPropertiesModalReadOnly_ClassNames}>
-					<span className={"FilesPropertiesModalReadOnly-label" satisfies FilesPropertiesModalReadOnly_ClassNames}>
-						Read-only
-					</span>
-					<span
-						id={descriptionId}
-						className={"FilesPropertiesModalReadOnly-description" satisfies FilesPropertiesModalReadOnly_ClassNames}
-					>
-						{description}
-						{managementState?.canManage === false ? " You cannot change this." : null}
-						{nodeKind === "folder" && managementState?.readOnlyState === "writable"
-							? " Locking a folder also protects everything inside it."
-							: null}
-						{hasVisibleReadOnlyDescendant
-							? " This folder contains read-only items, so it cannot be renamed, moved, or archived."
-							: null}
-					</span>
-				</span>
-			</MyCheckboxButton>
-
-			{managementState?.readOnlyState === "inherited" && managementState.canManage ? (
-				<div className={"FilesPropertiesModalReadOnly-actions" satisfies FilesPropertiesModalReadOnly_ClassNames}>
-					{managementState.source && onNavigateNode ? (
-						<MyButton variant="outline" disabled={isRunning} onClick={handleManageSource}>
-							Manage {managementState.source.path}
-						</MyButton>
+				<legend>Local write policy</legend>
+				{(
+					[
+						["inherit", "Inherit"],
+						["read_only", "Read-only"],
+						["writer", "Selected writer"],
+					] as const
+				).map(([mode, label]) => (
+					<label key={mode}>
+						<MyRadio
+							name={descriptionId}
+							checked={choice.mode === mode}
+							disabled={!canManage}
+							aria-busy={isRunning || undefined}
+							onChange={() => {
+								if (!isRunning) {
+									setDraft({ ...choice, mode });
+									setError(null);
+								}
+							}}
+						/>
+						{label}
+					</label>
+				))}
+			</fieldset>
+			{choice.mode === "writer" ? (
+				<>
+					{localPolicy?.mode === "writer" && !writer && !draft ? (
+						<p>Protected file. The selected writer is unavailable.</p>
 					) : null}
-					{/* A direct lock changes nothing while the outer lock stands. It keeps this node
-					    read-only if somebody unlocks the folder above later. */}
-					<MyButton variant="ghost" disabled={isRunning} onClick={handleAddDirectLock}>
-						Also lock here
-					</MyButton>
-				</div>
+					<MySelect
+						value={choice.writerKind}
+						setValue={(value) => {
+							if (!isRunning && (value === "user" || value === "service_account"))
+								setDraft({ ...choice, writerKind: value });
+						}}
+					>
+						<MySelectLabel>Writer type</MySelectLabel>
+						<MySelectTrigger disabled={!canManage}>
+							<MyButton variant="outline">
+								{choice.writerKind === "user" ? "Person" : "Service account"}
+								<MySelectOpenIndicator />
+							</MyButton>
+						</MySelectTrigger>
+						<MySelectPopover>
+							<MySelectPopoverContent>
+								<MySelectItem value="user">Person</MySelectItem>
+								<MySelectItem value="service_account">Service account</MySelectItem>
+							</MySelectPopoverContent>
+						</MySelectPopover>
+					</MySelect>
+					{choice.writerKind === "service_account" ? (
+						<ServiceAccountSelect
+							value={choice.serviceAccountId}
+							disabled={!canManage}
+							onChange={(serviceAccountId) => {
+								if (!isRunning) setDraft({ ...choice, serviceAccountId });
+							}}
+						/>
+					) : (
+						<MySelect
+							value={choice.userId ?? ""}
+							setValue={(value) => {
+								const userId = userIds?.find((id) => id === value);
+								if (!isRunning && userId) setDraft({ ...choice, userId });
+							}}
+						>
+							<MySelectLabel>Person</MySelectLabel>
+							<MySelectTrigger disabled={!canManage || userIds === undefined}>
+								<MyButton variant="outline">
+									{choice.userId
+										? (() => {
+												const user = users[choice.userId];
+												return user && !(user instanceof Error)
+													? (user.displayName ?? "Person")
+													: writer?.kind === "user"
+														? writer.name
+														: "Person unavailable";
+											})()
+										: "Choose a person"}
+									<MySelectOpenIndicator />
+								</MyButton>
+							</MySelectTrigger>
+							<MySelectPopover>
+								<MySelectPopoverScrollableArea>
+									<MySelectPopoverContent>
+										{(userIds ?? []).map((userId) => {
+											const user = users[userId];
+											return user && !(user instanceof Error) ? (
+												<MySelectItem key={userId} value={userId}>
+													{user.displayName ?? "Person"}
+												</MySelectItem>
+											) : null;
+										})}
+									</MySelectPopoverContent>
+								</MySelectPopoverScrollableArea>
+							</MySelectPopover>
+						</MySelect>
+					)}
+					<p className={"FilesPropertiesModalReadOnly-description" satisfies FilesPropertiesModalReadOnly_ClassNames}>
+						{!draft && writer?.name ? `Only ${writer.name} can edit. ` : "Only the selected writer can edit. "}Parent
+						rules and access permissions still apply.
+					</p>
+				</>
 			) : null}
+			<p
+				id={descriptionId}
+				className={"FilesPropertiesModalReadOnly-description" satisfies FilesPropertiesModalReadOnly_ClassNames}
+			>
+				{description}
+				{managementState?.canManage === false ? " You cannot change this policy." : null}
+				{managementState?.hasInheritedPolicy
+					? ` A parent policy also applies from ${managementState.inheritedSource?.path ?? "a protected folder"}.`
+					: null}
+				{hasVisibleReadOnlyDescendant
+					? " This folder contains read-only items, so it cannot be renamed, moved, or archived."
+					: null}
+			</p>
+			<div className={"FilesPropertiesModalReadOnly-actions" satisfies FilesPropertiesModalReadOnly_ClassNames}>
+				<MyButton
+					variant="outline"
+					disabled={!canManage || !draft || (choice.mode === "writer" && !writerSelected)}
+					aria-busy={isRunning || undefined}
+					onClick={write}
+				>
+					{isRunning ? "Saving…" : "Save policy"}
+				</MyButton>
+				{managementState?.inheritedSource && onNavigateNode ? (
+					<MyButton variant="ghost" onClick={handleManageSource}>
+						Open parent policy
+					</MyButton>
+				) : null}
+			</div>
 
 			{error ? (
 				<p
@@ -433,22 +543,19 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 		membershipId,
 		nodeId,
 	});
-	const readOnlyManagement = useQuery(app_convex_api.files_nodes.get_node_read_only_management_state, {
+	const cleanupBlocksCollaboration = useQuery(app_convex_api.files_nodes_content.get_file_collaboration_cleanup_state, {
 		membershipId,
 		nodeId,
 	});
-	const cleanupBlocksCollaboration = useQuery(
-		app_convex_api.files_nodes_content.get_file_collaboration_cleanup_state,
-		{ membershipId, nodeId },
-	);
 
 	const isCollaborative = node?.collaborationEnabled === true;
-	const isLocked = readOnlyManagement != null && readOnlyManagement.readOnlyState !== "writable";
-	// Changing the mode changes how the file is written, so the server asks for the write permission
-	// and refuses a locked file. Ask the same two questions here, in the same order.
 	const blockedReason =
-		canWrite === false ? "You don't have permission to edit this file." : isLocked ? "This file is read-only." : null;
-	const canToggle = blockedReason === null && canWrite !== undefined && readOnlyManagement !== undefined;
+		canWrite === false
+			? node?.writeBlockedReason === "read_only"
+				? "A file policy blocks editing this file."
+				: "You don't have permission to edit this file."
+			: null;
+	const canToggle = canWrite === true;
 
 	const runToggle = (collaborative: boolean) => {
 		setError(null);
@@ -513,7 +620,7 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 		}
 	}, [pendingCollaborativeMode]);
 
-	// The node is still loading, is gone, or this member may not read it. The read-only section above
+	// The node is still loading, is gone, or this member may not read it. The policy section above
 	// already reports that, so render nothing here.
 	if (node === undefined || node === null) {
 		return null;
@@ -542,7 +649,7 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 				className={"FilesPropertiesModalCollaboration-checkbox" satisfies FilesPropertiesModalCollaboration_ClassNames}
 				variant="outline"
 				checked={isCollaborative}
-				// Same reason as the read-only checkbox: do not disable this while the write runs, or the
+				// Do not disable this while the write runs, or the
 				// browser throws a keyboard user out of the dialog. `handleCheckedChange` ignores a second
 				// press instead.
 				disabled={!canToggle}
@@ -574,7 +681,9 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 
 			{cleanupBlocksCollaboration === true ? (
 				<p
-					className={"FilesPropertiesModalCollaboration-description" satisfies FilesPropertiesModalCollaboration_ClassNames}
+					className={
+						"FilesPropertiesModalCollaboration-description" satisfies FilesPropertiesModalCollaboration_ClassNames
+					}
 					role="status"
 				>
 					Old edit history is being removed. You can turn collaboration on after cleanup finishes.
@@ -596,7 +705,9 @@ const FilesPropertiesModalCollaboration = memo(function FilesPropertiesModalColl
 							: "Turn collaboration off for this file? The shared edit history is deleted. Comments attached to text disappear from the file for everyone. Saved versions are kept. Text changes waiting for review are kept. Review them again before accepting. Only the last saved text is used. Save open editor changes first."}
 					</p>
 					<div
-						className={"FilesPropertiesModalCollaboration-actions" satisfies FilesPropertiesModalCollaboration_ClassNames}
+						className={
+							"FilesPropertiesModalCollaboration-actions" satisfies FilesPropertiesModalCollaboration_ClassNames
+						}
 					>
 						<MyButton
 							ref={confirmButtonRef}
@@ -675,10 +786,7 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 		membershipId,
 		nodeId,
 	});
-	const readOnlyManagement = useQuery(app_convex_api.files_nodes.get_node_read_only_management_state, {
-		membershipId,
-		nodeId,
-	});
+	const node = useQuery(app_convex_api.files_nodes.get_file_node_for_membership, { membershipId, fileNodeId: nodeId });
 
 	// YAML is only the edit format. The stored map is the source of truth, so the section always
 	// re-renders it from the entries instead of keeping the exact text somebody typed.
@@ -702,14 +810,17 @@ const FilesPropertiesModalMetadata = memo(function FilesPropertiesModalMetadata(
 	// by somebody else.
 	const sentDraftRef = useRef<string | null>(null);
 
-	const isLocked = readOnlyManagement != null && readOnlyManagement.readOnlyState !== "writable";
-	const editable = canWrite === true && readOnlyManagement != null && !isLocked;
+	const editable = canWrite === true;
 	const dirty = metadata.draftYaml !== metadata.serverYaml;
 	const statusId = useId();
 	// Show the permission reason first when permission and the lock both block writing, so the
 	// section matches the order the server checks them in.
 	const blockedReason =
-		canWrite === false ? "You don't have permission to edit this item." : isLocked ? "This item is read-only." : null;
+		canWrite === false
+			? node?.writeBlockedReason === "read_only"
+				? "A file policy blocks editing this item."
+				: "You don't have permission to edit this item."
+			: null;
 
 	// Keep these options in one state slot that never changes. @monaco-editor/react deep-clones the
 	// options object whenever it changes, and some values in here point back at DOM nodes, so the
@@ -1048,9 +1159,7 @@ export const FilesPropertiesModal = memo(function FilesPropertiesModal(props: Fi
 				</MyModalScrollableArea>
 
 				<MyModalFooter>
-					{/* The read-only checkbox writes as soon as it is clicked, and Save metadata sits next
-					    to the editor it saves. So closing can only throw away an unsaved draft. Saying so
-					    is enough, and nothing here needs its own confirm step. */}
+					{/* Each section saves its own changes. Closing discards an unsaved draft. */}
 					{dirty ? (
 						<p className={"FilesPropertiesModal-unsaved" satisfies FilesPropertiesModal_ClassNames}>
 							Unsaved metadata will be lost.

@@ -5,20 +5,34 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-libra
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-const { tenantContextMock, useQueryMock, mutationMock, copyButtonMock, apiUrlMock } = vi.hoisted(() => ({
-	tenantContextMock: vi.fn(),
-	useQueryMock: vi.fn(),
-	mutationMock: vi.fn(),
-	copyButtonMock: vi.fn(),
-	apiUrlMock: vi.fn((path: string) => new URL(`https://api.test${path}`)),
-}));
+const { tenantContextMock, useQueryMock, mutationMock, copyButtonMock, apiUrlMock, searchMock, accountPermissionMock } =
+	vi.hoisted(() => ({
+		tenantContextMock: vi.fn(),
+		useQueryMock: vi.fn(),
+		mutationMock: vi.fn(),
+		copyButtonMock: vi.fn(),
+		apiUrlMock: vi.fn((path: string) => new URL(`https://api.test${path}`)),
+		searchMock: vi.fn(() => ({})),
+		accountPermissionMock: vi.fn(() => true),
+	}));
 
 vi.mock("@tanstack/react-router", () => ({
-	createFileRoute: (_path: string) => (options: unknown) => ({ options }),
+	createFileRoute: (_path: string) => (options: unknown) => ({ options, useSearch: searchMock }),
 }));
 
 vi.mock("convex/react", () => ({
-	useQuery: (...args: unknown[]) => useQueryMock(...args),
+	useQuery: (query: string, args: unknown) => {
+		const result = useQueryMock(query, args);
+		if (query === "account_permission") return accountPermissionMock();
+		if (query === "anagraphic") return { displayName: "Ada" };
+		if (query === "get_account") return { _id: "account_1", name: "Publisher", revokedAt: null };
+		return result;
+	},
+	usePaginatedQuery: () => ({
+		results: [{ _id: "account_1", name: "Publisher", revokedAt: null }],
+		status: "Exhausted",
+		loadMore: vi.fn(),
+	}),
 }));
 
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
@@ -32,6 +46,12 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 		mutation: (...args: unknown[]) => mutationMock(...args),
 	},
 	app_convex_api: {
+		users: { get_anagraphic: "anagraphic" },
+		access_control: {
+			get_current_user_workspace_permission: "account_permission",
+			list_service_accounts: "list_accounts",
+			get_service_account: "get_account",
+		},
 		public_api: {
 			api_credentials_list: "public_api.api_credentials_list",
 			api_credential_create: "public_api.api_credential_create",
@@ -121,6 +141,9 @@ const KEY_ID = `pk_${"a".repeat(32)}`;
 const API_KEY = `${KEY_ID}.${"b".repeat(64)}`;
 
 type TestCredential = {
+	serviceAccountId: string | null;
+	serviceAccountName: string | null;
+	sponsorUserId: string;
 	credentialId: string;
 	name: string;
 	keyId: string;
@@ -135,6 +158,9 @@ type TestCredential = {
 
 function createCredential(overrides?: Partial<TestCredential>): TestCredential {
 	return {
+		serviceAccountId: null,
+		serviceAccountName: null,
+		sponsorUserId: "user_1",
 		credentialId: "credential_1",
 		name: "Local reader",
 		keyId: KEY_ID,
@@ -154,6 +180,8 @@ function renderRoute() {
 
 describe("RouteApiKeys", () => {
 	beforeEach(() => {
+		searchMock.mockReturnValue({});
+		accountPermissionMock.mockReturnValue(true);
 		tenantContextMock.mockReturnValue({
 			membershipId: "membership_1",
 			organizationId: "organization_1",
@@ -264,6 +292,7 @@ describe("RouteApiKeys", () => {
 
 		await screen.findByRole("heading", { name: "Save your API key" });
 		expect(mutationMock).toHaveBeenCalledWith("public_api.api_credential_create", {
+			serviceAccountId: null,
 			membershipId: "membership_1",
 			name: "Local script",
 			scopes: ["files:list", "files:read"],
@@ -283,6 +312,44 @@ describe("RouteApiKeys", () => {
 
 		fireEvent.click(screen.getByRole("button", { name: "I saved the key" }));
 		expect(screen.queryByText(API_KEY)).toBeNull();
+	});
+
+	test("uses the account link and limits the new key to file scopes", async () => {
+		searchMock.mockReturnValue({ serviceAccountId: "account_1" });
+		mutationMock.mockResolvedValue({ _yay: { credentialId: "credential_2", keyId: KEY_ID, credential: API_KEY } });
+		renderRoute();
+		expect(screen.getByRole("combobox", { name: "Identity" }).textContent).toContain("Publisher");
+		expect(screen.queryByRole("checkbox", { name: /plugin data/i })).toBeNull();
+		fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "Deploy key" } });
+		fireEvent.click(screen.getByRole("checkbox", { name: /Manage file policies/ }));
+		fireEvent.submit(screen.getByRole("textbox", { name: "Name" }).closest("form")!);
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith("public_api.api_credential_create", {
+				membershipId: "membership_1",
+				name: "Deploy key",
+				serviceAccountId: "account_1",
+				scopes: ["files:list", "files:read", "files:permissions"],
+			}),
+		);
+	});
+
+	test("refuses account binding when its management permission is missing", () => {
+		searchMock.mockReturnValue({ serviceAccountId: "account_1" });
+		accountPermissionMock.mockReturnValue(false);
+		renderRoute();
+		fireEvent.change(screen.getByRole("textbox", { name: "Name" }), { target: { value: "Refused key" } });
+		fireEvent.submit(screen.getByRole("textbox", { name: "Name" }).closest("form")!);
+		expect(mutationMock).not.toHaveBeenCalled();
+	});
+
+	test("shows the sponsor and keeps a missing service identity distinct from Personal", () => {
+		useQueryMock.mockReturnValue({
+			_yay: [createCredential({ serviceAccountId: "account_1", serviceAccountName: null })],
+		});
+		renderRoute();
+		expect(screen.getByText("Service account unavailable")).toBeTruthy();
+		expect(screen.getByText("Ada")).toBeTruthy();
+		expect(screen.queryByText("Personal")).toBeNull();
 	});
 
 	test("says the key is valid but useless when its permissions allow no scope", async () => {
@@ -324,6 +391,7 @@ describe("RouteApiKeys", () => {
 
 		await screen.findByRole("heading", { name: "Save your API key" });
 		expect(mutationMock).toHaveBeenCalledWith("public_api.api_credential_create", {
+			serviceAccountId: null,
 			membershipId: "membership_1",
 			name: "Importer",
 			scopes: ["files:list", "files:download", "files:write"],
@@ -420,6 +488,7 @@ describe("RouteApiKeys", () => {
 		fireEvent.submit(nameInput.closest("form")!);
 
 		expect(mutationMock).toHaveBeenCalledWith("public_api.api_credential_create", {
+			serviceAccountId: null,
 			membershipId: "membership_1",
 			name: "Council reader",
 			scopes: ["files:list", "files:read", "plugin_data:read"],

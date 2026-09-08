@@ -1,30 +1,17 @@
 import "./index.css";
 
 import { createFileRoute } from "@tanstack/react-router";
+import { zodValidator } from "@tanstack/zod-adapter";
+import { z } from "zod";
 import { useQuery } from "convex/react";
-import {
-	AlertTriangle,
-	CheckCircle2,
-	Info,
-	KeyRound,
-	Plus,
-	RotateCw,
-	ShieldCheck,
-	Trash2,
-} from "lucide-react";
-import {
-	memo,
-	useId,
-	useLayoutEffect,
-	useRef,
-	useState,
-	type FormEvent,
-} from "react";
+import { AlertTriangle, CheckCircle2, Info, KeyRound, Plus, RotateCw, ShieldCheck, Trash2 } from "lucide-react";
+import { memo, useId, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
 import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyCheckboxButton } from "@/components/my-checkbox-button.tsx";
+import { ServiceAccountSelect } from "@/components/service-account-select.tsx";
 import {
 	MyInput,
 	MyInputArea,
@@ -44,13 +31,7 @@ import {
 	MyModalPopover,
 	MyModalScrollableArea,
 } from "@/components/my-modal.tsx";
-import {
-	MyTabs,
-	MyTabsList,
-	MyTabsPanel,
-	MyTabsPanels,
-	MyTabsTab,
-} from "@/components/my-tabs.tsx";
+import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/components/my-tabs.tsx";
 import { TextMonospaceBlock } from "@/components/monospace-block/monospace-block-text.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import {
@@ -58,11 +39,13 @@ import {
 	app_convex_api,
 	type app_convex_FunctionArgs,
 	type app_convex_FunctionReturnType,
+	type app_convex_Id,
 } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { app_fetch_main_api_url } from "@/lib/fetch.ts";
 import { cn } from "@/lib/utils.ts";
+import { public_api_SERVICE_ACCOUNT_SCOPES } from "../../../../../../shared/public-api.ts";
 
 const API_KEY_NAME_MAX_CHARS = 80;
 const API_KEY_DATETIME_FORMATTER = new Intl.DateTimeFormat("en-US", {
@@ -83,6 +66,7 @@ const API_KEY_SCOPE_LABELS = {
 	"files:read": "Read file content",
 	"files:download": "Download files",
 	"files:write": "Write files",
+	"files:permissions": "Manage file policies",
 	"plugin_data:read": "Read plugin data",
 	"plugin_data:write": "Write plugin data",
 } as const satisfies Record<RouteApiKeys_Scope, string>;
@@ -93,12 +77,13 @@ const API_KEY_SCOPE_ROWS = [
 	{ scope: "files:read", description: "Read the committed content of editable text files by path." },
 	{ scope: "files:download", description: "Get temporary download links for files." },
 	{ scope: "files:write", description: "Create and update editable text files by path, and upload other files." },
+	{ scope: "files:permissions", description: "Change write policies on files and folders you can manage." },
 	{ scope: "plugin_data:read", description: "Read the documents an installed plugin stores in this workspace." },
 	{ scope: "plugin_data:write", description: "Create, change, and delete those plugin documents." },
 ] as const satisfies ReadonlyArray<{ scope: RouteApiKeys_Scope; description: string }>;
 
 // Every scope that lets a key change stored data. They share one warning under the checkbox list.
-const API_KEY_WRITE_SCOPES: readonly RouteApiKeys_Scope[] = ["files:write", "plugin_data:write"];
+const API_KEY_WRITE_SCOPES: readonly RouteApiKeys_Scope[] = ["files:write", "files:permissions", "plugin_data:write"];
 
 // Read scopes start checked; download and write stay opt-in. Plugin data stays opt-in too: most keys
 // never touch it, and a plugin's stored documents can hold whatever that plugin collected.
@@ -107,6 +92,7 @@ const API_KEY_SCOPE_DEFAULTS = {
 	"files:read": true,
 	"files:download": false,
 	"files:write": false,
+	"files:permissions": false,
 	"plugin_data:read": false,
 	"plugin_data:write": false,
 } as const satisfies Record<RouteApiKeys_Scope, boolean>;
@@ -208,9 +194,7 @@ const RouteApiKeysCodeBlock = memo(function RouteApiKeysCodeBlock(props: RouteAp
 	return (
 		<div className={"RouteApiKeysCodeBlock" satisfies RouteApiKeysCodeBlock_ClassNames}>
 			<div className={"RouteApiKeysCodeBlock-header" satisfies RouteApiKeysCodeBlock_ClassNames}>
-				<span className={"RouteApiKeysCodeBlock-language" satisfies RouteApiKeysCodeBlock_ClassNames}>
-					{language}
-				</span>
+				<span className={"RouteApiKeysCodeBlock-language" satisfies RouteApiKeysCodeBlock_ClassNames}>{language}</span>
 				<CopyIconButton variant="ghost-highlightable" text={code} tooltipCopy={`Copy ${label}`} />
 			</div>
 			<TextMonospaceBlock text={code} aria-label={label} maxHeight="28lh" />
@@ -316,14 +300,14 @@ console.log(file.content);`;
 			<div className={"RouteApiKeysQuickStart-notes" satisfies RouteApiKeysQuickStart_ClassNames}>
 				<p className={"RouteApiKeysQuickStart-note" satisfies RouteApiKeysQuickStart_ClassNames}>
 					<Info aria-hidden />
-					API reads return the committed content of editable text files: Markdown plus recognized plain text
-					types like .json, .yaml, or .csv. Unsaved or pending changes are not returned.
+					API reads return the committed content of editable text files: Markdown plus recognized plain text types like
+					.json, .yaml, or .csv. Unsaved or pending changes are not returned.
 				</p>
 				<p className={"RouteApiKeysQuickStart-note" satisfies RouteApiKeysQuickStart_ClassNames}>
 					<Info aria-hidden />
 					Keys with write access can create and update Markdown files through /api/v1/files/write and
-					/api/v1/files/write-many, and upload files through /api/v1/files/upload-urls. Uploads with a
-					recognized plain text extension are converted into editable documents.
+					/api/v1/files/write-many, and upload files through /api/v1/files/upload-urls. Uploads with a recognized plain
+					text extension are converted into editable documents.
 				</p>
 			</div>
 		</section>
@@ -343,7 +327,8 @@ const RouteApiKeysVerificationStatus = memo(function RouteApiKeysVerificationSta
 }) {
 	const { state } = props;
 	if (state.status === "idle") return null;
-	const stateClassName = `RouteApiKeysVerificationStatus-state-${state.status}` as const satisfies RouteApiKeysVerificationStatus_ClassNames;
+	const stateClassName =
+		`RouteApiKeysVerificationStatus-state-${state.status}` as const satisfies RouteApiKeysVerificationStatus_ClassNames;
 
 	return (
 		<div
@@ -354,7 +339,11 @@ const RouteApiKeysVerificationStatus = memo(function RouteApiKeysVerificationSta
 			role={state.status === "error" ? "alert" : "status"}
 			aria-live={state.status === "error" ? "assertive" : "polite"}
 		>
-			{state.status === "success" ? <CheckCircle2 aria-hidden /> : state.status === "error" ? <AlertTriangle aria-hidden /> : null}
+			{state.status === "success" ? (
+				<CheckCircle2 aria-hidden />
+			) : state.status === "error" ? (
+				<AlertTriangle aria-hidden />
+			) : null}
 			{state.message}
 		</div>
 	);
@@ -384,6 +373,7 @@ type RouteApiKeysListItem_Props = {
 const RouteApiKeysListItem = memo(function RouteApiKeysListItem(props: RouteApiKeysListItem_Props) {
 	const { credential, onRotate, onRevoke } = props;
 	const active = credential.revokedAt === null;
+	const sponsor = useQuery(app_convex_api.users.get_anagraphic, { userId: credential.sponsorUserId });
 
 	return (
 		<li className={"RouteApiKeysListItem" satisfies RouteApiKeysListItem_ClassNames}>
@@ -398,6 +388,20 @@ const RouteApiKeysListItem = memo(function RouteApiKeysListItem(props: RouteApiK
 			</div>
 
 			<dl className={"RouteApiKeysListItem-meta" satisfies RouteApiKeysListItem_ClassNames}>
+				<div className={"RouteApiKeysListItem-metaItem" satisfies RouteApiKeysListItem_ClassNames}>
+					<dt className={"RouteApiKeysListItem-metaLabel" satisfies RouteApiKeysListItem_ClassNames}>Identity</dt>
+					<dd className={"RouteApiKeysListItem-metaValue" satisfies RouteApiKeysListItem_ClassNames}>
+						{credential.serviceAccountId === null
+							? "Personal"
+							: (credential.serviceAccountName ?? "Service account unavailable")}
+					</dd>
+				</div>
+				<div className={"RouteApiKeysListItem-metaItem" satisfies RouteApiKeysListItem_ClassNames}>
+					<dt className={"RouteApiKeysListItem-metaLabel" satisfies RouteApiKeysListItem_ClassNames}>Sponsor</dt>
+					<dd className={"RouteApiKeysListItem-metaValue" satisfies RouteApiKeysListItem_ClassNames}>
+						{sponsor?.displayName ?? "Unavailable"}
+					</dd>
+				</div>
 				<div className={"RouteApiKeysListItem-metaItem" satisfies RouteApiKeysListItem_ClassNames}>
 					<dt className={"RouteApiKeysListItem-metaLabel" satisfies RouteApiKeysListItem_ClassNames}>Created</dt>
 					<dd className={"RouteApiKeysListItem-metaValue" satisfies RouteApiKeysListItem_ClassNames}>
@@ -434,11 +438,7 @@ const RouteApiKeysListItem = memo(function RouteApiKeysListItem(props: RouteApiK
 
 			{active && onRotate && onRevoke ? (
 				<div className={"RouteApiKeysListItem-actions" satisfies RouteApiKeysListItem_ClassNames}>
-					<MyButton
-						variant="outline"
-						aria-label={`Rotate ${credential.name}`}
-						onClick={() => onRotate(credential)}
-					>
+					<MyButton variant="outline" aria-label={`Rotate ${credential.name}`} onClick={() => onRotate(credential)}>
 						<RotateCw aria-hidden />
 						Rotate
 					</MyButton>
@@ -522,7 +522,10 @@ const RouteApiKeysList = memo(function RouteApiKeysList(props: RouteApiKeysList_
 					<summary className={"RouteApiKeysList-revokedSummary" satisfies RouteApiKeysList_ClassNames}>
 						Recent revoked keys ({revokedCredentials.length})
 					</summary>
-					<ul className={"RouteApiKeysList-items" satisfies RouteApiKeysList_ClassNames} aria-label="Recent revoked API keys">
+					<ul
+						className={"RouteApiKeysList-items" satisfies RouteApiKeysList_ClassNames}
+						aria-label="Recent revoked API keys"
+					>
 						{revokedCredentials.map((credential) => (
 							<RouteApiKeysListItem key={credential.credentialId} credential={credential} />
 						))}
@@ -555,6 +558,9 @@ type RouteApiKeysCreateModal_Props = {
 	workspaceName: string;
 	name: string;
 	scopes: Record<RouteApiKeys_Scope, boolean>;
+	serviceAccountId: app_convex_Id<"access_control_service_accounts"> | null;
+	canBindAccount: boolean;
+	onServiceAccountChange: (value: app_convex_Id<"access_control_service_accounts"> | null) => void;
 	validationMessage?: string;
 	displayValidationMessage?: string;
 	error?: string;
@@ -573,6 +579,9 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 		workspaceName,
 		name,
 		scopes,
+		serviceAccountId,
+		canBindAccount,
+		onServiceAccountChange,
 		validationMessage,
 		displayValidationMessage,
 		error,
@@ -605,6 +614,19 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 					</MyModalHeader>
 					<MyModalScrollableArea>
 						<div className={"RouteApiKeysCreateModal-fields" satisfies RouteApiKeysCreateModal_ClassNames}>
+							<ServiceAccountSelect
+								value={serviceAccountId}
+								onChange={onServiceAccountChange}
+								label="Identity"
+								emptyLabel="Personal"
+								disabled={pending || !canBindAccount}
+							/>
+							{serviceAccountId ? (
+								<p>Service keys use file scopes only. Account grants and your access must both allow the request.</p>
+							) : null}
+							{serviceAccountId && !canBindAccount ? (
+								<p role="status">You need permission to manage service accounts to bind this key.</p>
+							) : null}
 							<MyInput layout="stacked" displayValidationMessage={displayValidationMessage}>
 								<MyInputLabel>Name</MyInputLabel>
 								<MyInputBackground />
@@ -629,34 +651,24 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 								</MyInputHelperText>
 							</MyInput>
 
-							<fieldset
-								className={"RouteApiKeysCreateModal-permissions" satisfies RouteApiKeysCreateModal_ClassNames}
-							>
+							<fieldset className={"RouteApiKeysCreateModal-permissions" satisfies RouteApiKeysCreateModal_ClassNames}>
 								<legend
-									className={
-										"RouteApiKeysCreateModal-permissionsTitle" satisfies RouteApiKeysCreateModal_ClassNames
-									}
+									className={"RouteApiKeysCreateModal-permissionsTitle" satisfies RouteApiKeysCreateModal_ClassNames}
 								>
 									Permissions
 								</legend>
-								<p
-									className={
-										"RouteApiKeysCreateModal-permissionsHint" satisfies RouteApiKeysCreateModal_ClassNames
-									}
-								>
+								<p className={"RouteApiKeysCreateModal-permissionsHint" satisfies RouteApiKeysCreateModal_ClassNames}>
 									Choose what this key can do. Select at least one permission.
 								</p>
-								<ul
-									className={
-										"RouteApiKeysCreateModal-permissionList" satisfies RouteApiKeysCreateModal_ClassNames
-									}
-								>
-									{API_KEY_SCOPE_ROWS.map((row) => (
+								<ul className={"RouteApiKeysCreateModal-permissionList" satisfies RouteApiKeysCreateModal_ClassNames}>
+									{API_KEY_SCOPE_ROWS.filter(
+										(row) =>
+											serviceAccountId === null ||
+											public_api_SERVICE_ACCOUNT_SCOPES.some((scope) => scope === row.scope),
+									).map((row) => (
 										<li key={row.scope}>
 											<MyCheckboxButton
-												className={
-													"RouteApiKeysCreateModal-permission" satisfies RouteApiKeysCreateModal_ClassNames
-												}
+												className={"RouteApiKeysCreateModal-permission" satisfies RouteApiKeysCreateModal_ClassNames}
 												variant="outline"
 												checked={scopes[row.scope]}
 												disabled={pending}
@@ -694,9 +706,8 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 										id={writeWarningId}
 										className={"RouteApiKeysCreateModal-writeWarning" satisfies RouteApiKeysCreateModal_ClassNames}
 									>
-										<AlertTriangle aria-hidden />
-										A write key can create and replace files and plugin documents everywhere you can write. Treat it
-										like a password.
+										<AlertTriangle aria-hidden />A write key can create and replace files and plugin documents
+										everywhere you can write. Treat it like a password.
 									</p>
 								) : null}
 							</fieldset>
@@ -708,7 +719,11 @@ const RouteApiKeysCreateModal = memo(function RouteApiKeysCreateModal(props: Rou
 						<MyButton variant="ghost" disabled={pending} onClick={() => onOpenChange(false)}>
 							Cancel
 						</MyButton>
-						<MyButton type="submit" disabled={pending || !hasSelectedScope} aria-busy={pending}>
+						<MyButton
+							type="submit"
+							disabled={pending || !hasSelectedScope || (serviceAccountId !== null && !canBindAccount)}
+							aria-busy={pending}
+						>
 							{pending ? "Creating..." : "Create API key"}
 						</MyButton>
 					</MyModalFooter>
@@ -876,8 +891,12 @@ const RouteApiKeysSecurity = memo(function RouteApiKeysSecurity() {
 			<div className={"RouteApiKeysSecurity-content" satisfies RouteApiKeysSecurity_ClassNames}>
 				<strong>API keys belong to you and work only in this workspace.</strong>
 				<span>They use your current file access and do not expire until revoked.</span>
-				<span>A key with write access can create and replace files everywhere you can write, so treat it like a password.</span>
-				<span>Keep keys in an environment variable. Do not put them in source code, screenshots, chat, or browser storage.</span>
+				<span>
+					A key with write access can create and replace files everywhere you can write, so treat it like a password.
+				</span>
+				<span>
+					Keep keys in an environment variable. Do not put them in source code, screenshots, chat, or browser storage.
+				</span>
 			</div>
 		</aside>
 	);
@@ -885,22 +904,20 @@ const RouteApiKeysSecurity = memo(function RouteApiKeysSecurity() {
 // #endregion header and security
 
 // #region root
-type RouteApiKeys_ClassNames =
-	| "RouteApiKeys"
-	| "RouteApiKeys-content"
-	| "RouteApiKeys-loading"
-	| "RouteApiKeys-error";
+type RouteApiKeys_ClassNames = "RouteApiKeys" | "RouteApiKeys-content" | "RouteApiKeys-loading" | "RouteApiKeys-error";
 
 function RouteApiKeys() {
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
+	const search = Route.useSearch();
 
 	// Remount on a workspace change so secrets, modal state, and pending requests cannot cross tenant boundaries.
 	return (
 		<RouteApiKeysMembership
-			key={membershipId}
+			key={`${membershipId}:${search.serviceAccountId ?? ""}`}
 			membershipId={membershipId}
 			organizationName={organizationName}
 			workspaceName={workspaceName}
+			initialServiceAccountId={search.serviceAccountId}
 		/>
 	);
 }
@@ -909,13 +926,22 @@ function RouteApiKeysMembership(props: {
 	membershipId: app_convex_FunctionArgs<typeof app_convex_api.public_api.api_credentials_list>["membershipId"];
 	organizationName: string;
 	workspaceName: string;
+	initialServiceAccountId?: string;
 }) {
-	const { membershipId, organizationName, workspaceName } = props;
+	const { membershipId, organizationName, workspaceName, initialServiceAccountId } = props;
 	const credentialsResult = useQuery(app_convex_api.public_api.api_credentials_list, { membershipId });
+	const canBindAccount = useQuery(app_convex_api.access_control.get_current_user_workspace_permission, {
+		membershipId,
+		permission: "workspace.service_accounts.manage",
+	});
 	const mountedRef = useRef(true);
 	const createNameDirtyRef = useRef(false);
 	const verificationRequestRef = useRef(0);
-	const [createOpen, setCreateOpen] = useState(false);
+	const [createOpen, setCreateOpen] = useState(initialServiceAccountId !== undefined);
+	const [createServiceAccountId, setCreateServiceAccountId] =
+		useState<app_convex_Id<"access_control_service_accounts"> | null>(
+			initialServiceAccountId ? (initialServiceAccountId as app_convex_Id<"access_control_service_accounts">) : null,
+		);
 	const [createName, setCreateName] = useState("");
 	const [createScopes, setCreateScopes] = useState(API_KEY_SCOPE_DEFAULTS);
 	const [createValidationMessage, setCreateValidationMessage] = useState<string>();
@@ -923,7 +949,9 @@ function RouteApiKeysMembership(props: {
 	const [createError, setCreateError] = useState<string>();
 	const [createPending, setCreatePending] = useState(false);
 	const [reveal, setReveal] = useState<RouteApiKeys_Reveal | null>(null);
-	const [revealVerificationState, setRevealVerificationState] = useState<RouteApiKeys_VerificationState>({ status: "idle" });
+	const [revealVerificationState, setRevealVerificationState] = useState<RouteApiKeys_VerificationState>({
+		status: "idle",
+	});
 	const [rotateTarget, setRotateTarget] = useState<RouteApiKeys_Credential | null>(null);
 	const [rotatePending, setRotatePending] = useState(false);
 	const [rotateError, setRotateError] = useState<string>();
@@ -955,6 +983,7 @@ function RouteApiKeysMembership(props: {
 			createNameDirtyRef.current = false;
 			setCreateName("");
 			setCreateScopes(API_KEY_SCOPE_DEFAULTS);
+			setCreateServiceAccountId(null);
 			setCreateValidationMessage(undefined);
 			setCreateDisplayValidationMessage(undefined);
 			setCreateError(undefined);
@@ -982,6 +1011,13 @@ function RouteApiKeysMembership(props: {
 		setCreateScopes((scopes) => ({ ...scopes, [scope]: checked }));
 		setCreateError(undefined);
 	});
+	const handleServiceAccountChange = useFn((value: app_convex_Id<"access_control_service_accounts"> | null) => {
+		if (createPending || (value !== null && canBindAccount !== true)) return;
+		setCreateServiceAccountId(value);
+		setCreateError(undefined);
+		if (value !== null)
+			setCreateScopes((scopes) => ({ ...scopes, "plugin_data:read": false, "plugin_data:write": false }));
+	});
 
 	const handleCreate = useFn((event: FormEvent<HTMLFormElement>) => {
 		event.preventDefault();
@@ -998,8 +1034,13 @@ function RouteApiKeysMembership(props: {
 
 		// The submit button is disabled with zero scopes; keep this guard for form submits that
 		// skip the button, like pressing Enter in the name field.
-		const submittedScopes = API_KEY_SCOPE_ROWS.filter((row) => createScopes[row.scope]).map((row) => row.scope);
+		const submittedScopes = API_KEY_SCOPE_ROWS.filter(
+			(row) =>
+				createScopes[row.scope] &&
+				(createServiceAccountId === null || public_api_SERVICE_ACCOUNT_SCOPES.some((scope) => scope === row.scope)),
+		).map((row) => row.scope);
 		if (submittedScopes.length === 0) return;
+		if (createServiceAccountId !== null && canBindAccount !== true) return;
 
 		const submittedName = createName.trim();
 		setCreatePending(true);
@@ -1009,6 +1050,7 @@ function RouteApiKeysMembership(props: {
 				membershipId,
 				name: submittedName,
 				scopes: submittedScopes,
+				serviceAccountId: createServiceAccountId,
 			})
 			.then((result) => {
 				if (!mountedRef.current) return;
@@ -1019,6 +1061,7 @@ function RouteApiKeysMembership(props: {
 
 				setCreateOpen(false);
 				setCreateName("");
+				setCreateServiceAccountId(null);
 				setCreateScopes(API_KEY_SCOPE_DEFAULTS);
 				setReveal({
 					credential: result._yay.credential,
@@ -1166,6 +1209,9 @@ function RouteApiKeysMembership(props: {
 				workspaceName={workspaceName}
 				name={createName}
 				scopes={createScopes}
+				serviceAccountId={createServiceAccountId}
+				canBindAccount={canBindAccount === true}
+				onServiceAccountChange={handleServiceAccountChange}
 				validationMessage={createValidationMessage}
 				displayValidationMessage={createDisplayValidationMessage}
 				error={createError}
@@ -1208,6 +1254,7 @@ function RouteApiKeysMembership(props: {
 
 const Route = createFileRoute("/w/$organizationName/$workspaceName/api-keys/")({
 	component: RouteApiKeys,
+	validateSearch: zodValidator(z.object({ serviceAccountId: z.string().optional().catch(undefined) })),
 });
 
 export { Route };

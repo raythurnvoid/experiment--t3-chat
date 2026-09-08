@@ -28,6 +28,7 @@ const access_control_permission_validator = v.union(
 	v.literal("content.write"),
 	v.literal("content.permissions.manage"),
 	v.literal("workspace.plugins.manage"),
+	v.literal("workspace.service_accounts.manage"),
 );
 
 /**
@@ -197,6 +198,7 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		userId: v.id("users"),
+		serviceAccountId: v.union(v.id("access_control_service_accounts"), v.null()),
 		name: v.string(),
 		keyId: v.string(),
 		obfuscatedValue: v.string(),
@@ -206,6 +208,7 @@ const app_convex_schema = defineSchema({
 				v.literal("files:list"),
 				v.literal("files:read"),
 				v.literal("files:write"),
+				v.literal("files:permissions"),
 				v.literal("files:download"),
 				v.literal("plugin_data:read"),
 				v.literal("plugin_data:write"),
@@ -761,20 +764,22 @@ const app_convex_schema = defineSchema({
 		 * stays right without walking up the tree. See `files_nodes_db_cascade_restricted_scope`.
 		 */
 		restrictedScopeNodeId: v.union(v.id("files_nodes"), v.null()),
-		/**
-		 * The lock that makes this node read-only.
-		 *
-		 * Its own id means this node has a direct lock. Another id means a parent folder locked it.
-		 * Null means the node is writable. Permissions are separate from this lock.
-		 */
-		readOnlyScopeNodeId: v.union(v.id("files_nodes"), v.null()),
-		/**
-		 * The plugin whose door created this node's direct lock. Member lock changes clear it.
-		 * Never returned to clients.
-		 */
-		readOnlyPluginName: v.union(v.string(), v.null()),
-		/** The exact service target that created this node's direct lock. Never returned to clients. */
-		readOnlyPluginServiceTargetId: v.union(v.id("plugin_service_storage_targets"), v.null()),
+		/** Nearest policy scope, or null when ordinary ACL rules decide writes. */
+		writePolicyScopeNodeId: v.union(v.id("files_nodes"), v.null()),
+		writePolicy: v.union(
+			v.null(),
+			v.object({ mode: v.literal("read_only") }),
+			v.object({
+				mode: v.literal("writer"),
+				writer: v.union(
+					v.object({ kind: v.literal("user"), userId: v.id("users") }),
+					v.object({
+						kind: v.literal("service_account"),
+						serviceAccountId: v.id("access_control_service_accounts"),
+					}),
+				),
+			}),
+		),
 		// Lifecycle and authorship
 		/** Archive operation UUID, or null for an active node. */
 		archiveOperationId: v.union(v.string(), v.null()),
@@ -1571,9 +1576,28 @@ const app_convex_schema = defineSchema({
 		createdAt: v.number(),
 	}).index("by_pluginName", ["pluginName"]),
 
+	/** A trusted plugin source keeps its account across uninstall and reinstall. */
+	plugins_service_account_bindings: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		pluginName: v.string(),
+		publisherUserId: v.id("users"),
+		sourceRepositoryUrl: v.string(),
+		serviceAccountId: v.id("access_control_service_accounts"),
+	})
+		.index("by_organization_workspace_pluginName_publisher_source", [
+			"organizationId",
+			"workspaceId",
+			"pluginName",
+			"publisherUserId",
+			"sourceRepositoryUrl",
+		])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+
 	plugins_workspace_installations: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
+		serviceAccountId: v.id("access_control_service_accounts"),
 		pluginVersionId: v.id("plugins_versions"),
 		pluginName: v.string(),
 		status: v.union(v.literal("enabled"), v.literal("disabled")),
@@ -1651,6 +1675,7 @@ const app_convex_schema = defineSchema({
 	plugins_event_runs: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
+		serviceAccountId: v.id("access_control_service_accounts"),
 		// The uploaded file the event fired for; plugin-written outputs are ordinary Markdown siblings.
 		// Both are absent for an event that fires on something other than a file.
 		assetId: v.optional(v.id("files_r2_assets")),
@@ -1753,6 +1778,7 @@ const app_convex_schema = defineSchema({
 	plugins_ui_sessions: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
+		serviceAccountId: v.id("access_control_service_accounts"),
 		installationId: v.id("plugins_workspace_installations"),
 		pluginVersionId: v.id("plugins_versions"),
 		userId: v.id("users"),
@@ -2275,6 +2301,7 @@ const app_convex_schema = defineSchema({
 	plugin_service_grants: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
+		serviceAccountId: v.id("access_control_service_accounts"),
 		installationId: v.id("plugins_workspace_installations"),
 		pluginVersionId: v.id("plugins_versions"),
 		pluginName: v.string(),
@@ -2598,6 +2625,18 @@ const app_convex_schema = defineSchema({
 
 	// #region access control
 
+	access_control_service_accounts: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		name: v.string(),
+		createdBy: v.id("users"),
+		createdAt: v.number(),
+		updatedAt: v.number(),
+		revokedAt: v.union(v.number(), v.null()),
+	})
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
+		.index("by_organization_workspace_revokedAt", ["organizationId", "workspaceId", "revokedAt"]),
+
 	/**
 	 * Custom roles, which always apply to the whole organization. System roles live in code, so they
 	 * have no docs here.
@@ -2653,14 +2692,14 @@ const app_convex_schema = defineSchema({
 		/**
 		 * The id of the thing this grant is about, written as a string.
 		 *
-		 * For `resourceKind: "file"` this is always the id of the restricted scope node — the folder that
-		 * was restricted — never the id of the file that was opened. So a restricted folder and
-		 * everything inside it share one set of grants.
+		 * Restricted files use their nearest restricted scope's id. Service accounts may also hold
+		 * an exact grant on an unrestricted node; that grant does not cover its descendants.
 		 */
 		resourceId: v.string(),
-		principalKind: v.union(v.literal("role"), v.literal("user"), v.literal("public")),
+		principalKind: v.union(v.literal("role"), v.literal("user"), v.literal("public"), v.literal("service_account")),
 		userId: v.optional(v.id("users")),
 		role: v.optional(access_control_role_ref_validator),
+		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
 		permission: access_control_permission_validator,
 		createdAt: v.number(),
 		updatedAt: v.number(),
@@ -2717,6 +2756,25 @@ const app_convex_schema = defineSchema({
 			"resourceKind",
 			"resourceId",
 			"principalKind",
+			"permission",
+		])
+		.index("by_organization_workspace_serviceAccount", ["organizationId", "workspaceId", "serviceAccountId"])
+		.index("by_org_workspace_serviceAccount_permission_resource", [
+			"organizationId",
+			"workspaceId",
+			"serviceAccountId",
+			"principalKind",
+			"permission",
+			"resourceKind",
+			"resourceId",
+		])
+		.index("by_organization_workspace_resource_serviceAccount_permission", [
+			"organizationId",
+			"workspaceId",
+			"resourceKind",
+			"resourceId",
+			"principalKind",
+			"serviceAccountId",
 			"permission",
 		])
 		// Finds every grant that still points at one role, so deleting a custom role can refuse.

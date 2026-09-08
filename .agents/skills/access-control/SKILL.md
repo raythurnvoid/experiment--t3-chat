@@ -21,49 +21,64 @@ Membership says where you are. Access control says what you may do there.
   2. **Role** — one `access_control_role_assignments` doc per `(organizationId, workspaceId, userId)`.
   3. **Direct grant** — an `access_control_permission_grants` doc for per-file sharing.
 - Grants are allow-only. There are no deny grants.
-- A file or folder read-only lock is not an ACL deny. ACL answers who may act first. The intrinsic
-  lock then answers whether the node may change at all. Owners do not bypass it. A caller needs
-  `content.permissions.manage` to use the dedicated lock controls, but that permission does not make
-  ordinary writes bypass a lock. Sharing and comment-sidecar permissions stay separate; see
-  `../files-read-only/SKILL.md`.
-- A sealed service must have `workspace.files.create-read-only` and live `content.permissions.manage`
-  at the effective destination ACL before it creates a **read-only** target. Both checks sit inside
-  that branch, so an ordinary writable target asks for neither. Its narrow read-only cleanup
-  exception rechecks manage on the exact provenance-bound target, and releases only that one lock
-  when it archives the file. It never bypasses a restricted ACL failure or grants general lock
-  access.
-- That exception is the only bypass that removes a lock, so it is worth naming what it asks. It is
-  not the only read-only bypass. The other named ones never unlock a live file: an accepted upload
-  finishes into a file that stays locked, and tenant, workspace, and account deletion delete the
-  whole scope. `../files-read-only/SKILL.md` owns that list. A service-locked node carries
-  `readOnlyPluginServiceTargetId`, a pointer to the target that created the lock.
-  `db_can_clean_up_service_created_lock`
-  (`packages/app/convex/public_api_service_uploads.ts`) allows the bypass only when all of this holds:
-  - **Self lock with known provenance** — `readOnlyScopeNodeId` is the node itself, so the lock is
-    direct and not inherited from a folder, and `readOnlyPluginServiceTargetId` is set.
-  - **Consent** — the installation still accepts `workspace.files.create-read-only`.
-  - **Tenancy and installation** — the pointed-at target is `readOnly`, and its organization,
-    workspace, and installation match the calling principal.
-  - **Destination binding** — the target's `destinationPath` equals the grant's sealed prefix, its
-    `destinationNodeId` is the destination being acted on, and its `nodeId` is this exact node.
-  - **Target still live** — not moved out, no delete requested, state `pending` or `committed`, and
-    its destination epoch is not yet closed.
-  - **Inside the seal** — walking the node's parents reaches the destination node without leaving
-    the organization and workspace.
-  - **Live permission** — the acting member still has `content.permissions.manage` on that node.
-- Every non-service write of `readOnlyScopeNodeId` clears `readOnlyPluginServiceTargetId`: the
-  cascade helper, `set_node_read_only`, and `set_node_writable` in
-  `packages/app/convex/files_nodes.ts`. That is what makes a member's lock change take the bypass
-  away. Once a member locks or unlocks the node, no service target owns that lock any more.
-- Plugin locks also carry `readOnlyPluginName`. Actual member lock changes clear both origin fields;
-  no-ops preserve them. Members with manage permission can use normal lock and sharing controls on
-  plugin output. Editable `plugin-name` metadata selects a plugin destination but grants no ACL power.
-- An actual successful manual sharing change deletes that node's `plugins_file_access_bindings` doc
-  only. It leaves unrelated grants intact. A denied or no-op sharing request preserves the binding.
-  Later plugin scope changes do not rewrite detached sharing. Metadata edits never detach bindings.
-- Explicit plugin access changes require live `content.permissions.manage` on the node and affected
-  restricted subtrees. Plugin archive-and-recreate replacement requires manage on the old file, even
-  without a new lock request. In-place content updates keep current sharing and require content write.
+- A file's write policy is separate from ACL. Check the actor and any service account first.
+  Then apply `writePolicyScopeNodeId` and the inline `writePolicy`. Owners do not bypass a
+  read-only or named-writer policy. See `../files-read-only/SKILL.md` for the policy rules.
+- Human/role sharing changes detach the node's `plugins_file_access_bindings` only when they
+  change sharing. Service-account grant edits preserve that reader binding. Unrestricting clears
+  human/role grants and keeps independent service grants at their stored node.
+- Plugin reader refreshes preserve service-account grants. Editable metadata and plugin names
+  never grant authority.
+
+## Service accounts
+
+Service accounts are workspace identities for software. They are not users and have no roles,
+owner rights, billing rights, public fallback, or private plugin-data scope rights. Their
+`createdBy` field is audit data, not authority.
+
+- `access_control_db_has_permission` accepts either the existing user/public input or an exclusive
+  `serviceAccountId`. The account branch runs before the human owner shortcut. It requires an
+  active same-tenant account and its own content grant.
+- Workspace grants cover unrestricted content. An unrestricted file/folder grant covers that
+  exact node, not its descendants. Restricted content requires a grant at the nearest live
+  restricted scope. A workspace grant never crosses that boundary.
+- Delegated requests require both the human actor and account check on the actual resource.
+  Credentials, capabilities, source limits, and write policies remain separate limits. Do not
+  require workspace-wide account access before a file check: an account may have only one
+  restricted-folder grant.
+- `access_control_db_filter_readable_file_nodes` and `access_control_db_can_act_on_file_node`
+  accept optional `serviceAccountId`. When present, they intersect both checks, including for
+  owner and unrestricted nodes. Their loaded node inputs include `_id`.
+- Any active workspace member may list/get active account labels for pickers. Revoked accounts
+  and grant pages require `workspace.service_accounts.manage`. This permission is in the existing
+  catalog and admin role. Personal/default workspaces support accounts.
+- Create, rename, revoke, account binding, and grant management require that permission. Names
+  are trimmed, nonempty, and at most `access_control_MAX_SERVICE_ACCOUNT_NAME_LENGTH` (80).
+  Creating an account gives no grants or credentials.
+- Grant edits also require the actor's `content.permissions.manage` on the actual resource.
+  Every added level permission must already be held by that actor there. File-only managers
+  do not need workspace content management. Removal checks management but gives no new level.
+- Account controls, the service-account sharing branch, and explicit plugin setup reuse
+  `access_control_db_authorize_service_account_grant` and
+  `access_control_db_set_service_account_grant`. The latter edits only the account's three
+  content docs and keeps the existing 50-principal file-sharing bound.
+- Account grant pages paginate `content.read` docs (one per valid resource level) and read each
+  resource's remaining docs. Names/paths are hidden unless the actor can read that resource.
+  The management-state query works before a grant exists and resolves a selected restricted child
+  to its actual scope. Removal still addresses the original stored ID if a later move made that
+  exact-node grant ineffective.
+- Revoke is idempotent and retains the account, grants, policies, and plugin bindings. Every live
+  authorization refuses the revoked account. There is no restore or delete door. Tenant purge
+  drains grants, bindings, then accounts through the existing bounded cleanup passes.
+
+Plugin setup may create an empty identity for a new trusted tuple only after account management
+passes. A new installation also needs account management when it reuses a retained binding after
+uninstall. Install/update grants are explicit input, with at most 20 resources and the same actor
+ceiling. Omitted grants stay unchanged. Updates, ensure calls, and reinstall never recreate grants
+or reactivate an account. Explicit installation rebind changes only its trusted tuple binding and
+installation pin. It does not move policies, copy grants, or rewrite old run/session/grant pins.
+`plugins_db_get_live_service_account` checks the active account, saved pin, current version, and
+exact publisher/source tuple without repairing them.
 
 ## Where a role binds
 
@@ -671,7 +686,8 @@ Be explicit about this when planning work; do not assume the subsystem is comple
   siblings. `db_revalidate_file_write_principal` then reloads the run, installation, source node, and
   actor's active membership in both the prepare and publish transactions. It requires the actor's
   current `content.write` on the source node before output can land. The separate intrinsic
-  read-only check also blocks the output destination, even for an owner-backed run. This does not turn
+  write-policy check also protects the output destination, even for an owner-backed run. The pinned
+  service account must independently hold the required grant on the actual target. This does not turn
   accepted plugin capabilities into ACL permissions; it is a live actor/source ceiling on the
   platform baseline.
 - **The global presence roster is readable by any account, and the `listRoom` gate does not change

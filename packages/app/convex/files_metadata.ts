@@ -10,7 +10,7 @@ import {
 	access_control_db_can_act_on_file_node,
 	access_control_db_filter_readable_file_nodes,
 } from "./access_control.ts";
-import { files_node_require_writable } from "./files_nodes.ts";
+import { files_nodes_db_require_user_writable } from "./files_nodes.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { Result } from "common/errors-as-values-utils.ts";
@@ -419,19 +419,17 @@ function search_index_query(
 	const plan = args.plan;
 	switch (plan.op) {
 		case "exists":
-			return ctx.db
-				.query("files_metadata_docs")
-				.withIndex("by_org_workspace_archive_docKind_fieldPath_tree", (q) => {
-					const base = q
-						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId)
-						.eq("archiveOperationId", undefined)
-						.eq("docKind", "field")
-						.eq("fieldPath", plan.fieldPath);
-					return args.treePathPrefix
-						? base.gte("treePath", args.treePathPrefix).lt("treePath", path_tree_prefix_upper_bound(args.treePathPrefix))
-						: base;
-				});
+			return ctx.db.query("files_metadata_docs").withIndex("by_org_workspace_archive_docKind_fieldPath_tree", (q) => {
+				const base = q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("archiveOperationId", undefined)
+					.eq("docKind", "field")
+					.eq("fieldPath", plan.fieldPath);
+				return args.treePathPrefix
+					? base.gte("treePath", args.treePathPrefix).lt("treePath", path_tree_prefix_upper_bound(args.treePathPrefix))
+					: base;
+			});
 		case "eq":
 			if (typeof plan.value === "string") {
 				const value = plan.value;
@@ -447,7 +445,9 @@ function search_index_query(
 							.eq("valueKind", "string")
 							.eq("stringValue", value);
 						return args.treePathPrefix
-							? base.gte("treePath", args.treePathPrefix).lt("treePath", path_tree_prefix_upper_bound(args.treePathPrefix))
+							? base
+									.gte("treePath", args.treePathPrefix)
+									.lt("treePath", path_tree_prefix_upper_bound(args.treePathPrefix))
 							: base;
 					});
 			}
@@ -465,7 +465,9 @@ function search_index_query(
 							.eq("valueKind", "number")
 							.eq("numberValue", value);
 						return args.treePathPrefix
-							? base.gte("treePath", args.treePathPrefix).lt("treePath", path_tree_prefix_upper_bound(args.treePathPrefix))
+							? base
+									.gte("treePath", args.treePathPrefix)
+									.lt("treePath", path_tree_prefix_upper_bound(args.treePathPrefix))
 							: base;
 					});
 			}
@@ -483,7 +485,9 @@ function search_index_query(
 							.eq("valueKind", "boolean")
 							.eq("booleanValue", value);
 						return args.treePathPrefix
-							? base.gte("treePath", args.treePathPrefix).lt("treePath", path_tree_prefix_upper_bound(args.treePathPrefix))
+							? base
+									.gte("treePath", args.treePathPrefix)
+									.lt("treePath", path_tree_prefix_upper_bound(args.treePathPrefix))
 							: base;
 					});
 			}
@@ -633,6 +637,7 @@ export const search = internalQuery({
 		organizationId: doc(app_convex_schema, "files_metadata_docs").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_metadata_docs").fields.workspaceId,
 		userId: v.id("users"),
+		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
 		plan: search_plan_validator,
 		pathPrefix: v.optional(v.string()),
 		numItems: v.number(),
@@ -703,6 +708,7 @@ export const search = internalQuery({
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
 					userId: args.userId,
+					serviceAccountId: args.serviceAccountId,
 					nodes: pageNodes,
 				})
 			).map((fileNode) => fileNode._id),
@@ -766,10 +772,7 @@ const SEARCH_VALUE_KINDS = ["string", "number", "boolean", "maybe_date"] as cons
  * app, and the doors answer it with their empty shape.
  */
 function search_field_path_is_valid(fieldPath: string) {
-	return (
-		fieldPath.length <= SEARCH_FIELD_PATH_MAX_LENGTH &&
-		files_search_query_field_path_is_valid(fieldPath)
-	);
+	return fieldPath.length <= SEARCH_FIELD_PATH_MAX_LENGTH && files_search_query_field_path_is_valid(fieldPath);
 }
 
 /**
@@ -1203,6 +1206,7 @@ export const get_by_path = internalQuery({
 		organizationId: doc(app_convex_schema, "files_metadata_docs").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_metadata_docs").fields.workspaceId,
 		userId: v.id("users"),
+		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
 		path: v.string(),
 		/** When set, resolve `path` through this user's pending path overlay (their pending moves). */
 		overlayUserId: v.optional(v.id("users")),
@@ -1240,6 +1244,7 @@ export const get_by_path = internalQuery({
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
+			serviceAccountId: args.serviceAccountId,
 			nodes: [fileNode],
 		});
 		if (!readable) {
@@ -1440,7 +1445,7 @@ export async function files_metadata_db_read_entry(
  * archive-scoped search until the next rename.
  *
  * This writer checks nothing. The two user-facing doors below check the permission and the
- * read-only lock before they call it.
+ * current file policy before they call it.
  *
  * The file-creation flows also call it directly, inside the same transaction that creates the node.
  * At that moment no permission has been set on the new file yet. Mount files and plugin source
@@ -1531,7 +1536,7 @@ async function db_authorize_metadata_write(
 		return authorized;
 	}
 
-	const writable = files_node_require_writable(fileNode);
+	const writable = await files_nodes_db_require_user_writable(ctx, { node: fileNode, userId: args.userAuth.id });
 	if (writable._nay) {
 		return writable;
 	}
@@ -1676,7 +1681,7 @@ export const update_entries_by_path = internalMutation({
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
-		const writable = files_node_require_writable(fileNode);
+		const writable = await files_nodes_db_require_user_writable(ctx, { node: fileNode, userId: args.userId });
 		if (writable._nay) {
 			return writable;
 		}

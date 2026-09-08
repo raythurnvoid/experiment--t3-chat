@@ -228,9 +228,9 @@ async function users_test_seed_page(
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
-		readOnlyScopeNodeId: null,
-		readOnlyPluginName: null,
-		readOnlyPluginServiceTargetId: null,
+		writePolicyScopeNodeId: null,
+		writePolicy: null,
+
 		archiveOperationId: null,
 	});
 

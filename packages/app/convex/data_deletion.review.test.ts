@@ -117,9 +117,9 @@ async function data_deletion_test_seed_page(
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
-		readOnlyScopeNodeId: null,
-		readOnlyPluginName: null,
-		readOnlyPluginServiceTargetId: null,
+		writePolicyScopeNodeId: null,
+		writePolicy: null,
+
 		archiveOperationId: null,
 	});
 
@@ -183,6 +183,11 @@ async function data_deletion_test_seed_plugin_ui_sessions(
 		updatedAt: now,
 	});
 	const installationId = await ctx.db.insert("plugins_workspace_installations", {
+		serviceAccountId: await test_mocks_fill_db_with.plugin_service_account(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			pluginVersionId: pluginVersionId,
+		}),
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		pluginVersionId,
@@ -200,6 +205,7 @@ async function data_deletion_test_seed_plugin_ui_sessions(
 	});
 	for (let i = 0; i < args.sessionCount; i += 1) {
 		await ctx.db.insert("plugins_ui_sessions", {
+			serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installationId))!.serviceAccountId,
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			installationId,
@@ -258,9 +264,9 @@ async function data_deletion_test_seed_workspace_content_bulk(
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
-			readOnlyScopeNodeId: null,
-			readOnlyPluginName: null,
-			readOnlyPluginServiceTargetId: null,
+			writePolicyScopeNodeId: null,
+			writePolicy: null,
+
 			archiveOperationId: null,
 		});
 		const contentR2Key = `content/organizations/${args.organizationId}/workspaces/${args.workspaceId}/nodes/${args.tag}-${i}/markdown`;
@@ -562,6 +568,7 @@ async function data_deletion_test_seed_workspace_content_bulk(
 				content: `${args.tag} ${i}`,
 			}),
 			ctx.db.insert("api_credentials", {
+				serviceAccountId: null,
 				organizationId: apiOrganizationId,
 				workspaceId: apiWorkspaceId,
 				userId: args.userId,
@@ -886,6 +893,8 @@ async function review_seed_all_workspace_content(
 			expiresAt: now + 86_400_000,
 		});
 		await ctx.db.insert("plugin_service_grants", {
+			serviceAccountId: (await ctx.db.get("plugins_workspace_installations", pluginTenant.installationId))!
+				.serviceAccountId,
 			...pluginTenant,
 			pluginVersionId,
 			actorUserId: args.userId,
@@ -953,6 +962,7 @@ async function review_seed_all_workspace_content(
 			updatedAt: now,
 		});
 		const runId = await ctx.db.insert("plugins_event_runs", {
+			serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installationId))!.serviceAccountId,
 			...tenant,
 			assetId: node.assetId,
 			fileNodeId: node._id,
@@ -1024,9 +1034,9 @@ async function review_seed_all_workspace_content(
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
-			readOnlyScopeNodeId: null,
-			readOnlyPluginName: null,
-			readOnlyPluginServiceTargetId: null,
+			writePolicyScopeNodeId: null,
+			writePolicy: null,
+
 			archiveOperationId: null,
 		});
 		const uploadAssetId = await ctx.db.insert("files_r2_assets", {
@@ -1063,9 +1073,9 @@ async function review_seed_all_workspace_content(
 			contentFrontmatterTooLargeFieldCount: null,
 			contentFrontmatterTooLargeIndexDocumentCount: null,
 			restrictedScopeNodeId: null,
-			readOnlyScopeNodeId: null,
-			readOnlyPluginName: null,
-			readOnlyPluginServiceTargetId: null,
+			writePolicyScopeNodeId: null,
+			writePolicy: null,
+
 			archiveOperationId: null,
 		});
 		await ctx.db.insert("plugin_service_storage_destinations", {

@@ -64,6 +64,10 @@ export function url_path_api_keys(args: { organizationName: string; workspaceNam
 	return `/w/${args.organizationName}/${args.workspaceName}/api-keys`;
 }
 
+export function url_path_service_accounts(args: { organizationName: string; workspaceName: string }) {
+	return `/w/${args.organizationName}/${args.workspaceName}/service-accounts`;
+}
+
 export function url_path_chat(args: { organizationName: string; workspaceName: string }) {
 	return `/w/${args.organizationName}/${args.workspaceName}/chat`;
 }

@@ -277,6 +277,7 @@ function to_store_principal(principal: AuthorizedPrincipal, bodyInstallationId: 
 				installationId: bodyInstallationId,
 				actorUserId: principal.userId,
 				principalKey: principal.principalKey,
+				credentialRef: { kind: principal.kind, credentialId: principal.credentialId },
 			},
 		} as const;
 	}
@@ -296,6 +297,7 @@ function to_store_principal(principal: AuthorizedPrincipal, bodyInstallationId: 
 				installationId: principal.installationId,
 				actorUserId: principal.userId,
 				principalKey: principal.principalKey,
+				credentialRef: { kind: principal.kind, sessionId: principal.sessionId },
 			},
 		} as const;
 	}
@@ -309,6 +311,7 @@ function to_store_principal(principal: AuthorizedPrincipal, bodyInstallationId: 
 				installationId: principal.installationId,
 				actorUserId: principal.actorUserId,
 				principalKey: principal.principalKey,
+				credentialRef: { kind: principal.kind, runId: principal.runId },
 			},
 		} as const;
 	}
@@ -322,6 +325,7 @@ function to_store_principal(principal: AuthorizedPrincipal, bodyInstallationId: 
 				installationId: principal.installationId,
 				actorUserId: principal.actorUserId,
 				principalKey: principal.principalKey,
+				credentialRef: { kind: principal.kind, grantId: principal.grantId },
 			},
 		} as const;
 	}

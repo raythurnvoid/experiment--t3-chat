@@ -29,6 +29,16 @@ import { toast } from "sonner";
 import { MyBadge } from "@/components/my-badge.tsx";
 import { MyButton } from "@/components/my-button.tsx";
 import { MyCheckboxButton } from "@/components/my-checkbox-button.tsx";
+import { ServiceAccountSelect } from "@/components/service-account-select.tsx";
+import {
+	MySelect,
+	MySelectItem,
+	MySelectLabel,
+	MySelectOpenIndicator,
+	MySelectPopover,
+	MySelectPopoverContent,
+	MySelectTrigger,
+} from "@/components/my-select.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
 import {
 	MyInput,
@@ -66,6 +76,7 @@ import {
 	app_convex,
 	app_convex_api,
 	type app_convex_FunctionReturnType,
+	type app_convex_FunctionArgs,
 	type app_convex_Id,
 } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
@@ -80,6 +91,11 @@ import {
 	plugins_parse_env_text,
 	plugins_validate_secret_name,
 } from "../../../../../../shared/plugins.ts";
+import {
+	access_control_FILE_SHARE_LEVEL_KEYS,
+	access_control_FILE_SHARE_LEVELS,
+	type access_control_FileShareLevel,
+} from "../../../../../../shared/access-control.ts";
 
 type RoutePlugins_Installation = app_convex_FunctionReturnType<
 	typeof app_convex_api.plugins.list_installations
@@ -1990,7 +2006,8 @@ type RoutePluginsPlugin_ClassNames =
 	| "RoutePluginsPluginConsentModal-list"
 	| "RoutePluginsPluginConsentModal-item"
 	| "RoutePluginsPluginConsentModal-empty"
-	| "RoutePluginsPluginConsentModal-actions";
+	| "RoutePluginsPluginConsentModal-actions"
+	| "RoutePluginsPluginConsentModal-accountFields";
 
 /**
  * Let workspace managers open any plugin and publishers open their own plugin.
@@ -2037,6 +2054,155 @@ function get_publisher_version(publisherPlugin: RoutePlugins_PublisherPlugin): R
 	};
 }
 
+type PluginServiceAccountGrants = NonNullable<
+	app_convex_FunctionArgs<typeof app_convex_api.plugins.install_version>["serviceAccountGrants"]
+>;
+
+const RoutePluginsServiceAccountGrants = memo(function RoutePluginsServiceAccountGrants(props: {
+	serviceAccountId: app_convex_Id<"access_control_service_accounts">;
+	grants: PluginServiceAccountGrants;
+	disabled: boolean;
+	onChange: (grants: PluginServiceAccountGrants) => void;
+}) {
+	const { serviceAccountId, grants, disabled, onChange } = props;
+	const { membershipId } = AppTenantProvider.useContext();
+	const [resourceKind, setResourceKind] = useState<"workspace" | "file">("workspace");
+	const [path, setPath] = useState("");
+	const [level, setLevel] = useState<access_control_FileShareLevel>("read");
+	const node = useQuery(
+		app_convex_api.files_nodes.get_authorized_by_path,
+		resourceKind === "file" && path.startsWith("/") ? { membershipId, path } : "skip",
+	);
+	const management = useQuery(
+		app_convex_api.access_control.get_service_account_grant_management_state,
+		resourceKind === "workspace"
+			? { membershipId, serviceAccountId, resource: { kind: "workspace" } }
+			: node
+				? { membershipId, serviceAccountId, resource: { kind: "file", nodeId: node.nodeId } }
+				: "skip",
+	);
+	const [labels, setLabels] = useState<Record<string, string>>({});
+	const resourceKey = (resource: PluginServiceAccountGrants[number]["resource"]) =>
+		resource.kind === "workspace" ? "workspace" : resource.nodeId;
+	const add = () => {
+		if (disabled || !management?.canManage || !management.grantableLevels.includes(level) || grants.length >= 20)
+			return;
+		const key = resourceKey(management.resource);
+		setLabels({
+			...labels,
+			[key]:
+				management.resource.kind === "workspace"
+					? "Workspace"
+					: `${management.file?.path ?? "Protected item"} — ${management.file?.scope === "restricted_scope" ? "This restricted scope" : "This item only"}`,
+		});
+		onChange([
+			...grants.filter((grant) => resourceKey(grant.resource) !== key),
+			{ resource: management.resource, level },
+		]);
+	};
+	return (
+		<div className={"RoutePluginsPluginConsentModal-accountFields" satisfies RoutePluginsPlugin_ClassNames}>
+			<h3>Grants to apply on install</h3>
+			<p>Only grants you add below will be changed. Existing grants stay as they are.</p>
+			<MySelect
+				value={resourceKind}
+				setValue={(value) => {
+					if (!disabled && (value === "workspace" || value === "file")) setResourceKind(value);
+				}}
+			>
+				<MySelectLabel>Grant resource</MySelectLabel>
+				<MySelectTrigger disabled={disabled}>
+					<MyButton variant="outline">
+						{resourceKind === "workspace" ? "Workspace" : "File or folder"}
+						<MySelectOpenIndicator />
+					</MyButton>
+				</MySelectTrigger>
+				<MySelectPopover>
+					<MySelectPopoverContent>
+						<MySelectItem value="workspace">Workspace</MySelectItem>
+						<MySelectItem value="file">File or folder</MySelectItem>
+					</MySelectPopoverContent>
+				</MySelectPopover>
+			</MySelect>
+			{resourceKind === "file" ? (
+				<MyInput layout="stacked">
+					<MyInputLabel>Grant file or folder path</MyInputLabel>
+					<MyInputBackground />
+					<MyInputArea>
+						<MyInputControl
+							value={path}
+							placeholder="/logs"
+							onChange={(event) => {
+								if (!disabled) setPath(event.currentTarget.value);
+							}}
+						/>
+					</MyInputArea>
+					<MyInputBox />
+				</MyInput>
+			) : null}
+			{management ? (
+				<p>
+					{management.file?.path ?? "Workspace"}:{" "}
+					{management.resource.kind === "workspace"
+						? "Unrestricted workspace content"
+						: management.file?.scope === "restricted_scope"
+							? "This restricted scope"
+							: "This item only"}
+				</p>
+			) : null}
+			<MySelect
+				value={level}
+				setValue={(value) => {
+					if (!disabled) setLevel(value as access_control_FileShareLevel);
+				}}
+			>
+				<MySelectLabel>Grant access level</MySelectLabel>
+				<MySelectTrigger disabled={disabled}>
+					<MyButton variant="outline">
+						{access_control_FILE_SHARE_LEVELS[level].label}
+						<MySelectOpenIndicator />
+					</MyButton>
+				</MySelectTrigger>
+				<MySelectPopover>
+					<MySelectPopoverContent>
+						{access_control_FILE_SHARE_LEVEL_KEYS.map((key) => (
+							<MySelectItem key={key} value={key} disabled={!management?.grantableLevels.includes(key)}>
+								{access_control_FILE_SHARE_LEVELS[key].label}
+							</MySelectItem>
+						))}
+					</MySelectPopoverContent>
+				</MySelectPopover>
+			</MySelect>
+			<MyButton
+				variant="outline"
+				disabled={
+					disabled || !management?.canManage || !management.grantableLevels.includes(level) || grants.length >= 20
+				}
+				onClick={add}
+			>
+				Add reviewed grant
+			</MyButton>
+			<ul>
+				{grants.map((grant) => (
+					<li key={resourceKey(grant.resource)}>
+						{labels[resourceKey(grant.resource)] ?? "Selected resource"}:{" "}
+						{access_control_FILE_SHARE_LEVELS[grant.level].label}
+						<MyButton
+							variant="ghost"
+							disabled={disabled}
+							onClick={() =>
+								onChange(grants.filter((candidate) => resourceKey(candidate.resource) !== resourceKey(grant.resource)))
+							}
+						>
+							Remove from install
+						</MyButton>
+					</li>
+				))}
+			</ul>
+		</div>
+	);
+});
+
 function RoutePluginsPlugin() {
 	const { pluginName } = Route.useParams();
 	const { membershipId, workspaceId } = AppTenantProvider.useContext();
@@ -2064,6 +2230,16 @@ function RoutePluginsPlugin() {
 		publisherPlugin,
 	});
 	const [consenting, setConsenting] = useState(false);
+	const canManageAccounts = useQuery(app_convex_api.access_control.get_current_user_workspace_permission, {
+		membershipId,
+		permission: "workspace.service_accounts.manage",
+	});
+	const [installAccountId, setInstallAccountId] = useState<
+		app_convex_Id<"access_control_service_accounts"> | undefined
+	>();
+	const [installGrants, setInstallGrants] = useState<PluginServiceAccountGrants>([]);
+	const [rebindAccountId, setRebindAccountId] = useState<app_convex_Id<"access_control_service_accounts"> | null>(null);
+	const [rebinding, setRebinding] = useState(false);
 	const [installing, setInstalling] = useState(false);
 	const [uninstalling, setUninstalling] = useState(false);
 	const [removing, setRemoving] = useState(false);
@@ -2078,7 +2254,7 @@ function RoutePluginsPlugin() {
 	// stable management-action owner falls back to it.
 	const permissionDeniedRef = useRef<HTMLDivElement | null>(null);
 	const publishBusy = publishSessionManager.session !== null;
-	const managementBusy = publishSessionManager.managementAction !== null;
+	const managementBusy = publishSessionManager.managementAction !== null || rebinding;
 
 	// Computed before the early returns because the install landing effect below reads
 	// `showInstall`; every input is null-safe while the queries are still loading.
@@ -2089,6 +2265,36 @@ function RoutePluginsPlugin() {
 			: null;
 	const installedItem = installations?.find((item) => item.installation.pluginName === plugin?.name) ?? null;
 	const installedVersion = installedItem?.version;
+	const currentAccount = useQuery(
+		app_convex_api.access_control.get_service_account,
+		installedItem?.installation.serviceAccountId
+			? { membershipId, serviceAccountId: installedItem.installation.serviceAccountId }
+			: "skip",
+	);
+	const handleRebind = useFn(() => {
+		if (!installedItem || !rebindAccountId || rebinding || canManageAccounts !== true || publishBusy || managementBusy)
+			return;
+		setRebinding(true);
+		app_convex
+			.mutation(app_convex_api.plugins.set_installation_service_account, {
+				membershipId,
+				installationId: installedItem.installation._id,
+				serviceAccountId: rebindAccountId,
+			})
+			.then((result) => {
+				if (result._nay) toast.error(result._nay.message);
+				else {
+					heroTitleRef.current?.focus();
+					setRebindAccountId(null);
+					toast.success("Plugin service account changed");
+				}
+			})
+			.catch((error: unknown) => {
+				console.error("[RoutePluginsPlugin.handleRebind] Failed to change service account", { error });
+				toast.error("Could not change the service account");
+			})
+			.finally(() => setRebinding(false));
+	});
 	const showInstall =
 		plugin !== null && canManagePlugins === true && (!installedVersion || installedVersion.version !== plugin.version);
 
@@ -2096,7 +2302,7 @@ function RoutePluginsPlugin() {
 		(installation: RoutePlugins_Installation["installation"], button: HTMLButtonElement) => {
 			// Keep this guard because a mock or programmatic event can still call a disabled handler.
 			// The button stays enabled during its own request so it can keep the focus.
-			if (publishBusy || installing || uninstalling || removing) {
+			if (publishBusy || installing || uninstalling || removing || rebinding) {
 				return;
 			}
 			const actionVersion = publishSessionManager.beginManagementAction("uninstall");
@@ -2138,7 +2344,7 @@ function RoutePluginsPlugin() {
 	const handleRemoveClaim = useFn(() => {
 		// The menu item disables itself while work runs, but this guard, like on every other
 		// handler on this route, is what stops a second activation from starting the work twice.
-		if (!publisherPlugin || publishBusy || installing || uninstalling || removing) {
+		if (!publisherPlugin || publishBusy || installing || uninstalling || removing || rebinding) {
 			return;
 		}
 		const actionVersion = publishSessionManager.beginManagementAction("remove_repository");
@@ -2183,6 +2389,7 @@ function RoutePluginsPlugin() {
 			installing ||
 			uninstalling ||
 			removing ||
+			rebinding ||
 			plugin.reviewStatus === "rejected" ||
 			plugin.reviewStatus === "flagged"
 		) {
@@ -2201,6 +2408,8 @@ function RoutePluginsPlugin() {
 				acceptedCapabilities: plugin.capabilities,
 				acceptedOutboundOrigins: plugin.outboundOrigins,
 				acceptedUiOutboundOrigins: plugin.uiOutboundOrigins,
+				...(installAccountId ? { serviceAccountId: installAccountId } : {}),
+				...(installGrants.length > 0 ? { serviceAccountGrants: installGrants } : {}),
 			})
 			.then((result) => {
 				if (result._nay) {
@@ -2342,6 +2551,8 @@ function RoutePluginsPlugin() {
 			return;
 		}
 
+		setInstallAccountId(undefined);
+		setInstallGrants([]);
 		setConsenting(true);
 	};
 	const handleConsentOpenChange = (open: boolean) => {
@@ -2512,6 +2723,38 @@ function RoutePluginsPlugin() {
 						onOpenSecrets={() => setManagingSecrets(true)}
 					/>
 				) : null}
+				{installedItem ? (
+					<section className={"RoutePluginsPluginConsentModal-accountFields" satisfies RoutePluginsPlugin_ClassNames}>
+						<h2>Service account</h2>
+						<p>{currentAccount?.revokedAt === null ? currentAccount.name : "Service account unavailable"}</p>
+						{canManageAccounts === true ? (
+							<>
+								<ServiceAccountSelect
+									value={rebindAccountId}
+									onChange={(value) => {
+										if (!rebinding) setRebindAccountId(value);
+									}}
+									label="Replacement service account"
+									disabled={rebinding}
+								/>
+								<p>
+									Changing accounts stops work using the old account. It does not move grants or change existing file
+									policies.
+								</p>
+								<MyButton
+									variant="outline"
+									disabled={!rebindAccountId || publishBusy || (managementBusy && !rebinding)}
+									aria-busy={rebinding || undefined}
+									onClick={handleRebind}
+								>
+									{rebinding ? "Changing…" : "Change service account"}
+								</MyButton>
+							</>
+						) : (
+							<p>You need permission to manage service accounts to change this binding.</p>
+						)}
+					</section>
+				) : null}
 				{secretsInstallationId || publisherPlugin ? (
 					<RoutePluginsPluginSecrets
 						membershipId={membershipId}
@@ -2566,9 +2809,40 @@ function RoutePluginsPlugin() {
 						{/* Platform baseline a run receives, so it is only true for a plugin that can get one. A
 						    page-only plugin never starts a run, and its page token carries no write scope at
 						    all, so telling an admin otherwise would overstate what they are granting. */}
+						<div className={"RoutePluginsPluginConsentModal-accountFields" satisfies RoutePluginsPlugin_ClassNames}>
+							<ServiceAccountSelect
+								value={installAccountId ?? installedItem?.installation.serviceAccountId ?? null}
+								onChange={(value) => {
+									if (!installing) {
+										setInstallAccountId(value ?? undefined);
+										setInstallGrants([]);
+									}
+								}}
+								emptyLabel={installedItem ? "Keep current account" : "Create an empty account"}
+								disabled={installing || canManageAccounts !== true}
+							/>
+							<p>
+								{installedItem
+									? "Updates keep existing grants unless you add a reviewed grant below."
+									: "New accounts start without file access. Choose an existing account to review its grants here."}
+							</p>
+							{!installedItem && canManageAccounts !== true ? (
+								<p>You need permission to manage service accounts for a new installation.</p>
+							) : null}
+							{canManageAccounts === true && (installAccountId ?? installedItem?.installation.serviceAccountId) ? (
+								<RoutePluginsServiceAccountGrants
+									key={installAccountId ?? installedItem?.installation.serviceAccountId}
+									serviceAccountId={(installAccountId ?? installedItem?.installation.serviceAccountId)!}
+									grants={installGrants}
+									disabled={installing}
+									onChange={setInstallGrants}
+								/>
+							) : null}
+						</div>
 						{plugin.canProcessFiles ? (
 							<p className={"RoutePluginsPluginConsentModal-baseline" satisfies RoutePluginsPlugin_ClassNames}>
-								This plugin can read the triggering upload and create Markdown files beside it.
+								This plugin can read the triggering upload and create Markdown files beside it when its account grants
+								allow it.
 							</p>
 						) : null}
 
@@ -2705,7 +2979,9 @@ function RoutePluginsPlugin() {
 								Cancel
 							</MyButton>
 							<MyButton
-								disabled={publishBusy || (managementBusy && !installing)}
+								disabled={
+									publishBusy || (managementBusy && !installing) || (!installedItem && canManageAccounts !== true)
+								}
 								aria-busy={installing}
 								onClick={() => handleAcceptAndInstall(plugin)}
 							>

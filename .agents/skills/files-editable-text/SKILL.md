@@ -85,13 +85,13 @@ Two predicates in `packages/app/shared/files.ts` ask the two different questions
 `replace_file_content` (`packages/app/convex/files_nodes_content.ts`) is the **member's** content-write door for a non-collaborative file. It is an action plus a final mutation, because a Convex mutation cannot reach R2 and this door writes a new version snapshot object. The agent never uses it: an agent write becomes a pending update, and its Accept runs `save_file_pending_update_non_collaborative_in_db` (`files_pending_updates.ts`), which commits through the same `files_nodes_db_commit_text_replacement` helper as `finalize_file_content_replacement` (see `../files-agent-pending-updates/SKILL.md`, "Files with collaboration turned off"). A plugin updating its own non-collaborative file goes through the public `/api/v1/files/write` door instead, which has its own write pipeline and does not go through this helper.
 
 - The action checks auth and credits, runs the text cap and the frontmatter preflight, and PUTs the new content object. Over-cap frontmatter is refused with `Too many frontmatter fields`, the same words as the pending-update preflight: both are doors where a person hands over a whole text and can shorten it after reading the message. Materialization cannot refuse anybody, so it settles with the marker pair instead — see the `file-metadata` skill.
-- `finalize_file_content_replacement` re-runs auth → membership → ACL `content.write` → read-only lock and credits, then replaces the chunks, points the node at the new asset, stores the version snapshot, and emits the `file_save` billing event.
+- `finalize_file_content_replacement` re-runs auth → membership → ACL `content.write` → current write policies and credits, then replaces the chunks, points the node at the new asset, stores the version snapshot, and emits the `file_save` billing event.
 - Saves carry only the text and the caller's scope and file ids. Neither the action nor the final mutation compares an older content asset. The mutation that commits last wins, including when an earlier request takes longer to upload. Success is `_yay: null`.
 - The door refuses a collaborative file. That file's text lives in its Yjs document, and replacing the chunks under it would leave the two disagreeing.
 
 ## The two toggles
 
-Both live in `packages/app/convex/files_nodes_content.ts`. Both need ACL `content.write`, because changing the mode changes how the file is written. Both are refused by the read-only lock, and both are rate-limited on `files_tree_write`. Calling either one on a file already in that mode succeeds and does nothing, like `set_node_read_only`.
+Both live in `packages/app/convex/files_nodes_content.ts`. Both need ACL `content.write` and must pass the current write policies, because changing the mode changes how the file is written. Both are rate-limited on `files_tree_write`. An authorized call on a file already in that mode succeeds and does nothing.
 
 `set_file_non_collaborative` (mutation) turns collaboration OFF and is destructive:
 
@@ -102,7 +102,7 @@ Both live in `packages/app/convex/files_nodes_content.ts`. Both need ACL `conten
 - The mutation creates a `files_yjs_cleanup_tasks` doc in the same mutation that removes live pointers. Its `historyPending` flag owns bounded cleanup of old history. Every fresh-document final mutation checks that task and the remaining old history. It refuses while old docs remain; otherwise it retires history cleanup before publishing sequence zero. A late worker cannot delete fresh history. Asset cleanup continues separately and never blocks enabling once old history is gone.
 - It refuses a file that is still an eager-created pending node: "Accept or discard this new file before turning collaboration off." Such a node without a `yjsLastSequenceId` could never be hard-deleted again, so discard, expiry, and account deletion would all skip it and the sidebar would show it as "Added" forever.
 
-`set_file_collaborative` (action) turns collaboration ON without deleting committed history. It reads the committed content object, builds one fresh compact document for the stored `textKind`, and commits the text that new document produces — not the text that went in, because building a rich document normalizes Markdown. It borrows the operator repair's split (the action PUTs, the mutation publishes) but is built on the CREATION path: the repair patches Yjs docs a file already has, and this file has none. Its preflight returns the node's `readOnlyScopeNodeId` so the lock is answered BEFORE the two uploads; the publish mutation asks again, because somebody can lock the file while the objects upload.
+`set_file_collaborative` (action) turns collaboration ON without deleting committed history. It reads the committed content object, builds one fresh compact document for the stored `textKind`, and commits the text that new document produces — not the text that went in, because building a rich document normalizes Markdown. It borrows the operator repair's split (the action PUTs, the mutation publishes) but is built on the CREATION path: the repair patches Yjs docs a file already has, and this file has none. Its preflight returns `canWrite` after checking the actor against the current write policies. This check happens before the two uploads. The publish mutation checks again because policies can change while the objects upload.
 
 Turning collaboration on still checks `baseAssetId` in `finalize_file_collaboration_enable`. A save during the upload must refuse the mode change, or the new Yjs document could contain older text. This check is separate from last-write-wins saves.
 
@@ -149,17 +149,18 @@ The rich editor serializes the whole document back to Markdown on save, so the f
 
 Adding a comment in the rich editor saves the file at once — the thread anchor must live in a committed version, or resolving from the sidebar would target text nobody saved. The Comment button is disabled while unsaved edits exist; the member saves first, then comments. A comment added from a tab with older text saves that older text plus the mark. It does not re-read or merge another tab's changes. The other text stays in the File Snapshots dialog.
 
-# Read-Only Check
+# Write Policy Check
 
-The file lock is checked after ACL and before both content-write doors. `yjs_push_update`, snapshot
-restore, and operator Yjs repair check the current lock in their final mutation before any node,
-asset, chunk, snapshot, or Yjs write. A current lock returns `read_only`. A past lock that was removed
-before the final mutation does not refuse the write.
+The file write policies are checked after ACL and before both content-write doors. `yjs_push_update`,
+snapshot restore, and operator Yjs repair check them in their final mutation before any node, asset,
+chunk, snapshot, or Yjs write. The actor must satisfy each policy on the node and its ancestors.
+A policy refusal returns `read_only`. A policy removed before the final mutation does not refuse
+the write. See `../files-read-only/SKILL.md` for selected writers and inherited policies.
 
 When the editor becomes read-only, the Yjs provider removes queued local updates. It reloads the saved
-document and shows a warning that the local changes were not saved. The server does not keep lock
-history. Materialization still processes Yjs updates committed before the lock. This work finishes
-already saved content; it does not accept a new user edit.
+document and shows a warning that the local changes were not saved. The server does not keep policy
+history. Materialization still processes Yjs updates committed before a policy refused further edits.
+This work finishes already saved content; it does not accept a new user edit.
 
 # Limits
 
@@ -218,7 +219,7 @@ The sidebar New-file flow creates a Markdown file with a default name, and a ren
 Upload conversion keeps the original upload asset id until its final mutation. That mutation first
 accepts an exact repeated publish, then checks that the node still uses the original upload. If the
 node was deleted or replaced while R2 writes ran, it removes only that action's unpublished output.
-It leaves saved snapshots alone. A later read-only lock still allows the accepted upload to finish.
+It leaves saved snapshots alone. A later write policy still allows the accepted upload to finish.
 
 # Generic Text Function Names
 
@@ -240,5 +241,5 @@ Exact content uses `files_text_chunks.textChunk` for both document shapes. Searc
 - `../files-agent-pending-updates/SKILL.md` — the paged pending-state pipeline that door 2 protects.
 - `../convex-admin-ops/SKILL.md` — the operator runbook for the markers and the repair action.
 - `../ai-chat-agent/SKILL.md` — the agent tools that read and write both shapes.
-- `../file-metadata/SKILL.md` — the flat key-value map stored next to a file. It is not part of the document, so neither write door sees it, but it shares the read-only lock and the `content.write` permission.
+- `../file-metadata/SKILL.md` — the flat key-value map stored next to a file. It is not part of the document, so neither write door sees it, but it shares the write policies and the `content.write` permission.
 - `../public-api/SKILL.md` — the public routes; `/files/write` accepts every editable text type.

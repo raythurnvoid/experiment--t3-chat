@@ -228,7 +228,7 @@ function makeNode(args: {
 	kind?: "file" | "folder";
 	parentId?: string;
 	hasEditableYjsState?: boolean;
-	readOnlyState?: "writable" | "self" | "inherited";
+	canWrite?: boolean;
 	nonCollaborative?: boolean;
 }): app_convex_Doc<"files_nodes"> {
 	const kind = args.kind ?? "file";
@@ -239,7 +239,9 @@ function makeNode(args: {
 		name: args.path.split("/").pop() ?? args.path,
 		kind,
 		parentId: args.parentId ?? "root",
-		readOnlyState: args.readOnlyState ?? "writable",
+		canWrite: args.canWrite ?? true,
+		writeBlockedReason: args.canWrite === false ? "read_only" : null,
+		writePolicyState: "none",
 		archiveOperationId: null,
 		assetId: null,
 		textKind: null,
@@ -777,7 +779,7 @@ describe("FileEditorSidebarPending", () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "STAGED_MD", unstaged: "UNSTAGED_MD" }),
 		]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "alpha/intro.md", readOnlyState: "self" })]);
+		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "alpha/intro.md", canWrite: false })]);
 
 		render(<FileEditorSidebarPending />);
 

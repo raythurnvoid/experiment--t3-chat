@@ -1051,6 +1051,17 @@
 	}
 	/* #endregion publisher releases */
 
+	.RoutePluginsPluginConsentModal-accountFields {
+		display: flex;
+		flex-direction: column;
+		gap: 12px;
+		padding: 16px;
+		border: 1px solid var(--color-base-1-07);
+		border-radius: 10px;
+		font-size: 13px;
+		overflow-wrap: anywhere;
+	}
+
 	@media (max-width: 640px) {
 		.RoutePluginsPlugin-content {
 			padding: 16px;

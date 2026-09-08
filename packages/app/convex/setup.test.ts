@@ -67,9 +67,11 @@ afterEach(async () => {
 	}
 });
 
-export function test_convex(options: {
-	transactionLimits?: Parameters<typeof convexTest>[0]["transactionLimits"];
-} = {}) {
+export function test_convex(
+	options: {
+		transactionLimits?: Parameters<typeof convexTest>[0]["transactionLimits"];
+	} = {},
+) {
 	const t = convexTest({ schema, modules: convex_test_modules, transactionLimits: options.transactionLimits });
 	test_convex_instances.push(t);
 	const withIdentity = t.withIdentity.bind(t);
@@ -104,10 +106,7 @@ export function test_convex(options: {
 	return t;
 }
 
-export async function test_get_file_yjs_pointers(
-	t: ReturnType<typeof test_convex>,
-	nodeId: Id<"files_nodes">,
-) {
+export async function test_get_file_yjs_pointers(t: ReturnType<typeof test_convex>, nodeId: Id<"files_nodes">) {
 	return await t.run(async (ctx) => {
 		const node = await ctx.db.get("files_nodes", nodeId);
 		if (!node?.yjsLastSequenceId || !node.yjsSnapshotId) {
@@ -226,9 +225,8 @@ export const test_mocks = {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
 				archiveOperationId: null,
 			});
 		};
@@ -440,6 +438,36 @@ export const test_mocks_fill_db_with = {
 		} as const;
 	},
 
+	plugin_service_account: async (
+		ctx: MutationCtx,
+		args: {
+			organizationId: Id<"organizations">;
+			workspaceId: Id<"organizations_workspaces">;
+			pluginVersionId: Id<"plugins_versions">;
+		},
+	) => {
+		const version = await ctx.db.get("plugins_versions", args.pluginVersionId);
+		if (!version) throw new Error("Expected plugin version");
+		const now = Date.now();
+		const serviceAccountId = await ctx.db.insert("access_control_service_accounts", {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			name: version.name,
+			createdBy: version.createdBy,
+			createdAt: now,
+			updatedAt: now,
+			revokedAt: null,
+		});
+		await ctx.db.insert("plugins_service_account_bindings", {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			pluginName: version.name,
+			publisherUserId: version.createdBy,
+			sourceRepositoryUrl: version.sourceRepositoryUrl,
+			serviceAccountId,
+		});
+		return serviceAccountId;
+	},
 	nested_files: async (ctx: MutationCtx) => {
 		const membership = await test_mocks_fill_db_with.membership(ctx);
 		const createdByUserId = membership.userId;

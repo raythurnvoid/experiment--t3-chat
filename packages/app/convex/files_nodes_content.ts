@@ -130,7 +130,8 @@ import {
 	files_READ_RANGE_MAX_LINES,
 	files_line_range_from_text,
 	files_merge_contiguous_chunks,
-	files_node_require_writable,
+	files_nodes_db_require_user_writable,
+	type files_nodes_get_user_file_write_access_Result,
 	files_nodes_db_create_node_recursively_at_path,
 	files_tail_lines_from_text,
 	yjs_reserve_and_increment_last_sequence,
@@ -770,7 +771,7 @@ export const get_create_file_node_write_preflight = internalQuery({
 	returns: v.union(
 		v.null(),
 		v.object({
-			anchorReadOnlyScopeNodeId: v.union(v.id("files_nodes"), v.null()),
+			canWrite: v.boolean(),
 			targetNodeId: v.union(v.id("files_nodes"), v.null()),
 		}),
 	),
@@ -832,18 +833,21 @@ export const get_create_file_node_write_preflight = internalQuery({
 		}
 
 		return {
-			anchorReadOnlyScopeNodeId: destination.anchorNode?.readOnlyScopeNodeId ?? null,
+			canWrite:
+				destination.anchorNode === null ||
+				!(
+					await files_nodes_db_require_user_writable(ctx, {
+						node: destination.anchorNode,
+						userId: args.userId,
+					})
+				)._nay,
 			targetNodeId: destination.targetNode?._id ?? null,
 		};
 	},
 });
 
 type get_create_file_node_write_preflight_Result =
-	typeof get_create_file_node_write_preflight extends RegisteredQuery<
-		infer _Visibility,
-		infer _Args,
-		infer ReturnValue
-	>
+	typeof get_create_file_node_write_preflight extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -1014,9 +1018,10 @@ export const create_file_node = internalMutation({
 				}
 			}
 
-			const anchorWritable = files_node_require_writable({
-				readOnlyScopeNodeId: destination.anchorNode?.readOnlyScopeNodeId ?? null,
-			});
+			const anchorWritable =
+				destination.anchorNode === null
+					? Result({ _yay: null })
+					: await files_nodes_db_require_user_writable(ctx, { node: destination.anchorNode, userId: authorUserId });
 			if (anchorWritable._nay) {
 				return await refuse(anchorWritable._nay);
 			}
@@ -1458,13 +1463,9 @@ async function action_create_file_node(
 		return Result({ _nay: { message: "Not found" } });
 	}
 
-	// Refuse a locked destination before there is anything to clean up.
-	// The deepest existing parent stores the nearest lock.
-	const anchorWritable = files_node_require_writable({
-		readOnlyScopeNodeId: preflight.anchorReadOnlyScopeNodeId,
-	});
-	if (anchorWritable._nay) {
-		return anchorWritable;
+	// Refuse a blocked destination before there is anything to clean up.
+	if (!preflight.canWrite) {
+		return Result({ _nay: { name: "read_only", message: "This item is read-only." } });
 	}
 
 	// Refuse an occupied target here so no R2 work is needed.
@@ -1607,12 +1608,14 @@ export const create_text_node = action({
 		// An action cannot read the database, so the permission check goes through a query. It asks
 		// about the folder the file goes into, like the two create mutations do, so a grant on a
 		// restricted folder still lets its people add files there.
-		const allowed = await ctx.runQuery(api.files_nodes.get_current_user_file_write_permission, {
-			membershipId: args.membershipId,
+		const allowed = (await ctx.runQuery(internal.files_nodes.get_user_file_write_access, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
 			nodeId: args.parentId,
-		});
-		if (!allowed) {
-			return Result({ _nay: { message: "Permission denied" } });
+		})) as files_nodes_get_user_file_write_access_Result;
+		if (allowed._nay) {
+			return allowed;
 		}
 
 		// The public create action stays Markdown-only by product rule. Files of other text types
@@ -1641,6 +1644,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		userId: v.id("users"),
+		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
 		path: v.string(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
 		includePending: v.optional(v.boolean()),
@@ -1689,6 +1693,7 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
+			serviceAccountId: args.serviceAccountId,
 			nodes: [fileNode],
 		});
 		if (!readableNode) return null;
@@ -1756,7 +1761,11 @@ export const get_file_text_content_db_state_by_path = internalQuery({
 		const pendingReplacement = pendingUpdate?.pendingReplacement;
 		if (pendingUpdate && pendingReplacement && pendingReplacement.yjsRootKind !== undefined) {
 			const stagedAsset = await ctx.db.get("files_r2_assets", pendingReplacement.assetId);
-			if (stagedAsset?.r2Key && stagedAsset.organizationId === organizationId && stagedAsset.workspaceId === workspaceId) {
+			if (
+				stagedAsset?.r2Key &&
+				stagedAsset.organizationId === organizationId &&
+				stagedAsset.workspaceId === workspaceId
+			) {
 				return {
 					asset: null,
 					pendingReplacementText: { r2Key: stagedAsset.r2Key, size: pendingReplacement.size },
@@ -1932,6 +1941,7 @@ export const get_file_last_available_text_content_by_path = internalAction({
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		userId: v.id("users"),
+		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
 		path: v.string(),
 		pendingUpdateId: v.optional(v.id("files_pending_updates")),
 		includePending: v.optional(v.boolean()),
@@ -1954,6 +1964,7 @@ export const get_file_last_available_text_content_by_path = internalAction({
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.userId,
+			serviceAccountId: args.serviceAccountId,
 			path: args.path,
 			pendingUpdateId: args.pendingUpdateId,
 			includePending: args.includePending,
@@ -1974,8 +1985,8 @@ export const get_file_last_available_text_content_by_path = internalAction({
 				return null;
 			}
 
-			content = await r2_fetch_object_from_bucket({ key: contentState.pendingReplacementText.r2Key }).then(
-				(response) => response.text(),
+			content = await r2_fetch_object_from_bucket({ key: contentState.pendingReplacementText.r2Key }).then((response) =>
+				response.text(),
 			);
 		} else if (contentState.content !== undefined) {
 			content = contentState.content;
@@ -3519,7 +3530,7 @@ export const get_replace_file_content_preflight = internalQuery({
 		v.object({
 			rootKind: v.union(v.literal("rich_text"), v.literal("plain_text")),
 			contentType: v.optional(v.string()),
-			readOnlyScopeNodeId: v.union(v.id("files_nodes"), v.null()),
+			canWrite: v.boolean(),
 		}),
 		v.null(),
 	),
@@ -3553,7 +3564,7 @@ export const get_replace_file_content_preflight = internalQuery({
 		return {
 			rootKind: fileNode.textKind,
 			contentType: fileNode.contentType ?? undefined,
-			readOnlyScopeNodeId: fileNode.readOnlyScopeNodeId ?? null,
+			canWrite: !(await files_nodes_db_require_user_writable(ctx, { node: fileNode, userId: args.userId }))._nay,
 		};
 	},
 });
@@ -3609,11 +3620,8 @@ async function action_replace_file_content(
 	if (!preflight) {
 		return Result({ _nay: { message: "Not found" } });
 	}
-	const writable = files_node_require_writable({
-		readOnlyScopeNodeId: preflight.readOnlyScopeNodeId,
-	});
-	if (writable._nay) {
-		return writable;
+	if (!preflight.canWrite) {
+		return Result({ _nay: { name: "read_only", message: "This item is read-only." } });
 	}
 	const creditCheck = await ctx.runQuery(internal.billing.check_credits, {
 		userId: args.userId,
@@ -3938,7 +3946,7 @@ export const finalize_file_content_replacement = internalMutation({
 		}
 
 		// Check the lock after access and before the first write, like every other write door.
-		const writable = files_node_require_writable(fileNode);
+		const writable = await files_nodes_db_require_user_writable(ctx, { node: fileNode, userId: args.userId });
 		if (writable._nay) {
 			return writable;
 		}
@@ -4019,11 +4027,7 @@ export const finalize_file_content_replacement = internalMutation({
 });
 
 type finalize_file_content_replacement_Result =
-	typeof finalize_file_content_replacement extends RegisteredMutation<
-		infer _Visibility,
-		infer _Args,
-		infer ReturnValue
-	>
+	typeof finalize_file_content_replacement extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -4345,7 +4349,9 @@ async function db_install_file_content_replacement(
 	// index, the chunks are still saved, the index is skipped, and the marker pair stays set.
 	// So a big frontmatter never makes this write fail.
 	const frontmatter =
-		args.yjsRootKind === "rich_text" && args.text !== undefined ? files_metadata_preflight_frontmatter(args.text) : null;
+		args.yjsRootKind === "rich_text" && args.text !== undefined
+			? files_metadata_preflight_frontmatter(args.text)
+			: null;
 	if (frontmatter?._nay) {
 		console.warn("Installing content without frontmatter metadata: the frontmatter could not be parsed", {
 			nodeId,
@@ -4533,7 +4539,7 @@ export const finalize_file_pending_replacement = internalMutation({
 		}
 
 		// Check the lock after access and before the first write, like every other write door.
-		const writable = files_node_require_writable(fileNode);
+		const writable = await files_nodes_db_require_user_writable(ctx, { node: fileNode, userId: args.userId });
 		if (writable._nay) {
 			return writable;
 		}
@@ -4770,7 +4776,7 @@ export const restore_snapshot = internalMutation({
 		// Check read-only after access and before every write.
 		// If the file is read-only, add deletion jobs for both uploaded snapshots and delete their asset docs.
 		// The staged restore update expires through its normal cleanup.
-		const writable = files_node_require_writable(fileNode);
+		const writable = await files_nodes_db_require_user_writable(ctx, { node: fileNode, userId: userAuth.id });
 		if (writable._nay) {
 			await db_hand_unpublished_assets_to_deletion_ledger(ctx, {
 				organizationId: membership.organizationId,
@@ -5108,7 +5114,7 @@ export const finalize_snapshot_restore_replacement = internalMutation({
 		}
 
 		// Check the lock after access and before the first write, like every other write door.
-		const writable = files_node_require_writable(fileNode);
+		const writable = await files_nodes_db_require_user_writable(ctx, { node: fileNode, userId: userAuth.id });
 		if (writable._nay) {
 			return writable;
 		}
@@ -5501,7 +5507,12 @@ export const restore_snapshot_r2 = action({
 
 		// Check the current lock before staging or writing assets and R2 files.
 		// The final mutation checks it again.
-		const nodeWritable = files_node_require_writable(fileNode);
+		const nodeWritable = (await ctx.runQuery(internal.files_nodes.get_user_file_write_access, {
+			organizationId: fileNode.organizationId,
+			workspaceId: fileNode.workspaceId,
+			nodeId: fileNode._id,
+			userId: userAuth.id,
+		})) as files_nodes_get_user_file_write_access_Result;
 		if (nodeWritable._nay) {
 			return nodeWritable;
 		}
@@ -5543,7 +5554,7 @@ export const restore_snapshot_r2 = action({
 				snapshotId: args.snapshotId,
 				membership,
 				fileNode,
-				expectedAssetId: fileNode.collaborationEnabled === false ? undefined : fileNode.assetId ?? undefined,
+				expectedAssetId: fileNode.collaborationEnabled === false ? undefined : (fileNode.assetId ?? undefined),
 				versionAsset: snapshotContent.asset,
 				version,
 				materializationState,
@@ -5811,7 +5822,12 @@ export const repair_file_yjs_state_from_visible_text = internalAction({
 
 		// Repair changes user content, so the operator must unlock the file first.
 		// Check before writing assets and R2 files, then check again in the final mutation.
-		const nodeWritable = files_node_require_writable(fileNode);
+		const nodeWritable = (await ctx.runQuery(internal.files_nodes.get_user_file_write_access, {
+			organizationId: fileNode.organizationId,
+			workspaceId: fileNode.workspaceId,
+			nodeId: fileNode._id,
+			userId: args.authorUserId,
+		})) as files_nodes_get_user_file_write_access_Result;
 		if (nodeWritable._nay) {
 			return nodeWritable;
 		}
@@ -5883,8 +5899,7 @@ export const repair_file_yjs_state_from_visible_text = internalAction({
 			// text. A rich document with no rich root has empty visible text.
 			const extractedText = files_yjs_doc_get_text({ yjsDoc, rootKind });
 			if (extractedText._nay) {
-				visibleText =
-					rootKind === "plain_text" ? files_yjs_doc_get_plain_text({ yjsDoc }) : "";
+				visibleText = rootKind === "plain_text" ? files_yjs_doc_get_plain_text({ yjsDoc }) : "";
 			} else {
 				visibleText = extractedText._yay;
 			}
@@ -6052,7 +6067,10 @@ export const finalize_file_yjs_repair = internalMutation({
 		// Repair changes user content, so refuse a read-only file before the first write.
 		// The repair files are already in R2. Add deletion jobs and delete the asset docs
 		// in this transaction, so a later crash cannot lose cleanup.
-		const writable = files_node_require_writable(state.fileNode);
+		const writable = await files_nodes_db_require_user_writable(ctx, {
+			node: state.fileNode,
+			userId: args.authorUserId,
+		});
 		if (writable._nay) {
 			await db_hand_unpublished_assets_to_deletion_ledger(ctx, {
 				organizationId: args.organizationId,
@@ -6271,10 +6289,7 @@ async function db_delete_superseded_yjs_asset(
  * Transfer the late-PUT deadline before node or tenant deletion removes this asset.
  * The caller owns deleting the node's snapshots and the asset doc.
  */
-export async function files_nodes_db_handoff_yjs_cleanup_task(
-	ctx: MutationCtx,
-	task: Doc<"files_yjs_cleanup_tasks">,
-) {
+export async function files_nodes_db_handoff_yjs_cleanup_task(ctx: MutationCtx, task: Doc<"files_yjs_cleanup_tasks">) {
 	const asset = await ctx.db.get("files_r2_assets", task.supersededYjsAssetId);
 	if (asset) {
 		await r2_enqueue_object_deletion_job(ctx, {
@@ -6377,8 +6392,7 @@ export const cleanup_file_yjs_covered_rows = internalMutation({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const fileNode = await ctx.db.get("files_nodes", args.nodeId);
-		const sameTenant =
-			fileNode?.organizationId === args.organizationId && fileNode.workspaceId === args.workspaceId;
+		const sameTenant = fileNode?.organizationId === args.organizationId && fileNode.workspaceId === args.workspaceId;
 		const canDeleteCoveredRows =
 			sameTenant &&
 			args.expectedActiveYjsLastSequenceId !== undefined &&
@@ -6517,7 +6531,7 @@ export const set_file_non_collaborative = mutation({
 			return Result({ _nay: { message: "Not found" } });
 		}
 
-		// Already off. Repeated calls succeed, like `set_node_read_only`.
+		// Already off. Repeated calls succeed.
 		if (fileNode.collaborationEnabled === false) {
 			return Result({ _yay: null });
 		}
@@ -6527,7 +6541,7 @@ export const set_file_non_collaborative = mutation({
 		}
 
 		// Check the lock after access and before the first write, like every other write door.
-		const writable = files_node_require_writable(fileNode);
+		const writable = await files_nodes_db_require_user_writable(ctx, { node: fileNode, userId: userAuth.id });
 		if (writable._nay) {
 			return writable;
 		}
@@ -6645,19 +6659,13 @@ async function db_file_has_remaining_yjs_history(
 		ctx.db
 			.query("files_yjs_snapshots")
 			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-				q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("fileNodeId", args.nodeId),
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.nodeId),
 			)
 			.first(),
 		ctx.db
 			.query("files_yjs_updates")
 			.withIndex("by_organization_workspace_fileNode_sequence", (q) =>
-				q
-					.eq("organizationId", args.organizationId)
-					.eq("workspaceId", args.workspaceId)
-					.eq("fileNodeId", args.nodeId),
+				q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("fileNodeId", args.nodeId),
 			)
 			.first(),
 		ctx.db
@@ -6750,10 +6758,8 @@ export const get_set_file_collaborative_preflight = internalQuery({
 			 * The file already has a Yjs document, so the action answers success and stops.
 			 */
 			alreadyCollaborative: v.boolean(),
-			/**
-			 * `null` when the file is writable. The action refuses a locked file before it uploads.
-			 */
-			readOnlyScopeNodeId: v.union(v.id("files_nodes"), v.null()),
+			/** The action refuses a blocked file before it uploads. */
+			canWrite: v.boolean(),
 			cleanupInProgress: v.boolean(),
 			assetId: v.id("files_r2_assets"),
 			assetR2Key: v.union(v.string(), v.null()),
@@ -6816,7 +6822,7 @@ export const get_set_file_collaborative_preflight = internalQuery({
 			rootKind: fileNode.textKind,
 			contentType: fileNode.contentType ?? undefined,
 			alreadyCollaborative: fileNode.collaborationEnabled !== false,
-			readOnlyScopeNodeId: fileNode.readOnlyScopeNodeId ?? null,
+			canWrite: !(await files_nodes_db_require_user_writable(ctx, { node: fileNode, userId: args.userId }))._nay,
 			cleanupInProgress,
 			assetId: fileNode.assetId,
 			assetR2Key: asset.r2Key ?? null,
@@ -6825,11 +6831,7 @@ export const get_set_file_collaborative_preflight = internalQuery({
 });
 
 type get_set_file_collaborative_preflight_Result =
-	typeof get_set_file_collaborative_preflight extends RegisteredQuery<
-		infer _Visibility,
-		infer _Args,
-		infer ReturnValue
-	>
+	typeof get_set_file_collaborative_preflight extends RegisteredQuery<infer _Visibility, infer _Args, infer ReturnValue>
 		? Awaited<ReturnValue>
 		: never;
 
@@ -6873,15 +6875,16 @@ export const set_file_collaborative = action({
 			return Result({ _yay: null });
 		}
 		if (preflight.cleanupInProgress) {
-			return Result({ _nay: { message: "The old collaboration history is still being removed. Please try again later." } });
+			return Result({
+				_nay: { message: "The old collaboration history is still being removed. Please try again later." },
+			});
 		}
 
 		// Refuse a locked file here, before the two uploads below. The finalize mutation asks the
 		// same question again, because somebody can lock the file while the objects upload; this
 		// check only keeps the common refusal from writing two objects the cleanup must delete.
-		const writable = files_node_require_writable({ readOnlyScopeNodeId: preflight.readOnlyScopeNodeId });
-		if (writable._nay) {
-			return writable;
+		if (!preflight.canWrite) {
+			return Result({ _nay: { name: "read_only", message: "This item is read-only." } });
 		}
 
 		// The content asset holds exactly the committed chunk text: every door that writes the
@@ -7047,7 +7050,7 @@ export const finalize_file_collaboration_enable = internalMutation({
 		}
 
 		// Check the lock after access and before the first write, like every other write door.
-		const writable = files_node_require_writable(fileNode);
+		const writable = await files_nodes_db_require_user_writable(ctx, { node: fileNode, userId: userAuth.id });
 		if (writable._nay) {
 			return writable;
 		}

@@ -1,10 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api.js";
-import {
-	test_convex,
-	test_mocks_cancel_pending_home_file_seeds,
-	test_mocks_fill_db_with,
-} from "./setup.test.ts";
+import { test_convex, test_mocks_cancel_pending_home_file_seeds, test_mocks_fill_db_with } from "./setup.test.ts";
 import { access_control_FILE_SHARE_LEVELS } from "../shared/access-control.ts";
 
 afterEach(() => {
@@ -78,9 +74,9 @@ describe("tenant deletion with many direct file grants", () => {
 							contentFrontmatterTooLargeFieldCount: null,
 							contentFrontmatterTooLargeIndexDocumentCount: null,
 							restrictedScopeNodeId: null,
-							readOnlyScopeNodeId: null,
-							readOnlyPluginName: null,
-							readOnlyPluginServiceTargetId: null,
+							writePolicyScopeNodeId: null,
+							writePolicy: null,
+
 							archiveOperationId: null,
 						});
 						await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });

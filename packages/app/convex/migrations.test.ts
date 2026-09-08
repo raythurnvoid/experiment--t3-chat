@@ -165,6 +165,15 @@ async function seed_member_share_door(t: ReturnType<typeof test_convex>) {
 			updatedAt: now,
 		});
 		const installationId = await ctx.db.insert("plugins_workspace_installations", {
+			serviceAccountId: await ctx.db.insert("access_control_service_accounts", {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				name: "Chitchat",
+				createdBy: membership.userId,
+				createdAt: now,
+				updatedAt: now,
+				revokedAt: null,
+			}),
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			pluginVersionId,
@@ -181,6 +190,7 @@ async function seed_member_share_door(t: ReturnType<typeof test_convex>) {
 			updatedAt: now,
 		});
 		const sessionId = await ctx.db.insert("plugins_ui_sessions", {
+			serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installationId))!.serviceAccountId,
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			installationId,
@@ -189,6 +199,14 @@ async function seed_member_share_door(t: ReturnType<typeof test_convex>) {
 			tokenHash: "page-session-member-share-backfill",
 			createdAt: now,
 			expiresAt: now + 30 * 60 * 1000,
+		});
+		await ctx.db.insert("plugins_service_account_bindings", {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			pluginName: "chitchat",
+			publisherUserId: membership.userId,
+			sourceRepositoryUrl: (await ctx.db.get("plugins_versions", pluginVersionId))!.sourceRepositoryUrl,
+			serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installationId))!.serviceAccountId,
 		});
 
 		return { ...membership, pluginVersionId, installationId, sessionId } as const;
@@ -557,9 +575,7 @@ describe("backfill_plugin_scope_append_activity", () => {
 		await t.run(async (ctx) => {
 			const scopes = await ctx.db
 				.query("plugins_data_scopes")
-				.withIndex("by_installation_scope", (q) =>
-					q.eq("installationId", fixture.installationId).eq("scopeId", "live"),
-				)
+				.withIndex("by_installation_scope", (q) => q.eq("installationId", fixture.installationId).eq("scopeId", "live"))
 				.collect();
 			const replies = scopes.find((scope) => scope.collection === "replies");
 			await ctx.db.patch("plugins_data_scopes", replies!._id, { appendSequence: 2 });
@@ -693,6 +709,8 @@ describe("plugin scope cleanup migrations", () => {
 				updatedAt: now,
 			});
 			const siblingInstallationId = await ctx.db.insert("plugins_workspace_installations", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", fixture.installationId))!
+					.serviceAccountId,
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.workspaceId,
 				pluginVersionId: fixture.pluginVersionId,
@@ -709,6 +727,8 @@ describe("plugin scope cleanup migrations", () => {
 				updatedAt: now,
 			});
 			const deadInstallationId = await ctx.db.insert("plugins_workspace_installations", {
+				serviceAccountId: (await ctx.db.get("plugins_workspace_installations", fixture.installationId))!
+					.serviceAccountId,
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.workspaceId,
 				pluginVersionId: fixture.pluginVersionId,

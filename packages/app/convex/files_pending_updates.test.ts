@@ -223,9 +223,8 @@ async function seed_file_with_markdown(args: {
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
-		readOnlyScopeNodeId: null,
-		readOnlyPluginName: null,
-		readOnlyPluginServiceTargetId: null,
+		writePolicyScopeNodeId: null,
+		writePolicy: null,
 	});
 
 	const snapshotId = await ctx.db.insert("files_yjs_snapshots", {
@@ -300,9 +299,9 @@ async function seed_folder_node(args: {
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
-		readOnlyScopeNodeId: null,
-		readOnlyPluginName: null,
-		readOnlyPluginServiceTargetId: null,
+		writePolicyScopeNodeId: null,
+		writePolicy: null,
+
 		archiveOperationId: null,
 	});
 }
@@ -428,9 +427,9 @@ async function seed_non_collaborative_file(ctx: MutationCtx, path: string, text:
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
-		readOnlyScopeNodeId: null,
-		readOnlyPluginName: null,
-		readOnlyPluginServiceTargetId: null,
+		writePolicyScopeNodeId: null,
+		writePolicy: null,
+
 		archiveOperationId: null,
 	});
 	await files_nodes_db_insert_file_content_docs(ctx, {
@@ -908,7 +907,11 @@ async function set_pending_test_read_only(
 	membershipId: Id<"organizations_workspaces_users">,
 	nodeId: Id<"files_nodes">,
 ) {
-	const result = await asUser.mutation(api.files_nodes.set_node_read_only, { membershipId, nodeId });
+	const result = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+		writePolicy: { mode: "read_only" },
+		membershipId,
+		nodeId,
+	});
 	if (result._nay) {
 		throw new Error(result._nay.message);
 	}
@@ -919,7 +922,11 @@ async function set_pending_test_writable(
 	membershipId: Id<"organizations_workspaces_users">,
 	nodeId: Id<"files_nodes">,
 ) {
-	const result = await asUser.mutation(api.files_nodes.set_node_writable, { membershipId, nodeId });
+	const result = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+		writePolicy: null,
+		membershipId,
+		nodeId,
+	});
 	if (result._nay) {
 		throw new Error(result._nay.message);
 	}
@@ -6899,7 +6906,8 @@ describe("save_file_pending_update on a file with collaboration off", () => {
 			external_id: seeded.userId,
 			name: "Test User",
 		});
-		const locked = await asUser.mutation(api.files_nodes.set_node_read_only, {
+		const locked = await asUser.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 		});
@@ -10281,9 +10289,9 @@ describe("upsert_file_pending_move_in_db", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
+
 				archiveOperationId: null,
 			}),
 		);
@@ -11482,9 +11490,9 @@ describe("apply_file_pending_move", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
+
 				archiveOperationId: null,
 			}),
 		);
@@ -17940,9 +17948,9 @@ describe("pending path overlay reads", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
+
 				archiveOperationId: null,
 			});
 		});

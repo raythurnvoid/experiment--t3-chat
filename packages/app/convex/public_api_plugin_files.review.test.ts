@@ -28,7 +28,28 @@ describe("ensure_plugin_folder", () => {
 				createdAt: now,
 				updatedAt: now,
 			});
-			const capabilities: plugins_Capability[] = ["plugin.backend.invoke", "workspace.files.write", "workspace.files.own-write"];
+			const capabilities: plugins_Capability[] = [
+				"plugin.backend.invoke",
+				"workspace.files.write",
+				"workspace.files.own-write",
+			];
+			const serviceAccountId = await ctx.db.insert("access_control_service_accounts", {
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				name: "Probe",
+				createdBy: owner.userId,
+				createdAt: now,
+				updatedAt: now,
+				revokedAt: null,
+			});
+			await ctx.db.insert("plugins_service_account_bindings", {
+				organizationId: owner.organizationId,
+				workspaceId: owner.workspaceId,
+				serviceAccountId,
+				pluginName: "probe",
+				publisherUserId: owner.userId,
+				sourceRepositoryUrl: "https://github.com/bonobo/probe-plugin",
+			});
 			// The publication pipeline is outside this permission test.
 			const pluginVersionId = await ctx.db.insert("plugins_versions", {
 				name: "probe",
@@ -67,6 +88,7 @@ describe("ensure_plugin_folder", () => {
 				updatedAt: now,
 			});
 			const installationId = await ctx.db.insert("plugins_workspace_installations", {
+				serviceAccountId,
 				organizationId: owner.organizationId,
 				workspaceId: owner.workspaceId,
 				pluginVersionId,
@@ -83,6 +105,8 @@ describe("ensure_plugin_folder", () => {
 				updatedAt: now,
 			});
 			const parentId = await ctx.db.insert("files_nodes", {
+				writePolicy: null,
+				writePolicyScopeNodeId: null,
 				organizationId: owner.organizationId,
 				workspaceId: owner.workspaceId,
 				parentId: files_ROOT_ID,
@@ -108,12 +132,9 @@ describe("ensure_plugin_folder", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
 				archiveOperationId: null,
 			});
-			return { owner, userId, membershipId, pluginVersionId, installationId, parentId };
+			return { owner, userId, membershipId, pluginVersionId, installationId, parentId, serviceAccountId };
 		});
 		const asOwner = t.withIdentity({
 			issuer: "https://clerk.test",
@@ -126,6 +147,16 @@ describe("ensure_plugin_folder", () => {
 			external_id: fixture.userId,
 		});
 		expect(
+			(
+				await asOwner.mutation(api.access_control.set_service_account_grant, {
+					membershipId: fixture.owner.membershipId,
+					serviceAccountId: fixture.serviceAccountId,
+					resource: { kind: "workspace" },
+					level: "write",
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(
 			await asMember.mutation(api.files_metadata.set_entries, {
 				membershipId: fixture.membershipId,
 				fileNodeId: fixture.parentId,
@@ -134,6 +165,7 @@ describe("ensure_plugin_folder", () => {
 		).toEqual({ _yay: null });
 		const apiToken = `plr_${"d".repeat(64)}`;
 		const started = await t.mutation(internal.plugins_runtime.start_invoke_run, {
+			serviceAccountId: fixture.serviceAccountId,
 			organizationId: fixture.owner.organizationId,
 			workspaceId: fixture.owner.workspaceId,
 			installationId: fixture.installationId,
@@ -157,11 +189,9 @@ describe("ensure_plugin_folder", () => {
 			nodes: await ctx.db.query("files_nodes").collect(),
 			metadata: await ctx.db.query("files_metadata_docs").collect(),
 		}));
-		expect(before.nodes).toEqual([
-			expect.objectContaining({ _id: fixture.parentId, path: "/tagged" }),
-		]);
+		expect(before.nodes).toEqual([expect.objectContaining({ _id: fixture.parentId, path: "/tagged" })]);
 		expect(before.nodes[0]!.restrictedScopeNodeId).toBeNull();
-		expect(before.nodes[0]!.readOnlyScopeNodeId).toBeNull();
+		expect(before.nodes[0]!.writePolicyScopeNodeId).toBeNull();
 		expect(await t.run((ctx) => ctx.db.get("organizations_workspaces_users", fixture.membershipId))).toMatchObject({
 			active: true,
 		});

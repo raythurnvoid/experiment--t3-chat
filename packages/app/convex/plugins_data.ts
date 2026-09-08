@@ -17,10 +17,8 @@ import {
 import { components, internal } from "./_generated/api.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import { access_control_db_has_permission } from "./access_control.ts";
-import {
-	files_nodes_db_cascade_restricted_scope,
-	files_nodes_db_resolve_parent_restricted_scope,
-} from "./files_nodes.ts";
+import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
+import { files_nodes_db_cascade_restricted_scope } from "./files_nodes.ts";
 import type { access_control_Permission } from "../shared/access-control.ts";
 import type { billing_PRODUCTS } from "../shared/billing.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
@@ -393,6 +391,12 @@ const store_principal_validator = v.object({
 	 * Stable producer identity. Versioned keys and reservations belong to it.
 	 */
 	principalKey: v.string(),
+	credentialRef: v.union(
+		v.object({ kind: v.literal("user_api_key"), credentialId: v.id("api_credentials") }),
+		v.object({ kind: v.literal("plugin_run"), runId: v.id("plugins_event_runs") }),
+		v.object({ kind: v.literal("plugin_ui"), sessionId: v.id("plugins_ui_sessions") }),
+		v.object({ kind: v.literal("plugin_service"), grantId: v.id("plugin_service_grants") }),
+	),
 });
 
 type StorePrincipal = Infer<typeof store_principal_validator>;
@@ -424,6 +428,10 @@ async function db_authorize(
 		collections?: string[];
 	},
 ) {
+	const credentialRef = args.principal.credentialRef;
+	if (credentialRef.kind !== args.principal.kind) {
+		return Result({ _nay: { message: "Unauthenticated" } });
+	}
 	const installationId = ctx.db.normalizeId("plugins_workspace_installations", args.principal.installationId);
 	const installation = installationId ? await ctx.db.get("plugins_workspace_installations", installationId) : null;
 	if (
@@ -433,6 +441,93 @@ async function db_authorize(
 		installation.workspaceId !== args.principal.workspaceId
 	) {
 		return Result({ _nay: { message: "Not found" } });
+	}
+
+	// Keep the original credential live through this transaction, including its saved account pin.
+	const now = Date.now();
+	const scope = args.permission === "content.read" ? "plugin_data:read" : "plugin_data:write";
+	if (credentialRef.kind === "user_api_key") {
+		const credential = await ctx.db.get("api_credentials", credentialRef.credentialId);
+		if (
+			!credential ||
+			credential.revokedAt !== null ||
+			credential.organizationId !== installation.organizationId ||
+			credential.workspaceId !== installation.workspaceId ||
+			credential.userId !== args.principal.actorUserId ||
+			credential.keyId !== args.principal.principalKey
+		) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		if (credential.serviceAccountId !== null || !credential.scopes.includes(scope)) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+	} else if (credentialRef.kind === "plugin_run") {
+		const run = await ctx.db.get("plugins_event_runs", credentialRef.runId);
+		if (
+			!run ||
+			run.status !== "running" ||
+			!run.apiTokenExpiresAt ||
+			run.apiTokenExpiresAt <= now ||
+			run.organizationId !== installation.organizationId ||
+			run.workspaceId !== installation.workspaceId ||
+			run.installationId !== installation._id ||
+			run.pluginVersionId !== installation.pluginVersionId ||
+			run.actorUserId !== args.principal.actorUserId ||
+			`plugin_run:${run._id}` !== args.principal.principalKey ||
+			!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: run.serviceAccountId }))
+		) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		if (run.fileNodeId) {
+			const source = await ctx.db.get("files_nodes", run.fileNodeId);
+			if (
+				!source ||
+				source.archiveOperationId !== null ||
+				source.organizationId !== installation.organizationId ||
+				source.workspaceId !== installation.workspaceId
+			) {
+				return Result({ _nay: { message: "Unauthenticated" } });
+			}
+		}
+		if (!run.acceptedCapabilities.includes(CAPABILITY_BY_PERMISSION[args.permission])) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
+	} else if (credentialRef.kind === "plugin_ui") {
+		const session = await ctx.db.get("plugins_ui_sessions", credentialRef.sessionId);
+		if (
+			!session ||
+			session.expiresAt <= now ||
+			session.organizationId !== installation.organizationId ||
+			session.workspaceId !== installation.workspaceId ||
+			session.installationId !== installation._id ||
+			session.pluginVersionId !== installation.pluginVersionId ||
+			session.userId !== args.principal.actorUserId ||
+			`plugin_ui:${session.organizationId}:${session.workspaceId}:${session.userId}:${session.installationId}` !==
+				args.principal.principalKey ||
+			!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: session.serviceAccountId }))
+		) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+	} else {
+		const grant = await ctx.db.get("plugin_service_grants", credentialRef.grantId);
+		if (
+			!grant ||
+			grant.revokedAt != null ||
+			grant.expiresAt <= now ||
+			grant.organizationId !== installation.organizationId ||
+			grant.workspaceId !== installation.workspaceId ||
+			grant.installationId !== installation._id ||
+			grant.pluginVersionId !== installation.pluginVersionId ||
+			grant.actorUserId !== args.principal.actorUserId ||
+			grant.principalKey !== args.principal.principalKey ||
+			!installation.acceptedCapabilities.includes("plugin.service.connect") ||
+			!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: grant.serviceAccountId }))
+		) {
+			return Result({ _nay: { message: "Unauthenticated" } });
+		}
+		if (!grant.scopes.includes(scope)) {
+			return Result({ _nay: { message: "Permission denied" } });
+		}
 	}
 
 	// The workspace consented to this plugin storing data. Without that consent there is nothing to
@@ -457,6 +552,7 @@ async function db_authorize(
 		}
 	}
 
+	const actor = await ctx.db.get("users", args.principal.actorUserId);
 	const membership = await ctx.db
 		.query("organizations_workspaces_users")
 		.withIndex("by_active_user_organization_workspace", (q) =>
@@ -467,7 +563,7 @@ async function db_authorize(
 				.eq("workspaceId", args.principal.workspaceId),
 		)
 		.first();
-	if (!membership) {
+	if (!actor || actor.deletedAt != null || !membership || membership.pendingOrganizationRemoval) {
 		return Result({ _nay: { message: "Unauthenticated" } });
 	}
 
@@ -610,14 +706,14 @@ async function db_create_usage(
  * Patch the accounting doc, and warn once when this write is what crosses 80% of a ceiling.
  *
  * The comparison lives here and not in `check_capacity`. That function is pure and runs before the
-	 * write is accepted, so from there it would warn for writes that are then refused for another
+ * write is accepted, so from there it would warn for writes that are then refused for another
  * reason, and again on every optimistic-concurrency retry of the same logical write. This runs in
  * the transaction that commits the crossing, so one crossing is one line.
  *
  * The thresholds are 80% of the two aggregates `check_capacity` refuses on, not of `usedBytes` and
  * `usedDocuments` alone. Three callers never touch those two fields: a reservation moves
-	 * `reservedBytes` and `reservedDocuments`, while revision tombstones and deleted-append receipts
-	 * move `tombstoneDocuments`.
+ * `reservedBytes` and `reservedDocuments`, while revision tombstones and deleted-append receipts
+ * move `tombstoneDocuments`.
  * Those are the doors that fill the store fastest, so a threshold over the stored halves alone would
  * never fire for them and the installation would meet its ceiling unannounced.
  *
@@ -798,10 +894,7 @@ async function db_patch_member_usage(
 		args.targetUsageId === "current"
 			? await db_get_member_usage_row(ctx, { installationId: args.installation._id, userId: args.userId })
 			: await ctx.db.get("plugins_data_member_usage", args.targetUsageId);
-	if (
-		existing &&
-		(existing.installationId !== args.installation._id || existing.userId !== args.userId)
-	) {
+	if (existing && (existing.installationId !== args.installation._id || existing.userId !== args.userId)) {
 		const errorMessage = "Plugin document points at the wrong member usage row";
 		const errorData = { memberUsageId: existing._id, installationId: args.installation._id, userId: args.userId };
 		console.error(errorMessage, errorData);
@@ -2327,6 +2420,9 @@ async function db_authorize_page_write(
 		installation.organizationId !== session.organizationId ||
 		installation.workspaceId !== session.workspaceId
 	) {
+		return Result({ _nay: { message: "Unauthorized" } });
+	}
+	if (!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: session.serviceAccountId }))) {
 		return Result({ _nay: { message: "Unauthorized" } });
 	}
 
@@ -3944,24 +4040,7 @@ export async function plugins_data_db_apply_file_access_binding(
 		if (!existingBinding) {
 			return;
 		}
-		const grants = await db_binding_file_grants(ctx, {
-			organizationId: existingBinding.organizationId,
-			workspaceId: existingBinding.workspaceId,
-			nodeId: existingBinding.nodeId,
-		});
-		for (const grant of grants) {
-			await ctx.db.delete("access_control_permission_grants", grant._id);
-		}
 		await ctx.db.delete("plugins_file_access_bindings", existingBinding._id);
-
-		const parentScope = await files_nodes_db_resolve_parent_restricted_scope(ctx, { parentId: args.node.parentId });
-		await ctx.db.patch("files_nodes", args.node._id, { restrictedScopeNodeId: parentScope });
-		await files_nodes_db_cascade_restricted_scope(ctx, {
-			organizationId: args.node.organizationId,
-			workspaceId: args.node.workspaceId,
-			parentId: args.node._id,
-			scopeNodeId: parentScope,
-		});
 		return;
 	}
 
@@ -4001,6 +4080,10 @@ export async function plugins_data_db_apply_file_access_binding(
 	});
 	const kept = new Set<Id<"users">>();
 	for (const grant of nodeGrants) {
+		// Reader changes do not change independent software access.
+		if (grant.principalKind === "service_account") {
+			continue;
+		}
 		const mirrored =
 			grant.principalKind === "user" &&
 			grant.userId !== undefined &&
@@ -5207,6 +5290,9 @@ async function db_authorize_page_read(ctx: QueryCtx) {
 	) {
 		return null;
 	}
+	if (!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: session.serviceAccountId }))) {
+		return null;
+	}
 	const user = await ctx.db.get("users", session.userId);
 	if (!user || user.deletedAt != null) {
 		return null;
@@ -6394,9 +6480,7 @@ export async function plugins_data_db_drain_batch(
 		})
 		.take(args.batchSize);
 	if (appendReplayReceipts.length > 0) {
-		await Promise.all(
-			appendReplayReceipts.map((doc) => ctx.db.delete("plugins_data_append_replay_receipts", doc._id)),
-		);
+		await Promise.all(appendReplayReceipts.map((doc) => ctx.db.delete("plugins_data_append_replay_receipts", doc._id)));
 		return { done: false, deletedCount: appendReplayReceipts.length };
 	}
 
@@ -6601,8 +6685,8 @@ async function db_take_preview_docs<T>(
  * how many there are would exceed what one Convex query may read. The counters are maintained in the
  * same transaction as every write, so they are the same answer for one read.
  *
-	 * `tombstones` therefore covers released reservation records, revision tombstones, and deleted-append
-	 * receipts together, because one counter pays for all of their slots.
+ * `tombstones` therefore covers released reservation records, revision tombstones, and deleted-append
+ * receipts together, because one counter pays for all of their slots.
  *
  * Per-member share rows, service grants, private-scope grants, live scope docs, and
  * released-range fences have no counters. Each registry-preview read is bounded. Past

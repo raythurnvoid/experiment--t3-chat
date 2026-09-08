@@ -20,19 +20,19 @@ export type files_VisibleTreeNode = Omit<
 	| "workspaceId"
 	| "createdBy"
 	| "updatedBy"
-	| "readOnlyScopeNodeId"
-	| "readOnlyPluginName"
-	| "readOnlyPluginServiceTargetId"
+	| "writePolicyScopeNodeId"
+	| "writePolicy"
 > & {
 	organizationId: app_convex_Id<"organizations">;
 	workspaceId: app_convex_Id<"organizations_workspaces">;
 	createdBy: app_convex_Id<"users">;
 	updatedBy: app_convex_Id<"users">;
-	// Safe read-only fields for the client. Send the lock source only when the caller can read it.
-	// Never send the raw `readOnlyScopeNodeId` because it may name a hidden folder.
-	readOnlyState: "writable" | "self" | "inherited";
-	readOnlySourceNodeId?: app_convex_Id<"files_nodes">;
-	readOnlySourcePath?: string;
+	canWrite: boolean;
+	writeBlockedReason: "permission" | "read_only" | null;
+	// Rule location is display-only. A selected writer may still edit.
+	writePolicyState: "none" | "self" | "inherited";
+	writePolicySourceNodeId?: app_convex_Id<"files_nodes">;
+	writePolicySourcePath?: string;
 };
 
 export const files_SYNTHETIC_ROOT_FOLDER = {
@@ -64,7 +64,10 @@ export const files_SYNTHETIC_ROOT_FOLDER = {
 	updatedBy: "",
 	createdBy: "",
 	updatedAt: 0,
-	readOnlyState: "writable",
+	// Root actions use the live workspace permission query.
+	canWrite: false,
+	writeBlockedReason: null,
+	writePolicyState: "none",
 } as const satisfies Merge<
 	files_VisibleTreeNode,
 	{
@@ -110,7 +113,7 @@ export function files_can_move_node_between_restricted_scopes(args: {
  * Run this once for the whole visible tree instead of searching again for every row.
  */
 export function files_collect_read_only_ancestor_ids(
-	nodes: Array<Pick<files_VisibleTreeNode, "_id" | "parentId" | "readOnlyState">>,
+	nodes: Array<Pick<files_VisibleTreeNode, "_id" | "parentId" | "canWrite">>,
 ) {
 	// The map also accepts "root", which has no node.
 	const nodesById = new Map<files_VisibleTreeNode["parentId"], (typeof nodes)[number]>();
@@ -120,7 +123,7 @@ export function files_collect_read_only_ancestor_ids(
 
 	const ancestorIds = new Set<files_VisibleTreeNode["_id"]>();
 	for (const node of nodes) {
-		if (node.readOnlyState === "writable") {
+		if (node.canWrite) {
 			continue;
 		}
 
@@ -138,26 +141,18 @@ export function files_collect_read_only_ancestor_ids(
 /**
  * Get the read-only label and tooltip for one file-tree row. Return null when no label is needed.
  *
- * Never name a hidden lock source. Say "a protected folder" instead.
+ * Describe a refused write without exposing the policy's selected writer.
  */
 export function files_get_read_only_row_labels(args: {
-	readOnlyState: files_VisibleTreeNode["readOnlyState"];
-	readOnlySourcePath: string | undefined;
+	canWrite: boolean;
+	writeBlockedReason: files_VisibleTreeNode["writeBlockedReason"];
 	/** True when a writable row contains a visible read-only child. */
 	hasVisibleReadOnlyDescendant: boolean;
 }) {
-	if (args.readOnlyState === "self") {
-		return { description: "read-only", tooltip: "Read-only" };
-	}
-	if (args.readOnlyState === "inherited") {
-		if (args.readOnlySourcePath !== undefined) {
-			return {
-				description: `read-only from ${args.readOnlySourcePath}`,
-				tooltip: `Read-only from ${args.readOnlySourcePath}`,
-			};
-		}
-
-		return { description: "read-only from a protected folder", tooltip: "Read-only from a protected folder" };
+	if (!args.canWrite) {
+		return args.writeBlockedReason === "read_only"
+			? { description: "protected", tooltip: "A file policy blocks editing" }
+			: { description: "read-only", tooltip: "You don't have permission to edit this item" };
 	}
 	if (args.hasVisibleReadOnlyDescendant) {
 		return { description: "contains read-only items", tooltip: "Contains read-only items" };
@@ -167,17 +162,13 @@ export function files_get_read_only_row_labels(args: {
 }
 
 /**
- * Combine write permission with the current read-only state.
+ * Use the server's write answer for this user.
  *
  * A folder with a read-only child can still receive new children. It cannot be renamed, moved, or
  * archived because those actions would also change the read-only child.
  */
-export function files_get_read_only_capabilities(args: {
-	canWrite: boolean;
-	readOnlyState: files_VisibleTreeNode["readOnlyState"];
-	hasVisibleReadOnlyDescendant: boolean;
-}) {
-	const isWritable = args.canWrite && args.readOnlyState === "writable";
+export function files_get_read_only_capabilities(args: { canWrite: boolean; hasVisibleReadOnlyDescendant: boolean }) {
+	const isWritable = args.canWrite;
 	const canChangeSubtree = isWritable && !args.hasVisibleReadOnlyDescendant;
 
 	return {
@@ -727,10 +718,7 @@ export function files_get_upload_pipeline_state(
 	return asset.kind === "upload" ? "pending_processing" : "not_applicable";
 }
 
-type FileNodeFieldsForEditability = Pick<
-	app_convex_Doc<"files_nodes">,
-	"kind" | "assetId" | "textKind"
->;
+type FileNodeFieldsForEditability = Pick<app_convex_Doc<"files_nodes">, "kind" | "assetId" | "textKind">;
 
 /**
  * True when the node is a text file the app can read and write, whether or not it is collaborative.
@@ -757,7 +745,9 @@ export function files_node_has_editable_yjs_state<
 		| (FileNodeFieldsForEditability & Pick<app_convex_Doc<"files_nodes">, "yjsSnapshotId" | "yjsLastSequenceId">)
 		| null
 		| undefined,
->(node: Node): node is NonNullable<Node> & {
+>(
+	node: Node,
+): node is NonNullable<Node> & {
 	kind: "file";
 	assetId: NonNullable<FileNodeFieldsForEditability["assetId"]>;
 	yjsSnapshotId: app_convex_Id<"files_yjs_snapshots">;
@@ -767,11 +757,7 @@ export function files_node_has_editable_yjs_state<
 	// Treat Yjs pointers as the editor-ready signal instead of inferring readiness from MIME metadata.
 	// A non-collaborative file is editable text but has no Yjs document, so it fails this on purpose
 	// and every Yjs door refuses it.
-	return (
-		files_node_has_editable_text_content(node) &&
-		node.yjsSnapshotId !== null &&
-		node.yjsLastSequenceId !== null
-	);
+	return files_node_has_editable_text_content(node) && node.yjsSnapshotId !== null && node.yjsLastSequenceId !== null;
 }
 
 type FilePendingUpdateFieldsForYjsContent = Pick<

@@ -312,29 +312,31 @@ Important behavior:
 - both switch the sidebar to the Pending changes tab by writing `app_state::files_last_tab` (the strip on click; the badge is display-only)
 - the shared `FILE_EDITOR_SIDEBAR_TAB_ID_PENDING` constant (moved here so the sidebar tabs, the strip, and the agent panel import it without a cycle)
 
-# Read-Only Locks
+# Write Policies
 
-Read-only protects both proposal creation and proposal commit. The full contract lives in
+Current file policy protects both proposal creation and proposal commit. Ordinary app, agent, and
+Bash proposals use the human actor as writer. Selecting that user does not grant file access, and
+every parent policy still applies. The full contract lives in
 `../files-read-only/SKILL.md`.
 
 - New content, move, replace, archive, and delete proposals require every node they would change to
   be writable. Copy may read a locked source, but its destination and replacement occupant must be
   writable.
-- Proposal creation, rebase, Save, and Accept may check locks before their action work. The final
-  mutation checks the current locks again before its first write. It checks the destination,
+- Proposal creation, rebase, Save, and Accept check ACL and policy before their action work. The final
+  mutation checks current policy again before its first write. It checks the destination,
   replacement occupant, and the occupant a replace-move archives.
-- The final mutation uses only the current lock state. A proposal created before a lock stays visible.
-  Accept and Save refuse while an affected node is locked. They may finish after every affected node
-  is writable again. There is no lock history counter.
-- A replace flow also stores the ordered source node ids. This is not lock history. It stops Accept
+- A proposal created before a policy change stays visible. Accept and Save refuse while any affected
+  node refuses the human writer. They may finish when every affected node permits the writer again.
+  There is no policy history counter. UI controls use actual `canWrite`, not policy presence.
+- A replace flow also stores the ordered source node ids. This is not policy history. It stops Accept
   from changing different files from the ones the user reviewed.
 - Whole-proposal Discard and Discard all stay available. They delete only the caller's pending docs.
   Diff hunk discard and editor-level discard that rewrite the pending Yjs model remain blocked.
 - `eagerCreated.createdAncestorIds` stores the ids of missing folders created with the new file. The
   ids are stored deepest first so cleanup can delete empty folders from the inside out.
-- Discard, expiry, and failed-write cleanup check the current lock on the eager-created file and each
-  created ancestor before the first delete. If one is locked, delete the pending docs but keep the
-  committed file and folders. A past lock that is now removed does not block safe cleanup.
+- Discard, expiry, and failed-write cleanup check the proposer's current policy access on the
+  eager-created file and each created ancestor before the first delete. If one refuses, delete the
+  pending docs but keep the committed file and folders. Past policy state does not block safe cleanup.
 
 # Cleanup And Expiry Model
 

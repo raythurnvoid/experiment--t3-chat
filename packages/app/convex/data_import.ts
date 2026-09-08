@@ -21,7 +21,7 @@ import { files_metadata_FRONTMATTER_FIELD_PREFIX } from "../shared/files-metadat
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
 import { server_path_normalize } from "../server/server-utils.ts";
 import {
-	files_node_require_writable,
+	files_nodes_db_require_user_writable,
 	files_nodes_db_archive_nodes,
 	files_nodes_db_create_node_recursively_at_path,
 } from "./files_nodes.ts";
@@ -139,7 +139,10 @@ export const create_upload_targets = internalMutation({
 			if (existingNode) {
 				// Normal imports must respect read-only locks. Only a named migration or repair may
 				// bypass a lock, and this import has no bypass.
-				const writable = files_node_require_writable(existingNode);
+				const writable = await files_nodes_db_require_user_writable(ctx, {
+					node: existingNode,
+					userId: args.createdBy,
+				});
 				if (writable._nay) {
 					return Result({ _nay: { ...writable._nay, data: { path: item.path } } });
 				}
@@ -183,7 +186,10 @@ export const create_upload_targets = internalMutation({
 				}
 				// A read-only parent folder stops the whole batch before its first write.
 				if (ancestor) {
-					const ancestorWritable = files_node_require_writable(ancestor);
+					const ancestorWritable = await files_nodes_db_require_user_writable(ctx, {
+						node: ancestor,
+						userId: args.createdBy,
+					});
 					if (ancestorWritable._nay) {
 						return Result({ _nay: { ...ancestorWritable._nay, data: { path: item.path } } });
 					}
@@ -410,10 +416,7 @@ export const list_unfinalized = internalQuery({
 			const nodes = await ctx.db
 				.query("files_nodes")
 				.withIndex("by_organization_workspace_asset", (q) =>
-					q
-						.eq("organizationId", args.organizationId)
-						.eq("workspaceId", args.workspaceId)
-						.eq("assetId", asset._id),
+					q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("assetId", asset._id),
 				)
 				.collect();
 			results.push({

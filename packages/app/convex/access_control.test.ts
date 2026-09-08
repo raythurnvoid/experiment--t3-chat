@@ -6,12 +6,16 @@ import {
 	test_get_file_yjs_pointers,
 	test_mocks_cancel_pending_home_file_seeds,
 	test_mocks_fill_db_with,
+	test_mocks,
 } from "./setup.test.ts";
 import {
 	access_control_db_ensure_role_assignment,
+	access_control_db_filter_readable_file_nodes,
+	access_control_db_can_act_on_file_node,
 	access_control_db_has_permission,
 	access_control_db_resolve_effective_permissions,
 	access_control_db_role_file_grant_caller_cannot_give,
+	access_control_db_set_service_account_grant,
 } from "./access_control.ts";
 import {
 	organizations_db_create,
@@ -217,6 +221,15 @@ async function access_control_test_seed_activity(
 			updatedAt: now,
 		});
 		const installationId = await ctx.db.insert("plugins_workspace_installations", {
+			serviceAccountId: await ctx.db.insert("access_control_service_accounts", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.defaultWorkspaceId,
+				name: "Media",
+				createdBy: fixture.ownerId,
+				createdAt: now,
+				updatedAt: now,
+				revokedAt: null,
+			}),
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.defaultWorkspaceId,
 			pluginVersionId,
@@ -242,6 +255,7 @@ async function access_control_test_seed_activity(
 			updatedAt: now,
 		});
 		const runId = await ctx.db.insert("plugins_event_runs", {
+			serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installationId))!.serviceAccountId,
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.defaultWorkspaceId,
 			assetId,
@@ -302,6 +316,648 @@ async function access_control_test_seed_open_folder(
 	expect(folder._nay).toBeUndefined();
 	return folder._yay!.nodeId;
 }
+
+describe("access_control_db_set_service_account_grant", () => {
+	test("changes only the named account grants and preserves human grants", async () => {
+		const t = test_convex();
+		await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "service-grant-owner" });
+			const membership = await test_mocks_fill_db_with.membership(ctx, { userId });
+			const { organizationId, workspaceId } = membership;
+			const serviceAccountId = await ctx.db.insert("access_control_service_accounts", {
+				organizationId,
+				workspaceId,
+				name: "Script",
+				createdBy: userId,
+				createdAt: 10,
+				updatedAt: 10,
+				revokedAt: null,
+			});
+			const nodeId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId,
+				workspaceId,
+				createdBy: userId,
+				updatedBy: userId,
+			});
+			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
+			const humanGrantId = await ctx.db.insert("access_control_permission_grants", {
+				organizationId,
+				workspaceId,
+				resourceKind: "file",
+				resourceId: nodeId,
+				principalKind: "user",
+				userId,
+				permission: "content.read",
+				createdAt: 20,
+				updatedAt: 21,
+			});
+			const humanGrant = await ctx.db.get("access_control_permission_grants", humanGrantId);
+			const args = { organizationId, workspaceId, serviceAccountId, resource: { kind: "file" as const, nodeId } };
+			expect((await access_control_db_set_service_account_grant(ctx, { ...args, level: "manage" }))._yay).toEqual({
+				changed: true,
+			});
+			const first = await ctx.db.query("access_control_permission_grants").collect();
+			expect(
+				first
+					.filter((grant) => grant.serviceAccountId === serviceAccountId)
+					.map((grant) => grant.permission)
+					.sort(),
+			).toEqual(["content.permissions.manage", "content.read", "content.write"]);
+			expect((await access_control_db_set_service_account_grant(ctx, { ...args, level: "manage" }))._yay).toEqual({
+				changed: false,
+			});
+			expect(await ctx.db.query("access_control_permission_grants").collect()).toEqual(first);
+			expect((await access_control_db_set_service_account_grant(ctx, { ...args, level: "read" }))._yay).toEqual({
+				changed: true,
+			});
+			expect((await access_control_db_set_service_account_grant(ctx, { ...args, level: null }))._yay).toEqual({
+				changed: true,
+			});
+			expect(await ctx.db.query("access_control_permission_grants").collect()).toEqual([humanGrant]);
+		});
+	});
+
+	test("refuses foreign accounts, foreign resources, inherited scopes, and revoked additions", async () => {
+		const t = test_convex();
+		await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "service-grant-bounds" });
+			const membership = await test_mocks_fill_db_with.membership(ctx, { userId });
+			const { organizationId, workspaceId } = membership;
+			const foreignWorkspaceId = await ctx.db.insert("organizations_workspaces", {
+				organizationId,
+				name: "foreign",
+				description: "",
+				default: false,
+				updatedAt: 1,
+			});
+			const serviceAccountId = await ctx.db.insert("access_control_service_accounts", {
+				organizationId,
+				workspaceId,
+				name: "Script",
+				createdBy: userId,
+				createdAt: 10,
+				updatedAt: 10,
+				revokedAt: null,
+			});
+			const parentId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId,
+				workspaceId,
+				createdBy: userId,
+				updatedBy: userId,
+			});
+			const childId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId,
+				workspaceId,
+				parentId,
+				restrictedScopeNodeId: parentId,
+				createdBy: userId,
+				updatedBy: userId,
+			});
+			const foreignId = await ctx.db.insert("files_nodes", {
+				...test_mocks.files.base(),
+				organizationId,
+				workspaceId: foreignWorkspaceId,
+				createdBy: userId,
+				updatedBy: userId,
+			});
+			const args = { organizationId, workspaceId, serviceAccountId, level: "write" as const };
+			expect(
+				(
+					await access_control_db_set_service_account_grant(ctx, {
+						...args,
+						workspaceId: foreignWorkspaceId,
+						resource: { kind: "workspace" },
+					})
+				)._nay?.message,
+			).toBe("Service account is unavailable");
+			expect(
+				(
+					await access_control_db_set_service_account_grant(ctx, {
+						...args,
+						resource: { kind: "file", nodeId: foreignId },
+					})
+				)._nay?.message,
+			).toBe("File is unavailable");
+			expect(
+				(
+					await access_control_db_set_service_account_grant(ctx, {
+						...args,
+						resource: { kind: "file", nodeId: childId },
+					})
+				)._nay?.message,
+			).toBe("Set access on the restricted scope");
+			await ctx.db.patch("access_control_service_accounts", serviceAccountId, { revokedAt: 30 });
+			expect(
+				(
+					await access_control_db_set_service_account_grant(ctx, {
+						...args,
+						resource: { kind: "workspace" },
+					})
+				)._nay?.message,
+			).toBe("Service account is unavailable");
+			expect(await ctx.db.query("access_control_permission_grants").collect()).toEqual([]);
+		});
+	});
+});
+
+describe("service account controls", () => {
+	test.each(["workspace purge", "member removal"] as const)("refuses account changes during %s", async (state) => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "Account lifecycle",
+			suffix: "account-lifecycle",
+		});
+		const created = await fixture.asOwner.mutation(api.access_control.create_service_account, {
+			membershipId: fixture.ownerMembershipId,
+			name: "Existing script",
+		});
+		expect(created._nay).toBeUndefined();
+		const serviceAccountId = created._yay!.serviceAccountId;
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		expect(
+			await fixture.asOwner.mutation(api.access_control.set_service_account_grant, {
+				membershipId: fixture.ownerMembershipId,
+				serviceAccountId,
+				resource: { kind: "workspace" },
+				level: "write",
+			}),
+		).toEqual({ _yay: null });
+		await t.run(async (ctx) => {
+			if (state === "workspace purge")
+				await ctx.db.patch("organizations_workspaces", fixture.defaultWorkspaceId, {
+					pluginDataPurgeStartedAt: Date.now(),
+				});
+			else
+				await ctx.db.patch("organizations_workspaces_users", fixture.ownerMembershipId, {
+					pendingOrganizationRemoval: true,
+				});
+		});
+		const before = await t.run(async (ctx) => ({
+			accounts: await ctx.db.query("access_control_service_accounts").collect(),
+			grants: await ctx.db.query("access_control_permission_grants").collect(),
+		}));
+		expect(
+			(
+				await fixture.asOwner.mutation(api.access_control.create_service_account, {
+					membershipId: fixture.ownerMembershipId,
+					name: "Too late",
+				})
+			)._nay,
+		).toMatchObject({ message: "Not found" });
+		expect(
+			(
+				await fixture.asOwner.mutation(api.access_control.rename_service_account, {
+					membershipId: fixture.ownerMembershipId,
+					serviceAccountId,
+					name: "Too late",
+				})
+			)._nay,
+		).toMatchObject({ message: "Not found" });
+		expect(
+			(
+				await fixture.asOwner.mutation(api.access_control.set_service_account_grant, {
+					membershipId: fixture.ownerMembershipId,
+					serviceAccountId,
+					resource: { kind: "workspace" },
+					level: "manage",
+				})
+			)._nay,
+		).toMatchObject({ message: "Not found" });
+		expect(
+			await t.run(async (ctx) => ({
+				accounts: await ctx.db.query("access_control_service_accounts").collect(),
+				grants: await ctx.db.query("access_control_permission_grants").collect(),
+			})),
+		).toEqual(before);
+	});
+
+	test("supports personal workspaces, trims labels, and retains revoked identities without grants", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "Account controls",
+			suffix: "account-controls",
+		});
+		await t.run(async (ctx) => {
+			await ctx.db.patch("organizations", fixture.organizationId, { default: true });
+		});
+		const created = await fixture.asOwner.mutation(api.access_control.create_service_account, {
+			membershipId: fixture.ownerMembershipId,
+			name: "  Personal script  ",
+		});
+		expect(created._nay).toBeUndefined();
+		const serviceAccountId = created._yay!.serviceAccountId;
+		const initial = await t.run(async (ctx) => await ctx.db.get("access_control_service_accounts", serviceAccountId));
+		expect(initial?.name).toBe("Personal script");
+		expect(await t.run(async (ctx) => await ctx.db.query("access_control_permission_grants").collect())).toEqual([]);
+		const args = { membershipId: fixture.memberMembershipId, serviceAccountId };
+		expect((await fixture.asMember.query(api.access_control.get_service_account, args))?.name).toBe("Personal script");
+		expect(
+			(await fixture.asMember.mutation(api.access_control.rename_service_account, { ...args, name: "Denied" }))._nay
+				?.message,
+		).toBe("Permission denied");
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		expect(
+			(
+				await fixture.asOwner.mutation(api.access_control.rename_service_account, {
+					...args,
+					membershipId: fixture.ownerMembershipId,
+					name: "Renamed",
+				})
+			)._nay,
+		).toBeUndefined();
+		const renamed = await t.run(async (ctx) => await ctx.db.get("access_control_service_accounts", serviceAccountId));
+		expect(renamed).toEqual({ ...initial, name: "Renamed", updatedAt: renamed!.updatedAt });
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		expect(
+			(
+				await fixture.asOwner.mutation(api.access_control.revoke_service_account, {
+					...args,
+					membershipId: fixture.ownerMembershipId,
+				})
+			)._nay,
+		).toBeUndefined();
+		const revoked = await t.run(async (ctx) => await ctx.db.get("access_control_service_accounts", serviceAccountId));
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		await fixture.asOwner.mutation(api.access_control.revoke_service_account, {
+			...args,
+			membershipId: fixture.ownerMembershipId,
+		});
+		expect(await t.run(async (ctx) => await ctx.db.get("access_control_service_accounts", serviceAccountId))).toEqual(
+			revoked,
+		);
+		expect(await fixture.asMember.query(api.access_control.get_service_account, args)).toBeNull();
+		expect(
+			(
+				await fixture.asMember.query(api.access_control.list_service_accounts, {
+					membershipId: fixture.memberMembershipId,
+					includeRevoked: true,
+					paginationOpts: { cursor: null, numItems: 50 },
+				})
+			).page,
+		).toEqual([]);
+		expect(
+			(
+				await fixture.asOwner.query(api.access_control.list_service_accounts, {
+					membershipId: fixture.ownerMembershipId,
+					includeRevoked: true,
+					paginationOpts: { cursor: null, numItems: 50 },
+				})
+			).page.map((account) => account._id),
+		).toContain(serviceAccountId);
+		await expect(t.query(api.access_control.get_service_account, args)).rejects.toThrow("Unauthenticated");
+	});
+
+	test("requires account management and the exact resource ceiling, without workspace content authority", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "Account ceiling",
+			suffix: "account-ceiling",
+		});
+		const created = await fixture.asOwner.mutation(api.access_control.create_service_account, {
+			membershipId: fixture.ownerMembershipId,
+			name: "Limited",
+		});
+		const serviceAccountId = created._yay!.serviceAccountId;
+		const nodeId = await access_control_test_seed_open_folder(fixture, { name: "private" });
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
+			const role = await ctx.db.insert("access_control_roles", {
+				organizationId: fixture.organizationId,
+				name: "Accounts only",
+				normalizedName: "accounts only",
+				description: "",
+				permissions: ["workspace.service_accounts.manage"],
+				createdBy: fixture.ownerId,
+				createdAt: 1,
+				updatedAt: 1,
+			});
+			const assignment = await ctx.db
+				.query("access_control_role_assignments")
+				.withIndex("by_organization_workspace_user", (q) =>
+					q
+						.eq("organizationId", fixture.organizationId)
+						.eq("workspaceId", fixture.defaultWorkspaceId)
+						.eq("userId", fixture.memberId),
+				)
+				.first();
+			await ctx.db.patch("access_control_role_assignments", assignment!._id, { role });
+			for (const permission of ["content.read", "content.permissions.manage"] as const) {
+				await ctx.db.insert("access_control_permission_grants", {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.defaultWorkspaceId,
+					resourceKind: "file",
+					resourceId: nodeId,
+					principalKind: "user",
+					userId: fixture.memberId,
+					permission,
+					createdAt: 1,
+					updatedAt: 1,
+				});
+			}
+		});
+		const args = {
+			membershipId: fixture.memberMembershipId,
+			serviceAccountId,
+			resource: { kind: "file" as const, nodeId },
+		};
+		const state = await fixture.asMember.query(api.access_control.get_service_account_grant_management_state, args);
+		expect(state).toMatchObject({ resource: args.resource, level: null, canManage: true, grantableLevels: ["read"] });
+		expect(
+			(await fixture.asMember.mutation(api.access_control.set_service_account_grant, { ...args, level: "write" }))._nay
+				?.message,
+		).toContain("Edit workspace content");
+		expect(
+			(await fixture.asMember.mutation(api.access_control.set_service_account_grant, { ...args, level: "read" }))._nay,
+		).toBeUndefined();
+		expect(
+			(
+				await fixture.asMember.mutation(api.access_control.set_service_account_grant, {
+					...args,
+					resource: { kind: "workspace" },
+					level: "read",
+				})
+			)._nay,
+		).toBeDefined();
+		const page = await fixture.asMember.query(api.access_control.list_service_account_grants, {
+			membershipId: fixture.memberMembershipId,
+			serviceAccountId,
+			paginationOpts: { cursor: null, numItems: 1 },
+		});
+		expect(page.page).toHaveLength(1);
+		expect(page.page[0]).toMatchObject({ resource: args.resource, level: "read", grantableLevels: ["read"] });
+	});
+});
+
+describe("access_control_db_has_permission service accounts", () => {
+	test("isolates account grants, restricts workspace fallback, and intersects the owner at every read helper", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "Account isolation",
+			suffix: "account-isolation",
+		});
+		const created = await fixture.asOwner.mutation(api.access_control.create_service_account, {
+			membershipId: fixture.ownerMembershipId,
+			name: "Exact",
+		});
+		const serviceAccountId = created._yay!.serviceAccountId;
+		const nodeId = await access_control_test_seed_open_folder(fixture, { name: "exact" });
+		const otherId = await access_control_test_seed_open_folder(fixture, { name: "other" });
+		await t.run(async (ctx) => {
+			const node = (await ctx.db.get("files_nodes", nodeId))!;
+			const other = (await ctx.db.get("files_nodes", otherId))!;
+			const common = {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.defaultWorkspaceId,
+				defaultWorkspaceId: fixture.defaultWorkspaceId,
+				organizationOwnerUserId: fixture.ownerId,
+			};
+			const check = (target: typeof node, permission: "content.read" | "content.write" = "content.read") =>
+				access_control_db_has_permission(ctx, {
+					...common,
+					serviceAccountId,
+					resource: { kind: "file", id: target._id, restrictedScopeNodeId: target.restrictedScopeNodeId },
+					permission,
+				});
+			expect(await check(node)).toBe(false);
+			expect(
+				await access_control_db_filter_readable_file_nodes(ctx, {
+					...common,
+					userId: fixture.ownerId,
+					serviceAccountId,
+					nodes: [node, other],
+				}),
+			).toEqual([]);
+			expect(
+				await access_control_db_can_act_on_file_node(ctx, {
+					...common,
+					userId: fixture.ownerId,
+					serviceAccountId,
+					fileNode: node,
+					permission: "content.write",
+				}),
+			).toBe(false);
+			await access_control_db_set_service_account_grant(ctx, {
+				...common,
+				serviceAccountId,
+				resource: { kind: "file", nodeId },
+				level: "read",
+			});
+			expect(await check(node)).toBe(true);
+			expect(await check(node, "content.write")).toBe(false);
+			expect(await check(other)).toBe(false);
+			expect(
+				(
+					await access_control_db_filter_readable_file_nodes(ctx, {
+						...common,
+						userId: fixture.ownerId,
+						serviceAccountId,
+						nodes: [node, other],
+					})
+				).map((item) => item._id),
+			).toEqual([nodeId]);
+			await access_control_db_set_service_account_grant(ctx, {
+				...common,
+				serviceAccountId,
+				resource: { kind: "workspace" },
+				level: "write",
+			});
+			expect(await check(other, "content.write")).toBe(true);
+			const assignments = await ctx.db
+				.query("access_control_role_assignments")
+				.withIndex("by_organization_workspace_user", (q) =>
+					q
+						.eq("organizationId", fixture.organizationId)
+						.eq("workspaceId", fixture.defaultWorkspaceId)
+						.eq("userId", fixture.memberId),
+				)
+				.collect();
+			for (const assignment of assignments) await ctx.db.delete("access_control_role_assignments", assignment._id);
+			for (const permission of ["content.read", "content.write"] as const) {
+				await ctx.db.insert("access_control_permission_grants", {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.defaultWorkspaceId,
+					resourceKind: "workspace",
+					resourceId: fixture.defaultWorkspaceId,
+					principalKind: "user",
+					userId: fixture.memberId,
+					permission,
+					createdAt: 1,
+					updatedAt: 1,
+				});
+			}
+			// A direct human workspace grant still covers an open node when an account is present.
+			expect(
+				await access_control_db_filter_readable_file_nodes(ctx, {
+					...common,
+					userId: fixture.memberId,
+					serviceAccountId,
+					nodes: [other],
+				}),
+			).toEqual([other]);
+			expect(
+				await access_control_db_can_act_on_file_node(ctx, {
+					...common,
+					userId: fixture.memberId,
+					serviceAccountId,
+					fileNode: other,
+					permission: "content.write",
+				}),
+			).toBe(true);
+			await ctx.db.patch("files_nodes", otherId, { restrictedScopeNodeId: otherId });
+			const restricted = (await ctx.db.get("files_nodes", otherId))!;
+			expect(await check(restricted)).toBe(false);
+			await access_control_db_set_service_account_grant(ctx, {
+				...common,
+				serviceAccountId,
+				resource: { kind: "file", nodeId: otherId },
+				level: "write",
+			});
+			expect(await check(restricted, "content.write")).toBe(true);
+			// The account can read here, but its human actor was never added to this scope.
+			expect(
+				await access_control_db_filter_readable_file_nodes(ctx, {
+					...common,
+					userId: fixture.memberId,
+					serviceAccountId,
+					nodes: [restricted],
+				}),
+			).toEqual([]);
+			expect(
+				await access_control_db_can_act_on_file_node(ctx, {
+					...common,
+					userId: fixture.memberId,
+					serviceAccountId,
+					fileNode: restricted,
+					permission: "content.write",
+				}),
+			).toBe(false);
+			await ctx.db.patch("access_control_service_accounts", serviceAccountId, { revokedAt: 1 });
+			expect(await check(node)).toBe(false);
+			expect(await check(restricted)).toBe(false);
+		});
+	});
+});
+
+describe("set_node_share_grant service accounts", () => {
+	test("preserves reader bindings and independent account grants during human sharing changes", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "Account binding",
+			suffix: "account-binding",
+		});
+		const created = await fixture.asOwner.mutation(api.access_control.create_service_account, {
+			membershipId: fixture.ownerMembershipId,
+			name: "Output writer",
+		});
+		const serviceAccountId = created._yay!.serviceAccountId;
+		const nodeId = await access_control_test_seed_open_folder(fixture, { name: "bound-output" });
+		const activityId = await access_control_test_seed_activity(t, fixture, { fileNodeId: nodeId });
+		const binding = await t.run(async (ctx) => {
+			const activity = (await ctx.db.get("activities", activityId))!;
+			if (activity.source.type !== "plugin_run") throw new Error("Expected plugin activity");
+			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
+			const id = await ctx.db.insert("plugins_file_access_bindings", {
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.defaultWorkspaceId,
+				nodeId,
+				installationId: activity.source.installationId,
+				scopeId: "private",
+				updatedAt: 1,
+			});
+			return await ctx.db.get("plugins_file_access_bindings", id);
+		});
+		const args = {
+			membershipId: fixture.ownerMembershipId,
+			nodeId,
+			principal: { kind: "service_account" as const, serviceAccountId },
+		};
+		await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, { ...args, level: "write" });
+		expect(await t.run(async (ctx) => await ctx.db.get("plugins_file_access_bindings", binding!._id))).toEqual(binding);
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		await fixture.asOwner.mutation(api.files_sharing.remove_node_share_grant, args);
+		expect(await t.run(async (ctx) => await ctx.db.get("plugins_file_access_bindings", binding!._id))).toEqual(binding);
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, { ...args, level: "write" });
+		const grants = await t.run(async (ctx) => await ctx.db.query("access_control_permission_grants").collect());
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		expect(
+			(
+				await fixture.asOwner.mutation(api.files_sharing.unrestrict_node, {
+					membershipId: fixture.ownerMembershipId,
+					nodeId,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(await t.run(async (ctx) => await ctx.db.query("access_control_permission_grants").collect())).toEqual(
+			grants,
+		);
+	});
+
+	test("shares exact open nodes and removes a stored grant after a move changes its scope", async () => {
+		const t = test_convex();
+		const fixture = await access_control_test_seed_enforcement_fixture(t, {
+			name: "Account shares",
+			suffix: "account-shares",
+		});
+		const created = await fixture.asOwner.mutation(api.access_control.create_service_account, {
+			membershipId: fixture.ownerMembershipId,
+			name: "Writer",
+		});
+		const serviceAccountId = created._yay!.serviceAccountId;
+		const nodeId = await access_control_test_seed_open_folder(fixture, { name: "output" });
+		const scopeId = await access_control_test_seed_open_folder(fixture, { name: "restricted" });
+		const args = {
+			membershipId: fixture.ownerMembershipId,
+			nodeId,
+			principal: { kind: "service_account" as const, serviceAccountId },
+		};
+		expect(
+			(await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, { ...args, level: "manage" }))._nay,
+		).toBeUndefined();
+		expect(
+			await fixture.asOwner.query(api.files_sharing.get_node_share_state, {
+				membershipId: fixture.ownerMembershipId,
+				nodeId,
+			}),
+		).toMatchObject({
+			entries: [{ principal: args.principal, level: "manage", serviceAccountName: "Writer" }],
+			canShareWithServiceAccounts: true,
+			serviceGrantableLevels: ["read", "write", "manage"],
+		});
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_nodes", scopeId, { restrictedScopeNodeId: scopeId });
+			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: scopeId, parentId: scopeId });
+		});
+		expect(
+			(
+				await fixture.asOwner.query(api.access_control.get_service_account_grant_management_state, {
+					membershipId: fixture.ownerMembershipId,
+					serviceAccountId,
+					resource: { kind: "file", nodeId },
+				})
+			)?.resource,
+		).toEqual({ kind: "file", nodeId: scopeId });
+		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
+		expect((await fixture.asOwner.mutation(api.files_sharing.remove_node_share_grant, args))._nay).toBeUndefined();
+		expect(
+			await t.run(
+				async (ctx) =>
+					await ctx.db
+						.query("access_control_permission_grants")
+						.withIndex("by_organization_workspace_serviceAccount", (q) =>
+							q
+								.eq("organizationId", fixture.organizationId)
+								.eq("workspaceId", fixture.defaultWorkspaceId)
+								.eq("serviceAccountId", serviceAccountId),
+						)
+						.collect(),
+			),
+		).toEqual([]);
+	});
+});
 
 describe("enforcement", () => {
 	test("a viewer can read the tree but cannot change it", async () => {
@@ -1254,6 +1910,7 @@ describe("system roles", () => {
 				"workspace.delete",
 				"workspace.members.manage",
 				"workspace.plugins.manage",
+				"workspace.service_accounts.manage",
 				"workspace.update",
 			].sort(),
 		);
@@ -3770,9 +4427,8 @@ describe("file sharing", () => {
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
 				restrictedScopeNodeId: args.restrictedScopeNodeId ?? null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
 				archiveOperationId: null,
 			});
 			const textChunkIds = await Promise.all(
@@ -5905,9 +6561,8 @@ describe("file sharing", () => {
 				contentYjsStateTooLargeByteSize: null,
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
 				archiveOperationId: null,
 			});
 			const yjsSnapshotId = await ctx.db.insert("files_yjs_snapshots", {
@@ -6110,7 +6765,9 @@ describe("file sharing", () => {
 			nodeId: folder._yay!.nodeId,
 		});
 		expect(shareState?.canManage).toBe(true);
-		expect(shareState?.entries).toEqual([{ principal: { kind: "user", userId: fixture.memberId }, level: "manage" }]);
+		expect(shareState?.entries).toEqual([
+			{ principal: { kind: "user", userId: fixture.memberId }, level: "manage", serviceAccountName: null },
+		]);
 
 		// The owner holds no grant doc anywhere, so they are reported as a fixed row instead.
 		expect(shareState?.organizationOwnerUserId).toBe(fixture.ownerId);
@@ -6455,9 +7112,8 @@ describe("file sharing", () => {
 				contentYjsStateTooLargeByteSize: null,
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
 				archiveOperationId: null,
 			});
 			const yjsSnapshotId = await ctx.db.insert("files_yjs_snapshots", {
@@ -7997,9 +8653,8 @@ describe("file sharing", () => {
 				contentYjsStateTooLargeByteSize: null,
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
 			});
 		});
 
@@ -8068,9 +8723,8 @@ describe("file sharing", () => {
 				contentYjsStateTooLargeByteSize: null,
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
 			});
 		});
 
@@ -8178,9 +8832,8 @@ describe("file sharing", () => {
 				contentYjsStateTooLargeByteSize: null,
 				contentFrontmatterTooLargeFieldCount: null,
 				contentFrontmatterTooLargeIndexDocumentCount: null,
-				readOnlyScopeNodeId: null,
-				readOnlyPluginName: null,
-				readOnlyPluginServiceTargetId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
 			});
 		});
 
@@ -8432,12 +9085,12 @@ describe("file sharing", () => {
 	});
 });
 
-describe("read-only lock management", () => {
+describe("file write policy management", () => {
 	/** The node's stored lock pointer, so refusal tests can prove nothing was written. */
 	async function read_lock_pointer(t: TestConvex, nodeId: Id<"files_nodes">) {
 		return await t.run(async (ctx) => {
 			const node = await ctx.db.get("files_nodes", nodeId);
-			return node?.readOnlyScopeNodeId;
+			return node?.writePolicyScopeNodeId;
 		});
 	}
 
@@ -8477,7 +9130,8 @@ describe("read-only lock management", () => {
 		});
 		expect(thread._nay).toBeUndefined();
 
-		const locked = await fixture.asOwner.mutation(api.files_nodes.set_node_read_only, {
+		const locked = await fixture.asOwner.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: fixture.ownerMembershipId,
 			nodeId: folderId,
 		});
@@ -8533,7 +9187,8 @@ describe("read-only lock management", () => {
 		const folderId = folder._yay!.nodeId;
 
 		// A writer (the default member role) may change content but not lock it.
-		const memberLock = await fixture.asMember.mutation(api.files_nodes.set_node_read_only, {
+		const memberLock = await fixture.asMember.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: fixture.memberMembershipId,
 			nodeId: folderId,
 		});
@@ -8542,14 +9197,16 @@ describe("read-only lock management", () => {
 
 		// A viewer may not either.
 		await access_control_test_demote_to_viewer(fixture);
-		const viewerLock = await fixture.asMember.mutation(api.files_nodes.set_node_read_only, {
+		const viewerLock = await fixture.asMember.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: fixture.memberMembershipId,
 			nodeId: folderId,
 		});
 		expect(viewerLock._nay?.message).toBe("Permission denied");
 
 		// Use the same path to prove the owner can lock the file.
-		const ownerLock = await fixture.asOwner.mutation(api.files_nodes.set_node_read_only, {
+		const ownerLock = await fixture.asOwner.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: fixture.ownerMembershipId,
 			nodeId: folderId,
 		});
@@ -8557,7 +9214,8 @@ describe("read-only lock management", () => {
 		expect(await read_lock_pointer(t, folderId)).toBe(folderId);
 
 		// Unlock is gated the same way.
-		const viewerUnlock = await fixture.asMember.mutation(api.files_nodes.set_node_writable, {
+		const viewerUnlock = await fixture.asMember.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: null,
 			membershipId: fixture.memberMembershipId,
 			nodeId: folderId,
 		});
@@ -8566,14 +9224,16 @@ describe("read-only lock management", () => {
 
 		// A custom role carrying content.permissions.manage may lock and unlock.
 		await promote_member_to_manager(fixture);
-		const managerUnlock = await fixture.asMember.mutation(api.files_nodes.set_node_writable, {
+		const managerUnlock = await fixture.asMember.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: null,
 			membershipId: fixture.memberMembershipId,
 			nodeId: folderId,
 		});
 		expect(managerUnlock._nay).toBeUndefined();
 		expect(await read_lock_pointer(t, folderId)).toBeNull();
 
-		const managerLock = await fixture.asMember.mutation(api.files_nodes.set_node_read_only, {
+		const managerLock = await fixture.asMember.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: fixture.memberMembershipId,
 			nodeId: folderId,
 		});
@@ -8609,7 +9269,8 @@ describe("read-only lock management", () => {
 
 		// The member manages the open folder, but cannot manage its hidden restricted subtree.
 		// Return a general error that does not name the hidden node.
-		const memberLock = await fixture.asMember.mutation(api.files_nodes.set_node_read_only, {
+		const memberLock = await fixture.asMember.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: fixture.memberMembershipId,
 			nodeId: open._yay!.nodeId,
 		});
@@ -8624,19 +9285,22 @@ describe("read-only lock management", () => {
 			path: "plain",
 		});
 		expect(plain._nay).toBeUndefined();
-		const plainLock = await fixture.asMember.mutation(api.files_nodes.set_node_read_only, {
+		const plainLock = await fixture.asMember.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: fixture.memberMembershipId,
 			nodeId: plain._yay!.nodeId,
 		});
 		expect(plainLock._nay).toBeUndefined();
 
 		// The owner may lock the hidden subtree. The member still cannot unlock it.
-		const ownerLock = await fixture.asOwner.mutation(api.files_nodes.set_node_read_only, {
+		const ownerLock = await fixture.asOwner.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: fixture.ownerMembershipId,
 			nodeId: open._yay!.nodeId,
 		});
 		expect(ownerLock._nay).toBeUndefined();
-		const memberUnlock = await fixture.asMember.mutation(api.files_nodes.set_node_writable, {
+		const memberUnlock = await fixture.asMember.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: null,
 			membershipId: fixture.memberMembershipId,
 			nodeId: open._yay!.nodeId,
 		});
@@ -8684,57 +9348,66 @@ describe("read-only lock management", () => {
 		});
 		expect(granted._nay).toBeUndefined();
 
-		const outerLock = await fixture.asOwner.mutation(api.files_nodes.set_node_read_only, {
+		const outerLock = await fixture.asOwner.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: fixture.ownerMembershipId,
 			nodeId: closed._yay!.nodeId,
 		});
 		expect(outerLock._nay).toBeUndefined();
 
 		// The member may add a direct lock to the node they manage, under the hidden outer lock.
-		const innerLock = await fixture.asMember.mutation(api.files_nodes.set_node_read_only, {
+		const innerLock = await fixture.asMember.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: fixture.memberMembershipId,
 			nodeId: inner._yay!.nodeId,
 		});
 		expect(innerLock._nay).toBeUndefined();
 
 		// The member sees the direct lock and the parent-lock flag, but never the hidden outer node.
-		const memberState = await fixture.asMember.query(api.files_nodes.get_node_read_only_management_state, {
+		const memberState = await fixture.asMember.query(api.files_nodes.get_node_write_policy_management_state, {
 			membershipId: fixture.memberMembershipId,
 			nodeId: inner._yay!.nodeId,
 		});
 		expect(memberState).toEqual({
 			nodeId: inner._yay!.nodeId,
 			canManage: true,
-			readOnlyState: "self",
-			hasInheritedParentLock: true,
-			source: null,
+			canWrite: false,
+			writeBlockedReason: "read_only",
+			localPolicy: { mode: "read_only" },
+			hasInheritedPolicy: true,
+			inheritedSource: null,
+			blockedByAncestor: false,
 		});
 
 		// The owner may read the outer lock root, so they get its id and path.
-		const ownerState = await fixture.asOwner.query(api.files_nodes.get_node_read_only_management_state, {
+		const ownerState = await fixture.asOwner.query(api.files_nodes.get_node_write_policy_management_state, {
 			membershipId: fixture.ownerMembershipId,
 			nodeId: inner._yay!.nodeId,
 		});
-		expect(ownerState?.source).toEqual({ nodeId: closed._yay!.nodeId, path: "/closed" });
+		expect(ownerState?.inheritedSource).toEqual({ nodeId: closed._yay!.nodeId, path: "/closed" });
 
 		// Removing the direct lock leaves the inherited lock in place.
 		// The result still does not name the hidden outer node.
-		const innerUnlock = await fixture.asMember.mutation(api.files_nodes.set_node_writable, {
+		const innerUnlock = await fixture.asMember.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: null,
 			membershipId: fixture.memberMembershipId,
 			nodeId: inner._yay!.nodeId,
 		});
 		expect(innerUnlock._nay).toBeUndefined();
 
-		const memberStateAfter = await fixture.asMember.query(api.files_nodes.get_node_read_only_management_state, {
+		const memberStateAfter = await fixture.asMember.query(api.files_nodes.get_node_write_policy_management_state, {
 			membershipId: fixture.memberMembershipId,
 			nodeId: inner._yay!.nodeId,
 		});
 		expect(memberStateAfter).toEqual({
 			nodeId: inner._yay!.nodeId,
 			canManage: true,
-			readOnlyState: "inherited",
-			hasInheritedParentLock: true,
-			source: null,
+			canWrite: false,
+			writeBlockedReason: "read_only",
+			localPolicy: null,
+			hasInheritedPolicy: true,
+			inheritedSource: null,
+			blockedByAncestor: true,
 		});
 		expect(await read_lock_pointer(t, inner._yay!.nodeId)).toBe(closed._yay!.nodeId);
 	});
@@ -8759,7 +9432,8 @@ describe("read-only lock management", () => {
 		});
 		expect(child._nay).toBeUndefined();
 
-		const locked = await fixture.asOwner.mutation(api.files_nodes.set_node_read_only, {
+		const locked = await fixture.asOwner.mutation(api.files_nodes.set_node_write_policy, {
+			writePolicy: { mode: "read_only" },
 			membershipId: fixture.ownerMembershipId,
 			nodeId: pub._yay!.nodeId,
 		});
@@ -8767,19 +9441,22 @@ describe("read-only lock management", () => {
 
 		// The source folder is open, so a plain member may read it and the state names it. The
 		// member still holds no manage permission, so `canManage` stays false.
-		const memberState = await fixture.asMember.query(api.files_nodes.get_node_read_only_management_state, {
+		const memberState = await fixture.asMember.query(api.files_nodes.get_node_write_policy_management_state, {
 			membershipId: fixture.memberMembershipId,
 			nodeId: child._yay!.nodeId,
 		});
 		expect(memberState).toEqual({
 			nodeId: child._yay!.nodeId,
 			canManage: false,
-			readOnlyState: "inherited",
-			hasInheritedParentLock: true,
-			source: { nodeId: pub._yay!.nodeId, path: "/pub" },
+			canWrite: false,
+			writeBlockedReason: "read_only",
+			localPolicy: null,
+			hasInheritedPolicy: true,
+			inheritedSource: { nodeId: pub._yay!.nodeId, path: "/pub" },
+			blockedByAncestor: true,
 		});
 
-		const ownerState = await fixture.asOwner.query(api.files_nodes.get_node_read_only_management_state, {
+		const ownerState = await fixture.asOwner.query(api.files_nodes.get_node_write_policy_management_state, {
 			membershipId: fixture.ownerMembershipId,
 			nodeId: child._yay!.nodeId,
 		});

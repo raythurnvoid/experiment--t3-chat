@@ -28,6 +28,7 @@ import { files_node_has_editable_text_content } from "../server/files.ts";
 import { server_request_json_parse_and_validate } from "../server/server-utils.ts";
 import { crypto_random_hex, crypto_sha256_hex, crypto_timing_safe_equal } from "../server/crypto-utils.ts";
 import { activities_db_finish, activities_db_get_by_source_id } from "./activities.ts";
+import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import type { plugins_decrypt_secret_for_runtime_Result } from "./plugins.ts";
 // Type-only import: public_api.ts value-imports this module, so a value import here would be a
 // runtime cycle.
@@ -79,9 +80,7 @@ async function db_plugin_workspace_is_live(
 	args: { organizationId: Id<"organizations">; workspaceId: Id<"organizations_workspaces"> },
 ) {
 	const workspace = await ctx.db.get("organizations_workspaces", args.workspaceId);
-	return (
-		workspace?.organizationId === args.organizationId && workspace.pluginDataPurgeStartedAt === undefined
-	);
+	return workspace?.organizationId === args.organizationId && workspace.pluginDataPurgeStartedAt === undefined;
 }
 
 /**
@@ -289,6 +288,13 @@ export async function plugins_runtime_db_enqueue_upload_completed_runs(
 	let enqueued = 0;
 
 	for (const candidate of candidates) {
+		if (
+			!(await plugins_db_get_live_service_account(ctx, {
+				installation: candidate.installation,
+				serviceAccountId: candidate.installation.serviceAccountId,
+			}))
+		)
+			continue;
 		// Skip if this installation already ran for this upload: an asset is uploaded only once, so
 		// a second upload-completed event can only be an R2 redelivery (with a fresh event id).
 		// Note: this dedupe on (asset, installation) only works for once-per-asset events; a
@@ -314,6 +320,7 @@ export async function plugins_runtime_db_enqueue_upload_completed_runs(
 			fileNodeId: args.fileNode._id,
 			actorUserId: createdBy,
 			installationId: candidate.installation._id,
+			serviceAccountId: candidate.installation.serviceAccountId,
 			pluginVersionId: candidate.version._id,
 			event: UPLOAD_COMPLETED_EVENT_TYPE,
 			eventId: composite_id("plugin", "upload_completed", args.eventId, String(candidate.installation._id)),
@@ -354,7 +361,11 @@ export async function plugins_runtime_db_enqueue_manual_run(
 ) {
 	if (
 		args.installation.status !== "enabled" ||
-		!(await db_plugin_workspace_is_live(ctx, args.installation))
+		!(await db_plugin_workspace_is_live(ctx, args.installation)) ||
+		!(await plugins_db_get_live_service_account(ctx, {
+			installation: args.installation,
+			serviceAccountId: args.installation.serviceAccountId,
+		}))
 	) {
 		return Result({ _nay: { message: "Not found" } });
 	}
@@ -396,6 +407,7 @@ export async function plugins_runtime_db_enqueue_manual_run(
 		// to the plugin's installer.
 		actorUserId: args.installation.installedBy,
 		installationId: args.installation._id,
+		serviceAccountId: args.installation.serviceAccountId,
 		pluginVersionId: version._id,
 		event: RUN_REQUESTED_EVENT_TYPE,
 		eventId: composite_id("plugin", "run_requested", crypto.randomUUID(), String(args.installation._id)),
@@ -473,12 +485,20 @@ export const enqueue_account_deleted_runs = internalMutation({
 				if (!installation || !version || installation.status !== "enabled" || !version.backendEntrypointFile) {
 					continue;
 				}
+				if (
+					!(await plugins_db_get_live_service_account(ctx, {
+						installation,
+						serviceAccountId: installation.serviceAccountId,
+					}))
+				)
+					continue;
 
 				const runId = await ctx.db.insert("plugins_event_runs", {
 					organizationId: membership.organizationId,
 					workspaceId: membership.workspaceId,
 					actorUserId: args.userId,
 					installationId: installation._id,
+					serviceAccountId: installation.serviceAccountId,
 					pluginVersionId: version._id,
 					event: ACCOUNT_DELETED_EVENT_TYPE,
 					eventId: composite_id("plugin", "account_deleted", String(args.userId), String(installation._id)),
@@ -559,6 +579,10 @@ export const start_event_run = internalMutation({
 		if (pluginRun.event !== ACCOUNT_DELETED_EVENT_TYPE && (!asset || !fileNode)) {
 			return Result({ _nay: { message: "Not found" } });
 		}
+		if (
+			!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: pluginRun.serviceAccountId }))
+		)
+			return Result({ _nay: { message: "Not found" } });
 
 		const now = Date.now();
 		await ctx.db.patch("plugins_event_runs", pluginRun._id, {
@@ -614,6 +638,7 @@ export const start_invoke_run = internalMutation({
 	args: {
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
+		serviceAccountId: v.id("access_control_service_accounts"),
 		installationId: v.id("plugins_workspace_installations"),
 		pluginVersionId: v.id("plugins_versions"),
 		userId: v.id("users"),
@@ -653,6 +678,8 @@ export const start_invoke_run = internalMutation({
 		if (!installation.acceptedCapabilities.includes("plugin.backend.invoke")) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
+		if (!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: args.serviceAccountId })))
+			return Result({ _nay: { message: "Not found" } });
 
 		const version = await ctx.db.get("plugins_versions", installation.pluginVersionId);
 		if (!version || !version.backendEntrypointFile) {
@@ -685,7 +712,9 @@ export const start_invoke_run = internalMutation({
 				return Result({ _nay: { message: "This endpoint requires a serialization key" } });
 			}
 			if (!INVOKE_CALLER_KEY_REGEX.test(args.callerSerializationKey)) {
-				return Result({ _nay: { message: "Serialization keys must be visible ASCII (no spaces) up to 128 characters" } });
+				return Result({
+					_nay: { message: "Serialization keys must be visible ASCII (no spaces) up to 128 characters" },
+				});
 			}
 			lockKey = `${endpoint.id}:${args.callerSerializationKey}`;
 		} else {
@@ -722,6 +751,7 @@ export const start_invoke_run = internalMutation({
 			workspaceId: args.workspaceId,
 			actorUserId: args.userId,
 			installationId: installation._id,
+			serviceAccountId: installation.serviceAccountId,
 			pluginVersionId: version._id,
 			event: UI_INVOKE_EVENT_TYPE,
 			eventId: composite_id("plugin", "ui_invoke", crypto.randomUUID(), String(installation._id)),

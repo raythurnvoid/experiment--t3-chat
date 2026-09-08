@@ -32,6 +32,7 @@ import {
 	url_path_plugin_page,
 	url_path_plugins,
 	url_path_roles,
+	url_path_service_accounts,
 	url_path_users,
 } from "@/lib/urls.ts";
 
@@ -434,6 +435,7 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 	const chatPath = url_path_chat({ organizationName, workspaceName });
 	const filesPath = url_path_files({ organizationName, workspaceName });
 	const apiKeysPath = url_path_api_keys({ organizationName, workspaceName });
+	const serviceAccountsPath = url_path_service_accounts({ organizationName, workspaceName });
 	const usersPath = url_path_users({ organizationName, workspaceName });
 	const rolesPath = url_path_roles({ organizationName, workspaceName });
 	const pluginsPath = url_path_plugins({ organizationName, workspaceName });
@@ -539,6 +541,14 @@ export const MainAppSidebar = memo(function MainAppSidebar(props: MainAppSidebar
 							) : null,
 						),
 					)}
+					{workspacePermissions === "all" || workspacePermissions?.includes("workspace.service_accounts.manage") ? (
+						<MainAppSidebarItem
+							to={serviceAccountsPath}
+							label="Service accounts"
+							icon={ShieldCheck}
+							tooltip={mainAppSidebarCollapsed ? "Service accounts" : undefined}
+						/>
+					) : null}
 					{/* Personal organizations keep member and role management out of main nav; direct URLs stay guarded/read-only. */}
 					{showUsersNavigation ? (
 						<>

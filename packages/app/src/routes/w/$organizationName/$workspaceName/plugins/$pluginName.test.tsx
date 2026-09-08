@@ -29,7 +29,25 @@ vi.mock("@tanstack/react-router", () => ({
 }));
 
 vi.mock("convex/react", () => ({
-	useQuery: (...args: unknown[]) => useQueryMock(...args),
+	useQuery: (query: string, ...args: unknown[]) => {
+		const result = useQueryMock(query, ...args);
+		if (query === "account_permission") return true;
+		if (query === "get_account") return { _id: "account_1", name: "Media worker", revokedAt: null };
+		if (query === "grant_management")
+			return {
+				resource: { kind: "workspace" },
+				level: null,
+				canManage: true,
+				grantableLevels: ["read", "write"],
+				file: null,
+			};
+		return result;
+	},
+	usePaginatedQuery: () => ({
+		results: [{ _id: "account_1", name: "Media worker", revokedAt: null }],
+		status: "Exhausted",
+		loadMore: vi.fn(),
+	}),
 }));
 
 vi.mock("sonner", () => ({
@@ -39,6 +57,13 @@ vi.mock("sonner", () => ({
 vi.mock("@/lib/app-convex-client.ts", () => ({
 	app_convex: { mutation: mutationMock, action: actionMock },
 	app_convex_api: {
+		access_control: {
+			get_current_user_workspace_permission: "account_permission",
+			list_service_accounts: "list_accounts",
+			get_service_account: "get_account",
+			get_service_account_grant_management_state: "grant_management",
+		},
+		files_nodes: { get_authorized_by_path: "get_authorized_by_path" },
 		organizations: { list: "organizations.list" },
 		plugins: {
 			list_installations: "plugins.list_installations",
@@ -51,6 +76,7 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			upsert_publisher_repository_secrets: "plugins.upsert_publisher_repository_secrets",
 			update_installation_configuration: "plugins.update_installation_configuration",
 			install_version: "plugins.install_version",
+			set_installation_service_account: "plugins.set_installation_service_account",
 			remove_repository: "plugins.remove_repository",
 			get_publish_candidate_head: "plugins.get_publish_candidate_head",
 			publish_version: "plugins.publish_version",
@@ -256,6 +282,7 @@ function published_plugin(overrides: {
 function installed_item(plugin: ReturnType<typeof published_plugin>) {
 	return {
 		installation: {
+			serviceAccountId: "account_1",
 			_id: "installation_1",
 			pluginName: plugin.name,
 			status: "enabled",
@@ -360,6 +387,63 @@ describe("RoutePluginsPluginConsentModal", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Install" }));
 
 		expect(screen.getByRole("dialog").textContent).toContain("triggering upload");
+	});
+
+	test("does not submit inferred grants during an ordinary update", async () => {
+		const plugin = published_plugin({ name: "media", canProcessFiles: true });
+		const installed = installed_item(plugin);
+		installed.version.version = "0.1.0";
+		setQueries(plugin, [installed]);
+		mutationMock.mockResolvedValue({ _yay: null });
+		render(<PageComponent />);
+		fireEvent.click(screen.getByRole("button", { name: "Update" }));
+		fireEvent.click(screen.getByRole("button", { name: "Accept and update" }));
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith(
+				"plugins.install_version",
+				expect.not.objectContaining({ serviceAccountGrants: expect.anything() }),
+			),
+		);
+		const args = mutationMock.mock.calls.find((call) => call[0] === "plugins.install_version")?.[1];
+		expect(args).not.toHaveProperty("serviceAccountId");
+	});
+
+	test("submits only a grant the user added to the consent form", async () => {
+		const plugin = published_plugin({ name: "media", canProcessFiles: true });
+		const installed = installed_item(plugin);
+		installed.version.version = "0.1.0";
+		setQueries(plugin, [installed]);
+		mutationMock.mockResolvedValue({ _yay: null });
+		render(<PageComponent />);
+		fireEvent.click(screen.getByRole("button", { name: "Update" }));
+		fireEvent.click(screen.getByRole("button", { name: "Add reviewed grant" }));
+		expect(mutationMock).not.toHaveBeenCalled();
+		fireEvent.click(screen.getByRole("button", { name: "Accept and update" }));
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith(
+				"plugins.install_version",
+				expect.objectContaining({ serviceAccountGrants: [{ resource: { kind: "workspace" }, level: "read" }] }),
+			),
+		);
+	});
+
+	test("rebinds only through the explicit account action", async () => {
+		const plugin = published_plugin({ name: "media", canProcessFiles: true });
+		setQueries(plugin, [installed_item(plugin)]);
+		mutationMock.mockResolvedValue({ _yay: null });
+		render(<PageComponent />);
+		fireEvent.click(screen.getByRole("combobox", { name: "Replacement service account" }));
+		fireEvent.click(await screen.findByRole("option", { name: "Media worker" }));
+		expect(mutationMock).not.toHaveBeenCalled();
+		fireEvent.click(screen.getByRole("button", { name: "Change service account" }));
+		await waitFor(() =>
+			expect(mutationMock).toHaveBeenCalledWith("plugins.set_installation_service_account", {
+				membershipId: "membership_1",
+				installationId: "installation_1",
+				serviceAccountId: "account_1",
+			}),
+		);
+		expect(mutationMock).toHaveBeenCalledTimes(1);
 	});
 
 	test("does not promise the upload baseline for a page-only plugin", () => {

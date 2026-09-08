@@ -74,7 +74,25 @@ async function seed_installation(
 			createdBy: membership.userId,
 			updatedAt: now,
 		});
+		const serviceAccountId = await ctx.db.insert("access_control_service_accounts", {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			name: pluginName,
+			createdBy: membership.userId,
+			createdAt: now,
+			updatedAt: now,
+			revokedAt: null,
+		});
+		await ctx.db.insert("plugins_service_account_bindings", {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			pluginName,
+			publisherUserId: membership.userId,
+			sourceRepositoryUrl: "https://github.com/bonobo/council-plugin",
+			serviceAccountId,
+		});
 		const installationId = await ctx.db.insert("plugins_workspace_installations", {
+			serviceAccountId,
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			pluginVersionId,
@@ -99,7 +117,7 @@ async function seed_installation(
 				updatedAt: now,
 			});
 		}
-		return { ...membership, pluginVersionId, installationId } as const;
+		return { ...membership, pluginVersionId, installationId, serviceAccountId } as const;
 	});
 }
 
@@ -116,6 +134,7 @@ async function seed_page_token(
 	const now = Date.now();
 	await t.run(async (ctx) => {
 		await ctx.db.insert("plugins_ui_sessions", {
+			serviceAccountId: fixture.serviceAccountId,
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.workspaceId,
 			installationId: fixture.installationId,
@@ -166,6 +185,7 @@ async function seed_member_page_token(
 			});
 		}
 		await ctx.db.insert("plugins_ui_sessions", {
+			serviceAccountId: fixture.serviceAccountId,
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.workspaceId,
 			installationId: fixture.installationId,

@@ -20,9 +20,11 @@ import type { Doc, Id } from "./_generated/dataModel.js";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import {
 	access_control_db_authorize_node,
+	access_control_db_authorize_service_account_grant,
 	access_control_db_caller_cannot_share_with_role,
 	access_control_db_has_permission,
 	access_control_db_resolve_effective_permissions,
+	access_control_db_set_service_account_grant,
 } from "./access_control.ts";
 import {
 	files_nodes_db_cascade_restricted_scope,
@@ -199,13 +201,17 @@ const share_level_validator = v.union(v.literal("read"), v.literal("write"), v.l
  */
 const share_principal_validator = v.union(
 	v.object({ kind: v.literal("user"), userId: v.id("users") }),
+	v.object({ kind: v.literal("service_account"), serviceAccountId: v.id("access_control_service_accounts") }),
 	v.object({
 		kind: v.literal("role"),
 		role: doc(app_convex_schema, "access_control_role_assignments").fields.role,
 	}),
 );
 
-type FileSharePrincipal = { kind: "user"; userId: Id<"users"> } | { kind: "role"; role: access_control_RoleRef };
+type FileSharePrincipal =
+	| { kind: "user"; userId: Id<"users"> }
+	| { kind: "role"; role: access_control_RoleRef }
+	| { kind: "service_account"; serviceAccountId: Id<"access_control_service_accounts"> };
 
 /**
  * One string that stands for one principal, so entries can be grouped in a `Map`.
@@ -214,6 +220,7 @@ type FileSharePrincipal = { kind: "user"; userId: Id<"users"> } | { kind: "role"
  * collide, because both are plain Convex ids.
  */
 function share_principal_key(principal: FileSharePrincipal) {
+	if (principal.kind === "service_account") return `service_account:${principal.serviceAccountId}`;
 	return principal.kind === "user" ? `user:${principal.userId}` : `role:${principal.role}`;
 }
 
@@ -250,6 +257,9 @@ function read_grant_principal(grant: Doc<"access_control_permission_grants">): F
 	}
 	if (grant.principalKind === "role" && grant.role) {
 		return { kind: "role", role: grant.role };
+	}
+	if (grant.principalKind === "service_account" && grant.serviceAccountId) {
+		return { kind: "service_account", serviceAccountId: grant.serviceAccountId };
 	}
 
 	// `public` grants land here. Nothing in this module writes one, and the share dialog has no row
@@ -313,7 +323,7 @@ async function db_set_principal_level(
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		scopeNodeId: Id<"files_nodes">;
-		principal: FileSharePrincipal;
+		principal: Exclude<FileSharePrincipal, { kind: "service_account" }>;
 		/** `null` removes the principal from the share list. */
 		level: access_control_FileShareLevel | null;
 		grants: Doc<"access_control_permission_grants">[];
@@ -399,7 +409,12 @@ function would_leave_no_manager(args: {
 		return false;
 	}
 
-	return !args.entries.some((entry) => entry.level === "manage" && share_principal_key(entry.principal) !== key);
+	return !args.entries.some(
+		(entry) =>
+			entry.principal.kind !== "service_account" &&
+			entry.level === "manage" &&
+			share_principal_key(entry.principal) !== key,
+	);
 }
 
 /**
@@ -413,7 +428,7 @@ async function validate_principal(
 	args: {
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
-		principal: FileSharePrincipal;
+		principal: Exclude<FileSharePrincipal, { kind: "service_account" }>;
 	},
 ) {
 	// Read into a local first: TypeScript narrows a `const`, but not `args.principal`, inside the
@@ -498,10 +513,13 @@ export const get_node_share_state = query({
 			 * depends on the role's own permission list.
 			 */
 			canShareWithRoles: v.boolean(),
+			canShareWithServiceAccounts: v.boolean(),
+			serviceGrantableLevels: v.array(share_level_validator),
 			entries: v.array(
 				v.object({
 					principal: share_principal_validator,
 					level: share_level_validator,
+					serviceAccountName: v.union(v.string(), v.null()),
 				}),
 			),
 			/** The owner always gets in, and holds no grant, so the dialog shows them as a fixed row. */
@@ -564,6 +582,33 @@ export const get_node_share_state = query({
 		});
 		const canShareWithRoles =
 			organizationPermissions === "all" || organizationPermissions.has("organization.roles.manage");
+		const canShareWithServiceAccounts =
+			canManage &&
+			(await access_control_db_has_permission(ctx, {
+				organizationId: organization._id,
+				workspaceId: membership.workspaceId,
+				defaultWorkspaceId,
+				organizationOwnerUserId: organization.ownerUserId,
+				userId: userAuth.id,
+				resource: { kind: "workspace", id: membership.workspaceId },
+				permission: "workspace.service_accounts.manage",
+			}));
+		const serviceGrantableLevels: access_control_FileShareLevel[] = [];
+		if (canShareWithServiceAccounts) {
+			for (const level of access_control_FILE_SHARE_LEVEL_KEYS) {
+				if (
+					(await caller_can_hand_out_level(ctx, {
+						organization,
+						defaultWorkspaceId,
+						workspaceId: membership.workspaceId,
+						node,
+						userId: userAuth.id,
+						level,
+					})) === null
+				)
+					serviceGrantableLevels.push(level);
+			}
+		}
 
 		// A pointer at a node that was deleted, or that is no longer restricted, means this node uses
 		// workspace access again. Reading the scope node here, instead of trusting the pointer, keeps the
@@ -574,6 +619,22 @@ export const get_node_share_state = query({
 			scopeNode.restrictedScopeNodeId === scopeNode._id &&
 			scopeNode.organizationId === organization._id &&
 			scopeNode.workspaceId === membership.workspaceId;
+		const grants = await db_list_scope_grants(ctx, {
+			organizationId: organization._id,
+			workspaceId: membership.workspaceId,
+			scopeNodeId: scopeIsLive ? scopeNode._id : node._id,
+		});
+		const entries = await Promise.all(
+			group_grants_into_entries(
+				scopeIsLive ? grants : grants.filter((grant) => grant.principalKind === "service_account"),
+			).map(async (entry) => {
+				const account =
+					entry.principal.kind === "service_account"
+						? await ctx.db.get("access_control_service_accounts", entry.principal.serviceAccountId)
+						: null;
+				return { ...entry, serviceAccountName: account?.name ?? null };
+			}),
+		);
 
 		if (!scopeNode || !scopeIsLive) {
 			return {
@@ -584,16 +645,12 @@ export const get_node_share_state = query({
 				canManage,
 				canRestrict,
 				canShareWithRoles,
-				entries: [],
+				canShareWithServiceAccounts,
+				serviceGrantableLevels,
+				entries,
 				organizationOwnerUserId: organization.ownerUserId,
 			};
 		}
-
-		const grants = await db_list_scope_grants(ctx, {
-			organizationId: organization._id,
-			workspaceId: membership.workspaceId,
-			scopeNodeId: scopeNode._id,
-		});
 
 		return {
 			nodeId: node._id,
@@ -608,7 +665,9 @@ export const get_node_share_state = query({
 			canManage,
 			canRestrict,
 			canShareWithRoles,
-			entries: group_grants_into_entries(grants),
+			canShareWithServiceAccounts,
+			serviceGrantableLevels,
+			entries,
 			organizationOwnerUserId: organization.ownerUserId,
 		};
 	},
@@ -649,6 +708,24 @@ export const set_node_share_grant = mutation({
 			return authorized;
 		}
 		const { membership, node, organization, defaultWorkspaceId } = authorized._yay;
+		if (args.principal.kind === "service_account") {
+			const resource = { kind: "file" as const, nodeId: node._id };
+			const allowed = await access_control_db_authorize_service_account_grant(ctx, {
+				userAuth,
+				membership,
+				resource,
+				level: args.level,
+			});
+			if (allowed._nay) return allowed;
+			const result = await access_control_db_set_service_account_grant(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				serviceAccountId: args.principal.serviceAccountId,
+				resource,
+				level: args.level,
+			});
+			return result._nay ? result : Result({ _yay: null });
+		}
 		if (node.restrictedScopeNodeId !== node._id) {
 			return Result({ _nay: { message: "Restrict this first, then choose who gets access" } });
 		}
@@ -809,6 +886,24 @@ export const remove_node_share_grant = mutation({
 			return authorized;
 		}
 		const { membership, node, organization } = authorized._yay;
+		if (args.principal.kind === "service_account") {
+			const resource = { kind: "file" as const, nodeId: node._id };
+			const allowed = await access_control_db_authorize_service_account_grant(ctx, {
+				userAuth,
+				membership,
+				resource,
+				level: null,
+			});
+			if (allowed._nay) return allowed;
+			const result = await access_control_db_set_service_account_grant(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				serviceAccountId: args.principal.serviceAccountId,
+				resource,
+				level: null,
+			});
+			return result._nay ? result : Result({ _yay: null });
+		}
 		if (node.restrictedScopeNodeId !== node._id) {
 			return Result({ _nay: { message: "This is not restricted" } });
 		}
@@ -1002,7 +1097,9 @@ export const unrestrict_node = mutation({
 			scopeNodeId: node._id,
 		});
 		for (const grant of grants) {
-			await ctx.db.delete("access_control_permission_grants", grant._id);
+			if (grant.principalKind !== "service_account") {
+				await ctx.db.delete("access_control_permission_grants", grant._id);
+			}
 		}
 
 		return Result({ _yay: null });

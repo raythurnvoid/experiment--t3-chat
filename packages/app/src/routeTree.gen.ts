@@ -18,6 +18,7 @@ import { Route as WOrganizationNameWorkspaceNameFilesSplatRouteImport } from './
 import { Route as WOrganizationNameWorkspaceNamePluginsIndexRouteImport } from './routes/w/$organizationName/$workspaceName/plugins/index'
 import { Route as WOrganizationNameWorkspaceNamePluginsPluginNameRouteImport } from './routes/w/$organizationName/$workspaceName/plugins/$pluginName'
 import { Route as WOrganizationNameWorkspaceNameRolesIndexRouteImport } from './routes/w/$organizationName/$workspaceName/roles/index'
+import { Route as WOrganizationNameWorkspaceNameServiceAccountsIndexRouteImport } from './routes/w/$organizationName/$workspaceName/service-accounts/index'
 import { Route as WOrganizationNameWorkspaceNameUsersIndexRouteImport } from './routes/w/$organizationName/$workspaceName/users/index'
 import { Route as WOrganizationNameWorkspaceNamePluginsPublisherIndexRouteImport } from './routes/w/$organizationName/$workspaceName/plugins/publisher/index'
 import { Route as WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRouteImport } from './routes/w/$organizationName/$workspaceName/plugins/$pluginName_.pages.$pageId'
@@ -75,6 +76,12 @@ const WOrganizationNameWorkspaceNameRolesIndexRoute =
     path: '/roles/',
     getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
   } as any)
+const WOrganizationNameWorkspaceNameServiceAccountsIndexRoute =
+  WOrganizationNameWorkspaceNameServiceAccountsIndexRouteImport.update({
+    id: '/service-accounts/',
+    path: '/service-accounts/',
+    getParentRoute: () => WOrganizationNameWorkspaceNameRouteRoute,
+  } as any)
 const WOrganizationNameWorkspaceNameUsersIndexRoute =
   WOrganizationNameWorkspaceNameUsersIndexRouteImport.update({
     id: '/users/',
@@ -104,6 +111,7 @@ export interface FileRoutesByFullPath {
   '/w/$organizationName/$workspaceName/files/': typeof WOrganizationNameWorkspaceNameFilesIndexRoute
   '/w/$organizationName/$workspaceName/plugins/': typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
   '/w/$organizationName/$workspaceName/roles/': typeof WOrganizationNameWorkspaceNameRolesIndexRoute
+  '/w/$organizationName/$workspaceName/service-accounts/': typeof WOrganizationNameWorkspaceNameServiceAccountsIndexRoute
   '/w/$organizationName/$workspaceName/users/': typeof WOrganizationNameWorkspaceNameUsersIndexRoute
   '/w/$organizationName/$workspaceName/plugins/publisher/': typeof WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute
   '/w/$organizationName/$workspaceName/plugins/$pluginName/pages/$pageId': typeof WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRoute
@@ -118,6 +126,7 @@ export interface FileRoutesByTo {
   '/w/$organizationName/$workspaceName/files': typeof WOrganizationNameWorkspaceNameFilesIndexRoute
   '/w/$organizationName/$workspaceName/plugins': typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
   '/w/$organizationName/$workspaceName/roles': typeof WOrganizationNameWorkspaceNameRolesIndexRoute
+  '/w/$organizationName/$workspaceName/service-accounts': typeof WOrganizationNameWorkspaceNameServiceAccountsIndexRoute
   '/w/$organizationName/$workspaceName/users': typeof WOrganizationNameWorkspaceNameUsersIndexRoute
   '/w/$organizationName/$workspaceName/plugins/publisher': typeof WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute
   '/w/$organizationName/$workspaceName/plugins/$pluginName/pages/$pageId': typeof WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRoute
@@ -133,6 +142,7 @@ export interface FileRoutesById {
   '/w/$organizationName/$workspaceName/files/': typeof WOrganizationNameWorkspaceNameFilesIndexRoute
   '/w/$organizationName/$workspaceName/plugins/': typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
   '/w/$organizationName/$workspaceName/roles/': typeof WOrganizationNameWorkspaceNameRolesIndexRoute
+  '/w/$organizationName/$workspaceName/service-accounts/': typeof WOrganizationNameWorkspaceNameServiceAccountsIndexRoute
   '/w/$organizationName/$workspaceName/users/': typeof WOrganizationNameWorkspaceNameUsersIndexRoute
   '/w/$organizationName/$workspaceName/plugins/publisher/': typeof WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute
   '/w/$organizationName/$workspaceName/plugins/$pluginName_/pages/$pageId': typeof WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRoute
@@ -149,6 +159,7 @@ export interface FileRouteTypes {
     | '/w/$organizationName/$workspaceName/files/'
     | '/w/$organizationName/$workspaceName/plugins/'
     | '/w/$organizationName/$workspaceName/roles/'
+    | '/w/$organizationName/$workspaceName/service-accounts/'
     | '/w/$organizationName/$workspaceName/users/'
     | '/w/$organizationName/$workspaceName/plugins/publisher/'
     | '/w/$organizationName/$workspaceName/plugins/$pluginName/pages/$pageId'
@@ -163,6 +174,7 @@ export interface FileRouteTypes {
     | '/w/$organizationName/$workspaceName/files'
     | '/w/$organizationName/$workspaceName/plugins'
     | '/w/$organizationName/$workspaceName/roles'
+    | '/w/$organizationName/$workspaceName/service-accounts'
     | '/w/$organizationName/$workspaceName/users'
     | '/w/$organizationName/$workspaceName/plugins/publisher'
     | '/w/$organizationName/$workspaceName/plugins/$pluginName/pages/$pageId'
@@ -177,6 +189,7 @@ export interface FileRouteTypes {
     | '/w/$organizationName/$workspaceName/files/'
     | '/w/$organizationName/$workspaceName/plugins/'
     | '/w/$organizationName/$workspaceName/roles/'
+    | '/w/$organizationName/$workspaceName/service-accounts/'
     | '/w/$organizationName/$workspaceName/users/'
     | '/w/$organizationName/$workspaceName/plugins/publisher/'
     | '/w/$organizationName/$workspaceName/plugins/$pluginName_/pages/$pageId'
@@ -252,6 +265,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof WOrganizationNameWorkspaceNameRolesIndexRouteImport
       parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
     }
+    '/w/$organizationName/$workspaceName/service-accounts/': {
+      id: '/w/$organizationName/$workspaceName/service-accounts/'
+      path: '/service-accounts'
+      fullPath: '/w/$organizationName/$workspaceName/service-accounts/'
+      preLoaderRoute: typeof WOrganizationNameWorkspaceNameServiceAccountsIndexRouteImport
+      parentRoute: typeof WOrganizationNameWorkspaceNameRouteRoute
+    }
     '/w/$organizationName/$workspaceName/users/': {
       id: '/w/$organizationName/$workspaceName/users/'
       path: '/users'
@@ -284,6 +304,7 @@ interface WOrganizationNameWorkspaceNameRouteRouteChildren {
   WOrganizationNameWorkspaceNameFilesIndexRoute: typeof WOrganizationNameWorkspaceNameFilesIndexRoute
   WOrganizationNameWorkspaceNamePluginsIndexRoute: typeof WOrganizationNameWorkspaceNamePluginsIndexRoute
   WOrganizationNameWorkspaceNameRolesIndexRoute: typeof WOrganizationNameWorkspaceNameRolesIndexRoute
+  WOrganizationNameWorkspaceNameServiceAccountsIndexRoute: typeof WOrganizationNameWorkspaceNameServiceAccountsIndexRoute
   WOrganizationNameWorkspaceNameUsersIndexRoute: typeof WOrganizationNameWorkspaceNameUsersIndexRoute
   WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute: typeof WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute
   WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRoute: typeof WOrganizationNameWorkspaceNamePluginsPluginNamePagesPageIdRoute
@@ -305,6 +326,8 @@ const WOrganizationNameWorkspaceNameRouteRouteChildren: WOrganizationNameWorkspa
       WOrganizationNameWorkspaceNamePluginsIndexRoute,
     WOrganizationNameWorkspaceNameRolesIndexRoute:
       WOrganizationNameWorkspaceNameRolesIndexRoute,
+    WOrganizationNameWorkspaceNameServiceAccountsIndexRoute:
+      WOrganizationNameWorkspaceNameServiceAccountsIndexRoute,
     WOrganizationNameWorkspaceNameUsersIndexRoute:
       WOrganizationNameWorkspaceNameUsersIndexRoute,
     WOrganizationNameWorkspaceNamePluginsPublisherIndexRoute:

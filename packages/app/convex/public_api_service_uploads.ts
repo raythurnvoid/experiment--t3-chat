@@ -6,8 +6,8 @@
  * upload target per file under the grant's destination prefix. The R2 event confirms and commits
  * the target; the service polls finalize for that answer. When the meeting is deleted later, a fresh
  * grant sealed to the same destination archives that whole folder, because deleting a file in this
- * product means archiving it. The generic `/api/v1/files/*` routes stay closed to service grants on
- * purpose; this narrower door is the only file surface a service reaches.
+ * product means archiving it. The separate write and plugin-archive routes also accept sealed
+ * grants, with the same current account and file policy checks.
  *
  * Accounting: creating a target charges nothing. The size in the request is only the service's
  * guess, and a signed PUT does not bind how many bytes actually arrive. The workspace is charged
@@ -27,13 +27,13 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { access_control_db_can_act_on_file_node, access_control_db_has_permission } from "./access_control.ts";
 import { billing_db_check_paid_plan, billing_db_emit_file_save, billing_pick_billed_user_id } from "./billing_db.ts";
 import {
-	files_node_require_writable,
 	files_nodes_db_archive_nodes,
-	files_nodes_db_can_act_on_swept_nodes,
-	files_nodes_db_cascade_read_only_scope,
 	files_nodes_db_create_node_recursively_at_path,
 	files_nodes_db_hard_delete_node,
-	files_nodes_db_resolve_parent_read_only_scope,
+	files_nodes_db_require_writable,
+	files_nodes_db_require_write_policy_management,
+	files_nodes_db_set_write_policy,
+	type files_nodes_WriteContext,
 } from "./files_nodes.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import {
@@ -58,6 +58,7 @@ import { should_never_happen } from "../shared/shared-utils.ts";
 import { files_normalize_name, files_normalize_upload_file_name } from "../shared/files.ts";
 import { path_extract_segments_from, path_name_of } from "../shared/paths.ts";
 import { public_api_is_path_inside_prefix } from "./public_api_http_auth.ts";
+import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 
 // #region shared
 
@@ -179,6 +180,9 @@ async function db_authorize_service_upload(ctx: MutationCtx, principal: ServiceU
 	if (!installation.acceptedCapabilities.includes("workspace.files.write")) {
 		return Result({ _nay: { message: "Permission denied" } });
 	}
+	if (!(await plugins_db_get_live_service_account(ctx, { installation, serviceAccountId: grant.serviceAccountId }))) {
+		return Result({ _nay: { message: "Unauthenticated" } });
+	}
 
 	// The grant acts for its actor, so the files it writes are judged with the actor's permissions.
 	const actor = await ctx.db.get("users", grant.actorUserId);
@@ -195,7 +199,7 @@ async function db_authorize_service_upload(ctx: MutationCtx, principal: ServiceU
 				.eq("workspaceId", grant.workspaceId),
 		)
 		.first();
-	if (!membership) {
+	if (!membership || membership.pendingOrganizationRemoval) {
 		return Result({ _nay: { message: "Unauthenticated" } });
 	}
 
@@ -225,7 +229,13 @@ async function db_authorize_service_upload(ctx: MutationCtx, principal: ServiceU
 	}
 
 	return Result({
-		_yay: { installation, organization, workspace, defaultWorkspaceId: organization.defaultWorkspaceId },
+		_yay: {
+			installation,
+			organization,
+			workspace,
+			defaultWorkspaceId: organization.defaultWorkspaceId,
+			serviceAccountId: grant.serviceAccountId,
+		},
 	});
 }
 
@@ -257,7 +267,7 @@ async function db_get_target(
 }
 
 async function db_get_destination(
-	ctx: MutationCtx,
+	ctx: QueryCtx | MutationCtx,
 	args: {
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
@@ -345,7 +355,10 @@ async function db_close_destination(
 	});
 }
 
-async function db_target_destination_is_closed(ctx: MutationCtx, target: Doc<"plugin_service_storage_targets">) {
+async function db_target_destination_is_closed(
+	ctx: QueryCtx | MutationCtx,
+	target: Doc<"plugin_service_storage_targets">,
+) {
 	const destination = await db_get_destination(ctx, {
 		organizationId: target.organizationId,
 		workspaceId: target.workspaceId,
@@ -356,164 +369,108 @@ async function db_target_destination_is_closed(ctx: MutationCtx, target: Doc<"pl
 }
 
 /**
- * Permit cleanup through only the direct lock this exact service target created.
- *
- * The target, current lock pointer, destination generation, accepted capability, and live actor ACL
- * are all part of this authority. A member unlock and relock clears the pointer in files_nodes.ts.
- *
- * Exported for the `/api/v1/files/write` engine: a file created read-only through `create-target`
- * must be updatable by the service that created it, and both doors must judge that lock with this
- * one rule.
+ * A current target must still belong to this installation and destination node.
+ * Archive uses the saved destination node so a member rename does not strand cleanup.
  */
-export async function public_api_service_uploads_db_can_clean_up_service_created_lock(
-	ctx: MutationCtx,
+async function db_validate_target_node(
+	ctx: QueryCtx | MutationCtx,
 	args: {
-		principal: Pick<ServiceUploadPrincipal, "organizationId" | "workspaceId" | "actorUserId" | "pathPrefix">;
+		target: Doc<"plugin_service_storage_targets">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
 		installation: Doc<"plugins_workspace_installations">;
+		actorUserId: Id<"users">;
+		pathPrefix: string;
 		destinationNodeId: Id<"files_nodes">;
 		node: Doc<"files_nodes">;
 	},
 ) {
-	// Exact provenance. The lock must be the node's own, not one it inherited from a locked folder,
-	// and it must still name the target that created it. Consent can also be taken back after the
-	// lock was made, so ask the installation again instead of trusting the pointer alone.
+	const { target, node } = args;
 	if (
-		args.node.readOnlyScopeNodeId !== args.node._id ||
-		args.node.readOnlyPluginServiceTargetId === null ||
-		!args.installation.acceptedCapabilities.includes("workspace.files.create-read-only")
-	) {
-		return false;
-	}
-
-	const target = await ctx.db.get("plugin_service_storage_targets", args.node.readOnlyPluginServiceTargetId);
-	// One question asked in parts: is this still the same read-only target, in the same place, alive?
-	//
-	// Tenancy and installation come first, so a grant cannot reach a lock in another workspace or one
-	// another plugin created. Then the destination binding, so a grant only ever reaches the file its
-	// own sealed prefix and destination produced. Then liveness: a target that moved out, was asked to
-	// be deleted, already ended, or belongs to a closed destination generation no longer speaks for
-	// this lock.
-	if (
-		!target ||
-		target.readOnly !== true ||
-		target.organizationId !== args.principal.organizationId ||
-		target.workspaceId !== args.principal.workspaceId ||
+		target.organizationId !== args.organizationId ||
+		target.workspaceId !== args.workspaceId ||
 		target.installationId !== args.installation._id ||
-		target.destinationPath !== args.principal.pathPrefix ||
+		target.destinationPath !== args.pathPrefix ||
 		target.destinationNodeId !== args.destinationNodeId ||
-		target.nodeId !== args.node._id ||
+		target.nodeId !== node._id ||
+		node.organizationId !== args.organizationId ||
+		node.workspaceId !== args.workspaceId ||
 		target.movedOutAt !== undefined ||
 		target.deleteRequestedAt !== undefined ||
 		(target.state !== "pending" && target.state !== "committed") ||
 		(await db_target_destination_is_closed(ctx, target))
-	) {
+	)
 		return false;
-	}
 
-	// The target says where the file was created, not where it sits now. Walk the parents up to the
-	// destination so a node a member moved out of the seal cannot be unlocked through it. Leaving the
-	// tenant on the way up is the same refusal.
-	let parentId = args.node.parentId;
-	while (parentId !== files_ROOT_ID && parentId !== args.destinationNodeId) {
+	const destination = await ctx.db.get("files_nodes", args.destinationNodeId);
+	if (
+		!destination ||
+		destination.kind !== "folder" ||
+		destination.organizationId !== args.organizationId ||
+		destination.workspaceId !== args.workspaceId
+	)
+		return false;
+
+	let parentId = node.parentId;
+	while (parentId !== files_ROOT_ID && parentId !== destination._id) {
 		const parent = await ctx.db.get("files_nodes", parentId);
-		if (
-			!parent ||
-			parent.organizationId !== args.principal.organizationId ||
-			parent.workspaceId !== args.principal.workspaceId
-		) {
+		if (!parent || parent.organizationId !== args.organizationId || parent.workspaceId !== args.workspaceId)
 			return false;
-		}
 		parentId = parent.parentId;
 	}
-	// The walk reached the workspace root instead, so the node is not under the destination at all.
-	if (parentId !== args.destinationNodeId) {
-		return false;
-	}
+	if (parentId !== destination._id) return false;
 
-	// Everything above is about the lock. This last one is about the person: the member behind the
-	// grant must still hold the permission the dedicated lock controls need. Losing it ends the bypass
-	// right away, without waiting for the grant to expire.
-	return await access_control_db_can_act_on_file_node(ctx, {
-		organizationId: args.principal.organizationId,
-		workspaceId: args.principal.workspaceId,
-		userId: args.principal.actorUserId,
-		fileNode: args.node,
-		permission: "content.permissions.manage",
-	});
+	// Passing a protected target retains its capability and human management ceiling.
+	// An ordinary unprotected content update needs only its normal write authority.
+	if (node.writePolicy?.mode === "writer") {
+		if (!args.installation.acceptedCapabilities.includes("workspace.files.create-read-only")) return false;
+		const organization = await ctx.db.get("organizations", args.organizationId);
+		if (!organization?.defaultWorkspaceId) return false;
+		return await access_control_db_has_permission(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			defaultWorkspaceId: organization.defaultWorkspaceId,
+			organizationOwnerUserId: organization.ownerUserId,
+			resource: { kind: "file", id: String(node._id), restrictedScopeNodeId: node.restrictedScopeNodeId },
+			userId: args.actorUserId,
+			permission: "content.permissions.manage",
+		});
+	}
+	return true;
 }
 
 /**
- * The other plugin-passable lock: a direct lock the plugin's own write doors created and named
- * with `readOnlyPluginName`. Kept next to
- * `public_api_service_uploads_db_can_clean_up_service_created_lock` so both lock kinds are judged
- * in one place. A file created read-only through `/api/v1/files/write` has no
- * `plugin_service_storage_targets` row, so the target-based rule above can never say yes for it.
+ * Path-based service file writes must validate a target when one exists.
+ * A stale target never falls through to the separate no-target file rules.
  */
-export async function public_api_service_uploads_db_can_release_plugin_named_lock(
-	ctx: MutationCtx,
+export async function public_api_service_uploads_db_validate_node_target(
+	ctx: QueryCtx,
 	args: {
 		installation: Doc<"plugins_workspace_installations">;
-		/**
-		 * The service grant's sealed destination.
-		 */
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		actorUserId: Id<"users">;
 		pathPrefix: string;
 		node: Doc<"files_nodes">;
 	},
 ) {
-	// The lock must be the node's own, name the calling plugin, sit inside the caller's authority
-	// area, and the consent that created it must still be accepted.
+	const target = await ctx.db
+		.query("plugin_service_storage_targets")
+		.withIndex("by_node", (q) => q.eq("nodeId", args.node._id))
+		.first();
+	if (!target) return true;
+	const destination = await files_db_get_visible_node_by_path(ctx, {
+		organizationId: args.organizationId,
+		workspaceId: args.workspaceId,
+		path: args.pathPrefix,
+	});
 	if (
-		args.node.readOnlyScopeNodeId !== args.node._id ||
-		args.node.readOnlyPluginName !== args.installation.pluginName ||
-		!public_api_is_path_inside_prefix(args.node.path, args.pathPrefix) ||
-		!args.installation.acceptedCapabilities.includes("workspace.files.create-read-only")
-	) {
+		!destination ||
+		destination.kind !== "folder" ||
+		!public_api_is_path_inside_prefix(args.node.path, args.pathPrefix)
+	)
 		return false;
-	}
-
-	// A member can also lock a folder above this node. The read-only cascade stops at the node's
-	// own lock, so that folder lock is invisible here and must still win — the same rule the
-	// service delete door applies.
-	return (await files_nodes_db_resolve_parent_read_only_scope(ctx, { parentId: args.node.parentId })) === null;
-}
-
-/**
- * Release the direct locks a service door was allowed to archive through.
- *
- * Archiving a file the service locked is only half the job. `unarchive_nodes` refuses the whole
- * restore when any node in the restored subtree is read-only. A file that kept this lock could
- * never come back, so the archived set would stop being restorable.
- *
- * Fall back to the parent's pointer the same way `set_node_writable` does. Both doors already
- * refused when a folder above the file still holds a lock, so that pointer is writable here.
- * A folder can carry a plugin-named lock (the invoke file doors lock folders), so a released
- * folder also cascades the parent pointer down its subtree, or its descendants would keep
- * pointing at a lock that no longer exists.
- */
-export async function public_api_service_uploads_db_release_service_created_locks(
-	ctx: MutationCtx,
-	args: { nodes: Array<Doc<"files_nodes">> },
-) {
-	await Promise.all(
-		args.nodes.map(async (node) => {
-			const parentScopeNodeId = await files_nodes_db_resolve_parent_read_only_scope(ctx, {
-				parentId: node.parentId,
-			});
-			await ctx.db.patch("files_nodes", node._id, {
-				readOnlyScopeNodeId: parentScopeNodeId,
-				readOnlyPluginServiceTargetId: null,
-				readOnlyPluginName: null,
-			});
-			if (node.kind === "folder") {
-				await files_nodes_db_cascade_read_only_scope(ctx, {
-					organizationId: node.organizationId,
-					workspaceId: node.workspaceId,
-					parentId: node._id,
-					scopeNodeId: parentScopeNodeId,
-				});
-			}
-		}),
-	);
+	return await db_validate_target_node(ctx, { ...args, target, destinationNodeId: destination._id });
 }
 
 /**
@@ -521,7 +478,11 @@ export async function public_api_service_uploads_db_release_service_created_lock
  */
 async function db_authorize_live_target_node(
 	ctx: MutationCtx,
-	args: { target: Doc<"plugin_service_storage_targets">; principal: ServiceUploadPrincipal },
+	args: {
+		target: Doc<"plugin_service_storage_targets">;
+		principal: ServiceUploadPrincipal;
+		serviceAccountId: Id<"access_control_service_accounts">;
+	},
 ) {
 	// Target keys are installation-wide, so the stored destination is the boundary between two
 	// processing grants from the same installation.
@@ -554,6 +515,7 @@ async function db_authorize_live_target_node(
 			workspaceId: args.principal.workspaceId,
 			userId: args.principal.actorUserId,
 			fileNode: node,
+			serviceAccountId: args.serviceAccountId,
 			permission: "content.write",
 		}))
 	) {
@@ -937,6 +899,7 @@ export const create_upload_target = internalMutation({
 			const liveNode = await db_authorize_live_target_node(ctx, {
 				target: existingTarget,
 				principal: args.principal,
+				serviceAccountId: authorized._yay.serviceAccountId,
 			});
 			if (liveNode._nay) {
 				return liveNode;
@@ -1001,6 +964,7 @@ export const create_upload_target = internalMutation({
 					workspaceId: args.principal.workspaceId,
 					userId: args.principal.actorUserId,
 					fileNode: existingNode,
+					serviceAccountId: authorized._yay.serviceAccountId,
 					permission: "content.write",
 				}))
 			) {
@@ -1043,37 +1007,57 @@ export const create_upload_target = internalMutation({
 			if (ancestor.kind !== "folder") {
 				return Result({ _nay: { message: "An intermediate segment is owned by a file" } });
 			}
-			const ancestorWritable = files_node_require_writable(ancestor);
-			if (ancestorWritable._nay) {
-				return ancestorWritable;
-			}
 		}
+
+		const writeContext: files_nodes_WriteContext = {
+			writer: { kind: "service_account", serviceAccountId: authorized._yay.serviceAccountId },
+			actorUserId: args.principal.actorUserId,
+			resourceScope: {
+				kind: "create",
+				parentNodeId: effectiveDestinationAclNode?._id ?? files_ROOT_ID,
+				path: args.path,
+			},
+			policyReach: "direct",
+		};
+		const writeTarget = { kind: "create" as const, parentNode: effectiveDestinationAclNode, path: args.path };
+		const accountCanWrite = await access_control_db_has_permission(ctx, {
+			organizationId: args.principal.organizationId,
+			workspaceId: args.principal.workspaceId,
+			defaultWorkspaceId: authorized._yay.defaultWorkspaceId,
+			organizationOwnerUserId: authorized._yay.organization.ownerUserId,
+			resource: effectiveDestinationAclNode
+				? {
+						kind: "file",
+						id: String(effectiveDestinationAclNode._id),
+						restrictedScopeNodeId: effectiveDestinationAclNode.restrictedScopeNodeId,
+					}
+				: { kind: "workspace", id: String(args.principal.workspaceId) },
+			serviceAccountId: authorized._yay.serviceAccountId,
+			permission: "content.write",
+		});
+		if (!accountCanWrite) return Result({ _nay: { message: "Permission denied" } });
+		const writable = await files_nodes_db_require_writable(ctx, {
+			organizationId: args.principal.organizationId,
+			workspaceId: args.principal.workspaceId,
+			writeContext,
+			target: writeTarget,
+		});
+		if (writable._nay) return writable;
+		const writePolicy = args.readOnly ? { mode: "writer" as const, writer: writeContext.writer } : undefined;
 
 		if (args.readOnly && !installation.acceptedCapabilities.includes("workspace.files.create-read-only")) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
 
-		if (args.readOnly) {
-			// A sealed grant may finish accepted uploads with content.write. A fresh read-only file is
-			// stronger because its lock can outlive the service run, so recheck manage at the ACL owner.
-			const canManageDestination = await access_control_db_has_permission(ctx, {
-				organizationId: authorized._yay.organization._id,
-				workspaceId: authorized._yay.workspace._id,
-				defaultWorkspaceId: authorized._yay.defaultWorkspaceId,
-				organizationOwnerUserId: authorized._yay.organization.ownerUserId,
-				resource: effectiveDestinationAclNode
-					? {
-							kind: "file",
-							id: String(effectiveDestinationAclNode._id),
-							restrictedScopeNodeId: effectiveDestinationAclNode.restrictedScopeNodeId ?? null,
-						}
-					: { kind: "workspace", id: String(authorized._yay.workspace._id) },
-				permission: "content.permissions.manage",
-				userId: args.principal.actorUserId,
+		if (writePolicy) {
+			const management = await files_nodes_db_require_write_policy_management(ctx, {
+				organizationId: args.principal.organizationId,
+				workspaceId: args.principal.workspaceId,
+				writeContext,
+				target: writeTarget,
+				writePolicy,
 			});
-			if (!canManageDestination) {
-				return Result({ _nay: { message: "Permission denied" } });
-			}
+			if (management._nay) return management;
 		}
 
 		const runTargets = await ctx.db
@@ -1176,6 +1160,8 @@ export const create_upload_target = internalMutation({
 				{ key: "plugin-name", value: installation.pluginName },
 			],
 			metadata: [{ key: "original-name", value: name }],
+			writeContext,
+			...(writePolicy ? { writePolicy } : {}),
 			now,
 		});
 		// The validation above cleared every failure this helper can hit. Throw so a surprise rolls
@@ -1249,13 +1235,6 @@ export const create_upload_target = internalMutation({
 			targetId,
 			assetId,
 		});
-		if (args.readOnly) {
-			// Bind the cleanup exception to this target. Member lock changes always clear this pointer.
-			await ctx.db.patch("files_nodes", nodeIdResult._yay, {
-				readOnlyScopeNodeId: nodeIdResult._yay,
-				readOnlyPluginServiceTargetId: targetId,
-			});
-		}
 
 		return Result({
 			_yay: {
@@ -1379,7 +1358,11 @@ export const remint_upload_target = internalMutation({
 		if (target.state === "released" || target.deleteRequestedAt !== undefined) {
 			return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This target was already released" } });
 		}
-		const liveNode = await db_authorize_live_target_node(ctx, { target, principal: args.principal });
+		const liveNode = await db_authorize_live_target_node(ctx, {
+			target,
+			principal: args.principal,
+			serviceAccountId: authorized._yay.serviceAccountId,
+		});
 		if (liveNode._nay) {
 			return liveNode;
 		}
@@ -1475,7 +1458,11 @@ export const finalize_upload_target = internalMutation({
 			});
 		}
 
-		const liveNode = await db_authorize_live_target_node(ctx, { target, principal: args.principal });
+		const liveNode = await db_authorize_live_target_node(ctx, {
+			target,
+			principal: args.principal,
+			serviceAccountId: authorized._yay.serviceAccountId,
+		});
 		if (liveNode._nay) {
 			return liveNode;
 		}
@@ -1629,61 +1616,73 @@ export const delete_upload_target = internalMutation({
 			return Result({ _nay: { message: "Not found" } });
 		}
 
-		// Ask every live node before the first write. Workspace permission from the grant is not enough
-		// inside a restricted scope, and a lock still means "leave this alone".
-		const serviceLockedNodeIds = new Set<Id<"files_nodes">>();
+		// Preflight every matching node before changing policies or archiving files.
+		const policiesToClear: Array<{ node: Doc<"files_nodes">; writeContext: files_nodes_WriteContext }> = [];
 		for (const match of matches) {
-			if (!match.node) {
-				continue;
-			}
+			if (!match.node) continue;
+			const writeContext: files_nodes_WriteContext = {
+				writer: { kind: "service_account", serviceAccountId: authorized._yay.serviceAccountId },
+				actorUserId: args.principal.actorUserId,
+				resourceScope: { kind: "node", nodeId: match.node._id },
+				policyReach: "direct",
+			};
 			if (
 				!(await access_control_db_can_act_on_file_node(ctx, {
 					organizationId: args.principal.organizationId,
 					workspaceId: args.principal.workspaceId,
 					userId: args.principal.actorUserId,
+					serviceAccountId: authorized._yay.serviceAccountId,
 					fileNode: match.node,
 					permission: "content.write",
 				}))
-			) {
+			)
 				return Result({ _nay: { message: "Permission denied" } });
-			}
-			const writable = files_node_require_writable(match.node);
-			if (!writable._nay) {
-				continue;
-			}
+			const writable = await files_nodes_db_require_writable(ctx, {
+				organizationId: args.principal.organizationId,
+				workspaceId: args.principal.workspaceId,
+				writeContext,
+				target: { kind: "node", node: match.node },
+			});
+			if (writable._nay) return writable;
 			if (
-				!(await public_api_service_uploads_db_can_clean_up_service_created_lock(ctx, {
-					principal: args.principal,
+				!(await db_validate_target_node(ctx, {
+					target: match.target,
+					organizationId: args.principal.organizationId,
+					workspaceId: args.principal.workspaceId,
 					installation,
+					actorUserId: args.principal.actorUserId,
+					pathPrefix: args.principal.pathPrefix,
 					destinationNodeId: match.target.destinationNodeId,
 					node: match.node,
 				}))
-			) {
-				return writable;
+			)
+				return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This upload target is no longer available" } });
+			if (match.target.state === "committed" && match.node.writePolicy !== null) {
+				const management = await files_nodes_db_require_write_policy_management(ctx, {
+					organizationId: args.principal.organizationId,
+					workspaceId: args.principal.workspaceId,
+					writeContext,
+					target: { kind: "node", node: match.node },
+					writePolicy: null,
+				});
+				if (management._nay) return management;
+				policiesToClear.push({ node: match.node, writeContext });
 			}
-			// A member can also lock a folder above this file. The read-only cascade stops at the file's
-			// own service lock, so that folder lock is still there after the release below. The file
-			// would stay read-only and the delete would take it anyway. Only a file ever carries the
-			// service provenance, so a lock above is always a member lock. Refuse the whole call, the
-			// same way `archive_destination` refuses a locked node inside its destination.
-			if (
-				(await files_nodes_db_resolve_parent_read_only_scope(ctx, { parentId: match.node.parentId })) !== null
-			) {
-				return writable;
-			}
-			serviceLockedNodeIds.add(match.node._id);
 		}
 
 		const now = Date.now();
 		const committedNodes = matches.flatMap((match) =>
-			match.target.state === "committed" && match.node && match.node.archiveOperationId === null
-				? [match.node]
-				: [],
+			match.target.state === "committed" && match.node && match.node.archiveOperationId === null ? [match.node] : [],
 		);
 		if (committedNodes.length > 0) {
-			await public_api_service_uploads_db_release_service_created_locks(ctx, {
-				nodes: committedNodes.filter((node) => serviceLockedNodeIds.has(node._id)),
-			});
+			for (const plan of policiesToClear) {
+				const cleared = await files_nodes_db_set_write_policy(ctx, { ...plan, writePolicy: null });
+				if (cleared._nay) {
+					const message = "Service archive policy clear failed after validation";
+					console.error(message, { nodeId: plan.node._id, nay: cleared._nay });
+					throw should_never_happen(message, { nodeId: plan.node._id, nay: cleared._nay });
+				}
+			}
 			// Archive every committed match together, like one member delete action.
 			await files_nodes_db_archive_nodes(ctx, {
 				nodeIds: committedNodes.map((node) => node._id),
@@ -1813,16 +1812,15 @@ export async function public_api_service_uploads_db_collect_bounded_descendants(
  *
  * The meeting is gone, so its files must leave the workspace tree. They are real committed files
  * though, and in this product deleting a file means archiving it, so the service archives too. One
- * operation id covers the folder and its whole subtree, and the locks this service created are
- * released on the way out, which together are what let a member restore the set later. The stored
+ * operation id covers the folder and its whole subtree. Local policies are cleared only when the
+ * actor and account can manage them, so a member can restore the set later. The stored
  * bytes stay charged. This quota only grows, so neither archive nor physical deletion gives bytes
  * back.
  *
  * The seal is the fence. The door takes no path, so a grant can only ever archive its own
- * destination, and `workspace.files.write` plus that seal is what makes archiving inside it a write
- * the service may do. A member can still have put something of their own in the folder, so inside
- * the fence the door asks the same questions `archive_nodes` asks a member: a restricted subtree
- * the actor cannot write, or a read-only node, refuses the whole call. The delete workflow fails
+ * destination. The accepted capability, actor permissions, account grants, and current policies
+ * must all allow the archive. A member can still have put something of their own in the folder,
+ * so a refusal anywhere in the subtree refuses the whole call. The delete workflow fails
  * visibly on a refusal and can be retried once the member clears what blocked it.
  *
  * No idempotency key: a replay finds nothing active at the destination and archives zero nodes.
@@ -1911,22 +1909,6 @@ export const archive_destination = internalMutation({
 			destination = restoredDestination;
 		}
 
-		// The grant carries workspace `content.write`, and a restricted folder subtracts from that: it
-		// grants access only to whoever was named on the scope. So ask about the destination node
-		// itself. The sweep below deliberately skips the destination's own scope, because this is the
-		// check that is supposed to have answered for it.
-		if (
-			!(await access_control_db_can_act_on_file_node(ctx, {
-				organizationId: args.principal.organizationId,
-				workspaceId: args.principal.workspaceId,
-				userId: args.principal.actorUserId,
-				fileNode: destination,
-				permission: "content.write",
-			}))
-		) {
-			return Result({ _nay: { message: "Permission denied" } });
-		}
-
 		// Follow parent ids, not paths. Active and archived trees can hold the same path.
 		const descendants = await public_api_service_uploads_db_collect_bounded_descendants(ctx, {
 			organizationId: args.principal.organizationId,
@@ -1944,55 +1926,67 @@ export const archive_destination = internalMutation({
 
 		const activeDescendants = descendants.filter((descendant) => descendant.archiveOperationId === null);
 
-		// A member can nest a restricted folder in here, and the seal says nothing about that folder.
-		// Ask what the member archive asks, so the actor cannot archive through the service what they
-		// could not archive from the file tree.
-		//
-		// This deliberately asks about archived descendants too, which is stricter than the member
-		// door: that one asks this about the active descendants and then checks the archived ones for
-		// locks in a second call. The subtree is already bounded and loaded here, so one list answers
-		// the permission question and feeds the lock loop below. Do not narrow either of them to the
-		// active descendants. A read-only archived child would then hide under a newly archived
-		// parent, which is what the member door's second call exists to stop.
-		if (
-			!(await files_nodes_db_can_act_on_swept_nodes(ctx, {
+		const writeContext: files_nodes_WriteContext = {
+			writer: { kind: "service_account", serviceAccountId: authorized._yay.serviceAccountId },
+			actorUserId: args.principal.actorUserId,
+			resourceScope: { kind: "subtree", nodeId: destination._id },
+			policyReach: "direct",
+		};
+		const policiesToClear: Array<Doc<"files_nodes">> = [];
+		// Archived descendants also need to remain restorable after this archive.
+		for (const node of [destination, ...descendants]) {
+			if (
+				!(await access_control_db_can_act_on_file_node(ctx, {
+					organizationId: args.principal.organizationId,
+					workspaceId: args.principal.workspaceId,
+					userId: args.principal.actorUserId,
+					serviceAccountId: authorized._yay.serviceAccountId,
+					fileNode: node,
+					permission: "content.write",
+				}))
+			)
+				return Result({ _nay: { message: "Permission denied" } });
+			const writable = await files_nodes_db_require_writable(ctx, {
 				organizationId: args.principal.organizationId,
 				workspaceId: args.principal.workspaceId,
-				userId: args.principal.actorUserId,
-				rootScopeNodeId: destination.restrictedScopeNodeId,
-				nodes: descendants,
-				permission: "content.write",
-			}))
-		) {
-			return Result({ _nay: { message: "Permission denied" } });
-		}
-
-		// A lock is a member saying "leave this alone". The only exceptions are the two locks the
-		// plugin's own doors created: the direct lock of this exact live service target, and a
-		// direct `readOnlyPluginName` lock from the plugin's write door, both judged while the
-		// actor still holds the needed permission.
-		const serviceLockedNodes: Array<Doc<"files_nodes">> = [];
-		for (const node of [destination, ...descendants]) {
-			const writable = files_node_require_writable(node);
-			if (!writable._nay) {
+				writeContext,
+				target: { kind: "node", node },
+			});
+			if (writable._nay) return writable;
+			const target = await ctx.db
+				.query("plugin_service_storage_targets")
+				.withIndex("by_node", (q) => q.eq("nodeId", node._id))
+				.first();
+			// A completed delete keeps its archived node and target as history.
+			if (node.archiveOperationId !== null && target?.state === "released" && target.deleteRequestedAt !== undefined)
 				continue;
-			}
 			if (
-				!(await public_api_service_uploads_db_can_clean_up_service_created_lock(ctx, {
-					principal: args.principal,
+				target &&
+				!(await db_validate_target_node(ctx, {
+					target,
+					organizationId: args.principal.organizationId,
+					workspaceId: args.principal.workspaceId,
 					installation: authorized._yay.installation,
+					actorUserId: args.principal.actorUserId,
+					pathPrefix: args.principal.pathPrefix,
 					destinationNodeId: destination._id,
 					node,
-				})) &&
-				!(await public_api_service_uploads_db_can_release_plugin_named_lock(ctx, {
-					installation: authorized._yay.installation,
-					pathPrefix: args.principal.pathPrefix,
-					node,
 				}))
-			) {
-				return writable;
+			)
+				return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This upload target is no longer available" } });
+			if (node.writePolicy !== null) {
+				if (!authorized._yay.installation.acceptedCapabilities.includes("workspace.files.create-read-only"))
+					return Result({ _nay: { message: "Permission denied" } });
+				const management = await files_nodes_db_require_write_policy_management(ctx, {
+					organizationId: args.principal.organizationId,
+					workspaceId: args.principal.workspaceId,
+					writeContext,
+					target: { kind: "node", node },
+					writePolicy: null,
+				});
+				if (management._nay) return management;
+				policiesToClear.push(node);
 			}
-			serviceLockedNodes.push(node);
 		}
 
 		await db_close_destination(ctx, {
@@ -2015,6 +2009,7 @@ export const archive_destination = internalMutation({
 				.first();
 			if (
 				target &&
+				target.state !== "released" &&
 				target.organizationId === args.principal.organizationId &&
 				target.workspaceId === args.principal.workspaceId &&
 				target.installationId === authorized._yay.installation._id &&
@@ -2028,7 +2023,14 @@ export const archive_destination = internalMutation({
 			}
 		}
 
-		await public_api_service_uploads_db_release_service_created_locks(ctx, { nodes: serviceLockedNodes });
+		for (const node of policiesToClear) {
+			const cleared = await files_nodes_db_set_write_policy(ctx, { node, writeContext, writePolicy: null });
+			if (cleared._nay) {
+				const message = "Service archive policy clear failed after validation";
+				console.error(message, { nodeId: node._id, nay: cleared._nay });
+				throw should_never_happen(message, { nodeId: node._id, nay: cleared._nay });
+			}
+		}
 
 		await files_nodes_db_archive_nodes(ctx, {
 			nodeIds: [destination._id, ...activeDescendants.map((descendant) => descendant._id)],

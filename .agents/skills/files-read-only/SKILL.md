@@ -1,58 +1,48 @@
 ---
 name: files-read-only
-description: Spec for the workspace read-only lock on files and folders — the intrinsic post-ACL lock pointer, recursive folder scope, current-lock write checks, accepted-upload completion, exact-key R2 deletion ledger, and 409 `conflict` mapping. Use when changing the lock helpers or write doors in `packages/app/convex/files_nodes.ts` / `files_nodes_content.ts` / `files_pending_updates.ts` / `public_api.ts` / `r2.ts`, the read-only field in `packages/app/convex/schema.ts`, the Yjs provider in `packages/app/src/lib/files-yjs-provider.ts`, or the lock UI in the Files sidebar, folder view, and editors.
+description: Spec for file write policies, selected human and service-account writers, parent policy checks, policy management, accepted-upload completion, exact-key R2 deletion jobs, and the stable read_only conflict. Use when changing file write checks, creation, moves, pending work, snapshot writes, public file doors, or the Files policy controls.
 ---
 
 # Mental Model
 
-Read-only is a property of a file or folder. It is separate from access control. ACL answers who may
-act. Read-only answers whether the node may change.
+File access and write policy are separate checks. Access control decides whether the current actor
+and any bound service account have the requested permission. A write policy then limits which writer
+may change the node. Selecting a writer grants no file access.
 
-No normal write bypasses a lock. This includes writes from owners, admins, members, API keys, plugin
-runs, and agents. `content.permissions.manage` lets a caller lock or unlock a node. It does not let
-other writes bypass the lock. Named tenant, workspace, and account deletion flows are lifecycle
-bypasses because they remove the whole scope. Two narrow product exceptions exist, both
-provenance-bound and neither general write access: cleanup of a service-created direct lock, and a
-plugin door passing its own plugin-created direct lock (`readOnlyPluginName`), both described below.
+The writer is either a human user or a service account. Ordinary app, agent, and Bash operations use
+the human. A service-bound key or plugin backend uses its bound account, with the current human actor
+as a separate permission ceiling. Plugin names, labels, run IDs, and upload targets do not identify a
+writer. They remain separate integration constraints.
 
-The closest OS comparison is the Linux immutable flag (`chattr +i`). It blocks content changes,
-rename, and delete. POSIX mode bits and the Windows read-only attribute are different because the
-parent folder may still allow rename or delete.
+Every policy above a node applies. A matching local writer cannot override a different parent writer
+or a read-only parent. Owners and admins do not bypass policy. Management permission lets them change
+the policy through the common setter. Named tenant, workspace, and account deletion flows remove
+their whole scope and remain lifecycle exceptions.
 
-A folder lock covers all active and archived descendants. A locked descendant also protects its
-ancestors. The app blocks rename, move, and archive on an unlocked ancestor when that action would
-also change the locked descendant.
-
-There are no writable exceptions inside a locked folder. The synthetic root cannot be locked. Clients
-cannot send a bypass flag. Copying a locked node out is allowed, but the new copy is writable. The old
-`readOnly` creation argument in `files_nodes_content.ts` is only for reserved mount content. It is not
-part of this lock system.
+Folder policies cover active and archived descendants. A descendant that refuses the current writer
+also blocks operations that would rename, move, archive, or replace it through an ancestor. Readable
+files may still be copied out. A copy follows its destination policy and existing sharing rules.
+The synthetic root has no local policy.
 
 # Data Model
 
-On `files_nodes`, beside `restrictedScopeNodeId`:
+`files_nodes` stores these fields beside `restrictedScopeNodeId`:
 
-- `readOnlyScopeNodeId`: `null` means writable. The node's own `_id` means it has a direct lock.
-  Another id means it inherits the nearest folder lock. Folder cascades include archived descendants
-  and stop at nested direct locks.
-- `readOnlyPluginServiceTargetId`: required nullable provenance for the exact service target that created a
-  direct lock. Public node query answers always remove it. Every member lock/unlock transition and
-  inherited-pointer cascade clears it. An idempotent call that changes no lock leaves it alone.
-- `readOnlyPluginName`: required nullable provenance for a direct lock a plugin door created (`access.readOnly`
-  on `/api/v1/files/write`, `plugin-folders/ensure`, or `plugin-access/set` — see
-  `../public-api/SKILL.md#plugin-file-doors`). Public node query answers remove it, and member
-  lock/unlock transitions clear it the same way as the service target pointer. A member with manage
-  permission can unlock every plugin-created node through the normal Files control. No-op requests
-  preserve both origin fields. Unlocking and locking again creates a member lock the plugin cannot pass.
+- `writePolicy`: `null` inherits; `{ mode: "read_only" }` blocks content writes;
+  `{ mode: "writer", writer }` selects one human or service account.
+- `writePolicyScopeNodeId`: `null` means no local or inherited policy. The node's own ID means it has
+  a local policy. Another ID points to the nearest parent policy. Cascades use stored parent IDs,
+  include archived descendants, and stop at nested local policies.
 
-Plugin selection lives in ordinary editable `plugin-name` metadata. It is separate from these lock
-fields. Cleared lock and origin fields store null. No schema ownership field or label fallback exists. Metadata edits never change locks or
-reader bindings. A real inherited-pointer rewrite clears both lock-origin fields; nested direct
-locks and their subtrees keep their own origin.
+The writer value is `{ kind: "user", userId }` or `{ kind: "service_account", serviceAccountId }`.
+An empty local choice keeps the parent's current pointer. A new local choice points to the node
+itself. Moving or restoring a node updates inherited pointers; a local policy stays local and still
+checks the new outer parents. Policy writes do not change `updatedAt` or `updatedBy`.
 
-There is no read-only generation or lock-history table. A past lock does not make later work stale.
-Every write checks the current pointer in its final transaction. If the pointer is clear at that time,
-the write may continue.
+There is no policy history counter. Every final write checks the current policy. A past refusal does
+not make later work stale once the current writer is allowed. Credential, ACL, scope, and content
+staleness checks still apply. Editable `plugin-name` metadata changes neither policies nor grants.
+
 
 ## Upload fields
 
@@ -98,153 +88,113 @@ delete flow does not prove that the file was deleted.
 
 # Operation Matrix
 
-| Operation                                   | Locked file                                  | Locked folder                   | Unlocked ancestor with a locked descendant      |
-| ------------------------------------------- | -------------------------------------------- | ------------------------------- | ----------------------------------------------- |
-| Open, read, search, download                | Allow (ACL applies)                          | Allow (ACL applies)             | Allow                                           |
-| Copy path, link, node id                    | Allow                                        | Allow                           | Allow                                           |
-| Copy content or subtree out                 | Allow when readable; copy is writable        | Same                            | Same                                            |
-| Edit or save content                        | Block                                        | Not applicable                  | Allow on unlocked siblings                      |
-| Create child, upload, import, paste media   | Not applicable                               | Block                           | Allow into unlocked branches                    |
-| Rename                                      | Block                                        | Block                           | Block for the ancestor                          |
-| Move                                        | Block as source and replacement              | Block as source and destination | Block for the ancestor                          |
-| Archive/delete                              | Block                                        | Block                           | Block for the ancestor                          |
-| Restore/unarchive                           | Block until unlocked                         | Block until unlocked            | Block when the restored subtree includes a lock |
-| Snapshot browse/download                    | Allow                                        | Not applicable                  | Allow                                           |
-| Snapshot restore/archive/unarchive          | Block                                        | Not applicable                  | Not applicable                                  |
-| Share or change access                      | Allow with management permission             | Same                            | Allow                                           |
-| Reply to an existing comment                | Allow with comment permission                | Not applicable                  | Allow                                           |
-| Create or resolve an anchored comment       | Block (changes a Yjs mark)                   | Not applicable                  | Allow on unlocked documents                     |
-| Discard a whole pending proposal            | Allow                                        | Allow                           | Allow                                           |
-| Accept/save pending work                    | Block                                        | Block                           | Block when any affected subtree is locked       |
-| Lock/unlock                                 | Only through the dedicated management action | Same                            | Same                                            |
-| Finish an upload accepted before the lock   | Allow; the finished file stays locked        | Same                            | Same                                            |
-| Materialize an already committed Yjs update | Allow                                        | Not applicable                  | Allow                                           |
-| Tenant/account deletion                     | Allow through the explicit deletion workflow | Allow                           | Allow                                           |
+The table describes a node whose policy refuses the current writer. ACL still applies in every row.
 
-Direct `chat_messages` sidecar mutations stay under their current comment ACL rules while a file is locked. The Files UI blocks anchored Create and Resolve when `canEditContent` is false because those actions also change a Yjs mark. The Yjs write gate remains authoritative if a live race reaches it.
+| Operation | Result |
+| --- | --- |
+| Open, read, search, download, copy path/link/ID | Allow |
+| Copy readable content or subtree out | Allow; destination policy applies |
+| Edit/save content, metadata, Yjs marks, or collaboration mode | Refuse |
+| Create children, upload, import, or paste media | Refuse at the destination |
+| Rename, move, replace, archive, or restore | Refuse if any affected node refuses |
+| Browse or download snapshots | Allow |
+| Restore, archive, or unarchive snapshots | Refuse |
+| Share or change policy | Require management permission separately |
+| Reply to an existing comment | Allow with comment permission |
+| Create or resolve an anchored comment | Refuse; this changes a Yjs mark |
+| Discard a whole pending proposal | Allow; keep protected eager-created nodes |
+| Accept, save, or rebase pending work | Refuse |
+| Finish an already accepted upload or committed Yjs materialization | Allow |
+| Delete a tenant, workspace, or account | Use the named deletion workflow |
 
-# Lock Management
+Direct comment sidecar mutations keep their comment ACL rules. The editor uses content write access
+for anchored Create and Resolve. The Yjs gate checks again if a race reaches the server.
 
-The `read-only` region in `packages/app/convex/files_nodes.ts` owns the full lock system. It includes `set_node_read_only`, `set_node_writable`, `get_node_read_only_management_state`, and the low-level helpers. Keep this code together because it all changes the same `files_nodes` lock pointer.
+# Policy Management
 
-Both mutations resolve auth and membership, apply the tree-write rate bucket, and require `content.permissions.manage` on the target. A folder lock preflights every distinct restricted scope in the subtree: a manager of an outer open folder must not freeze a hidden restricted subtree they cannot manage. A real transition patches and cascades pointers in one transaction. Idempotent calls make no extra writes. The mutations never patch `updatedBy`/`updatedAt`, and `v.id("files_nodes")` keeps the synthetic root unreachable.
+`files_nodes.ts` owns `set_node_write_policy`, `get_node_write_policy_management_state`, and the shared
+internal management helpers. HTTP and plugin adapters use the same helpers after their own live
+identity, token, capability, and resource checks.
 
-- Lock: an already explicit lock is an idempotent success. A node that is only inherited may take its own explicit lock (pointer becomes itself), so it stays locked if the outer lock is later removed.
-- Unlock: only an explicit root unlocks directly. Its pointer is replaced with the parent's current pointer and cascaded, so a still-locked parent keeps the node effectively read-only.
-- New nodes: user creation already refused a locked destination, so inserted nodes start unlocked. A named migration/repair path allowed to create below a lock sets the inherited pointer — bypass means the creation is allowed, not that the new node is writable.
+The setter requires current actor and optional account `content.permissions.manage` on the actual
+target. For a folder, it also checks every distinct nested restricted scope, including archived
+descendants. It does not require an exact account grant on each unrestricted child. New selected
+users must be active workspace members; new selected accounts must be active in the same workspace.
+A stored revoked writer remains visible as a redacted choice that a manager can replace.
+
+Creation preflights management on the actual nearest existing parent or root before inserting any
+missing path segment. It does not pretend that the new child already has an exact-node account grant.
+Choosing a local policy creates no grant. Intermediate folders inherit; only the requested leaf gets
+the requested local policy. A refusal commits no partial folders, assets, policy, or sharing changes.
+
+Inherit removes only the local choice and returns to the current parent policy. Setting a local choice
+below a parent is allowed, but does not bypass the parent. Repeating the same local choice is an
+idempotent success. Management stays separate from effective content write access.
 
 # Enforcement Rules
 
-- Use this order at every write door: auth and membership → ACL → read-only check → conflict
-  details → writes. Keep read-only outside the generic ACL code because owners pass ACL checks by
-  design. Lock and unlock require management permission, but they must be able to change the lock
-  being managed.
-- Every final user-write transaction checks the current lock before its first write. This includes a
-  Yjs push, file create, snapshot restore, Yjs repair, pending Save or Accept, public text publish,
-  the non-collaborative content replacement (`replace_file_content`), and both collaboration toggles
-  (`set_file_non_collaborative` / `set_file_collaborative`). A lock removed before this check does not
-  refuse the write.
-- The two collaboration toggles are content writes, not permission changes. They ask for ACL
-  `content.write` and then the lock, in that order, like every other content door. They do NOT use
-  `content.permissions.manage`, which is what lock and unlock use.
-- Other safety checks still apply. A public replacement keeps the expected target node id. A pending
-  replacement keeps the ordered source node ids. These checks stop the operation from changing
-  different files from the ones the user reviewed.
-- If a final mutation refuses after R2 writes already happened, it sends every written exact key to
-  `files_r2_object_deletion_jobs` before deleting temporary docs.
-- Upload publication and conversion finish a node and signed target that the app already accepted.
-  A later lock does not cancel this work.
-- Rename, move, archive, unarchive, and replace use the complete operation plan they already build.
-  Check that plan before the first write. One locked affected node refuses the whole call. Archive also
-  checks archived descendants for locks without widening normal ACL access.
-- Build read-only subtrees from stored `parentId` links. Do not use `path` or `treePath` prefixes. An
-  archived tree and a newer active tree may use the same path, but they are separate trees. A lock in
-  one must not affect the other.
-- Clients cannot request a bypass. Tenant, workspace, and account deletion are named lifecycle
-  bypasses in `data_deletion.ts`. Named migration and repair entrypoints may also bypass the lock.
-  Normal operator imports in `data_import.ts` do not bypass it.
-- A sealed service upload may create its new placeholder with a direct lock only when the plugin has
-  `workspace.files.create-read-only` and the actor has live `content.permissions.manage` at the
-  destination ACL. Its `delete` and `archive-destination` doors may pass that exact target's
-  direct lock. This exception rechecks tenant, installation, destination node, open epoch, target state,
-  capability, provenance, and live manage ACL before any cleanup write. Inherited, member-created,
-  member-recreated, moved, released, deleting, stale-epoch, or unrelated locks never pass. A member
-  lock on any folder above the file does not pass either. `archive-destination` also permits a direct
-  `readOnlyPluginName` lock from the same plugin inside the seal when `workspace.files.create-read-only`
-  remains accepted. A locked parent refuses this exception too.
-- The plugin write engine passes a read-only lock only for a lock its own plugin created, and the
-  two principal kinds are judged differently
-  (`public_api_db_can_pass_read_only_for_plugin`, `public_api.ts`).
-  - A `plugin_run` must be an invoke run. The engine resolves the lock's owning scope node and
-    checks its `readOnlyPluginName`, then follows outer lock sources too. Every passed lock must
-    name this plugin. An outer member lock blocks a nested plugin lock. `own-access` is NOT checked here: it is the
-    capability to CREATE a lock, `own-write` the capability to write the file, and revalidation
-    already checked the editable label and own-write. Losing own-access alone does not stop a
-    plugin from maintaining otherwise writable, matching files.
-  - A `plugin_service` passes only a lock on the file itself: the plugin-named lock its write door
-    created (`public_api_service_uploads_db_can_release_plugin_named_lock`, which requires
-    `workspace.files.create-read-only` and refuses when a member lock sits on a folder above), or
-    the lock of this installation's own live upload target.
-  Every other lock keeps answering 409 `This item is read-only.` exactly as before.
-- A door that passes that check must also release the lock before it archives the node. `unarchive_nodes`
-  refuses the whole restore when any node in the restored subtree is read-only, so a file that kept the
-  lock could never come back and the archived set would stop being restorable. A member can also hold a
-  folder lock above the file. The read-only cascade stops at a child holding its own lock, so the file's
-  own pointer does not show that folder lock, and releasing the service lock would leave the file
-  read-only. So both doors refuse the whole call while any folder above the file is locked. `delete`
-  reads the parent folder's pointer, and `archive-destination` sees the same lock while it sweeps its
-  destination subtree. The released pointer still falls back to the parent's current scope, the same way
-  `set_node_writable` does, and after those refusals that scope is always writable. Service-target
-  provenance is file-only; releasing a plugin-named folder lock also updates its descendants.
-- Plugin files go through the plugin file doors (`plugin-folders/ensure`, `/api/v1/files/write`
-  for a plugin run, `plugin-archive`, `plugin-access/set` — `../public-api/SKILL.md#plugin-file-doors`).
-  They are not user or agent doors. `files_node_require_writable` stays strict and has no bypass
-  flag. The recursive create helper may take `skipAccessControlAndLock` and
-  `inheritParentReadOnlyScope` **only** from those doors. Clients cannot send those flags. Invoke writes
-  check the target's label separately and may pass this plugin's current lock sources, including
-  ancestors. A member lock still blocks the write. Bash `replace_file_content` and `create_file_by_path`
-  under a plugin-locked folder still return `_nay.name === "read_only"`.
-- A plugin asking for `readOnly: true` on a node under a lock **its own plugin** already holds is
-  asking for nothing new, so the door answers success and writes no second lock. Releasing under any
-  lock above stays refused, because the lock above would keep the node read-only anyway, and so does
-  any request under a lock somebody else owns. A plugin that locks its root and then builds subfolders
-  inside it depends on this: Chitchat locks `/chitchat` and ensures `/chitchat/private/<channel>`.
-- `plugin-folders/ensure` passes `inheritParentReadOnlyScope`, like the write doors. A folder created
-  under a locked root must come out carrying the lock pointer, or the tree above reads read-only while
-  the folder's own field says nothing and the `readOnly: true` on it locks nothing.
-- Ensure applies requested access only to a new folder. An existing folder keeps the member's locks,
-  metadata, and sharing. A member-relocked folder refuses. Explicit `plugin-access/set` also needs
-  live manage permission on the node and affected restricted subtrees. Access and binding checks
-  finish before any node, lock, or grant write.
-- If discard or expiry finds a locked eager-created node or created ancestor, remove the pending docs
-  but keep the empty committed branch. `eagerCreated` stores the creation-time committed sequence and
-  optional `createdAncestorIds`. Cleanup checks every existing node's current lock before its first
-  hard delete. It then runs the existing checks that prove the nodes were not changed.
-- Workspace Bash writes create pending proposals and follow the same rules; `/tmp` stays writable, and `cp` may read a locked source (copy-out).
-- Hidden-source privacy (RO-10): a refusal never names or reveals a hidden node. Public query boundaries project `readOnlyState` and return `readOnlySourceNodeId`/path only when the source is in the caller's authorized result; otherwise the UI says `Read-only from a protected folder.` The management query returns the non-identifying `hasInheritedParentLock` flag instead of the outer node's id, name, or path.
+- Use this order: current auth and membership, actor/account ACL, resource scope and policy, conflict
+  details, then writes. Policy is outside ACL because owner permission does not bypass a policy.
+- `files_nodes_db_require_writable` accepts trusted writer, actor, resource scope, and policy reach.
+  It does not read plugin docs or infer identity from labels. Its callers establish current credentials
+  and ACL. `files_nodes_db_require_user_writable` supplies the explicit human writer for ordinary
+  callers. Action preflights use the Result query `get_user_file_write_access`, preserving `read_only`.
+- A scope is workspace, subtree, exact node, or create at a pinned nearest existing parent/root plus
+  normalized intended path. Check subtree membership through parent IDs, including after moves.
+- Reach `none` passes no policy. Reach `ancestors` may match every applicable selected-writer rule.
+  Reach `direct` may match only an existing target's own local rule; any outer policy refuses. During
+  creation, the existing parent is not the new target, so even a matching parent policy refuses direct
+  reach. Sealed service doors use direct reach and preserve their destination and target limits.
+- Generic account keys use account permissions and their validated resource scope. Invoke plugins
+  also keep accepted capability, editable label, source, and current installation checks. UI sessions
+  keep their read-only backend contract. The generic helper adds no integration bypass.
+- Every final content, Yjs, create, snapshot, repair, pending, import, or public publish transaction
+  checks current policy before its first write. Both collaboration toggles require content write,
+  not policy-management permission.
+- Rename, move, archive, unarchive, and replace check their complete affected set before any write.
+  Archived descendants use their real parent links. Equal paths in separate archived and active trees
+  do not make them the same policy scope. Hidden refusals reveal no hidden node name, ID, or path.
+- Keep expected target IDs and ordered pending source IDs. These stop stale work from changing a
+  different file; they are separate from policy history.
+- If an external write already happened before a final refusal, queue every exact key for durable
+  cleanup before removing its temporary docs. Do not treat starting a vendor retry as final deletion.
+- Plugin policy changes use common management checks. A requested `readOnly: true` maps to a local
+  selected-account policy, including below a matching account parent. Ensure keeps existing folders'
+  access unchanged. Policy changes never restore removed account grants.
+- Service archive may clear an allowed direct policy only through the common managed setter in the
+  same transaction. It still checks each swept node and refuses parent policy. Reader binding edits
+  preserve independently managed account grants; ordinary reader refreshes cannot add them back.
+- Eager-created cleanup checks the proposer's current policy access on the file and every created
+  ancestor before deleting any node. If one refuses, remove pending docs but keep the committed tree.
+  The existing untouched-node checks still apply. Bash `/tmp` stays writable; copy-out stays allowed.
+- Raw path/overlay resolution remains unfiltered so hidden occupied paths still conflict. Authorized
+  read entrypoints apply actor and optional account visibility after lookup. Lists never expose raw
+  policy fields or hidden writer/source identity.
 
 # Error Contract
 
-- Internal: `Result({ _nay: { name: "read_only", message: "This item is read-only." } })`. Callers branch on `_nay.name`, never the message. No `_nay.data` and no new validator.
-- Public API: HTTP `409 Conflict` with the existing code `conflict` and the message `This item is read-only.` Never map a lock refusal to `permission_denied` — the caller may have permission and still be blocked by resource state.
-- Batch semantics stay route-shaped: `/files/write-many` reports read-only as a per-item `conflict` and continues later items. `/files/touch` returns a request-level 409 and may keep earlier sequential touches. `/files/upload-urls` preflights the whole batch and returns one request-level 409 naming the offending caller-supplied path, minting nothing. Single write/fill routes return their normal request-level 409, and plugin routes settle with the existing `conflict` code. `skipIfUnchanged` still answers 409 on a locked target.
+- Internal: `Result({ _nay: { name: "read_only", message: "This item is read-only." } })`.
+  Branch on `_nay.name`. Do not turn a policy refusal into a generic permission refusal.
+- HTTP: `409 Conflict`, existing code `conflict`, same message. Missing ACL remains a permission error.
+- `/files/write-many` keeps per-item conflicts and continues. `/files/touch` keeps its sequential,
+  request-level conflict. `/files/upload-urls` preflights the batch and mints nothing on refusal.
+  Single and plugin routes keep their existing error shapes. `skipIfUnchanged` still checks policy.
 
 # Race Rules
 
-- Lock during a write: the final mutation checks every affected node before its first write. It refuses
-  while a lock is present. It continues if the lock was removed before this check. Identity, ACL, and
-  content-staleness checks still apply.
-- Accepted upload: creating the upload node, asset doc, and signed create-only target accepts the
-  upload. A later lock, or a lock and unlock cycle, does not cancel the upload, conversion, or
-  upload-completed plugin event. The live key is immutable, so a reused signed URL cannot overwrite
-  the published bytes.
-- Yjs uses the same current-lock rule. The server checks the lock in `yjs_push_update`. If a queued update reaches the server after the file is writable again, the server may accept it.
-- A read-only refusal is final for the queued local edits. The provider does not retry them. It drops them, reloads the saved document, and shows: `This file became read-only, so your unsaved changes were not saved. The saved version was reloaded.`
-- A permission refusal shows a warning on the first refusal: `You no longer have permission to edit this file. Your unsaved changes were not saved.`
-- A rate limit or network error keeps the queued edits and retries every 5 seconds. These cases do not show the final refusal warning.
-- A compaction refusal means the server is joining old Yjs updates to free space. The provider retries 5 times and waits 5 seconds between retries. It shows the final refusal warning if the server refuses the sixth request.
-- For a currently absent destination, publication resolves the path again and checks current ACL and locks. A past lock on a folder that is now unlocked, archived, or deleted does not stale the write. A target that appeared at the exact path is still a normal identity conflict and cannot be overwritten by stale create work.
-- A durable pending proposal committed before a lock stays visible. Accept, Save, and rebase fail while an affected node is locked. If every affected node is writable again before the final mutation, even an operation that started before the lock → unlock cycle may finish.
+- A final transaction checks current policy again after action work. If the writer is allowed then,
+  the write can finish subject to its other checks. Revoked credentials and changed resource identity
+  still refuse. An absent destination is resolved again before publication.
+- Upload acceptance creates the node, asset, and signed create-only target. A later policy change
+  does not cancel accepted object publication, conversion, or its upload-completed event. A reused
+  URL cannot overwrite a published object.
+- `yjs_push_update` applies the current rule. A final `read_only` refusal drops queued local edits,
+  reloads the saved document, and explains that the unsaved changes were not saved. A permission
+  refusal keeps its existing warning. Network/rate failures keep edits and retry every five seconds.
+  Compaction retries five times with the existing delay, then shows the final refusal on the sixth.
+- Pending proposals remain visible through policy changes. Save, Accept, and rebase can resume when
+  every affected node allows the writer. Whole-proposal Discard stays available.
+
 
 # Accepted Upload Completion
 
@@ -259,20 +209,20 @@ An already published event changes no metadata and starts no new work. If notifi
 fails, recovery reads the same direct object. Keep `unfinalizedExpiresAt` until publication or cleanup
 finishes. Recovery retries hourly for the first 30 hours after the signed URL was issued, then weekly.
 After eight days, it checks the object once more before retiring an ordinary failed placeholder.
-A read-only placeholder stays and is checked later. A writable pending service placeholder also stays,
+A placeholder whose policy refuses cleanup stays and is checked later. A pending service placeholder that permits cleanup also stays,
 but terminal cleanup sets `uploadRetiredAt` and queues its canonical key in one mutation.
 
 Pending service remint and create replay rotate the node and target to a fresh asset in one mutation.
 That mutation queues the old key before removing the old asset. It does not wait for old cleanup.
-A committed target stays terminal. Only a named tenant, workspace, or account deletion bypasses the lock;
+A committed target stays terminal. Only a named tenant, workspace, or account deletion bypasses file policy;
 these use `db_purge_organization_workspace_content_batch` in `data_deletion.ts`.
 
 Those retry doors still recheck the target's original destination seal, active current path, and
-restricted-file ACL. The lock is the one check they skip because it happened after upload acceptance.
+current actor/account authority and restricted-file ACL. Policy is the one check they skip because it happened after upload acceptance.
 If a service call observes that a member moved the file outside the seal, it closes those doors
 permanently for that target. The accepted R2 event can still finish and charge the file's real size.
 
-The service `delete` route also respects the lock before any write. It archives a committed upload,
+The service `delete` route also checks current policy before any write. It archives a committed upload,
 because that file may now hold normal editable state and history. It hard-deletes only a pending
 service placeholder, which has no accepted content yet.
 
@@ -287,96 +237,75 @@ the asset and node. It also releases the current service target when present. Mi
 refresh the same job. Stale operator-repair uploads use this durable table for real tenants. Reserved
 scopes keep their component cleanup.
 
-After acceptance, a lock only changes what may start next. The R2 event still publishes the file, text conversion still creates the editable representation, and upload-completed plugins still receive the event. The finished node keeps its direct or inherited lock. New edits, replacements, renames, moves, and deletes remain blocked.
+After acceptance, a policy change only affects what may start next. The R2 event still publishes the file, text conversion still creates the editable representation, and upload-completed plugins still receive the event. The finished node keeps its local or inherited policy. New edits, replacements, renames, moves, and deletes still check that policy.
 
 - UI: the normal waiting/processing state changes to the normal ready state. No separate read-only recovery action is needed.
-- Rich-text media: the asset upload may finish after its destination locks. Inserting the reference still checks whether the document is editable. If the document locked during the upload, keep the visible asset file and explain that it uploaded but was not inserted.
+- Rich-text media: the asset upload may finish after its destination policy changes. Inserting the reference still checks whether the document is editable. If the document stops allowing edits during the upload, keep the visible asset file and explain that it uploaded but was not inserted.
 
 # UI Capability Model
 
-Derive operation-specific capabilities instead of one broad `canWrite`:
+Public node queries return `canWrite`, `writeBlockedReason` (`null`, `permission`, or `read_only`), and
+`writePolicyState` (`none`, `self`, or `inherited`). The state describes policy location, not the human's
+write permission. A selected human can edit while a policy is present. Source ID/path appear only
+when readable. Lists do not join account names or expose raw authority fields.
 
-| Capability                                                                                            | Meaning                                                                                                                                                                                              |
-| ----------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `canEditContent`                                                                                      | ACL write and no effective lock                                                                                                                                                                      |
-| `canReceiveChildren`                                                                                  | Folder ACL write and the folder is not effectively locked                                                                                                                                            |
-| `canRelocateOrRename`                                                                                 | Source ACL write, no effective lock, no VISIBLE locked descendant                                                                                                                                    |
-| `canArchiveOrRestore`                                                                                 | Same subtree rule plus existing restore/restricted-scope rules                                                                                                                                       |
-| `canManage` (from `get_node_read_only_management_state`, not from `files_get_read_only_capabilities`) | `content.permissions.manage` on **this** node, not on the lock source. The Properties modal ANDs it with `readOnlyState !== "inherited"` to get its local `canToggle` — see the checkbox table below |
-| `readOnlyState`                                                                                       | `writable`, `self`, or `inherited`                                                                                                                                                                   |
-| `hasVisibleReadOnlyDescendant`                                                                        | One ancestor-id set derived from the authorized `list_tree` result; no per-row subtree scan                                                                                                          |
+Operation capabilities use actual `canWrite`. Rename, move, and archive also check the set of visible
+ancestors with a refusing descendant. The server checks hidden descendants again. Rows stay readable,
+selectable, searchable, and expandable. Policy and restricted-sharing indicators stay separate.
 
-Locked rows stay selectable, openable, searchable, and expandable; the lock mark is separate from the restricted-access icon. Exact accessible row descriptions:
+Files Properties offers Inherit, Read-only, and Selected writer. Its picker lists visible active
+workspace users and accounts. It shows local choice, inherited source, and effective refusal
+separately. The shared management state returns `canManage`, safe `localPolicy`, `hasInheritedPolicy`,
+safe `inheritedSource`, and `blockedByAncestor`, as well as write access. A hidden or revoked writer
+is redacted to null while the local mode stays `writer`. A protected parent cannot be bypassed by the
+local choice. A manager may still change that choice or navigate to a readable source.
 
-- `<name>, read-only` for a direct lock.
-- `<name>, read-only from <visible path>` for an inherited lock with a readable source.
-- `<name>, read-only from a protected folder` for an inherited lock with a hidden source.
-- `<name>, contains read-only items` for an unlocked visible ancestor.
-
-Tooltips use `Read-only`, `Read-only from /docs`, and `Contains read-only items`. Top-status strings: `This file is read-only.`, `Read-only because /docs is locked.`, `This folder contains read-only items. It cannot be renamed, moved, or archived.`
-
-## The lock control is one checkbox
-
-The lock lives in the `Protection` section of the Properties modal (`packages/app/src/components/files/files-properties-modal.tsx`), opened from the sidebar row menu or the breadcrumb button. It is one checkbox, ticked whenever the node is read-only by any route.
-
-A checkbox cannot say which of the four states the node is in, so the line under the label carries that, and it is the part a test must assert on:
-
-| `readOnlyState` | `hasInheritedParentLock` | Checkbox         | Description under the label                                                                               | What unticking does                               |
-| --------------- | ------------------------ | ---------------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| `writable`      | —                        | off              | `Anyone with permission to edit can change this <kind>.`                                                  | —                                                 |
-| `self`          | false                    | on               | `Locked here. Unchecking makes this <kind> writable again.`                                               | `set_node_writable` → writable                    |
-| `self`          | true                     | on               | `Locked here and by <source>. Unchecking removes only the lock set here, so this <kind> stays read-only.` | `set_node_writable` → drops to the inherited lock |
-| `inherited`     | true                     | on, **disabled** | `Read-only because <source> is locked. Unlock it there to make this <kind> writable.`                     | nothing; the box cannot be unticked here          |
-
-Two extra rules the checkbox alone does not carry:
-
-- While the lock write is in flight the box stays enabled and carries `aria-busy="true"`; `handleCheckedChange` ignores the second press instead. Do not disable it for the in-flight state. A browser blurs a focused element as soon as it becomes disabled, so a keyboard user who pressed Space would be thrown out of the dialog onto `<body>`. Only the static reasons (no manage permission, an inherited lock) disable the box, and both are already true before anybody can focus it.
-- An inherited lock is owned by a folder above, so this node cannot release it. The box is disabled. When the caller can manage the lock, two buttons appear instead: `Manage <source path>` (navigates, only when the source is readable) and `Also lock here`, which calls `set_node_read_only`. That direct lock changes nothing today; it keeps the node read-only if somebody unlocks the folder above later.
-- `canManage === false` disables the box and appends `You cannot change this.` to the description.
-
-The checkbox writes as soon as it is clicked. There is no Save for the lock — the modal's `Save metadata` button belongs to the key-value map only.
+Policy saves use the dedicated setter. Metadata Save remains a separate action. Keep keyboard focus,
+clear pending feedback, accessible labels, and usable layout at 200% zoom. Do not disable a focused
+control only because its save is running.
 
 # Requirements
 
-| ID    | Requirement                                                                                                                                   |
-| ----- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| RO-01 | A direct or inherited lock blocks every user-originated committed content change                                                              |
-| RO-02 | Locked names, paths, parents, archive state, and child entries cannot change                                                                  |
-| RO-03 | Owners and admins do not bypass an active lock                                                                                                |
-| RO-04 | `content.permissions.manage` is required to lock or unlock                                                                                    |
-| RO-05 | Folder locks apply to active and archived descendants and preserve nested explicit locks                                                      |
-| RO-06 | Reads, search, downloads, sharing, safe comment replies, and copy-out keep working                                                            |
-| RO-07 | Every final transaction checks current lock state before its first write                                                                      |
-| RO-08 | A past lock does not refuse a write that is writable in the final transaction; normal ACL, identity, and content-staleness checks still apply |
-| RO-09 | Existing pending proposals stay visible; accept/save fail while locked; discard remains available                                             |
-| RO-10 | Read-only checks do not reveal hidden restricted descendants                                                                                  |
-| RO-11 | Committed-Yjs convergence and accepted uploads finish; node-deleting cleanup respects locks                                                   |
-| RO-12 | UI state changes reactively and stays usable by keyboard, at 200% zoom, and with assistive names                                              |
-| RO-13 | API clients get one stable read-only conflict without new public error vocabulary                                                             |
-| RO-14 | A refused final transaction commits no partial state; every multi-step flow has explicit cleanup or a durable terminal outcome                |
+| ID | Requirement |
+| --- | --- |
+| RO-01 | Every content write passes ACL and every applicable current policy |
+| RO-02 | A refusing affected node blocks name, path, parent, archive, and child changes |
+| RO-03 | Owners/admins do not bypass policies; selecting a writer grants no access |
+| RO-04 | Policy configuration requires actual target/creation-scope management |
+| RO-05 | Parent rules cover active and archived descendants and preserve nested local choices |
+| RO-06 | Reads, sharing, safe comment replies, downloads, and readable copy-out keep working |
+| RO-07 | Final transactions check current actor, account, scope, and policy before writes |
+| RO-08 | Past policy state does not replace current checks or content-staleness checks |
+| RO-09 | Pending work remains visible; Discard remains available through a refusal |
+| RO-10 | Queries and refusals hide inaccessible source and writer identity |
+| RO-11 | Accepted uploads and committed Yjs convergence finish; node cleanup checks current policy |
+| RO-12 | UI uses actual human write access and remains keyboard/zoom accessible |
+| RO-13 | Policy refusal keeps the stable read_only and HTTP conflict vocabulary |
+| RO-14 | Refused operations commit no partial state and retain durable external cleanup |
 
 # Test Map
 
-- `convex/files_nodes.test.ts` — pointer/cascade states, tree operations, current-lock Yjs/snapshot/repair checks, action-backed replacement/toggle final checks, lock → unlock success, upload-node and failed-upload-discard refusals, copy-out controls.
-- `convex/files_pending_updates.test.ts` — proposal/accept/discard behavior, current-lock final checks, lock → unlock completion, and eager-created cleanup.
-- `convex/public_api.test.ts` — 409 `conflict` contract, batch semantics, current-lock final checks, target identity conflicts, lock → unlock success, and zero partial output. `convex/public_api_service_uploads.test.ts` also proves that the service delete checks every live node's current path, restricted ACL, and lock before its first write, refuses the whole call when a member locked a folder above the file, archives committed files, and hard-deletes only pending placeholders.
-- `convex/r2.test.ts` — post-lock accepted upload publication, lock → unlock completion, immutable direct uploads, conversion completion, deletion-job generations/tombstones/durability, and crash-orphan recovery.
-- `convex/data_deletion.test.ts` — lifecycle bypass and deletion-job ownership across purge.
-- `convex/data_import.test.ts` — normal import respects locks; bypasses are named and internal.
-- `convex/access_control.test.ts` — management authority, owner non-bypass, public-query lock-source privacy, hidden-outer-lock management state.
-- `src/lib/files-yjs-provider.test.ts` — current-lock terminal drop, access-change resync, and unchanged transient retries.
-- `server/bash.test.ts` `bash_run_command` — command matrix and eager-create compensation.
-- `server/server-ai-tools.test.ts` — tool description says locked paths are read-only and copy-out is allowed.
-- Frontend: sidebar in-source tests, `file-editor-sidebar-pending.test.tsx`, plain/diff editor and snapshot-modal tests, comment-tool tests, and lock-modal tests.
+- `convex/files_nodes.test.ts`: selected writers, ACL independence, every parent policy, direct-create
+  refusal, creation management, moved scope, archived restrictions, redaction, cascades, and writes.
+- `convex/files_pending_updates.test.ts`: current-policy proposal/commit checks and eager cleanup.
+- `convex/files_nodes_content.test.ts`: replacement, collaboration, snapshots, and materialization.
+- `convex/public_api*.test.ts`: bound accounts, current credentials/scopes, service targets, conflicts,
+  policy management, accepted uploads, and no partial publication.
+- `convex/access_control.test.ts`: human/account permissions, management authority, and source privacy.
+- `convex/r2.test.ts`: accepted-upload completion and exact-key cleanup generations and tombstones.
+- `convex/data_deletion*.test.ts`: lifecycle deletion and durable asset ownership.
+- `convex/data_import.test.ts`, `server/bash.test.ts`: ordinary imports and human pending writes.
+- Frontend policy, pending sidebar, editor, and Yjs provider tests: safe state, actual write access,
+  current-policy refusals, and retry behavior.
 
 # Related Skills
 
-- `../access-control/SKILL.md` — who may act; the lock is the post-ACL "may it change at all" gate.
-- `../files-agent-pending-updates/SKILL.md` — proposals, accept/discard, and eager cleanup under the lock.
-- `../files-editable-text/SKILL.md` — the Yjs write doors and shape guards the lock sits above.
-- `../files-explorer-tree/SKILL.md` — sidebar row states and interactions.
-- `../public-api/SKILL.md` — routes, batch contracts, and the `conflict` vocabulary.
-- `../data-deletion/SKILL.md` — the named lifecycle bypass and durable asset cleanup.
-- `../ai-chat-agent/SKILL.md` — agent and Bash tool behavior against locked paths.
-- `../files-rich-text-embeds/SKILL.md` — document and destination checks before media node creation.
-- `../plugin-system/SKILL.md` — plugin output cannot bypass a lock.
+- `../access-control/SKILL.md`: actor/account permissions, grants, and account management.
+- `../files-agent-pending-updates/SKILL.md`: proposal, commit, discard, and eager cleanup.
+- `../files-editable-text/SKILL.md`: Yjs write doors and shape guards.
+- `../files-explorer-tree/SKILL.md`: tree operations and row interactions.
+- `../public-api/SKILL.md`: credentials, scopes, plugin adapters, and conflict responses.
+- `../data-deletion/SKILL.md`: named lifecycle deletion and durable asset cleanup.
+- `../ai-chat-agent/SKILL.md`: ordinary human agent/Bash behavior.
+- `../files-rich-text-embeds/SKILL.md`: document and destination checks for embeds.
+- `../plugin-system/SKILL.md`: installation account bindings and integration limits.

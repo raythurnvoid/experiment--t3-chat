@@ -249,7 +249,8 @@ describe("data_import.create_upload_targets", () => {
 
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", occupantNodeId, {
-				readOnlyScopeNodeId: occupantNodeId,
+				writePolicyScopeNodeId: occupantNodeId,
+				writePolicy: { mode: "read_only" },
 			});
 		});
 
@@ -283,7 +284,8 @@ describe("data_import.create_upload_targets", () => {
 		// Unlocking allows the same import to replace the old file.
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", occupantNodeId, {
-				readOnlyScopeNodeId: null,
+				writePolicyScopeNodeId: null,
+				writePolicy: null,
 			});
 		});
 		const retried = await t.mutation(internal.data_import.create_upload_targets, {
@@ -315,7 +317,8 @@ describe("data_import.create_upload_targets", () => {
 				throw new Error(folder._nay.message);
 			}
 			await ctx.db.patch("files_nodes", folder._yay, {
-				readOnlyScopeNodeId: folder._yay,
+				writePolicyScopeNodeId: folder._yay,
+				writePolicy: { mode: "read_only" },
 			});
 		});
 

@@ -157,6 +157,7 @@ async function organizations_test_seed_api_credential(
 	const now = Date.now();
 	const revokedAt = args.revokedAt ?? null;
 	const credentialId = await ctx.db.insert("api_credentials", {
+		serviceAccountId: null,
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		userId: args.userId,
@@ -219,9 +220,9 @@ async function organizations_test_seed_workspace_scoped_rows(
 		contentFrontmatterTooLargeFieldCount: null,
 		contentFrontmatterTooLargeIndexDocumentCount: null,
 		restrictedScopeNodeId: null,
-		readOnlyScopeNodeId: null,
-		readOnlyPluginName: null,
-		readOnlyPluginServiceTargetId: null,
+		writePolicyScopeNodeId: null,
+		writePolicy: null,
+
 		archiveOperationId: null,
 	});
 	const assetId = await ctx.db.insert("files_r2_assets", {
@@ -325,6 +326,11 @@ async function organizations_test_seed_live_plugin_authority(
 		updatedAt: now,
 	});
 	const installationId = await ctx.db.insert("plugins_workspace_installations", {
+		serviceAccountId: await test_mocks_fill_db_with.plugin_service_account(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			pluginVersionId: pluginVersionId,
+		}),
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		pluginVersionId,
@@ -341,6 +347,7 @@ async function organizations_test_seed_live_plugin_authority(
 		updatedAt: now,
 	});
 	const runId = await ctx.db.insert("plugins_event_runs", {
+		serviceAccountId: (await ctx.db.get("plugins_workspace_installations", installationId))!.serviceAccountId,
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		actorUserId: args.userId,
@@ -2747,6 +2754,11 @@ describe("remove_user_from_organization", () => {
 			});
 			const [removedInstallationId, projectInstallationId, keptInstallationId] = await Promise.all([
 				ctx.db.insert("plugins_workspace_installations", {
+					serviceAccountId: await test_mocks_fill_db_with.plugin_service_account(ctx, {
+						organizationId: organization._yay!.organizationId,
+						workspaceId: organization._yay!.defaultWorkspaceId,
+						pluginVersionId: pluginVersionId,
+					}),
 					organizationId: organization._yay!.organizationId,
 					workspaceId: organization._yay!.defaultWorkspaceId,
 					pluginVersionId,
@@ -2763,6 +2775,11 @@ describe("remove_user_from_organization", () => {
 					updatedAt: now,
 				}),
 				ctx.db.insert("plugins_workspace_installations", {
+					serviceAccountId: await test_mocks_fill_db_with.plugin_service_account(ctx, {
+						organizationId: organization._yay!.organizationId,
+						workspaceId: workspace._yay!.workspaceId,
+						pluginVersionId: pluginVersionId,
+					}),
 					organizationId: organization._yay!.organizationId,
 					workspaceId: workspace._yay!.workspaceId,
 					pluginVersionId,
@@ -2779,6 +2796,11 @@ describe("remove_user_from_organization", () => {
 					updatedAt: now,
 				}),
 				ctx.db.insert("plugins_workspace_installations", {
+					serviceAccountId: await test_mocks_fill_db_with.plugin_service_account(ctx, {
+						organizationId: otherOrganization._yay!.organizationId,
+						workspaceId: otherOrganization._yay!.defaultWorkspaceId,
+						pluginVersionId: pluginVersionId,
+					}),
 					organizationId: otherOrganization._yay!.organizationId,
 					workspaceId: otherOrganization._yay!.defaultWorkspaceId,
 					pluginVersionId,
@@ -2822,6 +2844,8 @@ describe("remove_user_from_organization", () => {
 						expiresAt: now + 10 * 60 * 1000,
 					}),
 					ctx.db.insert("plugins_ui_sessions", {
+						serviceAccountId: (await ctx.db.get("plugins_workspace_installations", removedInstallationId))!
+							.serviceAccountId,
 						organizationId: organization._yay!.organizationId,
 						workspaceId: organization._yay!.defaultWorkspaceId,
 						installationId: removedInstallationId,
@@ -2832,6 +2856,8 @@ describe("remove_user_from_organization", () => {
 						expiresAt: now + 10 * 60 * 1000,
 					}),
 					ctx.db.insert("plugins_ui_sessions", {
+						serviceAccountId: (await ctx.db.get("plugins_workspace_installations", keptInstallationId))!
+							.serviceAccountId,
 						organizationId: otherOrganization._yay!.organizationId,
 						workspaceId: otherOrganization._yay!.defaultWorkspaceId,
 						installationId: keptInstallationId,
@@ -2842,6 +2868,8 @@ describe("remove_user_from_organization", () => {
 						expiresAt: now + 10 * 60 * 1000,
 					}),
 					ctx.db.insert("plugin_service_grants", {
+						serviceAccountId: (await ctx.db.get("plugins_workspace_installations", removedInstallationId))!
+							.serviceAccountId,
 						organizationId: organization._yay!.organizationId,
 						workspaceId: organization._yay!.defaultWorkspaceId,
 						installationId: removedInstallationId,
@@ -2857,6 +2885,8 @@ describe("remove_user_from_organization", () => {
 						updatedAt: now,
 					}),
 					ctx.db.insert("plugin_service_grants", {
+						serviceAccountId: (await ctx.db.get("plugins_workspace_installations", keptInstallationId))!
+							.serviceAccountId,
 						organizationId: otherOrganization._yay!.organizationId,
 						workspaceId: otherOrganization._yay!.defaultWorkspaceId,
 						installationId: keptInstallationId,
@@ -2875,6 +2905,10 @@ describe("remove_user_from_organization", () => {
 			for (let index = 0; index < 100; index += 1) {
 				const inProjectWorkspace = index % 2 === 0;
 				await ctx.db.insert("plugin_service_grants", {
+					serviceAccountId: (await ctx.db.get(
+						"plugins_workspace_installations",
+						inProjectWorkspace ? projectInstallationId : removedInstallationId,
+					))!.serviceAccountId,
 					organizationId: organization._yay!.organizationId,
 					workspaceId: inProjectWorkspace ? workspace._yay!.workspaceId : organization._yay!.defaultWorkspaceId,
 					installationId: inProjectWorkspace ? projectInstallationId : removedInstallationId,
@@ -3241,6 +3275,11 @@ describe("remove_user_from_organization", () => {
 				updatedAt: now,
 			});
 			const installationId = await ctx.db.insert("plugins_workspace_installations", {
+				serviceAccountId: await test_mocks_fill_db_with.plugin_service_account(ctx, {
+					organizationId: created._yay!.organizationId,
+					workspaceId: created._yay!.defaultWorkspaceId,
+					pluginVersionId: pluginVersionId,
+				}),
 				organizationId: created._yay!.organizationId,
 				workspaceId: created._yay!.defaultWorkspaceId,
 				pluginVersionId,
@@ -4097,9 +4136,9 @@ describe("access_control", () => {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
-					readOnlyScopeNodeId: null,
-					readOnlyPluginName: null,
-					readOnlyPluginServiceTargetId: null,
+					writePolicyScopeNodeId: null,
+					writePolicy: null,
+
 					archiveOperationId: null,
 				}),
 				ctx.db.insert("files_nodes", {
@@ -4128,9 +4167,9 @@ describe("access_control", () => {
 					contentFrontmatterTooLargeFieldCount: null,
 					contentFrontmatterTooLargeIndexDocumentCount: null,
 					restrictedScopeNodeId: null,
-					readOnlyScopeNodeId: null,
-					readOnlyPluginName: null,
-					readOnlyPluginServiceTargetId: null,
+					writePolicyScopeNodeId: null,
+					writePolicy: null,
+
 					archiveOperationId: null,
 				}),
 			]);

@@ -6261,7 +6261,8 @@ describe("bash_run_command", () => {
 					(node.path === "/docs" || node.path.startsWith("/docs/"))
 				) {
 					await ctx.db.patch("files_nodes", node._id, {
-						readOnlyScopeNodeId: docsId,
+						writePolicyScopeNodeId: docsId,
+						writePolicy: node._id === docsId ? { mode: "read_only" } : null,
 					});
 				}
 			}
@@ -6287,6 +6288,14 @@ describe("bash_run_command", () => {
 		);
 		expect(copiedOut.metadata.exitCode).toBe(0);
 		expect(copiedOut.stderr).toBe("");
+		expect(await get_seeded_node(runner, "/reports/copied-out.md")).toMatchObject({
+			writePolicyScopeNodeId: null,
+			writePolicy: null,
+		});
+		expect(await get_seeded_node(runner, "/docs/readme.md")).toMatchObject({
+			writePolicyScopeNodeId: docsId,
+			writePolicy: null,
+		});
 
 		const activePaths = await runner.t.run(async (ctx) =>
 			(await ctx.db.query("files_nodes").collect())
@@ -6817,7 +6826,9 @@ describe("bash_run_command", () => {
 		const savedOverId = await get_seeded_node_id(runner, "/data/settings.yaml");
 
 		// Lock: the copy is refused before anything is staged.
-		await runner.t.run((ctx) => ctx.db.patch("files_nodes", lockedId, { readOnlyScopeNodeId: lockedId }));
+		await runner.t.run((ctx) =>
+			ctx.db.patch("files_nodes", lockedId, { writePolicyScopeNodeId: lockedId, writePolicy: { mode: "read_only" } }),
+		);
 		const locked = await runner.run(`cp ${test_db_files_mount}/docs/readme.md ${test_db_files_mount}/data/locked.yaml`);
 		expect(locked.metadata.exitCode).not.toBe(0);
 		expect(locked.stderr).toContain("read-only");
@@ -8850,10 +8861,28 @@ describe("bash_run_command", () => {
 			}
 			let installationId: Id<"plugins_workspace_installations"> | null = null;
 			if (opts?.installed !== false) {
-				installationId = await runner.t.run((ctx) =>
-					ctx.db.insert("plugins_workspace_installations", {
+				installationId = await runner.t.run(async (ctx) => {
+					const serviceAccountId = await ctx.db.insert("access_control_service_accounts", {
 						organizationId: runner.seeded.organizationId,
 						workspaceId: runner.seeded.workspaceId,
+						name: pluginName,
+						createdBy: runner.seeded.userId,
+						createdAt: now,
+						updatedAt: now,
+						revokedAt: null,
+					});
+					await ctx.db.insert("plugins_service_account_bindings", {
+						organizationId: runner.seeded.organizationId,
+						workspaceId: runner.seeded.workspaceId,
+						pluginName,
+						publisherUserId: runner.seeded.userId,
+						sourceRepositoryUrl: `https://github.com/bonobo/${pluginName}-plugin`,
+						serviceAccountId,
+					});
+					return await ctx.db.insert("plugins_workspace_installations", {
+						organizationId: runner.seeded.organizationId,
+						workspaceId: runner.seeded.workspaceId,
+						serviceAccountId,
 						pluginVersionId,
 						pluginName,
 						status: "enabled",
@@ -8866,8 +8895,8 @@ describe("bash_run_command", () => {
 						installedBy: runner.seeded.userId,
 						updatedBy: runner.seeded.userId,
 						updatedAt: now,
-					}),
-				);
+					});
+				});
 			}
 			return { pluginVersionId, installationId };
 		}

@@ -69,11 +69,7 @@ import {
 	files_metadata_preflight_frontmatter,
 } from "../shared/files-metadata.ts";
 import app_convex_schema from "./schema.ts";
-import {
-	db_get_file_content_materialization_db_state,
-	files_node_require_writable,
-	files_nodes_db_hard_delete_node,
-} from "./files_nodes.ts";
+import { db_get_file_content_materialization_db_state, files_nodes_db_hard_delete_node } from "./files_nodes.ts";
 import {
 	db_insert_file_text_content,
 	files_nodes_create_yjs_snapshot_update_from_text,
@@ -381,6 +377,7 @@ type get_data_for_create_signed_download_url_Result =
  */
 export const get_data_for_public_download_url = internalQuery({
 	args: {
+		serviceAccountId: v.optional(v.id("access_control_service_accounts")),
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,
 		workspaceId: doc(app_convex_schema, "files_nodes").fields.workspaceId,
 		fileNodeId: v.string(),
@@ -432,6 +429,7 @@ export const get_data_for_public_download_url = internalQuery({
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
 			userId: args.visibilityUserId,
+			serviceAccountId: args.serviceAccountId,
 			nodes: [fileNode],
 		});
 		if (!readableNode) {
@@ -1658,7 +1656,8 @@ export const retire_missing_upload = internalMutation({
 		if (!node) {
 			return null;
 		}
-		if (files_node_require_writable(node)._nay) {
+		// Background cleanup cannot act as a selected writer. Keep protected placeholders.
+		if (node.writePolicyScopeNodeId !== null) {
 			await ctx.db.patch("files_r2_assets", asset._id, {
 				unfinalizedExpiresAt: now + UNFINALIZED_ASSET_RECHECK_DELAY_MS,
 			});

@@ -111,7 +111,7 @@ function build_pending_rows(
 	pendingUpdates: readonly app_convex_Doc<"files_pending_updates">[],
 	nodesById: Map<
 		app_convex_Id<"files_nodes">,
-		Omit<app_convex_Doc<"files_nodes">, "readOnlyScopeNodeId" | "readOnlyPluginName" | "readOnlyPluginServiceTargetId">
+		Omit<app_convex_Doc<"files_nodes">, "writePolicyScopeNodeId" | "writePolicy">
 	>,
 ): FileEditorSidebarPendingRow[] {
 	// Active nodes keyed by path, to spot the occupant a pending move's accept would replace.
@@ -1439,13 +1439,11 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 	const rows = build_pending_rows(pendingUpdates ?? [], nodesById);
 	const readOnlyAncestorIds = files_collect_read_only_ancestor_ids(fileNodesList ?? []);
 
-	// The permission query is checked first. These render helpers add the visible read-only checks.
-	// The server checks hidden nodes and the current locks again when Accept runs.
+	// The server checks hidden nodes and current policies again when Accept runs.
 	const getNodeCapabilities = (node: files_VisibleTreeNode | undefined) =>
 		node
 			? files_get_read_only_capabilities({
-					canWrite: true,
-					readOnlyState: node.readOnlyState,
+					canWrite: node.canWrite,
 					hasVisibleReadOnlyDescendant: readOnlyAncestorIds.has(node._id),
 				})
 			: null;
@@ -1786,9 +1784,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			collaborationEnabled: args.textKind ? !args.nonCollaborative : null,
 			yjsSnapshotId: null,
 			yjsLastSequenceId: null,
-			...(args.nonCollaborative
-				? { assetId: `asset_${args.id}`, contentType: "text/markdown" }
-				: {}),
+			...(args.nonCollaborative ? { assetId: `asset_${args.id}`, contentType: "text/markdown" } : {}),
 		}) as unknown as app_convex_Doc<"files_nodes">;
 
 	const makeNodesById = (nodes: app_convex_Doc<"files_nodes">[]) =>

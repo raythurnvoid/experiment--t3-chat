@@ -22,7 +22,8 @@ import {
 	db_get_file_content_materialization_db_state,
 	files_db_yjs_push_update,
 	files_merge_contiguous_chunks,
-	files_node_require_writable,
+	files_nodes_db_require_user_writable,
+	type files_nodes_get_user_file_write_access_Result,
 	files_nodes_db_apply_pending_move,
 	files_nodes_db_archive_nodes,
 	files_nodes_db_can_act_on_swept_nodes,
@@ -32,7 +33,6 @@ import {
 	files_nodes_db_remove_created_ancestor_folders_if_safe,
 	files_nodes_db_require_subtree_writable,
 	files_nodes_db_require_swept_nodes_writable,
-	files_nodes_db_resolve_parent_read_only_scope,
 	files_nodes_db_validate_pending_move_target_for_proposal,
 	authorize_leaving_restricted_scope,
 	files_yjs_NODE_NEEDS_REPAIR_MESSAGE,
@@ -1243,7 +1243,10 @@ export const create_file_pending_update_operation_batch = mutation({
 		}
 
 		// Refuse before staging pending Yjs input for a read-only file. Check again in the final write.
-		const nodeWritable = files_node_require_writable(authorized._yay.fileNode);
+		const nodeWritable = await files_nodes_db_require_user_writable(ctx, {
+			node: authorized._yay.fileNode,
+			userId: userAuth.id,
+		});
 		if (nodeWritable._nay) {
 			return nodeWritable;
 		}
@@ -2087,13 +2090,17 @@ async function files_pending_update_db_remove_eager_created_node_if_safe(
 	if (!eagerCreated) {
 		return false;
 	}
+	const userId = ctx.db.normalizeId("users", args.pendingUpdate.userId);
+	if (!userId) {
+		return false;
+	}
 
 	const node = await ctx.db.get("files_nodes", args.pendingUpdate.fileNodeId);
 	if (
 		!node ||
 		node.organizationId !== args.pendingUpdate.organizationId ||
 		node.workspaceId !== args.pendingUpdate.workspaceId ||
-		files_node_require_writable(node)._nay
+		(await files_nodes_db_require_user_writable(ctx, { node, userId }))._nay
 	) {
 		return false;
 	}
@@ -2106,7 +2113,7 @@ async function files_pending_update_db_remove_eager_created_node_if_safe(
 		if (
 			ancestor.organizationId !== args.pendingUpdate.organizationId ||
 			ancestor.workspaceId !== args.pendingUpdate.workspaceId ||
-			files_node_require_writable(ancestor)._nay
+			(await files_nodes_db_require_user_writable(ctx, { node: ancestor, userId }))._nay
 		) {
 			return false;
 		}
@@ -2377,7 +2384,7 @@ export const settle_file_pending_update_no_change_in_db = internalMutation({
 		) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
-		const writable = files_node_require_writable(file);
+		const writable = await files_nodes_db_require_user_writable(ctx, { node: file, userId: args.userId });
 		if (writable._nay) {
 			return writable;
 		}
@@ -2526,7 +2533,7 @@ export const refresh_file_pending_update_in_db = internalMutation({
 		) {
 			return Result({ _nay: { message: "Permission denied" } });
 		}
-		const writable = files_node_require_writable(file);
+		const writable = await files_nodes_db_require_user_writable(ctx, { node: file, userId: args.userId });
 		if (writable._nay) {
 			return writable;
 		}
@@ -2753,7 +2760,7 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 		}
 
 		// Check the lock again in this final write. Old lock history does not matter.
-		const nodeWritable = files_node_require_writable(file);
+		const nodeWritable = await files_nodes_db_require_user_writable(ctx, { node: file, userId: args.userId });
 		if (nodeWritable._nay) {
 			return nodeWritable;
 		}
@@ -3030,7 +3037,12 @@ async function action_upsert_file_pending_update(
 	}
 
 	// Check the lock before loading Yjs state. The final write checks it again.
-	const fileWritable = files_node_require_writable(data.fileNode);
+	const fileWritable = (await ctx.runQuery(internal.files_nodes.get_user_file_write_access, {
+		organizationId: data.fileNode.organizationId,
+		workspaceId: data.fileNode.workspaceId,
+		nodeId: data.fileNode._id,
+		userId: args.userId,
+	})) as files_nodes_get_user_file_write_access_Result;
 	if (fileWritable._nay) {
 		await retireBatch();
 		return fileWritable;
@@ -3527,12 +3539,14 @@ export const upsert_file_pending_update = action({
 
 		// No rate limit here: batch creation and every staging call already counted against the
 		// same limit, so counting the finishing action too would cut the real write budget.
-		const allowed = await ctx.runQuery(api.files_nodes.get_current_user_file_write_permission, {
-			membershipId: args.membershipId,
+		const allowed = (await ctx.runQuery(internal.files_nodes.get_user_file_write_access, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
 			nodeId: args.nodeId,
-		});
-		if (!allowed) {
-			return Result({ _nay: { message: "Permission denied" } });
+		})) as files_nodes_get_user_file_write_access_Result;
+		if (allowed._nay) {
+			return allowed;
 		}
 
 		const upserted = await action_upsert_file_pending_update(ctx, {
@@ -3696,24 +3710,31 @@ export const upsert_file_pending_move_in_db = internalMutation({
 		// A move changes the source, its descendants, and the destination folder.
 		// Require all of them to be writable when creating the proposal.
 		// Canceling an old move stays allowed because it only removes this user's pending proposal.
-		const sourceWritable = files_node_require_writable(sourceNode);
+		const sourceWritable = await files_nodes_db_require_user_writable(ctx, { node: sourceNode, userId: args.userId });
 		if (sourceWritable._nay) {
 			return sourceWritable;
 		}
 		const subtreeWritable = await files_nodes_db_require_subtree_writable(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			userId: args.userId,
+			writeContext: {
+				writer: { kind: "user", userId: args.userId },
+				actorUserId: args.userId,
+				resourceScope: { kind: "workspace" },
+				policyReach: "ancestors",
+			},
 			node: sourceNode,
 		});
 		if (subtreeWritable._nay) {
 			return subtreeWritable;
 		}
 
-		const destReadOnlyScopeNodeId = await files_nodes_db_resolve_parent_read_only_scope(ctx, {
-			parentId: args.destParentId,
-		});
-		const destWritable = files_node_require_writable({ readOnlyScopeNodeId: destReadOnlyScopeNodeId });
+		const destinationParent =
+			args.destParentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", args.destParentId);
+		const destWritable =
+			destinationParent === null
+				? Result({ _yay: null })
+				: await files_nodes_db_require_user_writable(ctx, { node: destinationParent, userId: args.userId });
 		if (destWritable._nay) {
 			return destWritable;
 		}
@@ -3737,14 +3758,22 @@ export const upsert_file_pending_move_in_db = internalMutation({
 		// Accepting a replace move archives the old destination and its descendants.
 		// Refuse the proposal if any of those nodes is read-only.
 		if (replacesNode) {
-			const occupantWritable = files_node_require_writable(replacesNode);
+			const occupantWritable = await files_nodes_db_require_user_writable(ctx, {
+				node: replacesNode,
+				userId: args.userId,
+			});
 			if (occupantWritable._nay) {
 				return occupantWritable;
 			}
 			const occupantSubtreeWritable = await files_nodes_db_require_subtree_writable(ctx, {
 				organizationId: args.organizationId,
 				workspaceId: args.workspaceId,
-				userId: args.userId,
+				writeContext: {
+					writer: { kind: "user", userId: args.userId },
+					actorUserId: args.userId,
+					resourceScope: { kind: "workspace" },
+					policyReach: "ancestors",
+				},
 				node: replacesNode,
 			});
 			if (occupantSubtreeWritable._nay) {
@@ -3876,14 +3905,19 @@ export const upsert_file_pending_archive_in_db = internalMutation({
 		// Accepting a delete archives the node and all its descendants.
 		// Require all of them to be writable before creating the proposal.
 		// Run this before canceling an eager `rm`. Discard can still remove this user's pending proposal.
-		const nodeWritable = files_node_require_writable(node);
+		const nodeWritable = await files_nodes_db_require_user_writable(ctx, { node: node, userId: args.userId });
 		if (nodeWritable._nay) {
 			return nodeWritable;
 		}
 		const subtreeWritable = await files_nodes_db_require_subtree_writable(ctx, {
 			organizationId: args.organizationId,
 			workspaceId: args.workspaceId,
-			userId: args.userId,
+			writeContext: {
+				writer: { kind: "user", userId: args.userId },
+				actorUserId: args.userId,
+				resourceScope: { kind: "workspace" },
+				policyReach: "ancestors",
+			},
 			node,
 		});
 		if (subtreeWritable._nay) {
@@ -4185,7 +4219,7 @@ export const apply_file_pending_archive = mutation({
 		}
 
 		// Check the lock again when accepting. Keep the proposal if a new lock blocks the write.
-		const nodeWritable = files_node_require_writable(node);
+		const nodeWritable = await files_nodes_db_require_user_writable(ctx, { node: node, userId: userAuth.id });
 		if (nodeWritable._nay) {
 			return nodeWritable;
 		}
@@ -4220,7 +4254,10 @@ export const apply_file_pending_archive = mutation({
 
 			// Access was checked above, so a read-only descendant can return the clear lock error.
 			for (const descendantFileNode of activeDescendants) {
-				const descendantWritable = files_node_require_writable(descendantFileNode);
+				const descendantWritable = await files_nodes_db_require_user_writable(ctx, {
+					node: descendantFileNode,
+					userId: userAuth.id,
+				});
 				if (descendantWritable._nay) {
 					return descendantWritable;
 				}
@@ -4234,7 +4271,12 @@ export const apply_file_pending_archive = mutation({
 			const archivedProtected = await files_nodes_db_require_swept_nodes_writable(ctx, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,
-				userId: userAuth.id,
+				writeContext: {
+					writer: { kind: "user", userId: userAuth.id },
+					actorUserId: userAuth.id,
+					resourceScope: { kind: "workspace" },
+					policyReach: "ancestors",
+				},
 				nodes: archivedDescendants,
 			});
 			if (archivedProtected._nay) {
@@ -4762,7 +4804,10 @@ export const commit_file_pending_update_rebase_in_db = internalMutation({
 		}
 
 		// Check the lock again in this final write.
-		const nodeWritable = files_node_require_writable(authorized._yay.fileNode);
+		const nodeWritable = await files_nodes_db_require_user_writable(ctx, {
+			node: authorized._yay.fileNode,
+			userId: args.userId,
+		});
 		if (nodeWritable._nay) {
 			return nodeWritable;
 		}
@@ -4830,10 +4875,7 @@ export const commit_file_pending_update_rebase_in_db = internalMutation({
 		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
-		if (
-			args.preparation &&
-			(fileNode.textKind !== args.preparation.rootKind || fileNode.archiveOperationId !== null)
-		) {
+		if (args.preparation && (fileNode.textKind !== args.preparation.rootKind || fileNode.archiveOperationId !== null)) {
 			return Result({ _nay: { message: "Not found" } });
 		}
 		// Frontmatter caps, before any write: the calling action retires the staged input batch
@@ -5016,7 +5058,12 @@ async function prepare_pending_update(
 		return Result({ _nay: { message: "Not found" } });
 	}
 	if (!pendingUpdate) return Result({ _yay: { pendingUpdate: null } });
-	const writable = files_node_require_writable(data.fileNode);
+	const writable = (await ctx.runQuery(internal.files_nodes.get_user_file_write_access, {
+		organizationId: data.fileNode.organizationId,
+		workspaceId: data.fileNode.workspaceId,
+		nodeId: data.fileNode._id,
+		userId: args.userId,
+	})) as files_nodes_get_user_file_write_access_Result;
 	if (writable._nay) return writable;
 	const content = files_pending_update_content_of(pendingUpdate);
 	if (!content) return Result({ _yay: { pendingUpdate } });
@@ -5228,11 +5275,13 @@ export const prepare_file_pending_update_for_review = action({
 		}
 		const membership = await ctx.runQuery(api.organizations.get_membership, { membershipId: args.membershipId });
 		if (!membership || membership.userId !== userAuth.id) return Result({ _nay: { message: "Unauthorized" } });
-		const allowed = await ctx.runQuery(api.files_nodes.get_current_user_file_write_permission, {
-			membershipId: args.membershipId,
+		const allowed = (await ctx.runQuery(internal.files_nodes.get_user_file_write_access, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
 			nodeId: args.nodeId,
-		});
-		if (!allowed) return Result({ _nay: { message: "Permission denied" } });
+		})) as files_nodes_get_user_file_write_access_Result;
+		if (allowed._nay) return allowed;
 		return prepare_pending_update(ctx, {
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
@@ -5304,12 +5353,14 @@ export const persist_file_pending_update_rebased_state = action({
 		// again would cut every user's real save budget in half. A refused caller costs us only the
 		// permission query. An action cannot read the database, so that check goes through a query,
 		// and it asks about this file, not the workspace, so a grant on a restricted folder still saves.
-		const allowed = await ctx.runQuery(api.files_nodes.get_current_user_file_write_permission, {
-			membershipId: args.membershipId,
+		const allowed = (await ctx.runQuery(internal.files_nodes.get_user_file_write_access, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
 			nodeId: args.nodeId,
-		});
-		if (!allowed) {
-			return Result({ _nay: { message: "Permission denied" } });
+		})) as files_nodes_get_user_file_write_access_Result;
+		if (allowed._nay) {
+			return allowed;
 		}
 
 		const retireBatch = async () => {
@@ -5338,7 +5389,12 @@ export const persist_file_pending_update_rebased_state = action({
 		}
 
 		// Check the lock before loading Yjs state. The final write checks it again.
-		const fileWritable = files_node_require_writable(data.fileNode);
+		const fileWritable = (await ctx.runQuery(internal.files_nodes.get_user_file_write_access, {
+			organizationId: data.fileNode.organizationId,
+			workspaceId: data.fileNode.workspaceId,
+			nodeId: data.fileNode._id,
+			userId: userAuth.id,
+		})) as files_nodes_get_user_file_write_access_Result;
 		if (fileWritable._nay) {
 			await retireBatch();
 			return fileWritable;
@@ -5847,7 +5903,7 @@ export const save_file_pending_update_in_db = internalMutation({
 		}
 
 		// Check the lock again before any save writes. Old lock history does not matter.
-		const targetWritable = files_node_require_writable(targetNode);
+		const targetWritable = await files_nodes_db_require_user_writable(ctx, { node: targetNode, userId: userAuth.id });
 		if (targetWritable._nay) {
 			return targetWritable;
 		}
@@ -6325,7 +6381,7 @@ export const save_file_pending_update_non_collaborative_in_db = internalMutation
 		}
 
 		// Check the lock again before any save writes. Old lock history does not matter.
-		const targetWritable = files_node_require_writable(targetNode);
+		const targetWritable = await files_nodes_db_require_user_writable(ctx, { node: targetNode, userId: userAuth.id });
 		if (targetWritable._nay) {
 			return targetWritable;
 		}
@@ -6620,7 +6676,12 @@ async function action_save_file_pending_update_non_collaborative(
 	}
 
 	// Check the current lock before loading the branches. The final write checks it again.
-	const fileWritable = files_node_require_writable(data.fileNode);
+	const fileWritable = (await ctx.runQuery(internal.files_nodes.get_user_file_write_access, {
+		organizationId: data.fileNode.organizationId,
+		workspaceId: data.fileNode.workspaceId,
+		nodeId: data.fileNode._id,
+		userId: args.userId,
+	})) as files_nodes_get_user_file_write_access_Result;
 	if (fileWritable._nay) {
 		return fileWritable;
 	}
@@ -6939,12 +7000,14 @@ export const save_file_pending_update = action({
 		// through a query that asks about this file. The rate limit sits in the commit mutation for
 		// a collaborative file and at the top of `action_save_file_pending_update_non_collaborative`
 		// for the other mode.
-		const allowed = await ctx.runQuery(api.files_nodes.get_current_user_file_write_permission, {
-			membershipId: args.membershipId,
+		const allowed = (await ctx.runQuery(internal.files_nodes.get_user_file_write_access, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
 			nodeId: args.nodeId,
-		});
-		if (!allowed) {
-			return Result({ _nay: { message: "Permission denied" } });
+		})) as files_nodes_get_user_file_write_access_Result;
+		if (allowed._nay) {
+			return allowed;
 		}
 
 		const data = (await ctx.runQuery(internal.files_pending_updates.get_data_for_pending_content_operation, {
@@ -6996,7 +7059,12 @@ export const save_file_pending_update = action({
 		}
 
 		// Check the current lock before loading Yjs state. The final write checks it again.
-		const fileWritable = files_node_require_writable(data.fileNode);
+		const fileWritable = (await ctx.runQuery(internal.files_nodes.get_user_file_write_access, {
+			organizationId: data.fileNode.organizationId,
+			workspaceId: data.fileNode.workspaceId,
+			nodeId: data.fileNode._id,
+			userId: userAuth.id,
+		})) as files_nodes_get_user_file_write_access_Result;
 		if (fileWritable._nay) {
 			return fileWritable;
 		}
@@ -7489,7 +7557,12 @@ export const stage_file_pending_replacement_internal_action = internalAction({
 		if (!data) {
 			return Result({ _nay: { message: "Not found" } });
 		}
-		const writable = files_node_require_writable(data.destNode);
+		const writable = (await ctx.runQuery(internal.files_nodes.get_user_file_write_access, {
+			organizationId: data.destNode.organizationId,
+			workspaceId: data.destNode.workspaceId,
+			nodeId: data.destNode._id,
+			userId: args.userId,
+		})) as files_nodes_get_user_file_write_access_Result;
 		if (writable._nay) {
 			return writable;
 		}
@@ -7683,7 +7756,7 @@ export const commit_file_pending_replacement_in_db = internalMutation({
 			return await refuse("Permission denied");
 		}
 
-		const nodeWritable = files_node_require_writable(file);
+		const nodeWritable = await files_nodes_db_require_user_writable(ctx, { node: file, userId: args.userId });
 		if (nodeWritable._nay) {
 			return await refuse(nodeWritable._nay.message);
 		}
@@ -7942,7 +8015,12 @@ async function action_accept_file_pending_replacement(
 		return Result({ _nay: { message: "Not found" } });
 	}
 
-	const writable = files_node_require_writable(data.fileNode);
+	const writable = (await ctx.runQuery(internal.files_nodes.get_user_file_write_access, {
+		organizationId: data.fileNode.organizationId,
+		workspaceId: data.fileNode.workspaceId,
+		nodeId: data.fileNode._id,
+		userId: args.userId,
+	})) as files_nodes_get_user_file_write_access_Result;
 	if (writable._nay) {
 		return writable;
 	}

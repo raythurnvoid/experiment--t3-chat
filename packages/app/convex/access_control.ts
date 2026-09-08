@@ -1,24 +1,31 @@
 import { v } from "convex/values";
+import { paginationOptsValidator, paginationResultValidator } from "convex/server";
 import { doc } from "convex-helpers/validators";
 
 import type { Doc, Id } from "./_generated/dataModel";
 import { mutation, query, type MutationCtx, type QueryCtx } from "./_generated/server.js";
 import {
 	access_control_ENFORCED_PERMISSIONS,
+	access_control_FILE_SHARE_LEVELS,
+	access_control_FILE_SHARE_LEVEL_KEYS,
+	access_control_FILE_SHARE_PERMISSIONS,
+	access_control_file_share_level_from_permissions,
 	access_control_is_system_role,
 	access_control_MAX_ROLE_DESCRIPTION_LENGTH,
 	access_control_MAX_ROLE_NAME_LENGTH,
+	access_control_MAX_SERVICE_ACCOUNT_NAME_LENGTH,
 	access_control_PERMISSION_CATALOG,
 	access_control_RESERVED_ROLE_NAMES,
 	access_control_SYSTEM_ROLE_MATRIX,
 	type access_control_DisplayRole,
+	type access_control_FileShareLevel,
 	type access_control_Permission,
 	type access_control_ResourceKind,
 	type access_control_RoleRef,
 } from "../shared/access-control.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { quotas_db_get } from "./quotas.ts";
-import { v_result } from "../server/convex-utils.ts";
+import { convex_error, v_result } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import app_convex_schema from "./schema.ts";
@@ -535,6 +542,110 @@ function db_get_role_permission_grant(
 
 // #region Write helpers
 
+/** Callers check their own manage permission and grant ceiling before using this writer. */
+export async function access_control_db_set_service_account_grant(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		serviceAccountId: Id<"access_control_service_accounts">;
+		resource: { kind: "workspace" } | { kind: "file"; nodeId: Id<"files_nodes"> };
+		level: access_control_FileShareLevel | null;
+	},
+) {
+	const account = await ctx.db.get("access_control_service_accounts", args.serviceAccountId);
+	if (
+		!account ||
+		account.organizationId !== args.organizationId ||
+		account.workspaceId !== args.workspaceId ||
+		(args.level !== null && account.revokedAt !== null)
+	) {
+		return Result({ _nay: { message: "Service account is unavailable" } });
+	}
+	const workspace = await ctx.db.get("organizations_workspaces", args.workspaceId);
+	if (!workspace || workspace.organizationId !== args.organizationId) {
+		return Result({ _nay: { message: "Workspace is unavailable" } });
+	}
+
+	let resourceId: string = args.workspaceId;
+	if (args.resource.kind === "file") {
+		const node = await ctx.db.get("files_nodes", args.resource.nodeId);
+		if (!node || node.organizationId !== args.organizationId || node.workspaceId !== args.workspaceId) {
+			return Result({ _nay: { message: "File is unavailable" } });
+		}
+		if (args.level !== null && node.restrictedScopeNodeId !== null && node.restrictedScopeNodeId !== node._id) {
+			return Result({ _nay: { message: "Set access on the restricted scope" } });
+		}
+		resourceId = node._id;
+		const grants = await ctx.db
+			.query("access_control_permission_grants")
+			.withIndex("by_organization_workspace_resource_user_permission", (q) =>
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("resourceKind", "file")
+					.eq("resourceId", resourceId),
+			)
+			.take(151);
+		// Sharing reads at most 50 principals. Account controls must keep that same bound.
+		if (
+			args.level !== null &&
+			!grants.some(
+				(grant) => grant.principalKind === "service_account" && grant.serviceAccountId === args.serviceAccountId,
+			)
+		) {
+			const principals = new Set(
+				grants.map(
+					(grant) => `${grant.principalKind}:${grant.userId ?? grant.role ?? grant.serviceAccountId ?? "public"}`,
+				),
+			);
+			if (principals.size >= 50)
+				return Result({
+					_nay: { message: "One file or folder can be shared with at most 50 people, roles, and service accounts" },
+				});
+		}
+	}
+
+	const wanted = new Set<access_control_Permission>(
+		args.level === null ? [] : access_control_FILE_SHARE_LEVELS[args.level].permissions,
+	);
+	const now = Date.now();
+	let changed = false;
+	for (const permission of access_control_FILE_SHARE_PERMISSIONS) {
+		const existing = await ctx.db
+			.query("access_control_permission_grants")
+			.withIndex("by_organization_workspace_resource_serviceAccount_permission", (q) =>
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("resourceKind", args.resource.kind)
+					.eq("resourceId", resourceId)
+					.eq("principalKind", "service_account")
+					.eq("serviceAccountId", args.serviceAccountId)
+					.eq("permission", permission),
+			)
+			.unique();
+		if (wanted.has(permission) && !existing) {
+			await ctx.db.insert("access_control_permission_grants", {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				resourceKind: args.resource.kind,
+				resourceId,
+				principalKind: "service_account",
+				serviceAccountId: args.serviceAccountId,
+				permission,
+				createdAt: now,
+				updatedAt: now,
+			});
+			changed = true;
+		} else if (!wanted.has(permission) && existing) {
+			await ctx.db.delete("access_control_permission_grants", existing._id);
+			changed = true;
+		}
+	}
+	return Result({ _yay: { changed } });
+}
+
 /**
  * Create a role assignment when the user has no role yet in this workspace.
  *
@@ -760,7 +871,7 @@ async function db_resolve_live_restricted_scope(
  * the workspace exactly what they are not allowed to open.
  */
 export async function access_control_db_filter_readable_file_nodes<
-	T extends { restrictedScopeNodeId: Id<"files_nodes"> | null },
+	T extends { _id: Id<"files_nodes">; restrictedScopeNodeId: Id<"files_nodes"> | null },
 >(
 	ctx: QueryCtx | MutationCtx,
 	args: {
@@ -768,6 +879,7 @@ export async function access_control_db_filter_readable_file_nodes<
 		workspaceId: Doc<"files_nodes">["workspaceId"];
 		userId: Id<"users">;
 		nodes: readonly T[];
+		serviceAccountId?: Id<"access_control_service_accounts">;
 		/**
 		 * Whether the caller holds workspace-wide `content.read`. Defaults to `true`, which is what
 		 * every list surface proves before calling.
@@ -779,6 +891,45 @@ export async function access_control_db_filter_readable_file_nodes<
 		hasWorkspaceRead?: boolean;
 	},
 ): Promise<T[]> {
+	if (args.serviceAccountId) {
+		const organizationId = ctx.db.normalizeId("organizations", String(args.organizationId));
+		const workspaceId = ctx.db.normalizeId("organizations_workspaces", String(args.workspaceId));
+		const organization = organizationId ? await ctx.db.get("organizations", organizationId) : null;
+		if (!organizationId || !workspaceId || !organization?.defaultWorkspaceId) return [];
+		const readableByNodeId = new Map<Id<"files_nodes">, boolean>();
+		const kept: T[] = [];
+		for (const node of args.nodes) {
+			const scopeNodeId = await db_resolve_live_restricted_scope(ctx, {
+				organizationId,
+				workspaceId,
+				restrictedScopeNodeId: node.restrictedScopeNodeId,
+			});
+			const key = scopeNodeId ?? node._id;
+			let readable = readableByNodeId.get(key);
+			if (readable === undefined) {
+				const permissionArgs = {
+					organizationId,
+					workspaceId,
+					defaultWorkspaceId: organization.defaultWorkspaceId,
+					organizationOwnerUserId: organization.ownerUserId,
+					resource: { kind: "file" as const, id: node._id, restrictedScopeNodeId: scopeNodeId },
+					permission: "content.read" as const,
+				};
+				readable =
+					((await access_control_db_has_permission(ctx, { ...permissionArgs, userId: args.userId })) ||
+						(!scopeNodeId &&
+							(await access_control_db_has_permission(ctx, {
+								...permissionArgs,
+								userId: args.userId,
+								resource: { kind: "workspace", id: workspaceId },
+							})))) &&
+					(await access_control_db_has_permission(ctx, { ...permissionArgs, serviceAccountId: args.serviceAccountId }));
+				readableByNodeId.set(key, readable);
+			}
+			if (readable) kept.push(node);
+		}
+		return kept;
+	}
 	const hasWorkspaceRead = args.hasWorkspaceRead ?? true;
 
 	// Nothing here is restricted, so the caller's workspace-wide read already covers all of it. This
@@ -873,11 +1024,12 @@ export async function access_control_db_can_act_on_file_node(
 		organizationId: Doc<"files_nodes">["organizationId"];
 		workspaceId: Doc<"files_nodes">["workspaceId"];
 		userId: Id<"users">;
-		fileNode: { restrictedScopeNodeId: Id<"files_nodes"> | null };
+		fileNode: { _id: Id<"files_nodes">; restrictedScopeNodeId: Id<"files_nodes"> | null };
+		serviceAccountId?: Id<"access_control_service_accounts">;
 		permission: access_control_Permission;
 	},
 ) {
-	if (!args.fileNode.restrictedScopeNodeId) {
+	if (!args.serviceAccountId && !args.fileNode.restrictedScopeNodeId) {
 		return true;
 	}
 
@@ -895,6 +1047,35 @@ export async function access_control_db_can_act_on_file_node(
 		return false;
 	}
 
+	if (args.serviceAccountId) {
+		const scopeNodeId = await db_resolve_live_restricted_scope(ctx, {
+			organizationId,
+			workspaceId,
+			restrictedScopeNodeId: args.fileNode.restrictedScopeNodeId,
+		});
+		const permissionArgs = {
+			organizationId,
+			workspaceId,
+			defaultWorkspaceId,
+			organizationOwnerUserId: organization.ownerUserId,
+			resource: {
+				kind: "file" as const,
+				id: args.fileNode._id,
+				restrictedScopeNodeId: scopeNodeId,
+			},
+			permission: args.permission,
+		};
+		return (
+			((await access_control_db_has_permission(ctx, { ...permissionArgs, userId: args.userId })) ||
+				(!scopeNodeId &&
+					(await access_control_db_has_permission(ctx, {
+						...permissionArgs,
+						userId: args.userId,
+						resource: { kind: "workspace", id: workspaceId },
+					})))) &&
+			(await access_control_db_has_permission(ctx, { ...permissionArgs, serviceAccountId: args.serviceAccountId }))
+		);
+	}
 	if (args.userId === organization.ownerUserId) {
 		return true;
 	}
@@ -941,10 +1122,61 @@ export async function access_control_db_has_permission(
 		organizationOwnerUserId: Id<"users">;
 		resource: access_control_Resource;
 		permission: access_control_Permission;
-		userId?: Id<"users">;
-		allowPublic?: boolean;
-	},
+	} & (
+		| { userId?: Id<"users">; allowPublic?: boolean; serviceAccountId?: never }
+		| { serviceAccountId: Id<"access_control_service_accounts">; userId?: never; allowPublic?: never }
+	),
 ) {
+	if (args.serviceAccountId) {
+		const account = await ctx.db.get("access_control_service_accounts", args.serviceAccountId);
+		if (
+			!account ||
+			account.revokedAt !== null ||
+			account.organizationId !== args.organizationId ||
+			account.workspaceId !== args.workspaceId ||
+			!access_control_FILE_SHARE_PERMISSIONS.some((permission) => permission === args.permission) ||
+			(args.resource.kind !== "workspace" && args.resource.kind !== "file")
+		)
+			return false;
+		const scopeNodeId =
+			args.resource.kind === "file"
+				? await db_resolve_live_restricted_scope(ctx, {
+						organizationId: args.organizationId,
+						workspaceId: args.workspaceId,
+						restrictedScopeNodeId: args.resource.restrictedScopeNodeId,
+					})
+				: null;
+		const grant = await ctx.db
+			.query("access_control_permission_grants")
+			.withIndex("by_organization_workspace_resource_serviceAccount_permission", (q) =>
+				q
+					.eq("organizationId", args.organizationId)
+					.eq("workspaceId", args.workspaceId)
+					.eq("resourceKind", args.resource.kind)
+					.eq("resourceId", scopeNodeId ?? args.resource.id)
+					.eq("principalKind", "service_account")
+					.eq("serviceAccountId", args.serviceAccountId)
+					.eq("permission", args.permission),
+			)
+			.first();
+		if (grant) return true;
+		if (scopeNodeId || args.resource.kind !== "file") return false;
+		return (
+			(await ctx.db
+				.query("access_control_permission_grants")
+				.withIndex("by_organization_workspace_resource_serviceAccount_permission", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("resourceKind", "workspace")
+						.eq("resourceId", args.workspaceId)
+						.eq("principalKind", "service_account")
+						.eq("serviceAccountId", args.serviceAccountId)
+						.eq("permission", args.permission),
+				)
+				.first()) !== null
+		);
+	}
 	const userId = args.userId;
 
 	// The owner is only the user stored in `organizations.ownerUserId`. Owners have no assignment doc.
@@ -1401,6 +1633,491 @@ export const get_current_user_workspace_permission = query({
 });
 
 // #endregion Role and permission queries
+
+// #region Service accounts
+
+const service_account_validator = v.object({
+	_id: v.id("access_control_service_accounts"),
+	name: v.string(),
+	createdBy: v.id("users"),
+	createdAt: v.number(),
+	updatedAt: v.number(),
+	revokedAt: v.union(v.number(), v.null()),
+});
+const service_account_resource_validator = v.union(
+	v.object({ kind: v.literal("workspace") }),
+	v.object({ kind: v.literal("file"), nodeId: v.id("files_nodes") }),
+);
+const service_account_level_validator = v.union(v.literal("read"), v.literal("write"), v.literal("manage"));
+const service_account_grant_validator = v.object({
+	resource: service_account_resource_validator,
+	level: v.union(service_account_level_validator, v.null()),
+	file: v.union(
+		v.null(),
+		v.object({
+			name: v.union(v.string(), v.null()),
+			path: v.union(v.string(), v.null()),
+			scope: v.union(v.literal("exact_node"), v.literal("restricted_scope")),
+		}),
+	),
+	canManage: v.boolean(),
+	grantableLevels: v.array(service_account_level_validator),
+});
+
+function service_account_public_fields(account: Doc<"access_control_service_accounts">) {
+	const { _id, name, createdBy, createdAt, updatedAt, revokedAt } = account;
+	return { _id, name, createdBy, createdAt, updatedAt, revokedAt };
+}
+
+async function db_service_account_context(
+	ctx: QueryCtx | MutationCtx,
+	membershipId: Id<"organizations_workspaces_users">,
+) {
+	const userAuth = await server_convex_get_user_fallback_to_anonymous(ctx);
+	const user = userAuth ? await ctx.db.get("users", userAuth.id) : null;
+	if (!userAuth || !user || user.deletedAt != null) return Result({ _nay: { message: "Unauthenticated" } });
+	const membership = await ctx.db.get("organizations_workspaces_users", membershipId);
+	if (!membership || !membership.active || membership.pendingOrganizationRemoval || membership.userId !== userAuth.id) {
+		return Result({ _nay: { message: "Not found" } });
+	}
+	const organization = await ctx.db.get("organizations", membership.organizationId);
+	const workspace = await ctx.db.get("organizations_workspaces", membership.workspaceId);
+	if (
+		!organization?.defaultWorkspaceId ||
+		!workspace ||
+		workspace.organizationId !== organization._id ||
+		workspace.pluginDataPurgeStartedAt !== undefined
+	) {
+		return Result({ _nay: { message: "Not found" } });
+	}
+	const canManage = await access_control_db_has_permission(ctx, {
+		organizationId: organization._id,
+		workspaceId: workspace._id,
+		defaultWorkspaceId: organization.defaultWorkspaceId,
+		organizationOwnerUserId: organization.ownerUserId,
+		resource: { kind: "workspace", id: workspace._id },
+		permission: "workspace.service_accounts.manage",
+		userId: userAuth.id,
+	});
+	return Result({
+		_yay: { userAuth, membership, organization, defaultWorkspaceId: organization.defaultWorkspaceId, canManage },
+	});
+}
+
+/**
+ * Sharing and plugin setup use the same actor ceiling as the account controls.
+ */
+export async function access_control_db_authorize_service_account_grant(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		userAuth: { id: Id<"users"> };
+		membership: Doc<"organizations_workspaces_users">;
+		resource: { kind: "workspace" } | { kind: "file"; nodeId: Id<"files_nodes"> };
+		level: access_control_FileShareLevel | null;
+	},
+) {
+	const authorized = await access_control_db_authorize_membership(ctx, {
+		userAuth: args.userAuth,
+		membership: args.membership,
+		permission: "workspace.service_accounts.manage",
+	});
+	if (authorized._nay) return authorized;
+	const node = args.resource.kind === "file" ? await ctx.db.get("files_nodes", args.resource.nodeId) : null;
+	if (
+		args.resource.kind === "file" &&
+		(!node ||
+			node.organizationId !== args.membership.organizationId ||
+			node.workspaceId !== args.membership.workspaceId)
+	) {
+		return Result({ _nay: { message: "Not found" } });
+	}
+	if (node && args.level !== null && node.restrictedScopeNodeId !== null && node.restrictedScopeNodeId !== node._id) {
+		return Result({ _nay: { message: "Set access on the restricted scope" } });
+	}
+	const resource: access_control_Resource = node
+		? { kind: "file", id: node._id, restrictedScopeNodeId: node.restrictedScopeNodeId }
+		: { kind: "workspace", id: args.membership.workspaceId };
+	const permissions = new Set<access_control_Permission>(["content.permissions.manage"]);
+	for (const permission of args.level === null ? [] : access_control_FILE_SHARE_LEVELS[args.level].permissions)
+		permissions.add(permission);
+	for (const permission of permissions) {
+		const allowed = await access_control_db_has_permission(ctx, {
+			organizationId: args.membership.organizationId,
+			workspaceId: args.membership.workspaceId,
+			defaultWorkspaceId: authorized._yay.defaultWorkspaceId,
+			organizationOwnerUserId: authorized._yay.organization.ownerUserId,
+			resource,
+			permission,
+			userId: args.userAuth.id,
+		});
+		if (!allowed)
+			return Result({
+				_nay: { message: `You do not have "${access_control_PERMISSION_CATALOG[permission].label}" on this resource` },
+			});
+	}
+	return Result({ _yay: null });
+}
+
+async function db_service_account_grant_entry(
+	ctx: QueryCtx | MutationCtx,
+	args: {
+		membership: Doc<"organizations_workspaces_users">;
+		organization: Doc<"organizations">;
+		defaultWorkspaceId: Id<"organizations_workspaces">;
+		userAuth: { id: Id<"users"> };
+		account: Doc<"access_control_service_accounts">;
+		resource: { kind: "workspace" } | { kind: "file"; nodeId: Id<"files_nodes"> };
+	},
+) {
+	const node = args.resource.kind === "file" ? await ctx.db.get("files_nodes", args.resource.nodeId) : null;
+	if (
+		args.resource.kind === "file" &&
+		(!node ||
+			node.organizationId !== args.membership.organizationId ||
+			node.workspaceId !== args.membership.workspaceId)
+	)
+		return null;
+	const resource: access_control_Resource = node
+		? { kind: "file", id: node._id, restrictedScopeNodeId: node.restrictedScopeNodeId }
+		: { kind: "workspace", id: args.membership.workspaceId };
+	const held = new Set<access_control_Permission>();
+	for (const permission of access_control_FILE_SHARE_PERMISSIONS) {
+		if (
+			await access_control_db_has_permission(ctx, {
+				organizationId: args.membership.organizationId,
+				workspaceId: args.membership.workspaceId,
+				defaultWorkspaceId: args.defaultWorkspaceId,
+				organizationOwnerUserId: args.organization.ownerUserId,
+				resource,
+				permission,
+				userId: args.userAuth.id,
+			})
+		)
+			held.add(permission);
+	}
+	const canManage = held.has("content.permissions.manage");
+	const grants = await ctx.db
+		.query("access_control_permission_grants")
+		.withIndex("by_organization_workspace_resource_serviceAccount_permission", (q) =>
+			q
+				.eq("organizationId", args.membership.organizationId)
+				.eq("workspaceId", args.membership.workspaceId)
+				.eq("resourceKind", args.resource.kind)
+				.eq("resourceId", node?._id ?? args.membership.workspaceId)
+				.eq("principalKind", "service_account")
+				.eq("serviceAccountId", args.account._id),
+		)
+		.take(3);
+	return {
+		resource: args.resource,
+		level: access_control_file_share_level_from_permissions(new Set(grants.map((grant) => grant.permission))),
+		file: node
+			? {
+					name: held.has("content.read") ? node.name : null,
+					path: held.has("content.read") ? node.path : null,
+					scope: node.restrictedScopeNodeId === node._id ? ("restricted_scope" as const) : ("exact_node" as const),
+				}
+			: null,
+		canManage,
+		grantableLevels:
+			canManage &&
+			args.account.revokedAt === null &&
+			(!node || node.restrictedScopeNodeId === null || node.restrictedScopeNodeId === node._id)
+				? access_control_FILE_SHARE_LEVEL_KEYS.filter((level) =>
+						access_control_FILE_SHARE_LEVELS[level].permissions.every((permission) => held.has(permission)),
+					)
+				: [],
+	};
+}
+
+export const list_service_accounts = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		includeRevoked: v.boolean(),
+		paginationOpts: paginationOptsValidator,
+	},
+	returns: paginationResultValidator(service_account_validator),
+	handler: async (ctx, args) => {
+		const context = await db_service_account_context(ctx, args.membershipId);
+		if (context._nay?.message === "Unauthenticated") throw convex_error(context._nay);
+		if (context._nay || (args.includeRevoked && !context._yay.canManage))
+			return { page: [], continueCursor: "", isDone: true };
+		const { membership } = context._yay;
+		const accounts = args.includeRevoked
+			? ctx.db
+					.query("access_control_service_accounts")
+					.withIndex("by_organization_workspace", (q) =>
+						q.eq("organizationId", membership.organizationId).eq("workspaceId", membership.workspaceId),
+					)
+			: ctx.db
+					.query("access_control_service_accounts")
+					.withIndex("by_organization_workspace_revokedAt", (q) =>
+						q
+							.eq("organizationId", membership.organizationId)
+							.eq("workspaceId", membership.workspaceId)
+							.eq("revokedAt", null),
+					);
+		const page = await accounts.paginate({
+			...args.paginationOpts,
+			numItems: Math.min(50, args.paginationOpts.numItems),
+		});
+		return { ...page, page: page.page.map(service_account_public_fields) };
+	},
+});
+
+export const get_service_account = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		serviceAccountId: v.id("access_control_service_accounts"),
+	},
+	returns: v.union(service_account_validator, v.null()),
+	handler: async (ctx, args) => {
+		const context = await db_service_account_context(ctx, args.membershipId);
+		if (context._nay?.message === "Unauthenticated") throw convex_error(context._nay);
+		if (context._nay) return null;
+		const { membership, canManage } = context._yay;
+		const account = await ctx.db.get("access_control_service_accounts", args.serviceAccountId);
+		if (
+			!account ||
+			account.organizationId !== membership.organizationId ||
+			account.workspaceId !== membership.workspaceId ||
+			(account.revokedAt !== null && !canManage)
+		)
+			return null;
+		return service_account_public_fields(account);
+	},
+});
+
+export const create_service_account = mutation({
+	args: { membershipId: v.id("organizations_workspaces_users"), name: v.string() },
+	returns: v_result({ _yay: v.object({ serviceAccountId: v.id("access_control_service_accounts") }) }),
+	handler: async (ctx, args) => {
+		const context = await db_service_account_context(ctx, args.membershipId);
+		if (context._nay) return context;
+		if (!context._yay.canManage) return Result({ _nay: { message: "Permission denied" } });
+		const name = args.name.trim();
+		if (!name || name.length > access_control_MAX_SERVICE_ACCOUNT_NAME_LENGTH)
+			return Result({
+				_nay: { message: `Name must be between 1 and ${access_control_MAX_SERVICE_ACCOUNT_NAME_LENGTH} characters` },
+			});
+		const limit = await rate_limiter_limit_by_key(ctx, { name: "roles_write", key: context._yay.userAuth.id });
+		if (limit) return Result({ _nay: { message: limit.message } });
+		const now = Date.now();
+		const serviceAccountId = await ctx.db.insert("access_control_service_accounts", {
+			organizationId: context._yay.membership.organizationId,
+			workspaceId: context._yay.membership.workspaceId,
+			name,
+			createdBy: context._yay.userAuth.id,
+			createdAt: now,
+			updatedAt: now,
+			revokedAt: null,
+		});
+		return Result({ _yay: { serviceAccountId } });
+	},
+});
+
+export const rename_service_account = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		serviceAccountId: v.id("access_control_service_accounts"),
+		name: v.string(),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const context = await db_service_account_context(ctx, args.membershipId);
+		if (context._nay) return context;
+		if (!context._yay.canManage) return Result({ _nay: { message: "Permission denied" } });
+		const account = await ctx.db.get("access_control_service_accounts", args.serviceAccountId);
+		if (
+			!account ||
+			account.organizationId !== context._yay.membership.organizationId ||
+			account.workspaceId !== context._yay.membership.workspaceId
+		)
+			return Result({ _nay: { message: "Not found" } });
+		const name = args.name.trim();
+		if (!name || name.length > access_control_MAX_SERVICE_ACCOUNT_NAME_LENGTH)
+			return Result({
+				_nay: { message: `Name must be between 1 and ${access_control_MAX_SERVICE_ACCOUNT_NAME_LENGTH} characters` },
+			});
+		const limit = await rate_limiter_limit_by_key(ctx, { name: "roles_write", key: context._yay.userAuth.id });
+		if (limit) return Result({ _nay: { message: limit.message } });
+		if (account.name !== name)
+			await ctx.db.patch("access_control_service_accounts", account._id, { name, updatedAt: Date.now() });
+		return Result({ _yay: null });
+	},
+});
+
+export const revoke_service_account = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		serviceAccountId: v.id("access_control_service_accounts"),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const context = await db_service_account_context(ctx, args.membershipId);
+		if (context._nay) return context;
+		if (!context._yay.canManage) return Result({ _nay: { message: "Permission denied" } });
+		const account = await ctx.db.get("access_control_service_accounts", args.serviceAccountId);
+		if (
+			!account ||
+			account.organizationId !== context._yay.membership.organizationId ||
+			account.workspaceId !== context._yay.membership.workspaceId
+		)
+			return Result({ _nay: { message: "Not found" } });
+		const limit = await rate_limiter_limit_by_key(ctx, { name: "roles_write", key: context._yay.userAuth.id });
+		if (limit) return Result({ _nay: { message: limit.message } });
+		if (account.revokedAt === null) {
+			const now = Date.now();
+			await ctx.db.patch("access_control_service_accounts", account._id, { revokedAt: now, updatedAt: now });
+		}
+		return Result({ _yay: null });
+	},
+});
+
+export const list_service_account_grants = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		serviceAccountId: v.id("access_control_service_accounts"),
+		paginationOpts: paginationOptsValidator,
+	},
+	returns: paginationResultValidator(
+		v.object({ ...service_account_grant_validator.fields, level: service_account_level_validator }),
+	),
+	handler: async (ctx, args) => {
+		const context = await db_service_account_context(ctx, args.membershipId);
+		if (context._nay?.message === "Unauthenticated") throw convex_error(context._nay);
+		const empty = { page: [], continueCursor: "", isDone: true };
+		if (context._nay || !context._yay.canManage) return empty;
+		const { membership } = context._yay;
+		const account = await ctx.db.get("access_control_service_accounts", args.serviceAccountId);
+		if (
+			!account ||
+			account.organizationId !== membership.organizationId ||
+			account.workspaceId !== membership.workspaceId
+		)
+			return empty;
+		const page = await ctx.db
+			.query("access_control_permission_grants")
+			.withIndex("by_org_workspace_serviceAccount_permission_resource", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("serviceAccountId", account._id)
+					.eq("principalKind", "service_account")
+					.eq("permission", "content.read"),
+			)
+			.paginate({ ...args.paginationOpts, numItems: Math.min(50, args.paginationOpts.numItems) });
+		const entries = await Promise.all(
+			page.page.map(async (grant) => {
+				const nodeId = grant.resourceKind === "file" ? ctx.db.normalizeId("files_nodes", grant.resourceId) : null;
+				if (grant.resourceKind !== "workspace" && !nodeId) return null;
+				const entry = await db_service_account_grant_entry(ctx, {
+					...context._yay,
+					account,
+					resource: nodeId ? { kind: "file", nodeId } : { kind: "workspace" },
+				});
+				return entry?.level ? { ...entry, level: entry.level } : null;
+			}),
+		);
+		return { ...page, page: entries.filter((entry) => entry !== null) };
+	},
+});
+
+export const get_service_account_grant_management_state = query({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		serviceAccountId: v.id("access_control_service_accounts"),
+		resource: service_account_resource_validator,
+	},
+	returns: v.union(service_account_grant_validator, v.null()),
+	handler: async (ctx, args) => {
+		const context = await db_service_account_context(ctx, args.membershipId);
+		if (context._nay?.message === "Unauthenticated") throw convex_error(context._nay);
+		if (context._nay || !context._yay.canManage) return null;
+		const { membership } = context._yay;
+		const account = await ctx.db.get("access_control_service_accounts", args.serviceAccountId);
+		if (
+			!account ||
+			account.organizationId !== membership.organizationId ||
+			account.workspaceId !== membership.workspaceId
+		)
+			return null;
+		let resource = args.resource;
+		if (resource.kind === "file") {
+			const node = await ctx.db.get("files_nodes", resource.nodeId);
+			if (!node || node.organizationId !== membership.organizationId || node.workspaceId !== membership.workspaceId)
+				return null;
+			const scopeNodeId = await db_resolve_live_restricted_scope(ctx, {
+				organizationId: membership.organizationId,
+				workspaceId: membership.workspaceId,
+				restrictedScopeNodeId: node.restrictedScopeNodeId,
+			});
+			if (scopeNodeId) resource = { kind: "file", nodeId: scopeNodeId };
+		}
+		return await db_service_account_grant_entry(ctx, { ...context._yay, account, resource });
+	},
+});
+
+async function db_change_service_account_grant(
+	ctx: MutationCtx,
+	args: {
+		membershipId: Id<"organizations_workspaces_users">;
+		serviceAccountId: Id<"access_control_service_accounts">;
+		resource: { kind: "workspace" } | { kind: "file"; nodeId: Id<"files_nodes"> };
+		level: access_control_FileShareLevel | null;
+	},
+) {
+	const context = await db_service_account_context(ctx, args.membershipId);
+	if (context._nay) return context;
+	const { userAuth, membership } = context._yay;
+	const account = await ctx.db.get("access_control_service_accounts", args.serviceAccountId);
+	if (
+		!account ||
+		account.organizationId !== membership.organizationId ||
+		account.workspaceId !== membership.workspaceId
+	)
+		return Result({ _nay: { message: "Not found" } });
+	const authorized = await access_control_db_authorize_service_account_grant(ctx, {
+		userAuth,
+		membership,
+		resource: args.resource,
+		level: args.level,
+	});
+	if (authorized._nay) return authorized;
+	const limit = await rate_limiter_limit_by_key(ctx, { name: "files_sharing_write", key: userAuth.id });
+	if (limit) return Result({ _nay: { message: limit.message } });
+	const result = await access_control_db_set_service_account_grant(ctx, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		serviceAccountId: args.serviceAccountId,
+		resource: args.resource,
+		level: args.level,
+	});
+	return result._nay ? result : Result({ _yay: null });
+}
+
+export const set_service_account_grant = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		serviceAccountId: v.id("access_control_service_accounts"),
+		resource: service_account_resource_validator,
+		level: service_account_level_validator,
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: db_change_service_account_grant,
+});
+
+export const remove_service_account_grant = mutation({
+	args: {
+		membershipId: v.id("organizations_workspaces_users"),
+		serviceAccountId: v.id("access_control_service_accounts"),
+		resource: service_account_resource_validator,
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => await db_change_service_account_grant(ctx, { ...args, level: null }),
+});
+
+// #endregion Service accounts
 
 // #region Custom roles
 

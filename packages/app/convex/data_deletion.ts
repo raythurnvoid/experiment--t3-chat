@@ -789,6 +789,29 @@ async function db_purge_organization_workspace_content_batch(
 		return { done: false, deletedCount: serviceUploads.deletedCount };
 	}
 
+	const pluginAccountBindings = await ctx.db
+		.query("plugins_service_account_bindings")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (pluginAccountBindings.length > 0) {
+		await Promise.all(pluginAccountBindings.map((doc) => ctx.db.delete("plugins_service_account_bindings", doc._id)));
+		return { done: false, deletedCount: pluginAccountBindings.length };
+	}
+
+	// Keep identities until their protected files, credentials, and grants are gone.
+	const serviceAccounts = await ctx.db
+		.query("access_control_service_accounts")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.take(batchSize);
+	if (serviceAccounts.length > 0) {
+		await Promise.all(serviceAccounts.map((doc) => ctx.db.delete("access_control_service_accounts", doc._id)));
+		return { done: false, deletedCount: serviceAccounts.length };
+	}
+
 	// Keep monotonic upload budgets until every service target and asset is gone. An R2 event may
 	// still settle accepted bytes during a workspace's retention window. A preserved data-reset
 	// workspace also starts with fresh upload budgets after its content has been cleared.

@@ -1,6 +1,6 @@
 import "./files-share-modal.css";
 
-import { useQueries, useQuery } from "convex/react";
+import { usePaginatedQuery, useQueries, useQuery } from "convex/react";
 import { Globe, Lock, Plus, ShieldCheck, Trash2 } from "lucide-react";
 import { memo, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -51,10 +51,11 @@ import {
 } from "../../../shared/access-control.ts";
 
 // #region principal value
-/** Who one share row is about. The same two kinds `files_sharing` accepts. */
+/** Who one share row is about. */
 type FilesSharePrincipal =
 	| { kind: "user"; userId: app_convex_Id<"users"> }
-	| { kind: "role"; role: access_control_RoleRef };
+	| { kind: "role"; role: access_control_RoleRef }
+	| { kind: "service_account"; serviceAccountId: app_convex_Id<"access_control_service_accounts"> };
 
 /**
  * One select value that stands for one principal.
@@ -63,7 +64,11 @@ type FilesSharePrincipal =
  * ids, so without it they could collide. The server groups its grants by the same string.
  */
 function files_share_principal_value(principal: FilesSharePrincipal) {
-	return principal.kind === "user" ? `user:${principal.userId}` : `role:${principal.role}`;
+	return principal.kind === "user"
+		? `user:${principal.userId}`
+		: principal.kind === "role"
+			? `role:${principal.role}`
+			: `service_account:${principal.serviceAccountId}`;
 }
 
 function files_share_principal_from_value(value: string): FilesSharePrincipal | null {
@@ -72,6 +77,12 @@ function files_share_principal_from_value(value: string): FilesSharePrincipal | 
 	}
 	if (value.startsWith("role:")) {
 		return { kind: "role", role: value.slice("role:".length) as access_control_RoleRef };
+	}
+	if (value.startsWith("service_account:")) {
+		return {
+			kind: "service_account",
+			serviceAccountId: value.slice("service_account:".length) as app_convex_Id<"access_control_service_accounts">,
+		};
 	}
 
 	// The empty value of the "choose someone" placeholder lands here.
@@ -106,12 +117,25 @@ type FilesShareModalEntry_Props = {
 	 * higher level hands the role out and needs role management, while a lower or equal level does not.
 	 */
 	canRaiseRoleLevel: boolean;
+	grantableLevels?: readonly access_control_FileShareLevel[];
 	onLevelChange: (principal: FilesSharePrincipal, level: access_control_FileShareLevel) => void;
 	onRemove: (principal: FilesSharePrincipal) => void;
 };
 
 const FilesShareModalEntry = memo(function FilesShareModalEntry(props: FilesShareModalEntry_Props) {
-	const { principal, name, meta, level, editable, pending, busy, canRaiseRoleLevel, onLevelChange, onRemove } = props;
+	const {
+		principal,
+		name,
+		meta,
+		level,
+		editable,
+		pending,
+		busy,
+		canRaiseRoleLevel,
+		grantableLevels,
+		onLevelChange,
+		onRemove,
+	} = props;
 
 	// `data-share-principal` is the only stable way a browser test can find one row: names are free
 	// text and ids from `useId()` change on every render. It is listed as a selector in
@@ -171,10 +195,11 @@ const FilesShareModalEntry = memo(function FilesShareModalEntry(props: FilesShar
 										value={levelKey}
 										data-share-level={levelKey}
 										disabled={
-											principal.kind === "role" &&
-											!canRaiseRoleLevel &&
-											access_control_FILE_SHARE_LEVEL_KEYS.indexOf(levelKey) >
-												access_control_FILE_SHARE_LEVEL_KEYS.indexOf(level)
+											(grantableLevels !== undefined && !grantableLevels.includes(levelKey)) ||
+											(principal.kind === "role" &&
+												!canRaiseRoleLevel &&
+												access_control_FILE_SHARE_LEVEL_KEYS.indexOf(levelKey) >
+													access_control_FILE_SHARE_LEVEL_KEYS.indexOf(level))
 										}
 									>
 										{access_control_FILE_SHARE_LEVELS[levelKey].label}
@@ -273,6 +298,11 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 	// Any active member may read this, so the picker can show custom role names to everybody. The
 	// server still refuses a change the caller is not allowed to make.
 	const customRoles = useQuery(app_convex_api.access_control.list_roles, viewNodeId ? { organizationId } : "skip");
+	const serviceAccounts = usePaginatedQuery(
+		app_convex_api.access_control.list_service_accounts,
+		viewNodeId ? { membershipId, includeRevoked: false } : "skip",
+		{ initialNumItems: 50 },
+	);
 
 	// Everybody the dialog has to name: the workspace members it can offer, the owner's fixed row, and
 	// anybody already on the list who has since left the workspace.
@@ -491,12 +521,20 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 			name:
 				entry.principal.kind === "user"
 					? read_display_name(userAnagraphicDict[entry.principal.userId])
-					: roleName(entry.principal.role),
+					: entry.principal.kind === "role"
+						? roleName(entry.principal.role)
+						: (entry.serviceAccountName ?? "Service account unavailable"),
 		}))
-		// People first, then roles, and by name inside each. A share list is short, so one stable order
+		// People first, then roles and service accounts, and by name inside each. A share list is short, so one stable order
 		// matters more than any ranking.
 		.sort((a, b) =>
-			a.principal.kind === b.principal.kind ? a.name.localeCompare(b.name) : a.principal.kind === "user" ? -1 : 1,
+			a.principal.kind === b.principal.kind
+				? a.name.localeCompare(b.name)
+				: a.principal.kind === "user"
+					? -1
+					: b.principal.kind === "user"
+						? 1
+						: a.principal.kind.localeCompare(b.principal.kind),
 		);
 
 	const takenPrincipalValues = new Set(entries.map((entry) => files_share_principal_value(entry.principal)));
@@ -526,13 +564,20 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 		.map((candidate) => ({ role: candidate.role, name: roleName(candidate.role) }))
 		.sort((a, b) => a.name.localeCompare(b.name));
 
-	const addDisabled = addPrincipalValue === "" || busy;
 	const selectedPrincipal = files_share_principal_from_value(addPrincipalValue);
+	const addDisabled =
+		addPrincipalValue === "" ||
+		busy ||
+		(selectedPrincipal?.kind === "service_account" &&
+			(!shareState?.canShareWithServiceAccounts || !shareState.serviceGrantableLevels.includes(addLevel)));
 	const selectedCandidateName = !selectedPrincipal
 		? null
 		: selectedPrincipal.kind === "user"
 			? read_display_name(userAnagraphicDict[selectedPrincipal.userId])
-			: roleName(selectedPrincipal.role);
+			: selectedPrincipal.kind === "role"
+				? roleName(selectedPrincipal.role)
+				: (serviceAccounts.results.find((account) => account._id === selectedPrincipal.serviceAccountId)?.name ??
+					"Service account unavailable");
 
 	return (
 		<MyModal open={nodeId !== null} setOpen={(open) => !open && handleClose()}>
@@ -548,7 +593,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 					<MyModalHeading>{shareState ? `Share ${shareState.nodeName}` : "Share"}</MyModalHeading>
 					<MyModalDescription>
 						{scope
-							? `Only the people and roles below can open this ${nodeKindText}.`
+							? `Only the people, roles, and service accounts below can open this ${nodeKindText}.`
 							: `Choose who can open this ${nodeKindText}.`}
 					</MyModalDescription>
 				</MyModalHeader>
@@ -592,7 +637,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 										{!scope
 											? `Anybody whose role lets them read workspace content can open this ${nodeKindText}.`
 											: scope.isSelf
-												? "A workspace role does not open this on its own. Only the people and roles listed below, plus the organization owner."
+												? "A workspace role does not open this on its own. Only the people, roles, and service accounts listed below, plus the organization owner."
 												: `The folder ${scope.path} decides who can open this ${nodeKindText}.`}
 									</span>
 								</div>
@@ -640,16 +685,32 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 												type="button"
 												variant="outline"
 												className={"FilesShareModal-add-principal-trigger" satisfies FilesShareModal_ClassNames}
-												aria-label="Person or role to add"
+												aria-label="Person, role, or service account to add"
 												data-share-add-principal={addPrincipalValue}
 											>
-												<span>{selectedCandidateName ?? "Add a person or role"}</span>
+												<span>{selectedCandidateName ?? "Add a person, role, or account"}</span>
 												<MySelectOpenIndicator />
 											</MyButton>
 										</MySelectTrigger>
 										<MySelectPopover unmountOnHide sameWidth>
 											<MySelectPopoverScrollableArea>
 												<MySelectPopoverContent>
+													{shareState.canShareWithServiceAccounts ? (
+														<MySelectItemsGroup>
+															<MySelectItemsGroupText>Service accounts</MySelectItemsGroupText>
+															{serviceAccounts.results
+																.filter((account) => !takenPrincipalValues.has(`service_account:${account._id}`))
+																.map((account) => (
+																	<MySelectItem
+																		key={account._id}
+																		value={`service_account:${account._id}`}
+																		data-share-principal={`service_account:${account._id}`}
+																	>
+																		{account.name}
+																	</MySelectItem>
+																))}
+														</MySelectItemsGroup>
+													) : null}
 													<MySelectItemsGroup>
 														<MySelectItemsGroupText>People</MySelectItemsGroupText>
 														{candidateUsers.length === 0 ? (
@@ -703,13 +764,23 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 										</MySelectPopover>
 									</MySelect>
 
+									{shareState.canShareWithServiceAccounts &&
+									(serviceAccounts.status === "CanLoadMore" || serviceAccounts.status === "LoadingMore") ? (
+										<MyButton
+											variant="ghost"
+											disabled={serviceAccounts.status === "LoadingMore"}
+											onClick={() => serviceAccounts.loadMore(50)}
+										>
+											Load more accounts
+										</MyButton>
+									) : null}
 									<MySelect value={addLevel} setValue={(value) => setAddLevel(value as access_control_FileShareLevel)}>
 										<MySelectTrigger disabled={busy}>
 											<MyButton
 												type="button"
 												variant="outline"
 												className={"FilesShareModal-add-level-trigger" satisfies FilesShareModal_ClassNames}
-												aria-label="Access level for the new person or role"
+												aria-label="Access level for the new person, role, or account"
 												data-share-level={addLevel}
 											>
 												<span>{access_control_FILE_SHARE_LEVELS[addLevel].label}</span>
@@ -719,7 +790,15 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 										<MySelectPopover unmountOnHide>
 											<MySelectPopoverContent>
 												{access_control_FILE_SHARE_LEVEL_KEYS.map((levelKey) => (
-													<MySelectItem key={levelKey} value={levelKey} data-share-level={levelKey}>
+													<MySelectItem
+														key={levelKey}
+														value={levelKey}
+														data-share-level={levelKey}
+														disabled={
+															selectedPrincipal?.kind === "service_account" &&
+															!shareState.serviceGrantableLevels.includes(levelKey)
+														}
+													>
 														{access_control_FILE_SHARE_LEVELS[levelKey].label}
 														{addLevel === levelKey ? <MySelectItemIndicator /> : null}
 													</MySelectItem>
@@ -742,7 +821,7 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 									// was standing on is removed.
 									tabIndex={-1}
 									className={"FilesShareModal-list" satisfies FilesShareModal_ClassNames}
-									aria-label="People and roles with access"
+									aria-label="People, roles, and service accounts with access"
 								>
 									<FilesShareModalEntry
 										principal={{ kind: "user", userId: shareState.organizationOwnerUserId }}
@@ -768,7 +847,13 @@ export const FilesShareModal = memo(function FilesShareModal(props: FilesShareMo
 													: access_control_FILE_SHARE_LEVELS[entry.level].description
 											}
 											level={entry.level}
-											editable={canEditList}
+											editable={
+												canEditList &&
+												(entry.principal.kind !== "service_account" || shareState.canShareWithServiceAccounts)
+											}
+											grantableLevels={
+												entry.principal.kind === "service_account" ? shareState.serviceGrantableLevels : undefined
+											}
 											pending={pendingKey === files_share_principal_value(entry.principal)}
 											busy={busy}
 											canRaiseRoleLevel={shareState.canShareWithRoles}
