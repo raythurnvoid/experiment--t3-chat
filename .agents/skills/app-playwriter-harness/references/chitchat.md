@@ -76,6 +76,16 @@ Verified with the published 0.8.1 frame on 2026-09-08:
 - Keep outage tests separate. Refusing only the owned frame's `/auth/lease` route checks Chitchat access renewal while Press stays online; it is not a whole-network outage. Check that drafts stay and new sends stop once the lease expires.
 - To test a message already submitted when the network fails, use an isolated QA browser context. Click Send first, then take only that context offline, wait through lease expiry, and restore it. Require one saved message and automatic confirmation with the same request ID. Do not take the user's shared owner context offline or call the lease-only test proof of this send-recovery flow.
 
+### Draft, unread, and deleted-copy regression checks
+
+- Open Edit before a second authenticated client saves a newer revision. Saving the first draft must show a conflict and keep its text. Reopen Edit before testing retention, so the draft uses the current revision.
+- Keep the actual edit DOM node in session memory. Send 51 fresh roots from the second workspace member. The edited root can remain as one extra row outside the 50-message head; require the same editor node and draft. History page bounds still apply to the other rows.
+- Use a private channel and a member with no prior read position. Viewing roots must not clear an unopened reply. Open that thread to clear its own reply position. With a narrow thread covering the root log, send a new root from the other member and require its stored root position to stay behind.
+- **Transcript details** is a native `summary` disclosure. Use its exact text or a `summary` locator, not a button-role locator. Its Rebuild copies button is inside the disclosure.
+- A locked tail file also blocks the reader worker's prepare step. To check deletion after reader removal, restore the file policy, retry, wait for `deletionPhase: "copy"`, then lock the owned file while accepted copies are still pending. Require no archive and a restricted Files sync recovery entry. Restore the captured policy before finishing the test.
+- After recovery, read the exact archived node through `files_nodes_content.get_non_collaborative_file_content`, the normal Files editor query. The signed-download action refuses archived nodes. Require the queued final message and every expected message marker in the Markdown. Check the archive flag separately. The transcript file is archived; its container stays active.
+- At a 512×384 host viewport, minimize the Press sidebar through its normal control before judging the plugin's usable width. Record both the host viewport and the frame's actual size. This is a zoom-layout equivalent, not a claim that browser zoom changed.
+
 ## Historical recipes through 0.7.x
 
 The remaining recipes preserve earlier observations. Old store/invoke API calls, cached root paths,

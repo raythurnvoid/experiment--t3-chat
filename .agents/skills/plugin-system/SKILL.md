@@ -622,9 +622,30 @@ recovery view for the current owner or the same-lifetime original delete actor. 
 stay inaccessible. Rebuild is unavailable once file archiving begins; Retry and Reconnect still
 enforce current Files permissions. Manual sharing stops automatic archive.
 
+Last-member workspace cleanup saves owner-only Files recovery before its reader request. The old
+sponsor may already have lost permission. A channel that never started Files setup needs no entry.
+
 Live QA must use the installed frame and read back stored chat and raw transcript text. Unit mocks cannot prove CSP, lease refresh, Markdown marker survival, or cross-backend permissions. Publish the exact reviewed commit, update the installation, and verify served version and bytes before committing the parent gitlink.
 
 # Releases
+
+Chitchat 0.8.6 shipped the review fixes on 2026-09-09. Plugin commit
+`72fc8d68ed1f4a8eca7c809fa9eead2edd4929e7`, version doc
+`hn7shef12zt9wgg06q62j69y618e3pvz`, and Press implementation checkpoint `777e06a6`
+own this release. SDK 0.20.3 stays at `4b7d0ee3a83d8348de1b04c9587ba5ba3cdfad4e`.
+Two independent correctness reviews and separate uniformity passes found two more bugs, both fixed
+and re-reviewed. Press lint and 6,399 tests passed. Chitchat typecheck and 291 tests passed.
+Two builds produced equal hashes. All three served assets match the manifest hashes and sizes.
+All four enabled installations use 0.8.6; the disabled installation stays unchanged.
+
+Live owner/member checks confirmed stale-edit refusal, one edit retained through 51 new roots,
+unopened replies staying unread, and hidden roots staying unread beneath a narrow thread.
+Private deletion removed member access before pending copies finished. The owner recovered a
+locked copy through Files sync and a confirmed rebuild. The final copy had 55 unique message
+markers, including the last accepted message. Copy sequence 63 finished before archive; the file
+was archived, its container stayed active, and the recovery entry closed. Archived Markdown was
+read through the normal Files editor query. Large-part and lost-response faults have focused
+automated coverage; this live run did not inject those faults.
 
 Chitchat 0.8.5 shipped the reconnect correction on 2026-09-09. Its commit is
 `ff1d6c5a57a2117c80ec990b378ea94561828034`, version doc
