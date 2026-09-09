@@ -1,4 +1,4 @@
-// The `/api/internal/plugins/service-grants/*` routes.
+// The `/api/v1/plugins/service-grants/*` routes.
 //
 // A service exchanges a plugin frame's short-lived `plu_` token for its own `psg_` grant, renews
 // that grant, and checks whether it may still act. Plugin pages and file views use the same flow.

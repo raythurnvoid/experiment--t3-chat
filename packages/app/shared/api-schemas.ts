@@ -90,13 +90,13 @@ import type { plugins_data_http_routes } from "../convex/plugins_data_http_route
 import type { plugins_invoke_http_routes } from "../convex/plugins_invoke_http_routes.ts";
 import type { public_api_files_list_http_routes } from "../convex/public_api_files_list_http.ts";
 import type { public_api_plugin_files_http_routes } from "../convex/public_api_plugin_files_http_routes.ts";
+import type { public_api_plugin_writers_http_routes } from "../convex/public_api_plugin_writers_http_routes.ts";
 import type { public_api_http_routes } from "../convex/public_api_http_routes.ts";
 import type { public_api_service_uploads_http_routes } from "../convex/public_api_service_uploads_http_routes.ts";
 import type { r2_http_routes } from "../convex/r2_http_routes.ts";
 import type { plugins_runtime_http_routes } from "../convex/plugins_runtime_http_routes.ts";
 import type { plugins_service_http_routes } from "../convex/plugins_service_http_routes.ts";
-import type { plugins_chitchat_http_routes } from "../convex/plugins_chitchat_http_routes.ts";
-import type { plugins_external_files_http_routes } from "../convex/plugins_external_files_http_routes.ts";
+import type { plugins_service_access_http_routes } from "../convex/plugins_service_access_http_routes.ts";
 import type { plugins_ui_http_routes } from "../convex/plugins_ui_http_routes.ts";
 import type { users_http_routes } from "../convex/users_http_routes.ts";
 
@@ -177,6 +177,18 @@ export interface api_schemas_Main {
 		typeof public_api_service_uploads_http_routes
 	>["/api/v1/files/service-uploads/create-target"];
 
+	"/api/v1/files/plugin-writers/inspect": ReturnType<
+		typeof public_api_plugin_writers_http_routes
+	>["/api/v1/files/plugin-writers/inspect"];
+
+	"/api/v1/files/plugin-writers/advance": ReturnType<
+		typeof public_api_plugin_writers_http_routes
+	>["/api/v1/files/plugin-writers/advance"];
+
+	"/api/v1/files/plugin-access/undo": ReturnType<
+		typeof public_api_plugin_writers_http_routes
+	>["/api/v1/files/plugin-access/undo"];
+
 	"/api/v1/files/service-uploads/remint": ReturnType<
 		typeof public_api_service_uploads_http_routes
 	>["/api/v1/files/service-uploads/remint"];
@@ -223,6 +235,18 @@ export interface api_schemas_Main {
 
 	"/api/v1/activities/start": ReturnType<typeof public_api_http_routes>["/api/v1/activities/start"];
 
+	"/api/v1/plugins/identity/exchange": ReturnType<
+		typeof plugins_service_access_http_routes
+	>["/api/v1/plugins/identity/exchange"];
+
+	"/api/v1/plugins/members/list": ReturnType<
+		typeof plugins_service_access_http_routes
+	>["/api/v1/plugins/members/list"];
+
+	"/api/v1/plugins/access/changes": ReturnType<
+		typeof plugins_service_access_http_routes
+	>["/api/v1/plugins/access/changes"];
+
 	"/api/files/contextual-prompt": ReturnType<typeof files_nodes_ai_http_routes>["/api/files/contextual-prompt"];
 
 	"/api/r2/event": ReturnType<typeof r2_http_routes>["/api/r2/event"];
@@ -239,32 +263,22 @@ export interface api_schemas_Main {
 		typeof plugins_runtime_http_routes
 	>["/api/internal/plugins/host/secret-get"];
 
-	"/api/internal/plugins/chitchat/lease": ReturnType<typeof plugins_chitchat_http_routes>["/api/internal/plugins/chitchat/lease"];
-	"/api/internal/plugins/chitchat/snapshot": ReturnType<typeof plugins_chitchat_http_routes>["/api/internal/plugins/chitchat/snapshot"];
-	"/api/internal/plugins/chitchat/events": ReturnType<typeof plugins_chitchat_http_routes>["/api/internal/plugins/chitchat/events"];
-	"/api/internal/plugins/files/ensure": ReturnType<typeof plugins_external_files_http_routes>["/api/internal/plugins/files/ensure"];
-	"/api/internal/plugins/files/prepare": ReturnType<typeof plugins_external_files_http_routes>["/api/internal/plugins/files/prepare"];
-	"/api/internal/plugins/files/write": ReturnType<typeof plugins_external_files_http_routes>["/api/internal/plugins/files/write"];
-	"/api/internal/plugins/files/readers": ReturnType<typeof plugins_external_files_http_routes>["/api/internal/plugins/files/readers"];
-	"/api/internal/plugins/files/rollback-readers": ReturnType<typeof plugins_external_files_http_routes>["/api/internal/plugins/files/rollback-readers"];
-	"/api/internal/plugins/files/archive": ReturnType<typeof plugins_external_files_http_routes>["/api/internal/plugins/files/archive"];
-	"/api/internal/plugins/files/fence": ReturnType<typeof plugins_external_files_http_routes>["/api/internal/plugins/files/fence"];
-	"/api/internal/plugins/service-grants/exchange": ReturnType<
+	"/api/v1/plugins/service-grants/exchange": ReturnType<
 		typeof plugins_service_http_routes
-	>["/api/internal/plugins/service-grants/exchange"];
-	"/api/internal/plugins/service-grants/recover": ReturnType<typeof plugins_service_http_routes>["/api/internal/plugins/service-grants/recover"];
+	>["/api/v1/plugins/service-grants/exchange"];
+	"/api/v1/plugins/service-grants/recover": ReturnType<typeof plugins_service_http_routes>["/api/v1/plugins/service-grants/recover"];
 
-	"/api/internal/plugins/service-grants/renew": ReturnType<
+	"/api/v1/plugins/service-grants/renew": ReturnType<
 		typeof plugins_service_http_routes
-	>["/api/internal/plugins/service-grants/renew"];
+	>["/api/v1/plugins/service-grants/renew"];
 
-	"/api/internal/plugins/service-grants/seal-processing": ReturnType<
+	"/api/v1/plugins/service-grants/seal-processing": ReturnType<
 		typeof plugins_service_http_routes
-	>["/api/internal/plugins/service-grants/seal-processing"];
+	>["/api/v1/plugins/service-grants/seal-processing"];
 
-	"/api/internal/plugins/service-grants/verify-live": ReturnType<
+	"/api/v1/plugins/service-grants/verify-live": ReturnType<
 		typeof plugins_service_http_routes
-	>["/api/internal/plugins/service-grants/verify-live"];
+	>["/api/v1/plugins/service-grants/verify-live"];
 
 	"/plugins-ui/session-jwt": ReturnType<typeof plugins_ui_http_routes>["/plugins-ui/session-jwt"];
 }

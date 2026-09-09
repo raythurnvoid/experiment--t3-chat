@@ -9,6 +9,7 @@
  */
 
 import type * as access_control from "../access_control.js";
+import type * as access_control_changes from "../access_control_changes.js";
 import type * as activities from "../activities.js";
 import type * as ai_chat from "../ai_chat.js";
 import type * as ai_chat_context from "../ai_chat_context.js";
@@ -38,23 +39,23 @@ import type * as http from "../http.js";
 import type * as migrations from "../migrations.js";
 import type * as notifications from "../notifications.js";
 import type * as organizations from "../organizations.js";
+import type * as organizations_membership_lifetimes from "../organizations_membership_lifetimes.js";
 import type * as plugins from "../plugins.js";
-import type * as plugins_chitchat from "../plugins_chitchat.js";
-import type * as plugins_chitchat_http from "../plugins_chitchat_http.js";
-import type * as plugins_chitchat_http_routes from "../plugins_chitchat_http_routes.js";
 import type * as plugins_data from "../plugins_data.js";
 import type * as plugins_data_http from "../plugins_data_http.js";
 import type * as plugins_data_http_routes from "../plugins_data_http_routes.js";
 import type * as plugins_external_file_readers from "../plugins_external_file_readers.js";
 import type * as plugins_external_files from "../plugins_external_files.js";
 import type * as plugins_external_files_access from "../plugins_external_files_access.js";
-import type * as plugins_external_files_http_routes from "../plugins_external_files_http_routes.js";
 import type * as plugins_invoke from "../plugins_invoke.js";
 import type * as plugins_invoke_http_routes from "../plugins_invoke_http_routes.js";
 import type * as plugins_review from "../plugins_review.js";
 import type * as plugins_runtime from "../plugins_runtime.js";
 import type * as plugins_runtime_http_routes from "../plugins_runtime_http_routes.js";
 import type * as plugins_service from "../plugins_service.js";
+import type * as plugins_service_access from "../plugins_service_access.js";
+import type * as plugins_service_access_http from "../plugins_service_access_http.js";
+import type * as plugins_service_access_http_routes from "../plugins_service_access_http_routes.js";
 import type * as plugins_service_accounts from "../plugins_service_accounts.js";
 import type * as plugins_service_grant_requests from "../plugins_service_grant_requests.js";
 import type * as plugins_service_http_routes from "../plugins_service_http_routes.js";
@@ -67,6 +68,7 @@ import type * as public_api_http_auth from "../public_api_http_auth.js";
 import type * as public_api_http_routes from "../public_api_http_routes.js";
 import type * as public_api_plugin_files from "../public_api_plugin_files.js";
 import type * as public_api_plugin_files_http_routes from "../public_api_plugin_files_http_routes.js";
+import type * as public_api_plugin_writers_http_routes from "../public_api_plugin_writers_http_routes.js";
 import type * as public_api_service_uploads from "../public_api_service_uploads.js";
 import type * as public_api_service_uploads_http from "../public_api_service_uploads_http.js";
 import type * as public_api_service_uploads_http_routes from "../public_api_service_uploads_http_routes.js";
@@ -87,6 +89,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   access_control: typeof access_control;
+  access_control_changes: typeof access_control_changes;
   activities: typeof activities;
   ai_chat: typeof ai_chat;
   ai_chat_context: typeof ai_chat_context;
@@ -116,23 +119,23 @@ declare const fullApi: ApiFromModules<{
   migrations: typeof migrations;
   notifications: typeof notifications;
   organizations: typeof organizations;
+  organizations_membership_lifetimes: typeof organizations_membership_lifetimes;
   plugins: typeof plugins;
-  plugins_chitchat: typeof plugins_chitchat;
-  plugins_chitchat_http: typeof plugins_chitchat_http;
-  plugins_chitchat_http_routes: typeof plugins_chitchat_http_routes;
   plugins_data: typeof plugins_data;
   plugins_data_http: typeof plugins_data_http;
   plugins_data_http_routes: typeof plugins_data_http_routes;
   plugins_external_file_readers: typeof plugins_external_file_readers;
   plugins_external_files: typeof plugins_external_files;
   plugins_external_files_access: typeof plugins_external_files_access;
-  plugins_external_files_http_routes: typeof plugins_external_files_http_routes;
   plugins_invoke: typeof plugins_invoke;
   plugins_invoke_http_routes: typeof plugins_invoke_http_routes;
   plugins_review: typeof plugins_review;
   plugins_runtime: typeof plugins_runtime;
   plugins_runtime_http_routes: typeof plugins_runtime_http_routes;
   plugins_service: typeof plugins_service;
+  plugins_service_access: typeof plugins_service_access;
+  plugins_service_access_http: typeof plugins_service_access_http;
+  plugins_service_access_http_routes: typeof plugins_service_access_http_routes;
   plugins_service_accounts: typeof plugins_service_accounts;
   plugins_service_grant_requests: typeof plugins_service_grant_requests;
   plugins_service_http_routes: typeof plugins_service_http_routes;
@@ -145,6 +148,7 @@ declare const fullApi: ApiFromModules<{
   public_api_http_routes: typeof public_api_http_routes;
   public_api_plugin_files: typeof public_api_plugin_files;
   public_api_plugin_files_http_routes: typeof public_api_plugin_files_http_routes;
+  public_api_plugin_writers_http_routes: typeof public_api_plugin_writers_http_routes;
   public_api_service_uploads: typeof public_api_service_uploads;
   public_api_service_uploads_http: typeof public_api_service_uploads_http;
   public_api_service_uploads_http_routes: typeof public_api_service_uploads_http_routes;

@@ -48,10 +48,9 @@ function expand<T>(): Expand<T> {
  * `plugin-sdk-api-entry.ts` gives: Convex codegen lists every module there. Nothing imports this
  * file at runtime.
  *
- * The list is every route whose handler allows the `plugin_ui` or `plugin_run` principal, plus
- * `/plugins-ui/session-jwt`, which the SDK itself calls. Routes only a `plugin_service`,
- * `user_api_key`, or `public_api_grant` may reach are left out, and so is every `/api/internal/*`
- * route: the SDK has no service client. Check the list against the app with
+ * Include public routes for plugin pages, runners, and external services, plus the SDK session
+ * exchange. Service credentials stay on the plugin's server. Internal host routes stay private.
+ * Check the list against the app with
  * `rg "allowedKinds: \[" packages/app/convex` before changing it.
  */
 export const bonobo_http_api = expand<
@@ -70,6 +69,17 @@ export const bonobo_http_api = expand<
 		| "/api/v1/files/plugin-folders/ensure"
 		| "/api/v1/files/plugin-archive"
 		| "/api/v1/files/plugin-access/set"
+		| "/api/v1/files/plugin-access/undo"
+		| "/api/v1/files/plugin-writers/inspect"
+		| "/api/v1/files/plugin-writers/advance"
+		| "/api/v1/plugins/identity/exchange"
+		| "/api/v1/plugins/members/list"
+		| "/api/v1/plugins/access/changes"
+		| "/api/v1/plugins/service-grants/exchange"
+		| "/api/v1/plugins/service-grants/recover"
+		| "/api/v1/plugins/service-grants/renew"
+		| "/api/v1/plugins/service-grants/seal-processing"
+		| "/api/v1/plugins/service-grants/verify-live"
 		| "/api/v1/activities/start"
 		| "/api/v1/plugin-backend/invoke"
 		| "/plugins-ui/session-jwt"

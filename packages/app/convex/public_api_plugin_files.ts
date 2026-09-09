@@ -5,7 +5,7 @@
 // Current capabilities, actor and account permissions, and write policies control each operation.
 
 import { v, type Infer } from "convex/values";
-import type { RegisteredMutation } from "convex/server";
+import type { RegisteredMutation, RegisteredQuery } from "convex/server";
 import { z } from "zod";
 
 import { internalMutation, type ActionCtx, type MutationCtx } from "./_generated/server.js";
@@ -21,6 +21,7 @@ import {
 	files_nodes_db_create_node_recursively_at_path,
 } from "./files_nodes.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
+import { files_nodes_reconstruct_latest_file_content_from_materialization_state } from "./files_nodes_reconstruct_content.ts";
 import {
 	public_api_db_revalidate_file_write_principal,
 	public_api_db_revalidate_live_plugin_run,
@@ -35,11 +36,16 @@ import {
 	plugins_data_db_prepare_file_access_binding,
 } from "./plugins_data.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
-import { files_ROOT_ID } from "../server/files.ts";
+import { files_ROOT_ID, files_get_utf8_byte_size, files_MAX_TEXT_CONTENT_BYTES } from "../server/files.ts";
+import { crypto_sha256_hex } from "../server/crypto-utils.ts";
 import { server_path_normalize, server_request_json_parse_and_validate } from "../server/server-utils.ts";
 import { Result } from "common/errors-as-values-utils.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
-import { files_normalize_name, files_normalize_special_node_path } from "../shared/files.ts";
+import {
+	files_editable_text_shape_of,
+	files_normalize_name,
+	files_normalize_special_node_path,
+} from "../shared/files.ts";
 import { path_extract_segments_from } from "../shared/paths.ts";
 import type { public_api_Scope } from "../shared/public-api.ts";
 
@@ -734,6 +740,67 @@ type set_plugin_access_Result =
 
 // #region http handlers
 
+type writer_ensure_Result =
+	typeof import("./plugins_external_files.ts").ensure_writer extends RegisteredMutation<
+		infer _Visibility,
+		infer _Args,
+		infer ReturnValue
+	>
+		? Awaited<ReturnValue>
+		: never;
+
+type writer_change_Result =
+	typeof import("./plugins_external_files.ts").change_scope extends RegisteredMutation<
+		infer _Visibility,
+		infer _Args,
+		infer ReturnValue
+	>
+		? Awaited<ReturnValue>
+		: never;
+
+type writer_inspect_Result =
+	typeof import("./plugins_external_files.ts").inspect extends RegisteredQuery<
+		infer _Visibility,
+		infer _Args,
+		infer ReturnValue
+	>
+		? Awaited<ReturnValue>
+		: never;
+
+function writer_failure(error: { message: string; name?: string }) {
+	if (error.message === "Unauthenticated" || error.message === "Unauthorized")
+		return { status: 401, body: { message: "Unauthenticated" } } as const;
+	if (error.message === "Permission denied") return { status: 403, body: { message: error.message } } as const;
+	if (error.name === "stale_write" || error.name === "read_only")
+		return { status: 409, body: { message: error.message } } as const;
+	return { status: 400, body: { message: error.message } } as const;
+}
+
+async function read_writer_proof(
+	ctx: ActionCtx,
+	request: Request,
+	ids: {
+		writerId?: string;
+		nodeIds?: string[];
+		userIds?: string[];
+	},
+) {
+	const token = request.headers.get("Authorization");
+	const secret = request.headers.get("X-Bonobo-Service-Authorization");
+	if (!token?.startsWith("Bearer ") || !secret?.startsWith("Bearer "))
+		return Result({ _nay: { message: "Unauthenticated" } });
+
+	const checked = await ctx.runQuery(internal.plugins_external_files.check_public_request, ids);
+	if (checked._nay) return checked;
+
+	return Result({
+		_yay: {
+			tokenHash: await crypto_sha256_hex(token.slice(7).trim()),
+			serviceSecretHash: await crypto_sha256_hex(secret.slice(7).trim()),
+		},
+	});
+}
+
 /**
  * Validate an absolute, already-canonical folder path. The plugin doors refuse non-canonical
  * segments for the same reason the write route does: creation happens verbatim on publish, so a
@@ -759,7 +826,21 @@ function validate_canonical_folder_path(rawPath: string) {
 
 const ensure_folder_body_validator = z.object({
 	path: z.string(),
-	access: z.object({ readOnly: z.boolean().optional(), readScopeId: z.string().nullable().optional() }).optional(),
+	access: z
+		.object({
+			readOnly: z.boolean().optional(),
+			readScopeId: z.string().nullable().optional(),
+			readers: z
+				.array(z.object({ userId: z.string(), membershipLifetime: z.number().int().nonnegative() }).strict())
+				.max(50)
+				.optional(),
+		})
+		.strict()
+		.optional(),
+	writer: z
+		.object({ resourceKey: z.string().min(1).max(512), rootNodeId: z.string().nullable() })
+		.strict()
+		.optional(),
 });
 
 export type public_api_plugin_files_http_ensure_folder_Body = z.infer<typeof ensure_folder_body_validator>;
@@ -771,7 +852,7 @@ export async function public_api_plugin_files_http_ensure_folder(
 ) {
 	const auth = await public_api_authorize_request(ctx, request, {
 		requiredScope: "files:write" satisfies public_api_Scope,
-		allowedKinds: ["plugin_run"],
+		allowedKinds: ["plugin_run", "plugin_service"],
 		route: path,
 	});
 	if (auth._nay) {
@@ -808,6 +889,41 @@ export async function public_api_plugin_files_http_ensure_folder(
 			body: await fail({ status: 400, message: validatedPath._nay.message, errorCode: "invalid_input" }),
 		} as const;
 	}
+	if (body._yay.writer) {
+		if (principal.kind !== "plugin_service")
+			return {
+				status: 403,
+				body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
+			} as const;
+		if (body._yay.access?.readScopeId !== undefined)
+			return { status: 400, body: { message: "Writer folders use readers, not readScopeId." } } as const;
+		const proof = await read_writer_proof(ctx, request, {
+			nodeIds: body._yay.writer.rootNodeId === null ? [] : [body._yay.writer.rootNodeId],
+			userIds: body._yay.access?.readers?.map((reader) => reader.userId),
+		});
+		if (proof._nay) return writer_failure(proof._nay);
+		const result = (await ctx.runMutation(internal.plugins_external_files.ensure_writer, {
+			...proof._yay,
+			grantId: principal.grantId,
+			resourceKey: body._yay.writer.resourceKey,
+			rootNodeId: body._yay.writer.rootNodeId as Id<"files_nodes"> | null,
+			path: validatedPath._yay,
+			readers: body._yay.access?.readers?.map((reader) => ({ ...reader, userId: reader.userId as Id<"users"> })),
+			readOnly: body._yay.access?.readOnly ?? false,
+		})) as writer_ensure_Result;
+		if (result._nay) return writer_failure(result._nay);
+		const { created, ...writer } = result._yay;
+		return {
+			status: 200,
+			body: { nodeId: writer.folderNodeId, path: validatedPath._yay, created, writer },
+			headers: { "Cache-Control": "no-store" },
+		} as const;
+	}
+	if (principal.kind !== "plugin_run" || body._yay.access?.readers !== undefined)
+		return {
+			status: 403,
+			body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
+		} as const;
 
 	const result = (await ctx.runMutation(internal.public_api_plugin_files.ensure_plugin_folder, {
 		organizationId: principal.organizationId,
@@ -869,6 +985,17 @@ export async function public_api_plugin_files_http_ensure_folder(
 
 const plugin_archive_body_validator = z.object({
 	path: z.string(),
+	writer: z
+		.object({
+			writerId: z.string(),
+			operationId: z.string().min(1).max(128),
+			writerGeneration: z.number().int().positive(),
+			sequence: z.number().int().positive(),
+			nodeId: z.string(),
+			expectedContentRevision: z.string().optional(),
+		})
+		.strict()
+		.optional(),
 });
 
 export type public_api_plugin_files_http_archive_Body = z.infer<typeof plugin_archive_body_validator>;
@@ -924,6 +1051,39 @@ export async function public_api_plugin_files_http_archive(
 	}
 
 	let principalRef: Infer<typeof archive_principal_ref_validator>;
+	if (body._yay.writer) {
+		if (principal.kind !== "plugin_service")
+			return {
+				status: 403,
+				body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
+			} as const;
+		const proof = await read_writer_proof(ctx, request, {
+			writerId: body._yay.writer.writerId,
+			nodeIds: [body._yay.writer.nodeId],
+		});
+		if (proof._nay) return writer_failure(proof._nay);
+		const writer = body._yay.writer;
+		const result = (await ctx.runMutation(internal.plugins_external_files.change_scope, {
+			...proof._yay,
+			grantId: principal.grantId,
+			writerId: writer.writerId as Id<"plugins_external_file_writers">,
+			operationId: writer.operationId,
+			writerGeneration: writer.writerGeneration,
+			change: {
+				kind: "archive",
+				path: requestedPath,
+				nodeId: writer.nodeId as Id<"files_nodes">,
+				sequence: writer.sequence,
+				expectedContentRevision: writer.expectedContentRevision,
+			},
+		})) as writer_change_Result;
+		if (result._nay) return writer_failure(result._nay);
+		return {
+			status: 200,
+			body: { archivedNodes: 1, receipt: result._yay },
+			headers: { "Cache-Control": "no-store" },
+		} as const;
+	}
 	if (principal.kind === "plugin_run") {
 		if (!pluginCallId) {
 			// Unreachable: public API authorization creates the call for plugin_run principals.
@@ -981,7 +1141,25 @@ export async function public_api_plugin_files_http_archive(
 
 const plugin_access_body_validator = z.object({
 	path: z.string(),
-	access: z.object({ readOnly: z.boolean().optional(), readScopeId: z.string().nullable().optional() }),
+	access: z
+		.object({
+			readOnly: z.boolean().optional(),
+			readScopeId: z.string().nullable().optional(),
+			readers: z
+				.array(z.object({ userId: z.string(), membershipLifetime: z.number().int().nonnegative() }).strict())
+				.max(50)
+				.optional(),
+		})
+		.strict(),
+	writer: z
+		.object({
+			writerId: z.string(),
+			operationId: z.string().min(1).max(128),
+			writerGeneration: z.number().int().positive(),
+			expectedReaderRevision: z.number().int().positive(),
+		})
+		.strict()
+		.optional(),
 });
 
 export type public_api_plugin_files_http_set_access_Body = z.infer<typeof plugin_access_body_validator>;
@@ -993,7 +1171,7 @@ export async function public_api_plugin_files_http_set_access(
 ) {
 	const auth = await public_api_authorize_request(ctx, request, {
 		requiredScope: "files:write" satisfies public_api_Scope,
-		allowedKinds: ["plugin_run"],
+		allowedKinds: ["plugin_run", "plugin_service"],
 		route: path,
 	});
 	if (auth._nay) {
@@ -1035,6 +1213,49 @@ export async function public_api_plugin_files_http_set_access(
 			body: await fail({ status: 400, message: "Path must not be the workspace root.", errorCode: "invalid_input" }),
 		} as const;
 	}
+	if (body._yay.writer) {
+		if (principal.kind !== "plugin_service")
+			return {
+				status: 403,
+				body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
+			} as const;
+		if (
+			!body._yay.access.readers ||
+			body._yay.access.readScopeId !== undefined ||
+			body._yay.access.readOnly !== undefined
+		)
+			return { status: 400, body: { message: "A writer access change sets only readers." } } as const;
+		const proof = await read_writer_proof(ctx, request, {
+			writerId: body._yay.writer.writerId,
+			userIds: body._yay.access.readers.map((reader) => reader.userId),
+		});
+		if (proof._nay) return writer_failure(proof._nay);
+		const writer = body._yay.writer;
+		const result = (await ctx.runMutation(internal.plugins_external_files.change_scope, {
+			...proof._yay,
+			grantId: principal.grantId,
+			writerId: writer.writerId as Id<"plugins_external_file_writers">,
+			operationId: writer.operationId,
+			writerGeneration: writer.writerGeneration,
+			change: {
+				kind: "readers",
+				expectedReaderRevision: writer.expectedReaderRevision,
+				readers: body._yay.access.readers.map((reader) => ({ ...reader, userId: reader.userId as Id<"users"> })),
+			},
+			expectedPath: requestedPath,
+		})) as writer_change_Result;
+		if (result._nay) return writer_failure(result._nay);
+		return {
+			status: 200,
+			body: { nodeId: result._yay.nodeId, receipt: result._yay },
+			headers: { "Cache-Control": "no-store" },
+		} as const;
+	}
+	if (principal.kind !== "plugin_run" || body._yay.access.readers !== undefined)
+		return {
+			status: 403,
+			body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
+		} as const;
 	// An access object with nothing to change is a caller mistake, not a no-op.
 	if (body._yay.access.readOnly === undefined && body._yay.access.readScopeId === undefined) {
 		return {
@@ -1107,5 +1328,147 @@ export async function public_api_plugin_files_http_set_access(
 		headers: { "Cache-Control": "no-store" },
 	} as const;
 }
+
+const inspect_writer_body_validator = z
+	.object({
+		writerId: z.string(),
+		path: z.string().min(1),
+		maxBytes: z.number().int().min(1).max(files_MAX_TEXT_CONTENT_BYTES),
+	})
+	.strict();
+
+export type public_api_plugin_files_http_inspect_writer_Body = z.infer<typeof inspect_writer_body_validator>;
+
+export async function public_api_plugin_files_http_inspect_writer(ctx: ActionCtx, request: Request) {
+	const auth = await public_api_authorize_request(ctx, request, {
+		requiredScope: "files:write",
+		allowedKinds: ["plugin_service"],
+		route: "/api/v1/files/plugin-writers/inspect",
+	});
+	if (auth._nay) return auth._nay;
+
+	const body = await server_request_json_parse_and_validate(request, inspect_writer_body_validator);
+	if (body._nay) return { status: 400, body: { message: body._nay.message } } as const;
+	if (!body._yay.path.startsWith("/") || server_path_normalize(body._yay.path) !== body._yay.path)
+		return { status: 400, body: { message: "Path must be a normalized absolute path." } } as const;
+
+	const proof = await read_writer_proof(ctx, request, { writerId: body._yay.writerId });
+	if (proof._nay) return writer_failure(proof._nay);
+
+	const args = {
+		...proof._yay,
+		grantId: auth._yay.principal.grantId,
+		writerId: body._yay.writerId as Id<"plugins_external_file_writers">,
+		path: body._yay.path,
+	};
+	const inspected = (await ctx.runQuery(internal.plugins_external_files.inspect, args)) as writer_inspect_Result;
+	if (inspected._nay) return writer_failure(inspected._nay);
+
+	const { writer, node } = inspected._yay;
+	if (node && (node.kind !== "file" || !node.contentType || !files_editable_text_shape_of(node.contentType)))
+		return { status: 409, body: { message: "The target is not an editable text file." } } as const;
+
+	let content: string | null = null;
+	if (node) {
+		const scope = {
+			organizationId: writer.organizationId,
+			workspaceId: writer.workspaceId,
+			userId: auth._yay.principal.actorUserId,
+			serviceAccountId: auth._yay.principal.serviceAccountId,
+		};
+		if (node.collaborationEnabled) {
+			const state = await ctx.runQuery(internal.files_nodes.get_file_content_materialization_state, {
+				...scope,
+				nodeId: node._id,
+			});
+			if (!state) return { status: 409, body: { message: "The file changed during the read." } } as const;
+			const reconstructed = await files_nodes_reconstruct_latest_file_content_from_materialization_state({ state });
+			if (reconstructed._nay) return writer_failure(reconstructed._nay);
+			content = reconstructed._yay.text;
+		} else {
+			const read = await ctx.runQuery(internal.files_nodes.read_file_content_from_chunks, {
+				...scope,
+				path: node.path,
+				committedOnly: true,
+				mode: { kind: "full", maxBytes: body._yay.maxBytes },
+			});
+			if (!read) return { status: 409, body: { message: "The file changed during the read." } } as const;
+			if (read.moreLines)
+				return { status: 409, body: { message: "File content exceeds the requested read limit." } } as const;
+			content = read.content;
+		}
+	}
+	if (content !== null && files_get_utf8_byte_size(content) > body._yay.maxBytes)
+		return { status: 409, body: { message: "File content exceeds the requested read limit." } } as const;
+
+	const confirmed = (await ctx.runQuery(internal.plugins_external_files.inspect, args)) as writer_inspect_Result;
+	if (confirmed._nay) return writer_failure(confirmed._nay);
+	if (
+		confirmed._yay.node?._id !== node?._id ||
+		confirmed._yay.contentRevision !== inspected._yay.contentRevision ||
+		confirmed._yay.readerRevision !== inspected._yay.readerRevision ||
+		confirmed._yay.writer.generation !== writer.generation ||
+		confirmed._yay.detached !== inspected._yay.detached
+	)
+		return { status: 409, body: { message: "The file changed during the read." } } as const;
+
+	return {
+		status: 200,
+		body: {
+			nodeId: node?._id ?? null,
+			content,
+			contentType: node?.contentType ?? null,
+			contentRevision: inspected._yay.contentRevision,
+			expectedParentNodeId: writer.folderNodeId,
+			writerGeneration: writer.generation,
+			readerRevision: inspected._yay.readerRevision,
+			detached: inspected._yay.detached,
+		},
+		headers: { "Cache-Control": "no-store" },
+	} as const;
+}
+
+const advance_writer_body_validator = z
+	.object({
+		writerId: z.string(),
+		operationId: z.string().min(1).max(128),
+		writerGeneration: z.number().int().positive(),
+		nextGeneration: z.number().int().positive(),
+	})
+	.strict();
+
+export type public_api_plugin_files_http_advance_writer_Body = z.infer<typeof advance_writer_body_validator>;
+
+export async function public_api_plugin_files_http_advance_writer(ctx: ActionCtx, request: Request) {
+	const auth = await public_api_authorize_request(ctx, request, {
+		requiredScope: "files:write",
+		allowedKinds: ["plugin_service"],
+		route: "/api/v1/files/plugin-writers/advance",
+	});
+	if (auth._nay) return auth._nay;
+
+	const body = await server_request_json_parse_and_validate(request, advance_writer_body_validator);
+	if (body._nay) return { status: 400, body: { message: body._nay.message } } as const;
+
+	const proof = await read_writer_proof(ctx, request, { writerId: body._yay.writerId });
+	if (proof._nay) return writer_failure(proof._nay);
+
+	const result = (await ctx.runMutation(internal.plugins_external_files.change_scope, {
+		...proof._yay,
+		grantId: auth._yay.principal.grantId,
+		writerId: body._yay.writerId as Id<"plugins_external_file_writers">,
+		operationId: body._yay.operationId,
+		writerGeneration: body._yay.writerGeneration,
+		change: { kind: "fence", nextGeneration: body._yay.nextGeneration },
+	})) as writer_change_Result;
+	if (result._nay) return writer_failure(result._nay);
+
+	return { status: 200, body: result._yay, headers: { "Cache-Control": "no-store" } } as const;
+}
+
+export {
+	plugins_external_file_readers_http_undo as public_api_plugin_files_http_undo_access,
+	type plugins_external_file_readers_http_undo_Body as public_api_plugin_files_http_undo_access_Body,
+} from "./plugins_external_file_readers.ts";
 
 // #endregion http handlers

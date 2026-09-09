@@ -6,10 +6,10 @@ import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts"
 import { public_api_PLUGIN_SERVICE_TOKEN_REGEX } from "../shared/public-api.ts";
 import type { plugins_Capability } from "../shared/plugins.ts";
 
-const EXCHANGE_PATH = "/api/internal/plugins/service-grants/exchange";
-const RENEW_PATH = "/api/internal/plugins/service-grants/renew";
-const VERIFY_LIVE_PATH = "/api/internal/plugins/service-grants/verify-live";
-const SEAL_PROCESSING_PATH = "/api/internal/plugins/service-grants/seal-processing";
+const EXCHANGE_PATH = "/api/v1/plugins/service-grants/exchange";
+const RENEW_PATH = "/api/v1/plugins/service-grants/renew";
+const VERIFY_LIVE_PATH = "/api/v1/plugins/service-grants/verify-live";
+const SEAL_PROCESSING_PATH = "/api/v1/plugins/service-grants/seal-processing";
 
 /**
  * The secret the seeded registration's hash is made from.
@@ -236,7 +236,7 @@ async function exchange_token(
 	return body.token;
 }
 
-describe("/api/internal/plugins/service-grants/exchange", () => {
+describe("/api/v1/plugins/service-grants/exchange", () => {
 	test("a files-only service can exchange, seal, and recover a lost renewal response", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t, {
@@ -263,7 +263,7 @@ describe("/api/internal/plugins/service-grants/exchange", () => {
 		expect(rotated.token).not.toBe(processing.token);
 		const ordinaryOldToken = await t.fetch(RENEW_PATH, { method: "POST", headers: service_headers(processing.token), body: JSON.stringify({ requestId: "another-renewal" }) });
 		expect(ordinaryOldToken.status).toBe(401);
-		const recovered = await t.fetch("/api/internal/plugins/service-grants/recover", { method: "POST", headers: service_headers(processing.token),
+		const recovered = await t.fetch("/api/v1/plugins/service-grants/recover", { method: "POST", headers: service_headers(processing.token),
 			body: JSON.stringify({ operation: "renew", requestId: "renew-1" }) });
 		expect(recovered.status, await recovered.clone().text()).toBe(200);
 		expect(await recovered.json()).toMatchObject(rotated);
@@ -274,7 +274,7 @@ describe("/api/internal/plugins/service-grants/exchange", () => {
 			const grant = await ctx.db.query("plugin_service_grants").withIndex("by_tokenHash", (q) => q.eq("tokenHash", receipts[2]!.responseTokenHash)).first();
 			await ctx.db.patch("plugin_service_grants", grant!._id, { revokedAt: Date.now() });
 		});
-		const revoked = await t.fetch("/api/internal/plugins/service-grants/recover", { method: "POST", headers: service_headers(processing.token),
+		const revoked = await t.fetch("/api/v1/plugins/service-grants/recover", { method: "POST", headers: service_headers(processing.token),
 			body: JSON.stringify({ operation: "renew", requestId: "renew-1" }) });
 		expect(revoked.status).toBe(401);
 	});
@@ -285,7 +285,7 @@ describe("/api/internal/plugins/service-grants/exchange", () => {
 		const pageToken = await seed_page_token(t, fixture);
 		const exchanged = await t.fetch(EXCHANGE_PATH, { method: "POST", headers: service_headers(pageToken), body: JSON.stringify({ requestId: "connect" }) });
 		expect(exchanged.status).toBe(200);
-		const wrongSecret = await t.fetch("/api/internal/plugins/service-grants/recover", { method: "POST", headers: service_headers(pageToken, { secret: "wrong" }),
+		const wrongSecret = await t.fetch("/api/v1/plugins/service-grants/recover", { method: "POST", headers: service_headers(pageToken, { secret: "wrong" }),
 			body: JSON.stringify({ operation: "exchange", requestId: "connect" }) });
 		expect(wrongSecret.status).toBe(401);
 		await t.run(async (ctx) => {
@@ -293,7 +293,7 @@ describe("/api/internal/plugins/service-grants/exchange", () => {
 			await ctx.db.patch("plugin_service_grant_requests", receipt._id, { expiresAt: Date.now() - 1 });
 		});
 		await t.mutation(internal.plugins_service_grant_requests.cleanup, {});
-		const expired = await t.fetch("/api/internal/plugins/service-grants/recover", { method: "POST", headers: service_headers(pageToken),
+		const expired = await t.fetch("/api/v1/plugins/service-grants/recover", { method: "POST", headers: service_headers(pageToken),
 			body: JSON.stringify({ operation: "exchange", requestId: "connect" }) });
 		expect(expired.status).toBe(400);
 		expect(await expired.json()).toEqual({ message: "Reconnect Files sync" });
@@ -578,7 +578,7 @@ describe("/api/internal/plugins/service-grants/exchange", () => {
 	});
 });
 
-describe("/api/internal/plugins/service-grants/renew", () => {
+describe("/api/v1/plugins/service-grants/renew", () => {
 	test("replaces the raw token on the same grant and kills the old one", async () => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
@@ -670,7 +670,7 @@ describe("/api/internal/plugins/service-grants/renew", () => {
 	});
 });
 
-describe("/api/internal/plugins/service-grants/verify-live", () => {
+describe("/api/v1/plugins/service-grants/verify-live", () => {
 	/**
 	 * Every field is required, so the service always states what it believes it holds. A body helper
 	 * keeps each test to the one claim it is about.
@@ -932,7 +932,7 @@ describe("/api/internal/plugins/service-grants/verify-live", () => {
 	});
 });
 
-describe("/api/internal/plugins/service-grants/seal-processing", () => {
+describe("/api/v1/plugins/service-grants/seal-processing", () => {
 	async function seal(t: ReturnType<typeof test_convex>, bearer: string, destinationPathPrefix = "/meetings") {
 		return await t.fetch(SEAL_PROCESSING_PATH, {
 			method: "POST",

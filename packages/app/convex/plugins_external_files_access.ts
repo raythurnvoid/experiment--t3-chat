@@ -34,7 +34,7 @@ export async function plugins_external_files_db_authorize(
 		path: string;
 		allowSealRoot?: boolean;
 		exactNodeId?: Id<"files_nodes">;
-		recoverEmptySetup?: { datasetGeneration: string; channelId: string; rootPath: string };
+		recoverEmptySetup?: { writerId: Id<"plugins_external_file_writers"> };
 	},
 ) {
 	const now = Date.now();
@@ -142,23 +142,13 @@ export async function plugins_external_files_db_authorize(
 			: { kind: "create", parentNodeId: parentNode?._id ?? files_ROOT_ID, path: args.path },
 	};
 	if (args.recoverEmptySetup && node?.kind === "folder" && node.restrictedScopeNodeId === node._id) {
-		const setup = args.recoverEmptySetup;
-		const writer = await ctx.db
-			.query("plugins_external_file_writers")
-			.withIndex("by_installation_datasetGeneration_channelId", (q) =>
-				q
-					.eq("installationId", installation._id)
-					.eq("datasetGeneration", setup.datasetGeneration)
-					.eq("channelId", setup.channelId),
-			)
-			.first();
+		const writer = await ctx.db.get("plugins_external_file_writers", args.recoverEmptySetup.writerId);
 		if (
 			writer &&
+			writer.installationId === installation._id &&
 			writer.folderNodeId === node._id &&
 			writer.path === args.path &&
-			writer.rootPath === setup.rootPath &&
-			setup.rootPath === grant.destinationPathPrefix &&
-			setup.channelId !== "__root"
+			writer.rootPath === grant.destinationPathPrefix
 		) {
 			const [root, binding, child] = await Promise.all([
 				ctx.db.get("files_nodes", writer.rootNodeId),
@@ -175,7 +165,7 @@ export async function plugins_external_files_db_authorize(
 			]);
 			if (
 				root?.kind === "folder" &&
-				root.path === setup.rootPath &&
+				root.path === writer.rootPath &&
 				root.archiveOperationId === null &&
 				binding?.nodeId === node._id &&
 				binding.detachedAt === null &&
@@ -190,7 +180,9 @@ export async function plugins_external_files_db_authorize(
 				}))
 			) {
 				// Only ensure uses this path, to recover IDs for an empty private setup. No file or ACL changes follow.
-				return Result({ _yay: { installation, serviceGrant: grant, pluginRun: null, writeContext, node, parentNode } });
+				return Result({
+					_yay: { installation, membership, serviceGrant: grant, pluginRun: null, writeContext, node, parentNode },
+				});
 			}
 		}
 	}
@@ -224,7 +216,9 @@ export async function plugins_external_files_db_authorize(
 		target: node ? { kind: "node", node } : { kind: "create", parentNode, path: args.path },
 	});
 	if (writable._nay) return writable;
-	return Result({ _yay: { installation, serviceGrant: grant, pluginRun: null, writeContext, node, parentNode } });
+	return Result({
+		_yay: { installation, membership, serviceGrant: grant, pluginRun: null, writeContext, node, parentNode },
+	});
 }
 
 export async function plugins_external_files_db_content_revision(ctx: QueryCtx, node: Doc<"files_nodes">) {
@@ -290,6 +284,9 @@ export async function plugins_external_files_db_check_write(
 		args.write.expectedNodeId,
 		args.write.expectedContentRevision,
 		args.write.expectedReaderRevision,
+		args.write.contentType,
+		args.write.nonCollaborative,
+		args.write.requestReadOnly,
 	]);
 	if (receipt) {
 		if (receipt.operation !== "write" || receipt.fingerprint !== fingerprint) {
@@ -298,7 +295,7 @@ export async function plugins_external_files_db_check_write(
 		return Result({ _yay: { ...facts._yay, writer, binding, fingerprint, receipt } });
 	}
 	if (binding && binding.detachedAt === null && binding.revision !== args.write.expectedReaderRevision) {
-		return Result({ _nay: { name: "stale_write", message: "The transcript readers changed" } });
+		return Result({ _nay: { name: "stale_write", message: "The file readers changed" } });
 	}
 	// A fenced rebuild may reuse its source sequence. Ordering is local to the current writer generation.
 	const latest = await ctx.db
@@ -309,7 +306,7 @@ export async function plugins_external_files_db_check_write(
 		.order("desc")
 		.first();
 	if (latest && latest.sequence >= args.write.sequence) {
-		return Result({ _nay: { name: "stale_write", message: "A newer transcript write already exists" } });
+		return Result({ _nay: { name: "stale_write", message: "A newer file write already exists" } });
 	}
 	const node = facts._yay.node;
 	if (

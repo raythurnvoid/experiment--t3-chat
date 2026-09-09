@@ -161,7 +161,7 @@ export function public_api_http_routes(router: { route: HttpRouter["route"] }) {
 							handler: httpAction(async (ctx, request) => {
 								const { public_api_http_write_file } = await import("./public_api.ts");
 								const result = await public_api_http_write_file(ctx, request, path);
-								return Response.json(result.body, result);
+								return Response.json(result.body, { ...result, headers: { "Cache-Control": "no-store" } });
 							}),
 						});
 

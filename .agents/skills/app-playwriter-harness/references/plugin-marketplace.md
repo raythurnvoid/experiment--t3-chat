@@ -367,7 +367,7 @@ not chase a "data-probe page hangs" report without re-checking it live.
 The Council plugin page (`/w/<org>/<workspace>/plugins/council/pages/council`) proves the whole
 service-connect auth chain: on load it POSTs to the Council Worker
 (`https://council.bonobo-senate.com/api/meetings/list` since plugin 0.2.3), and the Worker trades
-the page token for a service grant at Convex `/api/internal/plugins/service-grants/exchange`
+the page token for a service grant at Convex `/api/v1/plugins/service-grants/exchange`
 (`plugins_service.ts`). An empty meetings list with no `role="alert"` is the pass signal.
 
 - Capture the iframe's Worker calls with plain `state.page.on("request"/"response")` listeners on the
@@ -378,7 +378,7 @@ the page token for a service grant at Convex `/api/internal/plugins/service-gran
 - A first-open alert saying `Rate limit exceeded` is usually the host's `plugins_ui_session_mint`
   bucket (STRICT_WRITE: capacity 2, 12/min, keyed per user — the user's own open plugin tabs share it).
   Retry recovers in seconds; it is not a Worker or exchange fault.
-- An alert naming the exchange (`Convex /api/internal/plugins/service-grants/exchange returned HTTP
+- An alert naming the exchange (`Convex /api/v1/plugins/service-grants/exchange returned HTTP
   401`) means the Worker reached Convex and Convex refused. The exchange 401s for: a Worker-side
   `COUNCIL_SERVICE_EXCHANGE_SECRET` that does not hash-match the publisher's service registration, a
   bad bearer, or a dead page token. Since the registration migration there is NO Convex env var to

@@ -1224,19 +1224,17 @@ export function plugins_validate_manifest(input: unknown) {
 			},
 		});
 	}
-	// plugin.service.connect only lets an outside service borrow the capabilities the workspace
-	// already granted this plugin. On its own it can obtain no scope at all, so the grant mint would
-	// always refuse it. Reject that manifest at publish instead of letting the plugin install and
-	// then fail the first time its page tries to connect.
+	// A service needs member identity, plugin data, or Files consent to do useful work.
 	if (
 		capabilities.has("plugin.service.connect" satisfies plugins_Capability) &&
 		!capabilities.has("plugin.data.read" satisfies plugins_Capability) &&
+		!capabilities.has("workspace.members.read" satisfies plugins_Capability) &&
 		!capabilities.has("workspace.files.write" satisfies plugins_Capability)
 	) {
 		return Result({
 			_nay: {
 				message:
-					"The plugin.service.connect capability requires the plugin.data.read or workspace.files.write capability",
+					"The plugin.service.connect capability requires plugin.data.read, workspace.members.read, or workspace.files.write",
 			},
 		});
 	}

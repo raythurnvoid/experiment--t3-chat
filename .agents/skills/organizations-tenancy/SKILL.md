@@ -93,9 +93,11 @@ Canonical access-control details live in `../access-control/SKILL.md`.
 
 # Active memberships
 
-Chitchat mirrors current Press workspace people through its separate backend. Invite, removal, role change, ownership transfer and tenant deletion save ordered Chitchat access events in the source mutation. This adds no remote wait to Press mutations. The native app can retain old access for at most its 30-second lease; pushes usually shorten that window. See [auth-system](../auth-system/SKILL.md#chitchat-in-its-own-backend).
+External plugin backends may mirror current workspace members through the public member and access-change APIs. Invite, removal, role change, ownership transfer, profile change, and tenant deletion save scoped `access_control_changes` in the source mutation. Press has no plugin-specific callback and never waits for a remote consumer. Each consumer polls bounded pages and denies stale access by its absolute lease deadline, at most 30 seconds. See [external plugin identity](../auth-system/SKILL.md#identity-for-external-plugin-backends).
 
-`plugins_chitchat_memberships` keeps a lifetime per workspace and canonical user. Removal advances it before publishing the event. Re-invite keeps the advanced lifetime, so native private-channel membership and attached Files reader grants from the old lifetime remain invalid. Do not delete this marker as part of ordinary member removal.
+`organizations_membership_lifetimes` keeps a lifetime per workspace and canonical user. Its helpers live in `organizations_membership_lifetimes.ts`. Removal advances the lifetime before recording the event. Re-invite and account restoration keep the advanced lifetime, so an external private-group membership or Files reader grant from the old lifetime remains invalid. Do not delete this marker during ordinary member removal. Member snapshots include active workspace users even when they have never opened the plugin. They share display names, permissions and lifetime facts, never emails.
+
+`plugins_service_connections` belongs to the installation, not the member who sponsors a Files grant. A valid page exchange pins its exact registration, version and account. A missing or retired installation can retain a connection to read terminal events, but it cannot read new profiles. Each separate plugin database owns its group and channel rules. Core tenancy code must not load or change them.
 
 - **Fields:** `organizations_workspaces_users.active` is required. `false` keeps a membership non-effective during account-deletion retention or a bounded organization-removal drain. `pendingOrganizationRemoval` is optional for rollout compatibility and is `true` only for the second case. Account recovery reactivates ordinary inactive rows and skips marked rows.
 - **Indexes:** `by_workspace_user_active`, `by_user_organization_workspace_active`, `by_active_organization_workspace_user`, `by_active_user_organization_workspace` — prefix with `eq("active", true)` so hot paths avoid post-query filtering.
@@ -169,6 +171,9 @@ keeps the account and binding; it is not a workspace purge.
 - `packages/app/convex/organizations.ts` — public API, DB helpers, create/bootstrap, delete/edit, list, membership queries.
 - `packages/app/convex/access_control.ts` — public access-control API plus role assignment helpers, custom role CRUD, effective permission checks, and ownership transfer.
 - `packages/app/convex/users.ts` — bootstrap calls to `ensure`.
+- `packages/app/convex/organizations_membership_lifetimes.ts` — membership lifetime changes and public member facts.
+- `packages/app/convex/access_control_changes.ts` — source-transaction access ledger.
+- `packages/app/convex/plugins_service_access.ts` — public identity, member snapshots, and scoped access-change pages.
 - `packages/app/convex/data_deletion.ts` — `data_deletion_db_request`, `hard_delete_user_data` for live data resets, `finalize_user_deletion_data` for tombstone/deletion finalization, `init_user_deletion`, automatic owned-organization deletion queueing, `process_user_deletion_request`, `process_organization_deletion_request`, `process_workspace_deletion_request`, Workpool-backed `enqueue_deletion_requests_processing` / `process_deletion_requests`, `list_deletion_request_ids_by_scope`.
 - `packages/app/convex/notifications.ts` — in-app invite notifications.
 - `packages/app/convex/schema.ts` — `organizations`, `organizations_workspaces`, `organizations_workspaces_users`, `access_control_role_assignments`, `access_control_permission_grants`, `notifications`, `data_deletion_requests`, `users.defaultOrganizationId` / `defaultWorkspaceId`.

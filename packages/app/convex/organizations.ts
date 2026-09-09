@@ -1,7 +1,8 @@
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
 import { internal } from "./_generated/api.js";
-import { plugins_chitchat_db_record_events, plugins_chitchat_db_record_memberships } from "./plugins_chitchat.ts";
+import { access_control_changes_db_record } from "./access_control_changes.ts";
+import { organizations_membership_lifetimes_db_record } from "./organizations_membership_lifetimes.ts";
 import {
 	internalMutation,
 	internalQuery,
@@ -1271,7 +1272,7 @@ export const invite_user_to_organization_workspace = mutation({
 					.first(),
 			),
 		);
-		await plugins_chitchat_db_record_memberships(
+		await organizations_membership_lifetimes_db_record(
 			ctx,
 			joinedMemberships.flatMap((membership) => (membership ? [{ membership, active: true }] : [])),
 		);
@@ -1558,7 +1559,7 @@ export const remove_user_from_organization = mutation({
 				.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_role_assignments", doc._id)))),
 		]);
 
-		await plugins_chitchat_db_record_memberships(
+		await organizations_membership_lifetimes_db_record(
 			ctx,
 			memberships.map((membership) => ({ membership, active: false })),
 		);
@@ -2092,7 +2093,7 @@ export const delete_organization = mutation({
 				.then((docs) => Promise.all(docs.map((doc) => ctx.db.delete("access_control_roles", doc._id)))),
 		]);
 
-		await plugins_chitchat_db_record_events(ctx, [
+		await access_control_changes_db_record(ctx, [
 			{
 				scope: { kind: "organization", organizationId: organization._id },
 				event: { kind: "revoked", reason: "organization_deleted" },
@@ -2277,7 +2278,7 @@ export const delete_workspace = mutation({
 		// The missing workspace and memberships revoke access now.
 		// Grant counts grow with file shares, so the worker drains them in batches.
 		await ctx.db.delete("organizations_workspaces", workspace._id);
-		await plugins_chitchat_db_record_events(ctx, [
+		await access_control_changes_db_record(ctx, [
 			{
 				scope: { kind: "workspace", organizationId: organization._id, workspaceId: workspace._id },
 				event: { kind: "revoked", reason: "workspace_deleted" },

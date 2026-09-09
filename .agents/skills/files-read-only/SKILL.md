@@ -127,6 +127,14 @@ missing path segment. It does not pretend that the new child already has an exac
 Choosing a local policy creates no grant. Intermediate folders inherit; only the requested leaf gets
 the requested local policy. A refusal commits no partial folders, assets, policy, or sharing changes.
 
+Registered writer setup with explicit readers is a separate access operation. On first creation,
+it restricts the empty folder and grants the exact bound service account **Can manage** there in the
+same transaction. The actor must pass service-account management and the full parent grant ceiling;
+the account must already pass parent write and management checks. This keeps the account usable when
+the new restriction stops inherited access. Human reader permissions stay unchanged. Existing-folder
+retries never restore this grant or replace manual sharing. Later grant changes use normal Files
+sharing. A writer policy by itself still creates no access.
+
 Inherit removes only the local choice and returns to the current parent policy. Setting a local choice
 below a parent is allowed, but does not bypass the parent. Repeating the same local choice is an
 idempotent success. Management stays separate from effective content write access.
@@ -145,7 +153,7 @@ idempotent success. Management stays separate from effective content write acces
   Reach `direct` may match only an existing target's own local rule; any outer policy refuses. During
   creation, the existing parent is not the new target, so even a matching parent policy refuses direct
   reach. Generic sealed service doors use direct reach and preserve their destination and target limits.
-  The external own-file bridge may use ancestor reach only after its sealed destination, current
+  Public service writer requests may use ancestor reach only after their sealed destination, current
   service secret, `workspace.files.own-write`, actor/account ACL, labels, and pinned output scope pass.
 - Generic account keys use account permissions and their validated resource scope. Invoke plugins
   also keep accepted capability, editable label, source, and current installation checks. UI sessions

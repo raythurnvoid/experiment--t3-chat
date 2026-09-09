@@ -878,11 +878,6 @@ const RoutePluginsPluginServiceControls = memo(function RoutePluginsPluginServic
 		if (busy) {
 			return;
 		}
-		if (selectedScopes.length === 0) {
-			toast.error("Choose at least one scope");
-			return;
-		}
-
 		setBusy(true);
 		app_convex
 			.mutation(app_convex_api.plugins.set_plugin_service_registration, { pluginName, scopes: selectedScopes })
@@ -970,6 +965,7 @@ const RoutePluginsPluginServiceControls = memo(function RoutePluginsPluginServic
 					</MyCheckboxButton>
 				))}
 			</div>
+			<p>Leave all scopes off if the service only needs workspace identity and members.</p>
 			<div
 				className={"RoutePluginsPluginServiceControls-actions" satisfies RoutePluginsPluginServiceControls_ClassNames}
 			>

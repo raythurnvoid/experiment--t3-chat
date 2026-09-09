@@ -2792,6 +2792,9 @@ export const prepare_file_write = internalMutation({
 		if (revalidated._nay) {
 			return revalidated;
 		}
+		if (args.externalFileWrite && args.contentType !== args.externalFileWrite.contentType) {
+			return Result({ _nay: { name: "stale_write", message: "The file write options changed" } });
+		}
 		if (
 			expectedParentNodeId !== undefined &&
 			args.externalFileWrite === undefined &&
@@ -2930,6 +2933,25 @@ export const publish_file_write = internalMutation({
 				});
 			}
 			return revalidated;
+		}
+
+		if (
+			stage.externalFileWrite &&
+			(stage.contentType !== stage.externalFileWrite.contentType ||
+				(args.nonCollaborative === true) !== stage.externalFileWrite.nonCollaborative ||
+				(args.requestReadOnly === true) !== stage.externalFileWrite.requestReadOnly ||
+				(await crypto_sha256_hex(args.content)) !== stage.externalFileWrite.contentHash)
+		) {
+			await db_abandon_file_write_stage_conflict(ctx, {
+				stage,
+				putAssetIds:
+					args.nonCollaborative === true
+						? [stage.contentSnapshotAssetId]
+						: [stage.yjsSnapshotAssetId, stage.contentSnapshotAssetId],
+				refusalMessage: "The file write options or content changed",
+				deletionReason: "failed_create",
+			});
+			return Result({ _nay: { name: "stale_write", message: "The file write options or content changed" } });
 		}
 
 		const [yjsSnapshotAsset, contentSnapshotAsset] = await Promise.all([
@@ -3325,6 +3347,21 @@ export const publish_file_fill = internalMutation({
 				});
 			}
 			return revalidated;
+		}
+
+		// A fill keeps the current mode and policy. Only its text and type are published.
+		if (
+			stage.externalFileWrite &&
+			(stage.contentType !== stage.externalFileWrite.contentType ||
+				(await crypto_sha256_hex(args.content)) !== stage.externalFileWrite.contentHash)
+		) {
+			await db_abandon_file_write_stage_conflict(ctx, {
+				stage,
+				putAssetIds: [stage.contentSnapshotAssetId],
+				refusalMessage: "The file write options or content changed",
+				deletionReason: "failed_create",
+			});
+			return Result({ _nay: { name: "stale_write", message: "The file write options or content changed" } });
 		}
 
 		if ("receipt" in revalidated._yay && revalidated._yay.receipt) {
@@ -5440,7 +5477,7 @@ export async function public_api_http_set_file_write_policy(
 const write_file_body_validator = z.object({
 	path: z.string(),
 	/**
-	 * Invoke writes can require the same immediate parent at prepare and publication.
+	 * Invoke and conditional service writes can pin the immediate parent.
 	 */
 	expectedParentNodeId: z.string().optional(),
 	content: z.string(),
@@ -5466,6 +5503,19 @@ const write_file_body_validator = z.object({
 	 * transactionally at publish time.
 	 */
 	access: z.object({ readOnly: z.boolean().optional() }).optional(),
+	writer: z
+		.object({
+			writerId: z.string(),
+			operationId: z.string().min(1).max(128),
+			writerGeneration: z.number().int().positive(),
+			sequence: z.number().int().positive(),
+			expectedNodeId: z.string().nullable(),
+			expectedContentRevision: z.string().nullable(),
+			expectedReaderRevision: z.number().int().positive().nullable(),
+			contentHash: z.string().regex(/^[a-f0-9]{64}$/),
+		})
+		.strict()
+		.optional(),
 });
 
 export type public_api_http_write_file_Body = z.infer<typeof write_file_body_validator>;
@@ -5517,7 +5567,8 @@ export async function public_api_http_write_file(ctx: ActionCtx, request: Reques
 	}
 	if (
 		body._yay.expectedParentNodeId !== undefined &&
-		(principal.kind !== "plugin_run" || principal.outputParentPath !== null)
+		!(principal.kind === "plugin_run" && principal.outputParentPath === null) &&
+		!(principal.kind === "plugin_service" && body._yay.writer)
 	) {
 		return {
 			status: 403,
@@ -5557,7 +5608,7 @@ export async function public_api_http_write_file(ctx: ActionCtx, request: Reques
 			}),
 		} as const;
 	}
-	const shape = body._yay.contentType === undefined ? null : files_editable_text_shape_of(body._yay.contentType);
+	let shape = body._yay.contentType === undefined ? null : files_editable_text_shape_of(body._yay.contentType);
 	if (body._yay.contentType !== undefined && shape === null) {
 		return {
 			status: 400,
@@ -5643,7 +5694,100 @@ export async function public_api_http_write_file(ctx: ActionCtx, request: Reques
 			body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
 		} as const;
 	}
-	const overwrite = body._yay.overwrite ?? "replace";
+	let overwrite = body._yay.overwrite ?? "replace";
+	let externalFileWrite: Doc<"public_api_file_write_stages">["externalFileWrite"];
+	let receiptArgs:
+		| {
+				grantId: Id<"plugin_service_grants">;
+				path: string;
+				expectedParentNodeId: Id<"files_nodes">;
+				write: NonNullable<Doc<"public_api_file_write_stages">["externalFileWrite"]>;
+		  }
+		| undefined;
+	if (body._yay.writer) {
+		if (principal.kind !== "plugin_service") {
+			return {
+				status: 403,
+				body: await fail({ status: 403, message: "Permission denied", errorCode: "permission_denied" }),
+			} as const;
+		}
+
+		const writer = body._yay.writer;
+		overwrite = writer.expectedNodeId === null ? "fail" : "replace";
+		if (
+			!body._yay.expectedParentNodeId ||
+			body._yay.skipIfUnchanged === true ||
+			(body._yay.overwrite !== undefined && body._yay.overwrite !== overwrite) ||
+			(writer.expectedNodeId === null) !== (writer.expectedContentRevision === null) ||
+			(await crypto_sha256_hex(content)) !== writer.contentHash
+		) {
+			return {
+				status: 400,
+				body: await fail({ status: 400, message: "Invalid conditional file write", errorCode: "invalid_input" }),
+			} as const;
+		}
+
+		const bearer = request.headers.get("Authorization");
+		const secret = request.headers.get("X-Bonobo-Service-Authorization");
+		if (!bearer?.startsWith("Bearer ") || !secret?.startsWith("Bearer ")) {
+			return { status: 401, body: { message: "Unauthenticated" } } as const;
+		}
+		const checkedIds = await ctx.runQuery(internal.plugins_external_files.check_public_request, {
+			writerId: writer.writerId,
+			nodeIds: [body._yay.expectedParentNodeId, ...(writer.expectedNodeId === null ? [] : [writer.expectedNodeId])],
+		});
+		if (checkedIds._nay)
+			return {
+				status: 400,
+				body: { message: checkedIds._nay.message },
+			} as const;
+
+		if (shape === null) {
+			const current = (await ctx.runQuery(internal.files_nodes.get_by_path, {
+				organizationId: principal.organizationId,
+				workspaceId: principal.workspaceId,
+				visibilityUserId: principal.actorUserId,
+				serviceAccountId: principal.serviceAccountId,
+				path: requestedPath,
+			})) as files_nodes_get_by_path_Result;
+			shape =
+				(current ? files_editable_text_shape_of(current.contentType) : null) ?? files_default_text_shape_for_name(name);
+		}
+
+		externalFileWrite = {
+			...writer,
+			writerId: writer.writerId as Id<"plugins_external_file_writers">,
+			expectedNodeId: writer.expectedNodeId as Id<"files_nodes"> | null,
+			tokenHash: await crypto_sha256_hex(bearer.slice(7).trim()),
+			serviceSecretHash: await crypto_sha256_hex(secret.slice(7).trim()),
+			contentType: shape.contentType,
+			nonCollaborative: body._yay.nonCollaborative === true,
+			requestReadOnly: body._yay.access?.readOnly === true,
+		};
+		receiptArgs = {
+			grantId: principal.grantId,
+			path: requestedPath,
+			expectedParentNodeId: body._yay.expectedParentNodeId as Id<"files_nodes">,
+			write: externalFileWrite,
+		};
+		const prior = await ctx.runQuery(internal.plugins_external_files.get_write_receipt, receiptArgs);
+		if (prior._nay) {
+			const status =
+				prior._nay.name === "stale_write" || prior._nay.name === "read_only"
+					? 409
+					: prior._nay.message === "Permission denied"
+						? 403
+						: 401;
+			return { status, body: { message: status === 401 ? "Unauthenticated" : prior._nay.message } } as const;
+		}
+		if (prior._yay) {
+			return {
+				status: 200,
+				body: { path: requestedPath, nodeId: prior._yay.nodeId, contentType: shape.contentType, receipt: prior._yay },
+				headers: { "Cache-Control": "no-store" },
+			} as const;
+		}
+	}
 
 	// Nothing is free: a public-API write costs the same one cent a member's save costs.
 	// The gate sits at the route, not inside `prepare_file_write`, because `touch` shares that
@@ -5684,6 +5828,7 @@ export async function public_api_http_write_file(ctx: ActionCtx, request: Reques
 		principalRef,
 		path: requestedPath,
 		expectedParentNodeId: body._yay.expectedParentNodeId,
+		externalFileWrite,
 		content,
 		contentBytes,
 		overwrite,
@@ -5751,6 +5896,30 @@ export async function public_api_http_write_file(ctx: ActionCtx, request: Reques
 			principalKey: principal.principalKey,
 			bytes: contentBytes,
 		});
+	}
+
+	if (receiptArgs) {
+		const receipt = await ctx.runQuery(internal.plugins_external_files.get_write_receipt, receiptArgs);
+		if (receipt._nay) {
+			const status =
+				receipt._nay.name === "stale_write" || receipt._nay.name === "read_only"
+					? 409
+					: receipt._nay.message === "Permission denied"
+						? 403
+						: 401;
+			return { status, body: { message: status === 401 ? "Unauthenticated" : receipt._nay.message } } as const;
+		}
+		if (!receipt._yay) return { status: 500, body: { message: "The write receipt is unavailable" } } as const;
+		return {
+			status: 200,
+			body: {
+				path: requestedPath,
+				nodeId: written._yay.nodeId,
+				contentType: written._yay.contentType,
+				receipt: receipt._yay,
+			},
+			headers: { "Cache-Control": "no-store" },
+		} as const;
 	}
 
 	return {

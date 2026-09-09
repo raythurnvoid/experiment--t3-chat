@@ -13,7 +13,7 @@ import type {
 export function plugins_service_http_routes(router: { route: HttpRouter["route"] }) {
 	return {
 		...((
-			/* iife */ path = "/api/internal/plugins/service-grants/recover" as const satisfies api_schemas_Main_Path,
+			/* iife */ path = "/api/v1/plugins/service-grants/recover" as const satisfies api_schemas_Main_Path,
 		) => ({
 			[path]: {
 				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
@@ -22,15 +22,12 @@ export function plugins_service_http_routes(router: { route: HttpRouter["route"]
 						type PathParams = never;
 						type Headers = { Authorization: string; "X-Bonobo-Service-Authorization": string };
 						type Body = import("./plugins_service.ts").plugins_service_http_recover_Body;
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const { plugins_service_http_recover } = await import("./plugins_service.ts");
-								const result = await plugins_service_http_recover(ctx, request);
-								return Response.json(result.body, result);
-							}),
+						const handler = httpAction(async (ctx, request) => {
+							const { plugins_service_http_recover } = await import("./plugins_service.ts");
+							const result = await plugins_service_http_recover(ctx, request);
+							return Response.json(result.body, result);
 						});
+						router.route({ path, method, handler });
 						return {} as {
 							pathParams: PathParams;
 							searchParams: SearchParams;
@@ -45,7 +42,7 @@ export function plugins_service_http_routes(router: { route: HttpRouter["route"]
 			},
 		}))(),
 		...((
-			/* iife */ path = "/api/internal/plugins/service-grants/exchange" as const satisfies api_schemas_Main_Path,
+			/* iife */ path = "/api/v1/plugins/service-grants/exchange" as const satisfies api_schemas_Main_Path,
 		) => ({
 			[path]: {
 				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
@@ -55,15 +52,12 @@ export function plugins_service_http_routes(router: { route: HttpRouter["route"]
 						type Headers = { Authorization: string; "X-Bonobo-Service-Authorization": string };
 						type Body = plugins_service_http_exchange_Body;
 
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const { plugins_service_http_exchange } = await import("./plugins_service.ts");
-								const result = await plugins_service_http_exchange(ctx, request);
-								return Response.json(result.body, result);
-							}),
+						const handler = httpAction(async (ctx, request) => {
+							const { plugins_service_http_exchange } = await import("./plugins_service.ts");
+							const result = await plugins_service_http_exchange(ctx, request);
+							return Response.json(result.body, result);
 						});
+						router.route({ path, method, handler });
 
 						return {} as {
 							pathParams: PathParams;
@@ -78,7 +72,7 @@ export function plugins_service_http_routes(router: { route: HttpRouter["route"]
 				}))(),
 			},
 		}))(),
-		...((/* iife */ path = "/api/internal/plugins/service-grants/renew" as const satisfies api_schemas_Main_Path) => ({
+		...((/* iife */ path = "/api/v1/plugins/service-grants/renew" as const satisfies api_schemas_Main_Path) => ({
 			[path]: {
 				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
 					[method]: ((/* iife */) => {
@@ -87,15 +81,12 @@ export function plugins_service_http_routes(router: { route: HttpRouter["route"]
 						type Headers = { Authorization: string; "X-Bonobo-Service-Authorization": string };
 						type Body = plugins_service_http_renew_Body;
 
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const { plugins_service_http_renew } = await import("./plugins_service.ts");
-								const result = await plugins_service_http_renew(ctx, request);
-								return Response.json(result.body, result);
-							}),
+						const handler = httpAction(async (ctx, request) => {
+							const { plugins_service_http_renew } = await import("./plugins_service.ts");
+							const result = await plugins_service_http_renew(ctx, request);
+							return Response.json(result.body, result);
 						});
+						router.route({ path, method, handler });
 
 						return {} as {
 							pathParams: PathParams;
@@ -111,7 +102,7 @@ export function plugins_service_http_routes(router: { route: HttpRouter["route"]
 			},
 		}))(),
 		...((
-			/* iife */ path = "/api/internal/plugins/service-grants/seal-processing" as const satisfies api_schemas_Main_Path,
+			/* iife */ path = "/api/v1/plugins/service-grants/seal-processing" as const satisfies api_schemas_Main_Path,
 		) => ({
 			[path]: {
 				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
@@ -121,15 +112,12 @@ export function plugins_service_http_routes(router: { route: HttpRouter["route"]
 						type Headers = { Authorization: string; "X-Bonobo-Service-Authorization": string };
 						type Body = plugins_service_http_seal_processing_Body;
 
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const { plugins_service_http_seal_processing } = await import("./plugins_service.ts");
-								const result = await plugins_service_http_seal_processing(ctx, request);
-								return Response.json(result.body, result);
-							}),
+						const handler = httpAction(async (ctx, request) => {
+							const { plugins_service_http_seal_processing } = await import("./plugins_service.ts");
+							const result = await plugins_service_http_seal_processing(ctx, request);
+							return Response.json(result.body, result);
 						});
+						router.route({ path, method, handler });
 
 						return {} as {
 							pathParams: PathParams;
@@ -145,7 +133,7 @@ export function plugins_service_http_routes(router: { route: HttpRouter["route"]
 			},
 		}))(),
 		...((
-			/* iife */ path = "/api/internal/plugins/service-grants/verify-live" as const satisfies api_schemas_Main_Path,
+			/* iife */ path = "/api/v1/plugins/service-grants/verify-live" as const satisfies api_schemas_Main_Path,
 		) => ({
 			[path]: {
 				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
@@ -155,15 +143,12 @@ export function plugins_service_http_routes(router: { route: HttpRouter["route"]
 						type Headers = { Authorization: string; "X-Bonobo-Service-Authorization": string };
 						type Body = plugins_service_http_verify_live_Body;
 
-						router.route({
-							path,
-							method,
-							handler: httpAction(async (ctx, request) => {
-								const { plugins_service_http_verify_live } = await import("./plugins_service.ts");
-								const result = await plugins_service_http_verify_live(ctx, request);
-								return Response.json(result.body, result);
-							}),
+						const handler = httpAction(async (ctx, request) => {
+							const { plugins_service_http_verify_live } = await import("./plugins_service.ts");
+							const result = await plugins_service_http_verify_live(ctx, request);
+							return Response.json(result.body, result);
 						});
+						router.route({ path, method, handler });
 
 						return {} as {
 							pathParams: PathParams;

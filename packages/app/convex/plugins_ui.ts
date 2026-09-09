@@ -38,7 +38,7 @@ import {
 	type QueryCtx,
 } from "./_generated/server.js";
 import { internal } from "./_generated/api.js";
-import { plugins_chitchat_db_record_events } from "./plugins_chitchat.ts";
+import { access_control_changes_db_record } from "./access_control_changes.ts";
 import type { Id } from "./_generated/dataModel.js";
 import { Result } from "common/errors-as-values-utils.ts";
 import { v_result } from "../server/convex-utils.ts";
@@ -717,7 +717,7 @@ export const revoke_ui_session = mutation({
 		}
 
 		await ctx.db.delete("plugins_ui_sessions", session._id);
-		await plugins_chitchat_db_record_events(ctx, [
+		await access_control_changes_db_record(ctx, [
 			{
 				scope: { kind: "installation", installationId: session.installationId },
 				event: { kind: "session_revoked", hostSessionId: String(session._id) },
@@ -932,7 +932,7 @@ export const expire_ui_session = internalMutation({
 		}
 
 		await ctx.db.delete("plugins_ui_sessions", session._id);
-		await plugins_chitchat_db_record_events(ctx, [
+		await access_control_changes_db_record(ctx, [
 			{
 				scope: { kind: "installation", installationId: session.installationId },
 				event: { kind: "session_revoked", hostSessionId: String(session._id) },
@@ -960,7 +960,7 @@ export const cleanup_expired_ui_sessions = internalMutation({
 		for (const session of expired) {
 			await ctx.db.delete("plugins_ui_sessions", session._id);
 		}
-		await plugins_chitchat_db_record_events(
+		await access_control_changes_db_record(
 			ctx,
 			expired.map((session) => ({
 				scope: { kind: "installation" as const, installationId: session.installationId },

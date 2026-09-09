@@ -259,6 +259,9 @@ const app_convex_schema = defineSchema({
 				expectedReaderRevision: v.union(v.number(), v.null()),
 				serviceSecretHash: v.string(),
 				tokenHash: v.string(),
+				contentType: v.string(),
+				nonCollaborative: v.boolean(),
+				requestReadOnly: v.boolean(),
 			}),
 		),
 		/** Normalized absolute target path; parents are resolved again at publication. */
@@ -2315,70 +2318,11 @@ const app_convex_schema = defineSchema({
 	// #endregion plugins data
 
 	// #region plugins services
-	plugins_chitchat_access_state: defineTable({
-		key: v.literal("main"),
-		revision: v.number(),
-		oldestRevision: v.number(),
-		lastPushedRevision: v.number(),
-	}).index("by_key", ["key"]),
-	plugins_chitchat_access_events: defineTable({
-		revision: v.number(),
-		createdAt: v.number(),
-		scope: v.union(
-			v.object({ kind: v.literal("all") }),
-			v.object({ kind: v.literal("organization"), organizationId: v.id("organizations") }),
-			v.object({
-				kind: v.literal("workspace"),
-				organizationId: v.id("organizations"),
-				workspaceId: v.id("organizations_workspaces"),
-			}),
-			v.object({ kind: v.literal("installation"), installationId: v.id("plugins_workspace_installations") }),
-			v.object({ kind: v.literal("user"), userId: v.id("users") }),
-			v.object({ kind: v.literal("service_account"), serviceAccountId: v.id("access_control_service_accounts") }),
-		),
-		event: v.union(
-			v.object({
-				kind: v.literal("refresh"),
-				reason: v.union(
-					v.literal("permissions"),
-					v.literal("installation"),
-					v.literal("account"),
-					v.literal("members"),
-				),
-			}),
-			v.object({
-				kind: v.literal("member"),
-				member: v.object({
-					hostUserId: v.string(),
-					hostMembershipId: v.union(v.string(), v.null()),
-					membershipLifetime: v.number(),
-					displayName: v.union(v.string(), v.null()),
-					active: v.boolean(),
-					canRead: v.boolean(),
-					canWrite: v.boolean(),
-					isOwner: v.boolean(),
-				}),
-			}),
-			v.object({ kind: v.literal("session_revoked"), hostSessionId: v.string() }),
-			v.object({
-				kind: v.literal("revoked"),
-				reason: v.union(v.literal("uninstalled"), v.literal("workspace_deleted"), v.literal("organization_deleted")),
-			}),
-		),
-	})
-		.index("by_revision", ["revision"])
-		.index("by_createdAt", ["createdAt"]),
-	plugins_chitchat_memberships: defineTable({
-		organizationId: v.id("organizations"),
-		workspaceId: v.id("organizations_workspaces"),
-		userId: v.id("users"),
-		membershipId: v.union(v.id("organizations_workspaces_users"), v.null()),
-		lifetime: v.number(),
-		active: v.boolean(),
-	})
-		.index("by_workspace_user", ["workspaceId", "userId"])
-		.index("by_user", ["userId"]),
-	plugins_chitchat_connections: defineTable({
+	plugins_service_connections: defineTable({
+		registrationId: v.id("plugins_service_registrations"),
+		// A terminal connection may outlive the installation that held these pins.
+		pluginVersionId: v.union(v.id("plugins_versions"), v.null()),
+		serviceAccountId: v.union(v.id("access_control_service_accounts"), v.null()),
 		installationId: v.id("plugins_workspace_installations"),
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
@@ -2386,15 +2330,14 @@ const app_convex_schema = defineSchema({
 	}).index("by_installation", ["installationId"]),
 
 	/**
-	 * One new output scope for an external plugin dataset. Pinned nodes prevent old work from
+	 * One output folder for an external plugin resource. Pinned nodes prevent old work from
 	 * adopting a moved or replaced folder. A higher generation closes every older writer.
 	 */
 	plugins_external_file_writers: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		installationId: v.id("plugins_workspace_installations"),
-		datasetGeneration: v.string(),
-		channelId: v.string(),
+		resourceKey: v.string(),
 		rootNodeId: v.id("files_nodes"),
 		folderNodeId: v.id("files_nodes"),
 		rootPath: v.string(),
@@ -2402,7 +2345,7 @@ const app_convex_schema = defineSchema({
 		generation: v.number(),
 		updatedAt: v.number(),
 	})
-		.index("by_installation_datasetGeneration_channelId", ["installationId", "datasetGeneration", "channelId"])
+		.index("by_installation_resourceKey", ["installationId", "resourceKey"])
 		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
 
 	/**
@@ -2424,7 +2367,7 @@ const app_convex_schema = defineSchema({
 		.index("by_organization_workspace_installation", ["organizationId", "workspaceId", "installationId"]),
 
 	/**
-	 * Compact results commit with the file change. They hold no transcript text.
+	 * Compact results commit with the file change. They hold no file text.
 	 */
 	plugins_external_file_receipts: defineTable({
 		organizationId: v.id("organizations"),
@@ -2860,6 +2803,59 @@ const app_convex_schema = defineSchema({
 
 	// #region access control
 
+	access_control_change_state: defineTable({
+		key: v.literal("main"),
+		revision: v.number(),
+		oldestRevision: v.number(),
+	}).index("by_key", ["key"]),
+	access_control_changes: defineTable({
+		revision: v.number(),
+		createdAt: v.number(),
+		scope: v.union(
+			v.object({ kind: v.literal("all") }),
+			v.object({ kind: v.literal("organization"), organizationId: v.id("organizations") }),
+			v.object({
+				kind: v.literal("workspace"),
+				organizationId: v.id("organizations"),
+				workspaceId: v.id("organizations_workspaces"),
+			}),
+			v.object({ kind: v.literal("installation"), installationId: v.id("plugins_workspace_installations") }),
+			v.object({ kind: v.literal("user"), userId: v.id("users") }),
+			v.object({ kind: v.literal("service_account"), serviceAccountId: v.id("access_control_service_accounts") }),
+		),
+		event: v.union(
+			v.object({
+				kind: v.literal("refresh"),
+				reason: v.union(
+					v.literal("permissions"),
+					v.literal("installation"),
+					v.literal("account"),
+					v.literal("members"),
+				),
+			}),
+			v.object({
+				kind: v.literal("member"),
+				member: v.object({
+					hostUserId: v.string(),
+					hostMembershipId: v.union(v.string(), v.null()),
+					membershipLifetime: v.number(),
+					displayName: v.union(v.string(), v.null()),
+					active: v.boolean(),
+					canRead: v.boolean(),
+					canWrite: v.boolean(),
+					isOwner: v.boolean(),
+				}),
+			}),
+			v.object({ kind: v.literal("session_revoked"), hostSessionId: v.string() }),
+			v.object({
+				kind: v.literal("revoked"),
+				reason: v.union(v.literal("uninstalled"), v.literal("workspace_deleted"), v.literal("organization_deleted")),
+			}),
+		),
+	})
+		.index("by_revision", ["revision"])
+		.index("by_createdAt", ["createdAt"]),
+
 	access_control_service_accounts: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
@@ -2934,7 +2930,7 @@ const app_convex_schema = defineSchema({
 		principalKind: v.union(v.literal("role"), v.literal("user"), v.literal("public"), v.literal("service_account")),
 		userId: v.optional(v.id("users")),
 		/**
-		 * Attached external transcript readers must belong to this exact membership lifetime.
+		 * Plugin-managed file readers must belong to this exact membership lifetime.
 		 * A human sharing change removes the tag when it takes over the reader list.
 		 */
 		externalPluginMembershipLifetime: v.optional(v.number()),
@@ -3075,6 +3071,17 @@ const app_convex_schema = defineSchema({
 		.index("by_user_organization_workspace_active", ["userId", "organizationId", "workspaceId", "active"])
 		.index("by_active_organization_workspace_user", ["active", "organizationId", "workspaceId", "userId"])
 		.index("by_active_user_organization_workspace", ["active", "userId", "organizationId", "workspaceId"]),
+
+	organizations_membership_lifetimes: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		membershipId: v.union(v.id("organizations_workspaces_users"), v.null()),
+		lifetime: v.number(),
+		active: v.boolean(),
+	})
+		.index("by_workspace_user", ["workspaceId", "userId"])
+		.index("by_user", ["userId"]),
 
 	quotas: defineTable({
 		quotaName: v.union(

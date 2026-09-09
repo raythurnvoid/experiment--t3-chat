@@ -62,9 +62,6 @@ crons.cron("cleanup old plugin event runs", "30 6 * * *", internal.plugins_runti
 // Once daily at 06:45 UTC — delete expired plugin UI page sessions.
 crons.cron("cleanup expired plugin ui sessions", "45 6 * * *", internal.plugins_ui.cleanup_expired_ui_sessions, {});
 
-// Retry a notification missed while Chitchat was unavailable. Press mutations do not wait for it.
-crons.interval("retry chitchat access notifications", { seconds: 30 }, internal.plugins_chitchat_http.push_access_events, {});
-
 // Once hourly — release plugin-data reservations a crashed producer never released, then delete the
 // retry records, delete tombstones and append receipts, and delete expired service grants.
 //

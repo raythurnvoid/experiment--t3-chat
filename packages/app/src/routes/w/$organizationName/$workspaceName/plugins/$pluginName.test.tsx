@@ -74,6 +74,8 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			list_installations: "plugins.list_installations",
 			list_published_plugins: "plugins.list_published_plugins",
 			get_publisher_plugin: "plugins.get_publisher_plugin",
+			get_plugin_service_registration: "plugins.get_plugin_service_registration",
+			set_plugin_service_registration: "plugins.set_plugin_service_registration",
 			get_installation_health: "plugins.get_installation_health",
 			list_recent_runs: "plugins.list_recent_runs",
 			list_installation_secrets: "plugins.list_installation_secrets",
@@ -878,6 +880,27 @@ describe("RoutePluginsPlugin", () => {
 	afterEach(() => {
 		cleanup();
 		vi.clearAllMocks();
+	});
+
+	test("allows a service registration with no data or Files scopes", async () => {
+		const plugin = published_plugin({ name: "media", canProcessFiles: true });
+		setQueries(plugin, [], publisher_plugin_fixture());
+		const previousQuery = useQueryMock.getMockImplementation()!;
+		useQueryMock.mockImplementation((query: string) =>
+			query === "plugins.get_plugin_service_registration"
+				? { exists: false, scopes: [], updatedAt: null }
+				: previousQuery(query),
+		);
+		mutationMock.mockResolvedValue({ _yay: { exchangeSecret: "pse_example" } });
+		render(<PageComponent />);
+		for (const name of ["plugin_data:read", "plugin_data:write", "files:write"])
+			fireEvent.click(screen.getByRole("checkbox", { name }));
+		fireEvent.click(screen.getByRole("button", { name: "Generate secret" }));
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledWith("plugins.set_plugin_service_registration", {
+			pluginName: "media",
+			scopes: [],
+		}));
+		expect(await screen.findByText("pse_example")).toBeTruthy();
 	});
 
 	test("remounts plugin-local state when any route identity changes", () => {

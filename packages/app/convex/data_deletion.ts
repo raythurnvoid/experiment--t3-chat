@@ -2,7 +2,8 @@ import { v } from "convex/values";
 import { Workpool } from "@convex-dev/workpool";
 import type { RegisteredMutation } from "convex/server";
 import { components, internal } from "./_generated/api.js";
-import { plugins_chitchat_db_record_events, plugins_chitchat_db_record_memberships } from "./plugins_chitchat.ts";
+import { access_control_changes_db_record } from "./access_control_changes.ts";
+import { organizations_membership_lifetimes_db_record } from "./organizations_membership_lifetimes.ts";
 import {
 	internalAction,
 	internalMutation,
@@ -225,7 +226,7 @@ async function db_purge_organization_workspace_content_batch(
 	const workspace = await ctx.db.get("organizations_workspaces", workspaceId);
 	if (workspace?.organizationId === organizationId && workspace.pluginDataPurgeStartedAt === undefined) {
 		await ctx.db.patch("organizations_workspaces", workspace._id, { pluginDataPurgeStartedAt: Date.now() });
-		await plugins_chitchat_db_record_events(ctx, [
+		await access_control_changes_db_record(ctx, [
 			{
 				scope: { kind: "workspace", organizationId, workspaceId },
 				event: { kind: "revoked", reason: "workspace_deleted" },
@@ -1200,7 +1201,7 @@ async function db_queue_organization_deletion_for_owner_account_deletion(
 			),
 	]);
 
-	await plugins_chitchat_db_record_events(ctx, [
+	await access_control_changes_db_record(ctx, [
 		{
 			scope: { kind: "organization", organizationId: args.organization._id },
 			event: { kind: "revoked", reason: "organization_deleted" },
@@ -1271,7 +1272,7 @@ async function db_prepare_user_for_deletion(
 		await ctx.db.patch("users", args.user._id, {
 			deletedAt: args.now,
 		});
-		await plugins_chitchat_db_record_memberships(
+		await organizations_membership_lifetimes_db_record(
 			ctx,
 			memberships.map((membership) => ({ membership, active: false })),
 		);
@@ -1503,7 +1504,7 @@ async function db_drain_user_memberships_batch(
 					updatedAt: args.now,
 				}),
 			]);
-			await plugins_chitchat_db_record_events(ctx, [
+			await access_control_changes_db_record(ctx, [
 				{
 					scope: { kind: "organization", organizationId: organization._id },
 					event: { kind: "refresh", reason: "permissions" },

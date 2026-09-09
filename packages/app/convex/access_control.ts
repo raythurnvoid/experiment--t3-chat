@@ -28,7 +28,8 @@ import { quotas_db_get } from "./quotas.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { server_convex_get_user_fallback_to_anonymous } from "../server/server-utils.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
-import { plugins_chitchat_db_record_events } from "./plugins_chitchat.ts";
+import { access_control_changes_db_record } from "./access_control_changes.ts";
+import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import app_convex_schema from "./schema.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
@@ -489,10 +490,7 @@ async function db_get_user_permission_grant(
 		)
 		.first();
 	if (grant?.externalPluginMembershipLifetime !== undefined) {
-		const membership = await ctx.db
-			.query("plugins_chitchat_memberships")
-			.withIndex("by_workspace_user", (q) => q.eq("workspaceId", args.workspaceId).eq("userId", args.userId))
-			.first();
+		const membership = await organizations_membership_lifetimes_db_get(ctx, args);
 		if (!membership?.active || membership.lifetime !== grant.externalPluginMembershipLifetime) {
 			return null;
 		}
@@ -1258,12 +1256,11 @@ export async function access_control_db_has_permission(
 
 	// A plugin scope closes a door instead of opening one, so this branch answers on its own and
 	// never falls through to the role check below. Falling through would let every member in:
-	// `member` and `viewer` both hold `content.read`, so a private channel would be readable by the
+	// `member` and `viewer` both hold `content.read`, so a private scope would be readable by the
 	// whole workspace and the kind would look like a check while checking nothing.
 	//
 	// The owner short-circuit above still applies. The organization owner reads every scope, which
-	// is a deliberate product decision — see the access-control skill, and the copy Chitchat shows
-	// its members.
+	// is a deliberate product decision — see the access-control skill.
 	if (args.resource.kind === "plugin_scope") {
 		// User principals only. A role grant would put the scope back in reach of everyone holding
 		// that role, and a public grant would open it to anyone with the link. Both are the door this
@@ -2093,7 +2090,7 @@ export const revoke_service_account = mutation({
 		if (account.revokedAt === null) {
 			const now = Date.now();
 			await ctx.db.patch("access_control_service_accounts", account._id, { revokedAt: now, updatedAt: now });
-			await plugins_chitchat_db_record_events(ctx, [
+			await access_control_changes_db_record(ctx, [
 				{
 					scope: { kind: "service_account", serviceAccountId: account._id },
 					event: { kind: "refresh", reason: "account" },
@@ -2655,7 +2652,7 @@ export const update_role = mutation({
 
 		await ctx.db.patch("access_control_roles", role._id, patch);
 		if (args.permissions != null) {
-			await plugins_chitchat_db_record_events(ctx, [
+			await access_control_changes_db_record(ctx, [
 				{
 					scope: { kind: "organization", organizationId: organization._id },
 					event: { kind: "refresh", reason: "permissions" },
@@ -2823,7 +2820,7 @@ export const delete_role = mutation({
 			),
 		);
 		await ctx.db.delete("access_control_roles", role._id);
-		await plugins_chitchat_db_record_events(ctx, [
+		await access_control_changes_db_record(ctx, [
 			{
 				scope: { kind: "organization", organizationId: organization._id },
 				event: { kind: "refresh", reason: "permissions" },
@@ -2957,7 +2954,7 @@ export const set_user_role = mutation({
 			});
 			if (assignment) {
 				await ctx.db.delete("access_control_role_assignments", assignment._id);
-				await plugins_chitchat_db_record_events(ctx, [
+				await access_control_changes_db_record(ctx, [
 					{
 						scope: { kind: "workspace", organizationId: organization._id, workspaceId: args.workspaceId },
 						event: { kind: "refresh", reason: "permissions" },
@@ -3095,7 +3092,7 @@ export const set_user_role = mutation({
 			role: args.role,
 			now: Date.now(),
 		});
-		await plugins_chitchat_db_record_events(ctx, [
+		await access_control_changes_db_record(ctx, [
 			{
 				scope: isDefaultWorkspace
 					? { kind: "organization", organizationId: organization._id }
@@ -3225,7 +3222,7 @@ export const transfer_organization_ownership = mutation({
 			}),
 		]);
 
-		await plugins_chitchat_db_record_events(ctx, [
+		await access_control_changes_db_record(ctx, [
 			{
 				scope: { kind: "organization", organizationId: organization._id },
 				event: { kind: "refresh", reason: "permissions" },

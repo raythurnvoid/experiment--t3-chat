@@ -991,7 +991,7 @@ describe("plugins_validate_manifest", () => {
 		).toEqual({
 			_nay: {
 				message:
-					"The plugin.service.connect capability requires the plugin.data.read or workspace.files.write capability",
+					"The plugin.service.connect capability requires plugin.data.read, workspace.members.read, or workspace.files.write",
 			},
 		});
 		// Outbound fetch is the plugin's own backend calling out, not an outside service acting for it,
@@ -1004,12 +1004,11 @@ describe("plugins_validate_manifest", () => {
 		).toEqual({
 			_nay: {
 				message:
-					"The plugin.service.connect capability requires the plugin.data.read or workspace.files.write capability",
+					"The plugin.service.connect capability requires plugin.data.read, workspace.members.read, or workspace.files.write",
 			},
 		});
-		// Either grantable capability is enough on its own: a service that only files artifacts never
-		// needs the document store, and one that only keeps state never needs to write files.
-		for (const paired of ["plugin.data.read", "workspace.files.write"] as const) {
+		// A service can use members, files, or plugin data on its own.
+		for (const paired of ["plugin.data.read", "workspace.members.read", "workspace.files.write"] as const) {
 			const accepted = plugins_validate_manifest({
 				...manifest_json(),
 				capabilities: ["plugin.service.connect", paired],
@@ -1440,7 +1439,7 @@ describe("plugins_Capability", () => {
 			"plugin.data.write": ["plugin.data.read"],
 			"plugin.data.user-write": ["plugin.data.read"],
 			"workspace.files.create-read-only": ["workspace.files.write"],
-			"plugin.service.connect": ["plugin.data.read", "workspace.files.write"],
+			"plugin.service.connect": ["plugin.data.read", "workspace.members.read", "workspace.files.write"],
 			"workspace.files.own-write": ["workspace.files.write"],
 			"workspace.files.own-access": ["workspace.files.own-write"],
 		} satisfies Partial<Record<plugins_Capability, plugins_Capability[]>>;

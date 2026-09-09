@@ -11,7 +11,8 @@ import {
 import { v } from "convex/values";
 import { exportJWK, importPKCS8, importSPKI, SignJWT } from "jose";
 import { internal } from "./_generated/api.js";
-import { plugins_chitchat_db_record_events, plugins_chitchat_db_record_memberships } from "./plugins_chitchat.ts";
+import { access_control_changes_db_record } from "./access_control_changes.ts";
+import { organizations_membership_lifetimes_db_record } from "./organizations_membership_lifetimes.ts";
 import { type RegisteredMutation } from "convex/server";
 import app_convex_schema from "./schema.ts";
 import { doc } from "convex-helpers/validators";
@@ -333,11 +334,11 @@ async function db_upsert_anagraphic(
 	}
 	if (previous?.displayName !== args.displayName) {
 		const member = await ctx.db
-			.query("plugins_chitchat_memberships")
+			.query("organizations_membership_lifetimes")
 			.withIndex("by_user", (q) => q.eq("userId", args.userId))
 			.first();
 		if (member) {
-			await plugins_chitchat_db_record_events(ctx, [
+			await access_control_changes_db_record(ctx, [
 				{
 					scope: { kind: "user", userId: args.userId },
 					event: { kind: "refresh", reason: "members" },
@@ -792,7 +793,7 @@ export const resolve_user = internalMutation({
 				now,
 			});
 
-			await plugins_chitchat_db_record_memberships(
+			await organizations_membership_lifetimes_db_record(
 				ctx,
 				reactivatedMemberships.map((membership) => ({ membership, active: true })),
 			);

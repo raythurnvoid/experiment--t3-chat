@@ -7,6 +7,11 @@ description: Plugin publishing limits, artifact cleanup, plugin UI pages and fil
 
 Load `../convex/SKILL.md` before changing Convex code. Load `../data-deletion/SKILL.md` before changing plugin-related deletion behavior. Treat module docblocks as the closest implementation-local notes.
 
+Plugin product behavior belongs in its own repository and backend. Press exposes general identity,
+membership, access, and Files contracts. Never add a named product's tables, callbacks, secrets,
+routes, or branches to Press. A missing capability needs a public contract, SDK types, permission
+tests, and proof that an unrelated plugin can use it without another host change.
+
 # Manifest and publishing limits
 
 Validation lives in `plugins_validate_manifest` (`packages/app/shared/plugins.ts`); structural caps sit on the zod schemas, semantic/duplicate/aggregate checks are imperative first-failure loops returning `Result` `_nay` with short literal messages. Publish failures flow through `_nay` so `update_last_publish_attempt` records them — never throw for a limit rejection.
@@ -80,7 +85,7 @@ Several capabilities and manifest fields imply another one, and `plugins_validat
 - `workspace.files.create-read-only` requires `workspace.files.write`. It adds one create-time mode to the sealed upload door; it is not general lock authority.
 - `workspace.files.own-write` requires `workspace.files.write` — it is a narrower door on the same file surface, and keeping the base capability visible keeps the consent honest.
 - `workspace.files.own-access` requires `workspace.files.own-write`. It changes policy on the same labeled nodes that own-write maintains.
-- `plugin.service.connect` requires `plugin.data.read` or `workspace.files.write`. On its own it can obtain no scope, so the grant mint would always refuse it. `outbound.fetch` does not satisfy this: that is the plugin's own backend calling out, not an outside service acting for the plugin.
+- `plugin.service.connect` requires `plugin.data.read`, `workspace.files.write`, or `workspace.members.read`. A service using only identity and members may register with `scopes: []`. This grants no Files or data access. `outbound.fetch` does not satisfy the dependency.
 - `plugin.backend.invoke` and `backend.endpoints` require each other in both directions, like `ui.outbound.fetch` and its origins: the capability needs a `backend` block with at least one endpoint, and declared endpoints need the capability.
 - `userWritableCollections` requires `plugin.data.user-write`: the list narrows the user-write door, so without that door it means nothing.
 
@@ -423,10 +428,10 @@ The hourly `cleanup expired plugin data` cron runs `cleanup_expired_plugin_data`
 
 Plugins write workspace files through host file APIs. The old store-to-file engine was removed in
 the 2026-08 migration. Invoke plugins may use `/api/v1/files/plugin-folders/ensure`, `/api/v1/files/write`,
-`/api/v1/files/plugin-archive`, and `/api/v1/files/plugin-access/set`. Generic sealed services use the
-write and archive doors; ensure and access there remain invoke-only. Chitchat's separate Convex backend
-uses the external own-file bridge under `/api/internal/plugins/files/*`, with sealed grants and the
-current registered service secret. These contracts are separate; see [public API](../public-api/SKILL.md#plugin-file-doors).
+`/api/v1/files/plugin-archive`, and `/api/v1/files/plugin-access/set`. Registered sealed services use
+the same doors with optional writer conditions and their current service secret. General writer
+inspection, generation advance, and reader undo also live under `/api/v1/files/`. See
+[public API](../public-api/SKILL.md#plugin-file-doors) for their contracts and limits.
 
 Chitchat persists a fresh dataset root, exact folder IDs, file IDs, revisions, and writer generations
 in its own database. Its Markdown copies keep the existing inner layout and 100,000-byte part limit.
@@ -434,9 +439,16 @@ Old Files content is left alone. Repeated setup does not adopt a moved or replac
 labels, or restore removed grants. Private setup creates the empty restricted folder before text.
 Existing manual sharing governs later copies after automatic reader sync detaches.
 
-Both invoke writes and the external bridge pin `expectedParentNodeId`. Their final publication checks
+First-time registered writer setup with explicit readers grants its bound account **Can manage**
+on the new private folder. The actor must be allowed to manage service accounts and grant that full
+level on the nearest parent or workspace root. The account must pass parent write and management
+checks too. Creation, restriction, readers, and this exact account grant commit together. Human
+readers keep their requested access. Selecting a writer policy alone creates no grant. Repeated
+setup never restores a removed grant or changes manual sharing; normal Files sharing owns recovery.
+
+Both invoke and conditional service writes pin `expectedParentNodeId`. Their final publication checks
 the exact active parent. A missing, moved, archived, or replaced pinned parent refuses the write.
-The external bridge also checks its own saved root/folder IDs, labels, writer generation, current
+Conditional writes also check saved root/folder IDs, labels, writer generation, current
 authority, file policies, and content/reader revisions. Its receipt commits with the file change.
 
 These file updates are one-way. Chitchat's native database is the source of chat. A message and its
@@ -461,13 +473,17 @@ Worker deployment by themselves.
 
 # Service grant exchange
 
-External typed plugin backends can use the dedicated own-file bridge in
-`plugins_external_files.ts`. See `../public-api/SKILL.md#plugin-file-doors` for its fresh output roots,
-exact write receipts, writer generations, attached membership lifetimes, and manual Files takeover.
-It does not widen Council's generic service file doors or read old Chitchat files into the new database.
+External plugin backends use public service-grant and Files APIs. See
+`../public-api/SKILL.md#plugin-file-doors` for output writers, exact receipts, attached membership
+lifetimes, and manual Files takeover. Ordinary service writes keep their existing limits.
+
+Identity and roster access use `/api/v1/plugins/identity/exchange`, `members/list`, and `access/changes`.
+The installation owns the service connection. A valid page exchange binds its exact registration,
+version, and account. A service secret alone cannot create or refresh that authority. The general
+access ledger and membership lifetime facts belong to Press; product membership remains native.
 
 For reliable background work, send a persisted `requestId` on exchange, renew and seal-processing.
-Recover a lost response through `/api/internal/plugins/service-grants/recover` with the original
+Recover a lost response through `/api/v1/plugins/service-grants/recover` with the original
 bearer and service secret. Only that exact response can be recovered; current registration,
 installation, account, member and resulting token checks still apply. Response credentials are
 encrypted and expire within 24 hours. Deduplication survives expiry so the old request cannot mint
@@ -588,7 +604,7 @@ Git submodule with its own repo (`raythurnvoid/bonobo-plugin-gallery`). `dist/` 
 
 Chitchat is a separate Git repository and Convex project, embedded as one React 19 page in Press. Its own `convex/` schema and functions own channels, private membership, messages/replies, reactions, read states, request receipts, and transcript work. Press keeps identity, tenancy, installation, service accounts, and Files. See the plugin README for its data model, environment values, recovery, build, and release steps.
 
-The frame uses its own authenticated Convex client. The SDK client stays pointed at Press. There is no second login. Press issues a short Chitchat JWT after live membership, plugin-session, version, and account checks. Native access events plus a target 30-second lease replace direct host reads on every message. Permission loss can take that brief window to reach Chitchat; delivered events deny sooner. Failed renewal closes access. Internet is required; keep drafts and exact uncertain request IDs, but do not queue new offline sends.
+The frame uses its own authenticated Convex client. The SDK client stays pointed at Press. There is no second login. Chitchat uses the general public identity exchange and member/change pages. Its server polls access every 30 seconds and pulls before admitting a lease. The signed lease expires within 30 seconds; native expiry jobs also invalidate idle subscriptions. Failed renewal closes access. Internet is required; keep drafts and exact uncertain request IDs, but do not queue new offline sends.
 
 The manifest has no generic store or invoke capability and no backend runner artifact. It declares `plugin.service.connect`, `ui.outbound.fetch`, Files read/write/own-write/own-access, and workspace members read. Its exact HTTPS cloud, HTTPS action, and WSS cloud origins require install consent.
 
@@ -909,7 +925,7 @@ races between route authorization and the durable write.
 - Council 0.2.1 is a plugin-only patch. Published versions are immutable, so a new unused version is required when GitHub HEAD no longer matches the stored 0.2.0 hash. Bump, rebuild, push the plugin repo, update the parent gitlink, and publish that SHA. Do not re-apply D1 `0006`–`0008` or redeploy the Worker unless this patch actually needs them.
 - Council 0.2.2 is the recording-warning patch. It ships the dashboard sentence for a ready meeting whose video was refused as over the host upload cap. Bump, rebuild, push the plugin repo, update the parent gitlink, and publish that SHA. Apply D1 `0009` and deploy the Worker before or with this publish. Do not re-apply `0006`–`0008`.
 - Council 0.2.3 is the custom-domain patch (plugin commit `7496551eacff664d1a9ee832cba42c24f8078498`). The Worker gained the custom domain `https://council.bonobo-senate.com` (`routes` + `workers_dev: true` in `wrangler.jsonc`; the workers.dev host stays up for the provider webhook target). The plugin's `COUNCIL_SERVICE_ORIGIN` and manifest `uiOutboundOrigins` move to that domain, so updating an installation asks to re-accept the UI outbound origin, and the upgrade revokes outstanding service grants as usual. No D1 migration and no Convex change ride along.
-- Council naming convention: the **Council app** is the submodule at `packages/council` (repo `raythurnvoid/bonobo-senate-council`) and the deployed Worker — room UI, page and room APIs, D1, pipeline. The **Council plugin** is `plugins/bonobo-plugin-council`, the dashboard page installed in the host. The word "service" in contract names is frozen host vocabulary: `plugin.service.connect`, service grants, the Worker-side `COUNCIL_SERVICE_EXCHANGE_SECRET` secret, the `/api/internal/plugins/service-grants/*` routes, and `packages/app/convex/plugins_service.ts` keep their names whatever the app is called. The plugin name `council` is a host contract value too (the service registration and initial `plugin-name` metadata use it).
+- Council naming convention: the **Council app** is the submodule at `packages/council` (repo `raythurnvoid/bonobo-senate-council`) and the deployed Worker — room UI, page and room APIs, D1, pipeline. The **Council plugin** is `plugins/bonobo-plugin-council`, the dashboard page installed in the host. The word "service" in contract names is frozen host vocabulary: `plugin.service.connect`, service grants, the Worker-side `COUNCIL_SERVICE_EXCHANGE_SECRET` secret, the `/api/v1/plugins/service-grants/*` routes, and `packages/app/convex/plugins_service.ts` keep their names whatever the app is called. The plugin name `council` is a host contract value too (the service registration and initial `plugin-name` metadata use it).
 - Always run pnpm with `--ignore-workspace` inside `plugins/*` and inside `packages/bonobo-plugin-sdk` — installing through the root workspace pollutes the parent lockfile and produces stale git-dep pins. The two folders need the flag for different reasons. Normally no glob in `pnpm-workspace.yaml` matches `plugins/*`, so a plugin install reaches the root workspace only by walking up to the root `pnpm-workspace.yaml`. **Read that file rather than assuming**: linking the SDK into one plugin for development adds a glob for it, and while that link exists the flag must be dropped for that plugin, because `--ignore-workspace` together with a `workspace:*` dependency is a hard pnpm error. Put the link back to a `github:` pin when the SDK work is done. The SDK is a different case: `packages/*` matches `packages/bonobo-plugin-sdk`, so it really is a member of the root workspace and `pnpm-lock.yaml` carries an importer entry for it. The flag is what keeps an SDK install out of that shared lockfile.
 - Published plugin versions are immutable — never rewrite one; bump to the first unused patch version.
 - Comments in `src/` reach `dist/`, so even a comment-only source change alters the dist hashes and the manifest. Batch cosmetic source fixes with the next real release instead of shipping a version bump for them.

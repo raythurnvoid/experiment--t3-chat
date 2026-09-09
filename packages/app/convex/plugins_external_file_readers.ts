@@ -5,6 +5,7 @@ import { internal } from "./_generated/api.js";
 import { internalMutation, type ActionCtx } from "./_generated/server.js";
 import type { Doc, Id } from "./_generated/dataModel";
 import { access_control_db_can_act_on_file_node } from "./access_control.ts";
+import { organizations_membership_lifetimes_db_get } from "./organizations_membership_lifetimes.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import { files_nodes_db_require_writable } from "./files_nodes.ts";
 import { plugins_external_files_db_replace_readers } from "./plugins_external_files.ts";
@@ -132,6 +133,7 @@ export const rollback = internalMutation({
 				tokenHash: args.tokenHash,
 				serviceSecretHash: args.serviceSecretHash,
 				path: writer.path,
+				allowSealRoot: true,
 			});
 			if (authorized._nay) return authorized;
 			if (presented.installationId !== writer.installationId || presented.destinationPathPrefix !== writer.rootPath)
@@ -198,7 +200,7 @@ export const rollback = internalMutation({
 			writer.generation !== args.writerGeneration ||
 			(receipt && (receipt.writerGeneration !== args.writerGeneration || binding.revision !== receipt.readerRevision))
 		)
-			return Result({ _nay: { name: "stale_write", message: "A newer transcript access change exists" } });
+			return Result({ _nay: { name: "stale_write", message: "A newer file access change exists" } });
 		for (const node of [root, folder]) {
 			if (
 				(await files_metadata_db_read_entry(ctx, {
@@ -227,10 +229,10 @@ export const rollback = internalMutation({
 		if (change) {
 			const readers = [];
 			for (const reader of change.previousReaders) {
-				const membership = await ctx.db
-					.query("plugins_chitchat_memberships")
-					.withIndex("by_workspace_user", (q) => q.eq("workspaceId", writer.workspaceId).eq("userId", reader.userId))
-					.first();
+				const membership = await organizations_membership_lifetimes_db_get(ctx, {
+					workspaceId: writer.workspaceId,
+					userId: reader.userId,
+				});
 				if (membership?.active && membership.lifetime === reader.membershipLifetime) readers.push(reader);
 			}
 			await plugins_external_files_db_replace_readers(ctx, { installation, nodeId: folder._id, readers });
@@ -311,14 +313,21 @@ const body_validator = z
 		(body) => (body.receiptId === undefined) !== (body.originalReaderOperationId === undefined),
 		"Choose one reader operation",
 	);
-export type plugins_external_file_readers_http_rollback_Body = z.infer<typeof body_validator>;
+export type plugins_external_file_readers_http_undo_Body = z.infer<typeof body_validator>;
 
-export async function plugins_external_file_readers_http_rollback(ctx: ActionCtx, request: Request) {
+export async function plugins_external_file_readers_http_undo(ctx: ActionCtx, request: Request) {
 	const token = request.headers.get("Authorization")?.match(/^Bearer (psg_[A-Za-z0-9_-]+)$/)?.[1];
 	const secret = request.headers.get("X-Bonobo-Service-Authorization")?.match(/^Bearer (.+)$/)?.[1];
 	const body = await server_request_json_parse_and_validate(request, body_validator);
 	if (body._nay) return { status: 400, body: { message: body._nay.message } } as const;
 	if (!token || !secret) return { status: 401, body: { message: "Unauthenticated" } } as const;
+
+	const checked = await ctx.runQuery(internal.plugins_external_files.check_public_request, {
+		writerId: body._yay.writerId,
+		receiptId: body._yay.receiptId,
+	});
+	if (checked._nay) return { status: 400, body: { message: checked._nay.message } } as const;
+
 	const result: rollback_Result = await ctx.runMutation(internal.plugins_external_file_readers.rollback, {
 		...body._yay,
 		writerId: body._yay.writerId as Id<"plugins_external_file_writers">,

@@ -15,7 +15,7 @@ import { files_MAX_UPLOADS_BYTES, files_ROOT_ID } from "../server/files.ts";
 import { crypto_random_hex, crypto_sha256_hex } from "../server/crypto-utils.ts";
 import type { plugins_Capability } from "../shared/plugins.ts";
 
-const SEAL_PROCESSING_PATH = "/api/internal/plugins/service-grants/seal-processing";
+const SEAL_PROCESSING_PATH = "/api/v1/plugins/service-grants/seal-processing";
 const CREATE_TARGET_PATH = "/api/v1/files/service-uploads/create-target";
 const REMINT_PATH = "/api/v1/files/service-uploads/remint";
 const FINALIZE_PATH = "/api/v1/files/service-uploads/finalize";
@@ -193,7 +193,7 @@ async function exchange_token(
 	actorUserId = fixture.userId,
 ) {
 	const pageToken = await seed_page_token(t, fixture, actorUserId);
-	const response = await t.fetch("/api/internal/plugins/service-grants/exchange", {
+	const response = await t.fetch("/api/v1/plugins/service-grants/exchange", {
 		method: "POST",
 		headers: service_headers(pageToken),
 		body: JSON.stringify({}),

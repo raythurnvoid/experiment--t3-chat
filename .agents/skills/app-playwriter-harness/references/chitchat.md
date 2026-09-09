@@ -1,6 +1,6 @@
 # Chitchat plugin page
 
-## Current rebuild contract (2026-09-08)
+## Current rebuild contract (2026-09-09)
 
 Chitchat now uses its own Convex backend. Read the current
 `plugins/bonobo-plugin-chitchat/README.md` and verify the installed version before QA.
@@ -14,7 +14,8 @@ An older installed bundle may still use the old backend even when the working tr
   member removal/reinvite, and read-only behavior. Do not sign the user's QA profile in or out.
 - Check ordinary token renewal, a brief disconnect, and a lease that expires while the frame is idle.
   Drafts and uncertain request IDs must stay. New sends must stop without a live lease and socket.
-  Permission changes may take up to the 30-second lease to close native access; delivered events close it sooner.
+  Permission changes may take up to the 30-second lease to close native access. Chitchat polls the
+  public access-change feed; Press does not call a Chitchat callback.
 - Use the new transcript status controls. Read the exact fresh `/chitchat-<generation>` root shown in
   Transcript details. Verify raw Markdown markers, edits, replies, reactions, and rollover bytes there.
   Leave all old `/chitchat` output untouched. Inspect separate channel-copy and README-index status.
@@ -29,6 +30,24 @@ An older installed bundle may still use the old backend even when the working tr
 
 This section states the current source contract. Record actual live evidence separately; it does not
 claim that the new installed frame has passed these checks.
+
+### Public API boundary checks
+
+- The native backend uses `/api/v1/plugins/identity/exchange`, `/api/v1/plugins/members/list`, and
+  `/api/v1/plugins/access/changes`. Its verified lease issuer is `<Press HTTP URL>/plugins-services`
+  and its audience is `bonobo-plugin:chitchat`. Never use the removed private bridge for QA.
+- Service grants and conditional Files writes use the documented public SDK contracts. Press owns
+  folder access and writer proofs. Chitchat owns channel readers, Markdown, paths, and rollover.
+- Test a fresh private folder through Connect Files without manually adding service-account grants.
+  Require the first real Markdown write to finish. A setup test that injects grants can hide a broken
+  private-folder creation path.
+- Keep an edit open while at least 51 new messages move its original row out of the live page.
+  Require the exact draft text to survive, then cancel it and confirm the saved message did not change.
+- A second owned browser tab can leave the plugin frame in the background and stall OOPIF mouse
+  actions. After a timeout, read the state before retrying. Close a finished owned tab before continuing
+  input in the plugin. Do not close user tabs or steal focus to work around it.
+- Use `getLatestLogs` after actions. Page errors are already tracked by Playwriter; `page.getErrors`
+  is not a supported API. The composer has the `combobox` role, not `textbox`.
 
 ### Native permission readbacks
 

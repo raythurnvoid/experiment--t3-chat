@@ -96,6 +96,13 @@ For recoverable auth and permission failures, follow the Convex skill's handler-
 - Do not add defensive `typeof document` / `typeof window` guards in frontend-only modules just to handle hypothetical SSR.
 - Treat `packages/app/shared/` as the default isomorphic boundary; keep shared modules portable across browser and server runtimes.
 
+## Plugin Boundaries
+
+- Plugin product code belongs in the plugin's repository and backend. Press owns identity, tenancy, permissions, installation, and Files.
+- Plugins use supported public APIs. Do not add product-specific tables, routes, environment variables, callbacks, or branches to Press. Moving a special route under `/api/v1` does not make it a public platform contract.
+- When a capability is missing, add a small general API. Define its caller, consent, permissions, limits, retry rules, and SDK types. Prove that an unrelated plugin can use it without another Press change.
+- Boundary changes need independent boundary and security reviews. Preserve current data and pending operations through an audited migration. Remove temporary compatibility code after cutover.
+
 ## Key Technologies
 
 - Convex - Real-time backend, HTTP actions, persistence

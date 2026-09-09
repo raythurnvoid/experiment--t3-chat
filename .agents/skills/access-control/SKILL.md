@@ -29,24 +29,41 @@ Membership says where you are. Access control says what you may do there.
   human/role grants and keeps independent service grants at their stored node.
 - Plugin reader refreshes preserve service-account grants. Editable metadata and plugin names
   never grant authority.
-- New external transcript grants may carry `externalPluginMembershipLifetime`. The human grant
-  lookup accepts that grant only while the matching Press membership lifetime is active. Removing
+- Plugin-managed file grants may carry `externalPluginMembershipLifetime`. The human grant
+  lookup reads `organizations_membership_lifetimes` and accepts that grant only while its lifetime is active. Removing
   and reinviting an account does not restore its old private Files access. A real manual sharing
   change detaches `plugins_external_file_bindings` and clears these tags on remaining grants.
   Account grant edits and uninstall preserve the tags; old untagged grants keep their rules.
-  A role change that removes workspace chat read permission does not remove a separate Files
-  grant while workspace and channel membership remain active. Files grants are allow-only.
+  A role change that removes workspace content access does not remove a separate Files
+  grant while workspace membership remains active and the file grant still exists. Files grants are allow-only.
   An attached external binding with 50 tagged human readers reserves one additional slot for its
   own live installation account. Normal Files management and grant ceilings still apply. Other
   accounts and a 51st human stay refused. Manual detachment restores the normal cap and keeps
   existing grants; it does not remove an account that was already granted access.
-  If a native private change cannot commit after its Files readers were applied, the dedicated
-  `rollback-readers` door may restore the journaled previous readers without the lost sponsor ACL.
+  If an external service cannot commit after its Files readers were applied, public
+  `/api/v1/files/plugin-access/undo` may restore the saved previous readers without the lost sponsor ACL.
   It requires the original reader receipt or operation ID and bearer proof, plus live
   installation/version/account/service checks. Restoring applied readers checks the exact attached
   revision and writer generation. An unapplied operation may be cancelled without changing readers.
   Only current membership lifetimes are restored. Manual or newer sharing is never overwritten,
   and account grants stay independent.
+
+## Access changes for external services
+
+`access_control_changes.ts` owns the ordered access ledger and its head. Role changes, ownership
+transfer, service account changes, member changes, session revocation, installation changes, and
+tenant deletion append scoped facts in the same transaction as their source writes. Calls from one
+mutation must be sequential so they share one ordered counter. Press has no named plugin consumer
+or remote wait in this path.
+
+The public member and access-change APIs use `plugins_service_connections`. A live connection needs
+the exact registration, installation version, service account, and accepted member capability.
+An old or removed connection gets control events only. Another plugin's secret never authenticates
+that connection. A valid page identity exchange is the only way to update its pins.
+
+Plugin backends apply these facts and enforce their own access lease, which lasts at most 30 seconds.
+They own their private groups and live queries. Press owns workspace membership, Files grants,
+and `organizations_membership_lifetimes`. See [external plugin identity](../auth-system/SKILL.md#identity-for-external-plugin-backends).
 
 ## Service accounts
 
@@ -377,7 +394,8 @@ and sharing only ever writes grants on a restricted node, so that lookup misses 
 reads every private channel and every private direct message in the workspace, with no grant and no
 audit trail, and no revocation can take it away. That is deliberate — it mirrors the file rule rather
 than inventing a second one — but a plugin whose UI says "private" has to say this too, or the feature
-is a disclosure. The Chitchat plugin's own copy is the worked example.
+is a disclosure. This rule concerns Press plugin-store scopes. A plugin's separate database owns
+its own group rules and must document them in that plugin's repository.
 
 The consequence that matters most: **inside a restricted subtree a role's permissions grant
 nothing.** `has_restricted_file_permission` consults user grants, public
@@ -748,16 +766,11 @@ Be explicit about this when planning work; do not assume the subsystem is comple
   there. `files_nodes_db_create_node_recursively_at_path` answers `"This file already exists."`, and
   the public write route answers `"Permission denied"`. Neither hands over the name, the content or
   the author, and hiding it would need two nodes on one path. Accepted, not overlooked.
-- **`/chitchat/private` used to be the worst case; the digest suffix blunted it.** Every private
-  Chitchat channel folder hangs off one well-known, plugin-locked parent (`<chitchat root>/private`),
-  and the refusal strings still differ by case (`create_folder_node` on an existing unreadable child
-  answers `"Permission denied"`, a free name answers `"This item is read-only."` from the plugin
-  folder lock). But since Chitchat 0.6.0 each channel folder is named
-  `<slug>-<digest8(channelKey)>`, and the channel key is an unguessable client UUID, so a probe
-  cannot confirm a guessed channel name — the guess would have to include the digest. The channel
-  names are the secret being protected; if the two-answer split ever matters, collapse those answers
-  the way `create_upload_nodes` collapses its skips into `"conflict"`. Known and accepted; the tree
-  itself lists no channel folder to a non-member.
+- **Plugin-owned private paths have the same name-probing risk.** Under a locked parent,
+  `create_folder_node` can answer `"Permission denied"` for an unreadable existing child and
+  `"This item is read-only."` for a free name. Plugin authors should avoid guessable private paths.
+  Their folder layout belongs in their repository; Press does not recognize their private groups.
+  If the different answers become a product concern, collapse them as `create_upload_nodes` does.
 - **The folder import widens that oracle's budget, on purpose.** `files_nodes.create_upload_nodes`
   reports per-item skips, and a skip is the same class of probe. The payload never says why: a
   permission refusal and a user-chosen skip both answer the one literal `"conflict"`. Each item is
