@@ -49,6 +49,24 @@ claim that the new installed frame has passed these checks.
 - Use `getLatestLogs` after actions. Page errors are already tracked by Playwriter; `page.getErrors`
   is not a supported API. The composer has the `combobox` role, not `textbox`.
 
+### Lease renewal traffic
+
+- Use an installed frame in a workspace that has Chitchat enabled. Read the installation first;
+  a remembered `personal/home` route may belong to another account and have no Chitchat page.
+- Follow the troubleshooting skill to capture bounded native Convex JSONL logs. Observe at least
+  three ordinary `/auth/lease` responses in the browser, saving only time and status. Keep tokens
+  and complete request or response bodies out of logs.
+- For each `POST /auth/lease` completion, group native log entries by `requestId`. A ready
+  installation at the signed required revision should call `ensure_installation`, `get_installation`
+  and `admit_lease`, with no `access:sync` child. First setup and newer revisions still need sync.
+- Check separate `access:sync` completions with `caller: "Scheduler"` during the same window.
+  Those polls must continue. A shortcut in the shared sync action can silently stop revocation.
+- Keep a local draft through the observed renewals, then clear it without sending. Assert the same
+  textarea remains mounted, its draft stays, and Send becomes available after each renewal.
+- The route regression in `convex/http.test.ts` runs 50 test sessions through four renewals with
+  signed test JWTs and mocked host replies. This proves request counts and refusal handling. It is
+  not a live browser load test or a measurement of the real Press rate limiter.
+
 ### Reader recovery across an update
 
 - Use an owned private channel with a readable Files copy and a second workspace member. Save its
