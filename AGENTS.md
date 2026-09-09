@@ -1368,8 +1368,18 @@ Remove-Item Env:GH_TOKEN
 
 # Git commit messages
 
-Do not use Conventional Commits. Never start a commit subject with a type prefix such as `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:`, `perf:`, `style:`, `build:`, or `ci:`, and do not add a scope in parentheses.
+A commit message must start with one short, clear, lowercase line using simple words. Say what changed.
 
-- Write the subject as a plain short sentence that says what the commit does, for example `restore app-command guidance the shell swallowed`.
-- Keep the subject short and simple. Explain the why and the details in the body.
-- The same rule applies to pull request titles.
+- Use only that line by default.
+- Do not use tags, type prefixes such as `feat:`, `fix:`, or `style:`, or scopes in parentheses. Do not use Conventional Commits.
+- When a commit includes several changes, an optional bullet list may follow after one blank line. Keep each bullet short, clear, and lowercase, using simple words.
+- Pull request titles must follow the same rule as the first line of a commit message.
+
+Example with an optional list:
+
+```text
+improve plugin setup
+
+- group plugin tables
+- clarify field names
+```
