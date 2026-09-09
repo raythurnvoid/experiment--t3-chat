@@ -49,6 +49,29 @@ claim that the new installed frame has passed these checks.
 - Use `getLatestLogs` after actions. Page errors are already tracked by Playwriter; `page.getErrors`
   is not a supported API. The composer has the `combobox` role, not `textbox`.
 
+### Reader recovery across an update
+
+- Use an owned private channel with a readable Files copy and a second workspace member. Save its
+  folder policy, destination IDs, reader revision, and current file hash before changing anything.
+- Set only that channel folder to Read-only through the normal Files policy mutation. Remove the
+  second member through People. Require a saved pending change and a blocked reader job.
+- Update the existing installation in place. Restore the exact folder policy, then use Reconnect
+  Files. Confirm that the saved grant's request ID and update time changed; a button click alone
+  does not prove an exchange happened. Never log grant secrets.
+- A prior refusal can delay the next reader attempt by up to 30 seconds. Require the same pending
+  change to complete with a host receipt, the reader run to drain, and the same destination, root,
+  folder, writer, and transcript file IDs to remain. Read the actual Files copy and prove the removed
+  member cannot read it or the native private channel.
+- Normal login renewal can leave Files buttons enabled while a request is briefly unavailable.
+  Connect, Retry sync, and Rebuild copies must show the reconnect alert if that happens. For a
+  deterministic check, delay only the owned frame's next `/auth/lease` fetch, activate a Files
+  button normally, inspect its alert, then release the fetch and retry. A temporary fetch wrapper
+  must preserve the native receiver and be restored in `finally`, with a short automatic release.
+  Read the OOPIF route hazards before using network interception. Do not change the user's shared
+  browser network state.
+- Run the full plugin tests after the final build. Its manifest test reads both manifests and the
+  built assets; running it while a build changes those files can report a false mismatch.
+
 ### Native permission readbacks
 
 Verified with the published 0.8.1 frame on 2026-09-08:

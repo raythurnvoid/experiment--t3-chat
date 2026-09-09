@@ -620,12 +620,14 @@ Ordinary lease renewal must keep open menus, mention choices, dialogs, and trans
 The native `use_chat_query` keeps one bounded result only during a verified token swap, keyed by
 query, arguments, account, installation, generation, and membership lifetime. Real denial, expiry,
 and a changed key clear it. Send and permission checks still require current authority.
+Files actions show a short reconnect alert when renewal blocks a request. Failed attempts keep
+their request IDs; only confirmed success clears them.
 
 Attachment links request `download: true` from the existing Files URL route and use a normal
 download anchor without opening a popup. Expired links must offer refresh before navigation can
 replace the chat frame. File access and signed URL lifetime checks remain in Press.
 
-A fresh dataset uses a new `/chitchat-<generation>` Files root. Old Files and store data are left alone. Keep the existing inner layout, Markdown markers, UTC times, author snapshots, reply indentation, and 100,000-byte rollover. Durable ordered transcript jobs publish through the external Files bridge. Current account/actor access, labels, locks, pinned paths and IDs, content revision, writer generation, and operation receipts are checked at publication. Explicit rebuild replaces manual edits only after its UI confirmation.
+A fresh dataset uses a new `/chitchat-<generation>` Files root. Old Files and store data are left alone. Keep the existing inner layout, Markdown markers, UTC times, author snapshots, reply indentation, and 100,000-byte rollover. Durable ordered transcript jobs publish through public Files writer APIs. Current account/actor access, labels, locks, pinned paths and IDs, content revision, writer generation, and operation receipts are checked at publication. Explicit rebuild replaces manual edits only after its UI confirmation.
 
 Once Files setup has started, private reader changes wait for its acknowledgement and use recorded compensation if the native change cannot complete. Before any Files connection exists, they may complete locally. An uncertain reader call is either rolled back by its saved receipt or cancelled under its original operation ID before a late apply can land. Current file policies still apply. Real Files sharing changes detach automatic readers. Membership lifetime tags stop removal/reinvite from restoring old grants. Uninstall retires writer authority and leaves output and sharing intact. The owning host contracts are in the auth, access-control, Files, and public-api skills.
 
@@ -644,6 +646,33 @@ sponsor may already have lost permission. A channel that never started Files set
 Live QA must use the installed frame and read back stored chat and raw transcript text. Unit mocks cannot prove CSP, lease refresh, Markdown marker survival, or cross-backend permissions. Publish the exact reviewed commit, update the installation, and verify served version and bytes before committing the parent gitlink.
 
 # Releases
+
+Chitchat 0.8.8 completes the public API boundary correction on 2026-09-09. Press implementation
+commit `1c3de8c60ac413779fb668b895aeaa34fa124153` removes the product-specific runtime and keeps
+general identity, member, access-change, service-grant, and Files writer contracts. The compatible
+backfill, full hash audits, consumer switch, old-route removal, and strict schema deployment all
+finished. Existing chat data, active Files, and pending reader operations were preserved.
+
+SDK 0.20.5 mirror `c004e90d8ec9f91e25c25494d287da7198485870` has the exact same tree as the
+reviewed Press SDK. Native boundary commit `140d62bb884a237e6db8ce5e55daa6ebb0ee19d2` shipped as
+0.8.7. Final plugin commit `21bb287ff3d3d5fd49ab0887cb22f445eae6d1db` adds reconnect feedback and
+ships as 0.8.8, version doc `hn7kmj07gpgzvknwse8snc62298e3fah`. All four enabled installations
+were updated in place. Their IDs and service accounts stayed the same. The final root checkpoint
+adds this release record and the two verified gitlinks.
+
+Council source commit `6c4550f5c5837d597d764dc9021564b79669882d` uses the public grant URLs.
+Live Worker version `75bf2df6-abe4-420e-a476-87a379c26930` changes only those URLs from its prior
+live source; room assets and settings stayed unchanged. Unrelated undeployed checkout changes
+were excluded from that Worker release.
+
+Final checks passed: Press lint, generated SDK checks, and 6,420 tests; SDK typecheck and 48 tests;
+Chitchat typecheck and 298 tests; Council typecheck and 657 tests. Both plugin builds had equal
+hashes, and both users received the exact published assets. Independent boundary, permission,
+correctness, and separate uniformity reviews passed. Live checks covered renewed login, retained
+edits through 51 new roots, bounded history, private access loss, real Markdown copies, manual
+sharing, and a pending reader change recovered across an update with the same saved request.
+The installed reconnect alert was tested during a delayed login refresh. Public, private, and
+ten-part rollover copies reached ready after reconnect; manual sharing stayed detached.
 
 Chitchat 0.8.6 shipped the review fixes on 2026-09-09. Plugin commit
 `72fc8d68ed1f4a8eca7c809fa9eead2edd4929e7`, version doc
