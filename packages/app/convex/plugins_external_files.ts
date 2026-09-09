@@ -408,7 +408,7 @@ export const change_scope = internalMutation({
 			...args,
 			path,
 			allowSealRoot: true,
-			archivedNodeId: existing?.operation === "archive" ? existing.nodeId : undefined,
+			exactNodeId: args.change.kind === "archive" ? args.change.nodeId : undefined,
 		});
 		if (facts._nay) return facts;
 		if (
@@ -433,6 +433,15 @@ export const change_scope = internalMutation({
 			(folder.archiveOperationId !== null && existing?.operation !== "archive")
 		) {
 			return Result({ _nay: { name: "stale_write", message: "The output folder changed" } });
+		}
+		if (args.change.kind === "archive") {
+			const node = facts._yay.node;
+			if (
+				!node ||
+				node._id === writer.rootNodeId ||
+				(node.kind === "file" ? node.parentId !== folder._id : node._id !== folder._id)
+			)
+				return Result({ _nay: { name: "stale_write", message: "The transcript file changed" } });
 		}
 		const fingerprint = JSON.stringify([args.writerGeneration, args.change]);
 		if (existing)
@@ -492,10 +501,7 @@ export const change_scope = internalMutation({
 				updatedAt: Date.now(),
 			});
 		} else {
-			const node = facts._yay.node;
-			if (!node || node._id !== args.change.nodeId || node._id === writer.rootNodeId) {
-				return Result({ _nay: { name: "stale_write", message: "The transcript file changed" } });
-			}
+			const node = facts._yay.node!;
 			if (
 				args.change.expectedContentRevision !== undefined &&
 				(await plugins_external_files_db_content_revision(ctx, node)) !== args.change.expectedContentRevision
@@ -551,16 +557,18 @@ export const change_scope = internalMutation({
 				if (writable._nay) return writable;
 			}
 			nodeId = node._id;
-			await files_nodes_db_archive_nodes(ctx, {
-				nodeIds: [
-					nodeId,
-					...descendants
-						.filter((descendant) => descendant.archiveOperationId === null)
-						.map((descendant) => descendant._id),
-				],
-				updatedBy: facts._yay.serviceGrant.actorUserId,
-				now: Date.now(),
-			});
+			// An earlier Files archive already did the work. Keep its identity and dates.
+			if (node.archiveOperationId === null)
+				await files_nodes_db_archive_nodes(ctx, {
+					nodeIds: [
+						nodeId,
+						...descendants
+							.filter((descendant) => descendant.archiveOperationId === null)
+							.map((descendant) => descendant._id),
+					],
+					updatedBy: facts._yay.serviceGrant.actorUserId,
+					now: Date.now(),
+				});
 		}
 		const id = await ctx.db.insert("plugins_external_file_receipts", {
 			organizationId: writer.organizationId,

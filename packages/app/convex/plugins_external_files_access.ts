@@ -33,7 +33,7 @@ export async function plugins_external_files_db_authorize(
 		serviceSecretHash: string;
 		path: string;
 		allowSealRoot?: boolean;
-		archivedNodeId?: Id<"files_nodes">;
+		exactNodeId?: Id<"files_nodes">;
 		recoverEmptySetup?: { datasetGeneration: string; channelId: string; rootPath: string };
 	},
 ) {
@@ -106,18 +106,15 @@ export async function plugins_external_files_db_authorize(
 	if (!membership) return Result({ _nay: { message: "Permission denied" } });
 
 	const scope = { organizationId: grant.organizationId, workspaceId: grant.workspaceId };
-	let node = await plugins_external_files_db_get_node(ctx, { ...scope, path: args.path });
-	if (!node && args.archivedNodeId) {
-		const archived = await ctx.db.get("files_nodes", args.archivedNodeId);
-		if (
-			archived &&
-			archived.organizationId === grant.organizationId &&
-			archived.workspaceId === grant.workspaceId &&
-			archived.path === args.path &&
-			archived.archiveOperationId !== null
-		)
-			node = archived;
-	}
+	// Archive uses the saved node, even when another active item now uses its old path.
+	const node = args.exactNodeId
+		? await ctx.db.get("files_nodes", args.exactNodeId)
+		: await plugins_external_files_db_get_node(ctx, { ...scope, path: args.path });
+	if (
+		node &&
+		(node.organizationId !== grant.organizationId || node.workspaceId !== grant.workspaceId || node.path !== args.path)
+	)
+		return Result({ _nay: { message: "Permission denied" } });
 	let parentPath = server_path_parent_of(args.path);
 	let parentNode: Doc<"files_nodes"> | null = null;
 	while (parentPath !== "/") {

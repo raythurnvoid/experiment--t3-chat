@@ -3,10 +3,12 @@ import type { RegisteredMutation } from "convex/server";
 import { z } from "zod";
 import { internal } from "./_generated/api.js";
 import { internalMutation, type ActionCtx } from "./_generated/server.js";
-import type { Id } from "./_generated/dataModel";
+import type { Doc, Id } from "./_generated/dataModel";
+import { access_control_db_can_act_on_file_node } from "./access_control.ts";
 import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import { files_nodes_db_require_writable } from "./files_nodes.ts";
 import { plugins_external_files_db_replace_readers } from "./plugins_external_files.ts";
+import { plugins_external_files_db_authorize } from "./plugins_external_files_access.ts";
 import { plugins_db_get_live_service_account } from "./plugins_service_accounts.ts";
 import { rate_limiter_http_client_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import { crypto_sha256_hex, crypto_timing_safe_equal } from "../server/crypto-utils.ts";
@@ -109,17 +111,34 @@ export const rollback = internalMutation({
 					grant.destinationPathPrefix !== writer.rootPath))
 		)
 			return Result({ _nay: { name: "reader_proof_mismatch", message: "Unauthenticated" } });
-		if (
-			installation.pluginVersionId !== proof.pluginVersionId ||
-			installation.serviceAccountId !== proof.serviceAccountId
-		)
-			return Result({ _nay: { message: "Unauthenticated" } });
 		// An old bearer proves only this undo. It cannot authorize new Files work.
-		if (
-			!crypto_timing_safe_equal(proof.tokenHash, args.tokenHash) &&
-			!(grant && crypto_timing_safe_equal(grant.tokenHash, args.tokenHash))
-		)
-			return Result({ _nay: { name: "reader_proof_mismatch", message: "Unauthenticated" } });
+		const matchesProof =
+			crypto_timing_safe_equal(proof.tokenHash, args.tokenHash) ||
+			Boolean(grant && crypto_timing_safe_equal(grant.tokenHash, args.tokenHash));
+		const currentProof =
+			installation.pluginVersionId === proof.pluginVersionId &&
+			installation.serviceAccountId === proof.serviceAccountId;
+		let recoveryGrant: Doc<"plugin_service_grants"> | null = null;
+		if (!matchesProof || !currentProof) {
+			if (matchesProof) return Result({ _nay: { name: "reader_proof_mismatch", message: "Unauthenticated" } });
+			const presented = await ctx.db
+				.query("plugin_service_grants")
+				.withIndex("by_tokenHash", (q) => q.eq("tokenHash", args.tokenHash))
+				.first();
+			if (!presented) return Result({ _nay: { name: "reader_proof_mismatch", message: "Unauthenticated" } });
+			// After an upgrade or rebind, recovery needs current authority for this exact destination.
+			const authorized = await plugins_external_files_db_authorize(ctx, {
+				grantId: presented._id,
+				tokenHash: args.tokenHash,
+				serviceSecretHash: args.serviceSecretHash,
+				path: writer.path,
+			});
+			if (authorized._nay) return authorized;
+			if (presented.installationId !== writer.installationId || presented.destinationPathPrefix !== writer.rootPath)
+				return Result({ _nay: { message: "Permission denied" } });
+			recoveryGrant = presented;
+		}
+		const authority = recoveryGrant ?? proof;
 		const rateLimit = await rate_limiter_limit_by_key(ctx, {
 			name: "public_api_principal",
 			key: `${installation._id}:rollback-readers`,
@@ -164,6 +183,18 @@ export const rollback = internalMutation({
 		if (binding.detachedAt !== null)
 			return Result({ _yay: { _id: null, readerRevision: binding.revision, detached: true, restored: false } });
 		if (
+			recoveryGrant &&
+			!(await access_control_db_can_act_on_file_node(ctx, {
+				organizationId: writer.organizationId,
+				workspaceId: writer.workspaceId,
+				userId: recoveryGrant.actorUserId,
+				serviceAccountId: recoveryGrant.serviceAccountId,
+				fileNode: folder,
+				permission: "content.permissions.manage",
+			}))
+		)
+			return Result({ _nay: { message: "Permission denied" } });
+		if (
 			writer.generation !== args.writerGeneration ||
 			(receipt && (receipt.writerGeneration !== args.writerGeneration || binding.revision !== receipt.readerRevision))
 		)
@@ -183,8 +214,8 @@ export const rollback = internalMutation({
 			organizationId: writer.organizationId,
 			workspaceId: writer.workspaceId,
 			writeContext: {
-				writer: { kind: "service_account", serviceAccountId: proof.serviceAccountId },
-				actorUserId: proof.actorUserId,
+				writer: { kind: "service_account", serviceAccountId: authority.serviceAccountId },
+				actorUserId: authority.actorUserId,
 				resourceScope: { kind: "node", nodeId: folder._id },
 				policyReach: "ancestors",
 			},

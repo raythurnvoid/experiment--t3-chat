@@ -183,6 +183,11 @@ idempotent success. Management stays separate from effective content write acces
   If the original HTTP result was lost, the worker can name the original operation ID. An unapplied
   operation is cancelled with a durable receipt before success is returned; late reader calls refuse.
   This cancellation changes no sharing and requires a recognized sealed grant for the pinned root.
+  After an upgrade or account rebind, an old proof cannot authorize the undo. A current sealed
+  grant for the same installation and exact root may recover that recorded operation. The current
+  actor and account need Files write and sharing-management access. Current labels, policies,
+  membership lifetimes, writer generation, and reader revision still apply. A detached binding is
+  acknowledged without changing sharing. No old credential grants new authority.
 - Eager-created cleanup checks the proposer's current policy access on the file and every created
   ancestor before deleting any node. If one refuses, remove pending docs but keep the committed tree.
   The existing untouched-node checks still apply. Bash `/tmp` stays writable; copy-out stays allowed.

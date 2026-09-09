@@ -594,6 +594,12 @@ The manifest has no generic store or invoke capability and no backend runner art
 
 Use bounded indexed queries for channels, history, per-thread replies, and overview pages. Keep truthful reply summaries and unread counts. No generic document-key parsers, whole-channel companion scans, or timestamp change-feed workarounds remain. Private channel controls distinguish read, write, and manage access. The organization owner can read private channels; lists only show joined private channels.
 
+One open edit per pane may stay mounted outside its bounded history window. Its draft keeps the
+revision and mentions from when Edit opened. A newer live message cannot change that expected
+revision. Actual access loss clears the protected edit. Covered root logs do not mark messages
+read. Private replies advance only from a visible thread's own read position. The channel reply
+position advances through replies covered by their thread positions in bounded transactions.
+
 Ordinary lease renewal must keep open menus, mention choices, dialogs, and transcript details stable.
 The native `use_chat_query` keeps one bounded result only during a verified token swap, keyed by
 query, arguments, account, installation, generation, and membership lifetime. Real denial, expiry,
@@ -606,6 +612,15 @@ replace the chat frame. File access and signed URL lifetime checks remain in Pre
 A fresh dataset uses a new `/chitchat-<generation>` Files root. Old Files and store data are left alone. Keep the existing inner layout, Markdown markers, UTC times, author snapshots, reply indentation, and 100,000-byte rollover. Durable ordered transcript jobs publish through the external Files bridge. Current account/actor access, labels, locks, pinned paths and IDs, content revision, writer generation, and operation receipts are checked at publication. Explicit rebuild replaces manual edits only after its UI confirmation.
 
 Once Files setup has started, private reader changes wait for its acknowledgement and use recorded compensation if the native change cannot complete. Before any Files connection exists, they may complete locally. An uncertain reader call is either rolled back by its saved receipt or cancelled under its original operation ID before a late apply can land. Current file policies still apply. Real Files sharing changes detach automatic readers. Membership lifetime tags stop removal/reinvite from restoring old grants. Uninstall retires writer authority and leaves output and sharing intact. The owning host contracts are in the auth, access-control, Files, and public-api skills.
+
+After an upgrade, recovery of a saved reader operation can use a new sealed grant for the same
+installation and exact root, with current Files write and sharing-management access. Old credentials
+cannot authorize new work. Private deletion removes access first, finishes transcript copies through
+its fixed deletion sequence, then archives exact saved transcript files with durable progress.
+It keeps the container and unrelated files in Files. Blocked deletion stays available in a restricted
+recovery view for the current owner or the same-lifetime original delete actor. Deleted messages
+stay inaccessible. Rebuild is unavailable once file archiving begins; Retry and Reconnect still
+enforce current Files permissions. Manual sharing stops automatic archive.
 
 Live QA must use the installed frame and read back stored chat and raw transcript text. Unit mocks cannot prove CSP, lease refresh, Markdown marker survival, or cross-backend permissions. Publish the exact reviewed commit, update the installation, and verify served version and bytes before committing the parent gitlink.
 

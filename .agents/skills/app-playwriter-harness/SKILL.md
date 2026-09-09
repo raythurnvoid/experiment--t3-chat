@@ -22,7 +22,7 @@ Run this section again after a context compaction or when resuming an old conver
 vp env exec pnpx playwriter skill
 ```
 
-2. List connected browsers, copy the exact reported key for the browser that exposes the target app tab, and create an isolated session from the repo root:
+2. List connected browsers, copy the exact reported key for the browser that exposes the target app tab, and create an isolated session from the task's personal `+ai` folder. Run later CLI calls from that folder too, so generated scratch files stay outside the repository. Load repo helpers with absolute `-f` paths as shown in step 3:
 
 ```powershell
 vp env exec pnpx playwriter browser list
