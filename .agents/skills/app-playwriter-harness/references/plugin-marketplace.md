@@ -470,7 +470,11 @@ click provably does nothing, not before.
   only the title, the status label, and the action buttons (`Details` adds artifact `fileNodeId`s, still
   not the meeting id). To bind a row to an id, capture the `/api/meetings/list` response with a host-page
   `state.page.on("response")` listener and keep only `{id, title, status}` — that response also carries
-  fields you must not store. Then match the row by its title. Verified 2026-08-16.
+  fields you must not store. Then match the row by its title. Verified 2026-08-16. The `create` response
+  goes through the same listener, but its `res.json()` resolves after a short runner has already
+  returned, so a `state.created` filled from it can still be empty when the next runner reads it. Take
+  the new id from the next `/api/meetings/list` body instead; the created row is in it within one poll
+  (verified 2026-09-09).
   Details lists each artifact as `name` plus a `.meeting-artifact-id` span whose text is ` · <fileNodeId>`.
   Strip the leading `·` and spaces before using that text as `?nodeId=`. Passing the raw span text
   navigates to `?nodeId=root` instead of the file. Verified 2026-08-16.
@@ -540,12 +544,20 @@ click provably does nothing, not before.
   leave the active tree together and a member can restore them. Their bytes stay charged, and the R2
   objects stay — that is the archive working, not failed QA cleanup.
 - A create failure renders only as a `role="alert"` inside the frame with the Worker's generic message.
-  `Failed to reserve storage for the meeting` (HTTP 502) wraps ANY non-auth Convex `plugin-data/reserve`
-  refusal: `convex_post` in `packages/council/src/convex-api.ts` collapses every non-401/403/404/409/429
-  status to `refused`, the route maps that to 502, and neither side logs the underlying reason —
-  `wrangler tail` shows `logs: []` and `convex logs` shows nothing. Diagnose by reading the reserve args in
-  `routes-page.ts` against the caps in `packages/app/convex/plugins_data.ts` (`MAX_RESERVATION_TTL_MS`,
-  `MAX_VALUE_BYTES`, name rules) instead of retrying.
+  Since the plugin-data cleanup Worker, create books no storage: it checks the member's live write
+  permission first (403 `You do not have permission to create meetings in this workspace...` for a
+  `viewer`; 503 `Council is reloading its credentials` inside the cached minute after a Worker secret
+  rotation; 502 `Council could not check your access` when `verify-live` itself failed; 401 `Council is
+  not authorized for this workspace` when the host refused the grant or the plugin), then seals the
+  processing grant (502 `Council could not prepare storage for this meeting`), then creates the provider
+  meeting. Open, the host room link, close, and delete answer the same `viewer` case with 403 and
+  `You do not have permission to open/host/close/delete meetings in this workspace...`; every other
+  grant refusal on those routes stays 409 `The meeting's authority is no longer live`. `convex_post` in `packages/council/src/convex-api.ts` collapses every non-401/402/403/404/409/429
+  status to `refused` and neither side logs the underlying reason — `wrangler tail` shows `logs: []` and
+  `convex logs` shows nothing — so diagnose a 502 by replaying the seal against the host rules in
+  `plugins_service.ts` (installation enabled, same version, `plugin.service.connect` accepted,
+  `content.write`) instead of retrying. The old `Failed to reserve storage for the meeting` message
+  belonged to the removed `plugin-data/reserve` call and cannot appear any more.
 
 ## Colleague recording on the live Worker
 
@@ -596,9 +608,10 @@ fake-audio scratch-Chrome loop above.
   not a Files destination.
 - **Meeting note Files tree (no Join).** The Council Worker writes each meeting's note to
   `/meetings/<meetingId>/meeting.md` through its sealed service grant on `/api/v1/files/write` —
-  the host copies nothing any more. The 2026-08 data erase removed every old note, and the Worker
-  rebuilds them only after its pending redeploy (D1 `0010` resets `file_projection_revision` to 0
-  so every meeting rebuilds); until then absent notes are expected. To check: open
+  the host copies nothing any more. The Worker writes the note at create and on every later state
+  change, and its `*/15` sweep retries a note that is behind (D1 `meetings.note_written_revision <
+  note_revision` since migration `0011`; the columns were named `file_projection_*` before). To
+  check: open
   `/w/personal/home/files?nodeId=root` in an owned tab. Root shows
   `meetings, contains read-only items` (not `meetings, read-only`). `Add file` / `Add folder` on
   that row stay enabled; the same actions on `chitchat, read-only` stay disabled. Expand
