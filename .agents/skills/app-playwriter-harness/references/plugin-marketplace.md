@@ -425,8 +425,16 @@ click provably does nothing, not before.
   the CLI timeout (it does not always reject). Copy with a host-page textarea and
   `document.execCommand("copy")`. Scratch Chrome only *reads* the clipboard, on the Worker origin.
   Verified 2026-08-27.
+- Clicks inside the Council frame time out at the 5 s CLI budget when the QA tab is not the front
+  tab (seen 2026-09-10: the create click hung at "performing click action" and `state.out` stayed
+  null). Call `await state.page.bringToFront()` first, and run the fill-and-click chain detached
+  (an async IIFE that writes `state.out` and `state.done`, not awaited by the runner), then poll
+  `state.out` with a second runner. The same shape works for the two-step delete below.
 - Delete is a two-step inline confirm: `Delete` renders a `Confirm delete` / `Cancel` panel below the
-  row while the original `Delete` button stays in place, so scope the second click by exact name. After
+  row while the original `Delete` button stays in place, so scope the second click by exact name. The
+  row's `Delete` button carries `aria-label="Delete <title>"`, so `getByRole("button", { name: /^Delete$/ })`
+  matches nothing and times out; locate the first click with `/^Delete/` (or the full `Delete <title>`)
+  and the second with `Confirm delete` (verified 2026-09-09). After
   confirming, a body-text check can race the follow-up
   `meetings/list` refresh — re-read the list a moment later before asserting the row survived. A
   no-recording meeting settles `Created → Open → Ready` within ~10 seconds of Close and writes no
