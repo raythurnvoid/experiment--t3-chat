@@ -1810,115 +1810,148 @@ describe("r2 asset content", () => {
 		expect([...snapshotYjsDoc.share.keys()]).toEqual([files_YJS_DOC_KEYS.richText]);
 	});
 
-	test("finalizes an uploaded plain text file into a Y.Text document with the caller's content type", async () => {
-		const t = test_convex();
-		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
-		const asUser = t.withIdentity({
-			issuer: "https://clerk.test",
-			external_id: db.userId,
-			name: "Test User",
-		});
-
-		// The caller's type differs from the .yaml name's hint: the stored type is the caller's, and
-		// it decides both the document shape and what the node opens as. The name is only a hint
-		// for an upload with no type.
-		const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
-			membershipId: db.membershipId,
-			parentId: files_ROOT_ID,
+	test.each([
+		{
 			filename: "notes.yaml",
 			contentType: "text/plain;charset=utf-8",
-			size: 1024,
-		});
-		if (upload._nay) {
-			throw new Error(upload._nay.message);
-		}
-		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
-		if (!asset) {
-			throw new Error("Expected upload asset");
-		}
-		const assetR2Key = expected_asset_key({
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			assetId: asset._id,
-		});
-		// BOM + CRLF in the uploaded bytes: the producer boundary must store LF text without a BOM.
-		r2Objects.set(assetR2Key, new TextEncoder().encode("\uFEFFkey: value\r\nother: 2\r\n"));
+			storedType: "text/plain;charset=utf-8",
+			text: "key: value\nother: 2\n",
+		},
+		{
+			filename: "brief.html",
+			contentType: undefined,
+			storedType: "text/html;charset=utf-8",
+			text: "<!doctype html>\n<p>Brief</p>\n",
+		},
+		{
+			filename: "brief.htm",
+			contentType: undefined,
+			storedType: "text/html;charset=utf-8",
+			text: "<!doctype html>\n<p>Brief</p>\n",
+		},
+		{
+			filename: "brief.txt",
+			contentType: "text/html",
+			storedType: "text/html;charset=utf-8",
+			text: "<!doctype html>\n<p>Brief</p>\n",
+		},
+		{
+			filename: "brief.html",
+			contentType: "text/plain",
+			storedType: "text/plain;charset=utf-8",
+			text: "<!doctype html>\n<p>Brief</p>\n",
+		},
+	])(
+		"finalizes $filename ($contentType) into a Y.Text document",
+		async ({ filename, contentType, storedType, text }) => {
+			const t = test_convex();
+			const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
+			const asUser = t.withIdentity({
+				issuer: "https://clerk.test",
+				external_id: db.userId,
+				name: "Test User",
+			});
 
-		const response = await t.fetch("/api/r2/event", {
-			method: "POST",
-			headers: {
-				Authorization: `Bearer ${process.env.CLOUDFLARE_EVENTS_SECRET}`,
-				"Content-Type": "application/json",
-			},
-			body: JSON.stringify({
-				cloudflareMessageId: "message_yaml",
-				attempts: 1,
-				event: {
-					action: "PutObject",
-					bucket: asset.r2Bucket,
-					object: {
-						key: assetR2Key,
-						size: 1024,
-						eTag: "etag_yaml",
-					},
-					eventTime: "2026-05-11T00:00:00.000Z",
-				},
-			}),
-		});
-		expect(response.status).toBe(204);
-
-		const uploadedAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
-		expect(uploadedAsset?.processingWorkId).toBe("work_asset_refactor");
-
-		await asUser.action(internal.r2.finalize_uploaded_text_file, {
-			organizationId: db.organizationId,
-			workspaceId: db.workspaceId,
-			assetId: upload._yay.assetId,
-			eventId: "event_yaml",
-		});
-
-		const docs = await t.run(async (ctx) => {
-			const fileNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
-			const asset = await ctx.db.get("files_r2_assets", upload._yay.assetId);
-			const contentAsset = fileNode?.assetId ? await ctx.db.get("files_r2_assets", fileNode.assetId) : null;
-
-			return { fileNode, asset, contentAsset };
-		});
-
-		expect(docs.fileNode?.textKind).toBe("plain_text");
-		expect(docs.fileNode?.contentType).toBe("text/plain;charset=utf-8");
-		expect(await t.run((ctx) => ctx.db.query("files_snapshots").first())).toMatchObject({
-			contentType: "text/plain;charset=utf-8",
-			yjsRootKind: "plain_text",
-			collaborationEnabled: true,
-		});
-		expect(docs.fileNode?.yjsSnapshotId).toEqual(expect.any(String));
-		expect(docs.fileNode?.yjsLastSequenceId).toEqual(expect.any(String));
-		expect(docs.contentAsset?.kind).toBe("content_snapshot");
-		expect(docs.contentAsset?.r2Key ? r2_text(docs.contentAsset.r2Key) : null).toBe("key: value\nother: 2\n");
-		expect(docs.asset?.processingWorkId).toBeNull();
-
-		// Producer shape pair: the first Yjs snapshot must hold the Y.Text root the stamped
-		// `textKind` promises, and its text must round-trip the normalized upload.
-		const yjsSnapshotR2Key = await t.run(async (ctx) => {
-			const fileNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
-			if (!fileNode?.yjsSnapshotId) {
-				throw new Error("Expected the promoted node to hold a Yjs snapshot pointer");
+			// The caller's type wins over the name; the name is only a hint when no type is given.
+			const upload = await asUser.mutation(api.files_nodes.create_upload_node, {
+				membershipId: db.membershipId,
+				parentId: files_ROOT_ID,
+				filename,
+				contentType,
+				size: 1024,
+			});
+			if (upload._nay) {
+				throw new Error(upload._nay.message);
 			}
-			const yjsSnapshotDoc = await ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId);
-			const yjsSnapshotAsset = yjsSnapshotDoc ? await ctx.db.get("files_r2_assets", yjsSnapshotDoc.assetId) : null;
-			return yjsSnapshotAsset?.r2Key ?? null;
-		});
-		const yjsSnapshotBytes = yjsSnapshotR2Key ? r2Objects.get(yjsSnapshotR2Key) : undefined;
-		if (!yjsSnapshotBytes) {
-			throw new Error("Expected the uploaded Yjs snapshot bytes to be captured");
-		}
-		const snapshotYjsDoc = files_yjs_doc_create_from_array_buffer_update(array_buffer_from_bytes(yjsSnapshotBytes));
-		expect([...snapshotYjsDoc.share.keys()]).toEqual([files_YJS_DOC_KEYS.plainText]);
-		expect(files_yjs_doc_get_text({ yjsDoc: snapshotYjsDoc, rootKind: "plain_text" })).toEqual({
-			_yay: "key: value\nother: 2\n",
-		});
-	});
+			const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
+			if (!asset) {
+				throw new Error("Expected upload asset");
+			}
+			const assetR2Key = expected_asset_key({
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				assetId: asset._id,
+			});
+			// BOM + CRLF in the uploaded bytes: the producer boundary must store LF text without a BOM.
+			r2Objects.set(assetR2Key, new TextEncoder().encode(`\uFEFF${text.replaceAll("\n", "\r\n")}`));
+
+			const response = await t.fetch("/api/r2/event", {
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${process.env.CLOUDFLARE_EVENTS_SECRET}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({
+					cloudflareMessageId: "message_yaml",
+					attempts: 1,
+					event: {
+						action: "PutObject",
+						bucket: asset.r2Bucket,
+						object: {
+							key: assetR2Key,
+							size: 1024,
+							eTag: "etag_yaml",
+						},
+						eventTime: "2026-05-11T00:00:00.000Z",
+					},
+				}),
+			});
+			expect(response.status).toBe(204);
+
+			const uploadedAsset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
+			expect(uploadedAsset?.processingWorkId).toBe("work_asset_refactor");
+
+			await asUser.action(internal.r2.finalize_uploaded_text_file, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				assetId: upload._yay.assetId,
+				eventId: "event_yaml",
+			});
+
+			const docs = await t.run(async (ctx) => {
+				const fileNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
+				const asset = await ctx.db.get("files_r2_assets", upload._yay.assetId);
+				const contentAsset = fileNode?.assetId ? await ctx.db.get("files_r2_assets", fileNode.assetId) : null;
+
+				return { fileNode, asset, contentAsset };
+			});
+
+			expect(docs.fileNode?.textKind).toBe("plain_text");
+			expect(docs.fileNode?.contentType).toBe(storedType);
+			expect(await t.run((ctx) => ctx.db.query("files_snapshots").first())).toMatchObject({
+				contentType: storedType,
+				yjsRootKind: "plain_text",
+				collaborationEnabled: true,
+			});
+			expect(docs.fileNode?.yjsSnapshotId).toEqual(expect.any(String));
+			expect(docs.fileNode?.yjsLastSequenceId).toEqual(expect.any(String));
+			expect(docs.contentAsset?.kind).toBe("content_snapshot");
+			expect(docs.contentAsset?.r2Key ? r2_text(docs.contentAsset.r2Key) : null).toBe(text);
+			expect(docs.asset?.processingWorkId).toBeNull();
+
+			// Producer shape pair: the first Yjs snapshot must hold the Y.Text root the stamped
+			// `textKind` promises, and its text must round-trip the normalized upload.
+			const yjsSnapshotR2Key = await t.run(async (ctx) => {
+				const fileNode = await ctx.db.get("files_nodes", upload._yay.nodeId);
+				if (!fileNode?.yjsSnapshotId) {
+					throw new Error("Expected the promoted node to hold a Yjs snapshot pointer");
+				}
+				const yjsSnapshotDoc = await ctx.db.get("files_yjs_snapshots", fileNode.yjsSnapshotId);
+				const yjsSnapshotAsset = yjsSnapshotDoc ? await ctx.db.get("files_r2_assets", yjsSnapshotDoc.assetId) : null;
+				return yjsSnapshotAsset?.r2Key ?? null;
+			});
+			const yjsSnapshotBytes = yjsSnapshotR2Key ? r2Objects.get(yjsSnapshotR2Key) : undefined;
+			if (!yjsSnapshotBytes) {
+				throw new Error("Expected the uploaded Yjs snapshot bytes to be captured");
+			}
+			const snapshotYjsDoc = files_yjs_doc_create_from_array_buffer_update(array_buffer_from_bytes(yjsSnapshotBytes));
+			expect([...snapshotYjsDoc.share.keys()]).toEqual([files_YJS_DOC_KEYS.plainText]);
+			expect(files_yjs_doc_get_text({ yjsDoc: snapshotYjsDoc, rootKind: "plain_text" })).toEqual({
+				_yay: text,
+			});
+			snapshotYjsDoc.destroy();
+		},
+	);
 
 	test("converts an over-cap frontmatter upload with the frontmatter marker instead of throwing", async () => {
 		const t = test_convex();
@@ -3657,6 +3690,34 @@ describe("content pipeline crash orphans", () => {
 });
 
 describe("process_uploaded_asset_event accepted upload", () => {
+	test("keeps an older settled HTML upload as stored bytes after another event", async () => {
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const upload = await create_upload_fixture(t, db, "old.html", "text/html");
+		const bytes = new TextEncoder().encode("<!doctype html><p>Old upload</p>");
+		r2Objects.set(upload.key, bytes);
+		const bucket = await t.run(async (ctx) => {
+			// Completed HTML uploads were stored blobs before HTML became editable text.
+			await ctx.db.patch("files_nodes", upload.nodeId, { contentType: "text/html" });
+			await ctx.db.patch("files_r2_assets", upload.assetId, { r2Key: upload.key, processingWorkId: null });
+			return (await ctx.db.get("files_r2_assets", upload.assetId))!.r2Bucket;
+		});
+		const response = await post_r2_put_event(t, {
+			bucket,
+			key: upload.key,
+			size: bytes.byteLength,
+			messageId: "message_old_html",
+		});
+		expect(response.status).toBe(204);
+		expect(enqueueActionSpy).not.toHaveBeenCalled();
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", upload.nodeId))).toMatchObject({
+			contentType: "text/html",
+			textKind: null,
+			yjsSnapshotId: null,
+			assetId: upload.assetId,
+		});
+	});
+
 	test("keeps a pending upload unpublished when its object is missing", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));

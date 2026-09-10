@@ -677,7 +677,7 @@ export type BonoboHttpApi = {
 					body: {
 						path: string;
 						nodeId: import("convex/values").GenericId<"files_nodes">;
-						contentType: | `text/${"markdown" | "plain"}${"" | `;charset=${"utf-8"}`}`
+						contentType: | `text/${"markdown" | "plain" | "html"}${"" | `;charset=${"utf-8"}`}`
 	| "application/json"
 	| "application/yaml"
 	| "application/toml"
@@ -712,7 +712,7 @@ export type BonoboHttpApi = {
 					} | {
 						path: string;
 						nodeId: import("convex/values").GenericId<"files_nodes">;
-						contentType: | `text/${"markdown" | "plain"}${"" | `;charset=${"utf-8"}`}`
+						contentType: | `text/${"markdown" | "plain" | "html"}${"" | `;charset=${"utf-8"}`}`
 	| "application/json"
 	| "application/yaml"
 	| "application/toml"
@@ -730,7 +730,7 @@ export type BonoboHttpApi = {
 					} | {
 						path: string;
 						nodeId: import("convex/values").GenericId<"files_nodes">;
-						contentType: | `text/${"markdown" | "plain"}${"" | `;charset=${"utf-8"}`}`
+						contentType: | `text/${"markdown" | "plain" | "html"}${"" | `;charset=${"utf-8"}`}`
 	| "application/json"
 	| "application/yaml"
 	| "application/toml"

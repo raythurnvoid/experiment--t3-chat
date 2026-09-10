@@ -1,8 +1,10 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { toast } from "sonner";
+import { createRef, type Ref } from "react";
 
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
+import type { FileEditor_Ref } from "../file-editor.tsx";
 
 const {
 	tenantContextMock,
@@ -89,6 +91,7 @@ vi.mock("@monaco-editor/react", async () => {
 			useEffect(() => {
 				const fakeEditor = {
 					updateOptions: () => {},
+					layout: () => {},
 					getModel: () => null,
 					setModel: () => {},
 					onDidChangeModelContent: (listener: () => void) => {
@@ -167,15 +170,18 @@ function resolveQueryWithNonCollaborativeContent(text: string) {
 }
 
 function renderPlainTextEditor(args?: {
+	ref?: Ref<Pick<FileEditor_Ref, "getPreviewSnapshot">>;
 	monacoLanguageId?: string;
 	editable?: boolean;
 	nonCollaborative?: boolean;
 	withYjsLastSequenceId?: boolean;
+	onPreviewSnapshotChange?: () => void;
 }) {
 	const toolbarPortalHost = document.createElement("div");
 	document.body.append(toolbarPortalHost);
 	const rendered = render(
 		<FileEditorPlainText
+			ref={args?.ref}
 			nodeId={NODE_ID}
 			editable={args?.editable ?? true}
 			nonCollaborative={args?.nonCollaborative ?? false}
@@ -186,6 +192,7 @@ function renderPlainTextEditor(args?: {
 			presenceStore={presenceStore}
 			commentsPortalHost={null}
 			toolbarPortalHost={toolbarPortalHost}
+			onPreviewSnapshotChange={args?.onPreviewSnapshotChange}
 		/>,
 	);
 	return { ...rendered, toolbarPortalHost };
@@ -255,6 +262,41 @@ describe("view gating", () => {
 });
 
 describe("FileEditorPlainText", () => {
+	test.each([false, true])(
+		"preview reads immediate local typing with collaboration off: %s",
+		async (nonCollaborative) => {
+			const ref = createRef<Pick<FileEditor_Ref, "getPreviewSnapshot">>();
+			const onPreviewSnapshotChange = vi.fn();
+			if (nonCollaborative) resolveQueryWithNonCollaborativeContent("saved\n");
+			else resolveFetchWithPlainTextDoc("saved\n");
+			const { unmount } = renderPlainTextEditor({ ref, nonCollaborative, onPreviewSnapshotChange });
+			await act(async () => {});
+
+			expect(ref.current?.getPreviewSnapshot()).toMatchObject({
+				text: "saved\n",
+				sourceKind: "editor_draft",
+				isDirty: false,
+				membershipId: MEMBERSHIP_ID,
+				nodeId: NODE_ID,
+				rootKind: "plain_text",
+				yjsLastSequenceId: nonCollaborative ? null : LAST_SEQUENCE_ID,
+				pendingUpdate: null,
+			});
+			onPreviewSnapshotChange.mockClear();
+			act(() => {
+				monacoHarness.createdModels[0]!.model.setValue("local draft\n");
+				monacoHarness.changeListeners.forEach((listener) => listener());
+			});
+			// Preview can open before the 250 ms Save debounce finishes.
+			expect(ref.current?.getPreviewSnapshot()).toMatchObject({ text: "local draft\n", isDirty: true });
+			expect(onPreviewSnapshotChange).toHaveBeenCalled();
+			expect(pushMutationMock).not.toHaveBeenCalled();
+			expect(convexActionMock).not.toHaveBeenCalled();
+			unmount();
+			expect(ref.current).toBeNull();
+		},
+	);
+
 	test("waits for the collaborative lineage before fetching file content", async () => {
 		const { container } = renderPlainTextEditor({ withYjsLastSequenceId: false });
 		await act(async () => {});
@@ -398,14 +440,16 @@ describe("FileEditorPlainText", () => {
 	test("reloads the same collaborative mode when only its lineage changes", async () => {
 		vi.useFakeTimers();
 		try {
+			const ref = createRef<Pick<FileEditor_Ref, "getPreviewSnapshot">>();
 			resolveFetchWithPlainTextDoc('{"lineage":"a"}\n');
-			const { rerender, toolbarPortalHost } = renderPlainTextEditor();
+			const { rerender, toolbarPortalHost } = renderPlainTextEditor({ ref });
 			await act(async () => {});
 
 			const lastSequenceB = "last_sequence_b" as app_convex_Id<"files_yjs_docs_last_sequences">;
 			resolveFetchWithPlainTextDoc('{"lineage":"b"}\n', lastSequenceB);
 			rerender(
 				<FileEditorPlainText
+					ref={ref}
 					nodeId={NODE_ID}
 					editable={true}
 					nonCollaborative={false}
@@ -416,10 +460,15 @@ describe("FileEditorPlainText", () => {
 					toolbarPortalHost={toolbarPortalHost}
 				/>,
 			);
+			expect(ref.current).toBeNull();
 			await act(async () => {});
 
 			const currentModel = monacoHarness.createdModels.at(-1)?.model;
 			expect(currentModel?.getValue()).toBe('{"lineage":"b"}\n');
+			expect(ref.current?.getPreviewSnapshot()).toMatchObject({
+				text: '{"lineage":"b"}\n',
+				yjsLastSequenceId: lastSequenceB,
+			});
 			act(() => {
 				currentModel?.setValue('{"lineage":"saved-b"}\n');
 				monacoHarness.changeListeners.at(-1)?.();

@@ -1172,6 +1172,76 @@ describe("public files API", () => {
 		expect(stages).toEqual([]);
 	});
 
+	test.each(
+		[
+			{ path: "/brief.html", contentType: undefined, storedType: "text/html;charset=utf-8" },
+			{ path: "/brief.htm", contentType: undefined, storedType: "text/html;charset=utf-8" },
+			{ path: "/brief.txt", contentType: "text/html", storedType: "text/html;charset=utf-8" },
+			{ path: "/brief.html", contentType: "text/plain", storedType: "text/plain;charset=utf-8" },
+		].flatMap((file) => [false, true].map((nonCollaborative) => ({ ...file, nonCollaborative }))),
+	)(
+		"writes and downloads $path ($storedType, nonCollaborative: $nonCollaborative)",
+		async ({ path, contentType, storedType, nonCollaborative }) => {
+			const t = test_convex();
+			install_r2_object_reads();
+			const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-public-api-html" });
+			const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+			const created = await asUser.mutation(api.public_api.api_credential_create, {
+				serviceAccountId: null,
+				membershipId: db.membershipId,
+				name: "HTML writer",
+				scopes: ["files:read", "files:write", "files:download"],
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			const headers = auth_headers(created._yay.credential);
+			const content = "<!doctype html>\n<html><head><title>Brief</title></head><body><p>First</p></body></html>\n";
+			const written = await t.fetch("/api/v1/files/write", {
+				method: "POST",
+				headers,
+				body: JSON.stringify({ path, contentType, content, nonCollaborative }),
+			});
+			expect(written.status).toBe(200);
+			const writtenBody = (await written.json()) as { nodeId: Id<"files_nodes">; contentType: string };
+			expect(writtenBody.contentType).toBe(storedType);
+			const fileNode = await t.run((ctx) => ctx.db.get("files_nodes", writtenBody.nodeId));
+			expect(fileNode).toMatchObject({
+				contentType: storedType,
+				textKind: "plain_text",
+				collaborationEnabled: !nonCollaborative,
+			});
+			expect(fileNode?.yjsSnapshotId !== null).toBe(!nonCollaborative);
+
+			// A later write keeps the stored type, including older plain text named .html.
+			const nextContent = content.replace("First", "Saved");
+			const replaced = await t.fetch("/api/v1/files/write", {
+				method: "POST",
+				headers,
+				body: JSON.stringify({ path, content: nextContent }),
+			});
+			expect(replaced.status).toBe(200);
+			expect(await replaced.json()).toMatchObject({ nodeId: writtenBody.nodeId, contentType: storedType });
+			const read = await t.fetch("/api/v1/files/read", { method: "POST", headers, body: JSON.stringify({ path }) });
+			expect(read.status).toBe(200);
+			expect(await read.json()).toMatchObject({ content: nextContent });
+
+			const getUrl = vi.spyOn(R2.prototype, "getUrl");
+			getUrl.mockClear();
+			const download = await t.fetch("/api/v1/files/download-urls", {
+				method: "POST",
+				headers,
+				body: JSON.stringify({ fileNodeIds: [writtenBody.nodeId] }),
+			});
+			expect(download.status).toBe(200);
+			expect(getUrl).toHaveBeenCalledWith(
+				expect.any(String),
+				expect.objectContaining({
+					responseContentType: storedType,
+					responseContentDisposition: `attachment; filename*=UTF-8''${path.slice(1)}`,
+				}),
+			);
+		},
+	);
+
 	test("the write route creates a non-collaborative file with no Yjs docs", async () => {
 		const t = test_convex();
 		install_r2_object_reads();

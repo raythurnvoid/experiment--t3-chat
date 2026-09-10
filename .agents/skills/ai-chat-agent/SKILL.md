@@ -46,7 +46,7 @@ Primary:
 
 # Architecture Overview
 
-The current agent is a Convex-backed AI chat runtime that streams AI SDK 6 UI messages, persists threads/messages in Convex, and exposes a small server-side toolbelt focused on editable text files in the app file tree (Markdown plus the 19 plain-text extensions; see `../files-editable-text/SKILL.md`).
+The current agent is a Convex-backed AI chat runtime that streams AI SDK 6 UI messages, persists threads/messages in Convex, and exposes a small server-side toolbelt focused on editable text files in the app file tree (Markdown and plain-text formats, including HTML; see `../files-editable-text/SKILL.md`).
 
 - Main request path: `POST /api/chat`
 - Secondary title path: `POST /api/v1/runs/stream` for `assistant_id = "system/thread_title"`
@@ -175,6 +175,14 @@ Important limitation:
 - `web_search` uses the server-side Exa integration and should be used for current public facts, docs, release notes, news, and information outside the app files. Keep file tools first when the answer should come from the user's files.
 - `execute_code` runs an untrusted JavaScript snippet in an isolated Cloudflare Dynamic Worker (Worker Loader) hosted by the separate `bonobo-senate-code-execution-runner` Worker, reached over HTTP from the Convex action (`CODE_EXECUTION_RUNNER_URL` + `CODE_EXECUTION_RUNNER_SECRET` env). Use it for computation, JSON shaping, parsing, quick algorithmic work, gatewayed fetches, or file-aware calculations that are better expressed in code. The snippet body is `async (input) => { ... }`: it `return`s a JSON-serializable value and may `console.*`; `input` is an opaque optional JSON argument. The app tool creates a short-lived `public_api_grants` doc with explicit file read/list scopes and a nullable path prefix, then passes the token privately to the runner gateway; the snippet sees `fetch` and `process.env.T3_APP_ORIGIN`, not the raw grant token. To read app files, code should `POST` to `${process.env.T3_APP_ORIGIN}/api/v1/files/list` for discovery, `/api/v1/files/read-many` for folder-scale reads, and `/api/v1/files/read` for one-off reads; the runner gateway authorizes those app API requests. Do not pass app file paths or contents through `input`.
 - User API credentials and public API grants both authorize through `public_api.ts`. Any signed-in active workspace member can create and manage their own reveal-once `pk_...` credentials, and there is no workspace-wide key administration, so no permission gates this. User credentials support `files:list`, `files:read`, `files:write`, and `files:download`, while public API grants remain read-only. The workspace `API keys` page creates fixed list/read keys, shows the full key only after create or rotate, lets the user test that revealed key through the real list route, and provides list/read examples. User API key reads return committed content only; public API grant reads keep the current user's pending overlay.
+
+# HTML Briefs
+
+The main system prompt defines the native HTML preview contract. Create one complete `.html` document with a doctype, head, viewport, body, inline CSS, and regular JavaScript. Use module scripts for pinned HTTPS esm.sh imports, such as `https://esm.sh/d3@7.9.0`. Static imports, dynamic imports, and native top-level await are supported.
+
+Each document supplies its own styles and variables. No app CSS, Tailwind, React/JSX, Node modules, or local assets are provided. Keep data in the document and state in memory. Do not use storage, arbitrary APIs, form submission, workers, popups, or private data in request URLs. Show loading and error UI for async work and use accessible controls that fit the preview width.
+
+Use normal file tools and pending review. HTML stays `plain_text` source, and `.html` or `.htm` names only select the type at creation. Preview runs on a separate origin and does not accept or save proposals. Claim testing only when a tool tested the preview. Keep tone, colors, recipient preferences, and layout guidance in saved workspace skills.
 
 # Uploaded Source And Plugin-Generated Files
 

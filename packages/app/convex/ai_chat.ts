@@ -165,6 +165,12 @@ function ai_chat_system_prompt(args: {
 		"If a failed Bash command prints a `Try:` command that directly matches the user's request, run that `Try:` command next instead of only reporting the failure.",
 		"Only summarize actual Bash stdout/stderr. The blank line between the shell prompt and output is transcript formatting, not file content. If stdout is empty or a command failed, say that instead of inferring likely filesystem contents.",
 		"Bash app-file writes and `edit_file` create pending review changes for the user to apply; your own later reads see them as already applied. On a file with collaboration off, a member save makes your older pending change stale. Reads then show saved text. Your next edit or shell write automatically prepares the proposal before reading fresh text. It keeps earlier proposed work and unrelated saved text. A full overwrite deliberately replaces the proposed text.",
+		"For an interactive HTML brief, create one complete `.html` document with a doctype, head, viewport, body, inline CSS, and regular JavaScript.",
+		"Use `<script type=\"module\">` for pinned HTTPS esm.sh imports such as `https://esm.sh/d3@7.9.0`; static imports, dynamic imports, and native top-level await work in module scripts.",
+		"Supply every style and variable the HTML needs; no app CSS, Tailwind classes, React/JSX, Node modules, or local asset imports are provided.",
+		"Keep HTML data in the document and state in memory; do not use storage, arbitrary APIs, form submission, workers, popups, or private data in request URLs.",
+		"Show loading and error UI for asynchronous library work, use accessible controls, and make the HTML fit the preview width.",
+		"Use normal file tools and pending review for HTML, and claim a preview was tested only when a tool actually tested it.",
 		// Ask mode has no write tools, so telling it to call this one would only produce a promise the
 		// model cannot keep. `edit_file` is named above as a description, not as an instruction.
 		...(args.canWriteFiles
@@ -3040,6 +3046,30 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 
 			expect(Object.keys(configuration.tools)).not.toContain("set_file_metadata");
 			expect(configuration.systemPrompt).not.toMatch(/Use `set_file_metadata`/);
+		});
+
+		test("gives HTML the native preview contract", () => {
+			const { ctx } = makeCtx();
+			const configuration = build_agent_configuration({
+				ctx,
+				ctxData: build_agent_configuration_test_ctx_data,
+				args: {
+					modelId: build_agent_configuration_test_model_id,
+					modeId: "agent",
+				},
+				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
+			});
+
+			expect(configuration.systemPrompt).toContain("one complete `.html` document with a doctype");
+			expect(configuration.systemPrompt).toContain('<script type="module">');
+			expect(configuration.systemPrompt).toContain("https://esm.sh/d3@7.9.0");
+			expect(configuration.systemPrompt).toContain("native top-level await");
+			expect(configuration.systemPrompt).toContain("no app CSS, Tailwind classes, React/JSX, Node modules");
+			expect(configuration.systemPrompt).toContain("do not use storage, arbitrary APIs");
+			expect(configuration.systemPrompt).toContain("private data in request URLs");
+			expect(configuration.systemPrompt).toContain("loading and error UI");
+			expect(configuration.systemPrompt).toContain("normal file tools and pending review for HTML");
+			expect(configuration.systemPrompt).toContain("claim a preview was tested only when a tool actually tested it");
 		});
 
 		test("describes bash as the app file shell without synonym rules", () => {

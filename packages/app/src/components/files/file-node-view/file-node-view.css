@@ -60,7 +60,7 @@
 		}
 	}
 
-	.FileNodeView-content-panel > .FileEditor,
+	.FileNodeViewFile-tabs-panel > .FileEditor,
 	.FileNodeView-content-panel > .FileNodeViewFolder {
 		flex: 1 1 auto;
 		min-height: 0;
@@ -289,22 +289,29 @@
 		height: 20px;
 		width: 140px;
 	}
+	/* #endregion stored file */
 
+	/* #region file views */
 	/* Column filling the content area so the selected tab panel gets all leftover height. The
 	   scroll content is height: max-content, so a percentage would collapse; size against the
 	   FileNodeView-editor-area container instead, like the folder readme editor does. Subtract
 	   the sticky toolbar chrome so the whole block fits the scrollport; without it the panel
 	   always overflows by the toolbar height at every scroll position. */
-	.FileNodeViewStoredFile-tabs {
+	.FileNodeViewFile-tabs {
 		display: flex;
 		flex-direction: column;
 
 		height: max(480px, calc(100cqh - 44px - var(--app-scrollbar-w) - 1px));
 	}
 
-	.FileNodeViewStoredFile-tabs-bar {
+	.FileNodeViewFile-tabs-rich-text {
+		height: max-content;
+		min-height: calc(100cqh - 44px - var(--app-scrollbar-w) - 1px);
+	}
+
+	.FileNodeViewFile-tabs-bar {
 		/* Stick below the sticky editor toolbar so the tabs stay visible while the page scrolls.
-		   Same offset as FileNodeViewTopStickyFloatingContainer. */
+		   Reserve a separate row below when the floating status is present. */
 		position: sticky;
 		top: calc(44px + var(--app-scrollbar-w) + 1px);
 		z-index: 1;
@@ -319,7 +326,13 @@
 		border-bottom: 1px solid var(--color-fg-02);
 	}
 
-	.FileNodeViewStoredFile-tabs-panels {
+	.FileNodeView-content-panel:has(> .FileNodeViewTopStickyFloatingContainer) .FileNodeViewFile-tabs-bar {
+		/* Keep Review and other status controls from covering the file tabs. */
+		min-height: 84px;
+		padding-top: 40px;
+	}
+
+	.FileNodeViewFile-tabs-panels {
 		flex: 1;
 		min-height: 0;
 
@@ -327,7 +340,7 @@
 		flex-direction: column;
 	}
 
-	.FileNodeViewStoredFile-tabs-panel {
+	.FileNodeViewFile-tabs-panel {
 		flex: 1;
 		min-height: 0;
 
@@ -335,7 +348,20 @@
 		flex-direction: column;
 		overflow: auto;
 	}
-	/* #endregion stored file */
+
+	.FileNodeViewFile-tabs-rich-text > .FileNodeViewFile-tabs-panels,
+	.FileNodeViewFile-tabs-rich-text > .FileNodeViewFile-tabs-panels > .FileNodeViewFile-tabs-panel {
+		/* Rich text and its comment anchors share the route's scroll surface. */
+		contain: inline-size style;
+		overflow: visible;
+	}
+
+	.FileNodeViewFile-tabs-bar[hidden],
+	.FileNodeViewFile-tabs-panel[hidden],
+	.FileNodeViewToolbar-editor-actions[hidden] {
+		display: none;
+	}
+	/* #endregion file views */
 
 	/* #region plugin view */
 	/* Column filling the tab panel so the plugin iframe gets all leftover height. */

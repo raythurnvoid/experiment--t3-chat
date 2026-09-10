@@ -45,6 +45,18 @@ Restore keeps every owner's proposals. The open diff view waits for preparation 
 
 Files with collaboration off still support the views allowed by their shape. Their ordinary editors save the whole text through `replace_file_content`; proposal review uses the pending-update save path. Do not send these files through live Yjs loading.
 
+# File Tabs And HTML Preview
+
+`FileNodeViewFile` owns the file tabs for editable and stored files. Editable files open on Editor; stored files open on File details. HTML text files also have Preview. Matching plugin views follow the built-in tabs. The tab bar is hidden when there is only one view, but its React ancestry stays mounted so a late plugin query does not replace the editor.
+
+File-tab selection is local and scoped to membership and node. The URL `view` still chooses only Rich, Markdown/Code, or Diff. Review always selects Editor, even when the URL already says Diff. Automatic editor mode changes update the URL without leaving Preview. Editor panels stay mounted while hidden; preview and plugin frames unmount. Hidden editors keep queued writes but do not prepare stale reviews or take focus. Header mode controls and the toolbar's editor portal host are hidden outside Editor. Rich text keeps the route's scroll surface.
+
+`FileHtmlPreview` reads a frozen snapshot from Saved, Editor draft, or Proposed changes. First activation prefers a dirty current editor model, then the member's proposal, then Saved. Refresh reloads the chosen source. New edits show Updates available; they do not rerun scripts while the member uses the preview. A changed document identity or unavailable source clears the snapshot. Recovery requires Refresh, including after a collaboration toggle or proposal sync. Code reads its current model directly. Proposal Diff reads the modified pane and compares it with the confirmed unstaged text. It must not use the staged pane or Diff's save-dirty flag as the local-draft check.
+
+The HTML runtime lives in `packages/file-preview`, on a separate origin with no app credentials. The app never inserts HTML into its DOM. See that package's README for local setup, `VITE_FILE_PREVIEW_URL`, the frame protocol, browser security tests, and deployment headers. Old HTML blobs and plain-text files named `.html` keep their stored type and do not gain Preview through a rename.
+
+HTML Monaco uses syntax coloring only, like the other code files. `app-monaco-config.ts` disables its worker-backed language services because the app loads only the base editor worker. Keep this mode rule when adding a mapped language; otherwise folding, symbols, or links can call methods the worker does not provide.
+
 # Trace Live Sync
 
 The provider is app code adapted from Liveblocks. Convex stores and streams updates; R2 stores the snapshot bytes. The source comments name the read-only upstream reference files.
@@ -82,7 +94,7 @@ Check the thread list, document marks, scroll container, and CSS transform toget
 
 # Diff Widgets And Portals
 
-Diff hunk controls are Monaco content widgets. The editor CSS sets `anchor-name` from `--FileEditorDiff-anchor-name`; each widget sets `position-anchor` and uses `anchor(left)`. For misplaced controls, check both ends of that anchor link, the widget's current hunk position, and browser support before changing offsets.
+Diff hunk controls are Monaco content widgets. The editor CSS sets `anchor-name` from `--FileEditorDiff-anchor-name`; each widget sets `position-anchor` and uses `anchor(left)`. Monaco's EXACT overflow position is relative to the editor, so `afterRender` adds `anchor(top)` to `coordinate.top`. This follows file tabs and status rows above the editor without a fixed header offset. Hidden editors remove the portalled hunk buttons through `isActive`. For misplaced controls, check both ends of that anchor link, the widget's current hunk position, and browser support before changing offsets.
 
 `packages/app/src/routes/__root.tsx` owns `app_tiptap_hoisting_container` and `app_monaco_hoisting_container`. Editors use these DOM containers for menus and overflow widgets. For focus or outside-click bugs, trace the portal target and event handling as well as the visible editor.
 

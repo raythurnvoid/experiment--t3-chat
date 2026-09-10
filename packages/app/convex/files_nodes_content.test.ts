@@ -123,6 +123,70 @@ async function expect_retired_uploads(t: ReturnType<typeof test_convex>, count: 
 	});
 }
 
+describe("create_file_by_path", () => {
+	test.each(["html", "htm"])("keeps %s source through saves, collaboration changes, and restore", async (extension) => {
+		vi.useFakeTimers();
+		const t = test_convex();
+		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const scope = { organizationId: db.organizationId, workspaceId: db.workspaceId, userId: db.userId };
+		const text = "<!doctype html>\n<html><head><title>Brief</title></head><body><p>Original</p></body></html>\n";
+		const created = await t.action(internal.files_nodes_content.create_file_by_path, {
+			...scope,
+			path: `/brief.${extension}`,
+			textContent: text,
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const nodeId = created._yay.nodeId;
+		const snapshot = await t.run((ctx) => ctx.db.query("files_snapshots").first());
+		if (!snapshot) throw new Error("Missing HTML snapshot");
+		expect(snapshot).toMatchObject({ contentType: "text/html;charset=utf-8", yjsRootKind: "plain_text" });
+		const off = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+			membershipId: db.membershipId,
+			nodeId,
+			acknowledgeDropCollaborativeHistory: true,
+		});
+		expect(off._nay).toBeUndefined();
+		const saved = await asUser.action(api.files_nodes_content.replace_file_content, {
+			membershipId: db.membershipId,
+			nodeId,
+			text: text.replace("Original", "Saved"),
+		});
+		expect(saved._nay).toBeUndefined();
+		expect(
+			await asUser.query(api.files_nodes_content.get_non_collaborative_file_content, {
+				membershipId: db.membershipId,
+				nodeId,
+			}),
+		).toEqual({ _yay: { text: text.replace("Original", "Saved"), textKind: "plain_text" } });
+		for (const task of await t.run((ctx) => ctx.db.query("files_yjs_cleanup_tasks").collect())) {
+			await t.mutation(internal.files_nodes_content.cleanup_file_yjs_task, { taskId: task._id });
+		}
+		const on = await asUser.action(api.files_nodes_content.set_file_collaborative, {
+			membershipId: db.membershipId,
+			nodeId,
+		});
+		expect(on._nay).toBeUndefined();
+		const restored = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
+			membershipId: db.membershipId,
+			nodeId,
+			snapshotId: snapshot._id,
+			sessionId: "restore-html",
+		});
+		expect(restored._nay).toBeUndefined();
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toMatchObject({
+			contentType: "text/html;charset=utf-8",
+			textKind: "plain_text",
+			collaborationEnabled: true,
+		});
+		const read = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+			...scope,
+			path: `/brief.${extension}`,
+		});
+		expect(read?.content).toBe(text);
+	});
+});
+
 describe("snapshot content fields", () => {
 	test.each(["plain_text", "rich_text"] as const)(
 		"records each saved %s mode without changing older versions",
@@ -867,69 +931,72 @@ describe("restore_snapshot_r2", () => {
 		},
 	);
 
-	test("copies null-shaped text-like bytes without parsing", async () => {
-		vi.useFakeTimers();
-		const { t, db, asUser, nodeId, snapshotId } = await create_file_fixture();
-		await t.run((ctx) =>
-			ctx.db.patch("files_snapshots", snapshotId, {
-				contentType: "text/plain;charset=utf-8",
+	test.each(["text/plain;charset=utf-8", "text/html"])(
+		"copies null-shaped %s bytes without parsing",
+		async (contentType) => {
+			vi.useFakeTimers();
+			const { t, db, asUser, nodeId, snapshotId } = await create_file_fixture();
+			await t.run((ctx) =>
+				ctx.db.patch("files_snapshots", snapshotId, {
+					contentType,
+					yjsRootKind: null,
+					collaborationEnabled: false,
+				}),
+			);
+			const scope = { userId: db.userId, membershipId: db.membershipId, nodeId, snapshotId };
+			const restoreData = await t.query(internal.files_nodes_content.get_data_for_restore_snapshot, scope);
+			const downloadData = await t.query(internal.files_nodes.get_data_for_create_file_snapshot_content_url, scope);
+			expect(restoreData?.snapshotContent?.yjsRootKind).toBeNull();
+			expect(restoreData?.snapshotContent).not.toHaveProperty("nonCollaborative");
+			expect(restoreData?.snapshotContent?.collaborationEnabled).toBe(false);
+			expect(downloadData?.yjsRootKind).toBeNull();
+			expect(downloadData).not.toHaveProperty("nonCollaborative");
+			expect(downloadData?.contentType).toBe(contentType);
+			const off = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+				membershipId: db.membershipId,
+				nodeId,
+				acknowledgeDropCollaborativeHistory: true,
+			});
+			expect(off._nay).toBeUndefined();
+
+			const bytes = new Uint8Array([0xef, 0xbb, 0xbf, 0x41, 0x0d, 0x0a, 0x00, 0xff]);
+			if (!restoreData?.snapshotContent?.asset.r2Key) throw new Error("Missing snapshot key");
+			objects.set(restoreData.snapshotContent.asset.r2Key, bytes);
+			const copy = vi.spyOn(r2_server_side_copy, "copy_object").mockImplementation(async (_ctx, args) => {
+				objects.set(args.destinationKey, objects.get(args.sourceKey)!);
+				return { outcome: "copied", size: bytes.byteLength, etag: "stored-text" };
+			});
+			const restored = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
+				membershipId: db.membershipId,
+				nodeId,
+				snapshotId,
+				sessionId: "null-stored-shape",
+			});
+			expect(restored._nay).toBeUndefined();
+			const result = await t.run(async (ctx) => {
+				const node = await ctx.db.get("files_nodes", nodeId);
+				const assetId = node?.assetId;
+				if (!assetId) throw new Error("Missing restored asset");
+				return {
+					node,
+					asset: await ctx.db.get("files_r2_assets", assetId),
+					snapshot: await ctx.db
+						.query("files_snapshots")
+						.withIndex("by_asset", (q) => q.eq("assetId", assetId))
+						.first(),
+				};
+			});
+			expect(new Uint8Array(await new Response(objects.get(result.asset!.r2Key!)).arrayBuffer())).toEqual(bytes);
+			expect(copy).toHaveBeenCalledOnce();
+			expect(result.node).toMatchObject({ textKind: null, collaborationEnabled: null, yjsSnapshotId: null });
+			expect(result.snapshot).toMatchObject({
+				contentType,
 				yjsRootKind: null,
 				collaborationEnabled: false,
-			}),
-		);
-		const scope = { userId: db.userId, membershipId: db.membershipId, nodeId, snapshotId };
-		const restoreData = await t.query(internal.files_nodes_content.get_data_for_restore_snapshot, scope);
-		const downloadData = await t.query(internal.files_nodes.get_data_for_create_file_snapshot_content_url, scope);
-		expect(restoreData?.snapshotContent?.yjsRootKind).toBeNull();
-		expect(restoreData?.snapshotContent).not.toHaveProperty("nonCollaborative");
-		expect(restoreData?.snapshotContent?.collaborationEnabled).toBe(false);
-		expect(downloadData?.yjsRootKind).toBeNull();
-		expect(downloadData).not.toHaveProperty("nonCollaborative");
-		expect(downloadData?.contentType).toBe("text/plain;charset=utf-8");
-		const off = await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
-			membershipId: db.membershipId,
-			nodeId,
-			acknowledgeDropCollaborativeHistory: true,
-		});
-		expect(off._nay).toBeUndefined();
-
-		const bytes = new Uint8Array([0xef, 0xbb, 0xbf, 0x41, 0x0d, 0x0a, 0x00, 0xff]);
-		if (!restoreData?.snapshotContent?.asset.r2Key) throw new Error("Missing snapshot key");
-		objects.set(restoreData.snapshotContent.asset.r2Key, bytes);
-		const copy = vi.spyOn(r2_server_side_copy, "copy_object").mockImplementation(async (_ctx, args) => {
-			objects.set(args.destinationKey, objects.get(args.sourceKey)!);
-			return { outcome: "copied", size: bytes.byteLength, etag: "stored-text" };
-		});
-		const restored = await asUser.action(api.files_nodes_content.restore_snapshot_r2, {
-			membershipId: db.membershipId,
-			nodeId,
-			snapshotId,
-			sessionId: "null-stored-shape",
-		});
-		expect(restored._nay).toBeUndefined();
-		const result = await t.run(async (ctx) => {
-			const node = await ctx.db.get("files_nodes", nodeId);
-			const assetId = node?.assetId;
-			if (!assetId) throw new Error("Missing restored asset");
-			return {
-				node,
-				asset: await ctx.db.get("files_r2_assets", assetId),
-				snapshot: await ctx.db
-					.query("files_snapshots")
-					.withIndex("by_asset", (q) => q.eq("assetId", assetId))
-					.first(),
-			};
-		});
-		expect(new Uint8Array(await new Response(objects.get(result.asset!.r2Key!)).arrayBuffer())).toEqual(bytes);
-		expect(copy).toHaveBeenCalledOnce();
-		expect(result.node).toMatchObject({ textKind: null, collaborationEnabled: null, yjsSnapshotId: null });
-		expect(result.snapshot).toMatchObject({
-			contentType: "text/plain;charset=utf-8",
-			yjsRootKind: null,
-			collaborationEnabled: false,
-		});
-		expect(result.snapshot).not.toHaveProperty("nonCollaborative");
-	});
+			});
+			expect(result.snapshot).not.toHaveProperty("nonCollaborative");
+		},
+	);
 
 	test.each(
 		(["plain_text", "rich_text"] as const).flatMap((sourceRootKind) =>

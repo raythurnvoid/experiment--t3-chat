@@ -1,8 +1,10 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { toast } from "sonner";
+import { createRef, type Ref } from "react";
 
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
+import type { FileEditor_Ref } from "../file-editor.tsx";
 
 const {
 	tenantContextMock,
@@ -146,6 +148,7 @@ vi.mock("@monaco-editor/react", async () => {
 					focus: () => {},
 				};
 				const fakeEditor = {
+					layout: () => {},
 					updateOptions: (options: Record<string, unknown>) => {
 						monacoHarness.updateOptionsCalls.push(options);
 					},
@@ -221,11 +224,15 @@ function resolveQueryWithNonCollaborativeContent(text: string) {
 	convexQueryMock.mockResolvedValue({ _yay: { text, textKind: "rich_text" } });
 }
 
-function renderNonCollabDiffEditor(args?: { editable?: boolean }) {
+function renderNonCollabDiffEditor(args?: {
+	ref?: Ref<Pick<FileEditor_Ref, "getPreviewSnapshot">>;
+	editable?: boolean;
+}) {
 	const toolbarPortalHost = document.createElement("div");
 	document.body.append(toolbarPortalHost);
 	const rendered = render(
 		<FileEditorDiffNonCollab
+			ref={args?.ref}
 			nodeId={NODE_ID}
 			editable={args?.editable ?? true}
 			monacoLanguageId="markdown"
@@ -303,6 +310,25 @@ afterEach(() => {
 });
 
 describe("FileEditorDiffNonCollab", () => {
+	test("preview reads the modified draft before its dirty check", async () => {
+		const ref = createRef<Pick<FileEditor_Ref, "getPreviewSnapshot">>();
+		resolveQueryWithNonCollaborativeContent("saved\n");
+		renderNonCollabDiffEditor({ ref });
+		await flushEditorMount();
+		expect(ref.current?.getPreviewSnapshot()).toMatchObject({
+			text: "saved\n",
+			sourceKind: "editor_draft",
+			isDirty: false,
+			pendingUpdate: null,
+		});
+		act(() => {
+			getPanes().modified.setValue("local draft\n");
+			monacoHarness.changeListeners.forEach((listener) => listener());
+		});
+		expect(ref.current?.getPreviewSnapshot()).toMatchObject({ text: "local draft\n", isDirty: true });
+		expect(convexActionMock).not.toHaveBeenCalled();
+	});
+
 	test("mounts both panes on the committed text with nothing to save yet", async () => {
 		resolveQueryWithNonCollaborativeContent("alpha\n");
 		renderNonCollabDiffEditor();
@@ -613,6 +639,9 @@ function resolveStatePages(texts: { base: string; staged: string; unstaged: stri
 }
 
 function renderNonCollabProposalReview(args: {
+	ref?: Ref<Pick<FileEditor_Ref, "getPreviewSnapshot">>;
+	isActive?: boolean;
+	onPreviewSnapshotChange?: () => void;
 	committedAssetId: string;
 	rootKind?: "plain_text" | "rich_text";
 	nonCollaborative?: boolean;
@@ -632,6 +661,9 @@ function renderNonCollabProposalReview(args: {
 	let renderCount = 0;
 	const makeElement = (overrides: Partial<typeof args> = {}) => (
 		<FileEditorDiff
+			ref={args.ref}
+			isActive={overrides.isActive ?? args.isActive}
+			onPreviewSnapshotChange={args.onPreviewSnapshotChange}
 			className={`render-${(renderCount += 1)}`}
 			nodeId={NODE_ID}
 			editable={true}
@@ -708,6 +740,113 @@ function mockSaveDocQuery(args: {
 }
 
 describe("FileEditorDiff draft versions", () => {
+	test("preview reads the modified proposal and detects immediate local edits", async () => {
+		const ref = createRef<Pick<FileEditor_Ref, "getPreviewSnapshot">>();
+		const onPreviewSnapshotChange = vi.fn();
+		useStableQueryMock.mockReturnValue(nonCollabPendingUpdate);
+		resolveStatePages({ base: "saved\n", staged: "accepted\n", unstaged: "proposed\n" });
+		const { unmount } = renderNonCollabProposalReview({ ref, onPreviewSnapshotChange, committedAssetId: "asset_1" });
+		await flushNonCollabProposalMount();
+
+		expect(ref.current?.getPreviewSnapshot()).toMatchObject({
+			text: "proposed\n",
+			sourceKind: "proposed_changes",
+			isDirty: false,
+			membershipId: MEMBERSHIP_ID,
+			nodeId: NODE_ID,
+			pendingUpdate: { _id: PENDING_UPDATE_ID, updatedAt: 1, unstagedStateId: "state_unstaged" },
+		});
+		onPreviewSnapshotChange.mockClear();
+		act(() => {
+			getPanes().modified.setValue("proposed with typing\n");
+			monacoHarness.changeListeners.forEach((listener) => listener());
+		});
+		expect(ref.current?.getPreviewSnapshot()).toMatchObject({ text: "proposed with typing\n", isDirty: true });
+		expect(onPreviewSnapshotChange).toHaveBeenCalled();
+		expect(convexActionMock).not.toHaveBeenCalled();
+		unmount();
+		expect(ref.current).toBeNull();
+	});
+
+	test("a hidden stale review waits to prepare until Editor is selected", async () => {
+		const ref = createRef<Pick<FileEditor_Ref, "getPreviewSnapshot">>();
+		useStableQueryMock.mockReturnValue({ ...nonCollabPendingUpdate, contentNeedsRebase: true });
+		resolveStatePages({ base: "saved\n", staged: "accepted\n", unstaged: "proposed\n" });
+		const { rerenderWith } = renderNonCollabProposalReview({ ref, isActive: false, committedAssetId: "asset_1" });
+		await flushNonCollabProposalMount();
+
+		expect(convexActionMock.mock.calls).toHaveLength(0);
+		expect(ref.current?.getPreviewSnapshot()).toBeNull();
+		rerenderWith({ isActive: true });
+		await flushNonCollabProposalMount();
+		expect(convexActionMock).toHaveBeenCalledTimes(1);
+		expect(getFunctionName(convexActionMock.mock.calls[0]![0])).toBe(
+			"files_pending_updates:prepare_file_pending_update_for_review",
+		);
+	});
+
+	test("typing queued before Preview still persists while the editor is hidden", async () => {
+		vi.useFakeTimers();
+		try {
+			const ref = createRef<Pick<FileEditor_Ref, "getPreviewSnapshot">>();
+			useStableQueryMock.mockReturnValue(nonCollabPendingUpdate);
+			resolveStatePages({ base: "saved\n", staged: "saved\n", unstaged: "proposed\n" });
+			convexMutationMock.mockResolvedValue({ _yay: { operationBatchId: "batch_1" } });
+			convexActionMock.mockResolvedValue({
+				_yay: {
+					pendingUpdate: { ...nonCollabPendingUpdate, updatedAt: 2, unstagedStateId: "state_unstaged_2" },
+					currentYjsLastSequenceId: null,
+				},
+			});
+			const { rerenderWith } = renderNonCollabProposalReview({ ref, committedAssetId: "asset_1" });
+			await flushNonCollabProposalMount();
+			convexQueryMock.mockImplementation(async (_reference: unknown, args: { stateId: string }) =>
+				statePageOf(args.stateId === "state_unstaged_2" ? "proposed with typing\n" : "saved\n"),
+			);
+			act(() => {
+				getPanes().modified.setValue("proposed with typing\n");
+				monacoHarness.changeListeners.forEach((listener) => listener());
+			});
+			rerenderWith({ isActive: false });
+			await act(async () => {
+				await vi.advanceTimersByTimeAsync(250);
+			});
+
+			expect(convexActionMock.mock.calls).toHaveLength(1);
+			expect(convexActionMock.mock.calls[0]![0]).toBe("upsert_file_pending_update");
+			expect(convexMutationMock).toHaveBeenCalledWith("stage_file_pending_update_text_input", {
+				membershipId: MEMBERSHIP_ID,
+				operationBatchId: "batch_1",
+				role: "unstaged",
+				text: "proposed with typing\n",
+			});
+			expect(ref.current?.getPreviewSnapshot()).toMatchObject({
+				text: "proposed with typing\n",
+				isDirty: false,
+				pendingUpdate: { updatedAt: 2 },
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("a hidden review does not recover focus when its toolbar becomes stale", async () => {
+		useStableQueryMock.mockReturnValue(nonCollabPendingUpdate);
+		resolveStatePages({ base: "saved\n", staged: "accepted\n", unstaged: "proposed\n" });
+		const { rerenderWith } = renderNonCollabProposalReview({ committedAssetId: "asset_1" });
+		await flushNonCollabProposalMount();
+		act(() => screen.getByRole("button", { name: "Save staged changes" }).focus());
+		useStableQueryMock.mockReturnValue({ ...nonCollabPendingUpdate, contentNeedsRebase: true });
+		rerenderWith({ isActive: false });
+		await flushNonCollabProposalMount();
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+
+		expect(document.activeElement).toBe(document.body);
+		expect(convexActionMock.mock.calls).toHaveLength(0);
+	});
+
 	test("typing during an ordinary page reload stays editable and is saved after the pages arrive", async () => {
 		vi.useFakeTimers();
 		try {
@@ -2419,6 +2558,32 @@ describe("FileEditorDiff with collaboration off", () => {
 		expect(screen.getByRole("button", { name: "Discard proposal" })).toBeTruthy();
 	});
 
+	test("an inactive editor hides its floating hunk controls and restores them on return", async () => {
+		useStableQueryMock.mockReturnValue(nonCollabPendingUpdate);
+		resolveStatePages({ base: "alpha\n", staged: "alpha\n", unstaged: "alpha beta\n" });
+		monacoHarness.lineChanges.push({
+			originalStartLineNumber: 1,
+			originalEndLineNumber: 1,
+			modifiedStartLineNumber: 1,
+			modifiedEndLineNumber: 1,
+		});
+		const { rerenderWith } = renderNonCollabProposalReview({ committedAssetId: "asset_1" });
+		await flushNonCollabProposalMount();
+		await act(async () => {
+			monacoHarness.diffListeners.forEach((listener) => listener());
+		});
+		expect(screen.getByRole("button", { name: "Accept change" })).toBeTruthy();
+
+		rerenderWith({ isActive: false });
+		await act(async () => {});
+		expect(screen.queryByRole("button", { name: "Accept change" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "Discard change" })).toBeNull();
+
+		rerenderWith({ isActive: true });
+		await act(async () => {});
+		expect(screen.getByRole("button", { name: "Accept change" })).toBeTruthy();
+	});
+
 	test("a toolbar swap keeps keyboard focus in the toolbar, and leaves focus alone elsewhere", async () => {
 		useStableQueryMock.mockReturnValue(nonCollabPendingUpdate);
 		resolveStatePages({ base: "alpha\n", staged: "alpha\n", unstaged: "alpha beta\n" });
@@ -2496,6 +2661,7 @@ describe("FileEditorDiff with collaboration off", () => {
 	});
 
 	test("the fresh toolbar stays busy while the rewritten branches load, then takes the focus", async () => {
+		const ref = createRef<Pick<FileEditor_Ref, "getPreviewSnapshot">>();
 		useStableQueryMock.mockReturnValue(nonCollabPendingUpdate);
 		resolveStatePages({ base: "alpha\n", staged: "alpha\n", unstaged: "alpha beta\n" });
 		monacoHarness.lineChanges.push({
@@ -2505,7 +2671,7 @@ describe("FileEditorDiff with collaboration off", () => {
 			modifiedEndLineNumber: 1,
 		});
 		// A member saved the file: the proposal opens stale, with focus on its only button.
-		const { rerenderWith } = renderNonCollabProposalReview({ committedAssetId: "asset_2" });
+		const { rerenderWith } = renderNonCollabProposalReview({ ref, committedAssetId: "asset_2" });
 		await flushNonCollabProposalMount();
 		act(() => screen.getByRole("button", { name: "Discard proposal" }).focus());
 
@@ -2539,6 +2705,7 @@ describe("FileEditorDiff with collaboration off", () => {
 		expect(screen.queryByRole("button", { name: "Discard proposal" })).toBeNull();
 		expect((screen.getByRole("button", { name: acceptAllName }) as HTMLButtonElement).disabled).toBe(true);
 		expect(pageResolvers).toHaveLength(3);
+		expect(ref.current?.getPreviewSnapshot()).toBeNull();
 		// The swap is silent otherwise: the status line says what is going on.
 		expect(document.querySelector(".FileEditorDiff-stale")?.textContent).toBe("Loading the updated proposal…");
 		// The body is locked the same way: no hunk widget, and the modified pane is read-only.
@@ -2555,6 +2722,11 @@ describe("FileEditorDiff with collaboration off", () => {
 		expect((screen.getByRole("button", { name: acceptAllName }) as HTMLButtonElement).disabled).toBe(false);
 		expect(document.querySelector(".FileEditorDiff-stale")?.textContent).toBe("");
 		expect(getPanes().modified.getValue()).toBe("alpha\nmember\nbeta\n");
+		expect(ref.current?.getPreviewSnapshot()).toMatchObject({
+			text: "alpha\nmember\nbeta\n",
+			isDirty: false,
+			pendingUpdate: { updatedAt: 2, baseAssetId: "asset_2", unstagedStateId: "state_unstaged_2" },
+		});
 		await act(async () => {
 			monacoHarness.diffListeners.forEach((listener) => listener());
 		});

@@ -53,6 +53,12 @@ export default tseslint.config({
 });
 ```
 
+## HTML file preview
+
+The file Preview tab uses the separate static runtime in [packages/file-preview](packages/file-preview/README.md). For local use, build it with `vp env exec pnpm --dir packages/file-preview run build:local`, then run `vp env exec pnpm --dir packages/file-preview run preview:local`. Reuse an existing server on port 5175.
+
+The app's `VITE_FILE_PREVIEW_URL` points to the runtime's `/v0` URL. Development defaults to the local runtime. Production needs an explicit HTTPS URL on a separate host outside the app's cookie scope, plus the runtime's exact `FILE_PREVIEW_PARENT_ORIGINS` allowlist. See the runtime README for headers, checks, and deployment. No public host is created by the local setup.
+
 ## License / Attribution
 
 This project is licensed under **Apache-2.0**.

@@ -19,13 +19,17 @@ Rich text documents support GFM tables. The shared extension set in `packages/ap
 `files_nodes.contentType` decides how a file opens, how it is edited, and how it is served. The name is only a hint, used once, when a file is created without an explicit type. All in `packages/app/shared/files.ts`:
 
 - `files_parse_content_type` / `files_normalize_content_type`: parse and normalize a content type string; a bad one is refused with `files_INVALID_CONTENT_TYPE_MESSAGE`.
-- `files_editable_text_content_type_of(contentType)`: the stored editable text type, or `null` when the type is not editable text. Editable text is Markdown, plain text, JSON, YAML, TOML, CSV, TSV, CSS, JavaScript, TypeScript, shell, SQL, and the other text types the app edits.
+- `files_editable_text_content_type_of(contentType)`: the stored editable text type, or `null` when the type is not editable text. Editable text is Markdown, plain text, HTML, JSON, YAML, TOML, CSV, TSV, CSS, JavaScript, TypeScript, shell, SQL, and the other text types the app edits.
 - `files_yjs_root_kind_of_content_type(contentType)`: `rich_text` for Markdown, `plain_text` for every other editable text type, `null` otherwise. `files_editable_text_shape_of` returns the shape and the normalized type together.
 - `files_default_text_shape_for_name(name)`: the shape a create path uses when the caller gives no type: the name's hint (`.md` is Markdown, a known text extension is that type), else plain text. An unknown extension and an extensionless name make a plain text file. Nothing appends `.md`, and no name is refused for its extension.
 - `files_guess_content_type_from_name(name)` and `files_resolve_upload_content_type`: an upload keeps the caller's valid type; without one, the name's hint, else `application/octet-stream`.
 - `files_monaco_language_id_of_content_type(contentType)`: the Monaco language per stored type; unmapped types render as plain text.
 - `files_get_signed_download_serving({ contentType, fileName })`: the response headers every signed R2 download must pin, from the stored type. The name only fills the disposition file name. Only the literal media set serves inline; everything else — editable text, `svg`, `html`, unknown — downloads as an attachment. A presigned R2 GET carries no nosniff and no CSP, so this pinned type plus the disposition is the whole defense against hostile bytes running on the shared R2 origin. The stored type is client input at upload time, and that is fine here: the inline set holds only types a browser never runs as a page.
 - `files_lowercase_extension` in `packages/app/convex/files_nodes.ts` still stores the name's extension for search filters only: a leading-dot name like `.gitignore` and a trailing-dot name have no extension.
+
+HTML uses canonical `text/html;charset=utf-8`, a `plain_text` Yjs shape, and Monaco's `html` language. `.html` and `.htm` are creation hints. The 900,000-byte text limit still applies. HTML is never parsed as rich text, and downloads always use an attachment disposition. Preview runs a text snapshot on the separate file-preview origin; it does not serve the file inline from Press or R2.
+
+Adding HTML support does not convert old files. An older `.html` file stored as `text/plain` stays plain text, and an older HTML blob with `textKind: null` stays stored bytes. Copy and restore keep the saved shape. Completed uploads have `processingWorkId: null`, so a later upload event does not restart conversion. Fresh HTML uploads use the normal text conversion path. A later conversion feature needs an explicit data scope and user choice.
 
 # The Stored `textKind`
 

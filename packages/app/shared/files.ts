@@ -190,7 +190,7 @@ export const files_INITIAL_CONTENT = `\
 You can start editing your document here.`;
 
 export type files_ContentType =
-	| `text/${"markdown" | "plain"}${"" | `;charset=${"utf-8"}`}`
+	| `text/${"markdown" | "plain" | "html"}${"" | `;charset=${"utf-8"}`}`
 	| "application/json"
 	| "application/yaml"
 	| "application/toml"
@@ -260,6 +260,7 @@ const FILES_EDITABLE_TEXT_CONTENT_TYPE_BY_ESSENCE = new Map<string, files_Conten
 	["text/markdown", "text/markdown;charset=utf-8"],
 	["text/x-markdown", "text/markdown;charset=utf-8"],
 	["text/plain", "text/plain;charset=utf-8"],
+	["text/html", "text/html;charset=utf-8"],
 	["application/json", "application/json"],
 	["application/yaml", "application/yaml"],
 	["application/x-yaml", "application/yaml"],
@@ -287,6 +288,8 @@ const FILES_CONTENT_TYPE_HINT_BY_EXTENSION = new Map<string, files_ContentType>(
 	["md", "text/markdown;charset=utf-8"],
 	["txt", "text/plain;charset=utf-8"],
 	["log", "text/plain;charset=utf-8"],
+	["html", "text/html;charset=utf-8"],
+	["htm", "text/html;charset=utf-8"],
 	["json", "application/json"],
 	["jsonc", "application/json"],
 	["yaml", "application/yaml"],
@@ -311,6 +314,7 @@ const FILES_CONTENT_TYPE_HINT_BY_EXTENSION = new Map<string, files_ContentType>(
  */
 const FILES_MONACO_LANGUAGE_ID_BY_CONTENT_TYPE = new Map<files_ContentType, string>([
 	["text/markdown;charset=utf-8", "markdown"],
+	["text/html;charset=utf-8", "html"],
 	["application/json", "json"],
 	["application/yaml", "yaml"],
 	["text/css", "css"],

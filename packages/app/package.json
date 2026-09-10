@@ -105,6 +105,7 @@
 		"@tiptap/suggestion": "workspace:*",
 		"@tiptap/y-tiptap": "3.0.0",
 		"ai": "6.0.253",
+		"bonobo-file-preview": "workspace:*",
 		"class-variance-authority": "^0.7.1",
 		"clsx": "^2.1.1",
 		"cmdk": "^1.1.1",

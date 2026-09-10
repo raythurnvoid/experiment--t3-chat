@@ -9,7 +9,7 @@ import { cn, sx } from "@/lib/utils.ts";
 import { FileEditorDiff, FileEditorDiffNonCollab } from "./file-editor-diff/file-editor-diff.tsx";
 import { useMutation, useQuery } from "convex/react";
 import { app_convex_api } from "@/lib/app-convex-client.ts";
-import type { app_convex_Id } from "@/lib/app-convex-client.ts";
+import type { app_convex_Doc, app_convex_Id } from "@/lib/app-convex-client.ts";
 import {
 	files_create_room_id,
 	files_PresenceStore,
@@ -359,6 +359,8 @@ export function FileEditorPresenceSupplier(props: FileEditorPresenceSupplier_Pro
 
 // #region file editor render
 type FileEditorRender_Props = {
+	previewRef?: Ref<Pick<FileEditor_Ref, "getPreviewSnapshot">>;
+	isActive: boolean;
 	nodeId: app_convex_Id<"files_nodes">;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
 	/** The node's document shape, from the route-resolved node; the diff editor dispatches on it. */
@@ -392,12 +394,15 @@ type FileEditorRender_Props = {
 	toolbarPortalHost: HTMLElement;
 	serverSequence?: number;
 	onDiffExit: () => void;
+	onPreviewSnapshotChange?: () => void;
 	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
 };
 
 function FileEditorRender(props: FileEditorRender_Props) {
 	const {
+		previewRef,
+		isActive,
 		nodeId,
 		pendingUpdateId,
 		rootKind,
@@ -415,6 +420,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 		toolbarPortalHost,
 		serverSequence,
 		onDiffExit,
+		onPreviewSnapshotChange,
 		topStickyFloatingSlot,
 		topViewZoneSlot,
 	} = props;
@@ -478,6 +484,8 @@ function FileEditorRender(props: FileEditorRender_Props) {
 			return (
 				<FileEditorDiffNonCollab
 					key={nodeId}
+					ref={previewRef}
+					isActive={isActive}
 					nodeId={nodeId}
 					editable={editable}
 					monacoLanguageId={monacoLanguageId}
@@ -487,6 +495,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 					topSafeArea={topSafeArea}
 					topStickyFloatingSlot={topStickyFloatingSlot}
 					topViewZoneSlot={topViewZoneSlot}
+					onPreviewSnapshotChange={onPreviewSnapshotChange}
 				/>
 			);
 		}
@@ -494,6 +503,8 @@ function FileEditorRender(props: FileEditorRender_Props) {
 		return (
 			<FileEditorDiff
 				key={nodeId}
+				ref={previewRef}
+				isActive={isActive}
 				nodeId={nodeId}
 				editable={editable}
 				rootKind={rootKind}
@@ -508,6 +519,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 				serverSequence={serverSequence}
 				topSafeArea={topSafeArea}
 				onExit={onDiffExit}
+				onPreviewSnapshotChange={onPreviewSnapshotChange}
 				topStickyFloatingSlot={topStickyFloatingSlot}
 				topViewZoneSlot={topViewZoneSlot}
 			/>
@@ -516,6 +528,8 @@ function FileEditorRender(props: FileEditorRender_Props) {
 
 	return (
 		<FileEditorPlainText
+			ref={previewRef}
+			isActive={isActive}
 			nodeId={nodeId}
 			yjsLastSequenceId={yjsLastSequenceId}
 			editable={editable}
@@ -528,6 +542,7 @@ function FileEditorRender(props: FileEditorRender_Props) {
 			topSafeArea={topSafeArea}
 			topStickyFloatingSlot={topStickyFloatingSlot}
 			topViewZoneSlot={topViewZoneSlot}
+			onPreviewSnapshotChange={onPreviewSnapshotChange}
 		/>
 	);
 }
@@ -550,6 +565,8 @@ type FileEditor_CssVars = {
 };
 
 type FileEditorInner_Props = {
+	previewRef?: Ref<Pick<FileEditor_Ref, "getPreviewSnapshot">>;
+	isActive: boolean;
 	nodeId: app_convex_Id<"files_nodes">;
 	writeBlockedReason: files_yjs_EditBlockReason | null;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
@@ -578,6 +595,8 @@ type FileEditorInner_Props = {
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
 	onEditorModeChange: (mode: FileEditor_Mode, options?: { replace?: boolean }) => void;
+	onAutomaticEditorModeChange?: FileEditor_Props["onEditorModeChange"];
+	onPreviewSnapshotChange?: () => void;
 	onDiffExit?: () => void;
 	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
@@ -585,6 +604,8 @@ type FileEditorInner_Props = {
 
 function FileEditorInner(props: FileEditorInner_Props) {
 	const {
+		previewRef,
+		isActive,
 		nodeId,
 		writeBlockedReason,
 		pendingUpdateId,
@@ -601,6 +622,8 @@ function FileEditorInner(props: FileEditorInner_Props) {
 		commentsPortalHost,
 		toolbarPortalHost,
 		onEditorModeChange,
+		onAutomaticEditorModeChange,
+		onPreviewSnapshotChange,
 		onDiffExit,
 		topStickyFloatingSlot,
 		topViewZoneSlot,
@@ -659,7 +682,11 @@ function FileEditorInner(props: FileEditorInner_Props) {
 		// Leaving the diff goes back to the node's own default editor, not always the rich editor:
 		// a plain-text node has no rich view.
 		// Replace the review entry so Back cannot reopen a proposal that is gone.
-		onEditorModeChange(rootKind === "plain_text" ? "plain_text_editor" : "rich_text_editor", { replace: true });
+		// A hidden editor can finish a review without selecting its tab again.
+		(onAutomaticEditorModeChange ?? onEditorModeChange)(
+			rootKind === "plain_text" ? "plain_text_editor" : "rich_text_editor",
+			{ replace: true },
+		);
 		onDiffExit?.();
 	});
 
@@ -709,10 +736,10 @@ function FileEditorInner(props: FileEditorInner_Props) {
 		handleDiffExit();
 		// The toolbar button the member pressed went away with the view, so focus fell to the page
 		// body. Take it to the editor host, so the next Tab reaches the editor that mounts next.
-		if (document.activeElement === document.body) {
+		if (isActive && document.activeElement === document.body) {
 			renderHostRef.current?.focus();
 		}
-	}, [proposalWentAway, handleDiffExit]);
+	}, [proposalWentAway, handleDiffExit, isActive]);
 
 	return (
 		<div
@@ -747,6 +774,8 @@ function FileEditorInner(props: FileEditorInner_Props) {
 							<FileEditorDiffSkeleton />
 						) : (
 							<FileEditorRender
+								previewRef={previewRef}
+								isActive={isActive}
 								nodeId={nodeId}
 								pendingUpdateId={pendingUpdateId}
 								rootKind={rootKind}
@@ -764,6 +793,7 @@ function FileEditorInner(props: FileEditorInner_Props) {
 								serverSequence={serverSequence}
 								yjsLastSequenceId={yjsLastSequenceId}
 								onDiffExit={handleDiffExit}
+								onPreviewSnapshotChange={onPreviewSnapshotChange}
 								topStickyFloatingSlot={topStickyFloatingSlot}
 								topViewZoneSlot={topViewZoneSlot}
 							/>
@@ -775,12 +805,28 @@ function FileEditorInner(props: FileEditorInner_Props) {
 	);
 }
 
+export type FileEditor_PreviewSnapshot = {
+	text: string;
+	sourceKind: "editor_draft" | "proposed_changes";
+	isDirty: boolean;
+	membershipId: app_convex_Id<"organizations_workspaces_users">;
+	nodeId: app_convex_Id<"files_nodes">;
+	rootKind: files_YjsRootKind;
+	yjsLastSequenceId: app_convex_Id<"files_yjs_docs_last_sequences"> | null;
+	pendingUpdate: Pick<
+		app_convex_Doc<"files_pending_updates">,
+		"_id" | "updatedAt" | "baseStateId" | "stagedStateId" | "unstagedStateId" | "baseAssetId" | "baseLineageGeneration"
+	> | null;
+};
+
 export type FileEditor_Ref = {
 	getMode: () => FileEditor_Mode;
+	getPreviewSnapshot: () => FileEditor_PreviewSnapshot | null;
 };
 
 export type FileEditor_Props = {
 	ref?: Ref<FileEditor_Ref>;
+	isActive?: boolean;
 	nodeId: app_convex_Id<"files_nodes"> | null | undefined;
 	writeBlockedReason: files_yjs_EditBlockReason | null;
 	pendingUpdateId?: app_convex_Id<"files_pending_updates">;
@@ -813,6 +859,8 @@ export type FileEditor_Props = {
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
 	onEditorModeChange: (mode: FileEditor_Mode, options?: { replace?: boolean }) => void;
+	onAutomaticEditorModeChange?: FileEditor_Props["onEditorModeChange"];
+	onPreviewSnapshotChange?: () => void;
 	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
 };
@@ -820,6 +868,7 @@ export type FileEditor_Props = {
 export function FileEditor(props: FileEditor_Props) {
 	const {
 		ref,
+		isActive = true,
 		nodeId,
 		writeBlockedReason,
 		pendingUpdateId,
@@ -836,20 +885,34 @@ export function FileEditor(props: FileEditor_Props) {
 		commentsPortalHost,
 		toolbarPortalHost,
 		onEditorModeChange,
+		onAutomaticEditorModeChange,
+		onPreviewSnapshotChange,
 		topStickyFloatingSlot,
 		topViewZoneSlot,
 	} = props;
+
+	const { membershipId } = AppTenantProvider.useContext();
+	const previewRef = useRef<Pick<FileEditor_Ref, "getPreviewSnapshot"> | null>(null);
+	const getPreviewSnapshot = useFn(() => {
+		const snapshot = previewRef.current?.getPreviewSnapshot();
+		return snapshot?.membershipId === membershipId && snapshot.nodeId === nodeId && snapshot.rootKind === rootKind
+			? snapshot
+			: null;
+	});
 
 	useImperativeHandle(
 		ref,
 		() => ({
 			getMode: () => editorMode,
+			getPreviewSnapshot,
 		}),
-		[editorMode],
+		[editorMode, getPreviewSnapshot],
 	);
 
 	return nodeId ? (
 		<FileEditorInner
+			previewRef={previewRef}
+			isActive={isActive}
 			nodeId={nodeId}
 			writeBlockedReason={writeBlockedReason}
 			pendingUpdateId={pendingUpdateId}
@@ -866,6 +929,8 @@ export function FileEditor(props: FileEditor_Props) {
 			commentsPortalHost={commentsPortalHost}
 			toolbarPortalHost={toolbarPortalHost}
 			onEditorModeChange={onEditorModeChange}
+			onAutomaticEditorModeChange={onAutomaticEditorModeChange}
+			onPreviewSnapshotChange={onPreviewSnapshotChange}
 			topStickyFloatingSlot={topStickyFloatingSlot}
 			topViewZoneSlot={topViewZoneSlot}
 		/>

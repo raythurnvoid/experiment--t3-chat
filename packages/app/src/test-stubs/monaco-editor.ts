@@ -71,6 +71,12 @@ export const css = {
 	},
 };
 
+export const html = {
+	htmlDefaults: {
+		setModeConfiguration() {},
+	},
+};
+
 export const typescript = {
 	typescriptDefaults: {
 		setModeConfiguration() {},

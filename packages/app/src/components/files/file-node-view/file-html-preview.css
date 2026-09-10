@@ -1,0 +1,40 @@
+@layer components {
+	.FileHtmlPreview {
+		display: flex;
+		flex: 1 1 auto;
+		flex-direction: column;
+		gap: 12px;
+		min-width: 0;
+		min-height: 400px;
+		padding: 16px;
+	}
+
+	.FileHtmlPreview-toolbar,
+	.FileHtmlPreview-source {
+		display: flex;
+		align-items: center;
+		flex-wrap: wrap;
+		gap: 8px;
+	}
+
+	.FileHtmlPreview-status,
+	.FileHtmlPreview-message {
+		margin: 0;
+		font-size: 0.875rem;
+		color: var(--gray-700);
+	}
+
+	.FileHtmlPreview-message {
+		padding: 16px 0;
+		overflow-wrap: anywhere;
+	}
+
+	.FileHtmlPreview-frame {
+		flex: 1 1 auto;
+		width: 100%;
+		min-height: 360px;
+		border: 1px solid var(--gray-300);
+		border-radius: 8px;
+		background: white;
+	}
+}

@@ -6145,26 +6145,30 @@ describe("bash_run_command", () => {
 		expect(readBack.stdout).toBe("hi\n more\n");
 	});
 
-	test("redirect into a .json file stores the bytes exactly", async () => {
+	test.each([
+		{ name: "data.json", contentType: "application/json", text: '{"port": 9090}' },
+		{ name: "brief.html", contentType: "text/html;charset=utf-8", text: "<!doctype html><p>Brief</p>" },
+		{ name: "brief.htm", contentType: "text/html;charset=utf-8", text: "<!doctype html><p>Brief</p>" },
+	])("redirect into $name stores the bytes exactly", async ({ name, contentType, text }) => {
 		const runner = await create_bash_runner();
 
-		const written = await runner.run(`printf '{"port": 9090}' > ${test_db_files_mount}/data.json`);
+		const written = await runner.run(`printf '${text}' > ${test_db_files_mount}/${name}`);
 		// The named break-on-purpose line: a re-added Markdown-only write gate refuses here.
 		expect(written.metadata.exitCode).toBe(0);
 		expect(written.stderr).toBe("");
 
 		// Read-back before byte equality: with the fix off, no file exists at this path.
-		const destNode = await get_seeded_node(runner, "/data.json");
-		expect(destNode.contentType).toBe("application/json");
+		const destNode = await get_seeded_node(runner, `/${name}`);
+		expect(destNode.contentType).toBe(contentType);
 		expect(destNode.textKind).toBe("plain_text");
 		const pendingRows = await list_pending_updates(runner);
 		expect(pendingRows).toHaveLength(1);
 		expect(pendingRows[0]!.fileNodeId).toBe(destNode._id);
 
 		// Byte equality: plain text stores bytes exactly, with no added newline.
-		const readBack = await runner.run(`cat ${test_db_files_mount}/data.json`);
+		const readBack = await runner.run(`cat ${test_db_files_mount}/${name}`);
 		expect(readBack.metadata.exitCode).toBe(0);
-		expect(readBack.stdout).toBe('{"port": 9090}');
+		expect(readBack.stdout).toBe(text);
 	});
 
 	test("heredoc and append writes to plain text files stay byte-exact", async () => {
@@ -6261,37 +6265,45 @@ describe("bash_run_command", () => {
 		});
 	});
 
-	test("mv renames a plain text file across extensions and accepting keeps the stored type", async () => {
-		const runner = await create_bash_runner({
-			extraFiles: [{ path: "/data/notes.json", content: '{"note": true}\n' }],
-		});
-		const nodeId = await get_seeded_node_id(runner, "/data/notes.json");
+	test.each([
+		{ source: "notes.json", destination: "notes.yaml", extension: "yaml", contentType: "application/json" },
+		{ source: "notes.txt", destination: "notes.html", extension: "html", contentType: "text/plain;charset=utf-8" },
+	])(
+		"mv renames $source to $destination and accepting keeps the stored type",
+		async ({ source, destination, extension, contentType }) => {
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: `/data/${source}`, content: '{"note": true}\n' }],
+			});
+			const nodeId = await get_seeded_node_id(runner, `/data/${source}`);
 
-		const moved = await runner.run(`mv ${test_db_files_mount}/data/notes.json ${test_db_files_mount}/data/notes.yaml`);
-		expect(moved.metadata.exitCode).toBe(0);
-		expect(moved.stdout).toBe("pending move created: /data/notes.json -> /data/notes.yaml — review in Files\n");
+			const moved = await runner.run(
+				`mv ${test_db_files_mount}/data/${source} ${test_db_files_mount}/data/${destination}`,
+			);
+			expect(moved.metadata.exitCode).toBe(0);
+			expect(moved.stdout).toBe(`pending move created: /data/${source} -> /data/${destination} — review in Files\n`);
 
-		const asUser = runner.t.withIdentity({
-			issuer: "https://clerk.test",
-			subject: "clerk-bash-subtype-rename-accept",
-			external_id: runner.seeded.userId,
-			email: "bash-subtype-rename-accept@test.local",
-		});
-		const accepted = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
-			membershipId: runner.seeded.membershipId,
-			nodeId,
-		});
-		expect(accepted._nay).toBeUndefined();
+			const asUser = runner.t.withIdentity({
+				issuer: "https://clerk.test",
+				subject: "clerk-bash-subtype-rename-accept",
+				external_id: runner.seeded.userId,
+				email: "bash-subtype-rename-accept@test.local",
+			});
+			const accepted = await asUser.mutation(api.files_pending_updates.apply_file_pending_move, {
+				membershipId: runner.seeded.membershipId,
+				nodeId,
+			});
+			expect(accepted._nay).toBeUndefined();
 
-		// The accept patches the name and the extension index. The stored type stays: a rename
-		// never changes what the file is.
-		const renamed = await runner.t.run((ctx) => ctx.db.get("files_nodes", nodeId));
-		expect(renamed?.name).toBe("notes.yaml");
-		expect(renamed?.path).toBe("/data/notes.yaml");
-		expect(renamed?.lowercaseExtension).toBe("yaml");
-		expect(renamed?.contentType).toBe("application/json");
-		expect(renamed?.textKind).toBe("plain_text");
-	});
+			// The accept patches the name and the extension index. The stored type stays: a rename
+			// never changes what the file is.
+			const renamed = await runner.t.run((ctx) => ctx.db.get("files_nodes", nodeId));
+			expect(renamed?.name).toBe(destination);
+			expect(renamed?.path).toBe(`/data/${destination}`);
+			expect(renamed?.lowercaseExtension).toBe(extension);
+			expect(renamed?.contentType).toBe(contentType);
+			expect(renamed?.textKind).toBe("plain_text");
+		},
+	);
 
 	test("renames keep the stored type for any extension, and mv -f across types proposes a structural replace", async () => {
 		const runner = await create_bash_runner({
@@ -6630,6 +6642,38 @@ describe("bash_run_command", () => {
 		expect(saved.stdout).toContain("unique-token");
 		expect(saved.stdout).not.toContain("a: 1");
 	});
+
+	test.each([false, true])(
+		"cp carries HTML into a text destination with collaboration off: %s",
+		async (nonCollaborative) => {
+			const text = "<!doctype html>\n<p>Copied brief</p>\n";
+			const runner = await create_bash_runner({
+				extraFiles: [
+					{ path: "/data/brief.html", content: text, contentType: "text/html;charset=utf-8" },
+					{ path: "/data/target.txt", content: "Old text\n", nonCollaborative, withRealYjsSnapshot: !nonCollaborative },
+				],
+			});
+			const targetBefore = await get_seeded_node(runner, "/data/target.txt");
+			const copied = await runner.run(
+				`cp ${test_db_files_mount}/data/brief.html ${test_db_files_mount}/data/target.txt`,
+			);
+			expect(copied.metadata.exitCode).toBe(0);
+			expect(copied.stderr).toBe("");
+			expect((await get_seeded_node(runner, "/data/target.txt")).contentType).toBe("text/plain;charset=utf-8");
+
+			await accept_pending_replacement_for_test(runner, targetBefore._id);
+			const targetAfter = await get_seeded_node(runner, "/data/target.txt");
+			expect(targetAfter).toMatchObject({
+				_id: targetBefore._id,
+				contentType: "text/html;charset=utf-8",
+				textKind: "plain_text",
+				collaborationEnabled: !nonCollaborative,
+			});
+			expect(await version_snapshot_asset_ids(runner, targetBefore._id)).toContain(targetBefore.assetId);
+			expect(await list_pending_updates_for_node(runner, targetBefore._id)).toHaveLength(0);
+			expect((await runner.run(`cat ${test_db_files_mount}/data/target.txt`)).stdout).toBe(text);
+		},
+	);
 
 	test("cp onto an existing collaborative file proposes the source's whole file in both directions", async () => {
 		const runner = await create_bash_runner({

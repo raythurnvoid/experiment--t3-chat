@@ -19,7 +19,7 @@ import {
 	file_editor_get_size_status_message,
 	file_editor_warn_unsaved_text_dropped,
 } from "@/lib/file-editor.ts";
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useImperativeHandle, useMemo, useRef, useState, type Ref } from "react";
 import { createPortal } from "react-dom";
 import { Editor, type EditorProps } from "@monaco-editor/react";
 import { editor as monaco_editor, Range as monaco_Range } from "monaco-editor";
@@ -43,6 +43,7 @@ import { FileEditorCommentsSidebar } from "../file-editor-comments-sidebar.tsx";
 import { FileEditorPlainTextSkeleton } from "./file-editor-plain-text-skeleton.tsx";
 import { FileEditorMonacoTopViewZone } from "../file-editor-monaco-top-view-zone.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
+import type { FileEditor_Ref } from "../file-editor.tsx";
 
 // #region toolbar
 type FileEditorPlainTextToolbarActions_ClassNames =
@@ -269,6 +270,8 @@ type FileEditorPlainText_LoadedContent =
 	  };
 
 type FileEditorPlainTextInner_Props = {
+	ref?: Ref<Pick<FileEditor_Ref, "getPreviewSnapshot">>;
+	isActive: boolean;
 	nodeId: app_convex_Id<"files_nodes">;
 	editable: boolean;
 	/** The node's document shape, resolved by the snapshot fetch; Save/Sync dispatch on it. */
@@ -285,10 +288,13 @@ type FileEditorPlainTextInner_Props = {
 	serverSequence?: number;
 	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
+	onPreviewSnapshotChange?: () => void;
 };
 
 const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: FileEditorPlainTextInner_Props) {
 	const {
+		ref,
+		isActive,
 		initialData,
 		nodeId,
 		editable,
@@ -301,6 +307,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 		serverSequence,
 		topStickyFloatingSlot,
 		topViewZoneSlot,
+		onPreviewSnapshotChange,
 	} = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
@@ -483,6 +490,23 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	const getCurrentText = useFn(() => {
 		return modelRef.current?.getValue() ?? initialData.text;
 	});
+
+	const getPreviewSnapshot = useFn<FileEditor_Ref["getPreviewSnapshot"]>(() => {
+		const model = modelRef.current;
+		if (!editorRef.current || !model) return null;
+		const text = model.getValue();
+		return {
+			text,
+			sourceKind: "editor_draft",
+			isDirty: text !== baselineMarkdownRef.current,
+			membershipId,
+			nodeId,
+			rootKind,
+			yjsLastSequenceId: yjsLastSequenceIdRef.current,
+			pendingUpdate: null,
+		};
+	});
+	const handlePreviewSnapshotChange = useFn(() => onPreviewSnapshotChange?.());
 
 	// No `editable` guard here on purpose: this runs only after the backend already committed the
 	// restore, so skipping the refresh when permission was removed mid-restore would leave the
@@ -839,8 +863,19 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 
 		editor.onDidChangeModelContent(() => {
 			scheduleDirtyCheck();
+			handlePreviewSnapshotChange();
 		});
 	});
+
+	useImperativeHandle(ref, () => ({ getPreviewSnapshot }), [getPreviewSnapshot]);
+
+	useEffect(() => {
+		handlePreviewSnapshotChange();
+	}, [mountedEditor, isSaving, isSyncing, workingYjsDocSequence, handlePreviewSnapshotChange]);
+
+	useEffect(() => {
+		if (isActive) mountedEditor?.layout();
+	}, [isActive, mountedEditor]);
 
 	// The permission query can resolve or change after Monaco mounts. Update the live editor instead
 	// of rebuilding its model, which would drop the cursor and undo history.
@@ -851,9 +886,8 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 	/**
 	 * Warn before this editor goes away with text that was never saved.
 	 *
-	 * Only a file with collaboration turned off can lose text this way. A collaborative file keeps
-	 * every keystroke in its shared document. Read the model instead of the debounced dirty state,
-	 * because that state is up to 250 ms behind and would miss the last words typed.
+	 * This warning covers files with collaboration off. Read the model because the debounced dirty
+	 * state is up to 250 ms behind and would miss the last words typed.
 	 */
 	const warnIfUnsavedTextIsDropped = useFn(() => {
 		if (initialData.kind !== "non_collaborative") {
@@ -929,6 +963,8 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 });
 
 export type FileEditorPlainText_Props = {
+	ref?: Ref<Pick<FileEditor_Ref, "getPreviewSnapshot">>;
+	isActive?: boolean;
 	nodeId: app_convex_Id<"files_nodes">;
 	editable: boolean;
 	/**
@@ -950,10 +986,13 @@ export type FileEditorPlainText_Props = {
 	topSafeArea?: number;
 	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
+	onPreviewSnapshotChange?: () => void;
 };
 
 export const FileEditorPlainText = memo(function FileEditorPlainText(props: FileEditorPlainText_Props) {
 	const {
+		ref,
+		isActive = true,
 		nodeId,
 		editable,
 		monacoLanguageId,
@@ -966,6 +1005,7 @@ export const FileEditorPlainText = memo(function FileEditorPlainText(props: File
 		topSafeArea,
 		topStickyFloatingSlot,
 		topViewZoneSlot,
+		onPreviewSnapshotChange,
 	} = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
@@ -1039,6 +1079,8 @@ export const FileEditorPlainText = memo(function FileEditorPlainText(props: File
 		</div>
 	) : (
 		<FileEditorPlainTextInner
+			ref={ref}
+			isActive={isActive}
 			key={
 				fileContentData.kind === "collaborative"
 					? `collaborative:${fileContentData.yjsLastSequenceId}`
@@ -1056,6 +1098,7 @@ export const FileEditorPlainText = memo(function FileEditorPlainText(props: File
 			serverSequence={serverSequence}
 			topStickyFloatingSlot={topStickyFloatingSlot}
 			topViewZoneSlot={topViewZoneSlot}
+			onPreviewSnapshotChange={onPreviewSnapshotChange}
 		/>
 	);
 });

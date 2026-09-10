@@ -1,0 +1,9 @@
+{
+	"$schema": "https://unpkg.com/wrangler/config-schema.json",
+	"name": "bonobo-file-preview",
+	"compatibility_date": "2026-09-09",
+	"assets": {
+		"directory": "./dist",
+		"not_found_handling": "single-page-application",
+	},
+}

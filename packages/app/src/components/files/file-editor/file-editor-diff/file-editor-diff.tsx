@@ -3,7 +3,7 @@ import { Check, Undo2 } from "lucide-react";
 import { MyTooltip, MyTooltipArrow, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
 import { app_monaco_THEME_NAME_DARK } from "@/lib/app-monaco-config.ts";
 import { CoalescedRunner, usePromiseValue } from "@/lib/async.ts";
-import React, { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { memo, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { DiffEditor, type DiffEditorProps } from "@monaco-editor/react";
 import { editor as monaco_editor, Range as monaco_Range } from "monaco-editor";
@@ -59,6 +59,7 @@ import { FileEditorSnapshotsModal } from "../file-editor-snapshots-modal.tsx";
 import { Result } from "common/errors-as-values-utils.ts";
 import { FileEditorDiffSkeleton } from "./file-editor-diff-skeleton.tsx";
 import { FileEditorMonacoTopViewZone } from "../file-editor-monaco-top-view-zone.tsx";
+import type { FileEditor_Ref } from "../file-editor.tsx";
 
 // #region toolbar
 type FileEditorDiffToolbarActions_ClassNames =
@@ -443,7 +444,9 @@ class FileEditorDiffWidgetAcceptDiscard_Monaco implements monaco_editor.IContent
 			return;
 		}
 
-		this.node.style.transform = `translate3d(102px, 91px, 0)`;
+		// File tabs and status rows can move the editor below the page header.
+		this.node.style.top = `calc(anchor(top) + ${coordinate.top}px)`;
+		this.node.style.transform = `translate3d(102px, 0, 0)`;
 		this.node.style.display = "flex";
 		this.node.style.left = `anchor(left)`;
 		this.node.style.setProperty("position-anchor", this.args.anchorName);
@@ -769,6 +772,8 @@ type FileEditorDiff_CssVars = {
 };
 
 export type FileEditorDiff_Props = {
+	ref?: React.Ref<Pick<FileEditor_Ref, "getPreviewSnapshot">>;
+	isActive?: boolean;
 	className?: string;
 	nodeId: app_convex_Id<"files_nodes">;
 	editable: boolean;
@@ -805,6 +810,7 @@ export type FileEditorDiff_Props = {
 	serverSequence?: number;
 	topSafeArea?: number;
 	onExit: () => void;
+	onPreviewSnapshotChange?: () => void;
 	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
 };
@@ -844,6 +850,8 @@ type FileEditorDiffInner_Props = FileEditorDiff_Props & {
 
 const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorDiffInner_Props) {
 	const {
+		ref,
+		isActive = true,
 		className,
 		nodeId,
 		editable,
@@ -871,6 +879,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		onSave,
 		onClickSync,
 		onClickDiscardStaleProposal,
+		onPreviewSnapshotChange,
 		topStickyFloatingSlot,
 		topViewZoneSlot,
 	} = props;
@@ -1522,6 +1531,45 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		return editorModelsRef.current?.original.getValue() ?? editorContentState.stagedMarkdown;
 	});
 
+	const getPreviewSnapshot = useFn<FileEditor_Ref["getPreviewSnapshot"]>(() => {
+		const model = editorModelsRef.current?.modified;
+		if (
+			!model ||
+			isUnmountingRef.current ||
+			needsPreparation ||
+			isHistoryChanging ||
+			isBranchReloading ||
+			needsDraftReloadRef.current ||
+			isRestoringProposal
+		) {
+			return null;
+		}
+		const confirmed = getConfirmedDraft();
+		const proposal = confirmed.pendingUpdate;
+		const text = model.getValue();
+		return {
+			text,
+			sourceKind: proposal ? "proposed_changes" : "editor_draft",
+			isDirty: text !== confirmed.unstagedMarkdown,
+			membershipId,
+			nodeId,
+			rootKind,
+			yjsLastSequenceId: confirmed.yjsLastSequenceId ?? null,
+			pendingUpdate: proposal
+				? {
+						_id: proposal._id,
+						updatedAt: proposal.updatedAt,
+						baseStateId: proposal.baseStateId,
+						stagedStateId: proposal.stagedStateId,
+						unstagedStateId: proposal.unstagedStateId,
+						baseAssetId: proposal.baseAssetId,
+						baseLineageGeneration: proposal.baseLineageGeneration,
+					}
+				: null,
+		};
+	});
+	const handlePreviewSnapshotChange = useFn(() => onPreviewSnapshotChange?.());
+
 	// No `editable` guard here on purpose: this runs only after the backend already committed the
 	// restore, so skipping the refresh when permission was removed mid-restore would leave the
 	// editor showing stale content. The pre-action gate lives in the snapshots modal.
@@ -1733,6 +1781,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 
 		const disposeListenersObjects = [
 			editor.getOriginalEditor().onDidChangeModelContent(() => {
+				handlePreviewSnapshotChange();
 				if (ignoredProgrammaticModelChangesRef.current > 0) {
 					ignoredProgrammaticModelChangesRef.current -= 1;
 					return;
@@ -1752,6 +1801,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 				scheduleUpsertPendingUpdate();
 			}),
 			editor.getModifiedEditor().onDidChangeModelContent(() => {
+				handlePreviewSnapshotChange();
 				if (ignoredProgrammaticModelChangesRef.current > 0) {
 					ignoredProgrammaticModelChangesRef.current -= 1;
 					return;
@@ -1878,7 +1928,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 	// models. On foregrounding, detect that settled-but-stale state and rebuild the diff session
 	// so the editor always lands in the plain live-file view.
 	const handleVisibilityChangeDiffRecovery = useFn(() => {
-		if (document.visibilityState !== "visible") return;
+		if (!isActive || document.visibilityState !== "visible") return;
 
 		const editor = editorRef.current;
 		const models = editorModelsRef.current;
@@ -2080,6 +2130,28 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		preparedRestoreUpdate,
 	]);
 
+	useImperativeHandle(ref, () => ({ getPreviewSnapshot }), [getPreviewSnapshot]);
+
+	useEffect(() => {
+		handlePreviewSnapshotChange();
+	}, [
+		mountedModifiedEditor,
+		editorContentState,
+		draftSyncVersion,
+		isHistoryChanging,
+		isBranchReloading,
+		needsPreparation,
+		needsDraftReload,
+		isRestoringProposal,
+		handlePreviewSnapshotChange,
+	]);
+
+	useEffect(() => {
+		if (!isActive) return;
+		editorRef.current?.layout();
+		handleVisibilityChangeDiffRecovery();
+	}, [isActive, mountedModifiedEditor, handleVisibilityChangeDiffRecovery]);
+
 	// Keep the models mounted to preserve the cursor and undo history. A different document,
 	// base, or lineage blocks typing until its branches load. An ordinary page reload keeps
 	// local typing enabled; draft writes and Save wait until the stored branches catch up.
@@ -2090,6 +2162,11 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 	// Track focus inside the toolbar host, so the effect below can keep focus in the toolbar when
 	// the toolbar is swapped. See `toolbarFocusWithinRef`.
 	useEffect(() => {
+		if (!isActive) {
+			toolbarFocusWithinRef.current = false;
+			refocusToolbarWhenIdleRef.current = false;
+			return;
+		}
 		const handleFocusIn = () => {
 			toolbarFocusWithinRef.current = true;
 		};
@@ -2109,13 +2186,13 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 			toolbarPortalHost.removeEventListener("focusin", handleFocusIn);
 			toolbarPortalHost.removeEventListener("focusout", handleFocusOut);
 		};
-	}, [toolbarPortalHost]);
+	}, [toolbarPortalHost, isActive]);
 
 	// The stale flip swaps the whole toolbar, in both directions: a member save makes the proposal
 	// stale, and preparation makes a fresh one. A button that had focus is gone after
 	// the swap, so focus would fall to `body`. Move it to the first button of the new toolbar.
 	useEffect(() => {
-		if (!toolbarFocusWithinRef.current) return;
+		if (!isActive || !toolbarFocusWithinRef.current) return;
 
 		const button = toolbarPortalHost.querySelector<HTMLElement>("button:not(:disabled)");
 		if (button) {
@@ -2125,12 +2202,12 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 		// The fresh toolbar is busy while the rewritten branches load (`isBranchReloading` in the
 		// parent), so every button is disabled. Finish the move once it is idle.
 		refocusToolbarWhenIdleRef.current = true;
-	}, [needsPreparation, preparationError, toolbarPortalHost]);
+	}, [needsPreparation, preparationError, toolbarPortalHost, isActive]);
 
 	// A Save disables every button while it runs, and the browser drops the focus of a disabled
 	// button to `body`. `doSave` sets the flag; finish the move here once the toolbar is idle.
 	useEffect(() => {
-		if (isSaving || isSyncing || !refocusToolbarWhenIdleRef.current) return;
+		if (!isActive || isSaving || isSyncing || !refocusToolbarWhenIdleRef.current) return;
 
 		refocusToolbarWhenIdleRef.current = false;
 		// The first idle render still compares the panes with the old branches, so the Save button
@@ -2143,7 +2220,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 			toolbarPortalHost.querySelector<HTMLElement>("button:not(:disabled)")?.focus();
 		}, 0);
 		return () => clearTimeout(timeoutId);
-	}, [isSaving, isSyncing, toolbarPortalHost]);
+	}, [isSaving, isSyncing, toolbarPortalHost, isActive]);
 
 	// Name each pane for screen readers. This has to run after the mount, not inside `onMount`:
 	// Monaco rebuilds the two inner editors' options right after the diff editor is created, and
@@ -2320,7 +2397,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 					<FileEditorCommentsSidebar threadIds={commentThreadIds} canResolve={editable} />,
 					commentsPortalHost,
 				)}
-			{editable && !needsPreparation && !isBranchReloading && !needsDraftReload
+			{isActive && editable && !needsPreparation && !isBranchReloading && !needsDraftReload
 				? contentWidgets.map((widget) =>
 						createPortal(
 							<FileEditorDiffWidgetAcceptDiscard
@@ -2338,6 +2415,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 
 export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff_Props) {
 	const {
+		isActive = true,
 		nodeId,
 		editable,
 		rootKind,
@@ -2777,6 +2855,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 	// Decode the old family first so a failed preparation still has text to read and copy.
 	// Each request belongs to one proposal and one document; a later query cancels its result.
 	useEffect(() => {
+		if (!isActive) return;
 		if ((!needsPreparation && !restorePreparationRequested) || isBranchReloading || !pendingUpdate) return;
 		preparingPendingUpdateIdRef.current = pendingUpdate._id;
 		if (!editable) {
@@ -2823,6 +2902,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 		editable,
 		preparationAttempt,
 		restorePreparationRequested,
+		isActive,
 	]);
 
 	// Reset state when `nodeId` changes
@@ -3289,6 +3369,8 @@ type FileEditorDiffNonCollab_LoadedContent = {
 };
 
 type FileEditorDiffNonCollabInner_Props = {
+	ref?: React.Ref<Pick<FileEditor_Ref, "getPreviewSnapshot">>;
+	isActive: boolean;
 	nodeId: app_convex_Id<"files_nodes">;
 	editable: boolean;
 	/**
@@ -3302,12 +3384,15 @@ type FileEditorDiffNonCollabInner_Props = {
 	toolbarPortalHost: HTMLElement;
 	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
+	onPreviewSnapshotChange?: () => void;
 };
 
 const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 	props: FileEditorDiffNonCollabInner_Props,
 ) {
 	const {
+		ref,
+		isActive,
 		initialData,
 		nodeId,
 		editable,
@@ -3318,6 +3403,7 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 		toolbarPortalHost,
 		topStickyFloatingSlot,
 		topViewZoneSlot,
+		onPreviewSnapshotChange,
 	} = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
@@ -3478,6 +3564,23 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 		return editorModelsRef.current?.modified.getValue() ?? initialData.text;
 	});
 
+	const getPreviewSnapshot = useFn<FileEditor_Ref["getPreviewSnapshot"]>(() => {
+		const models = editorModelsRef.current;
+		if (!models) return null;
+		const text = models.modified.getValue();
+		return {
+			text,
+			sourceKind: "editor_draft",
+			isDirty: text !== models.original.getValue(),
+			membershipId,
+			nodeId,
+			rootKind: initialData.rootKind,
+			yjsLastSequenceId: null,
+			pendingUpdate: null,
+		};
+	});
+	const handlePreviewSnapshotChange = useFn(() => onPreviewSnapshotChange?.());
+
 	// No `editable` guard here on purpose: this runs only after the backend already committed the
 	// restore, so skipping the refresh when permission was removed mid-restore would leave the
 	// editor showing stale content. The pre-action gate lives in the snapshots modal.
@@ -3637,8 +3740,19 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 
 		editor.getModifiedEditor().onDidChangeModelContent(() => {
 			scheduleDirtyCheck();
+			handlePreviewSnapshotChange();
 		});
 	});
+
+	useImperativeHandle(ref, () => ({ getPreviewSnapshot }), [getPreviewSnapshot]);
+
+	useEffect(() => {
+		handlePreviewSnapshotChange();
+	}, [mountedModifiedEditor, isSaving, handlePreviewSnapshotChange]);
+
+	useEffect(() => {
+		if (isActive) editorRef.current?.layout();
+	}, [isActive, mountedModifiedEditor]);
 
 	// The permission query can resolve or change after Monaco mounts. Update the live editor instead
 	// of rebuilding its models, which would drop the cursor and undo history.
@@ -3758,6 +3872,8 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 });
 
 export type FileEditorDiffNonCollab_Props = {
+	ref?: React.Ref<Pick<FileEditor_Ref, "getPreviewSnapshot">>;
+	isActive?: boolean;
 	nodeId: app_convex_Id<"files_nodes">;
 	editable: boolean;
 	/**
@@ -3770,6 +3886,7 @@ export type FileEditorDiffNonCollab_Props = {
 	topSafeArea?: number;
 	topStickyFloatingSlot?: React.ReactNode;
 	topViewZoneSlot?: React.ReactNode;
+	onPreviewSnapshotChange?: () => void;
 };
 
 /**
@@ -3779,6 +3896,8 @@ export type FileEditorDiffNonCollab_Props = {
  */
 export const FileEditorDiffNonCollab = memo(function FileEditorDiffNonCollab(props: FileEditorDiffNonCollab_Props) {
 	const {
+		ref,
+		isActive = true,
 		nodeId,
 		editable,
 		monacoLanguageId,
@@ -3788,6 +3907,7 @@ export const FileEditorDiffNonCollab = memo(function FileEditorDiffNonCollab(pro
 		topSafeArea,
 		topStickyFloatingSlot,
 		topViewZoneSlot,
+		onPreviewSnapshotChange,
 	} = props;
 
 	const { membershipId } = AppTenantProvider.useContext();
@@ -3827,6 +3947,8 @@ export const FileEditorDiffNonCollab = memo(function FileEditorDiffNonCollab(pro
 	) : (
 		<FileEditorDiffNonCollabInner
 			key={`non_collaborative:${nodeId}`}
+			ref={ref}
+			isActive={isActive}
 			nodeId={nodeId}
 			editable={editable}
 			monacoLanguageId={monacoLanguageId}
@@ -3837,6 +3959,7 @@ export const FileEditorDiffNonCollab = memo(function FileEditorDiffNonCollab(pro
 			toolbarPortalHost={toolbarPortalHost}
 			topStickyFloatingSlot={topStickyFloatingSlot}
 			topViewZoneSlot={topViewZoneSlot}
+			onPreviewSnapshotChange={onPreviewSnapshotChange}
 		/>
 	);
 });

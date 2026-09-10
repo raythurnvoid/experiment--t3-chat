@@ -446,7 +446,8 @@ describe("files_normalize_content_type", () => {
 		["text/x-yaml", "application/yaml"],
 		["application/javascript", "text/javascript"],
 		["Image/PNG", "image/png"],
-		["text/html; charset=ISO-8859-1", "text/html;charset=iso-8859-1"],
+		["text/html", "text/html;charset=utf-8"],
+		["text/html; charset=ISO-8859-1", "text/html;charset=utf-8"],
 		["application/octet-stream", "application/octet-stream"],
 	] satisfies Array<[string, string]>)("normalizes %s to %s", (input, expected) => {
 		expect(files_normalize_content_type(input)).toBe(expected);
@@ -465,13 +466,14 @@ describe("files_editable_text_shape_of", () => {
 		["text/markdown;charset=utf-8", { contentType: "text/markdown;charset=utf-8", rootKind: "rich_text" }],
 		["text/markdown", { contentType: "text/markdown;charset=utf-8", rootKind: "rich_text" }],
 		["text/plain", { contentType: "text/plain;charset=utf-8", rootKind: "plain_text" }],
+		["text/html", { contentType: "text/html;charset=utf-8", rootKind: "plain_text" }],
+		["TEXT/HTML; charset=UTF-8", { contentType: "text/html;charset=utf-8", rootKind: "plain_text" }],
 		["application/json", { contentType: "application/json", rootKind: "plain_text" }],
 		["application/x-yaml", { contentType: "application/yaml", rootKind: "plain_text" }],
 		["text/css", { contentType: "text/css", rootKind: "plain_text" }],
 		["text/typescript", { contentType: "text/typescript", rootKind: "plain_text" }],
 		["application/sql", { contentType: "application/sql", rootKind: "plain_text" }],
-		// Active content and stored bytes never become a text document.
-		["text/html", null],
+		// Other types stay stored bytes.
 		["image/svg+xml", null],
 		["image/png", null],
 		["application/pdf", null],
@@ -493,6 +495,8 @@ describe("files_monaco_language_id_of_content_type", () => {
 		["text/markdown;charset=utf-8", "markdown"],
 		["text/markdown", "markdown"],
 		["text/plain;charset=utf-8", "plaintext"],
+		["text/html;charset=utf-8", "html"],
+		["text/html", "html"],
 		["application/json", "json"],
 		["application/yaml", "yaml"],
 		["text/yaml", "yaml"],
@@ -528,9 +532,10 @@ describe("files_guess_content_type_from_name", () => {
 		["view.tsx", "text/typescript"],
 		["run.sh", "application/x-sh"],
 		["query.sql", "application/sql"],
+		["page.html", "text/html;charset=utf-8"],
+		["PAGE.HTM", "text/html;charset=utf-8"],
 		// The name is only a hint. Unknown extensions and names without one hint at nothing.
 		["photo.png", null],
-		["page.html", null],
 		["script.py", null],
 		[".json", null],
 		[".gitignore", null],
@@ -554,6 +559,12 @@ describe("files_default_text_shape_for_name", () => {
 			contentType: "application/json",
 			rootKind: "plain_text",
 		});
+		for (const name of ["brief.html", "brief.htm"]) {
+			expect(files_default_text_shape_for_name(name)).toEqual({
+				contentType: "text/html;charset=utf-8",
+				rootKind: "plain_text",
+			});
+		}
 		expect(files_default_text_shape_for_name("notes")).toEqual({
 			contentType: "text/plain;charset=utf-8",
 			rootKind: "plain_text",
@@ -579,6 +590,12 @@ describe("files_resolve_upload_content_type", () => {
 		expect(files_resolve_upload_content_type({ contentType: "application/octet-stream", fileName: "notes.md" })).toBe(
 			"application/octet-stream",
 		);
+		expect(files_resolve_upload_content_type({ contentType: "text/plain", fileName: "brief.html" })).toBe(
+			"text/plain;charset=utf-8",
+		);
+		expect(files_resolve_upload_content_type({ contentType: "text/html", fileName: "brief.txt" })).toBe(
+			"text/html;charset=utf-8",
+		);
 	});
 
 	test("the name is a hint only when the caller sent no type", () => {
@@ -587,6 +604,9 @@ describe("files_resolve_upload_content_type", () => {
 		);
 		expect(files_resolve_upload_content_type({ contentType: undefined, fileName: "photo.png" })).toBe(
 			"application/octet-stream",
+		);
+		expect(files_resolve_upload_content_type({ contentType: undefined, fileName: "brief.htm" })).toBe(
+			"text/html;charset=utf-8",
 		);
 	});
 
@@ -601,7 +621,7 @@ describe("files_get_signed_download_serving", () => {
 		["video/mp4", "video/mp4"],
 		["audio/mpeg", "application/octet-stream"],
 		["image/svg+xml", "application/octet-stream"],
-		["text/html", "application/octet-stream"],
+		["text/html", "text/html;charset=utf-8"],
 		["text/plain", "text/plain;charset=utf-8"],
 	])("forces %s to download without changing its safe served type", (contentType, responseContentType) => {
 		const serving = files_get_signed_download_serving({ contentType, fileName: "it's a file.png", download: true });
@@ -626,7 +646,8 @@ describe("files_get_signed_download_serving", () => {
 		["video/mp4", "movie.mp4", "video/mp4", "inline"],
 		// SVG and HTML can run script when served inline, so they always download.
 		["image/svg+xml", "image.svg", "application/octet-stream", "attachment"],
-		["text/html", "page.html", "application/octet-stream", "attachment"],
+		["text/html", "page.html", "text/html;charset=utf-8", "attachment"],
+		["text/html;charset=utf-8", "page.htm", "text/html;charset=utf-8", "attachment"],
 		// Editable text keeps its canonical type but never serves inline.
 		["text/markdown", "notes.md", "text/markdown;charset=utf-8", "attachment"],
 		["application/json", "data.json", "application/json", "attachment"],
@@ -680,6 +701,11 @@ describe("files_node_has_editable_text_content", () => {
 		expect(files_node_has_editable_text_content({ kind: "folder", assetId, textKind: "rich_text" })).toBe(false);
 		expect(files_node_has_editable_text_content({ kind: "file", assetId: null, textKind: "plain_text" })).toBe(false);
 		expect(files_node_has_editable_text_content({ kind: "file", assetId, textKind: null })).toBe(false);
+	});
+
+	test("keeps older HTML blobs stored even when their type supports editable text", () => {
+		const node = { kind: "file" as const, assetId, textKind: null, contentType: "text/html", name: "brief.html" };
+		expect(files_node_has_editable_text_content(node)).toBe(false);
 	});
 });
 

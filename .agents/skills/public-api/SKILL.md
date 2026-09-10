@@ -13,6 +13,8 @@ Plugin UI documents and `/api/v1/*` share the Convex HTTP origin. Their iframe k
 
 A caller is never more powerful than the user behind it. `public_api_http_auth.ts` maps file and plugin-data scopes to their app permission. Routes pass only their scope. File requests also check the actual target; a service account may hold only a file grant, so HTTP entry must not require a workspace-wide account grant. Invoke file writes require both the actor's and the account's current permission. Upload-triggered runs keep their source/sibling ceiling and never pass a selected-writer policy. The plugin-data store keeps its separate actor and private-scope rules. Final file mutations recheck the original credential, membership, consent, target ACL, account grant, and current policy in one transaction.
 
+HTML is an editable text type. New `.html` and `.htm` text writes use `text/html;charset=utf-8` and the `plain_text` shape. An explicit HTML upload uses the normal text conversion pipeline. Existing files keep their stored type and shape; a rename does not convert them. HTML download URLs remain attachments. Built-in Preview uses authorized app reads and does not add an HTTP route or grant a file access scope.
+
 # Principals and scopes
 
 `public_api_authorize_request(ctx, request, { requiredScope, allowedKinds, route })` resolves the Bearer token into one principal kind:
