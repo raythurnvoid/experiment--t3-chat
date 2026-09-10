@@ -647,6 +647,18 @@ Live QA must use the installed frame and read back stored chat and raw transcrip
 
 # Releases
 
+Press host door update on 2026-09-10: `archive-destination` now also archives a destination
+folder that the sealed grant created through `files/write` alone. The host finds that folder by
+its own `plugin-name` label; a folder a member or another plugin made still answers zero. Council
+needed this: a meeting closed before any recording has only its note folder, and its delete used
+to leave `meeting.md` behind. No plugin or Worker code changed; the delete step already called
+the door. SDK 0.20.6 is unmirrored and changes only the README (runtime and types unchanged).
+Live proof in `personal/home`: QA meeting `1216fbc2` was created, its note folder appeared, and
+the page delete archived the folder and the note, cleared the note lock, closed the destination
+record at epoch 1 with zero targets, and ended the row as `deleted_tombstone`. Focused tests: 87
+pass in `public_api_service_uploads.test.ts`; with the label branch disabled on purpose, the two
+note tests fail on `archivedNodes`.
+
 Chitchat 0.8.9 fixes repeated access-feed reads during login renewal. Commit
 `ae732fbd95eda047c2c34748eb8a450777a22045` is published as
 `hn7qdmwjmpy3a2jwd49v8rpns98e258w`. The native development backend is deployed and all four

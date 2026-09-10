@@ -34,6 +34,7 @@ import {
 	files_nodes_db_set_write_policy,
 	type files_nodes_WriteContext,
 } from "./files_nodes.ts";
+import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import { quotas_db_ensure, quotas_db_get } from "./quotas.ts";
 import {
 	r2_create_asset_key,
@@ -1853,10 +1854,15 @@ export async function public_api_service_uploads_db_collect_bounded_descendants(
  * back.
  *
  * The seal is the fence. The door takes no path, so a grant can only ever archive its own
- * destination. The accepted capability, actor permissions, account grants, and current policies
- * must all allow the archive. A member can still have put something of their own in the folder,
- * so a refusal anywhere in the subtree refuses the whole call. The delete workflow fails
- * visibly on a refusal and can be retried once the member clears what blocked it.
+ * destination. The folder must be one this plugin made. Either a live upload target of this
+ * installation created it, or, when this installation has no upload target at the destination at
+ * all, the folder carries the `plugin-name` label of this plugin. The host writes that label on
+ * every node a `files/write` by the grant creates. A member may also set the label by hand, and a
+ * folder at the destination with no such label answers zero. The accepted capability, actor
+ * permissions, account grants, and current policies must all allow the archive. A member can
+ * still have put something of their own in the folder, so a refusal anywhere in the subtree
+ * refuses the whole call. The delete workflow fails visibly on a refusal and can be retried once
+ * the member clears what blocked it.
  *
  * No idempotency key: a replay finds nothing active at the destination and archives zero nodes.
  */
@@ -1885,28 +1891,29 @@ export const archive_destination = internalMutation({
 			// generation, while the stable node id still preserves a member rename.
 			.order("desc")
 			.first();
+
+		let destination: Doc<"files_nodes">;
+		let throughEpoch: number;
+		// Without an upload target, nothing proves this plugin made the folder. A `files/write` by
+		// this grant can still have created it, for example a meeting note written before any
+		// recording. So follow the active folder at the destination only when its `plugin-name`
+		// label names this plugin. A folder with no label, or with another plugin's label, answers
+		// zero, the same as a folder nobody made.
 		if (!stableTarget) {
-			return Result({ _yay: { archivedNodes: 0 } });
-		}
-		if (await db_target_destination_is_closed(ctx, stableTarget)) {
-			return Result({ _yay: { archivedNodes: 0 } });
-		}
-		let destination = await ctx.db.get("files_nodes", stableTarget.destinationNodeId);
-		if (!destination) {
-			// A target proves this folder existed. Refuse instead of telling the caller its delete worked.
-			return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This destination folder no longer exists" } });
-		}
-		if (
-			destination.organizationId !== args.principal.organizationId ||
-			destination.workspaceId !== args.principal.workspaceId ||
-			destination.kind !== "folder"
-		) {
-			return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This destination is no longer a meeting folder" } });
-		}
-		if (destination.archiveOperationId !== null) {
-			// A member can restore an older generation after a newer folder used the same path. Follow
-			// that active folder only when a target proves this installation created that exact node.
-			const restoredDestination = await ctx.db
+			const record = await db_get_destination(ctx, {
+				organizationId: args.principal.organizationId,
+				workspaceId: args.principal.workspaceId,
+				installationId: authorized._yay.installation._id,
+				destinationPath: args.principal.pathPrefix,
+			});
+			// Answer zero when a service archive already closed this destination. A member restore
+			// does not reopen it. Only a new upload target opens the next epoch.
+			if (record && record.closedEpoch >= record.currentEpoch) {
+				return Result({ _yay: { archivedNodes: 0 } });
+			}
+			throughEpoch = record?.currentEpoch ?? 1;
+
+			const labelledFolder = await ctx.db
 				.query("files_nodes")
 				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
 					q
@@ -1916,32 +1923,77 @@ export const archive_destination = internalMutation({
 						.eq("archiveOperationId", null),
 				)
 				.first();
-			const restoredTarget =
-				restoredDestination?.kind === "folder"
-					? await ctx.db
-							.query("plugin_service_storage_targets")
-							.withIndex("by_org_workspace_installation_destinationPath_destinationNode", (q) =>
-								q
-									.eq("organizationId", args.principal.organizationId)
-									.eq("workspaceId", args.principal.workspaceId)
-									.eq("installationId", authorized._yay.installation._id)
-									.eq("destinationPath", args.principal.pathPrefix)
-									.eq("destinationNodeId", restoredDestination._id),
-							)
-							.first()
-					: null;
-			if (!restoredDestination || !restoredTarget || (await db_target_destination_is_closed(ctx, restoredTarget))) {
-				await db_close_destination(ctx, {
+			if (
+				labelledFolder?.kind !== "folder" ||
+				(await files_metadata_db_read_entry(ctx, {
 					organizationId: args.principal.organizationId,
 					workspaceId: args.principal.workspaceId,
-					installationId: authorized._yay.installation._id,
-					destinationPath: args.principal.pathPrefix,
-					throughEpoch: stableTarget.destinationEpoch ?? 1,
-					now,
-				});
+					fileNodeId: labelledFolder._id,
+					key: "plugin-name",
+				})) !== authorized._yay.installation.pluginName
+			) {
 				return Result({ _yay: { archivedNodes: 0 } });
 			}
-			destination = restoredDestination;
+			destination = labelledFolder;
+		} else {
+			if (await db_target_destination_is_closed(ctx, stableTarget)) {
+				return Result({ _yay: { archivedNodes: 0 } });
+			}
+			throughEpoch = stableTarget.destinationEpoch ?? 1;
+
+			const targetFolder = await ctx.db.get("files_nodes", stableTarget.destinationNodeId);
+			if (!targetFolder) {
+				// A target proves this folder existed. Refuse instead of telling the caller its delete worked.
+				return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This destination folder no longer exists" } });
+			}
+			if (
+				targetFolder.organizationId !== args.principal.organizationId ||
+				targetFolder.workspaceId !== args.principal.workspaceId ||
+				targetFolder.kind !== "folder"
+			) {
+				return Result({ _nay: { name: REFUSAL_CONFLICT, message: "This destination is no longer a meeting folder" } });
+			}
+			destination = targetFolder;
+			// A member can restore an older generation after a newer folder used the same path. Follow
+			// that active folder only when a target proves this installation created that exact node.
+			if (targetFolder.archiveOperationId !== null) {
+				const restoredDestination = await ctx.db
+					.query("files_nodes")
+					.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+						q
+							.eq("organizationId", args.principal.organizationId)
+							.eq("workspaceId", args.principal.workspaceId)
+							.eq("path", args.principal.pathPrefix)
+							.eq("archiveOperationId", null),
+					)
+					.first();
+				const restoredTarget =
+					restoredDestination?.kind === "folder"
+						? await ctx.db
+								.query("plugin_service_storage_targets")
+								.withIndex("by_org_workspace_installation_destinationPath_destinationNode", (q) =>
+									q
+										.eq("organizationId", args.principal.organizationId)
+										.eq("workspaceId", args.principal.workspaceId)
+										.eq("installationId", authorized._yay.installation._id)
+										.eq("destinationPath", args.principal.pathPrefix)
+										.eq("destinationNodeId", restoredDestination._id),
+								)
+								.first()
+						: null;
+				if (!restoredDestination || !restoredTarget || (await db_target_destination_is_closed(ctx, restoredTarget))) {
+					await db_close_destination(ctx, {
+						organizationId: args.principal.organizationId,
+						workspaceId: args.principal.workspaceId,
+						installationId: authorized._yay.installation._id,
+						destinationPath: args.principal.pathPrefix,
+						throughEpoch,
+						now,
+					});
+					return Result({ _yay: { archivedNodes: 0 } });
+				}
+				destination = restoredDestination;
+			}
 		}
 
 		// Follow parent ids, not paths. Active and archived trees can hold the same path.
@@ -2042,7 +2094,7 @@ export const archive_destination = internalMutation({
 			workspaceId: args.principal.workspaceId,
 			installationId: authorized._yay.installation._id,
 			destinationPath: args.principal.pathPrefix,
-			throughEpoch: stableTarget.destinationEpoch ?? 1,
+			throughEpoch,
 			now,
 		});
 

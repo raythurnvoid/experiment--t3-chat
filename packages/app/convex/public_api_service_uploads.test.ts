@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { R2 } from "@convex-dev/r2";
 import { Workpool } from "@convex-dev/workpool";
 
 import { api, internal } from "./_generated/api.js";
@@ -7,6 +8,7 @@ import {
 	access_control_db_ensure_role_assignment,
 	access_control_db_set_service_account_grant,
 } from "./access_control.ts";
+import { files_metadata_db_read_entry } from "./files_metadata.ts";
 import { files_nodes_db_create_node_recursively_at_path } from "./files_nodes.ts";
 import { public_api_service_uploads_db_drain_batch } from "./public_api_service_uploads.ts";
 import { test_convex, test_mocks_fill_db_with } from "./setup.test.ts";
@@ -283,6 +285,27 @@ async function read_targets(t: ReturnType<typeof test_convex>) {
 }
 
 /**
+ * The epoch record of the fixture installation's `/meetings/meeting-1` destination, or `null`.
+ */
+async function read_destination(
+	t: ReturnType<typeof test_convex>,
+	fixture: Awaited<ReturnType<typeof seed_installation>>,
+) {
+	return await t.run(async (ctx) =>
+		ctx.db
+			.query("plugin_service_storage_destinations")
+			.withIndex("by_organization_workspace_installation_destinationPath", (q) =>
+				q
+					.eq("organizationId", fixture.organizationId)
+					.eq("workspaceId", fixture.workspaceId)
+					.eq("installationId", fixture.installationId)
+					.eq("destinationPath", "/meetings/meeting-1"),
+			)
+			.first(),
+	);
+}
+
+/**
  * The fixture payer is anonymous, so every billing charge lands on this snapshot meter.
  */
 async function read_meter(t: ReturnType<typeof test_convex>, fixture: Awaited<ReturnType<typeof seed_installation>>) {
@@ -316,6 +339,43 @@ async function simulate_finalizer(
 		eventId: `service-upload-test-${String(target._id)}`,
 	});
 	return canonicalKey;
+}
+
+/**
+ * Write a meeting note through `files/write` with the sealed grant, the way Council does. The note
+ * is a read-only, non-collaborative Markdown file. The write door uploads the file bytes to R2
+ * before it publishes the node, so stub the upload URL and the PUT. No other service upload route
+ * in this file reaches R2.
+ */
+async function write_note(t: ReturnType<typeof test_convex>, sealed: string, path: string) {
+	const generateUploadUrl = vi
+		.spyOn(R2.prototype, "generateUploadUrl")
+		.mockImplementation(async (customKey?: string) => ({
+			key: customKey ?? "test-upload-key",
+			url: "https://r2.test/upload",
+		}));
+	const syncMetadata = vi.spyOn(R2.prototype, "syncMetadata").mockResolvedValue(undefined);
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+			const urlString = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+			return new Response(null, {
+				status: urlString === "https://r2.test/upload" && init?.method === "PUT" ? 200 : 404,
+			});
+		}),
+	);
+	try {
+		return await call(t, "/api/v1/files/write", sealed, {
+			path,
+			content: "# Meeting",
+			nonCollaborative: true,
+			access: { readOnly: true },
+		});
+	} finally {
+		vi.unstubAllGlobals();
+		generateUploadUrl.mockRestore();
+		syncMetadata.mockRestore();
+	}
 }
 
 describe("service upload authorization", () => {
@@ -3448,6 +3508,174 @@ describe("service upload archive", () => {
 
 		const nodes = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());
 		expect(nodes.every((node) => node.archiveOperationId === null)).toBe(true);
+	});
+
+	test("archives a folder that only a note write by this grant created", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture, "/meetings/meeting-1");
+		// A meeting closed before any recording has no upload target. Its folder exists only because
+		// the grant wrote the meeting note.
+		expect((await write_note(t, sealed, "/meetings/meeting-1/meeting.md")).status).toBe(200);
+		expect(await read_targets(t)).toEqual([]);
+		const before = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());
+		expect(before.find((node) => node.path === "/meetings/meeting-1/meeting.md")?.writePolicy).toMatchObject({
+			mode: "writer",
+		});
+
+		const response = await call(t, ARCHIVE_PATH, sealed, {});
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ archivedNodes: 2 });
+
+		const nodes = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());
+		const archived = nodes.filter((node) => node.archiveOperationId !== null);
+		expect(archived.map((node) => node.path).sort()).toEqual(["/meetings/meeting-1", "/meetings/meeting-1/meeting.md"]);
+		expect(new Set(archived.map((node) => node.archiveOperationId)).size).toBe(1);
+		expect(nodes.find((node) => node.path === "/meetings")?.archiveOperationId).toBeNull();
+		// The note lock is cleared so a member can restore the set later.
+		expect(nodes.find((node) => node.path === "/meetings/meeting-1/meeting.md")?.writePolicy).toBeNull();
+		// The archive closes the destination the same way a target-based archive does.
+		expect(await read_destination(t, fixture)).toMatchObject({ currentEpoch: 1, closedEpoch: 1 });
+
+		// A replay finds nothing active at the destination and archives nothing more.
+		const replay = await call(t, ARCHIVE_PATH, sealed, {});
+		expect(replay.status).toBe(200);
+		expect(await replay.json()).toEqual({ archivedNodes: 0 });
+	});
+
+	test("does not archive a folder a member or another plugin made at the destination", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture, "/meetings/meeting-1");
+
+		// A member made the folder at the destination. It has no label, so there is nothing to archive.
+		await t.run(async (ctx) => {
+			await files_nodes_db_create_node_recursively_at_path(ctx, {
+				userId: fixture.userId,
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				parentId: files_ROOT_ID,
+				path: "/meetings/meeting-1/notes.txt",
+				kind: "file",
+				contentType: "text/plain",
+				now: Date.now(),
+			});
+		});
+		const memberResponse = await call(t, ARCHIVE_PATH, sealed, {});
+		expect(memberResponse.status).toBe(200);
+		expect(await memberResponse.json()).toEqual({ archivedNodes: 0 });
+		const nodes = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());
+		expect(nodes.every((node) => node.archiveOperationId === null)).toBe(true);
+
+		// Another plugin's label is not this plugin's label either. Archive the member folder first
+		// so the path is free for the labelled one.
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: fixture.userId, name: "Test User" });
+		const memberFolder = nodes.find((node) => node.path === "/meetings/meeting-1")!;
+		expect(
+			await asUser.mutation(api.files_nodes.archive_nodes, {
+				membershipId: fixture.membershipId,
+				nodeIds: [String(memberFolder._id)],
+			}),
+		).toEqual({ _yay: null });
+		await t.run(async (ctx) => {
+			await files_nodes_db_create_node_recursively_at_path(ctx, {
+				userId: fixture.userId,
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				parentId: files_ROOT_ID,
+				path: "/meetings/meeting-1/notes.txt",
+				kind: "file",
+				contentType: "text/plain",
+				createdNodesMetadata: [
+					{ key: "source", value: "plugin" },
+					{ key: "plugin-name", value: "other-plugin" },
+				],
+				now: Date.now(),
+			});
+		});
+		const otherResponse = await call(t, ARCHIVE_PATH, sealed, {});
+		expect(otherResponse.status).toBe(200);
+		expect(await otherResponse.json()).toEqual({ archivedNodes: 0 });
+		const afterOther = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());
+		expect(
+			afterOther
+				.filter((node) => node.archiveOperationId === null)
+				.map((node) => node.path)
+				.sort(),
+		).toEqual(["/meetings", "/meetings/meeting-1", "/meetings/meeting-1/notes.txt"]);
+		// A zero answer from the label lookup leaves no destination record behind.
+		expect(await read_destination(t, fixture)).toBeNull();
+	});
+
+	test("leaves a note the grant wrote inside a member-made folder", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture, "/meetings/meeting-1");
+		await t.run(async (ctx) => {
+			await files_nodes_db_create_node_recursively_at_path(ctx, {
+				userId: fixture.userId,
+				organizationId: fixture.organizationId,
+				workspaceId: fixture.workspaceId,
+				parentId: files_ROOT_ID,
+				path: "/meetings/meeting-1/notes.txt",
+				kind: "file",
+				contentType: "text/plain",
+				now: Date.now(),
+			});
+		});
+		// The label lands only on nodes the write creates. The member's folder stays unlabelled, so
+		// the door does not follow it, and the note inside it stays where the member can see it.
+		expect((await write_note(t, sealed, "/meetings/meeting-1/meeting.md")).status).toBe(200);
+
+		const response = await call(t, ARCHIVE_PATH, sealed, {});
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({ archivedNodes: 0 });
+		const nodes = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());
+		expect(nodes.map((node) => node.path).sort()).toEqual([
+			"/meetings",
+			"/meetings/meeting-1",
+			"/meetings/meeting-1/meeting.md",
+			"/meetings/meeting-1/notes.txt",
+		]);
+		expect(nodes.every((node) => node.archiveOperationId === null)).toBe(true);
+	});
+
+	test("does not archive a restored note folder after a service archive", async () => {
+		const t = test_convex();
+		const fixture = await seed_installation(t);
+		const sealed = await seal_token(t, fixture, "/meetings/meeting-1");
+		expect((await write_note(t, sealed, "/meetings/meeting-1/meeting.md")).status).toBe(200);
+		const archive = await call(t, ARCHIVE_PATH, sealed, {});
+		expect(archive.status).toBe(200);
+		expect(await archive.json()).toEqual({ archivedNodes: 2 });
+
+		// The member brings the folder back. It still carries the plugin label, but the service
+		// closed this destination, so the service cannot take it again.
+		const folder = (await t.run(async (ctx) => await ctx.db.query("files_nodes").collect())).find(
+			(node) => node.path === "/meetings/meeting-1",
+		)!;
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: fixture.userId, name: "Test User" });
+		expect(
+			await asUser.mutation(api.files_nodes.unarchive_nodes, {
+				membershipId: fixture.membershipId,
+				nodeIds: [String(folder._id)],
+			}),
+		).toEqual({ _yay: null });
+		expect(
+			await t.run(async (ctx) =>
+				files_metadata_db_read_entry(ctx, {
+					organizationId: fixture.organizationId,
+					workspaceId: fixture.workspaceId,
+					fileNodeId: folder._id,
+					key: "plugin-name",
+				}),
+			),
+		).toBe("council");
+
+		const replay = await call(t, ARCHIVE_PATH, sealed, {});
+		expect(replay.status).toBe(200);
+		expect(await replay.json()).toEqual({ archivedNodes: 0 });
+		expect((await t.run(async (ctx) => ctx.db.get("files_nodes", folder._id)))?.archiveOperationId).toBeNull();
 	});
 
 	test("a restricted destination the actor was never granted refuses the archive", async () => {
