@@ -2871,13 +2871,6 @@ export const commit_file_pending_update_upsert_in_db = internalMutation({
 			return Result({ _nay: { name: "pending_content_changed", message: "Pending update changed, retry the write" } });
 		}
 
-		// The node can be archived between the action's read and this commit: a new doc on it
-		// could never be saved, so reject before any write. An existing doc must stay editable
-		// and discardable — docs legitimately survive on archived files.
-		if (!existingPendingUpdate && file.archiveOperationId !== null) {
-			return Result({ _nay: { message: "Not found" } });
-		}
-
 		// Stamp the eager create with the sequence the creator captured in the mutation that
 		// created the node — never a read taken here. See the eager-create field docs.
 		const eagerCreated: app_convex_Doc<"files_pending_updates">["eagerCreated"] =
@@ -4881,7 +4874,7 @@ export const commit_file_pending_update_rebase_in_db = internalMutation({
 		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
-		if (args.preparation && (fileNode.textKind !== args.preparation.rootKind || fileNode.archiveOperationId !== null)) {
+		if (args.preparation && fileNode.textKind !== args.preparation.rootKind) {
 			return Result({ _nay: { message: "Not found" } });
 		}
 		// Frontmatter caps, before any write: the calling action retires the staged input batch
@@ -5056,11 +5049,7 @@ async function prepare_pending_update(
 		pendingUpdateId: args.pendingUpdateId,
 	})) as get_data_for_pending_content_operation_Result;
 	const pendingUpdate = data?.existingPendingUpdate;
-	if (
-		!data ||
-		(args.pendingUpdateId !== undefined && pendingUpdate?._id !== args.pendingUpdateId) ||
-		data.fileNode.archiveOperationId !== null
-	) {
+	if (!data || (args.pendingUpdateId !== undefined && pendingUpdate?._id !== args.pendingUpdateId)) {
 		return Result({ _nay: { message: "Not found" } });
 	}
 	if (!pendingUpdate) return Result({ _yay: { pendingUpdate: null } });
@@ -5908,16 +5897,16 @@ export const save_file_pending_update_in_db = internalMutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		// The target file can be archived (or removed) after the proposal, e.g. from the Files UI.
-		// Fail before any writes, or the save would bill, publish onto the archived file, and a
-		// replace-move would still archive its source with no active result. The doc stays intact.
+		// The target file can be removed after the proposal, e.g. from the Files UI. Fail before
+		// any writes, or the save would bill and publish onto a dead file. The doc stays intact.
+		// An archived target still saves: the archive only hides the node, its content stays
+		// writable, and unarchiving later shows the saved text.
 		const targetNode = await ctx.db.get("files_nodes", args.nodeId);
 		if (
 			!targetNode ||
 			targetNode.organizationId !== membership.organizationId ||
 			targetNode.workspaceId !== membership.workspaceId ||
-			!files_node_has_editable_yjs_state(targetNode) ||
-			targetNode.archiveOperationId !== null
+			!files_node_has_editable_yjs_state(targetNode)
 		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
@@ -6388,16 +6377,16 @@ export const save_file_pending_update_non_collaborative_in_db = internalMutation
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		// The target file can be archived, removed, or switched to collaboration after the
-		// proposal. Fail before any write, or the save would bill and publish onto it.
+		// The target file can be removed or switched to collaboration after the proposal.
+		// Fail before any write, or the save would bill and publish onto it. An archived
+		// target still saves: the archive only hides the node.
 		const targetNode = await ctx.db.get("files_nodes", args.nodeId);
 		if (
 			!targetNode ||
 			targetNode.organizationId !== membership.organizationId ||
 			targetNode.workspaceId !== membership.workspaceId ||
 			targetNode.collaborationEnabled !== false ||
-			!files_node_has_editable_text_content(targetNode) ||
-			targetNode.archiveOperationId !== null
+			!files_node_has_editable_text_content(targetNode)
 		) {
 			return Result({ _nay: { message: "Not found" } });
 		}
@@ -7486,7 +7475,6 @@ export const get_data_for_pending_replacement_stage = internalQuery({
 			destNode.organizationId !== args.organizationId ||
 			destNode.workspaceId !== args.workspaceId ||
 			destNode.kind !== "file" ||
-			destNode.archiveOperationId !== null ||
 			!sourceNode ||
 			sourceNode.organizationId !== args.organizationId ||
 			sourceNode.workspaceId !== args.workspaceId ||
@@ -7818,9 +7806,6 @@ export const commit_file_pending_replacement_in_db = internalMutation({
 				: !existingPendingUpdate || existingPendingUpdate.updatedAt !== args.expectedUpdatedAt
 		) {
 			return await refuse("Pending update changed, retry the write");
-		}
-		if (!existingPendingUpdate && file.archiveOperationId !== null) {
-			return await refuse("Not found");
 		}
 		// A pending delete wins over every other aspect of the doc, and accepting it would leave
 		// the staged object behind. Ask for a decision on the delete first.

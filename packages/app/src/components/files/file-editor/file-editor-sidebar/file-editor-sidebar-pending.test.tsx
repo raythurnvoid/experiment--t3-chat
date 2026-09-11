@@ -120,7 +120,7 @@ vi.mock("@/components/my-link.tsx", () => ({
 		search?: Record<string, string> | ((prev: Record<string, string>) => Record<string, string>);
 		className?: string;
 		"aria-label"?: string;
-		title?: string;
+		tooltip?: string;
 		children?: ReactNode;
 	}) {
 		let href = props.to;
@@ -130,8 +130,10 @@ vi.mock("@/components/my-link.tsx", () => ({
 		// The real Link also accepts an updater function; there is no previous search in the stub.
 		const search = typeof props.search === "function" ? props.search({}) : props.search;
 		const query = search ? `?${new URLSearchParams(search).toString()}` : "";
+		// The real MyLink renders `tooltip` through MyTooltip; the stub keeps it on the anchor so
+		// tests can still assert the full label reaches the link.
 		return (
-			<a href={`${href}${query}`} aria-label={props["aria-label"]} title={props.title}>
+			<a href={`${href}${query}`} aria-label={props["aria-label"]} title={props.tooltip}>
 				<span className={props.className}>{props.children}</span>
 			</a>
 		);
@@ -231,6 +233,7 @@ function makeNode(args: {
 	hasEditableYjsState?: boolean;
 	canWrite?: boolean;
 	nonCollaborative?: boolean;
+	archived?: boolean;
 }): app_convex_Doc<"files_nodes"> {
 	const kind = args.kind ?? "file";
 	return {
@@ -243,7 +246,7 @@ function makeNode(args: {
 		canWrite: args.canWrite ?? true,
 		writeBlockedReason: args.canWrite === false ? "read_only" : null,
 		writePolicyState: "none",
-		archiveOperationId: null,
+		archiveOperationId: args.archived ? `archive_op_${args.id}` : null,
 		assetId: null,
 		textKind: null,
 		collaborationEnabled: null,
@@ -1180,9 +1183,7 @@ describe("FileEditorSidebarPending", () => {
 				pendingArchive: { fromPath: "/video.mp4" },
 			}),
 		]);
-		treeNodesMock.mockReturnValue([
-			makeNode({ id: "node_video", path: "/video.mp4", hasEditableYjsState: false }),
-		]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_video", path: "/video.mp4", hasEditableYjsState: false })]);
 
 		const { container } = render(<FileEditorSidebarPending />);
 
@@ -1243,6 +1244,34 @@ describe("FileEditorSidebarPending", () => {
 		const link = screen.getByRole("link", { name: "/copy.md" });
 		expect(link.getAttribute("href")).toContain("view=diff_editor");
 		expect(container.querySelector("details")).toBeTruthy();
+	});
+
+	test("row on an archived file says Archived and still accepts onto it", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_a",
+				fileNodeId: "node_a",
+				staged: "s",
+				unstaged: "u",
+				eagerCreated: { committedSequence: 0 },
+			}),
+		]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md", archived: true })]);
+
+		const { container } = render(<FileEditorSidebarPending />);
+
+		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Added · Archived");
+		expect(screen.getByRole("link", { name: "/a.md, archived" })).toBeTruthy();
+
+		fireEvent.click(screen.getByText("Accept"));
+
+		await waitFor(() => expect(actionMock).toHaveBeenCalledTimes(1));
+		expect(actionMock).toHaveBeenCalledWith("save_file_pending_update", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_a",
+			pendingUpdateId: "pu_a",
+			reviewedUpdatedAt: 2,
+		});
 	});
 
 	test("copy row shows the Replaced caption without the green path", () => {
@@ -1384,7 +1413,7 @@ describe("FileEditorSidebarPending", () => {
 		expect(screen.getByRole("link", { name: "/b.md" })).toBeTruthy();
 
 		// Accept on the stale row explains instead of sending: the server would refuse the same way.
-		fireEvent.click(screen.getByTitle(files_PENDING_UPDATE_STALE_BASE_MESSAGE));
+		fireEvent.click(screen.getByRole("button", { name: "Accept changes to /a.md" }));
 		await act(async () => {});
 		expect(toast.error).toHaveBeenCalledWith(files_PENDING_UPDATE_STALE_BASE_MESSAGE);
 		expect(upsertPendingMock).not.toHaveBeenCalled();

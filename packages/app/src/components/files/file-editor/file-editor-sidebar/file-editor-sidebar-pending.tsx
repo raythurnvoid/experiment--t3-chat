@@ -25,6 +25,7 @@ import {
 	MySelectPopoverScrollableArea,
 	MySelectTrigger,
 } from "@/components/my-select.tsx";
+import { MyTooltip, MyTooltipContent, MyTooltipTrigger } from "@/components/my-tooltip.tsx";
 import { DiffMonospaceBlock } from "@/components/monospace-block/monospace-block-diff.tsx";
 import { format_datetime } from "@/lib/date.ts";
 import type { AppClassName } from "@/lib/dom-utils.ts";
@@ -89,6 +90,11 @@ type FileEditorSidebarPendingRow = {
 	isFolder: boolean;
 	/** True when the proposal created the file (write_file/cp onto a new path): shown as Added. */
 	isAddedFile: boolean;
+	/**
+	 * True when the file node is archived. Accept still applies the content — the file stays
+	 * archived — so the row must say so instead of looking like a normal change.
+	 */
+	isArchived: boolean;
 	/**
 	 * The file node's document shape from `list_tree` (the node owns the shape, never the
 	 * proposal). `null` when the node is missing from the tree; content decode then refuses.
@@ -213,6 +219,7 @@ function build_pending_rows(
 				canPreviewDeleteDiff: kind === "delete" && files_node_has_editable_yjs_state(node),
 				isFolder: node?.kind === "folder",
 				isAddedFile: pendingUpdate.eagerCreated != null,
+				isArchived: node != null && node.archiveOperationId !== null,
 				// A file with collaboration off keeps its shape too; its branches decode the same way.
 				rootKind: files_node_has_editable_text_content(node) ? node.textKind : null,
 				// Accepting a delete ignores the content branches, so stale content does not block it.
@@ -757,16 +764,24 @@ const PendingSourceOptionLabel = memo(function PendingSourceOptionLabel(props: {
 		};
 	}, [text]);
 
-	return (
+	const label = (
 		<span
 			ref={labelRef}
-			title={isOverflowing ? text : undefined}
 			className={cn(
 				"FileEditorSidebarPendingSourceSelect-option-label" satisfies FileEditorSidebarPendingSourceSelect_ClassNames,
 			)}
 		>
 			{text}
 		</span>
+	);
+
+	// Keep the trigger mounted in both states so the measured span is never remounted (the
+	// ResizeObserver above would keep watching a detached node). Only the content is conditional.
+	return (
+		<MyTooltip>
+			<MyTooltipTrigger focusable={false}>{label}</MyTooltipTrigger>
+			{isOverflowing ? <MyTooltipContent unmountOnHide>{text}</MyTooltipContent> : null}
+		</MyTooltip>
 	);
 });
 
@@ -927,6 +942,7 @@ type FileEditorSidebarPendingItem_Props = {
 	sizeOnlyReplacedNodeId: app_convex_Id<"files_nodes"> | undefined;
 	canPreviewDeleteDiff: boolean;
 	isAddedFile: boolean;
+	isArchived: boolean;
 	rootKind: files_YjsRootKind | null;
 	isStale: boolean;
 	acceptRequiresAllChanges: boolean;
@@ -947,6 +963,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 		sizeOnlyReplacedNodeId,
 		canPreviewDeleteDiff,
 		isAddedFile,
+		isArchived,
 		rootKind,
 		isStale,
 		acceptRequiresAllChanges,
@@ -1068,7 +1085,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 		event.preventDefault();
 		if (isBusy || !canAccept) return;
 		// The button stays enabled so the explanation is reachable by click too, not only by
-		// hovering the `title`.
+		// hovering the tooltip.
 		if (isStale) {
 			toast.error(files_PENDING_UPDATE_STALE_BASE_MESSAGE);
 			return;
@@ -1151,7 +1168,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 						params={{ organizationName, workspaceName }}
 						search={(prev) => ({ ...prev, nodeId: pendingUpdate.fileNodeId })}
 						aria-label={moveLabel}
-						title={moveLabel}
+						tooltip={moveLabel}
 					>
 						{kind === "move" && moveDestinationPath != null ? (
 							<PendingMoveLabel path={path} moveDestinationPath={moveDestinationPath} />
@@ -1175,7 +1192,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 							variant="ghost"
 							className={cn("FileEditorSidebarPending-accept" satisfies FileEditorSidebarPending_ClassNames)}
 							aria-label={`Accept ${actionLabel}`}
-							title={
+							tooltip={
 								isStale
 									? files_PENDING_UPDATE_STALE_BASE_MESSAGE
 									: acceptRequiresAllChanges
@@ -1208,8 +1225,9 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	// next slot: a move onto an occupied destination archives that file, so mark it as Replaced.
 	// Copy and replacement rows also show Replaced: accepting them installs a whole-file replacement
 	// (content and type). Plain edits show Modified. Old proposals point the owner to Review.
+	// An archived target still accepts — the file stays archived — so the row says so.
 	const caption =
-		kind === "delete"
+		(kind === "delete"
 			? "Deleted"
 			: isStale
 				? "Review to update"
@@ -1221,7 +1239,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 							? "Moved"
 							: kind === "copy" || kind === "replacement"
 								? "Replaced"
-								: "Modified";
+								: "Modified") + (isArchived ? " · Archived" : "");
 
 	// Content-plus-move rows show the same red → green move label as move-only rows; the link
 	// still opens the diff. Delete rows always show only their own path. The stale suffix gives
@@ -1230,7 +1248,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 		(kind === "move" || kind === "content_and_move") && moveDestinationPath != null
 			? `${path} → ${moveDestinationPath}`
 			: path;
-	const rowAccessibleLabel = isStale ? `${rowLabel}, review to update` : rowLabel;
+	const rowAccessibleLabel = (isStale ? `${rowLabel}, review to update` : rowLabel) + (isArchived ? ", archived" : "");
 
 	return (
 		<li>
@@ -1262,7 +1280,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 								: { nodeId: pendingUpdate.fileNodeId, view: "diff_editor" }
 						}
 						aria-label={rowAccessibleLabel}
-						title={rowAccessibleLabel}
+						tooltip={rowAccessibleLabel}
 					>
 						{(kind === "move" || kind === "content_and_move") && moveDestinationPath != null ? (
 							<PendingMoveLabel path={path} moveDestinationPath={moveDestinationPath} />
@@ -1286,7 +1304,7 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 							variant="ghost"
 							className={cn("FileEditorSidebarPending-accept" satisfies FileEditorSidebarPending_ClassNames)}
 							aria-label={`Accept ${actionLabel}`}
-							title={
+							tooltip={
 								isStale
 									? files_PENDING_UPDATE_STALE_BASE_MESSAGE
 									: acceptRequiresAllChanges
@@ -1623,7 +1641,9 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 						"FileEditorSidebarPending-empty" satisfies FileEditorSidebarPending_ClassNames,
 					)}
 				>
-					{pendingUpdates === undefined || fileNodesList === undefined ? "Loading pending changes…" : "No pending changes"}
+					{pendingUpdates === undefined || fileNodesList === undefined
+						? "Loading pending changes…"
+						: "No pending changes"}
 				</div>
 			</>
 		);
@@ -1654,7 +1674,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 								"FileEditorSidebarPending-accept" satisfies FileEditorSidebarPending_ClassNames,
 							)}
 							aria-label="Accept all shown pending changes"
-							title={
+							tooltip={
 								// Same order as the click: a row that requires all changes stops the bulk accept,
 								// stale rows are only skipped.
 								acceptRequiresAllChangesIds.size > 0
@@ -1703,6 +1723,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 							sizeOnlyReplacedNodeId={row.sizeOnlyReplacedNodeId}
 							canPreviewDeleteDiff={row.canPreviewDeleteDiff}
 							isAddedFile={row.isAddedFile}
+							isArchived={row.isArchived}
 							rootKind={row.rootKind}
 							isStale={row.isStale}
 							acceptRequiresAllChanges={acceptRequiresAllChangesIds.has(row.pendingUpdate._id)}

@@ -3058,7 +3058,7 @@ describe("upsert_file_pending_update", () => {
 		expect(secondRow.updatedAt).toBeGreaterThan(firstRow.updatedAt);
 	});
 
-	test("upsert_file_pending_update rejects a new proposal on an archived file", async () => {
+	test("upsert_file_pending_update keeps a new proposal on an archived file", async () => {
 		const t = test_convex();
 
 		const seeded = await t.run(async (ctx) =>
@@ -3075,7 +3075,8 @@ describe("upsert_file_pending_update", () => {
 			name: "Test User",
 		});
 
-		// The file is archived between the tool's read and its upsert.
+		// The file is archived between the tool's read and its upsert. The archive only hides
+		// the node: a proposal on it still saves, so the upsert is kept.
 		const archived = await asUser.mutation(api.files_nodes.archive_nodes, {
 			membershipId: seeded.membershipId,
 			nodeIds: [seeded.nodeId],
@@ -3088,9 +3089,11 @@ describe("upsert_file_pending_update", () => {
 			workspaceId: seeded.workspaceId,
 			userId: seeded.userId,
 			nodeId: seeded.nodeId,
-			unstagedMarkdown: `${seeded.baseMarkdown}\n\nToo late`,
+			unstagedMarkdown: `${seeded.baseMarkdown}\n\nAfter archive`,
 		});
-		expect(upserted._nay?.message).toBe("Not found");
+		if (upserted._nay) {
+			throw new Error(upserted._nay.message);
+		}
 
 		const rowAfter = await t.run((ctx) =>
 			read_pending_update_row({
@@ -3101,7 +3104,7 @@ describe("upsert_file_pending_update", () => {
 				nodeId: seeded.nodeId,
 			}),
 		);
-		expect(rowAfter).toBeNull();
+		expect(rowAfter).not.toBeNull();
 	});
 
 	test("upsert_file_pending_update keeps an existing row editable on an archived file", async () => {
@@ -17326,7 +17329,7 @@ describe("save with structural rows", () => {
 		expect(files_pending_update_has_yjs_content(row)).toBe(true);
 	});
 
-	test("save onto an archived target returns Not found and keeps the row", async () => {
+	test("save onto an archived target publishes the content and settles the row", async () => {
 		const t = test_convex();
 
 		const source = await t.run(async (ctx) =>
@@ -17382,12 +17385,25 @@ describe("save with structural rows", () => {
 			membershipId: dest.membershipId,
 			nodeId: dest.nodeId,
 		});
-		expect(saved._nay?.message).toBe("Not found");
+		if (saved._nay) {
+			throw new Error(saved._nay.message);
+		}
+		expect(saved._yay.newSequence).not.toBeNull();
 
 		await t.run(async (ctx) => {
-			// Nothing was published or archived: the source stays active and the row stays intact.
+			// The save published the proposal onto the still-archived node and settled the row;
+			// unarchiving later shows the saved text.
+			const destNode = await ctx.db.get("files_nodes", dest.nodeId);
+			expect(destNode?.archiveOperationId).toBe("archive-op-save-target");
 			const sourceNode = await ctx.db.get("files_nodes", source.nodeId);
 			expect(sourceNode?.archiveOperationId).toBeNull();
+			const committedMarkdown = await read_file_markdown_from_yjs({
+				ctx,
+				organizationId: dest.organizationId,
+				workspaceId: dest.workspaceId,
+				nodeId: dest.nodeId,
+			});
+			expect(committedMarkdown).toBe(replacementMarkdown);
 			const row = await read_pending_update_row({
 				ctx,
 				organizationId: dest.organizationId,
@@ -17395,14 +17411,7 @@ describe("save with structural rows", () => {
 				userId: dest.userId,
 				nodeId: dest.nodeId,
 			});
-			if (!row) {
-				throw new Error("Expected the pending row to survive the failed save");
-			}
-			expect(row.copiedFrom).toEqual({
-				nodeId: source.nodeId,
-				path: "/save-archived-target-source.md",
-			});
-			expect(files_pending_update_has_yjs_content(row)).toBe(true);
+			expect(row).toBeNull();
 		});
 	});
 });
