@@ -90,6 +90,23 @@
 		}
 	}
 
+	.FileNodeViewTopStickyFloatingContainer-mode-diff {
+		/* The diff editor's vertical scrollbar sits at the panel's right edge, so the
+		   row gets another 16px of clearance on top of the shared inset. */
+		padding-right: 32px;
+
+		/* Same background as the Monaco panes, so content under the row does not
+		   show through around the floating controls. */
+		background: var(--color-base-1-02);
+	}
+
+	.FileNodeViewTopStickyFloatingContainer-mode-diff .FileNodeViewTopFloating {
+		/* Drop the surface chrome so the content reads as drawn on the diff editor below. */
+		background: none;
+		border: none;
+		box-shadow: none;
+	}
+
 	.FileNodeView-editor-sidebar-panel {
 		container-type: size;
 

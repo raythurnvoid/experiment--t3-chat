@@ -3043,20 +3043,31 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 // #endregion content
 
 // #region top sticky floating container
-type FileNodeViewTopStickyFloatingContainer_ClassNames = "FileNodeViewTopStickyFloatingContainer";
+type FileNodeViewTopStickyFloatingContainer_ClassNames =
+	| "FileNodeViewTopStickyFloatingContainer"
+	| "FileNodeViewTopStickyFloatingContainer-mode-diff";
 
 type FileNodeViewTopStickyFloatingContainer_Props = {
+	/**
+	 * The floating row sits over the Monaco diff panes: the surface loses its chrome and the
+	 * row moves left so the content stays clear of the editor's vertical scrollbar.
+	 */
+	diffEditor: boolean;
 	children: React.ReactNode;
 };
 
 const FileNodeViewTopStickyFloatingContainer = memo(function FileNodeViewTopStickyFloatingContainer(
 	props: FileNodeViewTopStickyFloatingContainer_Props,
 ) {
-	const { children } = props;
+	const { diffEditor, children } = props;
 
 	return (
 		<div
-			className={"FileNodeViewTopStickyFloatingContainer" satisfies FileNodeViewTopStickyFloatingContainer_ClassNames}
+			className={cn(
+				"FileNodeViewTopStickyFloatingContainer" satisfies FileNodeViewTopStickyFloatingContainer_ClassNames,
+				diffEditor &&
+					("FileNodeViewTopStickyFloatingContainer-mode-diff" satisfies FileNodeViewTopStickyFloatingContainer_ClassNames),
+			)}
 		>
 			{children}
 		</div>
@@ -3577,7 +3588,9 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 								)}
 							</FileNodeViewToolbarCreateNodeActions>
 							{topStickyFloatingSlot ? (
-								<FileNodeViewTopStickyFloatingContainer>{topStickyFloatingSlot}</FileNodeViewTopStickyFloatingContainer>
+								<FileNodeViewTopStickyFloatingContainer diffEditor={effectiveView === "diff_editor"}>
+									{topStickyFloatingSlot}
+								</FileNodeViewTopStickyFloatingContainer>
 							) : null}
 							{/* Wait for the toolbar action slot before mounting editor content so editor portals receive a host. */}
 							{toolbarPortalHost && activeEditorNodeId ? (
