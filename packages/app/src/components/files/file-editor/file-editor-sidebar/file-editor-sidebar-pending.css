@@ -164,14 +164,28 @@
 	}
 
 	/* MyLink renders the className on its inner surface span, so the flex child of the summary is the
-	   <a> wrapper. Grow/clip it here so the path truncates and the actions stay pinned to the right. */
+	   <a> wrapper. Grow/clip it here so the path truncates and the actions stay pinned to the right.
+	   The negative margins absorb the summary's vertical padding and the gaps on both sides, so the
+	   link covers the whole row between the chevron and the action buttons: hovering there is what
+	   paints the row hover below, and clicking navigates instead of toggling the accordion. */
 	.FileEditorSidebarPending-item-summary > a {
 		flex: 1;
 		min-width: 0;
 
+		margin: -6px -4px;
+		padding: 6px 4px;
+
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	/* The link is the row's navigation target, so hover (and keyboard focus) on it highlights the
+	   whole row like the files tree items do. The chevron and the Accept/Discard buttons sit
+	   outside the link and keep their own hover states. */
+	.FileEditorSidebarPending-item-summary:has(> a:is(:hover, :focus-visible)),
+	.FileEditorSidebarPending-item-move:has(> a:is(:hover, :focus-visible)) {
+		background: linear-gradient(var(--color-base-1-05), var(--color-base-1-04));
 	}
 
 	.FileEditorSidebarPending-item-path {
@@ -232,10 +246,15 @@
 		padding: 6px 16px 6px 56px;
 	}
 
-	/* Same MyLink wrapper trick as the summary: grow/clip the <a> so the label truncates. */
+	/* Same MyLink wrapper trick as the summary: grow/clip the <a> so the label truncates. These
+	   rows have no chevron, so the link also absorbs the 56px left indent and covers the whole
+	   row up to the action buttons. */
 	.FileEditorSidebarPending-item-move > a {
 		flex: 1;
 		min-width: 0;
+
+		margin: -6px -4px -6px -56px;
+		padding: 6px 4px 6px 56px;
 
 		overflow: hidden;
 		text-overflow: ellipsis;
