@@ -68,6 +68,8 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 		}
 
 		for (const operand of appOperands) {
+			const path = bash_current_workspace_path_to_db_files_path(currentWorkspacePath, bash_resolve_path(commandCtx.cwd, operand));
+			if (path != null) dbFilesRoots.app.fs.observePath(path);
 			if (bash_GLOB_METACHARACTER_REGEX.test(operand)) {
 				return {
 					stdout: "",
@@ -382,6 +384,8 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 			intendedDestPath = path_join(destParentPath, destName);
 			intendedDestOperand = destOperand;
 		}
+
+		dbFilesRoots.app.fs.observePath(intendedDestPath);
 
 		// `mv -f` onto a file is always a structural move: the source keeps its identity, type, and
 		// history, and accepting archives the occupant.

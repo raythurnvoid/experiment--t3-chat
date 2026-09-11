@@ -106,7 +106,7 @@ import { bash_which_command_create } from "./bash-which-command.ts";
 import { bash_xargs_command_create } from "./bash-xargs-command.ts";
 
 const DEFAULT_CWD = "~";
-const OUTPUT_LIMIT = 30_000;
+const OUTPUT_LIMIT = 128 * 1024;
 
 const TERMINAL_TRAILING_NEWLINE_REGEX = /\n+$/;
 
@@ -1016,6 +1016,12 @@ async function bash_fs_create(args: {
 			tmpFs.dirty = false;
 		},
 		path_index_truncated: () => appDbFilesFs.pathIndexTruncated,
+		clear_observed_paths: () => {
+			appDbFilesFs.observedPaths.clear();
+			appDbFilesFs.observedPathsTruncated = false;
+		},
+		observed_paths: appDbFilesFs.observedPaths,
+		observed_paths_truncated: () => appDbFilesFs.observedPathsTruncated,
 		truncate_output,
 		format_output: format_bash_output,
 	};
@@ -1076,10 +1082,10 @@ function bash_shell_create(ctx: ActionCtx, args: { fs: MountableFs; cwd: string;
 				: []),
 			bash_tee_command_create(dbFilesRoots),
 			// Nested execution.
-			bash_nested_shell_command_create("bash", currentWorkspacePath),
-			bash_nested_shell_command_create("sh", currentWorkspacePath),
+			bash_nested_shell_command_create("bash", dbFilesRoots.app),
+			bash_nested_shell_command_create("sh", dbFilesRoots.app),
 			// xargs/which.
-			bash_xargs_command_create(),
+			bash_xargs_command_create(dbFilesRoots.app),
 			bash_which_command_create(),
 			// Native /tmp wrappers.
 			...native_just_bash_tmp_command_create_all(currentWorkspacePath),
@@ -1097,7 +1103,7 @@ function bash_shell_create(ctx: ActionCtx, args: { fs: MountableFs; cwd: string;
 		run_command: async (command: string) => {
 			// Block app and read-only mount files before Just Bash can load their
 			// contents as shell code through direct or nested commands.
-			if (await bash_command_loads_disallowed_shell_code(command, { cwd, fs })) {
+			if (await bash_command_loads_disallowed_shell_code(command, { cwd, fs, appRoot: dbFilesRoots.app })) {
 				return {
 					stdout: "",
 					stderr: bash_disallowed_shell_code_error(),
@@ -1246,7 +1252,11 @@ export async function bash_run_command(
 		pluginSourceMounts,
 	});
 
+	// Scope follows shell operations, not the cwd checks before and after them.
+	bashFs.clear_observed_paths();
 	const result = await bashFs.run_command(args.command);
+	const observedPaths = [...bashFs.observed_paths];
+	const observedPathsTruncated = bashFs.observed_paths_truncated();
 
 	// PWD is an ordinary shell variable; a command can unset or empty it, in
 	// which case we assume the shell did not move.
@@ -1400,6 +1410,8 @@ export async function bash_run_command(
 			stdoutLength,
 			stderrLength,
 			pathIndexTruncated,
+			observedPaths,
+			observedPathsTruncated,
 		},
 	};
 }

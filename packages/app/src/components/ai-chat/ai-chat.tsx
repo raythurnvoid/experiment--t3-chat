@@ -423,7 +423,6 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 	const initialComposerAttachments = queuedUserMessageEdit?.attachments ?? controller.session?.draftComposerAttachments;
 	const composerSelectedModelId = queuedUserMessageEdit?.selectedModelId ?? selectedModelId;
 	const composerSelectedModeId = queuedUserMessageEdit?.selectedModeId ?? selectedModeId;
-	const composerSkillIds = queuedUserMessageEdit?.skillIds ?? controller.selectedSkillIds;
 	const composerChat = controller.session?.chat ?? null;
 	const controllerRef = useLiveRef(controller);
 	const queuedUserMessages = controller.queuedUserMessages;
@@ -557,15 +556,7 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 		controller.setSelectedModeId(value);
 	});
 
-	const handleSkillIdsChange = useFn<NonNullable<AiChatComposer_Props["onSkillIdsChange"]>>((skillIds) => {
-		if (composerChat && queuedUserMessageEdit) {
-			controller.setQueuedUserMessageEditSkillIds(composerChat, queuedUserMessageEdit.id, skillIds);
-			return;
-		}
-		controller.setSelectedSkillIds(skillIds);
-	});
-
-	const handleComposerSubmit = useFn<AiChatComposer_Props["onSubmit"]>((value, attachments, skillIds) => {
+	const handleComposerSubmit = useFn<AiChatComposer_Props["onSubmit"]>((value, attachments) => {
 		if (!value.trim() && attachments.length === 0) {
 			return;
 		}
@@ -581,9 +572,9 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 		}
 
 		if (selectedThreadId) {
-			return controller.sendUserText(selectedThreadId, value, { attachments, skillIds });
+			return controller.sendUserText(selectedThreadId, value, { attachments });
 		}
-		controller.startNewChat(value, attachments, skillIds);
+		controller.startNewChat(value, attachments);
 		return true;
 	});
 
@@ -968,7 +959,6 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 							isRunning={controller.isRunning}
 							initialValue={initialComposerValue}
 							initialAttachments={initialComposerAttachments}
-							initialSkillIds={composerSkillIds}
 							inputLabel={queuedUserMessageEdit ? "Edit queued message" : undefined}
 							submitLabel={queuedUserMessageEdit ? "Save queued message" : undefined}
 							selectedModelId={composerSelectedModelId}
@@ -983,7 +973,6 @@ export const AiChatThread = memo(function AiChatThread(props: AiChatThread_Props
 							}
 							onSelectedModelIdChange={handleSelectedModelIdChange}
 							onSelectedModeIdChange={handleSelectedModeIdChange}
-							onSkillIdsChange={handleSkillIdsChange}
 							onSubmit={handleComposerSubmit}
 							onCancel={handleComposerCancel}
 							onClose={queuedUserMessageEdit ? handleComposerClose : undefined}

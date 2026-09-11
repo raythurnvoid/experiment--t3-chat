@@ -1,12 +1,8 @@
 import { describe, expect, test } from "vitest";
-import {
-	ai_chat_skills_LIMITS,
-	ai_chat_skills_catalog,
-	ai_chat_skills_parse,
-} from "./ai-chat-skills.ts";
+import { ai_chat_skills_LIMITS, ai_chat_skills_parse } from "./ai-chat-skills.ts";
 
 describe("ai_chat_skills_parse", () => {
-	test("reads standard fields and leaves unknown fields harmless", () => {
+	test("validates standard fields and returns only catalog metadata", () => {
 		const parsed = ai_chat_skills_parse(
 			"\uFEFF---\r\nname: example\r\ndescription: A useful skill\r\nlicense: MIT\r\ncompatibility: Needs Python\r\nmetadata:\r\n  bonobo-script-runtime: python\r\nallowed-tools: Bash\r\nfuture-field: [ignored]\r\n---\r\nPrivate body\r\n",
 			"example",
@@ -14,11 +10,6 @@ describe("ai_chat_skills_parse", () => {
 		expect(parsed._yay).toEqual({
 			name: "example",
 			description: "A useful skill",
-			license: "MIT",
-			compatibility: "Needs Python",
-			metadata: { "bonobo-script-runtime": "python" },
-			allowedTools: "Bash",
-			body: "Private body\n",
 		});
 	});
 
@@ -56,49 +47,21 @@ describe("ai_chat_skills_parse", () => {
 		expect(ai_chat_skills_parse("---\nname: &name example\ndescription: *name\n---\n", "example")._yay).toEqual({
 			name: "example",
 			description: "example",
-			body: "",
 		});
 	});
 
-	test("enforces UTF-8 body and frontmatter byte limits", () => {
+	test("does not load or bound the body while enforcing the UTF-8 frontmatter limit", () => {
 		expect(
 			ai_chat_skills_parse(
 				`---\nname: example\ndescription: ok\n---\n${"🐵".repeat(ai_chat_skills_LIMITS.skill / 4)}`,
 				"example",
-			)._nay?.name,
-		).toBe("too_large");
+			)._yay,
+		).toEqual({ name: "example", description: "ok" });
 		expect(
 			ai_chat_skills_parse(
 				`---\nname: example\ndescription: ok\n#${"x".repeat(ai_chat_skills_LIMITS.frontmatter)}\n---\n`,
 				"example",
 			)._nay?.name,
 		).toBe("too_large");
-	});
-});
-
-describe("ai_chat_skills_catalog", () => {
-	test("counts the model's serialized fields for ready and failed sources", () => {
-		const skill = { skillId: "skill_1", path: "/.agents/skills/example/SKILL.md", name: "example", description: '🐵"\\\n', compatibility: "Use saved files", scriptStatus: "supported" as const };
-		const complete = ai_chat_skills_catalog([{ ...skill, status: "available" }]);
-		expect(complete.bytes).toBe(new TextEncoder().encode(complete.text).byteLength);
-		for (const status of ["invalid", "unavailable", "too_large"] as const) {
-			const failed = ai_chat_skills_catalog([{ ...skill, description: "", status, message: "Save the source again." }]);
-			const model = ai_chat_skills_catalog([{ ...skill, description: "", status: "invalid", message: "Save the source again." }]);
-			expect(failed).toEqual(model);
-			expect(failed.bytes).toBe(new TextEncoder().encode(failed.text).byteLength);
-		}
-	});
-
-	test("reserves metadata before reconstruction without exposing placeholder text", () => {
-		const skill = { skillId: "skill_1", path: "/.agents/skills/example/SKILL.md", name: "example" };
-		const updating = ai_chat_skills_catalog([{ ...skill, description: "", status: "updating" }]);
-		const reconstructed = ai_chat_skills_catalog([{
-			...skill, description: "\0".repeat(ai_chat_skills_LIMITS.descriptionCharacters),
-			compatibility: "\0".repeat(ai_chat_skills_LIMITS.compatibilityCharacters),
-			scriptStatus: "unsupported", status: "available",
-		}]);
-		expect(updating.bytes).toBe(reconstructed.bytes);
-		expect(updating.text).not.toContain("\\u0000");
-		expect(updating.bytes).toBeGreaterThan(new TextEncoder().encode(updating.text).byteLength);
 	});
 });

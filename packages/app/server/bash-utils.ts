@@ -114,19 +114,16 @@ export const bash_READER_FILE_OPERAND_MAX = 10;
  * Maximum byte size for a full inline file read.
  *
  * Above this size, full-file readers fall back to bounded reads served from
- * materialized chunks, so a large file is never loaded in one shot. DEV-PHASE
- * AGGRESSIVE: intentionally tiny so small test files page like large files.
- * Raise before production.
+ * materialized chunks, so a large file is never loaded in one shot.
  */
-export const bash_READ_INLINE_MAX_BYTES = 2 * 1024;
+export const bash_READ_INLINE_MAX_BYTES = 64 * 1024;
 
 /**
  * Per-page line cap for head/sed/tail against a large file.
  *
- * Must match the backend `files_READ_RANGE_MAX_LINES`. DEV-PHASE AGGRESSIVE so
- * pagination kicks in on small files.
+ * Must match the backend `files_READ_RANGE_MAX_LINES`.
  */
-export const bash_READ_HEAD_LARGE_FILE_MAX_LINES = 40;
+export const bash_READ_HEAD_LARGE_FILE_MAX_LINES = 500;
 export const bash_COMMAND_EXIT_FAILURE = 1;
 export const bash_COMMAND_EXIT_USAGE = 2;
 export const bash_COMMAND_EXIT_CANNOT_EXECUTE = 126;
@@ -410,6 +407,8 @@ export class bash_DbFilesFs implements IFileSystem {
 	pathIndexTruncated = false;
 	private entryCache = new Map<string, DbFilesCacheEntry>();
 	private contentCache = new Map<string, string>();
+	readonly observedPaths = new Set<string>();
+	observedPathsTruncated = false;
 	private overlayPromise: Promise<files_PendingPathOverlay> | null = null;
 	/** Command-owned per-run caches (cat's content cache) cleared together with resetProposalCaches. */
 	private linkedProposalCaches: Array<Map<string, string>> = [];
@@ -446,6 +445,7 @@ export class bash_DbFilesFs implements IFileSystem {
 	private toDbFilesPath(path: string) {
 		const normalizedPath = bash_normalize_path(path);
 		if (this.dbFilesRootPath === "/") {
+			this.observePath(normalizedPath);
 			return normalizedPath;
 		}
 		return normalizedPath === "/" ? this.dbFilesRootPath : `${this.dbFilesRootPath}${normalizedPath}`;
@@ -1144,8 +1144,18 @@ export class bash_DbFilesFs implements IFileSystem {
 		});
 	}
 
-	async getEntry(path: string) {
+	observePath(path: string) {
+		if (this.readOnlySource != null) return;
+		if (this.observedPaths.size >= 100 && !this.observedPaths.has(path)) {
+			this.observedPathsTruncated = true;
+			return;
+		}
+		this.observedPaths.add(path);
+	}
+
+	async getEntry(path: string, recordPath = true) {
 		const normalizedPath = bash_normalize_path(path);
+		if (recordPath) this.observePath(normalizedPath);
 		const cached = this.entryCache.get(normalizedPath);
 		// Synthetic parent folders make descendant paths navigable. Except for the
 		// synthetic root, only entries with `_id` prove that an app path exists in `files_nodes`.
@@ -1408,6 +1418,7 @@ export function bash_resolve_db_files_shell_path(
 	const renderShellPath = (dbFilesPath: string) =>
 		bash_db_files_path_to_current_workspace_path(dbFilesRoots.app.currentWorkspacePath, dbFilesPath);
 	const dbFilesPath = bash_current_workspace_path_to_db_files_path(dbFilesRoots.app.currentWorkspacePath, normalized);
+	if (dbFilesPath != null) dbFilesRoots.app.fs.observePath(dbFilesPath);
 	return {
 		kind: dbFilesPath == null ? "outside_db_files" : "app",
 		fs: dbFilesRoots.app.fs,
@@ -1450,7 +1461,7 @@ const SHELL_REDIRECTION_WORD_REGEX = /^(?:\d*(?:<>|>>|>\||>|<|<<|<<<|<&|>&)|&>>?
 const SHELL_REDIRECTION_OPERATOR_REGEX = /^(?:\d*(?:<>|>>|>\||>|<|<<|<<<|<&|>&)|&>>?)$/u;
 
 type ShellWordToken = { kind: "separator" } | { kind: "word"; value: string };
-type ShellCodeGuardOptions = { cwd: string; fs: IFileSystem };
+type ShellCodeGuardOptions = { cwd: string; fs: IFileSystem; appRoot: bash_DbFilesRoot };
 
 /**
  * Split only enough shell syntax to find simple commands. Quotes and backslashes
@@ -1694,7 +1705,21 @@ async function command_substitution_loads_disallowed_shell_code(script: string, 
 					return true;
 				}
 				try {
-					if ((await options.fs.stat(bash_resolve_path(options.cwd, word))).isFile) {
+					const shellPath = bash_resolve_path(options.cwd, word);
+					const dbFilesPath =
+						options.appRoot.fs.readOnlySource == null
+							? bash_current_workspace_path_to_db_files_path(options.appRoot.currentWorkspacePath, shellPath)
+							: null;
+					// Safety probes inspect shell text, including skipped commands and patterns.
+					// Only actual file operations should load that folder's instructions.
+					if (dbFilesPath != null) {
+						if (
+							!bash_GLOB_METACHARACTER_REGEX.test(dbFilesPath) &&
+							(await options.appRoot.fs.getEntry(dbFilesPath, false))?.kind === "file"
+						) {
+							return true;
+						}
+					} else if ((await options.fs.stat(shellPath)).isFile) {
 						return true;
 					}
 				} catch {

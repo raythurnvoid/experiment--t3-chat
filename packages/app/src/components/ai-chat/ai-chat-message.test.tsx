@@ -15,7 +15,6 @@ const hookMocks = vi.hoisted(() => {
 		editingMessageId: null as string | null,
 		sendErrorMessageId: null as string | null,
 		sendErrorDetails: null as string | null,
-		source: null as { nodeId: string; path: string; name: string } | null,
 		actions: {
 			addToolOutput: vi.fn(),
 			resumeStream: vi.fn(),
@@ -30,11 +29,6 @@ const hookMocks = vi.hoisted(() => {
 		},
 	};
 });
-
-vi.mock("convex/react", async (importOriginal) => ({
-	...(await importOriginal<typeof import("convex/react")>()),
-	useQuery: () => hookMocks.source,
-}));
 
 type AiChatControllerStoreMockState = {
 	messageById: Map<string, ai_chat_UiMessage>;
@@ -73,9 +67,9 @@ vi.mock("@/hooks/ai-chat-controller.tsx", () => ({
 vi.mock("@/components/ai-chat/ai-chat-composer.tsx", () => ({
 	AiChatComposer: function AiChatComposer(props: AiChatComposer_Props) {
 		return (
-			<form data-testid="message-composer" data-skill-ids={props.initialSkillIds?.join(",")}>
-				<button type="button" onClick={() => props.onSubmit(props.initialValue, [], [])}>
-					Save with no skills
+			<form data-testid="message-composer">
+				<button type="button" onClick={() => props.onSubmit(props.initialValue, [])}>
+					Save message
 				</button>
 			</form>
 		);
@@ -189,68 +183,21 @@ describe("AiChatMessage", () => {
 		hookMocks.editingMessageId = null;
 		hookMocks.sendErrorMessageId = null;
 		hookMocks.sendErrorDetails = null;
-		hookMocks.source = null;
 	});
 
-	test("starts an inline edit with the original skills and passes an explicit empty selection", () => {
+	test("saves an inline edit with its message id", () => {
 		const message = createUserMessage();
 		renderMessage({
-			message: { ...message, metadata: { ...message.metadata, skillIds: ["skill_original"] } },
+			message,
 			isEditing: true,
 		});
-		expect(screen.getByTestId("message-composer").dataset.skillIds).toBe("skill_original");
-		fireEvent.click(screen.getByRole("button", { name: "Save with no skills" }));
+		fireEvent.click(screen.getByRole("button", { name: "Save message" }));
 		expect(hookMocks.actions.sendUserText).toHaveBeenCalledWith("thread_1", "Can you summarize my workspace notes?", {
 			messageId: message.id,
 			attachments: [],
-			skillIds: [],
 		});
 	});
 
-	test.each([
-		["tool-load_skill", "Load skill"],
-		["tool-read_skill_resource", "Read skill resource"],
-		["tool-run_skill_script", "Run skill script"],
-	] as const)("renders %s with a fresh source link and safe status", (type, title) => {
-		hookMocks.source = { nodeId: "resource", path: "/.agents/skills/current-name/SKILL.md", name: "SKILL.md" };
-		const result = { skillId: "skill", resourceId: "resource", version: "a".repeat(64), body: "PRIVATE SKILL BODY" };
-		const toolPart = { toolCallId: "skill-tool", state: "output-available" as const };
-		const message = {
-			...createAssistantMessage(),
-			parts: [
-				type === "tool-load_skill"
-					? { ...toolPart, type, input: { skillId: "skill" }, output: { ...result, status: "loaded" } }
-					: type === "tool-read_skill_resource"
-						? { ...toolPart, type, input: { skillId: "skill", resourceId: "resource" }, output: { ...result, status: "read" } }
-						: { ...toolPart, type, input: { skillId: "skill", resourceId: "resource" }, output: { ...result, status: "completed" } },
-			],
-		} satisfies ai_chat_UiMessage;
-		renderMessage({ message });
-		const button = screen.getByRole("button", { name: `${title}: /.agents/skills/current-name/SKILL.md` });
-		fireEvent.click(button);
-		expect(screen.getByRole("link", { name: "/.agents/skills/current-name/SKILL.md" })).not.toBeNull();
-		expect(screen.queryByText("PRIVATE SKILL BODY")).toBeNull();
-		expect(document.querySelector(`[data-part-type="${type}"]`)?.textContent).not.toContain("Input");
-		cleanup();
-		hookMocks.source = null;
-		renderMessage({ message });
-		expect(screen.getByRole("button", { name: `${title}: Source unavailable` })).not.toBeNull();
-		expect(screen.queryByRole("link", { name: "/.agents/skills/current-name/SKILL.md" })).toBeNull();
-	});
-
-	test.each(["failed", "changed", "not_loaded", "too_large", "unsupported_runtime", "invalid", "unavailable"] as const)("flags a skill %s result while collapsed", (status) => {
-		renderMessage({
-			message: {
-				...createAssistantMessage(),
-				parts: [{
-					type: "tool-run_skill_script", toolCallId: "skill-error", state: "output-available",
-					input: { skillId: "skill", resourceId: "resource" },
-					output: { skillId: "skill", resourceId: "resource", status },
-				}],
-			},
-		});
-		expect(screen.getByText("failed")).not.toBeNull();
-	});
 
 	test("shows Thinking without actions before the assistant message exists", () => {
 		render(<AiChatMessagePendingAssistant />);
@@ -450,8 +397,6 @@ describe("AiChatMessage", () => {
 						output: {
 							title: `exit 0 · ${bashWorkspaceMount}`,
 							output: `$ pwd\ncwd: ${bashWorkspaceMount}\nnext cwd: ${bashWorkspaceMount}\nexit: 0\n\n<stdout>\n${bashWorkspaceMount}\n</stdout>`,
-							stdout: `${bashWorkspaceMount}\n`,
-							stderr: "",
 							metadata: {
 								command: "pwd",
 								cwd: bashWorkspaceMount,
@@ -478,9 +423,9 @@ describe("AiChatMessage", () => {
 		expect(screen.getByRole("button", { name: "Bash: pwd" })).not.toBeNull();
 		fireEvent.click(screen.getByText("Bash:"));
 		const terminal = screen.getByRole("textbox", { name: "Bash terminal output" });
-		expect(terminal.textContent).toContain(`${bashWorkspaceMount}$ pwd`);
+		expect(terminal.textContent).toContain("$ pwd");
 		expect(terminal.textContent).toContain(bashWorkspaceMount);
-		expect(terminal.textContent).toContain(`exit 0 · cwd ${bashWorkspaceMount}`);
+		expect(terminal.textContent).toContain(`next cwd: ${bashWorkspaceMount}\nexit: 0`);
 		expect(screen.queryByRole("region", { name: "Metadata" })).toBeNull();
 		expect(screen.queryByRole("region", { name: "Stdout" })).toBeNull();
 	});
@@ -495,8 +440,6 @@ describe("AiChatMessage", () => {
 			output: {
 				title: `exit 0 · ${bashWorkspaceMount}`,
 				output: bashWorkspaceMount,
-				stdout: `${bashWorkspaceMount}\n`,
-				stderr: "",
 				metadata: {
 					command: "pwd",
 					cwd: bashWorkspaceMount,
@@ -626,7 +569,6 @@ describe("AiChatMessage", () => {
 								matches: 1,
 								matcher: "exact",
 								diff,
-								modifiedContent: '{\n\t"n": 2\n}\n',
 							},
 							output: "Replaced 1 occurrence",
 						},

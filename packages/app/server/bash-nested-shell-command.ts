@@ -1,5 +1,6 @@
 import { defineCommand, type FsStat } from "just-bash/browser";
 import {
+	type bash_DbFilesRoot,
 	bash_command_loads_disallowed_shell_code,
 	bash_is_path_under_current_workspace_path,
 	bash_is_path_under_read_only_mounts,
@@ -17,7 +18,8 @@ import {
  * forwarded to the nested script, and every nested command still uses the same
  * app-file guards as the outer shell.
  */
-export function bash_nested_shell_command_create(name: "bash" | "sh", currentWorkspacePath: string) {
+export function bash_nested_shell_command_create(name: "bash" | "sh", appRoot: bash_DbFilesRoot) {
+	const currentWorkspacePath = appRoot.currentWorkspacePath;
 	return defineCommand(name, async (args, commandCtx) => {
 		if (args.length === 0) {
 			return { stdout: "", stderr: "", exitCode: 0 };
@@ -114,7 +116,7 @@ export function bash_nested_shell_command_create(name: "bash" | "sh", currentWor
 				exitCode: bash_COMMAND_EXIT_FAILURE,
 			};
 		}
-		if (await bash_command_loads_disallowed_shell_code(script, { cwd: commandCtx.cwd, fs: commandCtx.fs })) {
+		if (await bash_command_loads_disallowed_shell_code(script, { cwd: commandCtx.cwd, fs: commandCtx.fs, appRoot })) {
 			return {
 				stdout: "",
 				stderr: bash_disallowed_shell_code_error(),

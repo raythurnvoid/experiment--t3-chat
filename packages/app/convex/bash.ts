@@ -49,6 +49,8 @@ export const run = internalAction({
 			stdoutLength: v.number(),
 			stderrLength: v.number(),
 			pathIndexTruncated: v.boolean(),
+			observedPaths: v.array(v.string()),
+			observedPathsTruncated: v.boolean(),
 		}),
 	}),
 	handler: async (ctx, args) => {

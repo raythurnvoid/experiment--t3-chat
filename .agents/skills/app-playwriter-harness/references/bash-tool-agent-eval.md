@@ -189,7 +189,7 @@ Use a stable `<runId>` such as `2026-06-06-a`. Keep the same fixture for baselin
 
 - A normal small Markdown file containing a distinctive token.
 - Multiple `.md` files under nested folders so `find`, `tree`, extension search, and path search have real results.
-- A large Markdown file with at least 120 lines and enough bytes to trigger Bash large-file paging.
+- A large Markdown file with more than 500 lines and more than 64 KiB of UTF-8 text to trigger Bash paging.
 - A broad token appearing in multiple files so `search --limit 1` can print a real `Next page`.
 - An uploaded PDF/source file using `.agents/skills/app-playwriter-harness/assets/files/r2-upload-sample.pdf`.
 - A readable sibling such as `<uploaded>.pdf.md` so unreadable-source recovery can actually continue.
@@ -210,7 +210,7 @@ Create:
 - docs/reference/readme-notes.md with basheval-common-<runId>.
 - docs/reference/deep/topic.md with basheval-common-<runId>.
 - notes/today.md with basheval-common-<runId>.
-- large/large-paged.md with at least 140 numbered lines. Include basheval-large-<runId> on line 1 and basheval-common-<runId> on several later lines.
+- large/large-paged.md with more than 500 numbered lines and more than 64 KiB of UTF-8 text. Include basheval-large-<runId> on line 1 and basheval-common-<runId> on several later lines. Keep each line short enough to read in full.
 
 After writing, use Bash to verify the fixture exists.
 ```

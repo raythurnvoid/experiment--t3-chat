@@ -181,6 +181,39 @@ describe("ai_chat thread state", () => {
 		expect(messages).toHaveLength(1);
 	});
 
+	test("thread_messages_add refuses an oversized serialized message without storing it", async () => {
+		const t = test_convex();
+		const seeded = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			subject: "clerk-ai-chat-message-size",
+			external_id: seeded.userId,
+			email: "ai-chat-message-size@test.local",
+		});
+		const created = await asUser.mutation(api.ai_chat.thread_create, {
+			membershipId: seeded.membershipId,
+			clientGeneratedId: "client_oversized_thread",
+			title: "Message size",
+			lastMessageAt: Date.now(),
+		});
+		const threadId = created._yay!.threadId;
+		const result = await asUser.mutation(api.ai_chat.thread_messages_add, {
+			membershipId: seeded.membershipId,
+			threadId,
+			messages: [{
+				clientGeneratedMessageId: "client_oversized_message",
+				content: {
+					id: "client_oversized_message",
+					role: "assistant",
+					parts: [{ type: "text", text: "\"".repeat(460 * 1024) }],
+				},
+			}],
+		});
+		expect(result._nay?.message).toContain("Message is too large to store");
+		const listed = await asUser.query(api.ai_chat.thread_messages_list, { membershipId: seeded.membershipId, threadId });
+		expect(listed?.messages).toHaveLength(0);
+	});
+
 	test("thread_messages_add rejects file parts that break the image contract", async () => {
 		const t = test_convex();
 		const seeded = await t.run((ctx) =>

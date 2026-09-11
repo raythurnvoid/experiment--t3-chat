@@ -73,7 +73,7 @@ For `POST /api/chat`:
 7. Resolve the existing thread or keep the optimistic client thread id for a new thread, then credit-gate before LLM work.
 8. Create the thread if needed and persist incoming user messages before generation.
 9. Convert stored UI messages to model messages, then decode image data URLs into bytes. The AI SDK routes URL-shaped file parts through its download step and Convex `fetch` cannot request `data:` URLs, so without the decode the model call fails with "Failed to download data:...".
-10. Run `streamText(...)` with the current tools and `activeTools`. When workspace instructions are enabled, build the initial system string from saved sources and selected skills. `prepareStep` refreshes that system context before each model step.
+10. Run `streamText(...)` with the current tools and `activeTools`. When workspace instructions are enabled, add root AGENTS.md and the skill catalog to the initial system prompt. File tool results add newly read ancestor rules. `prepareStep` reserves the last step for an answer and disables tools when the response budget is exhausted.
 11. Stream UI message chunks back through `createUIMessageStreamResponse(...)`.
 12. Persist the assistant response in `onFinish`.
 13. If the thread has no title yet, generate a short title and persist it.
@@ -81,8 +81,8 @@ For `POST /api/chat`:
 
 Non-obvious runtime details:
 
-- Workspace `AGENTS.md` and Agent Skills use the optional `AI_CHAT_WORKSPACE_INSTRUCTIONS_ENABLED` Convex env var, read once at module root. Only `true` enables them. See the [skills spec](../ai-chat-skills/SKILL.md) for saved-source access, limits, strict parsing, and the system-only tool content boundary. In enabled turns, the tenth and last model step disables tools and asks for the result or a remaining checkpoint.
-- Skill selections are stable file IDs. Drafts, queued messages, queue edits, message edits, retries, and regeneration keep their own selection. Explicit `skillIds: []` clears a previous selection. Both chat surfaces preserve the selection when an optimistic thread gets its persisted ID. The Instructions and skills dialog closes on Escape without cancelling a composer edit, and returns focus to its trigger.
+- Workspace `AGENTS.md` and Agent Skills use the optional `AI_CHAT_WORKSPACE_INSTRUCTIONS_ENABLED` Convex env var, read once at module root. Only `true` enables automatic guidance. Skills remain ordinary files in either mode. See the [skills spec](../ai-chat-skills/SKILL.md) for current reads, pending changes, ancestor rules, and limits.
+- The composer has no skill picker, chips, or saved skill selection. The agent chooses relevant catalog paths and reads them with Bash. Drafts, queued messages, edits, retries, and regeneration use the same file tools. Older message metadata is left untouched.
 - Ask mode drops the write tools (`ai_chat_WRITE_TOOL_NAMES`: `edit_file` and `set_file_metadata`) from the `tools` record `streamText` receives, not only from `activeTools`. `validationTools` keeps the whole registry so a thread that ran in agent mode still validates its stored `edit_file` parts when reopened in ask mode. Agent-mode file writes otherwise go through `bash` shell writes.
 - User messages are persisted before generation so they survive aborts/stopped generations.
 - As soon as a running user message is visible, the shared message list shows a temporary `Thinking` assistant row without message actions. This covers the time before AI SDK creates the assistant message. While the running assistant message has no visible text, reasoning, tool, file, or source part, its renderer keeps showing `Thinking`. Active runs use their live parts so the placeholder disappears with the first visible part and does not remain beside later streaming text or tool calls. Empty text and reasoning parts do not count as visible content. Do not show the placeholder for a non-running empty assistant message.
@@ -104,19 +104,16 @@ Non-obvious runtime details:
 
 # Current Toolbelt
 
-The tool registry supports these tools. Mode, model support, and the workspace-instructions gate decide which ones the model can call:
+The tool registry supports these tools. Mode and model support decide which ones the model can call:
 
 - `bash`
 - `edit_file` (in `ai_chat_WRITE_TOOL_NAMES`; absent from the registry in ask mode)
 - `set_file_metadata` (in `ai_chat_WRITE_TOOL_NAMES`; absent from the registry in ask mode)
 - `web_search`
 - `execute_code`
-- `load_skill` (workspace-instructions gate; saved body reaches the next model step through system context)
-- `read_skill_resource` (workspace-instructions gate; saved text from a loaded skill's resource list)
-- `run_skill_script` (workspace-instructions gate; exact saved JavaScript in the supported Worker runtime)
 - `image_generation` (run by OpenAI, not by this route; only for models whose `ai_chat_MODELS` entry sets `supportsImageGeneration`)
 
-The three skill tools are available in both modes when enabled. `validationTools` keeps their stored shapes even when the gate is off. Their stored inputs hold only source IDs; outputs hold only IDs, an optional version, and status. Read the [skills spec](../ai-chat-skills/SKILL.md) before changing their stream or persistence code.
+Skill bodies and references are ordinary Bash output. `execute_code` can run suitable JavaScript after the agent reads it; it does not add a separate skill runtime. Stored tool results replay unchanged. `validationTools` validates current tool shapes, while the SDK accepts completed unknown historical tools without making them callable.
 
 `read_file`, `list_files`, `glob_files`, `grep_files`, and `write_file` were deleted, not deactivated — `bash` replaced all five, and the `BASH_REPLACED_TOOL_NAMES` list that used to hold them is gone too. Old threads still render their stored parts, because rendering reads the message, not the registry.
 
@@ -252,7 +249,7 @@ Use normal file tools and pending review. HTML stays `plain_text` source, and `.
 
 ## Legacy `read_file`
 
-These tools are **deleted**. The sections below stay only so an old assistant message that still carries their parts can be read and rendered correctly. They cannot be called, and they are not in `validationTools` either. The app does not send them — `prepareSendMessagesRequest` posts `messagesToAppend`, at most the one new user message, never the transcript — but that is client behaviour, not a guarantee: the route validates whatever `body.messages` contains, so a client that ever posted a stored legacy tool part would get a `400`. Use Bash exact reads and discovery instead.
+These tools are **deleted**. The sections below explain stored parts in older messages. They cannot be called and are absent from `validationTools`. Completed historical parts still validate and replay through the SDK's normal unknown-tool handling. The app sends at most the new user message, while the server rebuilds prior history. Use Bash exact reads and discovery for new calls.
 
 - Reads one Markdown file by absolute path and returns numbered lines.
 - Path must be absolute and resolve to an app file.
@@ -326,7 +323,7 @@ These tools are **deleted**. The sections below stay only so an old assistant me
 
 ## `execute_code`
 
-- Stop passes the tool abort signal to the runner's HTTP fetch. `run_skill_script` uses the same helper and signal. This aborts the request; it is not proof that a remote isolate has already stopped.
+- Stop passes the tool abort signal to the runner's HTTP fetch. This aborts the request; it is not proof that a remote isolate has already stopped.
 - Runs an untrusted JavaScript snippet in an isolated Cloudflare Dynamic Worker. The Convex action creates a `public_api_grants` doc, then `POST`s `{ executionId, code, input?, network, app }` to `bonobo-senate-code-execution-runner` (`/internal/execute-code`) with `Authorization: Bearer <CODE_EXECUTION_RUNNER_SECRET>`; the factory is `ai_chat_tool_create_execute_code` in `../../../packages/app/server/server-ai-tools.ts`, and the host Worker lives in `../../../packages/code-execution-runner/src/index.ts`.
 - The snippet is the body of `async (input) => { ... }`. It `return`s a JSON-serializable value (the tool reports `Result: <json>`) and may `console.log/info/warn/error` (captured, bounded to 100 lines / 16 KB). `input` is the optional JSON argument.
 - Default isolation of the runner is still sealed when no app/network capability is supplied: `globalOutbound: null` means `fetch()`/`connect()` throw and no platform `env` is passed. The app chat tool normally supplies both gatewayed public HTTP and the app file capability, so snippets can do real fetch work and can call the app file APIs directly.
@@ -362,7 +359,7 @@ These tools are **deleted**. The sections below stay only so an old assistant me
 
 Reads:
 
-- Workspace instruction and skill loading has a separate saved-only read path in `convex/ai_chat_context.ts`. It never uses the pending overlay described below. Pending eager creates stay excluded until their saved creation stamp advances. See the [skills spec](../ai-chat-skills/SKILL.md).
+- Workspace instructions, skill files, and references use the same pending-aware path reads as ordinary files. Fresh reads check current access. Previously stored results stay in chat history. See the [skills spec](../ai-chat-skills/SKILL.md).
 - Bash reads (`cat` and the other exact readers) and `edit_file` go through `get_file_last_available_text_content_by_path`.
 - That action resolves visible app paths through the current user's pending structural overlay before reading content. Pending destinations are visible, vacated or replaced paths are hidden, and descendants follow a pending folder move.
 - After path resolution, it checks `files_pending_updates` for `(organizationId, workspaceId, userId, fileNodeId)` and overlays the current pending `unstaged` branch when content exists.
@@ -410,11 +407,11 @@ Writes:
 16. Server-side AI tool calls stream and persist through `/api/chat`; the client must not use AI SDK `sendAutomaticallyWhen` to resubmit completed server-side tool messages.
 17. Message image attachments are `FileUIPart`s with allowlisted media types and base64 data URLs. The chat route rejects any other file-part shape with a 400, and the public `thread_messages_add` mutation enforces the same contract, because stored file parts are forwarded to the model provider on later turns and a remote URL must never reach it.
 18. The chat route decodes image data URLs into bytes after `convertToModelMessages`. Without that, the AI SDK's download step tries to fetch the data URL and Convex `fetch` rejects it.
-19. Skill bodies, resource text, and script results reach the model through request-local system context. Script parameters stay private to the running tool. Do not put these fields in skill tool history. Recheck source access before each model step and each new source read.
+19. Skill text and results use normal tool history. Root AGENTS.md starts in the system prompt; newly encountered ancestor rules travel with file tool results. Deduplicate rules by path and text within the request, and recheck access on each fresh read.
 
 # Verification Checklist
 
-- Run the focused workspace instruction, skill tool, selection, and keyboard checks listed in the [skills spec](../ai-chat-skills/SKILL.md). Include route-level system strings, strict stored parts, revocation, and Stop reaching both runner fetches.
+- Run the focused context, file paging, history, budget, and composer checks in the [skills spec](../ai-chat-skills/SKILL.md). Include pending skill reads, deleted/revoked fresh reads, completed old tool replay, and Stop reaching the code runner.
 - New threads still dedupe optimistic entries correctly.
 - User messages persist even if generation is aborted mid-stream.
 - Assistant responses persist under the correct parent message.
@@ -450,10 +447,16 @@ Writes:
 
 Defensive limits against pathologically large / long-line content. These are NOT about the
 agent read path — that is already bounded (`bash` reads use a 256,000-character scan window
-(`files_READ_RANGE_MAX_SCAN_CHARS`), a 30,000-character stdout cap (`OUTPUT_LIMIT` in
+(`files_READ_RANGE_MAX_SCAN_CHARS`), a 128 * 1024-character stdout cap (`OUTPUT_LIMIT` in
 `server/bash.ts`), and per-line display truncation at `files_READ_MAX_LINE_CHARS = 8000` in
 `convex/files_nodes.ts`). The gap below is about **storage and materialization cost** of
 content written/typed into the workspace.
+
+Complete ordinary reads allow 64 KiB. Larger files use pages capped at 64 KiB and 500 lines.
+Local tools share a 384 KiB response budget. Inputs are capped at 64 KiB serialized, and
+parallel calls reserve their result space before execution. New UI messages must fit the
+900 KiB serialized storage guard. An oversized final reply is not saved; the stream ends
+with a clear error asking for a shorter result or smaller pages.
 
 - [x] **Cap total written-document size — done by the editable-text feature.** Every
       string→document producer now enforces `files_MAX_TEXT_CONTENT_BYTES` (900,000 bytes):

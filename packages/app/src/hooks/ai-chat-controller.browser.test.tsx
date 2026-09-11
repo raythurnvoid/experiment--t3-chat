@@ -136,10 +136,6 @@ function RuntimeStreamProbe() {
 			<div data-testid="error">{controller.error?.message ?? "null"}</div>
 			<div data-testid="queue-paused">{controller.isMessageQueuePaused ? "yes" : "no"}</div>
 			<div data-testid="queued">{controller.queuedUserMessages.length}</div>
-			<div data-testid="selected-skills">{controller.selectedSkillIds.join(",")}</div>
-			<button type="button" onClick={() => controller.setSelectedSkillIds(["skill_first"])}>
-				select skill
-			</button>
 			<div data-testid="assistant-text">
 				{(assistantMessage?.parts ?? []).map((part) => (part.type === "text" ? part.text : "")).join("")}
 			</div>
@@ -246,18 +242,14 @@ describe("AiChatController streaming against the real AI SDK", () => {
 		expect(screen.getByTestId("error").textContent).toBe("null");
 	});
 
-	test("sends selected root skills through the real transport and clears the next draft", async () => {
+	test("sends a new message without skill selections through the real transport", async () => {
 		hookMocks.responses.push(() => sseResponse([{ type: "start" }, { type: "finish" }]));
 		renderRuntime();
-		await userEvent.click(screen.getByRole("button", { name: "select skill" }));
 		await userEvent.click(screen.getByRole("button", { name: "new chat" }));
 		await userEvent.click(screen.getByRole("button", { name: "send" }));
 		await waitFor(() => expect(hookMocks.requestBodies).toHaveLength(1));
-		expect(hookMocks.requestBodies[0]).toMatchObject({
-			skillIds: ["skill_first"],
-			messages: [{ metadata: { skillIds: ["skill_first"] } }],
-		});
-		expect(screen.getByTestId("selected-skills").textContent).toBe("");
+		expect(hookMocks.requestBodies[0]).not.toHaveProperty("skillIds");
+		expect(hookMocks.requestBodies[0]).not.toHaveProperty("messages.0.metadata.skillIds");
 	});
 
 	test("moves a tool part from input-streaming to output-available", async () => {
@@ -268,7 +260,7 @@ describe("AiChatController streaming against the real AI SDK", () => {
 				{ type: "tool-input-start", toolCallId: "call_1", toolName: "bash" },
 				{ type: "tool-input-delta", toolCallId: "call_1", inputTextDelta: '{"command":"ls"}' },
 				{ type: "tool-input-available", toolCallId: "call_1", toolName: "bash", input: { command: "ls" } },
-				{ type: "tool-output-available", toolCallId: "call_1", output: { stdout: "notes.md" } },
+				{ type: "tool-output-available", toolCallId: "call_1", output: { output: "notes.md" } },
 				{ type: "finish-step" },
 				{ type: "finish" },
 			]),
@@ -282,7 +274,7 @@ describe("AiChatController streaming against the real AI SDK", () => {
 			expect(screen.getByTestId("running").textContent).toBe("no");
 		});
 		expect(screen.getByTestId("tool-parts").textContent).toBe("tool-bash:output-available");
-		expect(screen.getByTestId("tool-output").textContent).toBe('{"stdout":"notes.md"}');
+		expect(screen.getByTestId("tool-output").textContent).toBe('{"output":"notes.md"}');
 	});
 
 	test("shows the error text the server sent instead of a generic message", async () => {
@@ -301,6 +293,23 @@ describe("AiChatController streaming against the real AI SDK", () => {
 		await waitFor(() => {
 			expect(screen.getByTestId("error").textContent).toBe("The model refused the request");
 		});
+	});
+
+	test("shows a storage refusal sent after the finish chunk", async () => {
+		const errorText = "This reply is too large and was not saved. Start a new message with smaller file pages.";
+		hookMocks.responses.push(() => sseResponse([
+			{ type: "start" },
+			{ type: "text-start", id: "t1" },
+			{ type: "text-delta", id: "t1", delta: "The streamed answer" },
+			{ type: "text-end", id: "t1" },
+			{ type: "finish" },
+			{ type: "error", errorText },
+		]));
+		renderRuntime();
+		await userEvent.click(screen.getByRole("button", { name: "new chat" }));
+		await userEvent.click(screen.getByRole("button", { name: "send" }));
+		await waitFor(() => expect(screen.getByTestId("error").textContent).toBe(errorText));
+		expect(screen.getByTestId("assistant-text").textContent).toBe("The streamed answer");
 	});
 
 	test("overwrites the chat id when the server sends the persisted thread id", async () => {

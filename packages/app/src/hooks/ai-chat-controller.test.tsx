@@ -32,7 +32,6 @@ type MockPrepareSendMessagesRequestOptions = {
 			convexParentId?: string | null;
 			selectedModelId?: string;
 			selectedModeId?: string;
-			skillIds?: string[];
 		};
 	}>;
 	trigger: "submit-message" | "regenerate-message";
@@ -519,8 +518,6 @@ function RuntimeQueueProbe() {
 			<div data-testid="queue-session">{selectedChat ? "session" : "no-session"}</div>
 			<div data-testid="queue-selected">{selectedThreadId ?? "null"}</div>
 			<div data-testid="queue-draft">{controller.session?.draftComposerText ?? ""}</div>
-			<div data-testid="queue-skills">{controller.selectedSkillIds.join(",")}</div>
-			<div data-testid="queue-edit-skills">{controller.queuedUserMessageEdit?.skillIds.join(",") ?? "null"}</div>
 			<div data-testid="queue-texts">{controller.queuedUserMessages.map((message) => message.text).join("|")}</div>
 			<div data-testid="queue-attachments">
 				{controller.queuedUserMessages.map((message) => message.attachments.length).join("|")}
@@ -542,22 +539,6 @@ function RuntimeQueueProbe() {
 			</div>
 			<button type="button" onClick={() => controller.startNewChat()}>
 				new queue probe
-			</button>
-			<button type="button" onClick={() => controller.setSelectedSkillIds(["skill_first"])}>
-				select first skill probe
-			</button>
-			<button type="button" onClick={() => controller.setSelectedSkillIds(["skill_second"])}>
-				select second skill probe
-			</button>
-			<button
-				type="button"
-				onClick={() => {
-					const edit = controller.queuedUserMessageEdit;
-					const chat = controller.session?.chat;
-					if (edit && chat) controller.setQueuedUserMessageEditSkillIds(chat, edit.id, []);
-				}}
-			>
-				clear queued skills probe
 			</button>
 			<button type="button" onClick={() => send("First")}>
 				send first queue probe
@@ -1405,7 +1386,7 @@ describe("AiChatController", () => {
 		expect(fetchMock).toHaveBeenCalledOnce();
 	});
 
-	test("uses current model and mode but the original skills when preparing a regenerate request", async () => {
+	test("uses current model and mode when preparing a regenerate request", async () => {
 		render(
 			<FullPageSurface initialSelectedThreadId="thread_regenerate_settings">
 				<RuntimeQueueProbe />
@@ -1416,7 +1397,6 @@ describe("AiChatController", () => {
 			expect(screen.getByTestId("queue-session").textContent).toBe("session");
 		});
 		fireEvent.click(screen.getByRole("button", { name: "select mini ask queue probe" }));
-		fireEvent.click(screen.getByRole("button", { name: "select second skill probe" }));
 
 		const chat = hookMocks.chatInstances.find((item) => item.id === "thread_regenerate_settings");
 		expect(chat).toBeDefined();
@@ -1442,7 +1422,6 @@ describe("AiChatController", () => {
 						convexParentId: null,
 						selectedModelId: "gpt-5.4-nano",
 						selectedModeId: "agent",
-						skillIds: ["skill_original"],
 					},
 				},
 				{
@@ -1464,8 +1443,8 @@ describe("AiChatController", () => {
 			model: "gpt-5.4-mini",
 			mode: "ask",
 			parentId: "historical_assistant",
-			skillIds: ["skill_original"],
 		});
+		expect((preparedRequest as { body: Record<string, unknown> }).body).not.toHaveProperty("skillIds");
 	});
 
 	test("stamps matched live messages with persisted identity before follow-up sends", async () => {
@@ -2806,7 +2785,6 @@ describe("AiChatController", () => {
 			expect(screen.getByTestId("queue-session").textContent).toBe("session");
 		});
 
-		fireEvent.click(screen.getByRole("button", { name: "select first skill probe" }));
 		fireEvent.click(screen.getByRole("button", { name: "send first queue probe" }));
 		fireEvent.click(screen.getByRole("button", { name: "send second queue probe" }));
 		fireEvent.click(screen.getByRole("button", { name: "send third queue probe" }));
@@ -2859,7 +2837,6 @@ describe("AiChatController", () => {
 		expect(chat.pendingRequestResolvers).toHaveLength(0);
 		expect(chat.maxActiveRequestCount).toBe(1);
 
-		fireEvent.click(screen.getByRole("button", { name: "select second skill probe" }));
 		fireEvent.click(screen.getByRole("button", { name: "resume queue probe" }));
 
 		await waitFor(() => {
@@ -2869,46 +2846,14 @@ describe("AiChatController", () => {
 		const retriedMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined;
 		expect(retriedMessage?.parts).toContainEqual({ type: "text", text: "First" });
 		expect(retriedMessage?.metadata?.convexParentId).toBeNull();
-		expect(retriedMessage?.metadata?.skillIds).toEqual(["skill_first"]);
 		expect(chat.activeRequestCount).toBe(1);
 		expect(chat.pendingRequestResolvers).toHaveLength(1);
 		expect(chat.maxActiveRequestCount).toBe(1);
 		expect(screen.getByTestId("queue-texts").textContent).toBe("Second|Third");
 	});
 
-	test.each(["new queue probe", "new root skills"])(
-		"moves root skills into %s and stamps the first message",
-		async (newButton) => {
-			render(
-				<FullPageSurface>
-					<RuntimeQueueProbe />
-					<ControllerProbe label="root skills" />
-				</FullPageSurface>,
-			);
-			fireEvent.click(screen.getByRole("button", { name: "select first skill probe" }));
-			expect(screen.getByTestId("queue-skills").textContent).toBe("skill_first");
-			fireEvent.click(screen.getByRole("button", { name: newButton }));
-			await waitFor(() => expect(screen.getByTestId("queue-session").textContent).toBe("session"));
-			expect(screen.getByTestId("queue-skills").textContent).toBe("skill_first");
-			fireEvent.click(screen.getByRole("button", { name: "send first queue probe" }));
-			const id = screen.getByTestId("queue-selected").textContent;
-			const chat = hookMocks.chatInstances.find((item) => item.id === id)!;
-			const message = chat.sendMessage.mock.calls[0]?.[0] as ai_chat_UiMessage;
-			expect(message.metadata?.skillIds).toEqual(["skill_first"]);
-			expect(screen.getByTestId("queue-skills").textContent).toBe("");
-			const request = await chat.transport!.options.prepareSendMessagesRequest!({
-				api: "/api/chat",
-				body: {},
-				headers: new Headers(),
-				id: id!,
-				messages: [message],
-				trigger: "submit-message",
-			});
-			expect(request).toMatchObject({ body: { skillIds: ["skill_first"] } });
-		},
-	);
 
-	test("keeps the model, mode and skills selected when a message was queued", async () => {
+	test("keeps the model and mode selected when a message was queued", async () => {
 		hookMocks.holdChatRequests = true;
 		render(
 			<FullPageSurface initialSelectedThreadId="thread_queue_settings">
@@ -2922,10 +2867,7 @@ describe("AiChatController", () => {
 
 		fireEvent.click(screen.getByRole("button", { name: "send first queue probe" }));
 		fireEvent.click(screen.getByRole("button", { name: "select nano agent queue probe" }));
-		fireEvent.click(screen.getByRole("button", { name: "select first skill probe" }));
 		fireEvent.click(screen.getByRole("button", { name: "send second queue probe" }));
-		expect(screen.getByTestId("queue-skills").textContent).toBe("");
-		fireEvent.click(screen.getByRole("button", { name: "select second skill probe" }));
 		fireEvent.click(screen.getByRole("button", { name: "select mini ask queue probe" }));
 		fireEvent.click(screen.getByRole("button", { name: "complete client response queue probe" }));
 		fireEvent.click(screen.getByRole("button", { name: "persist assistant queue probe" }));
@@ -2942,31 +2884,8 @@ describe("AiChatController", () => {
 		const queuedMessage = chat.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined;
 		expect(queuedMessage?.metadata?.selectedModelId).toBe("gpt-5.4-nano");
 		expect(queuedMessage?.metadata?.selectedModeId).toBe("agent");
-		expect(queuedMessage?.metadata?.skillIds).toEqual(["skill_first"]);
-		expect(screen.getByTestId("queue-skills").textContent).toBe("skill_second");
 	});
 
-	test("explicitly removes all skills while editing a queued message", async () => {
-		hookMocks.holdChatRequests = true;
-		render(
-			<FullPageSurface initialSelectedThreadId="thread_queue_clear_skills">
-				<RuntimeQueueProbe />
-			</FullPageSurface>,
-		);
-		await waitFor(() => expect(screen.getByTestId("queue-session").textContent).toBe("session"));
-		fireEvent.click(screen.getByRole("button", { name: "send first queue probe" }));
-		fireEvent.click(screen.getByRole("button", { name: "select first skill probe" }));
-		fireEvent.click(screen.getByRole("button", { name: "send second queue probe" }));
-		fireEvent.click(screen.getByRole("button", { name: "edit first queued message probe" }));
-		expect(screen.getByTestId("queue-edit-skills").textContent).toBe("skill_first");
-		fireEvent.click(screen.getByRole("button", { name: "clear queued skills probe" }));
-		fireEvent.click(screen.getByRole("button", { name: "save queued edit probe" }));
-		fireEvent.click(screen.getByRole("button", { name: "complete client response queue probe" }));
-		fireEvent.click(screen.getByRole("button", { name: "persist assistant queue probe" }));
-		const chat = hookMocks.chatInstances.find((item) => item.id === "thread_queue_clear_skills")!;
-		await waitFor(() => expect(chat.sendMessage).toHaveBeenCalledTimes(2));
-		expect((chat.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage).metadata?.skillIds).toEqual([]);
-	});
 
 	test("limits the queue to ten messages and stop pauses it until resume", async () => {
 		hookMocks.holdChatRequests = true;
@@ -3285,7 +3204,6 @@ describe("AiChatController", () => {
 		const composerId = AiChatController.useStore.getState().threadById.get(optimisticThreadId)?.composerId;
 
 		fireEvent.click(screen.getByRole("button", { name: "send first queue probe" }));
-		fireEvent.click(screen.getByRole("button", { name: "select first skill probe" }));
 		fireEvent.click(screen.getByRole("button", { name: "send second queue probe" }));
 		fireEvent.click(screen.getByRole("button", { name: "send third queue probe" }));
 		fireEvent.click(screen.getByRole("button", { name: "edit first queued message probe" }));
@@ -3300,7 +3218,6 @@ describe("AiChatController", () => {
 		});
 		expect(screen.getByTestId("queue-texts").textContent).toBe("Third|Second");
 		expect(screen.getByTestId("queue-edit").textContent).toMatch(/:Second edited:/);
-		expect(screen.getByTestId("queue-edit-skills").textContent).toBe("skill_first");
 
 		hookMocks.threads = [
 			createThread({
@@ -3321,7 +3238,6 @@ describe("AiChatController", () => {
 		expect(AiChatController.useStore.getState().threadById.get("thread_queue_upgraded_after_settle")?.composerId).toBe(
 			composerId,
 		);
-		expect(screen.getByTestId("queue-edit-skills").textContent).toBe("skill_first");
 		expect(
 			AiChatController.useStore.getState().threadById.get("thread_queue_upgraded_after_settle")?.activeRequestToken,
 		).toBeNull();

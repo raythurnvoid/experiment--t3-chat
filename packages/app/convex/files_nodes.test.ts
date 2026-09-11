@@ -144,6 +144,20 @@ describe("bounded read line helpers", () => {
 		});
 	});
 
+	test("line pages stop at a UTF-8 byte boundary without skipping the next line", () => {
+		const lines = Array.from({ length: 500 }, (_, index) => `${index}: ${"é".repeat(500)}\n`);
+		const content = lines.join("");
+		const first = files_line_range_from_text(content, 1, 500);
+		const second = files_line_range_from_text(content, first.linesReturned + 1, 500);
+
+		expect(new TextEncoder().encode(first.content).byteLength).toBeLessThanOrEqual(64 * 1024);
+		expect(first.linesReturned).toBeGreaterThan(0);
+		expect(first.linesReturned).toBeLessThan(500);
+		expect(first.content).toBe(lines.slice(0, first.linesReturned).join(""));
+		expect(second.content.startsWith(lines[first.linesReturned])).toBe(true);
+		expect(first.moreLines).toBe(true);
+	});
+
 	test("files_line_range_from_text truncates a pathologically long line with a marker", () => {
 		const longLine = "Z".repeat(50000);
 		const content = `short\n${longLine}\nafter\n`;

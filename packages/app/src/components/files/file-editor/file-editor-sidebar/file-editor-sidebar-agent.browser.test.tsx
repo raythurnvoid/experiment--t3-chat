@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { userEvent } from "vitest/browser";
 import type { ai_chat_Thread } from "@/lib/ai-chat.ts";
 
-// Keep the real sidebar, controller, AI SDK transport, composer, tabs, and dialog.
+// Keep the real sidebar, controller, AI SDK transport, composer, and tabs.
 // Only auth, routing links, and the Convex/HTTP boundaries are simulated.
 const mocks = vi.hoisted(() => ({
 	tenant: {
@@ -20,15 +20,6 @@ const mocks = vi.hoisted(() => ({
 	listeners: new Set<() => void>(),
 	requestBodies: [] as Array<{ clientGeneratedThreadId: string }>,
 	threadMessages: { messages: [] },
-	catalog: {
-		enabled: true,
-		status: "complete",
-		instructions: [],
-		skills: [{
-			skillId: "skill_review", name: "review", description: "Review the work.",
-			path: "/.agents/skills/review/SKILL.md", status: "available",
-		}],
-	},
 	mutation: vi.fn(() => Promise.resolve({ _yay: {} })),
 }));
 
@@ -53,7 +44,6 @@ vi.mock("convex/react", async (importOriginal) => {
 			if (args === "skip") return undefined;
 			switch (getFunctionName(query)) {
 				case "ai_chat:thread_messages_list": return mocks.threadMessages;
-				case "ai_chat_context:get_catalog": return mocks.catalog;
 				case "files_pending_updates:list_files_pending_updates": return [];
 				default: return undefined;
 			}
@@ -98,7 +88,7 @@ describe("FileEditorSidebarAgent thread upgrade", () => {
 		vi.unstubAllGlobals();
 	});
 
-	test("keeps the real composer and open skills dialog through persistence during a queued edit", async () => {
+	test("keeps the real composer and focus through persistence during a queued edit", async () => {
 		const stream = openSseResponse();
 		vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
 			mocks.requestBodies.push(JSON.parse(String(init?.body)));
@@ -117,10 +107,9 @@ describe("FileEditorSidebarAgent thread upgrade", () => {
 		await userEvent.keyboard("Queued draft{Enter}");
 		await userEvent.click(await screen.findByRole("button", { name: "Edit queued message: Queued draft" }));
 		const editComposer = screen.getByRole("textbox", { name: "Edit queued message" }).closest(".AiChatComposer");
-		const trigger = screen.getByRole("button", { name: "Instructions and skills" });
-		await userEvent.click(trigger);
-		await userEvent.click(screen.getByRole("button", { name: "Select skill review" }));
-		const dialog = screen.getByRole("dialog", { name: "Instructions and skills" });
+		const editTextbox = screen.getByRole("textbox", { name: "Edit queued message" });
+		await userEvent.click(editTextbox);
+		expect(screen.queryByRole("button", { name: "Instructions and skills" })).toBeNull();
 
 		const optimisticId = mocks.requestBodies[0]?.clientGeneratedThreadId;
 		expect(optimisticId).toMatch(/^ai_thread-/u);
@@ -136,14 +125,9 @@ describe("FileEditorSidebarAgent thread upgrade", () => {
 			`app_state::file_editor_sidebar_agent_selected_tab::scope::${mocks.tenant.membershipId}`,
 		)).toBe("thread_persisted"));
 		expect(editComposer?.isConnected).toBe(true);
-		expect(dialog.isConnected).toBe(true);
-		expect(screen.getByRole("dialog", { name: "Instructions and skills" })).toBe(dialog);
-		expect(screen.getByRole("button", { name: "Deselect skill review" }).getAttribute("aria-pressed")).toBe("true");
-		await userEvent.keyboard("{Escape}");
-		expect(document.activeElement).toBe(trigger);
+		expect(document.activeElement).toBe(editTextbox);
 		expect(screen.getByRole("textbox", { name: "Edit queued message" }).closest(".AiChatComposer")).toBe(editComposer);
 		expect(screen.getByRole("textbox", { name: "Edit queued message" }).textContent).toBe("Queued draft");
-		expect(screen.getByRole("button", { name: "Remove skill review" })).not.toBeNull();
 		stream.write({ type: "finish" });
 		stream.close();
 	});

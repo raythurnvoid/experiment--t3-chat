@@ -23,7 +23,6 @@ import { Result } from "common/errors-as-values-utils.ts";
 
 import { MyButton } from "@/components/my-button.tsx";
 import { MyChip, MyChipLabel, MyChipMedia, MyChipRemove, MyChipRow } from "@/components/my-chip.tsx";
-import { AiChatSkillChips, AiChatSkillsControl } from "@/components/ai-chat/ai-chat-skills.tsx";
 import {
 	ai_chat_composer_file_mention_create_extension,
 	ai_chat_composer_file_mention_PLUGIN_KEY,
@@ -84,7 +83,6 @@ export type AiChatComposer_ClassNames =
 	| "AiChatComposer-editor-content-container"
 	| "AiChatComposer-editor-content"
 	| "AiChatComposer-attachments"
-	| "AiChatComposer-skills"
 	| "AiChatComposer-actions"
 	| "AiChatComposer-configurations"
 	| "AiChatComposer-configurations-attach"
@@ -95,7 +93,6 @@ export type AiChatComposer_ClassNames =
 
 /** Matches Windows (`\r\n`) and old Mac (`\r`) line endings. */
 const CR_LINE_ENDING_REGEX = /\r\n?/g;
-const EMPTY_SKILL_IDS: readonly string[] = [];
 
 /**
  * Serialize the editor content to plain text.
@@ -243,7 +240,6 @@ export type AiChatComposer_Props = Omit<
 	initialValue: string;
 	/** Image attachments to start with: a saved draft or a message being edited. */
 	initialAttachments?: readonly FileUIPart[];
-	initialSkillIds?: readonly string[];
 	inputLabel?: string;
 	submitLabel?: string;
 	selectedModelId: ai_chat_ModelId;
@@ -251,14 +247,13 @@ export type AiChatComposer_Props = Omit<
 
 	onValueChange?: (value: string) => void;
 	onAttachmentsChange?: (attachments: FileUIPart[]) => void;
-	onSkillIdsChange?: (skillIds: readonly string[]) => void;
 	onSelectedModelIdChange: (value: ai_chat_ModelId) => void;
 	onSelectedModeIdChange: (value: ai_chat_ModeId) => void;
 	/**
 	 * Return `false` to keep the composer text when the message was rejected,
 	 * for example when another surface filled the queue first.
 	 */
-	onSubmit: (value: string, attachments: FileUIPart[], skillIds: readonly string[]) => boolean | void;
+	onSubmit: (value: string, attachments: FileUIPart[]) => boolean | void;
 	onCancel?: () => void;
 	onInteractedOutside?: (event: FocusEvent | PointerEvent) => void;
 	onClose?: () => void;
@@ -278,14 +273,12 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 		isRunning,
 		initialValue,
 		initialAttachments,
-		initialSkillIds = EMPTY_SKILL_IDS,
 		inputLabel,
 		submitLabel,
 		selectedModelId,
 		selectedModeId,
 		onValueChange,
 		onAttachmentsChange,
-		onSkillIdsChange,
 		onSelectedModelIdChange,
 		onSelectedModeIdChange,
 		onSubmit,
@@ -324,11 +317,6 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 	/** Hidden file input behind the attachments-bar plus button. */
 	const attachmentsFileInputRef = useRef<HTMLInputElement | null>(null);
 	const hasAttachments = attachments.length > 0;
-	const [localSkillIds, setLocalSkillIds] = useState(initialSkillIds);
-	// Shared drafts use the controller's selection; an inline edit owns its local copy.
-	const skillIds = onSkillIdsChange ? initialSkillIds : localSkillIds;
-	const [skillsDialogElement, setSkillsDialogElement] = useState<HTMLElement | null>(null);
-	const [skillsDialogOpen, setSkillsDialogOpen] = useState(false);
 
 	/**
 	 * The "@" mention popup element while it is open. Held in state so the
@@ -422,21 +410,6 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 
 	const handleChipFocusExit = () => {
 		editorRef.current?.commands.focus();
-	};
-
-	const handleSkillIdsChange = (nextSkillIds: readonly string[]) => {
-		if (onSkillIdsChange) {
-			onSkillIdsChange(nextSkillIds);
-		} else {
-			setLocalSkillIds(nextSkillIds);
-		}
-	};
-
-	const handleSkillRemove = (skillId: string, focusEditor: boolean) => {
-		handleSkillIdsChange(skillIds.filter((id) => id !== skillId));
-		if (focusEditor) {
-			editorRef.current?.commands.focus();
-		}
 	};
 
 	const handleAttachmentsAddClick = () => {
@@ -648,7 +621,6 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 		const wasAccepted = onSubmit(
 			nextComposerText,
 			attachmentsRef.current.map((item) => item.part),
-			skillIds,
 		);
 		if (wasAccepted === false) {
 			return;
@@ -660,7 +632,6 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 		setComposerText("");
 		attachmentsRef.current = [];
 		setAttachments([]);
-		setLocalSkillIds(EMPTY_SKILL_IDS);
 
 		if (currentEditor) {
 			currentEditor.commands.setContent(files_tiptap_empty_doc_json(), { emitUpdate: false });
@@ -761,8 +732,8 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 	}, [onInteractedOutside]);
 
 	useUiInteractedOutside(rootRef, onInteractedOutside, {
-		allowedAreas: [editor?.view.dom, mentionPopupElement, skillsDialogElement],
-		enable: Boolean(onInteractedOutside) && enableInteractedOutside && !skillsDialogOpen,
+		allowedAreas: [editor?.view.dom, mentionPopupElement],
+		enable: Boolean(onInteractedOutside) && enableInteractedOutside,
 	});
 
 	useEffect(() => {
@@ -869,15 +840,6 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 							</MyChipRow>
 						</div>
 					)}
-					{skillIds.length > 0 && (
-						<div className={"AiChatComposer-skills" satisfies AiChatComposer_ClassNames}>
-							<AiChatSkillChips
-								skillIds={skillIds}
-								onRemove={handleSkillRemove}
-								onFocusExit={handleChipFocusExit}
-							/>
-						</div>
-					)}
 					<EditorContent
 						editor={editor}
 						className={"AiChatComposer-editor-content-container" satisfies AiChatComposer_ClassNames}
@@ -956,12 +918,6 @@ export const AiChatComposer = memo(function AiChatComposer(props: AiChatComposer
 					</MySearchSelectPopover>
 				</MySearchSelect>
 
-				<AiChatSkillsControl
-					skillIds={skillIds}
-					onSkillIdsChange={handleSkillIdsChange}
-					onDialogElementChange={setSkillsDialogElement}
-					onDialogOpenChange={setSkillsDialogOpen}
-				/>
 				<MyIconButton
 					className={"AiChatComposer-configurations-attach" satisfies AiChatComposer_ClassNames}
 					variant="ghost-highlightable"

@@ -47,7 +47,6 @@ export type AiChatQueuedUserMessage = {
 	id: ReturnType<typeof generate_id<"ai_message">>;
 	text: string;
 	attachments: readonly FileUIPart[];
-	skillIds: readonly string[];
 	selectedModelId: ai_chat_ModelId;
 	selectedModeId: ai_chat_ModeId;
 };
@@ -57,7 +56,6 @@ type ThreadSession = {
 	composerId: string;
 	draftComposerText: string;
 	draftComposerAttachments: readonly FileUIPart[];
-	draftSkillIds: readonly string[];
 	selectedModelId?: ai_chat_ModelId;
 	selectedModeId?: ai_chat_ModeId;
 	queuedUserMessages: readonly AiChatQueuedUserMessage[];
@@ -89,7 +87,6 @@ export type AiChatOptimisticThreadId = ReturnType<typeof generate_id<"ai_thread"
 type StoreState = {
 	draftSelectedModelId: ai_chat_ModelId;
 	draftSelectedModeId: ai_chat_ModeId;
-	draftSkillIds: readonly string[];
 	threadById: Map<string, ThreadSession>;
 	messageById: Map<string, ai_chat_UiMessage>;
 	activeMessageIdsByThreadId: Map<string, readonly string[]>;
@@ -102,7 +99,6 @@ type StoreState = {
 const DERIVED_CACHE_CLEAR_INTERVAL_MS = 60 * 60 * 1000;
 const QUEUED_USER_MESSAGE_LIMIT = 10;
 const EMPTY_QUEUED_USER_MESSAGES: readonly AiChatQueuedUserMessage[] = [];
-const EMPTY_SKILL_IDS: readonly string[] = [];
 
 /**
  * Cache persisted Convex messages by their final message id so query refreshes do not recreate old UIMessage objects.
@@ -191,7 +187,7 @@ export type AiChatRuntimeActions = {
 	sendUserText: (
 		threadId: string,
 		value: string,
-		options?: { messageId?: string; attachments?: FileUIPart[]; skillIds?: readonly string[] },
+		options?: { messageId?: string; attachments?: FileUIPart[] },
 	) => boolean;
 	regenerate: (threadId: string, messageId: string) => void;
 	branchChat: (threadId: string, messageId?: string) => void;
@@ -430,27 +426,17 @@ function get_message_selected_mode_id(message?: ai_chat_UiMessage | null) {
 	return selectedModeId;
 }
 
-function get_message_skill_ids(message?: ai_chat_UiMessage | null) {
-	const skillIds: unknown = message?.metadata?.skillIds;
-	if (!Array.isArray(skillIds) || !skillIds.every((id) => typeof id === "string")) {
-		return undefined;
-	}
-	return skillIds as string[];
-}
-
 const thread_session_create = (args?: {
 	chat?: Chat<ai_chat_UiMessage> | null;
 	chatArgs?: ThreadChatArgs | undefined;
 	selectedModelId?: ai_chat_ModelId;
 	selectedModeId?: ai_chat_ModeId;
-	skillIds?: readonly string[];
 }) => {
 	return {
 		chat: args?.chat ?? (args?.chatArgs ? create_chat_instance(args.chatArgs) : null),
 		composerId: crypto.randomUUID(),
 		draftComposerText: "",
 		draftComposerAttachments: [],
-		draftSkillIds: args?.skillIds ?? EMPTY_SKILL_IDS,
 		selectedModelId: args?.selectedModelId,
 		selectedModeId: args?.selectedModeId,
 		queuedUserMessages: [],
@@ -533,7 +519,6 @@ const useStore = ((/* iife */) => {
 	const store = create<StoreState>(() => ({
 		draftSelectedModelId: ai_chat_DEFAULT_MODEL_ID,
 		draftSelectedModeId: ai_chat_DEFAULT_MODE_ID,
-		draftSkillIds: EMPTY_SKILL_IDS,
 		threadById: new Map(),
 		messageById: new Map(),
 		activeMessageIdsByThreadId: new Map(),
@@ -636,7 +621,6 @@ const useStore = ((/* iife */) => {
 						edit.id !== message.id ||
 						(edit.text === message.text &&
 							edit.attachments === message.attachments &&
-							readonly_string_arrays_equal(edit.skillIds, message.skillIds) &&
 							edit.selectedModelId === message.selectedModelId &&
 							edit.selectedModeId === message.selectedModeId)
 					) {
@@ -1121,9 +1105,6 @@ const useThreadList = (props?: useThreadList_Props) => {
 
 	const selectedModelId = selectedThreadId ? (session?.selectedModelId ?? draftSelectedModelId) : draftSelectedModelId;
 	const selectedModeId = selectedThreadId ? (session?.selectedModeId ?? draftSelectedModeId) : draftSelectedModeId;
-	const selectedSkillIds = useStore((state) =>
-		selectedThreadId ? (state.threadById.get(selectedThreadId)?.draftSkillIds ?? EMPTY_SKILL_IDS) : state.draftSkillIds,
-	);
 
 	/** Necessary to manage optimistic threads and their switch to persisted threads. */
 	const persistedThreadIdByClientGeneratedId = useMemo<ReadonlyMap<string, string>>(() => {
@@ -1224,10 +1205,6 @@ const useThreadList = (props?: useThreadList_Props) => {
 				...options.body,
 				model: modelForRequest,
 				mode: modeForRequest,
-				skillIds:
-					get_message_skill_ids(
-						requestUserMessage ?? options.messages.findLast((message) => message.role === "user"),
-					) ?? [],
 				threadId: isOptimisticThread ? undefined : options.id,
 				clientGeneratedThreadId: isOptimisticThread ? options.id : undefined,
 				messages: messagesToAppend,
@@ -1349,7 +1326,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 		});
 	};
 
-	const startNewChat = useFn((message?: string, attachments?: FileUIPart[], skillIds = selectedSkillIds) => {
+	const startNewChat = useFn((message?: string, attachments?: FileUIPart[]) => {
 		const nextSelectedModelId = selectedModelId;
 		const nextSelectedModeId = selectedModeId;
 		const threadId = generate_id("ai_thread");
@@ -1359,13 +1336,11 @@ const useThreadList = (props?: useThreadList_Props) => {
 				chat: optimisticChat,
 				selectedModelId: nextSelectedModelId,
 				selectedModeId: nextSelectedModeId,
-				skillIds: message?.trim() || attachments?.length ? [] : skillIds,
 			});
 		});
 		useStore.setState(() => ({
 			draftSelectedModelId: nextSelectedModelId,
 			draftSelectedModeId: nextSelectedModeId,
-			draftSkillIds: EMPTY_SKILL_IDS,
 		}));
 		markThreadReadIfUnread(selectedThreadId);
 		setSelectedThreadId(threadId, { persist: false });
@@ -1380,7 +1355,6 @@ const useThreadList = (props?: useThreadList_Props) => {
 					parentClientGeneratedId: null,
 					selectedModelId: nextSelectedModelId,
 					selectedModeId: nextSelectedModeId,
-					skillIds: [...skillIds],
 				} satisfies NonNullable<ai_chat_UiMessage["metadata"]>,
 			});
 			track_chat_request(optimisticChat, request);
@@ -1524,7 +1498,7 @@ const useThreadList = (props?: useThreadList_Props) => {
 			stop_and_delete_thread_session(threadId);
 		}
 		storeMembershipId = membershipId;
-		useStore.setState({ threadById: new Map(), draftSkillIds: EMPTY_SKILL_IDS });
+		useStore.setState({ threadById: new Map() });
 		persistedUiMessageById.clear();
 		optimisticThreadListItemByKey.clear();
 	}, [membershipId]);
@@ -1607,7 +1581,6 @@ const useThreadList = (props?: useThreadList_Props) => {
 						composerId: session.composerId,
 						draftComposerText: session.draftComposerText,
 						draftComposerAttachments: session.draftComposerAttachments,
-						draftSkillIds: session.draftSkillIds,
 						selectedModelId: session.selectedModelId ?? persistedSession.selectedModelId,
 						selectedModeId: session.selectedModeId ?? persistedSession.selectedModeId,
 						queuedUserMessages: [...session.queuedUserMessages, ...persistedSession.queuedUserMessages],
@@ -1794,9 +1767,6 @@ const useThreadRuntimeController = () => {
 	const selectedModeId = selectedThreadId
 		? (session?.selectedModeId ?? persistedSelectedModeId ?? ai_chat_DEFAULT_MODE_ID)
 		: draftSelectedModeId;
-	const selectedSkillIds = useStore((state) =>
-		selectedThreadId ? (state.threadById.get(selectedThreadId)?.draftSkillIds ?? EMPTY_SKILL_IDS) : state.draftSkillIds,
-	);
 
 	const prepareSendMessagesRequest = useLiveRef<
 		NonNullable<DefaultChatTransport<ai_chat_UiMessage>["prepareSendMessagesRequest"]>
@@ -1838,10 +1808,6 @@ const useThreadRuntimeController = () => {
 				...options.body,
 				model: modelForRequest,
 				mode: modeForRequest,
-				skillIds:
-					get_message_skill_ids(
-						requestUserMessage ?? options.messages.findLast((message) => message.role === "user"),
-					) ?? [],
 				threadId: isOptimisticThread ? undefined : options.id,
 				clientGeneratedThreadId: isOptimisticThread ? options.id : undefined,
 
@@ -2124,7 +2090,7 @@ const useThreadRuntimeController = () => {
 		return result;
 	})();
 
-	const startNewChat = useFn((message?: string, attachments?: FileUIPart[], skillIds = selectedSkillIds) => {
+	const startNewChat = useFn((message?: string, attachments?: FileUIPart[]) => {
 		const nextSelectedModelId = selectedModelId;
 		const nextSelectedModeId = selectedModeId;
 		const threadId = generate_id("ai_thread");
@@ -2138,13 +2104,11 @@ const useThreadRuntimeController = () => {
 				chat: optimisticChat,
 				selectedModelId: nextSelectedModelId,
 				selectedModeId: nextSelectedModeId,
-				skillIds: message?.trim() || attachments?.length ? [] : skillIds,
 			});
 		});
 		useStore.setState(() => ({
 			draftSelectedModelId: nextSelectedModelId,
 			draftSelectedModeId: nextSelectedModeId,
-			draftSkillIds: EMPTY_SKILL_IDS,
 		}));
 		setSelectedThreadId(threadId, { persist: false });
 
@@ -2158,7 +2122,6 @@ const useThreadRuntimeController = () => {
 					parentClientGeneratedId: null,
 					selectedModelId: nextSelectedModelId,
 					selectedModeId: nextSelectedModeId,
-					skillIds: [...skillIds],
 				} satisfies NonNullable<ai_chat_UiMessage["metadata"]>,
 			});
 			track_chat_request(optimisticChat, request);
@@ -2383,20 +2346,6 @@ const useThreadRuntimeController = () => {
 		});
 	});
 
-	const setSelectedSkillIds = useFn((skillIds: readonly string[]) => {
-		if (!selectedThreadId) {
-			useStore.setState({ draftSkillIds: [...skillIds] });
-			return;
-		}
-		useStore.actions.setSession(selectedThreadId, (prev) => {
-			const base = prev ?? thread_session_create();
-			if (readonly_string_arrays_equal(base.draftSkillIds, skillIds)) {
-				return base;
-			}
-			return { ...base, draftSkillIds: [...skillIds] };
-		});
-	});
-
 	const failedSendUserMessage = selectedThreadFailedSendUserMessageId
 		? activeBranchMessages.mapById.get(selectedThreadFailedSendUserMessageId)
 		: undefined;
@@ -2409,7 +2358,6 @@ const useThreadRuntimeController = () => {
 				messageId?: string;
 				queuedMessage?: AiChatQueuedUserMessage;
 				attachments?: FileUIPart[];
-				skillIds?: readonly string[];
 			},
 		) => {
 			// An explicit attachments option wins even when empty: it means the user
@@ -2434,10 +2382,6 @@ const useThreadRuntimeController = () => {
 			}
 
 			const targetMessage = options?.messageId ? activeBranchMessages?.mapById.get(options.messageId) : null;
-			const skillIds =
-				options?.skillIds ??
-				options?.queuedMessage?.skillIds ??
-				(targetMessage ? (get_message_skill_ids(targetMessage) ?? []) : session.draftSkillIds);
 			const targetMessageIndex = targetMessage ? activeBranchMessages.list.indexOf(targetMessage) : undefined;
 			const latestMessage = activeBranchMessages.list.at(-1);
 
@@ -2584,7 +2528,6 @@ const useThreadRuntimeController = () => {
 					parentClientGeneratedId: parentMessageIds.parentClientGeneratedId,
 					selectedModelId: threadSelectedModelId,
 					selectedModeId: threadSelectedModeId,
-					skillIds: [...skillIds],
 				} satisfies NonNullable<ai_chat_UiMessage["metadata"]>,
 			});
 			track_chat_request(chat, request, options?.queuedMessage?.id ?? null);
@@ -2613,7 +2556,7 @@ const useThreadRuntimeController = () => {
 		(
 			threadId: string,
 			value: string,
-			options?: { messageId?: string; attachments?: FileUIPart[]; skillIds?: readonly string[] },
+			options?: { messageId?: string; attachments?: FileUIPart[] },
 		) => {
 			// A retry/edit target may be an image-only message with empty text;
 			// `sendUserTextNow` resolves its file parts before deciding.
@@ -2649,14 +2592,12 @@ const useThreadRuntimeController = () => {
 					id: generate_id("ai_message"),
 					text: value,
 					attachments: options?.attachments ?? [],
-					skillIds: [...(options?.skillIds ?? session.draftSkillIds)],
 					selectedModelId: session.selectedModelId ?? selectedModelId,
 					selectedModeId: session.selectedModeId ?? selectedModeId,
 				});
 				if (didEnqueue) {
 					setComposerValue(chat, "");
 					setComposerAttachments(chat, []);
-					setSelectedSkillIds([]);
 				}
 				return didEnqueue;
 			}
@@ -2665,9 +2606,6 @@ const useThreadRuntimeController = () => {
 			if (didSend) {
 				setComposerValue(chat, "");
 				setComposerAttachments(chat, []);
-				if (!options?.messageId) {
-					setSelectedSkillIds([]);
-				}
 			}
 			return didSend;
 		},
@@ -2721,19 +2659,6 @@ const useThreadRuntimeController = () => {
 		}
 		return useStore.actions.startQueuedUserMessageEdit(selectedThreadId, messageId);
 	});
-
-	const setQueuedUserMessageEditSkillIds = useFn(
-		(chat: Chat<ai_chat_UiMessage>, messageId: AiChatQueuedUserMessage["id"], skillIds: readonly string[]) => {
-			const threadId = threadIdByChat.get(chat);
-			if (!threadId) {
-				return;
-			}
-			const edit = useStore.actions.getSession(threadId)?.queuedUserMessageEdit;
-			if (edit?.id === messageId) {
-				useStore.actions.updateQueuedUserMessageEdit(threadId, { ...edit, skillIds: [...skillIds] });
-			}
-		},
-	);
 
 	const setQueuedUserMessageEditText = useFn(
 		(chat: Chat<ai_chat_UiMessage>, messageId: AiChatQueuedUserMessage["id"], text: string) => {
@@ -3125,7 +3050,6 @@ const useThreadRuntimeController = () => {
 		session,
 
 		status,
-		selectedSkillIds,
 		isRunning,
 		canSendUserText,
 		queuedUserMessages,
@@ -3149,14 +3073,12 @@ const useThreadRuntimeController = () => {
 
 		setComposerValue,
 		setComposerAttachments,
-		setSelectedSkillIds,
 		setSelectedModelId,
 		setSelectedModeId,
 		setEditingMessageId,
 		startQueuedUserMessageEdit,
 		setQueuedUserMessageEditText,
 		setQueuedUserMessageEditAttachments,
-		setQueuedUserMessageEditSkillIds,
 		setQueuedUserMessageEditModelId,
 		setQueuedUserMessageEditModeId,
 		saveQueuedUserMessageEdit,

@@ -16,9 +16,7 @@ import { files_normalize_ai_edit_content, files_normalize_lf_newlines } from "./
 import { files_node_has_editable_text_content } from "../shared/files.ts";
 import { ai_chat_GENERATED_IMAGE_FORMAT } from "../shared/ai-chat.ts";
 import {
-	ai_chat_context_load_skill,
-	ai_chat_context_read_resource,
-	ai_chat_context_add_script_result,
+	ai_chat_context_read_instructions,
 	type ai_chat_context_Context,
 } from "./ai-chat-context.ts";
 import {
@@ -525,6 +523,7 @@ export function ai_chat_tool_create_bash(
 		workspaceName: string;
 		userId: Id<"users">;
 		getThreadId: () => Id<"ai_chat_threads"> | null;
+		getWorkspaceContext?: () => ai_chat_context_Context | null;
 	},
 	options: {
 		allowDbFilesMkdir: boolean;
@@ -589,7 +588,7 @@ export function ai_chat_tool_create_bash(
 				throw new Error("Cannot run bash before the chat thread has been created.");
 			}
 
-			return await ctx.runAction(internal.bash.run, {
+			const result = await ctx.runAction(internal.bash.run, {
 				organizationId: ctxData.organizationId,
 				workspaceId: ctxData.workspaceId,
 				threadId,
@@ -599,6 +598,24 @@ export function ai_chat_tool_create_bash(
 				workspaceName: ctxData.workspaceName,
 				allowDbFilesMkdir: options.allowDbFilesMkdir,
 			});
+			const context = ctxData.getWorkspaceContext?.();
+			let instructions = context
+				? await ai_chat_context_read_instructions(ctx, context, result.metadata.observedPaths, 64 * 1024 - 256)
+				: "";
+			if (context && result.metadata.observedPathsTruncated) {
+				instructions += `${instructions ? "\n\n" : ""}Workspace guidance is incomplete: inspect fewer app paths per Bash call.`;
+			}
+			const {
+				observedPaths: _observedPaths,
+				observedPathsTruncated: _observedPathsTruncated,
+				...metadata
+			} = result.metadata;
+			return {
+				title: result.title,
+				output: result.output,
+				metadata,
+				...(instructions ? { instructions } : {}),
+			};
 		},
 	});
 }
@@ -634,7 +651,8 @@ function ai_chat_tool_edit_file_create_diff(path: string, before: string, after:
 
 	const lines = patch.slice(firstHunkIndex).split("\n");
 	lines.shift();
-	return lines.map((line) => (line.startsWith("@@") ? "" : line)).join("\n");
+	const diff = lines.map((line) => (line.startsWith("@@") ? "" : line)).join("\n");
+	return diff.length <= 4096 ? diff : `${diff.slice(0, 4096)}\n[Diff preview truncated.]`;
 }
 
 /**
@@ -651,6 +669,7 @@ export function ai_chat_tool_create_edit_file(
 		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
 		getThreadId: () => Id<"ai_chat_threads"> | null;
+		getWorkspaceContext?: () => ai_chat_context_Context | null;
 	},
 ) {
 	return tool({
@@ -666,6 +685,7 @@ export function ai_chat_tool_create_edit_file(
 			- Preserve the full remaining suffix after that prefix; /home/cloud-usr/w/personal/home/folder/README.md becomes /folder/README.md, never /README.md.
 			- A read-only refusal is terminal for this edit. Do not retry the path with bash redirects, tee, cp, mv, or another write tool; it cannot change until the user makes it writable.
 			- For a Markdown file the text must be valid GitHub Flavored Markdown; preserve valid Markdown structure (headings, code fences, lists). For any other text file, match the file's own format exactly (for example valid JSON in a JSON file) and do not reformat the rest of the file.
+			- Inspect the target with Bash in an earlier completed step before editing. Read any returned AGENTS.md guidance first; do not combine the first inspection and a write in one step.
 			- This tool saves a pending update for human review.`,
 
 		inputSchema: z.object({
@@ -799,6 +819,10 @@ export function ai_chat_tool_create_edit_file(
 				});
 
 				const replacedCount = args.replaceAll ? `Replaced ${matches} occurrences` : "Replaced 1 occurrence";
+				const context = ctxData.getWorkspaceContext?.();
+				const instructions = context
+					? await ai_chat_context_read_instructions(ctx, context, [normalizedPath], 64 * 1024 - 256)
+					: "";
 				return {
 					title: normalizedPath,
 					metadata: {
@@ -809,9 +833,9 @@ export function ai_chat_tool_create_edit_file(
 						matches,
 						matcher,
 						diff,
-						modifiedContent: modifiedText,
 					},
 					output: replacedCount,
+					...(instructions ? { instructions } : {}),
 				};
 			}
 		},
@@ -838,6 +862,7 @@ export function ai_chat_tool_create_set_file_metadata(
 		organizationId: Id<"organizations">;
 		workspaceId: Id<"organizations_workspaces">;
 		userId: Id<"users">;
+		getWorkspaceContext?: () => ai_chat_context_Context | null;
 	},
 ) {
 	return tool({
@@ -913,8 +938,13 @@ export function ai_chat_tool_create_set_file_metadata(
 			}
 
 			const entries = written._yay.entries;
+			const context = ctxData.getWorkspaceContext?.();
+			const instructions = context
+				? await ai_chat_context_read_instructions(ctx, context, [normalizedPath], 64 * 1024 - 256)
+				: "";
 			return {
 				title: normalizedPath,
+				...(instructions ? { instructions } : {}),
 				metadata: {
 					path: written._yay.path,
 					entries,
@@ -1167,7 +1197,6 @@ async function execute_code(
 	},
 	args: { code: string; input?: unknown },
 	abortSignal: AbortSignal | undefined,
-	allowPublicNetwork: boolean,
 ) {
 	const baseUrl = process.env.CODE_EXECUTION_RUNNER_URL?.trim();
 	const secret = process.env.CODE_EXECUTION_RUNNER_SECRET?.trim();
@@ -1211,7 +1240,7 @@ async function execute_code(
 			signal: abortSignal,
 			body: JSON.stringify({
 				executionId, code: args.code, input: args.input ?? null,
-				...(allowPublicNetwork ? { network: { mode: "public_http" } } : {}),
+				network: { mode: "public_http" },
 				app: { origin: appOrigin, token: publicApiGrantToken },
 			}),
 		});
@@ -1263,6 +1292,7 @@ export function ai_chat_tool_create_execute_code(
 			The snippet is the body of an async function: use \`return\` to produce a JSON-serializable result, and read the optional \`input\` argument as the variable \`input\`. \
 			Modern JavaScript, JSON, and \`fetch\` are available. The snippet has \`process.env.T3_APP_ORIGIN\`; the runner gateway adds file API authorization. \
 			To read app files, fetch \`${"${process.env.T3_APP_ORIGIN}"}/api/v1/files/list\` for paths, then \`${"${process.env.T3_APP_ORIGIN}"}/api/v1/files/read-many\` for contents; follow \`cursor\` until \`isDone\`, check \`errors\` and \`truncated\`, and use \`/api/v1/files/read\` only for one known file. \
+			Inspect each app folder with Bash in an earlier completed step and read its AGENTS.md guidance before reading it through these APIs. \
 			Do not pass app file paths or contents through \`input\`; keep \`input\` for ordinary JSON parameters, run file API fetches inside the snippet, and return a compact aggregate instead of raw file contents. \
 			Keep snippets small and deterministic: execution is time-limited and both the result and the logs are size-limited.`,
 
@@ -1283,7 +1313,7 @@ export function ai_chat_tool_create_execute_code(
 			.strict(),
 
 		execute: async (args, options) => {
-			const result = await execute_code(ctx, ctxData, args, options.abortSignal, true);
+			const result = await execute_code(ctx, ctxData, args, options.abortSignal);
 			const output = ai_chat_tool_execute_code_format_output(result);
 
 			return {
@@ -1305,156 +1335,6 @@ type ai_chat_tool_create_execute_code_Tool = ReturnType<typeof ai_chat_tool_crea
 export type ai_chat_tool_create_execute_code_ToolInput = InferToolInput<ai_chat_tool_create_execute_code_Tool>;
 export type ai_chat_tool_create_execute_code_ToolOutput = InferToolOutput<ai_chat_tool_create_execute_code_Tool>;
 // #endregion execute code
-
-// #region skills
-const skill_id_schema = z.string().min(1).max(128).regex(/^[a-z0-9_]+$/u);
-const skill_input_schema = z.object({ skillId: skill_id_schema }).strict();
-const skill_resource_input_schema = skill_input_schema.extend({ resourceId: skill_id_schema });
-
-export const ai_chat_skill_tool_output_schema = z.object({
-	skillId: skill_id_schema,
-	resourceId: skill_id_schema.optional(),
-	version: z.string().regex(/^[a-f0-9]{64}$/u).optional(),
-	status: z.enum(["loaded", "read", "completed", "unavailable", "invalid", "changed", "too_large", "not_loaded", "unsupported_runtime", "failed"]),
-}).strict();
-
-function skill_context(value: unknown) {
-	// This object is made by the route, never supplied by a chat message.
-	if (!value || typeof value !== "object" || !("loaded" in value) || !(value.loaded instanceof Map)) {
-		throw new Error("Skill operation failed.");
-	}
-	return value as ai_chat_context_Context;
-}
-
-function skill_failure_status(name: string | undefined): z.infer<typeof ai_chat_skill_tool_output_schema>["status"] {
-	switch (name) {
-		case "unavailable": case "invalid": case "changed": case "too_large": case "not_loaded": case "unsupported_runtime":
-			return name;
-		case "limit": return "too_large";
-		default: return "failed";
-	}
-}
-
-export function ai_chat_tool_create_load_skill(ctx: ActionCtx) {
-	return tool({
-		description: "Load a skill from the catalog by its skillId. Its saved instructions and resource IDs appear in the next step. Invalid skills need a corrected SKILL.md saved before a new turn.",
-		inputSchema: skill_input_schema,
-		outputSchema: ai_chat_skill_tool_output_schema,
-		execute: async ({ skillId }, options): Promise<z.infer<typeof ai_chat_skill_tool_output_schema>> => {
-			try {
-				const result = await ai_chat_context_load_skill(ctx, skill_context(options.experimental_context), skillId);
-				return result._nay ? { skillId, status: skill_failure_status(result._nay.name) } : { skillId, version: result._yay.version, status: "loaded" as const };
-			} catch {
-				options.abortSignal?.throwIfAborted();
-				return { skillId, status: "failed" as const };
-			}
-		},
-	});
-}
-
-type ai_chat_tool_create_load_skill_Tool = ReturnType<typeof ai_chat_tool_create_load_skill>;
-export type ai_chat_tool_create_load_skill_ToolInput = InferToolInput<ai_chat_tool_create_load_skill_Tool>;
-export type ai_chat_tool_create_load_skill_ToolOutput = InferToolOutput<ai_chat_tool_create_load_skill_Tool>;
-
-export function ai_chat_tool_create_read_skill_resource(ctx: ActionCtx) {
-	return tool({
-		description: "Read a saved text resource by IDs from a loaded skill's manifest. Load the skill in an earlier step first. Text appears in the next step's context. Binary files are unsupported.",
-		inputSchema: skill_resource_input_schema,
-		outputSchema: ai_chat_skill_tool_output_schema,
-		execute: async ({ skillId, resourceId }, options) => {
-			try {
-				const result = await ai_chat_context_read_resource(ctx, skill_context(options.experimental_context), skillId, resourceId);
-				return result._nay ? { skillId, resourceId, status: skill_failure_status(result._nay.name) } : { skillId, resourceId, version: result._yay.version, status: "read" as const };
-			} catch {
-				options.abortSignal?.throwIfAborted();
-				return { skillId, resourceId, status: "failed" as const };
-			}
-		},
-	});
-}
-
-type ai_chat_tool_create_read_skill_resource_Tool = ReturnType<typeof ai_chat_tool_create_read_skill_resource>;
-export type ai_chat_tool_create_read_skill_resource_ToolInput = InferToolInput<ai_chat_tool_create_read_skill_resource_Tool>;
-export type ai_chat_tool_create_read_skill_resource_ToolOutput = InferToolOutput<ai_chat_tool_create_read_skill_resource_Tool>;
-
-export function ai_chat_tool_create_run_skill_script(ctx: ActionCtx, ctxData: Parameters<typeof ai_chat_tool_create_execute_code>[1]) {
-	return tool({
-		description: "Run the exact saved .js resource from a skill loaded in an earlier step. Requires metadata.bonobo-script-runtime: worker-async-body-v1. The file must be an async function body, not Node, ESM, or a shell script. App file reads are allowed; public network is disabled. Result and logs appear in the next step's context.",
-		inputSchema: skill_resource_input_schema.extend({ input: z.unknown().optional() }),
-		outputSchema: ai_chat_skill_tool_output_schema,
-		execute: async ({ skillId, resourceId, input }, options) => {
-			const context = skill_context(options.experimental_context);
-			try {
-				const read = await ai_chat_context_read_resource(ctx, context, skillId, resourceId, true);
-				if (read._nay) return { skillId, resourceId, status: skill_failure_status(read._nay.name) };
-				const result = await execute_code(ctx, ctxData, { code: read._yay.content, input }, options.abortSignal, false);
-				const added = ai_chat_context_add_script_result(context, skillId, {
-					toolCallId: options.toolCallId, resourceId, text: ai_chat_tool_execute_code_format_output(result),
-				});
-				if (!added) return { skillId, resourceId, version: read._yay.version, status: "too_large" as const };
-				return { skillId, resourceId, version: read._yay.version, status: result.status === "succeeded" ? "completed" as const : "failed" as const };
-			} catch (error) {
-				options.abortSignal?.throwIfAborted();
-				ai_chat_context_add_script_result(context, skillId, {
-					toolCallId: options.toolCallId, resourceId, text: error instanceof Error ? error.message : "Skill script failed.",
-				});
-				return { skillId, resourceId, status: "failed" as const };
-			}
-		},
-	});
-}
-
-export function ai_chat_tool_create_run_skill_script_stored() {
-	return tool({ inputSchema: skill_resource_input_schema, outputSchema: ai_chat_skill_tool_output_schema });
-}
-
-type ai_chat_tool_create_run_skill_script_stored_Tool = ReturnType<typeof ai_chat_tool_create_run_skill_script_stored>;
-export type ai_chat_tool_create_run_skill_script_ToolInput = InferToolInput<ai_chat_tool_create_run_skill_script_stored_Tool>;
-export type ai_chat_tool_create_run_skill_script_ToolOutput = InferToolOutput<ai_chat_tool_create_run_skill_script_stored_Tool>;
-
-export function ai_chat_skill_tool_safe_input(toolName: string, input: unknown) {
-	const schema = toolName === "load_skill" ? skill_input_schema : skill_resource_input_schema;
-	// Strip live script parameters before validating the stored contract.
-	if (!input || typeof input !== "object") return null;
-	const parsed = schema.safeParse({
-		skillId: "skillId" in input ? input.skillId : undefined,
-		...(toolName !== "load_skill" ? { resourceId: "resourceId" in input ? input.resourceId : undefined } : {}),
-	});
-	return parsed.success ? parsed.data : null;
-}
-
-export function ai_chat_skill_tool_parts_are_safe(parts: unknown[]) {
-	for (const part of parts) {
-		if (!part || typeof part !== "object" || !("type" in part) || typeof part.type !== "string") continue;
-		if (part.type === "dynamic-tool" && "toolName" in part && ["load_skill", "read_skill_resource", "run_skill_script"].includes(String(part.toolName).toLowerCase())) return false;
-		if (!["tool-load_skill", "tool-read_skill_resource", "tool-run_skill_script"].includes(part.type.toLowerCase())) continue;
-		if (part.type !== part.type.toLowerCase()) return false;
-		const parsed = z.object({
-			type: z.string(), toolCallId: z.string(),
-			state: z.enum(["input-streaming", "input-available", "output-available", "output-error"]),
-			input: z.unknown().optional(), output: ai_chat_skill_tool_output_schema.optional(),
-			rawInput: z.undefined().optional(),
-			providerExecuted: z.boolean().optional(),
-			preliminary: z.boolean().optional(),
-			title: z.undefined().optional(),
-			toolMetadata: z.undefined().optional(),
-			errorText: z.literal("Skill operation failed.").optional(),
-		}).strict().safeParse(part);
-		if (!parsed.success) return false;
-		const { input, state, output } = parsed.data;
-		if (state === "input-streaming") {
-			if (input !== undefined && !z.object({}).strict().safeParse(input).success) return false;
-		} else if (state === "output-error" && input === undefined) {
-			continue;
-		} else {
-			const schema = part.type === "tool-load_skill" ? skill_input_schema : skill_resource_input_schema;
-			if (!schema.safeParse(input).success) return false;
-		}
-		if (state === "output-available" && !output) return false;
-	}
-	return true;
-}
-// #endregion skills
 
 // #region image generation
 
@@ -1508,6 +1388,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	const { describe, expect, test } = import.meta.vitest;
 
 	describe("ai_chat_tool_edit_file_create_diff", () => {
+		test("bounds a large edit preview", () => {
+			const diff = ai_chat_tool_edit_file_create_diff("/large.txt", "a".repeat(5000), "b".repeat(5000));
+			expect(diff).toHaveLength(4122);
+			expect(diff).toContain("[Diff preview truncated.]");
+		});
+
 		test("keeps only the changed lines", () => {
 			const before = '{\n\t"n": 1\n}\n';
 			const after = '{\n\t"n": 2\n}\n';

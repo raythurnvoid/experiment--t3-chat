@@ -56,13 +56,6 @@ import {
 	ai_chat_tool_create_set_file_metadata,
 	ai_chat_tool_create_web_search,
 	ai_chat_tool_create_execute_code,
-	ai_chat_tool_create_load_skill,
-	ai_chat_tool_create_read_skill_resource,
-	ai_chat_tool_create_run_skill_script,
-	ai_chat_tool_create_run_skill_script_stored,
-	ai_chat_skill_tool_safe_input,
-	ai_chat_skill_tool_output_schema,
-	ai_chat_skill_tool_parts_are_safe,
 	ai_chat_tool_create_image_generation,
 	ai_chat_tool_create_image_generation_stored,
 	ai_chat_WRITE_TOOL_NAMES,
@@ -75,14 +68,15 @@ import { billing_ingest_events } from "./billing_db.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import type { Doc, Id } from "./_generated/dataModel";
 import { ai_chat_context_ENABLED } from "./ai_chat_context.ts";
-import { ai_chat_skills_LIMITS } from "../shared/ai-chat-skills.ts";
 import {
 	ai_chat_context_create,
-	ai_chat_context_system,
-	ai_chat_context_prepare_step,
-	ai_chat_context_load_skill,
 	type ai_chat_context_Context,
 } from "../server/ai-chat-context.ts";
+import {
+	ai_chat_message_fits_storage,
+	ai_chat_tool_budget_apply,
+	ai_chat_tool_budget_create,
+} from "../server/ai-chat-tool-budget.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). Do not keep request state in module-level values.
@@ -433,58 +427,6 @@ function read_generated_image_asset_ids(content: Record<string, unknown>) {
 	return assetIds;
 }
 
-const SKILL_TOOL_NAMES = ["load_skill", "read_skill_resource", "run_skill_script"] as const satisfies readonly (keyof ai_chat_UiTools)[];
-
-function create_skill_tool_transform(skillCalls: Map<string, string>) {
-	return new TransformStream<InferUIMessageChunk<ai_chat_UiMessage>, InferUIMessageChunk<ai_chat_UiMessage>>({
-		transform(chunk, controller) {
-			// Track skill calls before argument deltas, including names the SDK will repair later.
-			if ("toolName" in chunk && SKILL_TOOL_NAMES.some((name) => name === chunk.toolName.toLowerCase())) {
-				skillCalls.set(chunk.toolCallId, chunk.toolName.toLowerCase());
-			}
-			const name = "toolCallId" in chunk ? skillCalls.get(chunk.toolCallId) : undefined;
-			if (!name || !("toolCallId" in chunk)) {
-				controller.enqueue(chunk);
-				return;
-			}
-			switch (chunk.type) {
-				case "tool-input-start":
-					controller.enqueue({ type: chunk.type, toolCallId: chunk.toolCallId, toolName: name });
-					return;
-				case "tool-input-delta":
-					// Script parameters must never reach the client, even if Stop happens mid-argument.
-					return;
-				case "tool-input-available": {
-					const input = ai_chat_skill_tool_safe_input(name, chunk.input);
-					if (input) {
-						controller.enqueue({ type: chunk.type, toolCallId: chunk.toolCallId, toolName: name, input });
-					} else {
-						controller.enqueue({ type: "tool-input-error", toolCallId: chunk.toolCallId, toolName: name, input: undefined, errorText: "Skill operation failed." });
-					}
-					return;
-				}
-				case "tool-input-error":
-					controller.enqueue({ type: chunk.type, toolCallId: chunk.toolCallId, toolName: name, input: undefined, errorText: "Skill operation failed." });
-					return;
-				case "tool-output-available": {
-					const output = ai_chat_skill_tool_output_schema.safeParse(chunk.output);
-					if (output.success) {
-						controller.enqueue({ type: chunk.type, toolCallId: chunk.toolCallId, output: output.data });
-					} else {
-						controller.enqueue({ type: "tool-output-error", toolCallId: chunk.toolCallId, errorText: "Skill operation failed." });
-					}
-					return;
-				}
-				case "tool-output-error":
-					controller.enqueue({ type: chunk.type, toolCallId: chunk.toolCallId, errorText: "Skill operation failed." });
-					return;
-				default:
-					controller.enqueue(chunk);
-			}
-		},
-	});
-}
-
 function build_agent_configuration(input: {
 	ctx: ActionCtx;
 	ctxData: {
@@ -499,19 +441,21 @@ function build_agent_configuration(input: {
 		modeId: (typeof ai_chat_MODE_IDS)[number];
 	};
 	getThreadId: () => Id<"ai_chat_threads"> | null;
+	getWorkspaceContext?: () => ai_chat_context_Context | null;
 }) {
 	const {
 		ctx,
 		ctxData,
 		args: { modelId, modeId },
 		getThreadId,
+		getWorkspaceContext,
 	} = input;
 
 	const supportsImageGeneration = ai_chat_MODELS[modelId].supportsImageGeneration;
 
 	// The tools that write pending updates (or grants) read the running chat's thread id from
 	// their ctxData; the lazy getter resolves after the http handler creates/loads the thread.
-	const toolCtxData = { ...ctxData, getThreadId };
+	const toolCtxData = { ...ctxData, getThreadId, getWorkspaceContext };
 
 	// The tools this route runs itself. Only these can write, so only these are filtered in ask mode.
 	const appTools = {
@@ -522,22 +466,16 @@ function build_agent_configuration(input: {
 		set_file_metadata: ai_chat_tool_create_set_file_metadata(ctx, toolCtxData),
 		web_search: ai_chat_tool_create_web_search(),
 		execute_code: ai_chat_tool_create_execute_code(ctx, toolCtxData),
-		load_skill: ai_chat_tool_create_load_skill(ctx),
-		read_skill_resource: ai_chat_tool_create_read_skill_resource(ctx),
-		run_skill_script: ai_chat_tool_create_run_skill_script(ctx, toolCtxData),
 	};
+	const toolBudget = ai_chat_tool_budget_create();
+	ai_chat_tool_budget_apply(appTools, toolBudget);
 
-	// We list every tool here, in every mode and for every model. `validateUIMessages` fails when a
-	// message mentions a tool name that is not in this list. The route accepts whatever messages a
-	// client posts, and a thread that once ran in agent mode, or on a model that draws pictures, can
-	// hold those tool calls. So a list that changed with the mode or the model would turn "this thread
-	// once ran in agent mode" into a 400. Our own app posts only the new user message, but the route
-	// cannot count on that.
+	// Keep current stored outputs valid across mode and model changes. Unknown completed tool
+	// parts from older messages use the SDK's normal history format.
 	const validationTools = {
 		...appTools,
-		// Pictures become asset references, and skill scripts lose their private parameters.
+		// Pictures become asset references before storage.
 		image_generation: ai_chat_tool_create_image_generation_stored(),
-		run_skill_script: ai_chat_tool_create_run_skill_script_stored(),
 	};
 
 	const writeToolNames = new Set<string>(ai_chat_WRITE_TOOL_NAMES);
@@ -550,10 +488,7 @@ function build_agent_configuration(input: {
 	// route is meant to be the check.
 	const tools = {
 		...(Object.fromEntries(
-			Object.entries(appTools).filter(([name]) =>
-				!(modeId === "ask" && writeToolNames.has(name)) &&
-				(ai_chat_context_ENABLED || !SKILL_TOOL_NAMES.some((skillName) => skillName === name)),
-			),
+			Object.entries(appTools).filter(([name]) => !(modeId === "ask" && writeToolNames.has(name))),
 		) as Partial<typeof appTools>),
 		// OpenAI runs this one on its own side and it changes nothing in the workspace, so both modes
 		// keep it. Only a model that can run it gets it, because it is not a tool we execute: a model
@@ -570,6 +505,7 @@ function build_agent_configuration(input: {
 		tools,
 		validationTools,
 		activeTools,
+		toolBudget,
 	};
 }
 
@@ -1465,10 +1401,10 @@ export const thread_messages_add = mutation({
 		// contract as the chat route, so a direct call to this public mutation cannot
 		// store a remote URL or an oversized image.
 		for (const message of args.messages) {
-			const parts: unknown[] = Array.isArray(message.content.parts) ? message.content.parts : [];
-			if (!ai_chat_skill_tool_parts_are_safe(parts)) {
-				return Result({ _nay: { message: "Invalid skill tool message" } });
+			if (!ai_chat_message_fits_storage(message.content)) {
+				return Result({ _nay: { message: "Message is too large to store. Start a new message with less content." } });
 			}
+			const parts: unknown[] = Array.isArray(message.content.parts) ? message.content.parts : [];
 			let filePartCount = 0;
 			let totalUrlChars = 0;
 			for (const part of parts) {
@@ -1605,7 +1541,6 @@ const chat_body_validator = z.object({
 	model: z.enum(ai_chat_MODEL_IDS),
 	/** Agent mode */
 	mode: z.enum(ai_chat_MODE_IDS),
-	skillIds: z.array(z.string().min(1).max(128).regex(/^[a-z0-9_]+$/u)).max(ai_chat_skills_LIMITS.selected).optional(),
 	trigger: z.enum(["submit-message", "regenerate-message"]),
 	/**
 	 * The id of the message to which the new message should be appended.
@@ -1739,8 +1674,10 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 		}
 		let threadId: Id<"ai_chat_threads"> | null = null;
 		let createdThreadId = null;
+		let workspaceContext: ai_chat_context_Context | null = null;
+		let workspaceSystem = "";
 
-		const { systemPrompt, tools, validationTools, activeTools } = build_agent_configuration({
+		const { systemPrompt, tools, validationTools, activeTools, toolBudget } = build_agent_configuration({
 			ctx,
 			ctxData: {
 				organizationId: membership.organizationId,
@@ -1756,12 +1693,13 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 				modeId: body.mode,
 			},
 			getThreadId: () => threadId,
+			getWorkspaceContext: () => workspaceContext,
 		});
-		let workspaceContext: ai_chat_context_Context | undefined;
 		if (ai_chat_context_ENABLED) {
 			const initialized = await ai_chat_context_create(ctx, { membershipId: membership._id, userId: user._id });
 			if (initialized._nay) return { status: 400, body: { message: initialized._nay.message } } as const;
-			workspaceContext = initialized._yay;
+			workspaceContext = initialized._yay.context;
+			workspaceSystem = initialized._yay.system;
 		}
 
 		// Validate the messages if they are present
@@ -1797,14 +1735,6 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 		}
 
 		const requestMessages = body.messages as ai_chat_UiMessage[];
-		const lastRequestUserMessage = requestMessages.findLast((message) => message.role === "user");
-		if (lastRequestUserMessage && body.skillIds !== undefined) {
-			lastRequestUserMessage.metadata = {
-				...lastRequestUserMessage.metadata,
-				parentClientGeneratedId: lastRequestUserMessage.metadata?.parentClientGeneratedId ?? null,
-				skillIds: body.skillIds,
-			};
-		}
 
 		// Enforce the image-attachment contract on incoming messages. The
 		// client compresses images to fit, but the caps must hold here too:
@@ -1812,6 +1742,9 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 		// whole message is stored as one Convex document (~1 MiB limit) and
 		// a remote URL must never be forwarded to the model provider.
 		for (const requestMessage of requestMessages) {
+			if (!ai_chat_message_fits_storage(requestMessage)) {
+				return { status: 400, body: { message: "Message is too large to store. Start a new message with less content." } } as const;
+			}
 			const fileParts = requestMessage.parts.filter((part) => part.type === "file");
 			const totalUrlChars = fileParts.reduce((total, part) => total + part.url.length, 0);
 			const hasInvalidFilePart = fileParts.some(
@@ -2011,17 +1944,9 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 			resolvedParentClientGeneratedId = requestMessages.at(-1)?.id ?? resolvedParentClientGeneratedId;
 		}
 
-		if (workspaceContext) {
-			const selected = chat_body_validator.shape.skillIds.safeParse(body.skillIds ?? uiMessages.findLast((message) => message.role === "user")?.metadata?.skillIds ?? []);
-			if (!selected.success) return { status: 400, body: { message: "Invalid skill selection" } } as const;
-			for (const skillId of new Set(selected.data)) {
-				const loaded = await ai_chat_context_load_skill(ctx, workspaceContext, skillId);
-				if (loaded._nay) return { status: 400, body: { message: loaded._nay.message } } as const;
-			}
-		}
-
 		const modelMessages = await convertToModelMessages(uiMessages, {
 			ignoreIncompleteToolCalls: true,
+			tools: validationTools,
 		});
 
 		// The AI SDK routes every URL-shaped file part through its download
@@ -2041,12 +1966,12 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 		}
 
 		let didStreamError = false;
+		let responseStorageError: string | null = null;
 		// Captured by `streamText.onFinish` below so `createUIMessageStream.onFinish`
 		// can emit one direct Polar usage event with the actual token cost.
 		let capturedUsage: { inputTokens: number; outputTokens: number } | null = null;
 		let capturedActualCents = 0;
 		let capturedGeneratedImages = 0;
-		const skillCalls = new Map<string, string>();
 
 		const stream = createUIMessageStream<ai_chat_UiMessage>({
 			generateId: get_id_generator("ai_message"),
@@ -2077,28 +2002,20 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 						model: openai(body.model),
 						middleware: drop_preliminary_tool_results_middleware,
 					}),
-					system: workspaceContext ? ai_chat_context_system(workspaceContext, systemPrompt) : systemPrompt,
-					experimental_context: workspaceContext,
-					prepareStep: workspaceContext ? async ({ experimental_context, stepNumber }) => {
-						const prepared = await ai_chat_context_prepare_step(ctx, experimental_context as ai_chat_context_Context, systemPrompt);
-						// Private tool results need a following model step. Keep the last one for an answer.
-						if (stepNumber === 9) return {
-							...prepared, activeTools: [],
-							system: prepared.system + "\nThis is the last step. Give the result and any remaining checkpoint. Do not claim unfinished work is complete.",
+					system: `${systemPrompt}\n${workspaceSystem}`,
+					prepareStep: ({ stepNumber }) => {
+						// Leave a model step to explain tool results and any unfinished work.
+						if (stepNumber === 9 || toolBudget.exhausted) return {
+							activeTools: [],
+							system: `${systemPrompt}\n${workspaceSystem}\nThis is the last step. Give the result and any remaining checkpoint. Do not claim unfinished work is complete.`,
 						};
-						return prepared;
-					} : undefined,
+					},
 					messages: modelMessages,
 					maxOutputTokens: 2000,
 					abortSignal: request.signal,
 					activeTools,
 					experimental_repairToolCall: async (failed) => {
 						const lowerToolName = failed.toolCall.toolName.toLowerCase();
-						if (SKILL_TOOL_NAMES.some((name) => name === lowerToolName)) {
-							skillCalls.set(failed.toolCall.toolCallId, lowerToolName);
-							// Keep validation errors and raw script arguments out of repaired UI calls.
-							if (lowerToolName === failed.toolCall.toolName) return null;
-						}
 						// `Object.hasOwn`, not `in`: `tools` is a plain object, so `in` also finds
 						// keys from `Object.prototype`. With `in`, the name `"Constructor"` would
 						// be "fixed" to `"constructor"`, which is a built-in function, not a tool.
@@ -2163,7 +2080,7 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 					onError: (error: unknown) => (error instanceof Error ? error.message : String(error)),
 				});
 				writer.merge(
-					ui_message_stream.pipeThrough(create_skill_tool_transform(skillCalls)).pipeThrough(
+					ui_message_stream.pipeThrough(
 						create_generated_image_upload_transform({
 							ctx,
 							organizationId: membership.organizationId,
@@ -2322,6 +2239,11 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 					return;
 				}
 
+				if (!ai_chat_message_fits_storage(result.responseMessage)) {
+					responseStorageError = "This reply is too large and was not saved. Start a new message and ask for a shorter result or smaller file pages. Any file changes already made still need review.";
+					return;
+				}
+
 				const capturedInputTokens = capturedUsage?.inputTokens ?? 0;
 				const capturedOutputTokens = capturedUsage?.outputTokens ?? 0;
 				const capturedTotalTokens = capturedInputTokens + capturedOutputTokens;
@@ -2388,7 +2310,12 @@ export async function ai_chat_http_chat(ctx: ActionCtx, request: Request) {
 
 		return {
 			status: 200,
-			body: stream,
+			body: stream.pipeThrough(new TransformStream<InferUIMessageChunk<ai_chat_UiMessage>, InferUIMessageChunk<ai_chat_UiMessage>>({
+				// SDK onFinish runs during flush. Send its storage refusal before the stream closes.
+				flush(controller) {
+					if (responseStorageError) controller.enqueue({ type: "error", errorText: responseStorageError });
+				},
+			})),
 		} as const;
 	} catch (error) {
 		const errorMessage = "AI chat stream error";
@@ -2684,74 +2611,6 @@ export async function ai_chat_http_run_stream(ctx: ActionCtx, request: Request) 
 if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 	const { describe, test, expect, vi } = import.meta.vitest;
 
-	describe("create_skill_tool_transform", () => {
-		test.each(["run_skill_script", "RUN_SKILL_SCRIPT", "Run_Skill_Script"])(
-			"removes private streamed data from %s before UI persistence",
-			async (toolName) => {
-				const { readUIMessageStream } = await import("ai");
-				const skillId = "a".repeat(32);
-				const resourceId = "b".repeat(32);
-				const chunks: InferUIMessageChunk<ai_chat_UiMessage>[] = [
-					{ type: "start", messageId: "skills" },
-					{ type: "tool-input-start", toolCallId: "run", toolName },
-					{ type: "tool-input-delta", toolCallId: "run", inputTextDelta: '{"input":"PRIVATE_PARAMS"' },
-					{
-						type: "tool-input-available",
-						toolCallId: "run",
-						toolName: "run_skill_script",
-						input: { skillId, resourceId, input: "PRIVATE_PARAMS" },
-						providerMetadata: { vendor: { private: "PRIVATE_METADATA" } },
-					},
-					{
-						type: "tool-output-available",
-						toolCallId: "run",
-						output: { skillId, resourceId, status: "completed", body: "PRIVATE_SKILL_BODY" },
-					},
-					{ type: "tool-input-start", toolCallId: "failed", toolName },
-					{
-						type: "tool-input-error",
-						toolCallId: "failed",
-						toolName: "run_skill_script",
-						input: "PRIVATE_RAW_INPUT",
-						errorText: "PRIVATE_PROVIDER_ERROR",
-					},
-					{ type: "tool-input-start", toolCallId: "stopped", toolName },
-					{ type: "tool-input-delta", toolCallId: "stopped", inputTextDelta: '{"input":"PRIVATE_PARTIAL"' },
-					{ type: "finish" },
-				];
-
-				const stream = new ReadableStream<InferUIMessageChunk<ai_chat_UiMessage>>({
-					start(controller) {
-						for (const chunk of chunks) {
-							controller.enqueue(chunk);
-						}
-						controller.close();
-					},
-				}).pipeThrough(create_skill_tool_transform(new Map()));
-
-				let finalMessage: ai_chat_UiMessage | undefined;
-				const partials: string[] = [];
-				for await (const message of readUIMessageStream<ai_chat_UiMessage>({ stream })) {
-					partials.push(JSON.stringify(message));
-					finalMessage = message;
-				}
-
-				for (const partial of partials) {
-					expect(partial).not.toContain("PRIVATE_");
-				}
-				expect(finalMessage?.parts).toHaveLength(3);
-				expect(ai_chat_skill_tool_parts_are_safe(finalMessage!.parts), JSON.stringify(finalMessage!.parts)).toBe(true);
-				expect(finalMessage?.parts[0]).toMatchObject({
-					type: "tool-run_skill_script",
-					state: "output-error",
-					input: { skillId, resourceId },
-					errorText: "Skill operation failed.",
-				});
-				expect(finalMessage?.parts[2]).toMatchObject({ type: "tool-run_skill_script", state: "input-streaming" });
-			},
-		);
-	});
-
 	type build_agent_configuration_test_user_identity = NonNullable<
 		Awaited<ReturnType<ActionCtx["auth"]["getUserIdentity"]>>
 	>;
@@ -2781,9 +2640,6 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		"set_file_metadata",
 		"web_search",
 		"execute_code",
-		"load_skill",
-		"read_skill_resource",
-		"run_skill_script",
 		"image_generation",
 	] as const;
 
@@ -2884,9 +2740,6 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				"set_file_metadata",
 				"web_search",
 				"execute_code",
-				"load_skill",
-				"read_skill_resource",
-				"run_skill_script",
 				"image_generation",
 			]);
 		});
@@ -2906,8 +2759,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			// The `tools` object is what really matters. `activeTools` only shapes the request sent to
 			// the model. The SDK parses and runs a tool call by looking its name up in `tools`, so
 			// leaving `edit_file` there would keep it callable in ask mode whatever `activeTools` says.
-			expect(Object.keys(configuration.tools)).toEqual(["bash", "web_search", "execute_code", "load_skill", "read_skill_resource", "run_skill_script", "image_generation"]);
-			expect(configuration.activeTools).toEqual(["bash", "web_search", "execute_code", "load_skill", "read_skill_resource", "run_skill_script", "image_generation"]);
+			expect(Object.keys(configuration.tools)).toEqual(["bash", "web_search", "execute_code", "image_generation"]);
+			expect(configuration.activeTools).toEqual(["bash", "web_search", "execute_code", "image_generation"]);
 			expect("edit_file" in configuration.tools).toBe(false);
 			expect("set_file_metadata" in configuration.tools).toBe(false);
 
@@ -2939,6 +2792,39 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				expect("image_generation" in configuration.validationTools).toBe(true);
 			}
 		});
+
+		test.each(["load_skill", "read_skill_resource", "run_skill_script", "removed_tool"])(
+			"replays a completed historical %s result without registering the tool",
+			async (toolName) => {
+				const { ctx } = makeCtx();
+				const configuration = build_agent_configuration({
+					ctx,
+					ctxData: build_agent_configuration_test_ctx_data,
+					args: { modelId: build_agent_configuration_test_model_id, modeId: "ask" },
+					getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
+				});
+				const output = { status: "completed", value: "The stored result" };
+				const message = {
+					id: "historical_message",
+					role: "assistant",
+					parts: [{
+						type: `tool-${toolName}`,
+						toolCallId: "historical_call",
+						state: "output-available",
+						input: { path: "/old-file.md" },
+						output,
+					}],
+				} as unknown as ai_chat_UiMessage;
+
+				expect(configuration.tools).not.toHaveProperty(toolName);
+				const validated = await validateUIMessages<ai_chat_UiMessage>({ messages: [message], tools: configuration.validationTools });
+				const replay = await convertToModelMessages(validated, { tools: configuration.validationTools });
+				expect(replay[1]).toMatchObject({
+					role: "tool",
+					content: [{ type: "tool-result", toolName, output: { type: "json", value: output } }],
+				});
+			},
+		);
 
 		test("accepts a historical execute_code tool part when validating stored UI messages", async () => {
 			const { ctx } = makeCtx();

@@ -6538,14 +6538,10 @@ export type get_file_next_yjs_update_Result =
 
 // #region read file
 
-// Bounded reads. DEV-PHASE AGGRESSIVE CAPS: deliberately small so our tiny test files exercise the
-// same paging / truncation / fallback paths a huge file would in production. Raise these before
-// production. `MAX_LINES` is the per-page line cap for head/sed/tail; `SCAN_MAX_BYTES` is the
-// leading-window size for the in-memory/windowed FALLBACK path (committed reads use chunks and are
-// depth-unbounded, so this only bounds pending/stale reads).
-// Exported so the agent-facing bash tool description / system prompt can interpolate the true
-// per-read line cap instead of hardcoding a number that silently drifts when this value changes.
-export const files_READ_RANGE_MAX_LINES = 40;
+// Bound pages by lines and bytes so a complete page fits in a chat tool result.
+// Export the line cap for the Bash tool prompt.
+export const files_READ_RANGE_MAX_LINES = 500;
+const files_READ_RANGE_MAX_BYTES = 64 * 1024;
 
 /**
  * Size bound (UTF-16 code units) for one chunk-range scan. The line-based stop conditions bound
@@ -6586,8 +6582,16 @@ export function files_line_range_from_text(content: string, startLine: number, m
 	// A trailing newline yields an empty final element that is not a real line; drop it.
 	const lines = hasTrailingNewline ? split.slice(0, -1) : split;
 	const start = Math.max(0, startLine - 1);
-	const slice = lines.slice(start, start + maxLines).map(files_truncate_long_display_line);
-	const moreLines = start + maxLines < lines.length;
+	const slice: string[] = [];
+	let bytes = 0;
+	for (const line of lines.slice(start, start + maxLines)) {
+		const displayed = files_truncate_long_display_line(line);
+		const lineBytes = files_get_utf8_byte_size(displayed) + 1;
+		if (bytes + lineBytes > files_READ_RANGE_MAX_BYTES) break;
+		slice.push(displayed);
+		bytes += lineBytes;
+	}
+	const moreLines = start + slice.length < lines.length;
 	const out = slice.length > 0 ? `${slice.join("\n")}\n` : "";
 	return { content: out, linesReturned: slice.length, moreLines };
 }
@@ -6600,10 +6604,19 @@ export function files_tail_lines_from_text(content: string, maxLines: number) {
 	const hasTrailingNewline = content.endsWith("\n");
 	const split = content.split("\n");
 	const lines = hasTrailingNewline ? split.slice(0, -1) : split;
-	const slice = lines.slice(Math.max(0, lines.length - maxLines)).map(files_truncate_long_display_line);
+	const slice: string[] = [];
+	let bytes = 0;
+	for (let index = lines.length - 1; index >= Math.max(0, lines.length - maxLines); index--) {
+		const displayed = files_truncate_long_display_line(lines[index]);
+		const lineBytes = files_get_utf8_byte_size(displayed) + 1;
+		if (bytes + lineBytes > files_READ_RANGE_MAX_BYTES) break;
+		slice.push(displayed);
+		bytes += lineBytes;
+	}
+	slice.reverse();
 	// `moreAbove` is true when the file (or this window) holds lines before the returned tail, so a
 	// `tail` view can honestly signal it is partial rather than implying it shows the whole file.
-	return { content: slice.length > 0 ? `${slice.join("\n")}\n` : "", moreAbove: lines.length > maxLines };
+	return { content: slice.length > 0 ? `${slice.join("\n")}\n` : "", moreAbove: lines.length > slice.length };
 }
 
 /**
@@ -6753,6 +6766,27 @@ export function files_merge_contiguous_chunks(
 	return out;
 }
 
+async function files_read_prefix_from_ordered_chunks(
+	chunks: AsyncIterable<{ startIndex: number; endIndex: number; textChunk: string }>,
+	maxBytes: number,
+) {
+	let content = "";
+	let endIndex = 0;
+	let hasChunks = false;
+	for await (const chunk of chunks) {
+		hasChunks = true;
+		if (chunk.startIndex !== endIndex) return null;
+		content += chunk.textChunk;
+		endIndex = chunk.endIndex;
+		const bytes = new TextEncoder().encode(content);
+		if (bytes.byteLength > maxBytes) {
+			// Streaming decode drops an unfinished UTF-8 character at the byte boundary.
+			return { hasChunks, content: new TextDecoder().decode(bytes.subarray(0, maxBytes), { stream: true }), moreLines: true };
+		}
+	}
+	return { hasChunks, content, moreLines: false };
+}
+
 /**
  * Read a forward line window from chunks that are already ordered by their line range.
  *
@@ -6783,6 +6817,7 @@ async function files_read_forward_line_range_from_ordered_chunks(
 	}> = [];
 	let hasChunks = false;
 	let sawBeyond = false;
+	let stoppedForSize = false;
 	let overlappingLength = 0;
 
 	for await (const chunk of chunks) {
@@ -6810,19 +6845,27 @@ async function files_read_forward_line_range_from_ordered_chunks(
 			return null;
 		}
 		overlapping.push(chunk);
+		if (overlappingLength >= files_READ_RANGE_MAX_BYTES && chunk.lineEnd > startLine) {
+			stoppedForSize = true;
+			break;
+		}
 	}
 
 	if (overlapping.length === 0) {
 		return { hasChunks, content: "", moreLines: sawBeyond };
 	}
 
-	const merged = files_merge_contiguous_chunks(overlapping);
+	let merged = files_merge_contiguous_chunks(overlapping);
 	if (merged == null) return null;
+	// A size-limited scan may end inside a line. Leave that line for the next page.
+	if (stoppedForSize && !merged.endsWith("\n")) {
+		merged = merged.slice(0, merged.lastIndexOf("\n") + 1);
+	}
 	const baseLine = overlapping[0]!.lineStart;
 	// The merged text begins at baseLine, so translate the document line number
 	// into the merged-string line number before slicing.
 	const range = files_line_range_from_text(merged, startLine - baseLine + 1, maxLines);
-	return { hasChunks, content: range.content, moreLines: range.moreLines || sawBeyond };
+	return { hasChunks, content: range.content, moreLines: range.moreLines || sawBeyond || stoppedForSize };
 }
 
 /**
@@ -6902,7 +6945,7 @@ export const read_committed_file_chunks_line_range = internalQuery({
 			// file has `lastLineEnd + 1` lines; the tail is partial iff that total exceeds maxLines, i.e.
 			// `lastLineEnd >= maxLines`. (Using the file's true last line, not the merged-suffix length,
 			// which can equal maxLines on a chunk boundary while earlier lines still exist.)
-			const moreLines = (lastLineEnd ?? 0) >= maxLines;
+			const moreLines = tail.moreAbove || (lastLineEnd ?? 0) >= maxLines;
 			return { usable: true as const, nodeId: source.nodeId, content: tail.content, moreLines };
 		}
 
@@ -6981,6 +7024,10 @@ export const read_file_content_from_chunks = internalQuery({
 		 */
 		committedOnly: v.optional(v.boolean()),
 		mode: v.union(
+			v.object({
+				kind: v.literal("prefix"),
+				maxBytes: v.number(),
+			}),
 			v.object({
 				kind: v.literal("full"),
 				maxBytes: v.number(),
@@ -7102,6 +7149,12 @@ export const read_file_content_from_chunks = internalQuery({
 						.query("files_text_chunks")
 						.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdate._id));
 
+					if (args.mode.kind === "prefix") {
+						const prefix = await files_read_prefix_from_ordered_chunks(chunks, Math.max(0, Math.min(files_READ_RANGE_MAX_BYTES, args.mode.maxBytes)));
+						if (prefix == null || (!prefix.hasChunks && pendingUpdate.size > 0)) return null;
+						return { nodeId: fileNode._id, content: prefix.content, moreLines: prefix.moreLines, pendingUpdateId: pendingUpdate._id, pendingUpdateBaseStateId };
+					}
+
 					if (args.mode.kind === "full") {
 						if (pendingUpdate.size > args.mode.maxBytes) return null;
 						const collectedChunks = await chunks.collect();
@@ -7188,6 +7241,17 @@ export const read_file_content_from_chunks = internalQuery({
 				asset.kind === allowedAssetKind
 					? asset.size
 					: 0;
+		}
+
+		if (args.mode.kind === "prefix") {
+			const prefix = await files_read_prefix_from_ordered_chunks(
+				ctx.db.query("files_text_chunks").withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
+					q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("sourceKind", "committed").eq("fileNodeId", fileNode._id),
+				),
+				Math.max(0, Math.min(files_READ_RANGE_MAX_BYTES, args.mode.maxBytes)),
+			);
+			if (prefix == null || (!prefix.hasChunks && byteSize > 0)) return null;
+			return { nodeId: fileNode._id, content: prefix.content, moreLines: prefix.moreLines, pendingUpdateId: null, pendingUpdateBaseStateId };
 		}
 
 		if (args.mode.kind === "full") {

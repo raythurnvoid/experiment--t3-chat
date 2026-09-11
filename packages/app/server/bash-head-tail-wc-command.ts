@@ -400,7 +400,7 @@ export function bash_head_tail_wc_command_create(
 					if (result.moreLines && !result.scanTruncated) {
 						notes.push(
 							`More lines below. ${bash_sed_command_build_next_page_hint({
-								nextStartLine: startLine + maxLines,
+								nextStartLine: startLine + result.content.split("\n").length - 1,
 								maxLines,
 								shellPath: oversizedFileShellPath,
 							})}`,
@@ -454,7 +454,7 @@ export function bash_head_tail_wc_command_create(
 						// Point the agent at the next page via sed line ranges (plain bash paging).
 						notes.push(
 							`More lines below. ${bash_sed_command_build_next_page_hint({
-								nextStartLine: maxLines + 1,
+								nextStartLine: result.content.split("\n").length,
 								maxLines,
 								shellPath: oversizedFileShellPath,
 							})}`,
@@ -499,7 +499,7 @@ export function bash_head_tail_wc_command_create(
 				} else if (result.moreLines) {
 					// Signal that this is a partial end-of-file view and point at the top of the file.
 					tailNotes.push(
-						`showing the last ${maxLines} lines; earlier lines precede them. Read from the top with: head -n ${maxLines} ${bash_shell_arg_quote(
+						`showing the last ${result.content.split("\n").length - 1} lines; earlier lines precede them. Read from the top with: head -n ${maxLines} ${bash_shell_arg_quote(
 							oversizedFileShellPath,
 						)}`,
 					);

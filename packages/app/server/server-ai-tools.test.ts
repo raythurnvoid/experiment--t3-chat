@@ -27,8 +27,6 @@ import {
 	ai_chat_tool_create_set_file_metadata,
 	ai_chat_tool_create_web_search,
 	ai_chat_tool_create_execute_code,
-	ai_chat_tool_create_run_skill_script,
-	ai_chat_skill_tool_parts_are_safe,
 	replace_once_or_all,
 } from "./server-ai-tools.ts";
 import { has_defined_property } from "../shared/shared-utils.ts";
@@ -140,6 +138,8 @@ describe("ai_chat_tool_create_bash", () => {
 					stdoutLength: server_ai_tools_test_db_files_mount.length + 1,
 					stderrLength: 0,
 					pathIndexTruncated: false,
+					observedPaths: [],
+					observedPathsTruncated: false,
 				},
 			}),
 		});
@@ -156,7 +156,10 @@ describe("ai_chat_tool_create_bash", () => {
 			throw new Error("`result` is AsyncIterable but expected sync object");
 		}
 
-		expect(result.stdout).toBe(`${server_ai_tools_test_db_files_mount}\n`);
+		expect(result.output).toBe("$ pwd");
+		expect(result).not.toHaveProperty("stdout");
+		expect(result).not.toHaveProperty("stderr");
+		expect(result.metadata).not.toHaveProperty("observedPaths");
 		expect(runAction).toHaveBeenCalledWith(
 			expect.anything(),
 			expect.objectContaining({
@@ -168,6 +171,58 @@ describe("ai_chat_tool_create_bash", () => {
 				allowDbFilesMkdir: true,
 			}),
 		);
+	});
+
+	test("returns scoped rules once beside the unchanged shell output", async () => {
+		const context: ai_chat_context_Context = {
+			organizationId: server_ai_tools_test_ctx_data.organizationId,
+			workspaceId: server_ai_tools_test_ctx_data.workspaceId,
+			userId: server_ai_tools_test_user_id,
+			instructions: new Map(),
+			instructionBytes: 0,
+		};
+		const { ctx } = makeCtx(async (_ref, args) => {
+			if (args.path !== "/docs/AGENTS.md") return null;
+			return args.mode ? { content: "Use short headings." } : { _id: "rules", kind: "file" };
+		}, {
+			runActionImpl: async () => ({
+				title: "exit 0", output: "$ cat docs/notes.md\n\nNotes", stdout: "Notes", stderr: "",
+				metadata: { exitCode: 0, observedPaths: ["/docs/notes.md"], observedPathsTruncated: false },
+			}),
+		});
+		const tool = ai_chat_tool_create_bash(ctx, {
+			...server_ai_tools_test_ctx_data, getWorkspaceContext: () => context,
+		}, { allowDbFilesMkdir: true });
+		const first = await tool.execute!({ command: "cat docs/notes.md" }, { toolCallId: "first", messages: [] });
+		expect(first).toMatchObject({
+			output: "$ cat docs/notes.md\n\nNotes",
+			instructions: JSON.stringify({ source: "/docs/AGENTS.md", scope: "/docs/", instructions: "Use short headings." }),
+		});
+		expect(first).not.toHaveProperty("stdout");
+		expect(first).not.toHaveProperty("stderr");
+		const second = await tool.execute!({ command: "cat docs/notes.md" }, { toolCallId: "second", messages: [] });
+		expect(second).not.toHaveProperty("instructions");
+	});
+
+	test("warns when a command touched more paths than its rule scan could cover", async () => {
+		const context: ai_chat_context_Context = {
+			organizationId: server_ai_tools_test_ctx_data.organizationId,
+			workspaceId: server_ai_tools_test_ctx_data.workspaceId,
+			userId: server_ai_tools_test_user_id,
+			instructions: new Map(),
+			instructionBytes: 0,
+		};
+		const { ctx } = makeCtx(async () => null, {
+			runActionImpl: async () => ({
+				title: "exit 0", output: "$ find .", stdout: "", stderr: "",
+				metadata: { exitCode: 0, observedPaths: [], observedPathsTruncated: true },
+			}),
+		});
+		const tool = ai_chat_tool_create_bash(ctx, {
+			...server_ai_tools_test_ctx_data, getWorkspaceContext: () => context,
+		}, { allowDbFilesMkdir: true });
+		const result = await tool.execute!({ command: "find ." }, { toolCallId: "many", messages: [] });
+		expect(result).toHaveProperty("instructions", "Workspace guidance is incomplete: inspect fewer app paths per Bash call.");
 	});
 
 	test("describes supported app ls flags and pagination limits", () => {
@@ -849,6 +904,7 @@ test("edit_file tool stores pending unstaged branch updates from the agent", asy
 	expect(result.metadata.pendingUpdateId).toBe(pendingUpdateId);
 	expect(result.metadata.matches).toBe(1);
 	expect(result.metadata.matcher).toBe("simple");
+	expect(result.metadata).not.toHaveProperty("modifiedContent");
 });
 
 describe("ai_chat_tool_create_edit_file", () => {
@@ -910,7 +966,7 @@ describe("ai_chat_tool_create_edit_file", () => {
 			if (refuseAgain) {
 				await expect(result).rejects.toThrow("The proposal changed after it was read.");
 			} else {
-				await expect(result).resolves.toMatchObject({ metadata: { modifiedContent: "saved\nnew\n" } });
+				await expect(result).resolves.toMatchObject({ metadata: { diff: " saved\n-old\n+new\n" } });
 			}
 			expect(reads).toBe(2);
 			expect(writes).toBe(2);
@@ -1467,35 +1523,8 @@ test("execute_code tool: describes app file API reads", () => {
 	);
 });
 
-describe("skill tool history", () => {
-	const skillId = "a".repeat(32);
-	const resourceId = "b".repeat(32);
-	const part = {
-		type: "tool-run_skill_script", toolCallId: "script-call", state: "output-available",
-		input: { skillId, resourceId }, output: { skillId, resourceId, status: "completed", version: "c".repeat(64) },
-	};
-
-	test("accepts safe references and rejects bodies or parameters anywhere in the tool part", () => {
-		expect(ai_chat_skill_tool_parts_are_safe([part])).toBe(true);
-		expect(ai_chat_skill_tool_parts_are_safe([{ ...part, output: { ...part.output, body: "PRIVATE SKILL BODY" } }])).toBe(false);
-		expect(ai_chat_skill_tool_parts_are_safe([{ ...part, input: { ...part.input, input: "PRIVATE PARAMETER" } }])).toBe(false);
-		expect(ai_chat_skill_tool_parts_are_safe([{ ...part, rawInput: "PRIVATE PARAMETER" }])).toBe(false);
-		expect(ai_chat_skill_tool_parts_are_safe([{ ...part, callProviderMetadata: { private: "PRIVATE BODY" } }])).toBe(false);
-		expect(ai_chat_skill_tool_parts_are_safe([{ ...part, type: "dynamic-tool", toolName: "run_skill_script" }])).toBe(false);
-		expect(ai_chat_skill_tool_parts_are_safe([{ ...part, type: "dynamic-tool", toolName: "RUN_SKILL_SCRIPT" }])).toBe(false);
-		expect(ai_chat_skill_tool_parts_are_safe([{ ...part, type: "tool-RUN_SKILL_SCRIPT" }])).toBe(false);
-		expect(ai_chat_skill_tool_parts_are_safe([{ ...part, type: "tool-Run_Skill_Script", input: { input: "PRIVATE" } }])).toBe(false);
-	});
-
-	test("accepts a Stop during argument streaming only while input is empty", () => {
-		const partial = { type: "tool-run_skill_script", toolCallId: "script-call", state: "input-streaming" };
-		expect(ai_chat_skill_tool_parts_are_safe([partial])).toBe(true);
-		expect(ai_chat_skill_tool_parts_are_safe([{ ...partial, input: { input: "PRIVATE" } }])).toBe(false);
-	});
-});
-
 describe("runner cancellation", () => {
-	test.each(["execute_code", "run_skill_script"] as const)("Stop aborts the %s fetch", async (name) => {
+	test("Stop aborts the execute_code fetch", async () => {
 		const abort = new AbortController();
 		let notifyFetch!: () => void;
 		const fetched = new Promise<void>((resolve) => { notifyFetch = resolve; });
@@ -1506,24 +1535,14 @@ describe("runner cancellation", () => {
 				const init = args[1] as RequestInit;
 				notifyFetch();
 				expect(init.signal).toBe(abort.signal);
-				if (name === "run_skill_script") expect(JSON.parse(String(init.body))).not.toHaveProperty("network");
 				return await new Promise<execute_code_test_runner_response>((_resolve, reject) => {
 					init.signal?.addEventListener("abort", () => { fetchWasAborted = true; reject(init.signal?.reason); }, { once: true });
 				});
 			},
 		}, async () => {
-			const source = { nodeId: "a".repeat(32) as Id<"files_nodes">, path: "/.agents/skills/calculate/SKILL.md", version: "c".repeat(64), size: 20, status: "ready" as const };
-			const resource = { ...source, nodeId: "b".repeat(32) as Id<"files_nodes">, path: "/.agents/skills/calculate/scripts/totals.js" };
-			const { ctx } = makeCtx(async () => ({ _yay: [source] }), { runActionImpl: async () => ({ _yay: { source: resource, content: "return 2 + 2;" } }) });
-			const context: ai_chat_context_Context = {
-				membershipId: "d".repeat(32) as Id<"organizations_workspaces_users">,
-				userId: server_ai_tools_test_user_id, instructions: [], catalog: [],
-				loaded: new Map([[source.nodeId, { source, name: "calculate", body: "Calculate", runtime: "worker-async-body-v1", resources: [resource], delivered: true, resourceText: new Map(), scriptResults: [] }]]),
-			};
-			const options = { toolCallId: "abort-call", messages: [], abortSignal: abort.signal, experimental_context: context };
-			const operation = name === "execute_code"
-				? ai_chat_tool_create_execute_code(ctx, server_ai_tools_test_ctx_data).execute?.({ code: "return 2 + 2;" }, options)
-				: ai_chat_tool_create_run_skill_script(ctx, server_ai_tools_test_ctx_data).execute?.({ skillId: source.nodeId, resourceId: resource.nodeId }, options);
+			const { ctx } = makeCtx(async () => null);
+			const options = { toolCallId: "abort-call", messages: [], abortSignal: abort.signal };
+			const operation = ai_chat_tool_create_execute_code(ctx, server_ai_tools_test_ctx_data).execute?.({ code: "return 2 + 2;" }, options);
 			const rejected = expect(operation).rejects.toThrow("Stop");
 			await fetched;
 			abort.abort(new Error("Stop"));

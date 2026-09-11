@@ -115,6 +115,8 @@ export function bash_rm_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 		}
 
 		for (const operand of appOperands) {
+			const path = bash_current_workspace_path_to_db_files_path(currentWorkspacePath, bash_resolve_path(commandCtx.cwd, operand));
+			if (path != null) dbFilesRoots.app.fs.observePath(path);
 			if (bash_GLOB_METACHARACTER_REGEX.test(operand)) {
 				return {
 					stdout: "",

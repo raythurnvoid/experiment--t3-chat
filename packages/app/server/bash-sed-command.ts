@@ -149,7 +149,7 @@ export function bash_sed_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 				if (result.moreLines && !result.scanTruncated) {
 					notes.push(
 						`More lines below. ${bash_sed_command_build_next_page_hint({
-							nextStartLine: fastPath.endLine + 1,
+							nextStartLine: fastPath.startLine + result.content.split("\n").length - 1,
 							maxLines,
 							shellPath: pathResolution.renderShellPath(dbFilesPath),
 						})}`,

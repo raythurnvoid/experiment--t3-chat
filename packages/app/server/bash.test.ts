@@ -167,10 +167,10 @@ describe("bash_run_command", () => {
 		{ path: "/reports/summary.md", content: "summary\n" },
 	];
 
-	// ~8.9KB / 1000 lines — over READ_INLINE_MAX_BYTES, so readers take the bounded large-file pages.
+	// Keep 1000 lines while exceeding the full-read cap. Common first/tail pages stay short.
 	const big_md_file: BashSeedSpec = {
 		path: "/big.md",
-		content: `${Array.from({ length: 1000 }, (_, index) => `line ${index + 1}`).join("\n")}\n`,
+		content: `${Array.from({ length: 1000 }, (_, index) => `line ${index + 1}${index === 749 ? "x".repeat(bash_READ_INLINE_MAX_BYTES) : ""}`).join("\n")}\n`,
 	};
 
 	async function seed_organization_folder(
@@ -1120,7 +1120,7 @@ describe("bash_run_command", () => {
 
 		await upsert_pending_update_for_test(runner, {
 			nodeId: dbFilesDocId,
-			unstagedText: Array.from({ length: 400 }, (_, index) => `line ${index + 1}`).join("\n\n"),
+			unstagedText: "pending text ".repeat(6000),
 		});
 		const pendingUpdate = await runner.t.query(internal.files_pending_updates.get_by_file_node, {
 			organizationId: runner.seeded.organizationId,
@@ -3512,6 +3512,87 @@ describe("bash_run_command", () => {
 		expect(smallStillWorks.stdout).toContain("# Readme");
 	});
 
+	test("cat reads a complete 64 KiB skill with more than 500 lines", async () => {
+		const prefix = "---\nname: complete\ndescription: Read the whole file.\n---\n";
+		const lines = "instruction\n".repeat(600);
+		const content = `${prefix}${lines}${"x".repeat(64 * 1024 - prefix.length - lines.length - 8)}THE_END\n`;
+		const { run } = await create_bash_runner({
+			extraFiles: [{ path: "/.agents/skills/complete/SKILL.md", content }],
+		});
+
+		const result = await run("cat .agents/skills/complete/SKILL.md");
+
+		expect(result.metadata.exitCode).toBe(0);
+		expect(result.stdout).toBe(content);
+		expect(result.metadata.stdoutTruncated).toBe(false);
+		expect(result.stderr).toBe("");
+	});
+
+	test("records only command paths without cwd maintenance or listed descendants", async () => {
+		const { run } = await create_bash_runner({ initialCwd: `${test_db_files_mount}/docs` });
+
+		const read = await run(`cat ${test_db_files_mount}/reports/summary.md`);
+		const listed = await run(`ls ${test_db_files_mount}/reports`);
+
+		expect(read.metadata.observedPaths).toContain("/reports/summary.md");
+		expect(read.metadata.observedPaths).not.toContain("/docs");
+		expect(listed.metadata.observedPaths).toContain("/reports");
+		expect(listed.metadata.observedPaths).not.toContain("/reports/summary.md");
+	});
+
+	test.each([
+		"false && value=$(cat reports/missing.md); echo done",
+		"bash -c 'false && value=$(cat reports/missing.md); echo done'",
+		"printf '%s\\n' 'false && value=$(cat reports/missing.md); echo done' | xargs -I {} bash -c '{}'",
+	])("does not record paths probed by shell safety checks: %s", async (command) => {
+		const { run } = await create_bash_runner();
+
+		const result = await run(`cat docs/readme.md > /tmp/read; ${command}`);
+
+		expect(result.metadata.exitCode).toBe(0);
+		expect(result.stdout).toBe("done\n");
+		expect(result.metadata.observedPaths).toContain("/docs/readme.md");
+		expect(result.metadata.observedPaths).not.toContain("/reports/missing.md");
+	});
+
+	test("follows byte-limited pages without losing file lines", async () => {
+		const content = Array.from({ length: 600 }, (_, index) => `${index}: ${"é".repeat(200)}\n`).join("");
+		const { run } = await create_bash_runner({ extraFiles: [{ path: "/pages.txt", content }] });
+		let command = "cat pages.txt";
+		let combined = "";
+		for (let page = 0; page < 10; page++) {
+			const result = await run(command);
+			expect(result.metadata.exitCode).toBe(0);
+			expect(new TextEncoder().encode(result.stdout).byteLength).toBeLessThanOrEqual(64 * 1024);
+			combined += result.stdout;
+			const next = /Next page: (sed[^\n]+)/.exec(result.stderr)?.[1];
+			if (!next) break;
+			command = next;
+		}
+		expect(combined).toBe(content);
+	});
+
+	test("prefix reads keep UTF-8 characters whole and see pending content", async () => {
+		const runner = await create_bash_runner({
+			extraFiles: [{ path: "/prefix.txt", content: "head ééé tail", nonCollaborative: true }],
+		});
+		const read = () => runner.t.query(internal.files_nodes.read_file_content_from_chunks, {
+			organizationId: runner.seeded.organizationId,
+			workspaceId: runner.seeded.workspaceId,
+			userId: runner.seeded.userId,
+			overlayUserId: runner.seeded.userId,
+			path: "/prefix.txt",
+			mode: { kind: "prefix", maxBytes: 8 },
+		});
+
+		expect(await read()).toMatchObject({ content: "head é", moreLines: true, pendingUpdateId: null });
+		const write = await runner.run("printf 'edit ééé tail' > prefix.txt");
+		expect(write.metadata.exitCode).toBe(0);
+		const pending = await read();
+		expect(pending).toMatchObject({ content: "edit é", moreLines: true });
+		expect(pending?.pendingUpdateId).not.toBeNull();
+	});
+
 	test("large cat uses query-only chunk line range reads", async () => {
 		const { run, runQuery, runAction } = await create_bash_runner({ extraFiles: [big_md_file] });
 		const bigPath = `${test_db_files_mount}/big.md`;
@@ -3557,7 +3638,7 @@ describe("bash_run_command", () => {
 			extraFiles: [
 				{
 					path: "/big.md",
-					content: `${"A".repeat(4999)}\n${"B".repeat(4999)}\n${"C".repeat(2000)}`,
+					content: `${"A".repeat(49999)}\n${"B".repeat(49999)}\n${"C".repeat(2000)}`,
 					materialized: false,
 				},
 			],
@@ -3807,7 +3888,7 @@ describe("bash_run_command", () => {
 			extraFiles: [
 				{
 					path: "/chunk-unavailable.md",
-					content: Array.from({ length: 1000 }, (_, index) => `line ${index + 1}`).join("\n"),
+					content: big_md_file.content,
 					materialized: false,
 				},
 			],
@@ -3834,7 +3915,7 @@ describe("bash_run_command", () => {
 		const draftNodeId = await get_seeded_node_id(runner, "/draft.md");
 		await upsert_pending_update_for_test(runner, {
 			nodeId: draftNodeId,
-			unstagedText: Array.from({ length: 400 }, (_, index) => `line ${index + 1}`).join("\n\n"),
+			unstagedText: Array.from({ length: 400 }, (_, index) => `line ${index + 1}${index === 300 ? "x".repeat(bash_READ_INLINE_MAX_BYTES) : ""}`).join("\n\n"),
 		});
 		const pendingUpdate = await runner.t.query(internal.files_pending_updates.get_by_file_node, {
 			organizationId: runner.seeded.organizationId,
@@ -5466,7 +5547,7 @@ describe("bash_run_command", () => {
 						{ path: filePath, oldString: "old", newString: "new", replaceAll: false },
 						{ toolCallId: "new-family", messages: [] },
 					),
-				).resolves.toMatchObject({ metadata: { modifiedContent: "earlier proposal\nnew\n" } });
+				).resolves.toMatchObject({ metadata: { pendingUpdateId: expect.any(String), matches: 1 } });
 			} else {
 				const appended = await runner.run(`printf 'tail\\n' >> ${path}`);
 				expect(appended.stderr).toBe("");
@@ -5552,7 +5633,7 @@ describe("bash_run_command", () => {
 					{ path: filePath, oldString: "third: old", newString: "third: tool", replaceAll: false },
 					{ toolCallId: "preflight-race", messages: [] },
 				),
-			).resolves.toMatchObject({ metadata: { modifiedContent: preparedText.replace("third: old", "third: tool") } });
+			).resolves.toMatchObject({ metadata: { pendingUpdateId: expect.any(String), matches: 1 } });
 		} else {
 			const appended = await runner.run(`printf 'tail\\n' >> ${path}`);
 			expect(appended.stderr).toBe("");
@@ -5746,7 +5827,7 @@ describe("bash_run_command", () => {
 						{ path: filePath, oldString: "third: old", newString: "third: tool", replaceAll: false },
 						{ toolCallId: "read-race", messages: [] },
 					),
-				).resolves.toMatchObject({ metadata: { modifiedContent: preparedText.replace("third: old", "third: tool") } });
+				).resolves.toMatchObject({ metadata: { pendingUpdateId: expect.any(String), matches: 1 } });
 			} else {
 				const written = await runner.run(
 					operation === "append" ? `printf 'tool tail\\n' >> ${path}` : `printf 'replacement\\n' > ${path}`,
@@ -8479,9 +8560,9 @@ describe("bash_run_command", () => {
 		const result = await run("seq 1 40000");
 
 		expect(result.metadata.stdoutTruncated).toBe(true);
-		expect(result.metadata.stdoutLength).toBeGreaterThan(30_000);
+		expect(result.metadata.stdoutLength).toBeGreaterThan(128 * 1024);
 		expect(result.metadata.pathIndexTruncated).toBe(false);
-		expect(result.stdout).toContain("[truncated after 30000 characters]");
+		expect(result.stdout).toContain("[truncated after 131072 characters]");
 	});
 
 	describe("github mounts (Phase F7)", () => {

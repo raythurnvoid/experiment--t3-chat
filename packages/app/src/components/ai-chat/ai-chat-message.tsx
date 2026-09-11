@@ -34,8 +34,6 @@ import {
 	type ToolUIPart,
 } from "ai";
 import type { ExtractStrict } from "type-fest";
-import { useQuery } from "convex/react";
-import { app_convex_api } from "@/lib/app-convex-client.ts";
 import {
 	ai_chat_get_message_text,
 	type ai_chat_UiMessage,
@@ -347,30 +345,11 @@ function ai_chat_message_part_tool_bash_terminal_text(
 	result: AiChatMessagePartToolBash_Props["result"],
 	errorText?: string,
 ) {
-	const metadata = result?.metadata;
-	const command = metadata?.command ?? args?.command ?? "";
-	const cwd = metadata?.cwd ?? metadata?.nextCwd;
-	const prompt = cwd ? `${cwd}$` : "$";
-	const terminalParts = [`${prompt} ${command}`];
-	const normalizedStdout = result?.stdout?.replace(/\r\n?/g, "\n").replace(/\n+$/, "");
-	const normalizedStderr = result?.stderr?.replace(/\r\n?/g, "\n").replace(/\n+$/, "");
+	const terminalParts = [result?.output ?? `$ ${args?.command ?? ""}`];
 	const normalizedError = errorText?.replace(/\r\n?/g, "\n").replace(/\n+$/, "");
 
-	if (normalizedStdout) {
-		terminalParts.push(normalizedStdout);
-	}
-	if (normalizedStderr) {
-		terminalParts.push(normalizedStderr);
-	}
 	if (normalizedError) {
 		terminalParts.push(normalizedError);
-	}
-	if (metadata) {
-		const statusParts = [`exit ${metadata.exitCode}`];
-		if (metadata.nextCwd) {
-			statusParts.push(`cwd ${metadata.nextCwd}`);
-		}
-		terminalParts.push(statusParts.join(" · "));
 	}
 
 	return terminalParts.join("\n\n");
@@ -404,72 +383,6 @@ const AiChatMessagePartToolBash = memo(function AiChatMessagePartToolBash(props:
 	);
 });
 // #endregion tool bash
-
-// #region skill tools
-type AiChatMessagePartToolSkill_Props = {
-	part: ExtractStrict<
-		ToolUIPart<ai_chat_UiTools>,
-		{ type: "tool-load_skill" | "tool-read_skill_resource" | "tool-run_skill_script" }
-	>;
-	isChatRunning: boolean;
-};
-
-const ai_chat_skill_tool_status_labels = {
-	loaded: "Loaded",
-	read: "Read",
-	completed: "Completed",
-	changed: "Source changed. Load the skill again.",
-	not_loaded: "Load the skill first.",
-	too_large: "Source exceeds the size limit.",
-	unsupported_runtime: "This script runtime is not supported.",
-	invalid: "Repair the skill file before loading it.",
-	failed: "Failed",
-	unavailable: "Source unavailable",
-} satisfies Record<ai_chat_UiTools["load_skill"]["output"]["status"], string>;
-
-const AiChatMessagePartToolSkill = memo(function AiChatMessagePartToolSkill(props: AiChatMessagePartToolSkill_Props) {
-	const { part, isChatRunning } = props;
-	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
-	const nodeId = part.type === "tool-load_skill" ? part.output?.skillId : part.output?.resourceId;
-	// Resolve the saved ID again so history cannot reveal a source after access is removed.
-	const source = useQuery(
-		app_convex_api.ai_chat_context.get_source,
-		nodeId ? { membershipId, nodeId } : "skip",
-	);
-	const title =
-		part.type === "tool-load_skill"
-			? "Load skill"
-			: part.type === "tool-read_skill_resource"
-				? "Read skill resource"
-				: "Run skill script";
-	const status = part.output?.status;
-	const statusText = ai_chat_skill_tool_status_labels[status ?? (part.state === "output-error" ? "failed" : "unavailable")];
-	const summaryState = status && status !== "loaded" && status !== "read" && status !== "completed" ? "output-error" : part.state;
-
-	return (
-		<AiChatMessagePartDisclosure>
-			<AiChatMessagePartDisclosureButton
-				title={title}
-				text={source?.path ?? (nodeId ? "Source unavailable" : undefined)}
-				state={summaryState}
-				isChatRunning={isChatRunning}
-			/>
-			<AiChatMessagePartToolBody>
-				{source && (
-					<MyLink
-						to="/w/$organizationName/$workspaceName/files"
-						params={{ organizationName, workspaceName }}
-						search={{ nodeId: source.nodeId }}
-					>
-						{source.path}
-					</MyLink>
-				)}
-				<p>{statusText}</p>
-			</AiChatMessagePartToolBody>
-		</AiChatMessagePartDisclosure>
-	);
-});
-// #endregion skill tools
 
 // #region tool edit_file
 type AiChatMessagePartToolEditPage_ClassNames = "AiChatMessagePartToolEditPage" | "AiChatMessagePartToolEditPage-link";
@@ -998,11 +911,6 @@ const AiChatMessagePartInner = memo(function AiChatMessagePartInner(props: AiCha
 		}
 
 		switch (part.type) {
-			case "tool-load_skill":
-			case "tool-read_skill_resource":
-			case "tool-run_skill_script": {
-				return <AiChatMessagePartToolSkill part={part} isChatRunning={isChatRunning} />;
-			}
 			case "tool-bash": {
 				return (
 					<AiChatMessagePartToolBash
@@ -1384,7 +1292,7 @@ type AiChatMessageUser_Props = ComponentPropsWithRef<"div"> & {
 	onSelectedModeIdChange: AiChatComposer_Props["onSelectedModeIdChange"];
 	onEditStart: (args: { messageId: string; parentId: string | null }) => void;
 	onEditCancel: () => void;
-	onEditSubmit: (args: { value: string; attachments: FileUIPart[]; skillIds: readonly string[] }) => void;
+	onEditSubmit: (args: { value: string; attachments: FileUIPart[] }) => void;
 	onMessageRetrySend: (args: { threadId: string; messageId: string; value: string }) => void;
 	onSelectBranchAnchor: (threadId: string, anchorId: string) => void;
 };
@@ -1516,8 +1424,8 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 		onEditCancel();
 	});
 
-	const handleEditSubmit = useFn<AiChatComposer_Props["onSubmit"]>((value, attachments, skillIds) => {
-		onEditSubmit({ value, attachments, skillIds });
+	const handleEditSubmit = useFn<AiChatComposer_Props["onSubmit"]>((value, attachments) => {
+		onEditSubmit({ value, attachments });
 	});
 	const handleEditValueChange = useFn<AiChatComposer_Props["onValueChange"]>(() => {});
 
@@ -1604,7 +1512,6 @@ const AiChatMessageUser = memo(function AiChatMessageUser(props: AiChatMessageUs
 								isRunning={false}
 								initialValue={text ?? ""}
 								initialAttachments={messageFileParts}
-								initialSkillIds={message.metadata?.skillIds}
 								selectedModelId={selectedModelId}
 								selectedModeId={selectedModeId}
 								onValueChange={handleEditValueChange}
@@ -2018,7 +1925,7 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 		actions.setEditingMessageId(selectedThreadId, null);
 	});
 
-	const handleEditSubmit = useFn((args: { value: string; attachments: FileUIPart[]; skillIds: readonly string[] }) => {
+	const handleEditSubmit = useFn((args: { value: string; attachments: FileUIPart[] }) => {
 		if (!selectedThreadId || (!args.value && args.attachments.length === 0)) {
 			return;
 		}
@@ -2027,7 +1934,6 @@ export const AiChatMessage = memo(function AiChatMessage(props: AiChatMessage_Pr
 		actions.sendUserText(selectedThreadId, args.value, {
 			messageId,
 			attachments: args.attachments,
-			skillIds: args.skillIds,
 		});
 		actions.setEditingMessageId(selectedThreadId, null);
 	});

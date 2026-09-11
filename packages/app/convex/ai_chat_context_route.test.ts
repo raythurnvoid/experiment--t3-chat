@@ -59,7 +59,7 @@ async function setup() {
 }
 
 describe("/api/chat workspace instructions", () => {
-	test("sends saved root and nested guidance and catalog first, then delivers a loaded body in prepareStep", async () => {
+	test("starts with pending root rules and a catalog, then reads skills and ancestor rules through Bash", async () => {
 		const { t, asUser, membership, threadId } = await setup();
 		const { organizationId, workspaceId, userId } = membership;
 		const scope = { organizationId, workspaceId, userId };
@@ -94,26 +94,30 @@ describe("/api/chat workspace instructions", () => {
 		expect(model.streamText).toHaveBeenCalledTimes(1);
 
 		const call = model.streamText.mock.calls[0][0] as Parameters<typeof streamText>[0];
-		expect(call.system).toContain("ROOT_GUIDANCE_271");
-		expect(call.system).toContain("NESTED_GUIDANCE_272");
+		expect(call.system).toContain("UNSAVED_GUIDANCE_275");
+		expect(call.system).not.toContain("ROOT_GUIDANCE_271");
+		expect(call.system).not.toContain("NESTED_GUIDANCE_272");
 		expect(call.system).toContain("CATALOG_DESCRIPTION_273");
-		expect(String(call.system).indexOf("ROOT_GUIDANCE_271")).toBeLessThan(String(call.system).indexOf("NESTED_GUIDANCE_272"));
-		expect(call.system).not.toContain("UNSAVED_GUIDANCE_275");
 		expect(call.system).not.toContain("SECRET_SKILL_BODY_274");
-		expect(call.experimental_context).toBeDefined();
-		if (!call.prepareStep || !call.tools?.load_skill?.execute) throw new Error("Expected live skill tool and prepareStep");
+		expect(call.tools).not.toHaveProperty("load_skill");
+		expect(call.tools).not.toHaveProperty("read_skill_resource");
+		expect(call.tools).not.toHaveProperty("run_skill_script");
+		if (!call.prepareStep || !call.tools?.bash?.execute) throw new Error("Expected Bash and prepareStep");
 
 		await t.run(async () => {
 			const first = await call.prepareStep!({ model: call.model, messages: call.messages ?? [], steps: [], stepNumber: 0, experimental_context: call.experimental_context });
-			expect(first?.system).not.toContain("SECRET_SKILL_BODY_274");
+			expect(first).toBeUndefined();
 
-			const output = await call.tools!.load_skill.execute!({ skillId: skill._yay.nodeId }, { toolCallId: "load", messages: [], experimental_context: call.experimental_context });
-			expect(output).toEqual({ skillId: skill._yay.nodeId, version: expect.stringMatching(/^[a-f0-9]{64}$/u), status: "loaded" });
+			const output = await call.tools!.bash.execute!({ command: "cat .agents/skills/summarize-invoices/SKILL.md" }, { toolCallId: "read-skill", messages: [] });
+			expect(output).toMatchObject({ output: expect.stringContaining("SECRET_SKILL_BODY_274") });
+			expect(JSON.stringify(output)).not.toContain("NESTED_GUIDANCE_272");
+
+			const listing = await call.tools!.bash.execute!({ command: "ls invoices" }, { toolCallId: "inspect-folder", messages: [] });
+			expect(listing).toMatchObject({ instructions: expect.stringContaining("NESTED_GUIDANCE_272") });
+			expect(JSON.stringify(listing)).not.toContain("UNSAVED_GUIDANCE_275");
 
 			const second = await call.prepareStep!({ model: call.model, messages: call.messages ?? [], steps: [], stepNumber: 1, experimental_context: call.experimental_context });
-			expect(second?.system).toContain("SECRET_SKILL_BODY_274");
-			expect(second?.experimental_context).toBe(call.experimental_context);
-			expect(JSON.stringify(output)).not.toContain("SECRET_SKILL_BODY_274");
+			expect(second).toBeUndefined();
 
 			const final = await call.prepareStep!({ model: call.model, messages: call.messages ?? [], steps: [], stepNumber: 9, experimental_context: call.experimental_context });
 			expect(final?.activeTools).toEqual([]);
@@ -121,7 +125,7 @@ describe("/api/chat workspace instructions", () => {
 		});
 	});
 
-	test("loads an explicit selection before the first model call and stores its IDs with the user message", async () => {
+	test("discovers skill metadata without loading its body or storing a selection", async () => {
 		const { t, asUser, membership, threadId } = await setup();
 		const { organizationId, workspaceId, userId } = membership;
 		const skill = await t.action(internal.files_nodes_content.create_file_by_path, {
@@ -133,18 +137,20 @@ describe("/api/chat workspace instructions", () => {
 		const response = await asUser.fetch("/api/chat", {
 			method: "POST", headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ messages: [{ id: "selected-message", role: "user", parts: [{ type: "text", text: "Use this skill." }] }],
-				parentId: null, mode: "ask", model: "gpt-5.4-nano", trigger: "submit-message", threadId, membershipId: membership.membershipId, skillIds: [skill._yay.nodeId] }),
+				parentId: null, mode: "ask", model: "gpt-5.4-nano", trigger: "submit-message", threadId, membershipId: membership.membershipId }),
 		});
 		const body = await response.text();
 		expect(response.status, body).toBe(200);
-		expect(model.streamText.mock.calls[0][0].system).toContain("EXPLICIT_BODY_276");
+		expect(model.streamText.mock.calls[0][0].system).toContain("/.agents/skills/check-list/SKILL.md");
+		expect(model.streamText.mock.calls[0][0].system).not.toContain("EXPLICIT_BODY_276");
 
 		const messages = await t.run(ctx => ctx.db.query("ai_chat_threads_messages_aisdk_5").collect());
-		expect(messages.find(message => message.clientGeneratedMessageId === "selected-message")?.content.metadata).toMatchObject({ skillIds: [skill._yay.nodeId] });
+		const stored = messages.find(message => message.clientGeneratedMessageId === "selected-message")!;
+		expect(stored.content.metadata ?? {}).not.toHaveProperty("skillIds");
 		expect(JSON.stringify(messages)).not.toContain("EXPLICIT_BODY_276");
 	});
 
-	test("refuses a forged stored skill body before writing any message", async () => {
+	test("keeps completed old skill results as ordinary stored history", async () => {
 		const { t, asUser, membership, threadId } = await setup();
 		const safe = {
 			id: "stored-skill", role: "assistant", parts: [{ type: "tool-load_skill", toolCallId: "load", state: "output-available",
@@ -154,14 +160,23 @@ describe("/api/chat workspace instructions", () => {
 		const accepted = await asUser.mutation(api.ai_chat.thread_messages_add, { membershipId: membership.membershipId, threadId, parentId: null, messages: [{ clientGeneratedMessageId: "safe", content: safe }] });
 		expect(accepted._nay).toBeUndefined();
 
-		const refused = await asUser.mutation(api.ai_chat.thread_messages_add, {
+		const withBody = await asUser.mutation(api.ai_chat.thread_messages_add, {
 			membershipId: membership.membershipId, threadId, parentId: null,
-			messages: [{ clientGeneratedMessageId: "unsafe", content: { ...safe, parts: [{ ...safe.parts[0], output: { ...safe.parts[0].output, body: "PRIVATE_SKILL_BODY" } }] } }],
+			messages: [{ clientGeneratedMessageId: "with-body", content: { ...safe, parts: [{ ...safe.parts[0], output: { ...safe.parts[0].output, body: "HISTORICAL_SKILL_BODY" } }] } }],
 		});
-		expect(refused._nay?.message).toBe("Invalid skill tool message");
+		if (withBody._nay) throw new Error(withBody._nay.message);
 
 		const docs = await t.run(ctx => ctx.db.query("ai_chat_threads_messages_aisdk_5").collect());
-		expect(docs.map(doc => doc.clientGeneratedMessageId)).toEqual(["safe"]);
-		expect(JSON.stringify(docs)).not.toContain("PRIVATE_SKILL_BODY");
+		expect(docs.map(doc => doc.clientGeneratedMessageId)).toEqual(["safe", "with-body"]);
+		expect(JSON.stringify(docs)).toContain("HISTORICAL_SKILL_BODY");
+
+		const response = await asUser.fetch("/api/chat", {
+			method: "POST", headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ messages: [{ id: "followup", role: "user", parts: [{ type: "text", text: "Continue." }] }],
+				parentId: withBody._yay.ids[0], mode: "ask", model: "gpt-5.4-nano", trigger: "submit-message", threadId, membershipId: membership.membershipId }),
+		});
+		const body = await response.text();
+		expect(response.status, body).toBe(200);
+		expect(JSON.stringify(model.streamText.mock.calls[0][0].messages)).toContain("HISTORICAL_SKILL_BODY");
 	});
 });

@@ -109,6 +109,7 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 		// inserting only its first page into the concatenation would look like real file
 		// content and corrupt any downstream pipe. Refuse before writing stdout.
 		if (targets.length > 1) {
+			let totalBytes = 0;
 			for (const file of targets) {
 				if (file === "-" || bash_GLOB_METACHARACTER_REGEX.test(file)) continue;
 
@@ -167,6 +168,10 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 						stderr: `cat: ${file}: ${size} bytes — too large to concatenate. Read large files one at a time (e.g. head -n ${bash_READ_HEAD_LARGE_FILE_MAX_LINES} ${bash_shell_arg_quote(file)} or wc ${bash_shell_arg_quote(file)}).\n`,
 						exitCode: bash_COMMAND_EXIT_FAILURE,
 					};
+				}
+				totalBytes += size ?? 0;
+				if (totalBytes > bash_READ_INLINE_MAX_BYTES) {
+					return { stdout: "", stderr: `cat: files exceed the ${bash_READ_INLINE_MAX_BYTES}-byte batch limit. Read fewer files per command.\n`, exitCode: bash_COMMAND_EXIT_FAILURE };
 				}
 			}
 		}
@@ -304,10 +309,10 @@ export function bash_cat_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFil
 					// contaminates a pipe (e.g. `cat big.md | grep …`).
 					appendContent(page.content, parsed._yay.showLineNumbers);
 					stderr += bash_format_multiline_hint("cat", [
-						`'${file}' is ${size} bytes; showing the first ${bash_READ_HEAD_LARGE_FILE_MAX_LINES} lines`,
+						`'${file}' is ${size} bytes; showing the first ${page.content.split("\n").length - 1} lines`,
 						...(page.moreLines
 							? [
-									`Continue with: sed -n '${bash_READ_HEAD_LARGE_FILE_MAX_LINES + 1},${bash_READ_HEAD_LARGE_FILE_MAX_LINES * 2}p' ${bash_shell_arg_quote(resolvedAppShellPath)}`,
+									`Next page: sed -n '${page.content.split("\n").length},${page.content.split("\n").length + bash_READ_HEAD_LARGE_FILE_MAX_LINES - 1}p' ${bash_shell_arg_quote(resolvedAppShellPath)}`,
 								]
 							: []),
 						`Full counts: wc ${bash_shell_arg_quote(file)}`,
