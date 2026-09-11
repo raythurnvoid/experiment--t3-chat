@@ -77,6 +77,7 @@
 		"@tanstack/react-hotkeys": "0.4.2",
 		"@tanstack/react-router": "^1.170.18",
 		"@tanstack/react-router-devtools": "^1.167.0",
+		"@tanstack/react-virtual": "3.13.18",
 		"@tanstack/zod-adapter": "^1.167.0",
 		"@tiptap/core": "workspace:*",
 		"@tiptap/extension-collaboration": "workspace:*",

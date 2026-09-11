@@ -5,7 +5,7 @@
 // `shared/files-yjs.ts`.
 
 import { StarterKit } from "@tiptap/starter-kit";
-import { Markdown } from "@tiptap/markdown";
+import { Markdown, MarkdownManager, type MarkdownExtensionOptions } from "@tiptap/markdown";
 import { TaskList } from "@tiptap/extension-task-list";
 import { TaskItem } from "@tiptap/extension-task-item";
 import { TextAlign } from "@tiptap/extension-text-align";
@@ -15,7 +15,7 @@ import { Underline } from "@tiptap/extension-underline";
 import { Highlight } from "@tiptap/extension-highlight";
 import { HorizontalRule } from "@tiptap/extension-horizontal-rule";
 import { Table, TableRow, TableHeader, TableCell } from "@tiptap/extension-table";
-import { marked } from "marked";
+import { marked, Marked } from "marked";
 import type { Doc as YDoc } from "yjs";
 import { Editor, Extension, Node, type Extensions } from "@tiptap/core";
 import type { JSONContent as TiptapJSONContent, MarkdownRendererHelpers, RenderContext } from "@tiptap/core";
@@ -50,150 +50,166 @@ const VIDEO_BLOCK_REGEX = /^(<video\b[^>]*>(?:\s*<\/video>)?)[ \t]*(?:\n|$)/;
 const MARKDOWN_URL_NEEDS_ANGLE_BRACKETS_REGEX = /[\s()]/;
 
 /**
- * Shared marked instance configured for Markdown files.
- *
- * Configured with GitHub Flavored Markdown enabled and breaks disabled.
+ * Configure Markdown parsing for files and editor instances.
  */
+function configure_marked(instance: Marked | typeof marked) {
+	instance.setOptions({
+		gfm: true,
+		breaks: false,
+	});
+
+	// Tiptap registers a custom `taskList` tokenizer on the same marked instance
+	// in `packages/app/vendor/tiptap/packages/extension-list/src/task-list/task-list.ts` (line 76).
+	// Add a renderer for it so `marked.parse()` can emit HTML for task lists.
+	instance.use({
+		extensions: [
+			{
+				// YAML-style frontmatter. Recognized only at the start of the root
+				// document token stream so nested list/blockquote content keeps its
+				// normal Markdown meaning. The emitted HTML round-trips through
+				// `files_frontmatter_node.parseHTML` -> Tiptap JSON -> `renderMarkdown`.
+				name: "frontmatter",
+				level: "block",
+				start(src) {
+					return src.startsWith("---\n") ? 0 : -1;
+				},
+				tokenizer(this: { lexer: { tokens: unknown } }, src, tokens) {
+					if (tokens !== this.lexer.tokens) return undefined;
+					if (tokens && tokens.length > 0) return undefined;
+					if (!src.startsWith("---\n")) return undefined;
+					const match = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(src);
+					if (!match) return undefined;
+					return {
+						type: "frontmatter",
+						raw: match[0],
+						text: match[1],
+					};
+				},
+				renderer(token) {
+					const text = (token as { text?: string }).text ?? "";
+					const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+					return `<pre data-frontmatter>${escaped}</pre>`;
+				},
+			},
+			{
+				// `<video>` embeds. Marked keeps a raw HTML tag at the top level only when its tag
+				// name is in the CommonMark block list, and `video` is not in it. Without this
+				// tokenizer the tag comes back wrapped in `<p>`, and parsing the block video node
+				// out of that wrapper splits the paragraph and leaves an empty one behind. The
+				// document would then grow a blank line on every markdown round-trip.
+				name: "videoBlock",
+				level: "block",
+				start(src) {
+					return src.match(VIDEO_BLOCK_START_REGEX)?.index ?? -1;
+				},
+				tokenizer(src) {
+					const match = VIDEO_BLOCK_REGEX.exec(src);
+					if (!match) return undefined;
+					return {
+						type: "videoBlock",
+						raw: match[0],
+						text: match[1],
+					};
+				},
+				renderer(token) {
+					return (token as { text?: string }).text ?? "";
+				},
+			},
+			{
+				name: "taskList",
+				renderer(token) {
+					const taskListToken = token as {
+						items?: Array<{
+							checked?: boolean;
+							text?: string;
+							tokens?: unknown[];
+							nestedTokens?: unknown[];
+						}>;
+					};
+					const itemsHtml = (taskListToken.items ?? [])
+						.map((itemToken) => {
+							const itemTextHtml =
+								itemToken.tokens && itemToken.tokens.length > 0
+									? this.parser.parseInline(itemToken.tokens as Parameters<typeof this.parser.parseInline>[0])
+									: (itemToken.text ?? "");
+							const nestedHtml =
+								itemToken.nestedTokens && itemToken.nestedTokens.length > 0
+									? this.parser.parse(itemToken.nestedTokens as Parameters<typeof this.parser.parse>[0])
+									: "";
+							return `<li data-type="taskItem" data-checked="${
+								itemToken.checked ? "true" : "false"
+							}"><p>${itemTextHtml}</p>${nestedHtml}</li>`;
+						})
+						.join("");
+					return `<ul data-type="taskList">${itemsHtml}</ul>`;
+				},
+			},
+			// Tiptap's inline tokens also need HTML renderers for standalone parsing and search.
+			{
+				name: "underline",
+				renderer(token) {
+					return `<u>${this.parser.parseInline(token.tokens as Parameters<typeof this.parser.parseInline>[0])}</u>`;
+				},
+			},
+			{
+				name: "highlight",
+				renderer(token) {
+					return `<mark>${this.parser.parseInline(token.tokens as Parameters<typeof this.parser.parseInline>[0])}</mark>`;
+				},
+			},
+		],
+		renderer: {
+			heading(token) {
+				const headingToken = token as {
+					raw?: string;
+					depth?: number;
+					text?: string;
+					tokens?: unknown[];
+				};
+				const raw = headingToken.raw ?? "";
+				const trailingSpaces = raw.match(TRAILING_SPACES_OR_TABS_REGEX)?.[0];
+
+				if (!trailingSpaces) {
+					return false;
+				}
+
+				const depth = headingToken.depth ?? 1;
+				const bodyHtml =
+					headingToken.tokens && headingToken.tokens.length > 0
+						? this.parser.parseInline(headingToken.tokens as Parameters<typeof this.parser.parseInline>[0])
+						: (headingToken.text ?? "");
+
+				return `<h${depth}>${bodyHtml}${trailingSpaces}</h${depth}>`;
+			},
+
+			// Handle trailing `\\\n` in paragraphs that are not converted to `<br>` by default
+			paragraph(token) {
+				const paragraphToken = token as {
+					raw?: string;
+				};
+				const raw = paragraphToken.raw ?? "";
+				const trailingHardBreaks = raw.match(TRAILING_HARD_BREAKS_REGEX)?.[0];
+
+				if (!trailingHardBreaks) {
+					return false;
+				}
+
+				const hardBreakCount = (trailingHardBreaks.match(HARD_BREAK_REGEX) ?? []).length;
+				const bodyRaw = raw.slice(0, raw.length - trailingHardBreaks.length);
+				const bodyHtml = instance.parseInline(bodyRaw, { async: false });
+
+				return `<p>${bodyHtml}${"<br>".repeat(hardBreakCount)}</p>`;
+			},
+		},
+	});
+}
+
 const files_marked = ((/* iife */) => {
 	function value() {
 		const instance = marked;
-		instance.setOptions({
-			gfm: true,
-			breaks: false,
-		});
-
-		// Tiptap registers a custom `taskList` tokenizer on the same marked instance
-		// in `packages/app/vendor/tiptap/packages/extension-list/src/task-list/task-list.ts` (line 76).
-		// Add a renderer for it so `marked.parse()` can emit HTML for task lists.
-		instance.use({
-			extensions: [
-				{
-					// YAML-style frontmatter. Recognized only at the start of the root
-					// document token stream so nested list/blockquote content keeps its
-					// normal Markdown meaning. The emitted HTML round-trips through
-					// `files_frontmatter_node.parseHTML` -> Tiptap JSON -> `renderMarkdown`.
-					name: "frontmatter",
-					level: "block",
-					start(src) {
-						return src.startsWith("---\n") ? 0 : -1;
-					},
-					tokenizer(this: { lexer: { tokens: unknown } }, src, tokens) {
-						if (tokens !== this.lexer.tokens) return undefined;
-						if (tokens && tokens.length > 0) return undefined;
-						if (!src.startsWith("---\n")) return undefined;
-						const match = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(src);
-						if (!match) return undefined;
-						return {
-							type: "frontmatter",
-							raw: match[0],
-							text: match[1],
-						};
-					},
-					renderer(token) {
-						const text = (token as { text?: string }).text ?? "";
-						const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-						return `<pre data-frontmatter>${escaped}</pre>`;
-					},
-				},
-				{
-					// `<video>` embeds. Marked keeps a raw HTML tag at the top level only when its tag
-					// name is in the CommonMark block list, and `video` is not in it. Without this
-					// tokenizer the tag comes back wrapped in `<p>`, and parsing the block video node
-					// out of that wrapper splits the paragraph and leaves an empty one behind. The
-					// document would then grow a blank line on every markdown round-trip.
-					name: "videoBlock",
-					level: "block",
-					start(src) {
-						return src.match(VIDEO_BLOCK_START_REGEX)?.index ?? -1;
-					},
-					tokenizer(src) {
-						const match = VIDEO_BLOCK_REGEX.exec(src);
-						if (!match) return undefined;
-						return {
-							type: "videoBlock",
-							raw: match[0],
-							text: match[1],
-						};
-					},
-					renderer(token) {
-						return (token as { text?: string }).text ?? "";
-					},
-				},
-				{
-					name: "taskList",
-					renderer(token) {
-						const taskListToken = token as {
-							items?: Array<{
-								checked?: boolean;
-								text?: string;
-								tokens?: unknown[];
-								nestedTokens?: unknown[];
-							}>;
-						};
-						const itemsHtml = (taskListToken.items ?? [])
-							.map((itemToken) => {
-								const itemTextHtml =
-									itemToken.tokens && itemToken.tokens.length > 0
-										? this.parser.parseInline(itemToken.tokens as Parameters<typeof this.parser.parseInline>[0])
-										: (itemToken.text ?? "");
-								const nestedHtml =
-									itemToken.nestedTokens && itemToken.nestedTokens.length > 0
-										? this.parser.parse(itemToken.nestedTokens as Parameters<typeof this.parser.parse>[0])
-										: "";
-								return `<li data-type="taskItem" data-checked="${
-									itemToken.checked ? "true" : "false"
-								}"><p>${itemTextHtml}</p>${nestedHtml}</li>`;
-							})
-							.join("");
-						return `<ul data-type="taskList">${itemsHtml}</ul>`;
-					},
-				},
-			],
-			renderer: {
-				heading(token) {
-					const headingToken = token as {
-						raw?: string;
-						depth?: number;
-						text?: string;
-						tokens?: unknown[];
-					};
-					const raw = headingToken.raw ?? "";
-					const trailingSpaces = raw.match(TRAILING_SPACES_OR_TABS_REGEX)?.[0];
-
-					if (!trailingSpaces) {
-						return false;
-					}
-
-					const depth = headingToken.depth ?? 1;
-					const bodyHtml =
-						headingToken.tokens && headingToken.tokens.length > 0
-							? this.parser.parseInline(headingToken.tokens as Parameters<typeof this.parser.parseInline>[0])
-							: (headingToken.text ?? "");
-
-					return `<h${depth}>${bodyHtml}${trailingSpaces}</h${depth}>`;
-				},
-
-				// Handle trailing `\\\n` in paragraphs that are not converted to `<br>` by default
-				paragraph(token) {
-					const paragraphToken = token as {
-						raw?: string;
-					};
-					const raw = paragraphToken.raw ?? "";
-					const trailingHardBreaks = raw.match(TRAILING_HARD_BREAKS_REGEX)?.[0];
-
-					if (!trailingHardBreaks) {
-						return false;
-					}
-
-					const hardBreakCount = (trailingHardBreaks.match(HARD_BREAK_REGEX) ?? []).length;
-					const bodyRaw = raw.slice(0, raw.length - trailingHardBreaks.length);
-					const bodyHtml = instance.parseInline(bodyRaw, { async: false });
-
-					return `<p>${bodyHtml}${"<br>".repeat(hardBreakCount)}</p>`;
-				},
-			},
-		});
-
+		configure_marked(instance);
+		// Standalone HTML parsing needs the same task and inline tokenizers as an editor.
+		new MarkdownManager({ marked: instance, extensions: get_tiptap_shared_extensions_list() });
 		return instance;
 	}
 
@@ -873,7 +889,16 @@ export const files_get_tiptap_shared_extensions = ((/* iife */) => {
 			}),
 			textAlign: TextAlign,
 			typography: Typography,
-			markdown: Markdown.configure({ marked: files_marked() }),
+			markdown: Markdown.extend<Omit<MarkdownExtensionOptions, "marked"> & { marked?: Marked }>({
+				onBeforeCreate(event) {
+					// Tiptap adds tokenizers during editor creation. Sharing Marked grows those lists
+					// for every search chunk and editor, even after the editor is destroyed.
+					const instance = new Marked();
+					configure_marked(instance);
+					this.options.marked = instance;
+					this.parent?.(event);
+				},
+			}),
 			highlight: Highlight.extend({
 				renderMarkdown: (node: TiptapJSONContent, helpers: MarkdownRendererHelpers, ctx: RenderContext) => {
 					const color = node.attrs?.color;

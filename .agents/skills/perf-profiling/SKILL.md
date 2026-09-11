@@ -54,3 +54,20 @@ Ready-to-use scripts live in `scripts/` next to this file:
 2. CPU profile via CDP: create a dated personal AI folder first and assign an absolute `.cpuprofile` path there to `state.perfProfilePath`. The CPU template first cleans up an earlier latency rig, then creates and detaches its own CDP session. It runs `Profiler.enable` → `setSamplingInterval {interval:100}` → `Profiler.start` → the interaction → `Profiler.stop`. The template serializes the profile through a browser download and saves it with `download.saveAs(...)`, which avoids sandboxed filesystem limits. Analyze self time from `nodes` + `samples` + `timeDeltas`. To attribute a native getter such as `get scrollX`, build a reverse parent map from every node's `children`, then walk parent ids from the hot node to its calling frames.
 3. Attribute before optimizing: remove extension and dev-build overhead, then optimize only app frames that remain hot.
 4. Use a dedicated fresh tab for measurements and close it after — never instrument the user's tab (they may navigate and wipe the rig mid-run).
+
+## Compare A Production Build Without Replacing The Dev Server
+
+Use an owned Playwriter tab with page-specific request routes when other work still needs the dev server.
+
+1. Build with `vp env exec pnpm --dir packages/app exec vite build --outDir <absolute-task-scratch-directory>`. Check the destination first and use a new directory for each build.
+2. Keep the same app origin and backend. In that one tab, serve the compiled `index.html` for the app's main document and exact built files for their asset URLs. Let API, plugin, and other requests use the normal server. A missing compiled asset must fail the check instead of falling back to a different build.
+3. Install the DevTools hook stub before that tab's first navigation. Record the built index hash, served asset paths, and route errors. Compare the page's script URLs against that exact build. Confirm that no Vite client, React refresh script, or source entry loaded. A healthy server or matching source file on disk does not prove the page runs the new build.
+4. Wait for the real data to load before timing an interaction. Measure the click and render inside the page. Keep initial data loading separate from rendering time.
+5. Await cleanup of the page's request routes before closing the owned tab. Restore harness page references to the owned dev tab. Do not change browser-wide routes or leave instrumentation on the user's tab.
+
+Native QA scripts that import `/src/lib/app-convex-client.ts` should keep using a separate normal dev tab.
+
+For a large Files workspace, record document load, first complete tree, and expansion as separate
+times. `FilesTreeProvider` waits for all pages before showing the first tree. Use an in-page observer
+for the ready state, record whether an import is still writing, and keep timed-out samples as limits.
+Do not report a CLI timeout as render time or use a late observer to claim when an earlier state began.

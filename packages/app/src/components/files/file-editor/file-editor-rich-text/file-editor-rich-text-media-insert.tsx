@@ -8,7 +8,6 @@ import "./file-editor-rich-text-media-insert.css";
 import { memo, useState } from "react";
 import { Extension } from "@tiptap/core";
 import type { Editor } from "@tiptap/react";
-import { useQuery } from "convex/react";
 import {
 	MySearchSelect,
 	MySearchSelectItem,
@@ -19,8 +18,7 @@ import {
 	MySearchSelectSearch,
 	type MySearchSelect_Props,
 } from "@/components/my-search-select.tsx";
-import { app_convex_api } from "@/lib/app-convex-client.ts";
-import type { app_convex_Id } from "@/lib/app-convex-client.ts";
+import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
 import { files_media_build_file_src } from "@/lib/files-media-src.ts";
 import { cn } from "@/lib/utils.ts";
 import { useFn } from "@/hooks/utils-hooks.ts";
@@ -88,26 +86,23 @@ export type FileEditorRichTextMediaEmbedPicker_ClassNames =
 
 type FileEditorRichTextMediaEmbedPicker_Props = {
 	editor: Editor;
-	membershipId: app_convex_Id<"organizations_workspaces_users">;
 	/** The caret rectangle the popover anchors to, captured when the picker was opened. */
 	anchorRect: { x: number; y: number; width: number; height: number };
 	onClose: () => void;
 };
 
 /**
- * A caret-anchored picker listing the workspace's image and video files. Mounted only while
- * open, so the tree subscription lives only as long as the picker (the sidebar already
- * subscribes to the same query with the same args, and Convex dedupes identical
- * subscriptions).
+ * A caret-anchored picker listing the workspace's image and video files.
+ * It reads the same complete tree as the sidebar from the workspace provider.
  */
 export const FileEditorRichTextMediaEmbedPicker = memo(function FileEditorRichTextMediaEmbedPicker(
 	props: FileEditorRichTextMediaEmbedPicker_Props,
 ) {
-	const { editor, membershipId, anchorRect, onClose } = props;
+	const { editor, anchorRect, onClose } = props;
 
 	const [searchText, setSearchText] = useState("");
 
-	const treeNodes = useQuery(app_convex_api.files_nodes.list_tree, { membershipId });
+	const treeNodes = FilesTreeProvider.useContext();
 	const mediaNodes = (treeNodes ?? []).filter(
 		(node) =>
 			node.kind === "file" &&
@@ -166,7 +161,11 @@ export const FileEditorRichTextMediaEmbedPicker = memo(function FileEditorRichTe
 									"FileEditorRichTextMediaEmbedPicker-empty" satisfies FileEditorRichTextMediaEmbedPicker_ClassNames,
 								)}
 							>
-								{mediaNodes.length === 0 ? "No images or videos in this workspace" : "No results"}
+								{treeNodes === undefined
+									? "Loading files…"
+									: mediaNodes.length === 0
+										? "No images or videos in this workspace"
+										: "No results"}
 							</div>
 						) : (
 							<MySearchSelectList>

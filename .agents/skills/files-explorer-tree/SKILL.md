@@ -18,6 +18,7 @@ Primary:
 - `../../../packages/app/convex/plugins_runtime.ts`
 - `../../../packages/app/shared/files.ts`
 - `../../../packages/app/src/lib/files.ts`
+- `../../../packages/app/src/lib/files-tree-context.tsx`
 - `../plugin-system/SKILL.md`
 - `../../../plugins/bonobo-plugin-pdf/README.md`
 - `../../../plugins/bonobo-plugin-image/README.md`
@@ -116,7 +117,21 @@ Tree-item components:
 
 ## Server-Driven Data
 
-- Sidebar queries `files_nodes.list_tree`.
+- `files_nodes.list_tree` returns native Convex pages in `treePath` order, including archived nodes.
+- `FilesTreeProvider`, mounted once inside `AppTenantProvider`, loads 500 nodes per page and shares
+  the tree across the sidebar, folder view, pending changes, search, mentions, and media picker.
+  It subscribes only while at least one tree consumer is mounted, so other workspace screens do not
+  load the tree. Closing the last consumer releases every page subscription.
+  It returns `undefined` until every page arrives. During a live page split it keeps the last complete
+  query result so folder README editors stay mounted. This cache contains only the query result and
+  clears on membership changes, first-page resets, or when the last consumer closes. Only `isDone`
+  ends paging; access checks can leave a page empty. Keep the native split fields so live imports can
+  split growing pages safely.
+- Paging avoids the query read limit, but the first tree view still waits for every page. Virtual
+  rows reduce mounted DOM; they do not reduce that initial data load. Measure initial loading and
+  expansion after loading separately. A fast expansion does not prove a fast first visit.
+- A lock source can be on another page. The query loads those sources by id and checks read access
+  before returning their names or paths.
 - Tree collection maps/sets are derived from query results (`useMemo`) and rebuilt from server data.
 - Loading/empty states are derived from query presence and visible IDs.
 
@@ -153,7 +168,12 @@ Tree-item components:
 - Plain text searches names, paths, and contents. Filter-only queries work too. All chips are ANDed. Invalid chips block results.
 - Names and folders come from the readable tree. Content comes from `files_nodes.search_content`, including the caller's pending text. Duplicate files share one row with a preview.
 - Metadata filters, including negated filters, match active files and folders. Content queries stay file-only.
-- Filtered content queries pass candidate file `nodeIds` to the server. This scope applies before pagination, with tenant and file access checks still enforced. Empty scopes return no results.
+- Filtered content queries send every candidate file `nodeId` in groups of at most 1,000 through
+  `useQueries`, so a broad filter stays below Convex's argument-array limit. Each scope applies
+  before pagination, with tenant and file access checks still enforced. Empty scopes send no
+  content query. The palette waits for every group and shows an error if any group fails. It merges
+  the bounded responses by node id; these groups do not provide exhaustive results or a shared
+  relevance score. Unfiltered text keeps one content query.
 - Suggestions open on entry, with the same Escape, Ctrl+Space, and filter-button behavior as the sidebar. After dismissing suggestions, ArrowDown from the input focuses results. ArrowUp from the first result returns to the input. Enter opens a result. Escape closes suggestions first, then the modal.
 - “Use filters in sidebar” transfers chips into route `q` and opens the tree. Plain content text stays in global search because the sidebar matches names and paths.
 - The result list scrolls separately from the input. Chips are capped at the smaller of 96px and 20% of viewport height. On short screens, the sidebar action replaces the keyboard hint. The list shows up to 50 combined rows and asks for narrower filters when more name matches exist. Content matches retain the bounded server search.
@@ -199,7 +219,8 @@ Tree-item components:
 - Upload path conflicts open the conflict modal; file conflicts support replace or renamed upload, while folder conflicts block replacement. The draft carries its `rootKind` (rich, plain, or null for a stored upload) for the modal's copy; its stored type was decided when the file was picked, so the rename field accepts any valid name and only refuses a stored upload without an extension.
 - File name normalization uses conventional `README`, `AGENTS`, and `SKILL` basenames. A new bare `readme` becomes `README.md` in create, rename, upload, and import. Other rename and upload names keep the typed extension. The `.agents` folder keeps its leading dot and appears like any folder. Existing stored names are not migrated, and file lookup stays exact.
 - File rename selects the basename by default so `.md` is not included in the initial edit selection.
-- Rename uses `files_nodes.rename_node` with Convex `optimisticUpdate` for immediate title feedback.
+- Rename uses `files_nodes.rename_node` with Convex `optimisticUpdate` and
+  `optimisticallyUpdateValueInPaginatedQuery` for immediate title feedback across cached pages.
 - The selected file/folder path auto-expands in the sidebar after route changes and path-based create/rename moves so the focused row stays visible.
 - Archive/unarchive uses `files_nodes.archive_nodes` / `files_nodes.unarchive_nodes`.
 - The row menu's Restore gate mirrors the backend restore plan (`can_unarchive_item`): a node whose parent is missing or still archived restores to root, so Restore also needs workspace write at root plus scope manage when the node would leave its restricted scope. A node that carries its own restriction only needs its own write answer. An in-place restore only needs the node's write answer.
@@ -293,6 +314,36 @@ Tree-item components:
 - guarded `canDrop`
 - guarded `canDragForeignDragObjectOver` / `canDropForeignDragObject` for external file drops
 
+Row guide lines use `ItemMeta.posInSet` (zero-based) and `setSize` to find the last sibling.
+Do not call `parent.getChildren()` for this check in each row: it loads every sibling again per row.
+
+## Virtual Rows
+
+- Headless Tree keeps the full visible item list and uses `buildProxiedInstance`. TanStack Virtual
+  mounts only the viewport rows, five extra rows on each side, and active rows that must keep their DOM.
+- The existing `FilesSidebar-content` is the scroll element. `scrollToItem` uses the virtualizer so
+  keyboard navigation can reach rows that have not mounted yet. Opening a different node scrolls to
+  its row after its ancestors expand; query updates and manual scrolling do not repeat that scroll.
+- A normal row is 45 px. An expanded empty folder owns its extra 45 px placeholder in the same
+  virtual row. Search hides placeholders. Keep the row keys tied to the row model so changed
+  placeholders refresh heights even when they are offscreen. The tree has 2 px padding at each end.
+- Keep the focused row (or first tab stop), rename row, open menu source, actual drag source, and
+  Properties/Share source mounted. Do not pin every selected row. Dialog close restores the source's
+  tree focus before clearing its pin so focus can return to the same DOM element.
+- Focusing any row control also sets Headless Tree focus to that row. This keeps the More and folder
+  arrow buttons mounted while they hold focus, including menu focus return after scrolling.
+- Live node updates keep the current keyboard focus when its row is still visible. A changed route
+  focuses its node; a removed or filtered row falls back to the visible route node or first row.
+  Never focus the synthetic root: it has no rendered row and its Headless Tree index is -1.
+- Query updates still reset Ctrl/Shift selection to the route row, but keep the keyboard target.
+  Outside clicks and drag cleanup keep their normal focus reset.
+- If a create action changes the route before its node reaches the tree query, keep valid keyboard
+  focus while waiting and focus the new node when it arrives. Search filters do not make a known node new.
+- Keep Headless Tree's ref and ARIA props on the inner `treeitem`. The absolute outer row has
+  `role="presentation"`. Drop-zone height and target checks still use the full visible row list.
+- `FilesSidebarTree` uses `use no memo` because the virtualizer returns a mutable instance. Its row
+  components keep their normal memoization. Do not add per-row measurement: heights are fixed.
+
 # Architectural Invariants
 
 1. Keep placeholder behavior client-only and non-mutable.
@@ -321,6 +372,9 @@ Tree-item components:
 - An unknown, archived, or wrong-case path URL shows the not-found panel with a working "Search for this path" link.
 - Copy path yields the plain path; Copy link yields an absolute `?nodeId=` URL that reopens the same node; Copy node id yields the bare id. All three still work after the node is renamed or moved.
 - Selection modes and anchor behavior are correct.
+- A tree with thousands of visible rows mounts only the viewport plus active rows. Home/End and
+  arrow keys scroll and focus correctly. Scrolling keeps an active rename, menu, drag, or dialog
+  source mounted. Search toggles and folder changes leave no blank gaps or stale placeholder height.
 - Root create can create a file and a folder.
 - Root create, upload, folder import, and multi-selection archive controls stay disabled unless every selected node or destination is writable. Archiving a selection that sweeps an unwritable restricted descendant is refused by the backend with a toast.
 - Folder create can create child files/folders.

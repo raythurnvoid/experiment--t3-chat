@@ -2,7 +2,7 @@ import "./files-search-palette.css";
 
 import * as Ariakit from "@ariakit/react";
 import { useNavigate } from "@tanstack/react-router";
-import { useQueries, useQuery } from "convex/react";
+import { useQueries } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { FileText, Folder, Search } from "lucide-react";
 import { memo, useMemo, useRef, useState } from "react";
@@ -16,6 +16,7 @@ import { useFilesSearchMetadata } from "@/hooks/files-search-hooks.ts";
 import { useDebounce, useFn } from "@/hooks/utils-hooks.ts";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { files_ROOT_ID, files_create_tree_items_list_from_nodes, files_is_node } from "@/lib/files.ts";
 import { parse_search_query, search_filter_matches_item } from "@/lib/files-search.ts";
@@ -39,6 +40,7 @@ type FilesSearchPalette_ClassNames =
 
 const SNIPPET_RADIUS = 60;
 const RESULTS_LIMIT = 50;
+const CONTENT_NODE_IDS_LIMIT = 1000;
 
 function files_search_palette_snippet(textChunk: string, query: string) {
 	const flatText = textChunk.replace(/\s+/gu, " ").trim();
@@ -58,7 +60,7 @@ const FilesSearchPaletteContent = memo(function FilesSearchPaletteContent(props:
 	const inputRef = useRef<HTMLInputElement>(null);
 	const firstResultRef = useRef<HTMLButtonElement>(null);
 	const resultsRef = useRef<HTMLDivElement>(null);
-	const treeNodes = useQuery(app_convex_api.files_nodes.list_tree, { membershipId });
+	const treeNodes = FilesTreeProvider.useContext();
 	const treeItems = useMemo(
 		() => (treeNodes ? files_create_tree_items_list_from_nodes(treeNodes) : undefined),
 		[treeNodes],
@@ -107,29 +109,39 @@ const FilesSearchPaletteContent = memo(function FilesSearchPaletteContent(props:
 		!isMetadataFailed &&
 		treeItems !== undefined;
 	// Convex useQueries needs a stable object to avoid resubscribing during render.
-	const contentQueries = useMemo(
-		() => ({
-			...(canSearchContent
-				? {
-						content: {
-							query: app_convex_api.files_nodes.search_content,
-							args: { membershipId, query: text, ...(contentNodeIds === undefined ? {} : { nodeIds: contentNodeIds }) },
-						},
-					}
-				: {}),
-		}),
-		[canSearchContent, membershipId, text, contentNodeIds],
-	);
-	const contentResponse: FunctionReturnType<typeof app_convex_api.files_nodes.search_content> | Error | undefined =
-		useQueries(contentQueries).content;
-	const isFailed = isMetadataFailed || contentResponse instanceof Error;
+	const contentQueries = useMemo(() => {
+		if (!canSearchContent) return {};
+		// Broad filters can match more ids than one Convex argument array allows.
+		const nodeIdGroups =
+			contentNodeIds === undefined
+				? [undefined]
+				: Array.from({ length: Math.ceil(contentNodeIds.length / CONTENT_NODE_IDS_LIMIT) }, (_, index) =>
+						contentNodeIds.slice(index * CONTENT_NODE_IDS_LIMIT, (index + 1) * CONTENT_NODE_IDS_LIMIT),
+					);
+		return Object.fromEntries(
+			nodeIdGroups.map((nodeIds, index) => [
+				index,
+				{
+					query: app_convex_api.files_nodes.search_content,
+					args: { membershipId, query: text, ...(nodeIds === undefined ? {} : { nodeIds }) },
+				},
+			]),
+		);
+	}, [canSearchContent, membershipId, text, contentNodeIds]);
+	const contentResponses: Array<
+		FunctionReturnType<typeof app_convex_api.files_nodes.search_content> | Error | undefined
+	> = Object.values(useQueries(contentQueries));
+	const isFailed = isMetadataFailed || contentResponses.some((response) => response instanceof Error);
 	const isLoading =
 		isActive &&
+		!isFailed &&
 		(searchQuery !== debouncedQuery ||
 			treeItems === undefined ||
 			isMetadataLoading ||
-			(canSearchContent && contentResponse === undefined));
-	const contentResults = contentResponse instanceof Error ? [] : (contentResponse?.results ?? []);
+			(canSearchContent && contentResponses.some((response) => response === undefined)));
+	const contentResults = contentResponses.flatMap((response) =>
+		response instanceof Error ? [] : (response?.results ?? []),
+	);
 	const resultsById = new Map<
 		app_convex_Id<"files_nodes">,
 		{

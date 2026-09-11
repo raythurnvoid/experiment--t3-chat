@@ -1024,8 +1024,11 @@ describe("enforcement", () => {
 		});
 		expect(demoted._nay).toBeUndefined();
 
-		const [tree, created, renamed, archived, node] = await Promise.all([
-			asViewer.query(api.files_nodes.list_tree, { membershipId: viewerMembershipId }),
+		const [{ page: tree }, created, renamed, archived, node] = await Promise.all([
+			asViewer.query(api.files_nodes.list_tree, {
+				membershipId: viewerMembershipId,
+				paginationOpts: { numItems: 500, cursor: null },
+			}),
 			asViewer.mutation(api.files_nodes.create_folder_node, {
 				membershipId: viewerMembershipId,
 				parentId: files_ROOT_ID,
@@ -1104,8 +1107,11 @@ describe("enforcement", () => {
 		expect(assigned._nay).toBeUndefined();
 
 		const asMember = access_control_test_identity(t, memberId);
-		const [tree, node] = await Promise.all([
-			asMember.query(api.files_nodes.list_tree, { membershipId: memberMembershipId }),
+		const [{ page: tree }, node] = await Promise.all([
+			asMember.query(api.files_nodes.list_tree, {
+				membershipId: memberMembershipId,
+				paginationOpts: { numItems: 500, cursor: null },
+			}),
 			asMember.query(api.files_nodes.get_file_node_for_membership, {
 				membershipId: memberMembershipId,
 				fileNodeId: String(folder._yay!.nodeId),
@@ -1130,8 +1136,11 @@ describe("enforcement", () => {
 		});
 		expect(folder._nay).toBeUndefined();
 
-		const [tree, thread, comment] = await Promise.all([
-			fixture.asMember.query(api.files_nodes.list_tree, { membershipId: fixture.memberMembershipId }),
+		const [{ page: tree }, thread, comment] = await Promise.all([
+			fixture.asMember.query(api.files_nodes.list_tree, {
+				membershipId: fixture.memberMembershipId,
+				paginationOpts: { numItems: 500, cursor: null },
+			}),
 			fixture.asMember.mutation(api.ai_chat.thread_create, {
 				membershipId: fixture.memberMembershipId,
 				clientGeneratedId: "thread-member-work",
@@ -4726,8 +4735,11 @@ describe("file sharing", () => {
 		});
 		const { folderId, childId } = await seed_restricted_folder(t, fixture, { name: "private" });
 
-		const [memberTree, memberFolder, memberChild, ownerTree] = await Promise.all([
-			fixture.asMember.query(api.files_nodes.list_tree, { membershipId: fixture.memberMembershipId }),
+		const [{ page: memberTree }, memberFolder, memberChild, { page: ownerTree }] = await Promise.all([
+			fixture.asMember.query(api.files_nodes.list_tree, {
+				membershipId: fixture.memberMembershipId,
+				paginationOpts: { numItems: 500, cursor: null },
+			}),
 			fixture.asMember.query(api.files_nodes.get_file_node_for_membership, {
 				membershipId: fixture.memberMembershipId,
 				fileNodeId: String(folderId),
@@ -4738,7 +4750,10 @@ describe("file sharing", () => {
 				membershipId: fixture.memberMembershipId,
 				fileNodeId: String(childId),
 			}),
-			fixture.asOwner.query(api.files_nodes.list_tree, { membershipId: fixture.ownerMembershipId }),
+			fixture.asOwner.query(api.files_nodes.list_tree, {
+				membershipId: fixture.ownerMembershipId,
+				paginationOpts: { numItems: 500, cursor: null },
+			}),
 		]);
 
 		expect(memberTree.some((fileNode) => fileNode._id === folderId)).toBe(false);
@@ -4772,8 +4787,11 @@ describe("file sharing", () => {
 		await access_control_test_demote_to_viewer(fixture);
 		await access_control_test_reset_write_rate_limit(t, fixture.memberId);
 
-		const [tree, renamed, rootWrite, folderWrite] = await Promise.all([
-			fixture.asMember.query(api.files_nodes.list_tree, { membershipId: fixture.memberMembershipId }),
+		const [{ page: tree }, renamed, rootWrite, folderWrite] = await Promise.all([
+			fixture.asMember.query(api.files_nodes.list_tree, {
+				membershipId: fixture.memberMembershipId,
+				paginationOpts: { numItems: 500, cursor: null },
+			}),
 			fixture.asMember.mutation(api.files_nodes.rename_node, {
 				membershipId: fixture.memberMembershipId,
 				nodeId: childId,
@@ -4874,8 +4892,9 @@ describe("file sharing", () => {
 		expect(granted._nay).toBeUndefined();
 
 		// The member does not match the grant yet, so the folder is still hidden from them.
-		const beforeRole = await fixture.asMember.query(api.files_nodes.list_tree, {
+		const { page: beforeRole } = await fixture.asMember.query(api.files_nodes.list_tree, {
 			membershipId: fixture.memberMembershipId,
+			paginationOpts: { numItems: 500, cursor: null },
 		});
 		expect(beforeRole.some((fileNode) => fileNode._id === folderId)).toBe(false);
 
@@ -4883,8 +4902,9 @@ describe("file sharing", () => {
 		// So the folder appears exactly because of the share list, not because of the role's own rights.
 		await access_control_test_demote_to_viewer(fixture);
 
-		const afterRole = await fixture.asMember.query(api.files_nodes.list_tree, {
+		const { page: afterRole } = await fixture.asMember.query(api.files_nodes.list_tree, {
 			membershipId: fixture.memberMembershipId,
+			paginationOpts: { numItems: 500, cursor: null },
 		});
 		expect(afterRole.some((fileNode) => fileNode._id === folderId)).toBe(true);
 	});
@@ -4952,12 +4972,13 @@ describe("file sharing", () => {
 		});
 		expect(assignerAssigned._nay).toBeUndefined();
 
-		const beforeAssign = await access_control_test_identity(t, eveId).query(api.files_nodes.list_tree, {
+		const { page: beforeAssign } = await access_control_test_identity(t, eveId).query(api.files_nodes.list_tree, {
 			membershipId: await access_control_test_read_membership_id(t, {
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.defaultWorkspaceId,
 				userId: eveId,
 			}),
+			paginationOpts: { numItems: 500, cursor: null },
 		});
 		expect(beforeAssign.some((fileNode) => fileNode._id === folderId)).toBe(false);
 
@@ -4977,8 +4998,9 @@ describe("file sharing", () => {
 			workspaceId: fixture.defaultWorkspaceId,
 			userId: eveId,
 		});
-		const afterAssign = await access_control_test_identity(t, eveId).query(api.files_nodes.list_tree, {
+		const { page: afterAssign } = await access_control_test_identity(t, eveId).query(api.files_nodes.list_tree, {
 			membershipId: eveMembershipId,
+			paginationOpts: { numItems: 500, cursor: null },
 		});
 		expect(afterAssign.some((fileNode) => fileNode._id === folderId)).toBe(false);
 
@@ -5006,9 +5028,13 @@ describe("file sharing", () => {
 		});
 		expect(byGrantHolder._nay).toBeUndefined();
 
-		const afterGrantHolderAssign = await access_control_test_identity(t, eveId).query(api.files_nodes.list_tree, {
-			membershipId: eveMembershipId,
-		});
+		const { page: afterGrantHolderAssign } = await access_control_test_identity(t, eveId).query(
+			api.files_nodes.list_tree,
+			{
+				membershipId: eveMembershipId,
+				paginationOpts: { numItems: 500, cursor: null },
+			},
+		);
 		expect(afterGrantHolderAssign.some((fileNode) => fileNode._id === folderId)).toBe(true);
 	});
 
@@ -6022,8 +6048,9 @@ describe("file sharing", () => {
 		});
 		expect(shared._nay).toBeUndefined();
 
-		const before = await fixture.asMember.query(api.files_nodes.list_tree, {
+		const { page: before } = await fixture.asMember.query(api.files_nodes.list_tree, {
 			membershipId: memberSideMembershipId,
+			paginationOpts: { numItems: 500, cursor: null },
 		});
 		expect(before.some((fileNode) => fileNode._id === folder._yay!.nodeId)).toBe(false);
 
@@ -6037,8 +6064,9 @@ describe("file sharing", () => {
 		expect(assigned._nay).toBeUndefined();
 
 		// The assignment really did open the folder, which is why refusing it as "adds nothing" was wrong.
-		const after = await fixture.asMember.query(api.files_nodes.list_tree, {
+		const { page: after } = await fixture.asMember.query(api.files_nodes.list_tree, {
 			membershipId: memberSideMembershipId,
+			paginationOpts: { numItems: 500, cursor: null },
 		});
 		expect(after.some((fileNode) => fileNode._id === folder._yay!.nodeId)).toBe(true);
 
@@ -6738,8 +6766,11 @@ describe("file sharing", () => {
 
 		const { folderId } = await seed_restricted_folder(t, fixture, { name: "owner-only" });
 
-		const [tree, shareState, unrestricted] = await Promise.all([
-			fixture.asMember.query(api.files_nodes.list_tree, { membershipId: fixture.memberMembershipId }),
+		const [{ page: tree }, shareState, unrestricted] = await Promise.all([
+			fixture.asMember.query(api.files_nodes.list_tree, {
+				membershipId: fixture.memberMembershipId,
+				paginationOpts: { numItems: 500, cursor: null },
+			}),
 			fixture.asMember.query(api.files_sharing.get_node_share_state, {
 				membershipId: fixture.memberMembershipId,
 				nodeId: folderId,
@@ -7022,8 +7053,11 @@ describe("file sharing", () => {
 		});
 		expect(unrestricted._nay).toBeUndefined();
 
-		const [tree, state, grantCount] = await Promise.all([
-			fixture.asMember.query(api.files_nodes.list_tree, { membershipId: fixture.memberMembershipId }),
+		const [{ page: tree }, state, grantCount] = await Promise.all([
+			fixture.asMember.query(api.files_nodes.list_tree, {
+				membershipId: fixture.memberMembershipId,
+				paginationOpts: { numItems: 500, cursor: null },
+			}),
 			fixture.asOwner.query(api.files_sharing.get_node_share_state, {
 				membershipId: fixture.ownerMembershipId,
 				nodeId: childId,
@@ -8591,8 +8625,9 @@ describe("file sharing", () => {
 		});
 		expect(assigned._nay).toBeUndefined();
 
-		const tree = await fixture.asMember.query(api.files_nodes.list_tree, {
+		const { page: tree } = await fixture.asMember.query(api.files_nodes.list_tree, {
 			membershipId: fixture.memberMembershipId,
+			paginationOpts: { numItems: 500, cursor: null },
 		});
 		const treeIds = tree.map((fileNode) => fileNode._id);
 		expect(treeIds).toContain(folderId);

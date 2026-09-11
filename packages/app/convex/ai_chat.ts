@@ -154,6 +154,8 @@ function ai_chat_system_prompt(args: {
 		"Use the available tools as the working interface for the organization.",
 		`Bash starts in the current workspace path at \`~/w/${args.organizationName}/${args.workspaceName}\` (\`${currentWorkspacePath}\`). \`~\` is \`${HOME}\`, the app mount is \`${appMountPath}\`, and \`/tmp\` is durable scratch scoped to this chat thread.`,
 		`User messages may reference app files with mentions written as \`@/path/to/file.md\` (any app file works the same, for example \`@/data/config.json\`); a trailing slash like \`@/docs/\` means a folder. Resolve them under the current workspace path (\`@/docs/api.md\` is \`${currentWorkspacePath}/docs/api.md\`) before using Bash or \`edit_file\`.`,
+		`Link app files with Markdown URLs under \`/w/${args.organizationName}/${args.workspaceName}/files/\`, followed by their workspace-relative path with each path segment URL-encoded.`,
+		`For example, Bash path \`${currentWorkspacePath}/docs/Q3 notes.md\` links to \`/w/${args.organizationName}/${args.workspaceName}/files/docs/Q3%20notes.md\`; do not use Bash paths or bare relative paths as link URLs.`,
 		"The Bash tool description is the authority on its command surface, its flags, and how the db-backed app mount differs from `/tmp`. Follow it instead of assuming POSIX/GNU behavior, and never describe an app-mount limitation as a global Bash limitation.",
 		"Run the exact printed `Next page:` command to continue a listing, and when the user asks for one continuation, run only the first one and then stop.",
 		"If a failed Bash command prints a `Try:` command that directly matches the user's request, run that `Try:` command next instead of only reporting the failure.",

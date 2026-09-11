@@ -9,7 +9,7 @@ const {
 	tenantContextMock,
 	useQueryMock,
 	useQueriesMock,
-	useStableQueryMock,
+	treeNodesMock,
 	actionMock,
 	mutationMock,
 	fetchFileYjsStateAndTextMock,
@@ -20,7 +20,7 @@ const {
 	tenantContextMock: vi.fn(),
 	useQueryMock: vi.fn(),
 	useQueriesMock: vi.fn(),
-	useStableQueryMock: vi.fn(),
+	treeNodesMock: vi.fn(),
 	actionMock: vi.fn(),
 	mutationMock: vi.fn(),
 	fetchFileYjsStateAndTextMock: vi.fn(),
@@ -43,10 +43,9 @@ vi.mock("convex/react", () => ({
 	useConvex: () => ({ action: actionMock, mutation: mutationMock }),
 }));
 
-// The real useStableQuery routes through convex/react useQuery; mocking it separately lets tests
-// feed the tree query on its own.
-vi.mock("@/hooks/convex-hooks.ts", () => ({
-	useStableQuery: (...args: unknown[]) => useStableQueryMock(...args),
+// Feed the complete tree separately from the pending-update queries.
+vi.mock("@/lib/files-tree-context.tsx", () => ({
+	FilesTreeProvider: { useContext: () => treeNodesMock() },
 }));
 
 // Spy target: tests assert on toast.error and toast.warning calls.
@@ -311,7 +310,7 @@ beforeEach(() => {
 	useQueryMock.mockReset();
 	useQueriesMock.mockReset();
 	useQueriesMock.mockReturnValue({});
-	useStableQueryMock.mockReset();
+	treeNodesMock.mockReset();
 	vi.mocked(toast.error).mockClear();
 	vi.mocked(toast.warning).mockClear();
 });
@@ -321,9 +320,19 @@ afterEach(() => {
 });
 
 describe("FileEditorSidebarPending", () => {
+	test("waits for the complete tree before listing pending changes", () => {
+		useQueryMock.mockReturnValue([makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "s", unstaged: "u" })]);
+		treeNodesMock.mockReturnValue(undefined);
+
+		render(<FileEditorSidebarPending />);
+
+		expect(screen.getByText("Loading pending changes…")).toBeTruthy();
+		expect(screen.queryByRole("region", { name: "Pending changes" })).toBeNull();
+	});
+
 	test("renders an empty state when there are no pending updates", () => {
 		useQueryMock.mockReturnValue([]);
-		useStableQueryMock.mockReturnValue([]);
+		treeNodesMock.mockReturnValue([]);
 
 		render(<FileEditorSidebarPending />);
 
@@ -335,7 +344,7 @@ describe("FileEditorSidebarPending", () => {
 			makePendingUpdate({ id: "pu_z", fileNodeId: "node_z", staged: "s", unstaged: "u" }),
 			makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "s", unstaged: "u" }),
 		]);
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_z", path: "zebra/notes.md" }),
 			makeNode({ id: "node_a", path: "alpha/intro.md" }),
 		]);
@@ -373,7 +382,7 @@ describe("FileEditorSidebarPending", () => {
 				threadIds: ["thread_b"],
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_user", path: "/user.md" }),
 			makeNode({ id: "node_shared", path: "/shared.md" }),
 			makeNode({ id: "node_a", path: "/a.md" }),
@@ -455,7 +464,7 @@ describe("FileEditorSidebarPending", () => {
 				threadIds: [],
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_loading", path: "/loading.md" }),
 			makeNode({ id: "node_missing", path: "/missing.md" }),
 			makeNode({ id: "node_error", path: "/error.md" }),
@@ -492,7 +501,7 @@ describe("FileEditorSidebarPending", () => {
 				threadIds: ["thread_a"],
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_agent", path: "/agent.md" })]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_agent", path: "/agent.md" })]);
 		useQueriesMock.mockReturnValue({ thread_a: makeThread({ id: "thread_a", title: "Agent chat" }) });
 
 		render(<FileEditorSidebarPending />);
@@ -526,7 +535,7 @@ describe("FileEditorSidebarPending", () => {
 				() => pendingUpdates,
 			);
 		});
-		useStableQueryMock.mockReturnValue([userNode, agentNode]);
+		treeNodesMock.mockReturnValue([userNode, agentNode]);
 		useQueriesMock.mockReturnValue({ thread_a: makeThread({ id: "thread_a", title: "Agent chat" }) });
 
 		const { container } = render(<FileEditorSidebarPending />);
@@ -565,7 +574,7 @@ describe("FileEditorSidebarPending", () => {
 				threadIds: ["thread_a"],
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_user", path: "/user.md" }),
 			makeNode({ id: "node_agent", path: "/agent.md" }),
 		]);
@@ -606,7 +615,7 @@ describe("FileEditorSidebarPending", () => {
 				threadIds: ["thread_a"],
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_user", path: "/user.md" }),
 			makeNode({ id: "node_agent", path: "/agent.md" }),
 		]);
@@ -647,7 +656,7 @@ describe("FileEditorSidebarPending", () => {
 				threadIds: ["thread_b"],
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_folder", path: "/docs", kind: "folder" }),
 			makeNode({ id: "node_child", path: "/docs/report.md", parentId: "node_folder" }),
 		]);
@@ -672,7 +681,7 @@ describe("FileEditorSidebarPending", () => {
 
 	test("path link opens the file in the diff editor and preserves the full path metadata", () => {
 		useQueryMock.mockReturnValue([makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "s", unstaged: "u" })]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "alpha/deeply/nested/intro.md" })]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "alpha/deeply/nested/intro.md" })]);
 
 		const { container } = render(<FileEditorSidebarPending />);
 
@@ -694,7 +703,7 @@ describe("FileEditorSidebarPending", () => {
 		const clientWidthSpy = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(80);
 		truncatePathForWidthMock.mockReturnValue(truncatedPath);
 		useQueryMock.mockReturnValue([makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "s", unstaged: "u" })]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path })]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path })]);
 
 		const { container } = render(<FileEditorSidebarPending />);
 
@@ -717,7 +726,7 @@ describe("FileEditorSidebarPending", () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "STAGED_MD", unstaged: "UNSTAGED_MD" }),
 		]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "alpha/intro.md" })]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "alpha/intro.md" })]);
 
 		render(<FileEditorSidebarPending />);
 		fireEvent.click(screen.getByText("Accept"));
@@ -750,7 +759,7 @@ describe("FileEditorSidebarPending", () => {
 		pendingStateBytesByStateId.delete("pu_refused_staged");
 		pendingStateBytesByStateId.delete("pu_refused_unstaged");
 		useQueryMock.mockReturnValue([pendingUpdate]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "alpha/intro.md" })]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "alpha/intro.md" })]);
 
 		render(<FileEditorSidebarPending />);
 		fireEvent.click(screen.getByText("Accept"));
@@ -766,7 +775,7 @@ describe("FileEditorSidebarPending", () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "STAGED_MD", unstaged: "UNSTAGED_MD" }),
 		]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "alpha/intro.md" })]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "alpha/intro.md" })]);
 		useQueriesMock.mockImplementation((queries: Record<string, unknown>) =>
 			"node_a" in queries ? { node_a: undefined } : {},
 		);
@@ -781,7 +790,7 @@ describe("FileEditorSidebarPending", () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "STAGED_MD", unstaged: "UNSTAGED_MD" }),
 		]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "alpha/intro.md", canWrite: false })]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "alpha/intro.md", canWrite: false })]);
 
 		render(<FileEditorSidebarPending />);
 
@@ -802,7 +811,7 @@ describe("FileEditorSidebarPending", () => {
 			makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "STAGED_MD", unstaged: "UNSTAGED_MD" }),
 			makePendingUpdate({ id: "pu_b", fileNodeId: "node_b", staged: "STAGED_MD", unstaged: "UNSTAGED_MD" }),
 		]);
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_a", path: "alpha/intro.md" }),
 			makeNode({ id: "node_b", path: "alpha/other.md" }),
 		]);
@@ -830,7 +839,7 @@ describe("FileEditorSidebarPending", () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "STAGED_MD", unstaged: "UNSTAGED_MD" }),
 		]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "alpha/intro.md" })]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "alpha/intro.md" })]);
 		actionMock.mockReset();
 		// The upsert lands, then another tab's save advances the row before this save runs; the
 		// reactive query renders the real state, so no error and no success announcement.
@@ -848,7 +857,7 @@ describe("FileEditorSidebarPending", () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "STAGED_MD", unstaged: "UNSTAGED_MD" }),
 		]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "alpha/intro.md" })]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "alpha/intro.md" })]);
 
 		render(<FileEditorSidebarPending />);
 		fireEvent.click(screen.getByText("Discard"));
@@ -867,7 +876,7 @@ describe("FileEditorSidebarPending", () => {
 			makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "STAGED_A", unstaged: "UNSTAGED_A" }),
 			makePendingUpdate({ id: "pu_b", fileNodeId: "node_b", staged: "STAGED_B", unstaged: "UNSTAGED_B" }),
 		]);
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_a", path: "alpha/intro.md" }),
 			makeNode({ id: "node_b", path: "beta/readme.md" }),
 		]);
@@ -912,7 +921,7 @@ describe("FileEditorSidebarPending", () => {
 			makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "STAGED_A", unstaged: "UNSTAGED_A" }),
 			makePendingUpdate({ id: "pu_b", fileNodeId: "node_b", staged: "STAGED_B", unstaged: "UNSTAGED_B" }),
 		]);
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_a", path: "alpha/intro.md" }),
 			makeNode({ id: "node_b", path: "beta/readme.md" }),
 		]);
@@ -944,7 +953,7 @@ describe("FileEditorSidebarPending", () => {
 					pendingMove: { destParentId: "root", destName: "a.md", fromPath: "/a.md" },
 				}),
 			]);
-			useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+			treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
 			mutationMock.mockReset();
 			mutationMock
 				.mockResolvedValueOnce({ _nay: { message: "Rate limit exceeded" } })
@@ -980,7 +989,7 @@ describe("FileEditorSidebarPending", () => {
 					pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md" },
 				}),
 			]);
-			useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+			treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
 			mutationMock.mockReset();
 			// A Convex write conflict surfaces as a THROWN error, not a `_nay` result.
 			mutationMock.mockRejectedValueOnce(new Error("Documents changed while this mutation was being run"));
@@ -1018,7 +1027,7 @@ describe("FileEditorSidebarPending", () => {
 					pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md" },
 				}),
 			]);
-			useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+			treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
 			mutationMock.mockReset();
 			mutationMock.mockRejectedValue(new Error("Documents changed while this mutation was being run"));
 
@@ -1046,7 +1055,7 @@ describe("FileEditorSidebarPending", () => {
 			makePendingUpdate({ id: "pu_a", fileNodeId: "node_a", staged: "STAGED_A", unstaged: "UNSTAGED_A" }),
 			makePendingUpdate({ id: "pu_b", fileNodeId: "node_b", staged: "STAGED_B", unstaged: "UNSTAGED_B" }),
 		]);
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_a", path: "alpha/intro.md" }),
 			makeNode({ id: "node_b", path: "beta/readme.md" }),
 		]);
@@ -1076,7 +1085,7 @@ describe("FileEditorSidebarPending", () => {
 				pendingMove: { destParentId: "node_docs", destName: "a.md", fromPath: "/a.md" },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_a", path: "/a.md" }),
 			makeNode({ id: "node_docs", path: "/docs", kind: "folder" }),
 		]);
@@ -1110,7 +1119,7 @@ describe("FileEditorSidebarPending", () => {
 			}
 			return undefined;
 		});
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_source", path: "/source.mp4", hasEditableYjsState: false }),
 			makeNode({ id: "node_target", path: "/target.mp4", hasEditableYjsState: false }),
 		]);
@@ -1150,7 +1159,7 @@ describe("FileEditorSidebarPending", () => {
 			if (query === "get_asset_by_file_node_id") return { size: 1_024 };
 			return undefined;
 		});
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_source", path: "/source.mp4", hasEditableYjsState: false }),
 			makeNode({ id: "node_target", path: "/target.mp4", hasEditableYjsState: false }),
 		]);
@@ -1171,7 +1180,7 @@ describe("FileEditorSidebarPending", () => {
 				pendingArchive: { fromPath: "/video.mp4" },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_video", path: "/video.mp4", hasEditableYjsState: false }),
 		]);
 
@@ -1191,7 +1200,7 @@ describe("FileEditorSidebarPending", () => {
 				pendingArchive: { fromPath: "/notes.md" },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_text", path: "/notes.md" })]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_text", path: "/notes.md" })]);
 
 		const { container } = render(<FileEditorSidebarPending />);
 
@@ -1222,7 +1231,7 @@ describe("FileEditorSidebarPending", () => {
 				eagerCreated: { committedSequence: 0 },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_a", path: "/copy.md" }),
 			makeNode({ id: "node_src", path: "/source.md" }),
 		]);
@@ -1246,7 +1255,7 @@ describe("FileEditorSidebarPending", () => {
 				copiedFrom: { nodeId: "node_src", path: "/source.md" },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/target.md" })]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "/target.md" })]);
 
 		const { container } = render(<FileEditorSidebarPending />);
 
@@ -1263,7 +1272,7 @@ describe("FileEditorSidebarPending", () => {
 				pendingReplacement: { assetId: "asset_staged", size: 3, contentType: "image/png", baseAssetId: "asset_base" },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_a", path: "/target.md" }),
 			makeNode({ id: "node_src", path: "/photo.png" }),
 		]);
@@ -1292,7 +1301,7 @@ describe("FileEditorSidebarPending", () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({ id: "pu_edit", fileNodeId: "node_a", staged: "s", unstaged: "u" }),
 		]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
 
 		const { container } = render(<FileEditorSidebarPending />);
 
@@ -1327,7 +1336,7 @@ describe("FileEditorSidebarPending", () => {
 				yjsDoc.destroy();
 			}
 			useQueryMock.mockReturnValue([pendingUpdate]);
-			useStableQueryMock.mockReturnValue([
+			treeNodesMock.mockReturnValue([
 				{
 					...makeNode({ id: "node_restored", path: "/restored.txt", hasEditableYjsState: rootKind !== null }),
 					textKind: rootKind ?? undefined,
@@ -1359,7 +1368,7 @@ describe("FileEditorSidebarPending", () => {
 				baseAssetId: "asset_node_b",
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_a", path: "/a.md", nonCollaborative: true }),
 			makeNode({ id: "node_b", path: "/b.md", nonCollaborative: true }),
 		]);
@@ -1411,7 +1420,7 @@ describe("FileEditorSidebarPending", () => {
 				pendingArchive: { fromPath: "/b.md" },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_a", path: "/a.md" }),
 			makeNode({ id: "node_b", path: "/b.md" }),
 		]);
@@ -1454,7 +1463,7 @@ describe("FileEditorSidebarPending", () => {
 				pendingArchive: { fromPath: "/d.md" },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_a", path: "/a.md", nonCollaborative: true }),
 			makeNode({ id: "node_b", path: "/b.md" }),
 			makeNode({ id: "node_c", path: "/c.md" }),
@@ -1490,7 +1499,7 @@ describe("FileEditorSidebarPending", () => {
 				pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md" },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
 
 		const { container } = render(<FileEditorSidebarPending />);
 
@@ -1512,7 +1521,7 @@ describe("FileEditorSidebarPending", () => {
 				pendingMove: { destParentId: "node_docs", destName: "a.md", fromPath: "/a.md", replacesNodeId: "node_dest" },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_a", path: "/a.md" }),
 			makeNode({ id: "node_docs", path: "/docs", kind: "folder" }),
 			// The declared target moved away after the proposal; nothing occupies /docs/a.md, so
@@ -1533,7 +1542,7 @@ describe("FileEditorSidebarPending", () => {
 				pendingMove: { destParentId: "node_docs", destName: "dest.md", fromPath: "/a.md", replacesNodeId: "node_t" },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_a", path: "/a.md" }),
 			makeNode({ id: "node_docs", path: "/docs", kind: "folder" }),
 			// The declared target moved to /elsewhere.md after the proposal while a different
@@ -1560,7 +1569,7 @@ describe("FileEditorSidebarPending", () => {
 				pendingMove: { destParentId: "node_docs", destName: "free.md", fromPath: "/c.md" },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_a", path: "/a.md" }),
 			makeNode({ id: "node_c", path: "/c.md" }),
 			makeNode({ id: "node_docs", path: "/docs", kind: "folder" }),
@@ -1588,7 +1597,7 @@ describe("FileEditorSidebarPending", () => {
 				pendingMove: { destParentId: "root", destName: "full-dst", fromPath: "/dir-b" },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_dir_a", path: "/dir-a", kind: "folder" }),
 			makeNode({ id: "node_dir_b", path: "/dir-b", kind: "folder" }),
 			makeNode({ id: "node_empty_dst", path: "/empty-dst", kind: "folder" }),
@@ -1626,7 +1635,7 @@ describe("FileEditorSidebarPending", () => {
 				pendingMove: { destParentId: "root", destName: "e.md", fromPath: "/d.md" },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_a", path: "/a.md" }),
 			makeNode({ id: "node_b", path: "/b.md" }),
 			makeNode({ id: "node_d", path: "/d.md" }),
@@ -1653,7 +1662,7 @@ describe("FileEditorSidebarPending", () => {
 				eagerCreated: { committedSequence: 0 },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_a", path: "/a.md" }),
 			makeNode({ id: "node_dest", path: "/b.md" }),
 		]);
@@ -1672,7 +1681,7 @@ describe("FileEditorSidebarPending", () => {
 				pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md" },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
 
 		render(<FileEditorSidebarPending />);
 		fireEvent.click(screen.getByText("Accept"));
@@ -1695,7 +1704,7 @@ describe("FileEditorSidebarPending", () => {
 				pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md" },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
 		mutationMock.mockReset();
 		// Missing or settled rows resolve as no-op `_yay`, so a `_nay` is a real conflict.
 		mutationMock.mockResolvedValue({ _nay: { message: "Path already exists" } });
@@ -1718,7 +1727,7 @@ describe("FileEditorSidebarPending", () => {
 				pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md" },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
 
 		render(<FileEditorSidebarPending />);
 		fireEvent.click(screen.getByText("Discard"));
@@ -1739,7 +1748,7 @@ describe("FileEditorSidebarPending", () => {
 				pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md" },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
 		mutationMock.mockReset();
 		// The discard is idempotent (missing or settled rows resolve `_yay`), so a `_nay` is a
 		// real conflict the user must see.
@@ -1760,7 +1769,7 @@ describe("FileEditorSidebarPending", () => {
 				pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md" },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
 		mutationMock.mockReset();
 		mutationMock.mockResolvedValue({ _nay: { message: "Discard conflict" } });
 
@@ -1781,7 +1790,7 @@ describe("FileEditorSidebarPending", () => {
 				copiedFrom: { nodeId: "node_src", path: "/source.md" },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/copy.md" })]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "/copy.md" })]);
 
 		render(<FileEditorSidebarPending />);
 		fireEvent.click(screen.getByText("Discard"));
@@ -1804,7 +1813,7 @@ describe("FileEditorSidebarPending", () => {
 				eagerCreated: { committedSequence: 0 },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/new.md" })]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "/new.md" })]);
 
 		render(<FileEditorSidebarPending />);
 		fireEvent.click(screen.getByText("Discard"));
@@ -1827,7 +1836,7 @@ describe("FileEditorSidebarPending", () => {
 				copiedFrom: { nodeId: "node_src", path: "/source.md" },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/copy.md" })]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "/copy.md" })]);
 
 		render(<FileEditorSidebarPending />);
 		fireEvent.click(screen.getByText("Accept"));
@@ -1860,7 +1869,7 @@ describe("FileEditorSidebarPending", () => {
 				pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md" },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
 
 		render(<FileEditorSidebarPending />);
 		fireEvent.click(screen.getByText("Accept"));
@@ -1900,7 +1909,7 @@ describe("FileEditorSidebarPending", () => {
 				pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md" },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
 
 		render(<FileEditorSidebarPending />);
 		fireEvent.click(screen.getByText("Discard"));
@@ -1928,7 +1937,7 @@ describe("FileEditorSidebarPending", () => {
 				pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md" },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
 		mutationMock.mockReset();
 		// A failed revert must not discard the move: a retry needs the row intact.
 		mutationMock.mockResolvedValue({ _nay: { message: "Revert failed" } });
@@ -1968,7 +1977,7 @@ describe("FileEditorSidebarPending", () => {
 				eagerCreated: { committedSequence: 0 },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_a", path: "/a.md" }),
 			makeNode({ id: "node_c", path: "/c.md" }),
 		]);
@@ -1999,7 +2008,7 @@ describe("FileEditorSidebarPending", () => {
 				pendingMove: { destParentId: "root", destName: "c.md", fromPath: "/b.md" },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_a", path: "/a.md" }),
 			makeNode({ id: "node_b", path: "/b.md" }),
 		]);
@@ -2043,7 +2052,7 @@ describe("FileEditorSidebarPending", () => {
 				pendingMove: { destParentId: "root", destName: "fsc-a", fromPath: "/fsc-b" },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_a", path: "/fsc-a", kind: "folder" }),
 			makeNode({ id: "node_b", path: "/fsc-b", kind: "folder" }),
 		]);
@@ -2092,7 +2101,7 @@ describe("FileEditorSidebarPending", () => {
 				copiedFrom: { nodeId: "node_src", path: "/source.md" },
 			}),
 		]);
-		useStableQueryMock.mockReturnValue([
+		treeNodesMock.mockReturnValue([
 			makeNode({ id: "node_a", path: "/a.md" }),
 			makeNode({ id: "node_b", path: "/b.md" }),
 		]);

@@ -7,7 +7,7 @@ import { useConvex, useQueries, useQuery } from "convex/react";
 import { toast } from "sonner";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
-import { useStableQuery } from "@/hooks/convex-hooks.ts";
+import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
 import { useFn } from "@/hooks/utils-hooks.ts";
 import { MyButton, MyButtonIcon } from "@/components/my-button.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
@@ -1391,7 +1391,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 	});
 
 	const pendingUpdates = useQuery(app_convex_api.files_pending_updates.list_files_pending_updates, { membershipId });
-	const fileNodesList = useStableQuery(app_convex_api.files_nodes.list_tree, { membershipId });
+	const fileNodesList = FilesTreeProvider.useContext();
 	// Accept writes into the file, so fail closed while permission loads or changes. Discard only
 	// removes this user's draft and stays available after demotion.
 	const pendingNodeIds = useMemo(
@@ -1611,7 +1611,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 		/>
 	);
 
-	if (rows.length === 0) {
+	if (pendingUpdates === undefined || fileNodesList === undefined || rows.length === 0) {
 		return (
 			<>
 				{statusElement}
@@ -1623,7 +1623,7 @@ export const FileEditorSidebarPending = memo(function FileEditorSidebarPending()
 						"FileEditorSidebarPending-empty" satisfies FileEditorSidebarPending_ClassNames,
 					)}
 				>
-					No pending changes
+					{pendingUpdates === undefined || fileNodesList === undefined ? "Loading pending changes…" : "No pending changes"}
 				</div>
 			</>
 		);

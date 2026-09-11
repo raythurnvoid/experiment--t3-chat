@@ -8,6 +8,10 @@ import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AiChatMessage, AiChatMessagePendingAssistant } from "./ai-chat-message.tsx";
 import type { AiChatComposer_Props } from "./ai-chat-composer.tsx";
 
+vi.mock("@/lib/files-tree-context.tsx", () => ({
+	FilesTreeProvider: (props: { children: ReactNode }) => props.children,
+}));
+
 const hookMocks = vi.hoisted(() => {
 	return {
 		messageById: new Map<string, ai_chat_UiMessage>(),

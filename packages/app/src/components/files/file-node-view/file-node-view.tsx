@@ -61,11 +61,11 @@ import { MySkeleton } from "@/components/my-skeleton.tsx";
 import { MySpinner } from "@/components/my-spinner.tsx";
 import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/components/my-tabs.tsx";
 import { PluginsUiFrame, type PluginsUiFrame_Props } from "@/components/plugins-ui-frame.tsx";
-import { useStableQuery } from "@/hooks/convex-hooks.ts";
 import { useFn, useRenderPromise } from "@/hooks/utils-hooks.ts";
 import { useFileNodeActivities } from "@/lib/activities.ts";
 import { app_convex, app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
 import { format_relative_time } from "@/lib/date.ts";
 import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
 import { file_editor_get_content_too_large_message } from "@/lib/file-editor.ts";
@@ -3127,7 +3127,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		setFileViewSelection({ membershipId, nodeId: searchNodeId, view });
 	});
 
-	const fileNodesList = useStableQuery(app_convex_api.files_nodes.list_tree, { membershipId });
+	const fileNodesList = FilesTreeProvider.useContext();
 	const readOnlyAncestorIds = useMemo(() => files_collect_read_only_ancestor_ids(fileNodesList ?? []), [fileNodesList]);
 
 	const resolvedNode = useQuery(

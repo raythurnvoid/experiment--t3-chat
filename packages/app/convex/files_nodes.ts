@@ -5753,10 +5753,11 @@ const SUBTREE_FILTER_MAX_ROWS_READ = 10_000;
 export const list_tree = query({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
+		paginationOpts: paginationOptsValidator,
 	},
 	// Use the public node fields above. This keeps new schema fields in sync with this query.
 	// These four fields cannot contain reserved `GLOBAL` or `SYSTEM` values in the visible tree.
-	returns: v.array(
+	returns: paginationResultValidator(
 		v.object({
 			...files_node_public_doc_fields,
 			organizationId: v.id("organizations"),
@@ -5774,7 +5775,7 @@ export const list_tree = query({
 			throw convex_error({ message: "Unauthenticated" });
 		}
 		if (!membership || membership.userId !== userAuth.id || membership.active === false) {
-			return [];
+			return { page: [], isDone: true, continueCursor: args.paginationOpts.cursor ?? "" };
 		}
 
 		// A failed check does not end the query here. Somebody whose role gives no workspace-wide read
@@ -5786,13 +5787,18 @@ export const list_tree = query({
 			permission: "content.read",
 		});
 
-		const allFileNodes = await ctx.db
+		const result = await ctx.db
 			.query("files_nodes")
 			.withIndex("by_organization_workspace_treePath", (q) =>
 				q.eq("organizationId", membership.organizationId).eq("workspaceId", membership.workspaceId),
 			)
 			.order("asc")
-			.collect();
+			.paginate({
+				...args.paginationOpts,
+				numItems: Math.min(args.paginationOpts.numItems, 500),
+				maximumRowsRead: 1000,
+				maximumBytesRead: 4 * 1024 * 1024,
+			});
 
 		// The tree is the widest leak in the app: it carries the name and the path of every node in the
 		// workspace. Without this filter a restricted file would still be listed for everybody, and the
@@ -5801,17 +5807,32 @@ export const list_tree = query({
 			organizationId: membership.organizationId,
 			workspaceId: membership.workspaceId,
 			userId: userAuth.id,
-			nodes: allFileNodes,
+			nodes: result.page,
 			hasWorkspaceRead: !authorized._nay,
 		});
 
-		// The policy source is this node or one of its parents.
-		// Every node in this map already passed the read check above.
+		// A policy source can be on another page. Check its read access before naming it.
 		const readableById = new Map(fileNodes.map((fileNode) => [fileNode._id, fileNode]));
+		const sourceIds = new Set(
+			fileNodes
+				.map((fileNode) => fileNode.writePolicyScopeNodeId)
+				.filter((nodeId): nodeId is Id<"files_nodes"> => nodeId !== null && !readableById.has(nodeId)),
+		);
+		const sources = await Promise.all([...sourceIds].map((nodeId) => ctx.db.get("files_nodes", nodeId)));
+		const readableSources = await access_control_db_filter_readable_file_nodes(ctx, {
+			organizationId: membership.organizationId,
+			workspaceId: membership.workspaceId,
+			userId: userAuth.id,
+			nodes: sources.filter((source) => source !== null),
+			hasWorkspaceRead: !authorized._nay,
+		});
+		for (const source of readableSources) {
+			readableById.set(source._id, source);
+		}
 
 		const canWriteContentByScope = new Map<Id<"files_nodes"> | null, Promise<boolean>>();
 		const policyWritableByScope = new Map<Id<"files_nodes"> | null, Promise<boolean>>();
-		return await Promise.all(
+		const page = await Promise.all(
 			fileNodes.map(async (fileNode) => {
 				if (fileNode.createdBy === users_SYSTEM_AUTHOR || fileNode.updatedBy === users_SYSTEM_AUTHOR) {
 					const errorMessage = "Reserved SYSTEM author reached visible file tree";
@@ -5862,6 +5883,8 @@ export const list_tree = query({
 				};
 			}),
 		);
+		// A page can be empty after access checks. Only isDone ends the tree walk.
+		return { ...result, page };
 	},
 });
 

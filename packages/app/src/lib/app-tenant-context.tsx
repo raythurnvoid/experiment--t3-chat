@@ -1,5 +1,6 @@
 import { createContext, memo, use, type ReactNode } from "react";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
+import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
 
 export type AppTenantContextValue = {
 	/** Convex `organizations_workspaces_users` document id for the current user and tenant. */
@@ -24,7 +25,9 @@ const AppTenantProvider = Object.assign(
 			<AppTenantContext.Provider
 				value={{ membershipId, organizationId, organizationName, workspaceId, workspaceName }}
 			>
-				{children}
+				<FilesTreeProvider key={membershipId} membershipId={membershipId}>
+					{children}
+				</FilesTreeProvider>
 			</AppTenantContext.Provider>
 		);
 	}),

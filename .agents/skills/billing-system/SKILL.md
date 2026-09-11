@@ -208,6 +208,8 @@ For signed-in users there is no local credit debit after save; Polar usage event
 
 R2 content materialization is storage bookkeeping for an already accepted save; it must not emit an additional billing event.
 
+For bulk imports, distinguish a saved file with a durable billing job from an event already accepted by Polar. A large sandbox queue can remain after all file checks pass. Check the current queue's workspace, payer, amount, unique event IDs, retry state, and worker progress; report pending events separately. A healthy pending queue alone does not require waiting for full drain to finish the file import. Failed or canceled jobs need investigation. Never disable billing, change rates, or mark jobs complete to speed up the import. See the [import guide](../convex-admin-ops/references/large-file-imports.md#billing-and-upload-finalization).
+
 Plugin file writes have no billing exception: a plugin writes its file content through `/api/v1/files/write`, and every public-API file write emits `file_save` like any other save. The plugin file doors (`plugin-folders/ensure`, `plugin-archive`, `plugin-access/set`) write no file content, so they have no gate and no emit. Do not add a `skipBilling` flag to `replace_file_content`.
 
 ### Anonymous users

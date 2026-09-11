@@ -872,6 +872,36 @@ describe("service-bound API credentials", () => {
 	});
 });
 
+describe("mark_credential_used", () => {
+	test("updates usage at most once per minute and ignores older request times", async () => {
+		const t = test_convex();
+		const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-key-usage" });
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const created = await asUser.mutation(api.public_api.api_credential_create, {
+			membershipId: db.membershipId,
+			serviceAccountId: null,
+			name: "Usage key",
+			scopes: ["files:read"],
+		});
+		if (created._nay) throw new Error(created._nay.message);
+		const credentialId = created._yay.credentialId;
+		const now = Date.now();
+
+		await t.mutation(internal.public_api.mark_credential_used, { credentialId, now });
+		const firstUse = await t.run(async (ctx) => await ctx.db.get("api_credentials", credentialId));
+		expect(firstUse?.lastUsedAt).toBe(now);
+
+		await t.mutation(internal.public_api.mark_credential_used, { credentialId, now: now + 59_999 });
+		expect(await t.run(async (ctx) => await ctx.db.get("api_credentials", credentialId))).toEqual(firstUse);
+
+		await t.mutation(internal.public_api.mark_credential_used, { credentialId, now: now + 60_000 });
+		expect((await t.run(async (ctx) => await ctx.db.get("api_credentials", credentialId)))?.lastUsedAt).toBe(now + 60_000);
+
+		await t.mutation(internal.public_api.mark_credential_used, { credentialId, now: now + 30_000 });
+		expect((await t.run(async (ctx) => await ctx.db.get("api_credentials", credentialId)))?.lastUsedAt).toBe(now + 60_000);
+	});
+});
+
 describe("public files API", () => {
 	test.each(["😀", "\uffff"])("lists %s descendants and content type suffixes", async (suffix) => {
 		const t = test_convex();

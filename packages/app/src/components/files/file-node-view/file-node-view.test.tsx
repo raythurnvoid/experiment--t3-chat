@@ -51,6 +51,19 @@ vi.mock("@/lib/app-convex-client.ts", async () => {
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	AppTenantProvider: { useContext: () => tenantContextMock() },
 }));
+vi.mock("@/lib/files-tree-context.tsx", async () => {
+	const { useQuery } = await import("convex/react");
+	const { api } = await import("../../../../convex/_generated/api.js");
+	return {
+		FilesTreeProvider: {
+			useContext: () =>
+				useQuery(api.files_nodes.list_tree, {
+					membershipId: tenantContextMock().membershipId,
+					paginationOpts: { numItems: 500, cursor: null },
+				}),
+		},
+	};
+});
 vi.mock("@/components/app-auth.tsx", () => ({
 	AppAuthProvider: { useAuthenticated: () => ({ userId: "user_1" }) },
 }));

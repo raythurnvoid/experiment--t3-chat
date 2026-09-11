@@ -1205,6 +1205,51 @@ describe("files_tiptap_markdown_to_json", () => {
 	});
 });
 
+describe("files_headless_tiptap_editor_create", () => {
+	test("keeps each editor's Markdown parser separate", () => {
+		const input = [
+			"---",
+			"subject: Parser isolation",
+			"---",
+			"",
+			"- [ ] First task",
+			"- [x] Finished task",
+			"",
+			"![Image](bonobo-file://k17abcdef)",
+			"",
+			'<video src="bonobo-file://k17video"></video>',
+			"",
+		].join("\n");
+		const first = files_headless_tiptap_editor_create({ initialContent: { markdown: input } });
+		if (first._nay) throw new Error("Expected first editor creation to succeed", { cause: first._nay });
+		const parser = first._yay.markdown!.instance;
+		const expectedJson = first._yay.getJSON();
+		const expectedMarkdown = files_headless_tiptap_editor_get_markdown({ mut_editor: first._yay });
+		const blockCount = parser.defaults.extensions?.block?.length;
+		const inlineCount = parser.defaults.extensions?.inline?.length;
+
+		try {
+			for (let index = 0; index < 20; index++) {
+				const next = files_headless_tiptap_editor_create({ initialContent: { markdown: input } });
+				if (next._nay) throw new Error("Expected next editor creation to succeed", { cause: next._nay });
+				try {
+					expect(next._yay.markdown!.instance).not.toBe(parser);
+					expect(next._yay.markdown!.instance.defaults.extensions?.block?.length).toBe(blockCount);
+					expect(next._yay.markdown!.instance.defaults.extensions?.inline?.length).toBe(inlineCount);
+					expect(next._yay.getJSON()).toEqual(expectedJson);
+					expect(files_headless_tiptap_editor_get_markdown({ mut_editor: next._yay })).toBe(expectedMarkdown);
+					expect(parser.defaults.extensions?.block?.length).toBe(blockCount);
+					expect(parser.defaults.extensions?.inline?.length).toBe(inlineCount);
+				} finally {
+					next._yay.destroy();
+				}
+			}
+		} finally {
+			first._yay.destroy();
+		}
+	});
+});
+
 describe("files_tiptap_markdown_to_plain_text", () => {
 	beforeEach(() => {
 		const domParser = globalThis.window?.DOMParser;
@@ -1270,9 +1315,29 @@ describe("files_tiptap_markdown_to_plain_text", () => {
 		expect(result._yay).toContain("two");
 		expect(result._yay).toContain("2");
 	});
+
+	test("keeps underlined and highlighted text searchable", () => {
+		const result = files_tiptap_markdown_to_plain_text({
+			markdown: "++**A & B**++ and ==*C & D*==",
+		});
+
+		expect(result._nay).toBeUndefined();
+		expect(result._yay).toBe("A & B and C & D");
+	});
 });
 
 describe("files_parse_markdown_to_html", () => {
+	test.each([
+		["underline", "++**A & B**++", "<p><u><strong>A &amp; B</strong></u></p>\n"],
+		["highlight", "==*C & D*==", "<p><mark><em>C &amp; D</em></mark></p>\n"],
+		["nested marks", "++==Both==++", "<p><u><mark>Both</mark></u></p>\n"],
+	])("renders %s tokens from the editor Markdown parser", (_name, markdown, expectedHtml) => {
+		const result = files_parse_markdown_to_html(markdown);
+
+		expect(result._nay).toBeUndefined();
+		expect(result._yay).toBe(expectedHtml);
+	});
+
 	test("preserves trailing newline shape at EOF", () => {
 		const noTrailingNewline = files_parse_markdown_to_html("hello");
 		const oneTrailingNewline = files_parse_markdown_to_html("hello\n");

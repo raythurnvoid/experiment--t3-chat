@@ -4,13 +4,16 @@ import { useFilesSearchMetadata } from "@/hooks/files-search-hooks.ts";
 import { parse_search_query, search_filter_matches_item, search_path_filter } from "@/lib/files-search.ts";
 import React, {
 	memo,
+	useCallback,
 	useDeferredValue,
 	useEffect,
+	useImperativeHandle,
 	useLayoutEffect,
 	useMemo,
 	useRef,
 	useState,
 	type ComponentProps,
+	type RefObject,
 } from "react";
 import { toast } from "sonner";
 import { create } from "zustand";
@@ -40,9 +43,16 @@ import {
 	CopyMinus,
 	CopyPlus,
 } from "lucide-react";
-import { useConvex, useQueries, useQuery, type ConvexReactClient } from "convex/react";
+import {
+	optimisticallyUpdateValueInPaginatedQuery,
+	useConvex,
+	useQueries,
+	useQuery,
+	type ConvexReactClient,
+} from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import {
+	buildProxiedInstance,
 	dragAndDropFeature,
 	expandAllFeature,
 	hotkeysCoreFeature,
@@ -58,6 +68,7 @@ import {
 } from "@headless-tree/core";
 import { AssistiveTreeDescription } from "@headless-tree/react";
 import { useTree } from "@headless-tree/react/react-compiler";
+import { defaultRangeExtractor, useVirtualizer, type Range, type Virtualizer } from "@tanstack/react-virtual";
 import { useNavigate } from "@tanstack/react-router";
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { FilesNameInputControl } from "./files-name-input.tsx";
@@ -104,6 +115,7 @@ import {
 } from "@/components/my-modal.tsx";
 import { useFileNodeActivities } from "@/lib/activities.ts";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
+import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
 import { cn, copy_to_clipboard, forward_ref, should_never_happen, sx } from "@/lib/utils.ts";
 import { path_extract_segments_from } from "@/lib/paths.ts";
 import { app_convex_api, type app_convex_Doc, type app_convex_Id } from "@/lib/app-convex-client.ts";
@@ -1702,7 +1714,8 @@ function tree_item_get_hidden_track_file_ids_for_descendants(item?: FilesSidebar
 	let parent = child?.getParent();
 	while (child && parent && parent.getId() !== files_ROOT_ID) {
 		// Hide ancestor guide lines once the branch occupying that depth has already ended.
-		if (parent.getChildren().at(-1)?.getId() === child.getId()) {
+		const childMeta = child.getItemMeta();
+		if (childMeta.posInSet === childMeta.setSize - 1) {
 			result.add(parent.getId());
 		}
 
@@ -1746,6 +1759,7 @@ type FilesSidebarTreeItem_Props = {
 	onCreateNode: (parentNodeId: string, kind: files_TreeItem["kind"]) => void;
 	onStartRename: (itemId: string) => void;
 	onRenameErrorClear: (itemId: string) => void;
+	onMenuOpenChange: (itemId: string, isOpen: boolean) => void;
 	onCopy: (nodeId: string) => void;
 	onCopyLink: (nodeId: string) => void;
 	onCopyNodeId: (nodeId: string) => void;
@@ -1776,6 +1790,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		onCreateNode,
 		onStartRename,
 		onRenameErrorClear,
+		onMenuOpenChange,
 		onCopy,
 		onCopyLink,
 		onCopyNodeId,
@@ -1844,7 +1859,9 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 	});
 	const terminalTrackFileId = useVal(() => {
 		const parent = item.getParent();
-		if (!parent || parent.getId() === files_ROOT_ID || parent.getChildren().at(-1)?.getId() !== itemId) {
+		const itemMeta = item.getItemMeta();
+		// Use the stored position so each row does not load all its siblings.
+		if (!parent || parent.getId() === files_ROOT_ID || itemMeta.posInSet !== itemMeta.setSize - 1) {
 			return undefined;
 		}
 
@@ -1854,6 +1871,10 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 
 	// While the row menu is open, the row shows as selected so the menu target stays visible.
 	const [isMenuOpen, setIsMenuOpen] = useState(false);
+	const handleMenuOpenChange = useFn((isOpen: boolean) => {
+		setIsMenuOpen(isOpen);
+		onMenuOpenChange(itemId, isOpen);
+	});
 
 	const updatedByDisplayName = displayNameByUserId.get(itemData.updatedBy) ?? "Unknown";
 	const shouldRenderPlaceholder = !isSearchActive && itemData.kind === "folder" && !hasChildren && isExpanded;
@@ -2000,6 +2021,11 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		wrapperElementRef.current?.focus();
 	});
 
+	const handleWrapperFocus = useFn(() => {
+		// Row controls also need their row kept mounted while they hold focus.
+		item.setFocused();
+	});
+
 	const handleWrapperKeyDown = useFn<NonNullable<ComponentProps<"div">["onKeyDown"]>>((event) => {
 		// The old row was a native button, so Enter and Space clicked it. The wrapper div does not,
 		// so run the row click behavior here. Only react to keys pressed on the wrapper itself, not
@@ -2044,7 +2070,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 
 	return (
 		<>
-			<MyContextMenu setOpen={setIsMenuOpen}>
+			<MyContextMenu setOpen={handleMenuOpenChange}>
 				<MyContextMenuTrigger onContextMenu={handleRowContextMenu}>
 					<div
 						ref={handleWrapperRef}
@@ -2068,6 +2094,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 						aria-label={label}
 						aria-disabled={(isPending && !isFocused) || undefined}
 						data-focused={isFocused || undefined}
+						onFocus={handleWrapperFocus}
 						onKeyDown={handleWrapperKeyDown}
 						{...({
 							"data-files-sidebar-tree-context": "",
@@ -2408,12 +2435,15 @@ const FilesSidebarTree_COMPACT_ACTIONS_MAX_WIDTH = 300;
 
 type FilesSidebarTree_ClassNames =
 	| "FilesSidebarTree"
+	| "FilesSidebarTree-row"
 	| "FilesSidebarTree-dragging"
 	| "FilesSidebarTree-empty-state"
 	| "FilesSidebarTree-folder-actions-expanded";
 
 type FilesSidebarTree_Props = {
 	tree: FilesSidebarTree_Shared;
+	scrollElementRef: RefObject<HTMLDivElement | null>;
+	virtualizerRef: RefObject<Virtualizer<HTMLDivElement, HTMLDivElement> | null>;
 	isTreeLoading: boolean;
 	showEmptyState: boolean;
 	isSearchActive: boolean;
@@ -2423,6 +2453,7 @@ type FilesSidebarTree_Props = {
 	trackActiveFileIds: Set<string>;
 	selectedNodeId: string | null;
 	selectedNodeIds: Set<string>;
+	dialogNodeId: string | null;
 	isBusy: boolean;
 	isUploadingFile: boolean;
 	pendingActionNodeIds: Set<string>;
@@ -2445,8 +2476,13 @@ type FilesSidebarTree_Props = {
 type FilesSidebarTree_DivProps = ComponentProps<"div">;
 
 const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_Props) {
+	// The virtualizer keeps one mutable instance; read its current rows on every render.
+	"use no memo";
+
 	const {
 		tree,
+		scrollElementRef,
+		virtualizerRef,
 		isTreeLoading,
 		showEmptyState,
 		isSearchActive,
@@ -2456,6 +2492,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 		trackActiveFileIds,
 		selectedNodeId,
 		selectedNodeIds,
+		dialogNodeId,
 		isBusy,
 		isUploadingFile,
 		pendingActionNodeIds,
@@ -2479,15 +2516,28 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 	const { ref: treeContainerRef, ...treeContainerRest } = treeContainerProps;
 
 	const [expandedFolderActionsVisible, setExpandedFolderActionsVisible] = useState(false);
+	const [openMenuItemId, setOpenMenuItemId] = useState<string | null>(null);
+	const [dragSourceItemId, setDragSourceItemId] = useState<string | null>(null);
 
 	const isTreeDragging = (tree().getState().dnd?.draggedItems?.length ?? 0) > 0;
 	const renderedTreeItems = tree().getItems();
+	const itemIndexById = useMemo(
+		() => new Map(renderedTreeItems.map((item, index) => [item.getId(), index])),
+		[renderedTreeItems],
+	);
+	const focusedItemId = tree().getState().focusedItem;
+	const focusedItemIndex = focusedItemId ? (itemIndexById.get(focusedItemId) ?? -1) : 0;
 	// When the focused item is no longer rendered (e.g. archived away), no row keeps tabIndex 0
 	// and the tree drops out of the Tab order; fall back to the first row as the tab stop.
-	const hasFocusedRenderedItem = renderedTreeItems.some((item) => item.isFocused());
+	const hasFocusedRenderedItem = focusedItemIndex >= 0;
+	const renamingItemIndex = itemIndexById.get(tree().getState().renamingItem ?? "") ?? -1;
+	const openMenuItemIndex = itemIndexById.get(openMenuItemId ?? "") ?? -1;
+	const dragSourceItemIndex = itemIndexById.get(dragSourceItemId ?? "") ?? -1;
+	const dialogItemIndex = itemIndexById.get(dialogNodeId ?? "") ?? -1;
 
 	const treeRootElementRef = useRef<HTMLDivElement | null>(null);
 	const treeRootResizeObserverRef = useRef<ResizeObserver | null>(null);
+	const lastScrolledSelectedNodeIdRef = useRef<string | null>(null);
 
 	const [isDraggingOverRootZone, setIsDraggingOverRootZone] = useState(false);
 	const isDraggingOverRootZoneRef = useRef(false);
@@ -2501,18 +2551,61 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 	const headlessActiveDropTargetId = tree().getState().dnd?.dragTarget?.item.getId() ?? null;
 	const activeDropTargetId =
 		activeExternalFileDropTargetId === undefined ? headlessActiveDropTargetId : activeExternalFileDropTargetId;
-	const dropZoneRows = renderedTreeItems.map((item) => {
-		const itemData = item.getItemData();
+	const dropZoneRows = useMemo(
+		() =>
+			renderedTreeItems.map((item) => {
+				const itemData = item.getItemData();
+				const itemId = item.getId();
 
-		return {
-			id: item.getId(),
-			parentId: item.getParent()?.getId() ?? files_ROOT_ID,
-			kind: itemData.kind,
-			depth: item.getItemMeta().level,
-			hasPlaceholderRow:
-				!isSearchActive && itemData.kind === "folder" && item.getChildren().length === 0 && item.isExpanded(),
-		} satisfies DropZoneRow;
+				return {
+					id: itemId,
+					parentId: item.getParent()?.getId() ?? files_ROOT_ID,
+					kind: itemData.kind,
+					depth: item.getItemMeta().level,
+					hasPlaceholderRow:
+						!isSearchActive &&
+						itemData.kind === "folder" &&
+						item.isExpanded() &&
+						item.getTree().retrieveChildrenIds(itemId).length === 0,
+				} satisfies DropZoneRow;
+			}),
+		[renderedTreeItems, isSearchActive],
+	);
+
+	// A changed row model must refresh the known heights, including offscreen placeholders.
+	const getVirtualItemKey = useCallback((index: number) => dropZoneRows[index].id, [dropZoneRows]);
+	const getVirtualRange = useCallback(
+		(range: Range) => {
+			const indexes = defaultRangeExtractor(range);
+			// Keep active DOM elements alive without mounting every selected row.
+			for (const index of [
+				Math.max(focusedItemIndex, 0),
+				renamingItemIndex,
+				openMenuItemIndex,
+				dragSourceItemIndex,
+				dialogItemIndex,
+			]) {
+				if (index >= 0 && index < range.count) {
+					indexes.push(index);
+				}
+			}
+			return [...new Set(indexes)].sort((a, b) => a - b);
+		},
+		[focusedItemIndex, renamingItemIndex, openMenuItemIndex, dragSourceItemIndex, dialogItemIndex],
+	);
+	// This component opts out above; the rows keep their own memoization.
+	// eslint-disable-next-line react-hooks/incompatible-library
+	const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
+		count: renderedTreeItems.length,
+		getScrollElement: () => scrollElementRef.current,
+		estimateSize: (index) => ROW_HEIGHT_PX * (dropZoneRows[index].hasPlaceholderRow ? 2 : 1),
+		getItemKey: getVirtualItemKey,
+		rangeExtractor: getVirtualRange,
+		overscan: 5,
+		paddingStart: 2,
+		paddingEnd: 2,
 	});
+	useImperativeHandle(virtualizerRef, () => virtualizer, [virtualizer]);
 
 	const dropZone = get_tree_drop_zone({
 		rows: dropZoneRows,
@@ -2541,6 +2634,15 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 
 		activeExternalFileDropTargetIdRef.current = nextValue;
 		setActiveExternalFileDropTargetId(nextValue);
+	};
+
+	const handleMenuOpenChange = useFn<FilesSidebarTreeItem_Props["onMenuOpenChange"]>((itemId, isOpen) => {
+		setOpenMenuItemId(isOpen ? itemId : null);
+	});
+
+	const handleDragStartCapture: NonNullable<FilesSidebarTree_DivProps["onDragStartCapture"]> = (event) => {
+		const itemElement = event.target instanceof Element ? event.target.closest(".FilesSidebarTreeItem") : null;
+		setDragSourceItemId(itemElement?.getAttribute("data-file-id") ?? null);
 	};
 
 	const handleUpdateRootZoneFromDragEvent: NonNullable<FilesSidebarTree_DivProps["onDragOverCapture"]> = (event) => {
@@ -2588,11 +2690,13 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 	};
 
 	const handleDragEndCapture = () => {
+		setDragSourceItemId(null);
 		handleSetIsDraggingOverRootZone(false);
 		handleSetActiveExternalFileDropTargetId(undefined);
 	};
 
 	const handleDropCapture = () => {
+		setDragSourceItemId(null);
 		handleSetIsDraggingOverRootZone(false);
 		handleSetActiveExternalFileDropTargetId(undefined);
 	};
@@ -2627,8 +2731,26 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 			return;
 		}
 
+		setDragSourceItemId(null);
 		handleSetIsDraggingOverRootZone(false);
 	}, [isTreeDragging]);
+
+	useLayoutEffect(() => {
+		if (!selectedNodeId || selectedNodeId === files_ROOT_ID) {
+			lastScrolledSelectedNodeIdRef.current = selectedNodeId;
+			return;
+		}
+		if (lastScrolledSelectedNodeIdRef.current === selectedNodeId) {
+			return;
+		}
+		const selectedItemIndex = itemIndexById.get(selectedNodeId);
+		if (selectedItemIndex === undefined) {
+			return;
+		}
+
+		virtualizer.scrollToIndex(selectedItemIndex, { align: "auto" });
+		lastScrolledSelectedNodeIdRef.current = selectedNodeId;
+	}, [selectedNodeId, itemIndexById, virtualizer]);
 
 	return (
 		<>
@@ -2641,7 +2763,8 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 						("FilesSidebarTree-folder-actions-expanded" satisfies FilesSidebarTree_ClassNames),
 				)}
 				{...treeContainerRest}
-				style={treeContainerProps.style}
+				style={{ ...treeContainerProps.style, height: virtualizer.getTotalSize() }}
+				onDragStartCapture={handleDragStartCapture}
 				onDragEnterCapture={handleDragEnterCapture}
 				onDragOverCapture={handleDragOverCapture}
 				onDragLeaveCapture={handleDragLeaveCapture}
@@ -2665,40 +2788,49 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 											: "No files yet."}
 							</div>
 						) : null}
-						{renderedTreeItems.map((item, itemIndex) => {
+						{virtualizer.getVirtualItems().map((virtualItem) => {
+							const itemIndex = virtualItem.index;
+							const item = renderedTreeItems[itemIndex];
 							const itemId = item.getId();
 							const itemData = item.getItemData();
 							return (
-								<FilesSidebarTreeItem
+								<div
 									key={itemId}
-									tree={tree}
-									item={item}
-									displayNameByUserId={displayNameByUserId}
-									trackActiveFileIds={trackActiveFileIds}
-									selectedNodeId={selectedNodeId}
-									isSelected={selectedNodeIds.has(itemId)}
-									isDropZoneIncluded={dropZoneItemIds.has(itemId)}
-									isSearchActive={isSearchActive}
-									isBusy={isBusy}
-									pendingActionNodeIds={pendingActionNodeIds}
-									renameError={renameErrorByNodeId.get(itemId)}
-									isTreeDragging={isTreeDragging}
-									isFallbackTabStop={!hasFocusedRenderedItem && itemIndex === 0}
-									expandedFolderActionsVisible={expandedFolderActionsVisible}
-									canWrite={canWriteItem(itemData)}
-									canUnarchive={canUnarchiveItem(itemData)}
-									hasVisibleReadOnlyDescendant={files_is_node(itemData) && readOnlyAncestorIds.has(itemData._id)}
-									onCreateNode={onCreateNode}
-									onStartRename={onStartRename}
-									onRenameErrorClear={onRenameErrorClear}
-									onCopy={onCopy}
-									onCopyLink={onCopyLink}
-									onCopyNodeId={onCopyNodeId}
-									onShare={onShare}
-									onProperties={onProperties}
-									onArchive={onArchive}
-									onUnarchive={onUnarchive}
-								/>
+									role="presentation"
+									className={"FilesSidebarTree-row" satisfies FilesSidebarTree_ClassNames}
+									style={{ transform: `translateY(${virtualItem.start}px)` }}
+								>
+									<FilesSidebarTreeItem
+										tree={tree}
+										item={item}
+										displayNameByUserId={displayNameByUserId}
+										trackActiveFileIds={trackActiveFileIds}
+										selectedNodeId={selectedNodeId}
+										isSelected={selectedNodeIds.has(itemId)}
+										isDropZoneIncluded={dropZoneItemIds.has(itemId)}
+										isSearchActive={isSearchActive}
+										isBusy={isBusy}
+										pendingActionNodeIds={pendingActionNodeIds}
+										renameError={renameErrorByNodeId.get(itemId)}
+										isTreeDragging={isTreeDragging}
+										isFallbackTabStop={!hasFocusedRenderedItem && itemIndex === 0}
+										expandedFolderActionsVisible={expandedFolderActionsVisible}
+										canWrite={canWriteItem(itemData)}
+										canUnarchive={canUnarchiveItem(itemData)}
+										hasVisibleReadOnlyDescendant={files_is_node(itemData) && readOnlyAncestorIds.has(itemData._id)}
+										onCreateNode={onCreateNode}
+										onStartRename={onStartRename}
+										onRenameErrorClear={onRenameErrorClear}
+										onMenuOpenChange={handleMenuOpenChange}
+										onCopy={onCopy}
+										onCopyLink={onCopyLink}
+										onCopyNodeId={onCopyNodeId}
+										onShare={onShare}
+										onProperties={onProperties}
+										onArchive={onArchive}
+										onUnarchive={onUnarchive}
+									/>
+								</div>
 							);
 						})}
 					</>
@@ -3786,9 +3918,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const convex = useConvex();
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
 
-	const treeNodesList = useQuery(app_convex_api.files_nodes.list_tree, {
-		membershipId,
-	});
+	const treeNodesList = FilesTreeProvider.useContext();
 	const treeItemsList = useMemo(
 		() => (treeNodesList ? files_create_tree_items_list_from_nodes(treeNodesList) : undefined),
 		[treeNodesList],
@@ -3828,12 +3958,15 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const isBusy = isCreatingFile || isArchivingSelection;
 	const uploadInputRef = useRef<HTMLInputElement | null>(null);
 	const importFolderInputRef = useRef<HTMLInputElement | null>(null);
+	const treeScrollElementRef = useRef<HTMLDivElement | null>(null);
+	const treeVirtualizerRef = useRef<Virtualizer<HTMLDivElement, HTMLDivElement> | null>(null);
 
 	const [expandedItems, setExpandedItems] = useState<string[]>([]);
 	const canCollapseAll = expandedItems.length > 1;
 
 	const expandedItemsBeforeSearchRef = useRef<Set<string> | null>(null);
 	const selectedFilePathAutoExpandedKeyRef = useRef<string | null>(null);
+	const lastFocusedSelectedNodeIdRef = useRef<string | null | undefined>(undefined);
 
 	const readOnlyAncestorIds = useMemo(() => files_collect_read_only_ancestor_ids(treeNodesList ?? []), [treeNodesList]);
 	const workspaceWritePermission = useQuery(app_convex_api.access_control.get_current_user_workspace_permission, {
@@ -4697,9 +4830,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 							return;
 						}
 
-						const treeNodesList = localStore.getQuery(app_convex_api.files_nodes.list_tree, {
-							membershipId,
-						});
 						if (!treeNodesList) {
 							return;
 						}
@@ -4717,12 +4847,13 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 							return;
 						}
 
-						localStore.setQuery(
+						optimisticallyUpdateValueInPaginatedQuery(
+							localStore,
 							app_convex_api.files_nodes.list_tree,
 							{
 								membershipId,
 							},
-							treeNodesList.map((node) =>
+							(node) =>
 								node._id === itemId
 									? {
 											...node,
@@ -4731,7 +4862,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 											updatedAt: renamedItem.updatedAt,
 										}
 									: node,
-							),
 						);
 					},
 				},
@@ -4823,35 +4953,41 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	);
 
 	const isInternalTreeDragActiveRef = useRef(false);
-	const reconcileTreeSelectionToNavigatedNode = useFn((treeInstance: TreeInstance<files_TreeItem>) => {
-		const selectableNavigatedNodeId =
-			selectedNodeId && selectedNodeId !== files_ROOT_ID && visibleFileIds.has(selectedNodeId) ? selectedNodeId : null;
-		const selectionDataRef = treeInstance.getDataRef<SelectionDataRef>();
-		const selectedItemIds = treeInstance.getState().selectedItems ?? [];
+	const reconcileTreeSelectionToNavigatedNode = useFn(
+		(treeInstance: TreeInstance<files_TreeItem>, focusNavigatedNode = true) => {
+			const selectableNavigatedNodeId =
+				selectedNodeId && selectedNodeId !== files_ROOT_ID && visibleFileIds.has(selectedNodeId)
+					? selectedNodeId
+					: null;
+			const selectionDataRef = treeInstance.getDataRef<SelectionDataRef>();
+			const selectedItemIds = treeInstance.getState().selectedItems ?? [];
 
-		if (!selectableNavigatedNodeId) {
-			if (selectedItemIds.length === 0 && !selectionDataRef.current.selectUpToAnchorId) {
+			if (!selectableNavigatedNodeId) {
+				if (selectedItemIds.length === 0 && !selectionDataRef.current.selectUpToAnchorId) {
+					return;
+				}
+
+				selectionDataRef.current.selectUpToAnchorId = null;
+				treeInstance.setSelectedItems([]);
 				return;
 			}
 
-			selectionDataRef.current.selectUpToAnchorId = null;
-			treeInstance.setSelectedItems([]);
-			return;
-		}
+			if (
+				selectedItemIds.length === 1 &&
+				selectedItemIds[0] === selectableNavigatedNodeId &&
+				selectionDataRef.current.selectUpToAnchorId === selectableNavigatedNodeId
+			) {
+				return;
+			}
 
-		if (
-			selectedItemIds.length === 1 &&
-			selectedItemIds[0] === selectableNavigatedNodeId &&
-			selectionDataRef.current.selectUpToAnchorId === selectableNavigatedNodeId
-		) {
-			return;
-		}
-
-		// Keep drag cleanup aligned with the route-owned navigated row, not Headless Tree's temporary drag source.
-		selectionDataRef.current.selectUpToAnchorId = selectableNavigatedNodeId;
-		treeInstance.setSelectedItems([selectableNavigatedNodeId]);
-		treeInstance.getItemInstance(selectableNavigatedNodeId).setFocused();
-	});
+			// Keep drag cleanup aligned with the route-owned navigated row, not Headless Tree's temporary drag source.
+			selectionDataRef.current.selectUpToAnchorId = selectableNavigatedNodeId;
+			treeInstance.setSelectedItems([selectableNavigatedNodeId]);
+			if (focusNavigatedNode) {
+				treeInstance.getItemInstance(selectableNavigatedNodeId).setFocused();
+			}
+		},
+	);
 
 	const reconcileTreeSelectionToNavigatedNodeAfterInternalDrag = useFn((treeInstance: TreeInstance<files_TreeItem>) => {
 		if (!isInternalTreeDragActiveRef.current) {
@@ -4976,6 +5112,10 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 	const tree = useTree<files_TreeItem>({
 		rootItemId: files_ROOT_ID,
+		instanceBuilder: buildProxiedInstance,
+		scrollToItem: (item) => {
+			treeVirtualizerRef.current?.scrollToIndex(item.getItemMeta().index, { align: "auto" });
+		},
 		state: {
 			expandedItems,
 			renamingItem,
@@ -5246,6 +5386,10 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	});
 
 	const handleShareModalClose = useFn(() => {
+		if (shareNodeId) {
+			tree().getItemInstance(shareNodeId).setFocused();
+			tree().updateDomFocus();
+		}
 		setShareNodeId(null);
 	});
 
@@ -5255,6 +5399,9 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	});
 
 	const handlePropertiesModalClose = useFn(() => {
+		if (propertiesNodeId) {
+			tree().getItemInstance(propertiesNodeId).setFocused();
+		}
 		setPropertiesNodeId(null);
 	});
 
@@ -5637,21 +5784,36 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		}
 	}, [expandedItems, hasSelectedFileInTree, selectedNodeId, setExpandedItems, treeItems, visibleFileIds]);
 
-	// Auto focus file in tree on file navigation
+	// Follow navigation, but keep keyboard focus through live node updates.
 	useEffect(() => {
+		const currentTree = tree();
+		const focusedItemId = currentTree.getState().focusedItem;
+		// A create action can navigate before its node reaches the tree query.
+		const availableSelectedNodeId = selectedNodeId && treeItems?.itemById.has(selectedNodeId) ? selectedNodeId : null;
+		// Hidden rows and the synthetic root have index -1.
+		if (
+			(!availableSelectedNodeId || lastFocusedSelectedNodeIdRef.current === availableSelectedNodeId) &&
+			focusedItemId &&
+			currentTree.getItemInstance(focusedItemId).getItemMeta().index >= 0
+		) {
+			return;
+		}
 		const nextFocusedItemId =
-			(selectedNodeId && visibleFileIds.has(selectedNodeId) ? selectedNodeId : undefined) ??
-			treeItems?.sortedItemsIdsByParentId.get(files_ROOT_ID)?.[0];
+			(selectedNodeId && selectedNodeId !== files_ROOT_ID && visibleFileIds.has(selectedNodeId)
+				? selectedNodeId
+				: undefined) ?? currentTree.getItems()[0]?.getId();
 		if (!nextFocusedItemId) {
 			return;
 		}
 
-		tree().getItemInstance(nextFocusedItemId).setFocused();
-	}, [visibleFileIds, selectedNodeId]);
+		lastFocusedSelectedNodeIdRef.current = availableSelectedNodeId;
+		currentTree.getItemInstance(nextFocusedItemId).setFocused();
+	}, [visibleFileIds, selectedNodeId, treeItems]);
 
 	// Keep the URL-owned selected node as the single selected tree row; root/home means no tree row is selected.
 	useLayoutEffect(() => {
-		reconcileTreeSelectionToNavigatedNode(tree());
+		// The focus effect above handles route and visibility changes.
+		reconcileTreeSelectionToNavigatedNode(tree(), false);
 	}, [selectedNodeId, visibleFileIds]);
 
 	// The `aside` gets a name because the app sidebar is also a `complementary` landmark. Two landmarks
@@ -5721,6 +5883,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			/>
 
 			<div
+				ref={treeScrollElementRef}
 				className={cn(
 					"FilesSidebar-content" satisfies FilesSidebar_ClassNames,
 					"app-scrollable" satisfies AppClassName,
@@ -5728,6 +5891,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			>
 				<FilesSidebarTree
 					tree={tree}
+					scrollElementRef={treeScrollElementRef}
+					virtualizerRef={treeVirtualizerRef}
 					isTreeLoading={treeItemsList === undefined}
 					showEmptyState={showEmptyState}
 					isSearchActive={isSearchActive}
@@ -5737,6 +5902,7 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					trackActiveFileIds={trackActiveFileIds}
 					selectedNodeId={selectedNodeId}
 					selectedNodeIds={selectedNodeIds}
+					dialogNodeId={propertiesNodeId ?? shareNodeId}
 					isBusy={isBusy}
 					isUploadingFile={isUploadingFile}
 					pendingActionNodeIds={pendingActionNodeIds}
@@ -6510,6 +6676,221 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(maxDone).toBe(0);
 			expect(maxFailed).toBe(0);
 			expect(useFilesImportStore.getState().phase).toBe("idle");
+		});
+	});
+
+	describe("tree_item_get_hidden_track_file_ids_for_descendants", () => {
+		test("ends ancestor guides without loading every sibling", async () => {
+			const { createTree } = await import("@headless-tree/core");
+			const childIds = Array.from({ length: 5_000 }, (_, index) => `child-${index}`);
+			const childrenById = new Map([
+				[files_ROOT_ID, ["folder"]],
+				["folder", childIds],
+				["child-4999", ["nested"]],
+			]);
+			const getChildren = vi.fn((id: string) => childrenById.get(id) ?? []);
+			const tree = createTree<files_TreeItem>({
+				rootItemId: files_ROOT_ID,
+				initialState: { expandedItems: ["folder", "child-4999"] },
+				getItemName: (item) => item.getId(),
+				isItemFolder: () => true,
+				dataLoader: {
+					getItem: (id) =>
+						test_node({
+							id,
+							parentId: id === "folder" ? files_ROOT_ID : id === "nested" ? "child-4999" : "folder",
+							kind: "folder",
+							name: id,
+						}),
+					getChildren,
+				},
+				features: [syncDataLoaderFeature],
+			});
+			tree.setMounted(true);
+			tree.rebuildTree();
+			getChildren.mockClear();
+
+			expect(tree_item_get_hidden_track_file_ids_for_descendants(tree.getItemInstance("child-0"))).toEqual(new Set());
+			expect(tree_item_get_hidden_track_file_ids_for_descendants(tree.getItemInstance("nested"))).toEqual(
+				new Set(["child-4999", "folder"]),
+			);
+			expect(tree_item_get_hidden_track_file_ids_for_descendants(tree.getItemInstance("folder"))).toEqual(new Set());
+			expect(getChildren).not.toHaveBeenCalled();
+		});
+	});
+
+	describe("FilesSidebarTree", () => {
+		test("virtualizes large trees while keeping focus, rename, dialog, and placeholder rows", async () => {
+			const { act, cleanup, fireEvent, render, waitFor } = await import("@testing-library/react");
+			const { ConvexProvider } = await import("convex/react");
+			const { app_convex } = await import("@/lib/app-convex-client.ts");
+			const emptyResult: never[] = [];
+			vi.spyOn(app_convex, "watchQuery").mockReturnValue({
+				onUpdate: () => () => {},
+				localQueryResult: () => emptyResult,
+				journal: () => undefined,
+			});
+			vi.spyOn(AppTenantProvider, "useContext").mockReturnValue({
+				membershipId: "membership" as app_convex_Id<"organizations_workspaces_users">,
+				organizationId: "organization" as app_convex_Id<"organizations">,
+				organizationName: "organization",
+				workspaceId: "workspace" as app_convex_Id<"organizations_workspaces">,
+				workspaceName: "workspace",
+			});
+			// happy-dom has no layout or native scrolling. Keep the real virtualizer and row UI.
+			vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockReturnValue(450);
+			vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockReturnValue(300);
+			vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(450);
+			vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockReturnValue(225_049);
+			vi.spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(function (
+				this: HTMLElement,
+				options: ScrollToOptions | number,
+				y?: number,
+			) {
+				this.scrollTop = typeof options === "number" ? (y ?? 0) : (options.top ?? 0);
+				this.dispatchEvent(new Event("scroll"));
+			});
+
+			const nodes = Array.from({ length: 5_000 }, (_, index) =>
+				test_node({ id: `child-${index}`, parentId: files_ROOT_ID, kind: "folder", name: `child-${index}` }),
+			);
+			const itemById = new Map<string, files_TreeItem>(nodes.map((node) => [node._id, node]));
+			itemById.set(files_ROOT_ID, files_SYNTHETIC_ROOT_FOLDER);
+			const childIds = nodes.map((node) => node._id);
+			const treeRef = React.createRef<TreeInstance<files_TreeItem>>();
+			const virtualizerRef = React.createRef<Virtualizer<HTMLDivElement, HTMLDivElement>>();
+			const handleAction = vi.fn();
+			function TestTree(props: { isSearchActive?: boolean; selectedNodeId?: string; dialogNodeId?: string }) {
+				const scrollElementRef = useRef<HTMLDivElement | null>(null);
+				const tree = useTree<files_TreeItem>({
+					rootItemId: files_ROOT_ID,
+					instanceBuilder: buildProxiedInstance,
+					initialState: { expandedItems: ["child-0"], focusedItem: "child-0" },
+					dataLoader: {
+						getItem: (id) => itemById.get(id)!,
+						getChildren: (id) => (id === files_ROOT_ID ? childIds : []),
+					},
+					features: [
+						syncDataLoaderFeature,
+						selectionFeature,
+						hotkeysCoreFeature,
+						dragAndDropFeature,
+						renamingFeature,
+						expandAllFeature,
+						propMemoizationFeature,
+					],
+					getItemName: (item) => item.getItemData().name,
+					isItemFolder: () => true,
+					scrollToItem: (item) => virtualizerRef.current?.scrollToIndex(item.getItemMeta().index),
+				});
+				useImperativeHandle(treeRef, tree);
+				return (
+					<ConvexProvider client={app_convex}>
+						<div ref={scrollElementRef}>
+							<FilesSidebarTree
+								tree={tree}
+								scrollElementRef={scrollElementRef}
+								virtualizerRef={virtualizerRef}
+								isTreeLoading={false}
+								showEmptyState={false}
+								isSearchActive={props.isSearchActive ?? false}
+								isSearchLoading={false}
+								isSearchFailed={false}
+								displayNameByUserId={new Map()}
+								trackActiveFileIds={new Set()}
+								selectedNodeId={props.selectedNodeId ?? null}
+								selectedNodeIds={new Set(childIds)}
+								dialogNodeId={props.dialogNodeId ?? null}
+								isBusy={false}
+								isUploadingFile={false}
+								pendingActionNodeIds={new Set()}
+								renameErrorByNodeId={new Map()}
+								canWriteItem={() => true}
+								canUnarchiveItem={() => true}
+								readOnlyAncestorIds={new Set()}
+								onCreateNode={handleAction}
+								onStartRename={handleAction}
+								onRenameErrorClear={handleAction}
+								onCopy={handleAction}
+								onCopyLink={handleAction}
+								onCopyNodeId={handleAction}
+								onShare={handleAction}
+								onProperties={handleAction}
+								onArchive={handleAction}
+								onUnarchive={handleAction}
+							/>
+						</div>
+					</ConvexProvider>
+				);
+			}
+
+			try {
+				const view = render(<TestTree />);
+				await waitFor(() => expect(view.queryAllByRole("treeitem").length).toBeGreaterThan(5));
+				expect(view.queryAllByRole("treeitem").length).toBeLessThan(30);
+				expect(virtualizerRef.current?.getTotalSize()).toBe(225_049);
+				const firstRow = view.getByRole("treeitem", { name: "child-0" });
+				expect(firstRow.getAttribute("aria-setsize")).toBe("5000");
+				expect(firstRow.getAttribute("aria-posinset")).toBe("1");
+				expect(view.container.querySelectorAll(".FilesSidebarTreeItemPlaceholder")).toHaveLength(1);
+
+				firstRow.focus();
+				fireEvent.keyDown(firstRow, { key: "End", code: "End" });
+				await waitFor(() => expect(document.activeElement?.getAttribute("data-file-id")).toBe("child-4999"));
+				expect(view.queryAllByRole("treeitem").length).toBeLessThan(30);
+				expect(view.getByRole("treeitem", { name: "child-4999" }).getAttribute("aria-posinset")).toBe("5000");
+
+				act(() => virtualizerRef.current?.scrollToIndex(2_000));
+				await waitFor(() => expect(view.getByRole("treeitem", { name: "child-2000" })).toBeTruthy());
+				expect(document.activeElement?.getAttribute("data-file-id")).toBe("child-4999");
+				view.rerender(<TestTree isSearchActive dialogNodeId="child-3000" />);
+				expect(virtualizerRef.current?.getTotalSize()).toBe(225_004);
+				expect(view.getByRole("treeitem", { name: "child-3000" })).toBeTruthy();
+				view.rerender(<TestTree isSearchActive />);
+				expect(view.queryByRole("treeitem", { name: "child-3000" })).toBeNull();
+
+				act(() => treeRef.current?.getItemInstance("child-2000").startRenaming());
+				await waitFor(() => expect(view.getByRole("textbox")).toBeTruthy());
+				const renameInput = view.getByRole("textbox");
+				act(() => virtualizerRef.current?.scrollToIndex(4_000));
+				expect(renameInput.isConnected).toBe(true);
+				act(() => treeRef.current?.abortRenaming());
+				// Headless Tree restores focus through a timer after the row is mounted.
+				await waitFor(() => expect(document.activeElement?.getAttribute("data-file-id")).toBe("child-2000"), {
+					timeout: 5_000,
+				});
+
+				view.rerender(<TestTree selectedNodeId="child-1000" />);
+				await waitFor(() => expect(view.getByRole("treeitem", { name: "child-1000" })).toBeTruthy());
+				act(() => virtualizerRef.current?.scrollToIndex(4_000));
+				view.rerender(<TestTree selectedNodeId="child-1000" />);
+				expect(view.queryByRole("treeitem", { name: "child-1000" })).toBeNull();
+				expect(view.queryAllByRole("treeitem").length).toBeLessThan(30);
+
+				const menuButton = view.getByRole("button", { name: "More actions for child-4000" });
+				act(() => menuButton.focus());
+				expect(treeRef.current?.getState().focusedItem).toBe("child-4000");
+				await act(async () => fireEvent.click(menuButton));
+				await waitFor(() => expect(view.getByRole("menu")).toBeTruthy());
+				act(() => virtualizerRef.current?.scrollToIndex(1_000));
+				expect(menuButton.isConnected).toBe(true);
+				fireEvent.keyDown(view.getByRole("menu"), { key: "Escape", code: "Escape" });
+				await waitFor(() => expect(view.queryByRole("menu")).toBeNull());
+				expect(treeRef.current?.getState().focusedItem).toBe("child-4000");
+				expect(menuButton.isConnected).toBe(true);
+				await waitFor(() => expect(document.activeElement).toBe(menuButton));
+
+				const arrowButton = view.getByRole("button", { name: "Expand folder child-1001" });
+				act(() => arrowButton.focus());
+				fireEvent.click(arrowButton);
+				expect(treeRef.current?.getState().focusedItem).toBe("child-1001");
+				act(() => virtualizerRef.current?.scrollToIndex(0));
+				expect(arrowButton.isConnected).toBe(true);
+				expect(document.activeElement).toBe(arrowButton);
+			} finally {
+				cleanup();
+				vi.restoreAllMocks();
+			}
 		});
 	});
 

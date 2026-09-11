@@ -382,8 +382,8 @@ async function seed_paginated_bash_listing_fixture(ctx: MutationCtx) {
 	return { ...membership, docsFolderId };
 }
 
-describe("paginated bash listing queries", () => {
-	test("list_tree returns active and archived nodes in treePath order", async () => {
+describe("list_tree", () => {
+	test("returns active and archived nodes across pages in treePath order", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
 		const asUser = t.withIdentity({
@@ -392,9 +392,24 @@ describe("paginated bash listing queries", () => {
 			name: "Test User",
 		});
 
-		const treeNodesList = await asUser.query(api.files_nodes.list_tree, {
+		const firstPage = await asUser.query(api.files_nodes.list_tree, {
 			membershipId: db.membershipId,
+			paginationOpts: { numItems: 3, cursor: null },
 		});
+		const secondPage = await asUser.query(api.files_nodes.list_tree, {
+			membershipId: db.membershipId,
+			paginationOpts: { numItems: 3, cursor: firstPage.continueCursor },
+		});
+		const thirdPage = await asUser.query(api.files_nodes.list_tree, {
+			membershipId: db.membershipId,
+			paginationOpts: { numItems: 3, cursor: secondPage.continueCursor },
+		});
+		const treeNodesList = [...firstPage.page, ...secondPage.page, ...thirdPage.page];
+		expect(firstPage.isDone).toBe(false);
+		expect(secondPage.isDone).toBe(false);
+		expect(thirdPage.isDone).toBe(true);
+		expect(firstPage.page).toHaveLength(3);
+		expect(secondPage.page).toHaveLength(3);
 
 		expect(treeNodesList.map((item) => item.path)).toEqual([
 			"/docs-archive",
@@ -409,6 +424,63 @@ describe("paginated bash listing queries", () => {
 		expect(treeNodesList.map((item) => item.archiveOperationId)).toContain("archive-operation-test");
 	});
 
+	test("caps large page requests and continues without losing nodes", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => {
+			const membership = await test_mocks_fill_db_with.membership(ctx);
+			await Promise.all(
+				Array.from({ length: 501 }, (_, index) => {
+					const name = `file-${String(index).padStart(4, "0")}.md`;
+					return ctx.db.insert("files_nodes", {
+						...test_mocks.files.base(),
+						organizationId: membership.organizationId,
+						workspaceId: membership.workspaceId,
+						createdBy: membership.userId,
+						updatedBy: membership.userId,
+						name,
+						path: `/${name}`,
+						treePath: `/${name}`,
+					});
+				}),
+			);
+			return membership;
+		});
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const firstPage = await asUser.query(api.files_nodes.list_tree, {
+			membershipId: db.membershipId,
+			paginationOpts: { numItems: 40_000, cursor: null },
+		});
+		const secondPage = await asUser.query(api.files_nodes.list_tree, {
+			membershipId: db.membershipId,
+			paginationOpts: { numItems: 40_000, cursor: firstPage.continueCursor },
+		});
+
+		expect(firstPage.page).toHaveLength(500);
+		expect(firstPage.isDone).toBe(false);
+		expect(secondPage.page).toHaveLength(1);
+		expect(secondPage.isDone).toBe(true);
+		expect(new Set([...firstPage.page, ...secondPage.page].map((node) => node._id)).size).toBe(501);
+	});
+
+	test("refuses missing auth and ends a different user's membership with an empty page", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
+		const other = await t.run(async (ctx) =>
+			test_mocks_fill_db_with.membership(ctx, { organizationName: "other-organization" }),
+		);
+		const args = { membershipId: db.membershipId, paginationOpts: { numItems: 3, cursor: null } };
+		await expect(t.query(api.files_nodes.list_tree, args)).rejects.toThrow("Unauthenticated");
+
+		const asOther = t.withIdentity({ issuer: "https://clerk.test", external_id: other.userId });
+		expect(await asOther.query(api.files_nodes.list_tree, args)).toEqual({
+			page: [],
+			isDone: true,
+			continueCursor: "",
+		});
+	});
+});
+
+describe("paginated bash listing queries", () => {
 	test("paginates direct children without descendants or archived nodes", async () => {
 		const t = test_convex();
 		const db = await t.run(async (ctx) => seed_paginated_bash_listing_fixture(ctx));
@@ -930,8 +1002,9 @@ test("generated sibling file is visible in the tree query", async () => {
 		return { sourceNodeId, markdownNodeId };
 	});
 
-	const treeNodesList = await asUser.query(api.files_nodes.list_tree, {
+	const { page: treeNodesList } = await asUser.query(api.files_nodes.list_tree, {
 		membershipId: db.membershipId,
+		paginationOpts: { numItems: 500, cursor: null },
 	});
 
 	const treeNodeIds = treeNodesList.map((fileNode) => fileNode._id);
@@ -10438,7 +10511,10 @@ describe("search box doors", () => {
 		});
 		if (written._nay) throw new Error(written._nay.message);
 
-		const tree = await asOwner.query(api.files_nodes.list_tree, { membershipId: db.membershipId });
+		const { page: tree } = await asOwner.query(api.files_nodes.list_tree, {
+			membershipId: db.membershipId,
+			paginationOpts: { numItems: 500, cursor: null },
+		});
 		const tasksFolderId = tree.find((fileNode) => fileNode.path === "/tasks")!._id;
 
 		return { db, asOwner, openTaskId, fixedTaskId, archivedTaskId, tasksFolderId };
@@ -10896,7 +10972,10 @@ describe("search box doors", () => {
 	test("archiving a folder drops its keys and values from the catalog", async () => {
 		const t = test_convex();
 		const seeded = await seed_search_box_fixture(t);
-		const tree = await seeded.asOwner.query(api.files_nodes.list_tree, { membershipId: seeded.db.membershipId });
+		const { page: tree } = await seeded.asOwner.query(api.files_nodes.list_tree, {
+			membershipId: seeded.db.membershipId,
+			paginationOpts: { numItems: 500, cursor: null },
+		});
 		const archiveFolderId = tree.find((fileNode) => fileNode.path === "/tasks-archive")!._id;
 		const keys = () =>
 			seeded.asOwner
@@ -16234,7 +16313,10 @@ describe("selected file writers", () => {
 			}),
 		).toBe(true);
 
-		const tree = await asMember.query(api.files_nodes.list_tree, { membershipId: member.membershipId });
+		const { page: tree } = await asMember.query(api.files_nodes.list_tree, {
+			membershipId: member.membershipId,
+			paginationOpts: { numItems: 500, cursor: null },
+		});
 		expect(tree.find((node) => node._id === innerId)).toMatchObject({ canWrite: true, writePolicyState: "self" });
 		expect(tree.find((node) => node._id === deepId)).toMatchObject({ canWrite: true, writePolicyState: "inherited" });
 	});
@@ -18238,7 +18320,10 @@ describe("files_nodes public read-only view", () => {
 		const t = test_convex();
 		const f = await seed_hidden_lock_root(t);
 
-		const memberTree = await f.asMember.query(api.files_nodes.list_tree, { membershipId: f.memberMembershipId });
+		const { page: memberTree } = await f.asMember.query(api.files_nodes.list_tree, {
+			membershipId: f.memberMembershipId,
+			paginationOpts: { numItems: 500, cursor: null },
+		});
 		// Only the granted scope is listed; the outer lock root itself never appears.
 		expect(memberTree.map((node) => node.path).sort()).toEqual(["/outer/inner", "/outer/inner/secret.md"]);
 		for (const node of memberTree) {
@@ -18251,7 +18336,10 @@ describe("files_nodes public read-only view", () => {
 		}
 
 		// The owner can read the lock root, so each returned node may name it.
-		const ownerTree = await f.asOwner.query(api.files_nodes.list_tree, { membershipId: f.db.membershipId });
+		const { page: ownerTree } = await f.asOwner.query(api.files_nodes.list_tree, {
+			membershipId: f.db.membershipId,
+			paginationOpts: { numItems: 500, cursor: null },
+		});
 		const outerRow = ownerTree.find((node) => node._id === f.outerId);
 		const innerRow = ownerTree.find((node) => node._id === f.innerId);
 		expect(outerRow).toMatchObject({
@@ -18260,6 +18348,41 @@ describe("files_nodes public read-only view", () => {
 			writePolicySourcePath: "/outer",
 		});
 		expect(innerRow).toMatchObject({
+			writePolicyState: "inherited",
+			writePolicySourceNodeId: f.outerId,
+			writePolicySourcePath: "/outer",
+		});
+	});
+
+	test("list_tree keeps paging past a hidden node and checks lock sources from another page", async () => {
+		const t = test_convex();
+		const f = await seed_hidden_lock_root(t);
+		const hiddenPage = await f.asMember.query(api.files_nodes.list_tree, {
+			membershipId: f.memberMembershipId,
+			paginationOpts: { numItems: 1, cursor: null },
+		});
+		expect(hiddenPage.page).toEqual([]);
+		expect(hiddenPage.isDone).toBe(false);
+		const memberPage = await f.asMember.query(api.files_nodes.list_tree, {
+			membershipId: f.memberMembershipId,
+			paginationOpts: { numItems: 1, cursor: hiddenPage.continueCursor },
+		});
+		expect(memberPage.page).toHaveLength(1);
+		expect(memberPage.page[0]).toMatchObject({ _id: f.innerId, writePolicyState: "inherited" });
+		expect(memberPage.page[0]).not.toHaveProperty("writePolicySourceNodeId");
+		expect(memberPage.page[0]).not.toHaveProperty("writePolicySourcePath");
+
+		const sourcePage = await f.asOwner.query(api.files_nodes.list_tree, {
+			membershipId: f.db.membershipId,
+			paginationOpts: { numItems: 1, cursor: null },
+		});
+		const ownerPage = await f.asOwner.query(api.files_nodes.list_tree, {
+			membershipId: f.db.membershipId,
+			paginationOpts: { numItems: 1, cursor: sourcePage.continueCursor },
+		});
+		expect(ownerPage.page).toHaveLength(1);
+		expect(ownerPage.page[0]).toMatchObject({
+			_id: f.innerId,
 			writePolicyState: "inherited",
 			writePolicySourceNodeId: f.outerId,
 			writePolicySourcePath: "/outer",
@@ -18389,7 +18512,10 @@ describe("member controls on plugin-labeled nodes", () => {
 			path: "/labeled/child/leaf",
 		});
 		if (created._nay) throw new Error(created._nay.message);
-		const tree = await asOwner.query(api.files_nodes.list_tree, { membershipId: db.membershipId });
+		const { page: tree } = await asOwner.query(api.files_nodes.list_tree, {
+			membershipId: db.membershipId,
+			paginationOpts: { numItems: 500, cursor: null },
+		});
 		const folderId = tree.find((node) => node.path === "/labeled")!._id;
 		const childId = tree.find((node) => node.path === "/labeled/child")!._id;
 		const leafId = created._yay.nodeId;

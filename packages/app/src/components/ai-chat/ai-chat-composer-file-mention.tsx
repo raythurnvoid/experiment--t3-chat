@@ -7,7 +7,6 @@ import "./ai-chat-composer-file-mention.css";
 
 import type { MouseEvent, Ref } from "react";
 import { memo, useEffect, useId, useImperativeHandle, useState } from "react";
-import { useQuery } from "convex/react";
 import { computePosition, flip, offset, shift } from "@floating-ui/dom";
 import { PluginKey } from "@tiptap/pm/state";
 import { mergeAttributes, type Editor } from "@tiptap/core";
@@ -24,8 +23,8 @@ import type {
 	MyMenuItemContentSecondary_ClassNames,
 } from "@/components/my-menu.tsx";
 import { cn } from "@/lib/utils.ts";
-import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
-import { app_convex_api, type app_convex_Doc } from "@/lib/app-convex-client.ts";
+import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
+import type { app_convex_Doc } from "@/lib/app-convex-client.ts";
 import type { AppClassName, AppElementId } from "@/lib/dom-utils.ts";
 
 /**
@@ -264,8 +263,7 @@ const AiChatComposerFileMentionList = memo(function AiChatComposerFileMentionLis
 
 	const listboxId = `AiChatComposerFileMentionList-${useId()}`;
 
-	const { membershipId } = AppTenantProvider.useContext();
-	const treeNodes = useQuery(app_convex_api.files_nodes.list_tree, { membershipId });
+	const treeNodes = FilesTreeProvider.useContext();
 	const items = treeNodes && filter_mention_items(treeNodes, query);
 
 	// The stored highlight belongs to the query it was set for; a new query

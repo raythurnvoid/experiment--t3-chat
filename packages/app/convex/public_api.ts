@@ -169,6 +169,7 @@ const CREDENTIAL_SECRET_BYTES = 32;
 const API_CREDENTIAL_NAME_MAX_CHARS = 80;
 // Keep the API key list bounded. The active API credential quota is stored in `quotas`.
 const API_CREDENTIAL_LIST_MAX = 100;
+const API_CREDENTIAL_LAST_USED_UPDATE_INTERVAL_MS = 60_000;
 const PUBLIC_API_GRANT_TTL_MS = 10 * 60 * 1000;
 const PUBLIC_API_GRANT_CLEANUP_BATCH_SIZE = 100;
 const PLUGIN_SERVICE_GRANT_TOKEN_PREFIX = "psg_";
@@ -1887,7 +1888,11 @@ export const mark_credential_used = internalMutation({
 	returns: v.null(),
 	handler: async (ctx, args) => {
 		const credential = await ctx.db.get("api_credentials", args.credentialId);
-		if (credential) {
+		// Frequent timestamp writes make concurrent file writes retry on the same credential doc.
+		if (
+			credential &&
+			(credential.lastUsedAt === null || args.now - credential.lastUsedAt >= API_CREDENTIAL_LAST_USED_UPDATE_INTERVAL_MS)
+		) {
 			await ctx.db.patch("api_credentials", credential._id, { lastUsedAt: args.now });
 		}
 

@@ -213,12 +213,19 @@
 
 	/* #region tree */
 	.FilesSidebarTree {
-		flex: 1;
-		padding-block: 2px;
+		flex: 1 0 auto;
+		min-height: 100%;
 
 		/* Column flex so the drop zone indicator can push itself to the panel bottom. */
 		display: flex;
 		flex-direction: column;
+	}
+
+	.FilesSidebarTree-row {
+		position: absolute;
+		top: 0;
+		left: 0;
+		width: 100%;
 	}
 
 	.FilesSidebarTree-empty-state {

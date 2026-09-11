@@ -53,6 +53,19 @@ export default tseslint.config({
 });
 ```
 
+## Development and operator guides
+
+Read [AGENTS.md](AGENTS.md) for runtime, commands, app structure, and checks. Node commands use `vp env exec`; package commands use pnpm.
+
+- [Large file imports and recovery](.agents/skills/convex-admin-ops/references/large-file-imports.md): partial writes, upload targets, byte checks, billing queues, and safe cleanup.
+- [Convex operations](.agents/skills/convex-admin-ops/SKILL.md): deployment checks, Windows JSON arguments, and server/local clock differences.
+- [Files tree](.agents/skills/files-explorer-tree/SKILL.md): shared paginated loading, virtual rows, focus, and drag/drop.
+- [Browser QA](.agents/skills/app-playwriter-harness/SKILL.md) and [known hazards](.agents/skills/app-playwriter-harness/references/known-hazards.md): browser ownership, closed tabs, selectors, and recovery.
+- [Performance checks](.agents/skills/perf-profiling/SKILL.md): separate network loading from rendering and verify the production bundle being measured.
+- [Editable text](.agents/skills/files-editable-text/SKILL.md): exact Markdown storage, parser ownership, and content refusal markers.
+
+Run-specific exports, scripts, proofs, and handoffs belong in the personal task folder described in AGENTS.md. Keep their credentials and business data out of these guides.
+
 ## HTML file preview
 
 The file Preview tab uses the separate static runtime in [packages/file-preview](packages/file-preview/README.md). For local use, build it with `vp env exec pnpm --dir packages/file-preview run build:local`, then run `vp env exec pnpm --dir packages/file-preview run preview:local`. Reuse an existing server on port 5175.

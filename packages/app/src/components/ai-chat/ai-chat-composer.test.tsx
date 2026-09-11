@@ -11,19 +11,31 @@ import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 // The mention popup reads the workspace tree through a Convex subscription;
 // serve a small fixed tree instead of a live client. Tests can override the
 // mock per test (for example to render the loading state).
-const { mentionTreeNodes, useQueryMock } = vi.hoisted(() => {
+const { mentionTreeNodes, treeNodesMock } = vi.hoisted(() => {
 	const mentionTreeNodes = [
 		{ name: "docs", path: "/docs", kind: "folder", archiveOperationId: null },
 		{ name: "api.md", path: "/docs/api.md", kind: "file", archiveOperationId: null },
 	];
-	return { mentionTreeNodes, useQueryMock: vi.fn((): typeof mentionTreeNodes | undefined => mentionTreeNodes) };
+	return {
+		mentionTreeNodes,
+		treeNodesMock: vi.fn(
+			(_query: unknown, _args: unknown, _options: unknown): typeof mentionTreeNodes | undefined => mentionTreeNodes,
+		),
+	};
 });
 
 vi.mock("convex/react", async (importOriginal) => {
 	const original = await importOriginal<typeof import("convex/react")>();
 	return {
 		...original,
-		useQuery: useQueryMock,
+		usePaginatedQuery: (query: unknown, args: unknown, options: unknown) => {
+			const nodes = args === "skip" ? undefined : treeNodesMock(query, args, options);
+			return {
+				results: nodes ?? [],
+				status: nodes === undefined ? "LoadingFirstPage" : "Exhausted",
+				loadMore: vi.fn(),
+			};
+		},
 	};
 });
 
@@ -51,8 +63,8 @@ describe("AiChatComposer", () => {
 	afterEach(() => {
 		cleanup();
 		// Drop per-test overrides (like the loading state) and restore the tree.
-		useQueryMock.mockReset();
-		useQueryMock.mockImplementation(() => mentionTreeNodes);
+		treeNodesMock.mockReset();
+		treeNodesMock.mockImplementation(() => mentionTreeNodes);
 	});
 
 	test("names the composer textbox and configuration comboboxes", () => {
@@ -580,9 +592,11 @@ describe("AiChatComposer", () => {
 		// The popup lists the workspace tree; ArrowDown moves the highlight from
 		// the folder row to the file row, Enter picks it without submitting.
 		const listbox = await screen.findByRole("listbox", { name: "Files and folders" });
-		expect(useQueryMock).toHaveBeenCalledWith(app_convex_api.files_nodes.list_tree, {
-			membershipId: "membership-1",
-		});
+		expect(treeNodesMock).toHaveBeenCalledWith(
+			app_convex_api.files_nodes.list_tree,
+			{ membershipId: "membership-1" },
+			{ initialNumItems: 500 },
+		);
 
 		// The editor keeps DOM focus, so the popup is exposed through the
 		// textbox's aria-controls and aria-activedescendant.
@@ -814,7 +828,7 @@ describe("AiChatComposer", () => {
 
 	test("shows a loading row while the workspace tree has not arrived", async () => {
 		const onSubmit = vi.fn();
-		useQueryMock.mockReturnValue(undefined);
+		treeNodesMock.mockReturnValue(undefined);
 		render_with_tenant(
 			<AiChatComposer
 				canCancel={false}
