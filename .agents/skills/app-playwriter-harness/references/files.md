@@ -8,6 +8,8 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - `nodeId=root` opens the root folder browser.
 - Folder node ids open the folder browser; file node ids open the editor.
 - Optional `view` values: `rich_text_editor`, `plain_text_editor`, `diff_editor`.
+- There is also a path route, `/w/:organizationName/:workspaceName/files/<file path>`. It resolves the path and replaces the URL with `?nodeId=<id>`. Documents written by an import link to each other this way, so use it to open a file when you know its path but not its id.
+- A link inside a mounted editor does not navigate on a plain click. The editor is editable, so the click only moves the caret. To follow a document link, read its `href` and `goto` it.
 
 ## First Checks
 
@@ -58,6 +60,28 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Folder explorer rows: `.FileNodeViewFolderExplorer-row`.
 - Folder table drop target state: `.FileNodeViewFolderExplorer-row-drop-target`.
 - Folder table dragging state: `.FileNodeViewFolderExplorer-row-dragging`.
+
+### Large And Virtual Trees
+
+- The sidebar scroll owner is `.FilesSidebar-content`. Only viewport rows and active controls stay
+  mounted. DOM row count is not the workspace file count. Use `[role="treeitem"][data-file-id="<id>"]`
+  for a known row; the absolute outer wrapper is only presentation.
+- Scroll with the pointer inside the sidebar, then locate the row again. An offscreen row can leave
+  the DOM between observations. Do not reuse a saved box for drag start. Confirm both boxes in view
+  immediately before mouse-down, and release mouse and Escape after a failed drag probe.
+- Test keyboard focus on both root and file routes. Ctrl-click or Shift-click a row, let a live tree
+  update arrive, then press ArrowDown. Check the exact focused row id separately from selection.
+  The synthetic root has no DOM row. Also check rename cancel/re-entry/save and Properties/Share
+  close, including focus again after 200–400 ms.
+- `Failed to scroll to index ... after 10 attempts` is an unresolved scroll result. Record the
+  focused id, scroll offset, row count, and build. A later wheel scroll does not prove End or drag
+  auto-scroll passed. Test those actions separately.
+- Narrow-layout limit observed at 512 px: the sidebar header can clip Collapse all and More options.
+  Its five 36 px buttons, gap, and padding need 220 px, while the saved panel width is a percentage.
+  Check control hit targets as well as document overflow. This limit was not fixed by virtual rows.
+- A stored binary can be present and downloadable while its workspace has no matching enabled
+  viewer plugin. Record that as a preview limit. Verify bytes, node/asset ids, and Properties
+  separately; do not re-upload the file or install plugins just to make a preview check pass.
 
 ## Upload Fixtures
 
@@ -178,6 +202,9 @@ Use this after changing the right sidebar, tabs, panel group, or chat layout.
 ### Sidebar Create Then Rename By Id
 
 The sidebar `New file` button creates immediately at root with a generated `new-file*.md` name and no rename mode, so never locate the new row by a guessed name — harvest its id by diffing the `data-file-id` sets (verified 2026-08-10):
+
+Use this DOM-diff recipe only in a small tree where every row is mounted. In a virtual tree, scrolling
+also changes that set. Prefer the new `nodeId` in the route after creation, then confirm the exact row.
 
 ```js
 // Call 1: snapshot ids, click New file.

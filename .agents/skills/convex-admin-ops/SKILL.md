@@ -48,6 +48,14 @@ Use `--push` only when you intentionally need to deploy local Convex source chan
 
 For a one-shot push in this repo, run `convex dev --once` with `--typecheck disable` after the normal repo lint/type check has passed. There is no `convex/tsconfig.json`; `--typecheck enable` prints that it skipped type checking and can exit successfully before it pushes anything. Require the final `Convex functions ready!` message, then verify the new schema or function with a readback.
 
+# Fresh Read Timing
+
+Convex and the local machine can have different clocks. For a short read-before-write guard,
+measure elapsed time on the local machine from before the read until just before the write.
+Include browser imports and auth checks in that budget. Do not compare a server `checkedAt`
+with the local clock; a fresh read can appear to come from the future. Use server timestamps
+only when comparing dates produced by the same server clock, such as database update times.
+
 # Failed Deployment Lookup
 
 If `convex dev --once` fails before upload at `team_and_project` with HTTP 500, the installed CLI
@@ -178,12 +186,24 @@ This idempotent mutation deletes that claim and its publisher secrets only. Do n
 
 # Bulk File Import (`data_import`)
 
+For imports with many files, interrupted batches, binary reuse, or cleanup of an older import, first read [Large file imports and recovery](references/large-file-imports.md). It includes the failure modes found during a full workspace import and the evidence needed to resume safely.
+
 `packages/app/convex/data_import.ts` is an internal operator module for bulk-importing files into one workspace. Imports now go through the public API with a write-scoped API key: text files through `/api/v1/files/write` or `/api/v1/files/write-many` (`overwrite: "replace"` for idempotent re-runs, `skipIfUnchanged: true` so re-runs do not mint new versions), and binary files through `/api/v1/files/upload-urls` (presigned PUT urls; pass `skipProcessing: true` for import-style uploads that must skip conversion and plugin dispatch). Ordinary user folder imports do not need any of this: the Files sidebar has a browser bulk import (`files_nodes.create_upload_nodes`, see the [files-explorer-tree skill](../files-explorer-tree/SKILL.md)) that runs the full processing pipeline. What remains here is mostly operator diagnostics:
 
 - `data_import:create_upload_targets` (internalMutation): mints file nodes plus presigned R2 PUT urls for binary files. It inserts assets with `processingWorkId: null`, so the R2 event finalizer records the object without starting conversion or plugin dispatch. Args: `organizationId`, `workspaceId`, `createdBy` (a `users` id), `items` as `[{ path, contentType, size }]`. Re-running a failed path archives and replaces its half-created node. Superseded by `/api/v1/files/upload-urls`, which adds quota and per-path ACL checks; this mutation stays only until the import CLI moves to the public route, then it gets deleted.
 - `data_import:verify_run` (query): returns node counts, asset counts, and `pluginEventRuns` for the workspace. Use `assets.unfinalizedActive` (unfinalized assets referenced by an active node) to judge an import: crashed create attempts and archive-and-replace leave unfinalized rows that no active file references, and those are harmless.
 - `data_import:list_unfinalized` (query): for each unfinalized asset, lists the active/archived node paths and snapshot references that point at it. Use it to prove an asset has zero references before deleting it with `files_nodes_content:cleanup_file_node_creation_assets` (args need the computed R2 keys `organizations/<org>/workspaces/<ws>/assets/<assetId>`).
 - `data_import:verify_metadata` (query): for each given path, counts committed frontmatter metadata docs (`null` when no active node exists). Use it to prove frontmatter indexing after a text import.
+
+For large imports:
+
+- Use `nonCollaborative: true` when creating text records that must keep their source Markdown exactly. This flag does not change an existing file's collaboration mode.
+- Save each batch's paths before sending it, then save every returned node id. A failed `write-many` request can have committed some files. Drain other requests and read those paths before retrying with `overwrite: "fail"`; do not replace an uncertain result blindly. `overwrite: "replace"` is only for a planned replacement whose scope the user approved.
+- `read-many` returns at most 128,000 bytes per file and 384,000 bytes across the response. For larger text, resolve its node id with paginated listing, then use `download-urls` and compare the full bytes or SHA-256 hash. Check `truncated` and every error.
+- Keep the accepted upload target for retries. Minting another target spends the cumulative upload-byte quota again. A timed-out PUT or HTTP 412 needs object readback before recovery. Send the returned headers unchanged; `Content-MD5` can also verify the source bytes on R2 upload.
+- The old `verify_run` and `list_unfinalized` diagnostics collect whole workspace tables. Use paginated readbacks for workspaces with many files, and require the final page before reporting counts.
+- Pages that also read each file's asset and versions can hit `SystemTimeoutError` below the row and index limits. For a read-only scan, retry that same cursor with a smaller page only for the confirmed timeout. Keep a completed-scan marker, row hash, and input hashes so recovery can reuse a complete scan without treating a partial scan as proof.
+- Before replacing old content, back it up and compare it with its source. Reuse binaries only after checking source identity and bytes. Move their existing nodes through the normal move/rename doors so their metadata and comments stay attached.
 
 R2 events can arrive several minutes late through Cloudflare queue retries, so wait on `unfinalizedActive`, not raw `unfinalized`. A crashed create attempt can leave an unfinished asset. The hourly cleanup checks unreferenced assets after 24 hours. For a pending upload with a node, recovery checks the actual R2 object before retirement. After eight days, a missing ordinary upload can lose its unlocked placeholder; a service upload keeps a retired placeholder for a fresh attempt. A saved or archived file with confirmed content stays. Never remove an asset alone while a node or snapshot still uses it.
 

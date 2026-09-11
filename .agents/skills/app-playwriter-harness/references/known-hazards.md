@@ -449,6 +449,7 @@ schema.nodes.image?.isInline; // and per-node spec facts
 
 ## Monaco (plain text and diff editors)
 
+- **Never wait on a bare `.monaco-editor`.** The app always mounts `div.monaco-editor#app_monaco_hoisting_container`, and it is hidden. `waitForSelector` keeps resolving to that hidden node and then times out, even on a route that has no Monaco at all. This bites hardest in an `a, b` selector: the hidden container matches `.monaco-editor` while the editor you actually wanted is still mounting, so the wait fails for the wrong reason. Wait on the concrete editor class instead, such as `.FileEditorRichTextNonCollab-editor-content` for the Rich view.
 - **Synthetic input does not reach Monaco at all since `monaco-editor` 0.56.0** (verified 2026-08-03, in Edge extension mode AND headless direct CDP, on a writable editor). `locator.click()` on `.view-lines` does not focus the editor: no `.focused` class appears and `document.activeElement` stays on `<body>`. `keyboard.type`, `keyboard.insertText`, clipboard paste (`Control+v`), and shortcuts (`Control+a`, `Control+c`, `Control+End`) never reach the model, even when focus is confirmed. The focus target is now `div.native-edit-context` (tabindex 0, `role="textbox"`); `textarea.ime-text-area` still exists but has tabindex -1 and is not the input path. A programmatic `.focus()` on `.native-edit-context` does set `document.activeElement`, but typed input still does not land. Do not burn retries on alternate click or typing recipes, and do not read "typing does nothing" as a read-only editor — probe `aria-readonly` and the toolbar instead.
 - **Update 2026-08-31: focusing through the handle first DOES make `keyboard.type` land.** On the
   non-collaborative diff editor, `await page.evaluate(() => window.__qa.monaco().diffModified.focus())`
@@ -1744,6 +1745,18 @@ Then sum `assertionResults.length` per entry in `testResults`. A ready script is
 `packages/council` when it was written; the same suite is 26 files / 648 tests as of 2026-08-31, so
 read the current summary line rather than these numbers, and check that the two agree — a JSON
 report written by a crashed run still parses.
+
+## A dependency update can reload a running Vitest browser test
+
+After a lockfile change, Vite can find another dependency while a browser test is loading. The log
+says `optimized dependencies changed. reloading`, followed by `Vite unexpectedly reloaded a test`.
+A test file may then fail to import and report zero tests, even while the other suites pass.
+
+Check that sequence before treating the import error as an app failure. Let optimization finish,
+then rerun that exact file with `--project browser` and a path relative to `packages/app`. Read its
+test count. Report the failed full run and the separate rerun; do not call the full run a pass.
+Only change `optimizeDeps.include` if the reload keeps recurring. Verified 2026-09-10 with
+`react-dom/server`: the affected file passed both tests on its next run.
 
 ## Vitest browser tests hang when the checkout path contains `+`
 
