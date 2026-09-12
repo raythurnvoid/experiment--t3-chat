@@ -159,7 +159,7 @@ Node keys are required. `textKind` records the text shape, including when `colla
 
 # End-To-End Flow
 
-HTML Preview can read the member's current `unstaged` branch before Accept or Save. It never calls review preparation or writes proposal content. A stale proposal asks the member to Review or Sync first. A local modified Diff pane is also Proposed changes; the staged pane is not Saved. Preview keeps its selected source and frozen text until Refresh. If that source disappears, it stops the frame and asks for another source instead of silently showing Saved. See [files-editors](../files-editors/SKILL.md#file-tabs-and-html-preview) for the editor lifetime and draft getter rules.
+HTML Preview can read the member's current `unstaged` branch before Accept or Save. It never calls review preparation or writes proposal content. A stale proposal asks the member to Review or Sync first. A local modified Diff pane is also Proposed changes; the staged pane is not Saved. Preview keeps its selected source and frozen text until Refresh. If that source disappears, it stops the frame and asks for another source instead of silently showing Saved. See [files-editors](../files-editors/SKILL.md#file-view-dropdown-and-html-preview) for the editor lifetime and draft getter rules.
 
 Workspace AGENTS.md and skills use the same current-user pending content and paths as ordinary file reads. Startup discovers skill metadata and root rules. Bash loads whole skills and returns rules for the paths it uses. There is no separate saved-only view or activation state. New reads check current access; earlier tool results remain in chat history. See the [workspace skills spec](../ai-chat-skills/SKILL.md).
 

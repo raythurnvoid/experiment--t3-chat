@@ -60,7 +60,7 @@
 		}
 	}
 
-	.FileNodeViewFile-tabs-panel > .FileEditor,
+	.FileNodeViewFile-panel > .FileEditor,
 	.FileNodeView-content-panel > .FileNodeViewFolder {
 		flex: 1 1 auto;
 		min-height: 0;
@@ -308,56 +308,84 @@
 	}
 	/* #endregion stored file */
 
+	/* #region view select */
+	.FileNodeViewViewSelect-trigger {
+		max-width: 240px;
+
+		> span {
+			overflow: hidden;
+			text-overflow: ellipsis;
+			white-space: nowrap;
+		}
+	}
+
+	.FileNodeViewViewSelect-popover {
+		width: min(240px, calc(100vw - 16px));
+		min-width: 0;
+		border: 1px solid #3c4451;
+		border-radius: 6px;
+		background: linear-gradient(#282d35, #1f2329);
+		color: var(--color-fg-11);
+		box-shadow:
+			inset 0 1px 2px oklch(1 0 0 / 0.2),
+			0 4px 6px oklch(0 0 0 / 0.3),
+			0 8px 10px oklch(0 0 0 / 0.18);
+	}
+
+	.FileNodeViewViewSelect-search {
+		background: #282d35;
+		border-bottom-color: #3c4451;
+	}
+
+	.FileNodeViewViewSelect-item {
+		min-height: 32px;
+		padding: 6px 10px;
+		overflow-wrap: anywhere;
+
+		&[aria-selected="true"] {
+			--MySelectItem-background-start: #353b44;
+			--MySelectItem-background-end: #2f343c;
+			font-weight: 600;
+		}
+
+		&[data-active-item],
+		&:hover,
+		&:active {
+			--MySelectItem-background-start: #404752;
+			--MySelectItem-background-end: #383d47;
+		}
+
+		@media (prefers-reduced-motion: reduce) {
+			transition: none;
+		}
+	}
+
+	.FileNodeViewViewSelect-empty {
+		padding: 12px 10px;
+		color: var(--color-fg-10);
+		font-size: 0.875rem;
+	}
+	/* #endregion view select */
+
 	/* #region file views */
-	/* Column filling the content area so the selected tab panel gets all leftover height. The
+	/* Column filling the content area so the selected view gets all leftover height. The
 	   scroll content is height: max-content, so a percentage would collapse; size against the
 	   FileNodeView-editor-area container instead, like the folder readme editor does. Subtract
 	   the sticky toolbar chrome so the whole block fits the scrollport; without it the panel
 	   always overflows by the toolbar height at every scroll position. */
-	.FileNodeViewFile-tabs {
+	.FileNodeViewFile {
 		display: flex;
 		flex-direction: column;
 
 		height: max(480px, calc(100cqh - 44px - var(--app-scrollbar-w) - 1px));
 	}
 
-	.FileNodeViewFile-tabs-rich-text {
+	.FileNodeViewFile-rich-text {
 		height: max-content;
 		min-height: calc(100cqh - 44px - var(--app-scrollbar-w) - 1px);
 	}
 
-	.FileNodeViewFile-tabs-bar {
-		/* Stick below the sticky editor toolbar so the tabs stay visible while the page scrolls.
-		   Reserve a separate row below when the floating status is present. */
-		position: sticky;
-		top: calc(44px + var(--app-scrollbar-w) + 1px);
-		z-index: 1;
-
-		display: flex;
-		align-items: center;
-		min-height: 44px;
-		padding-inline: 8px;
-
-		/* Same secondary-bar surface as the Files header row and the editor toolbar. */
-		background: var(--color-base-1-03);
-		border-bottom: 1px solid var(--color-fg-02);
-	}
-
-	.FileNodeView-content-panel:has(> .FileNodeViewTopStickyFloatingContainer) .FileNodeViewFile-tabs-bar {
-		/* Keep Review and other status controls from covering the file tabs. */
-		min-height: 84px;
-		padding-top: 40px;
-	}
-
-	.FileNodeViewFile-tabs-panels {
-		flex: 1;
-		min-height: 0;
-
-		display: flex;
-		flex-direction: column;
-	}
-
-	.FileNodeViewFile-tabs-panel {
+	.FileNodeViewFile-panel {
 		flex: 1;
 		min-height: 0;
 
@@ -366,22 +394,20 @@
 		overflow: auto;
 	}
 
-	.FileNodeViewFile-tabs-rich-text > .FileNodeViewFile-tabs-panels,
-	.FileNodeViewFile-tabs-rich-text > .FileNodeViewFile-tabs-panels > .FileNodeViewFile-tabs-panel {
+	.FileNodeViewFile-rich-text > .FileNodeViewFile-panel {
 		/* Rich text and its comment anchors share the route's scroll surface. */
 		contain: inline-size style;
 		overflow: visible;
 	}
 
-	.FileNodeViewFile-tabs-bar[hidden],
-	.FileNodeViewFile-tabs-panel[hidden],
+	.FileNodeViewFile-panel[hidden],
 	.FileNodeViewToolbar-editor-actions[hidden] {
 		display: none;
 	}
 	/* #endregion file views */
 
 	/* #region plugin view */
-	/* Column filling the tab panel so the plugin iframe gets all leftover height. */
+	/* Fill the view panel so the plugin iframe gets all leftover height. */
 	.FileNodeViewPluginView {
 		/* Anchors the loading cover below, which is absolute and fills this column. */
 		position: relative;
@@ -533,13 +559,6 @@
 		height: calc(44px + var(--app-scrollbar-w) + 1px);
 		flex: 0 0 auto;
 
-		/* Shared secondary-bar surface: the Files header row, this toolbar, and the
-		   sidebar tabs row must read as one continuous row under the global top bar.
-		   Paint it on the scroll container itself so the scrollbar track below the
-		   toolbar row keeps the same color (same shape as .FileEditorSidebar-toolbar). */
-		background: var(--color-base-1-03);
-		border-bottom: 1px solid var(--color-fg-02);
-
 		/* Use the assembled toolbar as the scroll container because folder/file actions and editor
 		   actions portal in separately. */
 		overflow: auto hidden;
@@ -556,9 +575,14 @@
 
 		width: max-content;
 		min-width: 100%;
-		height: 44px;
+		height: 45px;
+
+		/* Paint only the 44px button row and its border. Keep the scrollbar gutter transparent. */
+		background: var(--color-base-1-03);
+		border-bottom: 1px solid var(--color-fg-02);
 	}
 
+	.FileNodeViewToolbar-view-select,
 	.FileNodeViewToolbarFolderActions,
 	.FileNodeViewToolbarFileDownloadAction,
 	.FileNodeViewToolbar-editor-actions {
@@ -575,7 +599,7 @@
 	.FileNodeViewToolbarFolderActions {
 		flex: 0 0 auto;
 
-		padding: 4px 0 4px 18px;
+		padding: 4px 0;
 
 		overflow-x: visible;
 	}
@@ -588,10 +612,24 @@
 		overflow-x: visible;
 	}
 
-	.FileNodeViewToolbar:not(:has(.FileNodeViewToolbarFolderActions)) .FileNodeViewToolbarFileDownloadAction {
+	.FileNodeViewToolbar-view-select {
+		flex: 0 0 auto;
+		padding: 4px 0 4px 18px;
+
+		&:empty {
+			display: none;
+		}
+	}
+
+	.FileNodeViewToolbar:not(:has(.FileNodeViewToolbar-view-select:not(:empty))) .FileNodeViewToolbarFolderActions,
+	.FileNodeViewToolbar:not(:has(.FileNodeViewToolbar-view-select:not(:empty))):not(
+			:has(.FileNodeViewToolbarFolderActions)
+		)
+		.FileNodeViewToolbarFileDownloadAction {
 		padding-left: 18px;
 	}
 
+	.FileNodeViewToolbar-view-select:not(:empty)::after,
 	.FileNodeViewToolbarFolderActions::after,
 	.FileNodeViewToolbarFileDownloadAction::after {
 		content: "";
@@ -613,7 +651,9 @@
 		contain: layout style;
 	}
 
-	.FileNodeViewToolbar:not(:has(.FileNodeViewToolbarFolderActions)):not(:has(.FileNodeViewToolbarFileDownloadAction))
+	.FileNodeViewToolbar:not(:has(.FileNodeViewToolbar-view-select:not(:empty))):not(
+			:has(.FileNodeViewToolbarFolderActions)
+		):not(:has(.FileNodeViewToolbarFileDownloadAction))
 		.FileNodeViewToolbar-editor-actions {
 		padding-left: 18px;
 	}

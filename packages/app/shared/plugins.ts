@@ -1304,7 +1304,7 @@ export function plugins_validate_manifest(input: unknown) {
 
 /**
  * List every plugin file view that matches a file's content type. The result is ordered by
- * installation creation time, so the tab order in the files UI stays stable and does not depend
+ * installation creation time, so the view option order in the files UI stays stable and does not depend
  * on query order. A manifest rejects duplicate content types across its file views, so each
  * plugin contributes at most one match.
  */

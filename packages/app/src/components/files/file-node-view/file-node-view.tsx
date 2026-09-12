@@ -22,7 +22,6 @@ import { MainAppHeaderBillingIndicator } from "@/components/main-app-header-bill
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
 import { MyButton, MyButtonIcon, type MyButton_ClassNames } from "@/components/my-button.tsx";
-import { MyButtonGroup, MyButtonGroupItem } from "@/components/my-button-group.tsx";
 import { MyFloatingSurface } from "@/components/my-floating-surface.tsx";
 import { MyGridTable, MyGridTableBody, MyGridTableCell, MyGridTableRow } from "@/components/my-grid-table.tsx";
 import { MyIconButton, MyIconButtonIcon } from "@/components/my-icon-button.tsx";
@@ -56,10 +55,19 @@ import {
 	MyMenuTrigger,
 } from "@/components/my-menu.tsx";
 import { MyPanel, MyPanelGroup, MyPanelResizeHandle } from "@/components/my-resizable-panel-group.tsx";
+import {
+	MySearchSelect,
+	MySearchSelectItem,
+	MySearchSelectList,
+	MySearchSelectPopover,
+	MySearchSelectPopoverContent,
+	MySearchSelectPopoverScrollableArea,
+	MySearchSelectSearch,
+	MySearchSelectTrigger,
+} from "@/components/my-search-select.tsx";
 import { MySeparator } from "@/components/my-separator.tsx";
 import { MySkeleton } from "@/components/my-skeleton.tsx";
 import { MySpinner } from "@/components/my-spinner.tsx";
-import { MyTabs, MyTabsList, MyTabsPanel, MyTabsPanels, MyTabsTab } from "@/components/my-tabs.tsx";
 import { PluginsUiFrame, type PluginsUiFrame_Props } from "@/components/plugins-ui-frame.tsx";
 import { useFn, useRenderPromise } from "@/hooks/utils-hooks.ts";
 import { useFileNodeActivities } from "@/lib/activities.ts";
@@ -255,14 +263,9 @@ type FileNodeViewHeader_Props = {
 	selectedNodeId: string | null | undefined;
 	fileNodesList: files_VisibleTreeNode[] | undefined;
 	readOnlyAncestorIds: ReadonlySet<app_convex_Id<"files_nodes">>;
-	editorMode: FileEditor_Mode;
-	/** The active editor document shape; the view switch offers only views that shape supports. */
-	rootKind: files_YjsRootKind;
 	filesSidebarOpen: boolean;
 	showFileControls: boolean;
-	showEditorControls?: boolean;
 	onlineUsers: FileEditor_OnlineUser[];
-	onEditorModeChange: (mode: FileEditor_Mode, options?: { replace?: boolean }) => void;
 	onNavigateNode: (nodeId: app_convex_Id<"files_nodes">) => void;
 };
 
@@ -271,13 +274,9 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 		selectedNodeId,
 		fileNodesList,
 		readOnlyAncestorIds,
-		editorMode,
-		rootKind,
 		filesSidebarOpen,
 		showFileControls,
-		showEditorControls = showFileControls,
 		onlineUsers,
-		onEditorModeChange,
 		onNavigateNode,
 	} = props;
 
@@ -304,10 +303,6 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 	const [shareNodeId, setShareNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
 	const [propertiesNodeId, setPropertiesNodeId] = useState<app_convex_Id<"files_nodes"> | null>(null);
 	const propertiesTriggerRef = useRef<HTMLButtonElement>(null);
-
-	const handleEditorModeChange = useFn((mode: string) => {
-		onEditorModeChange(mode as FileEditor_Mode);
-	});
 
 	const handleShareClick = useFn(() => {
 		if (currentNode) {
@@ -451,17 +446,6 @@ const FileNodeViewHeader = memo(function FileNodeViewHeader(props: FileNodeViewH
 			<div className={cn("FileNodeViewHeader-switch-group" satisfies FileNodeViewHeader_ClassNames)}>
 				{showFileControls && <FileEditorPresence users={onlineUsers} />}
 				<MainAppHeaderBillingIndicator />
-				{showEditorControls && (
-					<MyButtonGroup value={editorMode} onValueChange={handleEditorModeChange}>
-						{/* A plain text document has no rich view, so hide that switch entry and call the
-						    Monaco view "Code" instead of "Markdown". */}
-						{rootKind === "rich_text" && <MyButtonGroupItem value="rich_text_editor">Rich</MyButtonGroupItem>}
-						<MyButtonGroupItem value="plain_text_editor">
-							{rootKind === "rich_text" ? "Markdown" : "Code"}
-						</MyButtonGroupItem>
-						<MyButtonGroupItem value="diff_editor">Diff</MyButtonGroupItem>
-					</MyButtonGroup>
-				)}
 			</div>
 
 			<FilesShareModal nodeId={shareNodeId} onClose={handleShareModalClose} />
@@ -767,15 +751,102 @@ const FileNodeViewFileEditor = memo(function FileNodeViewFileEditor(props: FileN
 
 // #endregion file editor
 
-// #region file views
-type FileNodeViewFile_ClassNames =
-	| "FileNodeViewFile-tabs"
-	| "FileNodeViewFile-tabs-rich-text"
-	| "FileNodeViewFile-tabs-bar"
-	| "FileNodeViewFile-tabs-panels"
-	| "FileNodeViewFile-tabs-panel";
+// #region view select
+type FileNodeViewViewSelect_ClassNames =
+	| "FileNodeViewViewSelect-trigger"
+	| "FileNodeViewViewSelect-popover"
+	| "FileNodeViewViewSelect-search"
+	| "FileNodeViewViewSelect-item"
+	| "FileNodeViewViewSelect-empty";
 
-function file_view_tab_id(match: { plugin: { pluginName: string }; fileView: { id: string } }) {
+type FileNodeViewViewSelect_Props = {
+	options: { value: string; label: string }[];
+	value: string;
+	onValueChange: (value: string) => void;
+};
+
+const FileNodeViewViewSelect = memo(function FileNodeViewViewSelect(props: FileNodeViewViewSelect_Props) {
+	const { options, value, onValueChange } = props;
+
+	const [searchText, setSearchText] = useState("");
+
+	const selectedOption = options.find((option) => option.value === value)!;
+	const normalizedSearchText = searchText.trim().toLowerCase();
+	const shownOptions = options.filter((option) => option.label.toLowerCase().includes(normalizedSearchText));
+
+	const handleOpenChange = useFn((open: boolean) => {
+		if (!open) {
+			setSearchText("");
+		}
+	});
+
+	return (
+		<MySearchSelect value={value} setValue={onValueChange} setOpen={handleOpenChange} setValueOnMove={false}>
+			{/* Closed-trigger navigation must not start a preview or plugin session. */}
+			<MySearchSelectTrigger aria-label={`View: ${selectedOption.label}`} moveOnKeyDown={false} typeahead={false}>
+				<MyButton
+					type="button"
+					variant="outline"
+					className={"FileNodeViewViewSelect-trigger" satisfies FileNodeViewViewSelect_ClassNames}
+				>
+					<span>View: {selectedOption.label}</span>
+				</MyButton>
+			</MySearchSelectTrigger>
+			<MySearchSelectPopover
+				aria-label="File views"
+				className={"FileNodeViewViewSelect-popover" satisfies FileNodeViewViewSelect_ClassNames}
+			>
+				<MySearchSelectPopoverScrollableArea>
+					<MySearchSelectPopoverContent>
+						<MySearchSelectSearch
+							className={"FileNodeViewViewSelect-search" satisfies FileNodeViewViewSelect_ClassNames}
+							aria-label="Search views"
+							placeholder="Search views"
+							value={searchText}
+							onChange={(event) => setSearchText(event.currentTarget.value)}
+						/>
+						<MySearchSelectList aria-label="File views">
+							{shownOptions.map((option) => (
+								<MySearchSelectItem
+									key={option.value}
+									value={option.value}
+									className={"FileNodeViewViewSelect-item" satisfies FileNodeViewViewSelect_ClassNames}
+								>
+									{option.label}
+								</MySearchSelectItem>
+							))}
+						</MySearchSelectList>
+						{shownOptions.length === 0 && (
+							<div role="status" className={"FileNodeViewViewSelect-empty" satisfies FileNodeViewViewSelect_ClassNames}>
+								No views found
+							</div>
+						)}
+					</MySearchSelectPopoverContent>
+				</MySearchSelectPopoverScrollableArea>
+			</MySearchSelectPopover>
+		</MySearchSelect>
+	);
+});
+
+function get_editor_view_options(rootKind: files_YjsRootKind) {
+	const options: { value: FileEditor_Mode; label: string }[] = [];
+	if (rootKind === "rich_text") {
+		options.push({ value: "rich_text_editor", label: "Rich text" });
+	}
+
+	options.push(
+		{ value: "plain_text_editor", label: rootKind === "rich_text" ? "Markdown" : "Code" },
+		{ value: "diff_editor", label: "Review changes" },
+	);
+
+	return options;
+}
+// #endregion view select
+
+// #region file views
+type FileNodeViewFile_ClassNames = "FileNodeViewFile" | "FileNodeViewFile-rich-text" | "FileNodeViewFile-panel";
+
+function file_view_id(match: { plugin: { pluginName: string }; fileView: { id: string } }) {
 	return `plugin_${match.plugin.pluginName}_${match.fileView.id}`;
 }
 
@@ -796,6 +867,7 @@ type FileNodeViewFile_Props = {
 	onlineUsers: FileEditor_OnlineUser[];
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
+	viewSelectPortalHost: HTMLElement;
 	onEditorModeChange: (mode: FileEditor_Mode, options?: { replace?: boolean }) => void;
 	onAutomaticEditorModeChange: FileEditor_Props["onEditorModeChange"];
 	onFileViewChange: (view: string) => void;
@@ -820,13 +892,13 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 		onlineUsers,
 		commentsPortalHost,
 		toolbarPortalHost,
+		viewSelectPortalHost,
 		onEditorModeChange,
 		onAutomaticEditorModeChange,
 		onFileViewChange,
 		onNavigateNode,
 	} = props;
 	const { membershipId } = AppTenantProvider.useContext();
-	const tabId = useId();
 	const editorRef = useRef<FileEditor_Ref>(null);
 	const primaryPanelRef = useRef<HTMLDivElement>(null);
 	const [previewRevision, setPreviewRevision] = useState(0);
@@ -837,28 +909,45 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 	});
 	const fileViewPlugins = useQuery(app_convex_api.plugins_ui.list_file_views, { membershipId });
 	const isEditable = files_node_has_editable_text_content(node);
-	const hasHtmlPreview = isEditable && files_editable_text_content_type_of(node.contentType) === "text/html;charset=utf-8";
+	const hasHtmlPreview =
+		isEditable && files_editable_text_content_type_of(node.contentType) === "text/html;charset=utf-8";
 	const uploadState = files_get_upload_pipeline_state(asset);
 	// Plugin views read stored bytes. Wait for an upload's final object before opening them.
 	const fileViewMatches =
 		isEditable || (asset !== undefined && (uploadState === "terminal" || uploadState === "not_applicable"))
 			? plugins_list_file_view_matches(fileViewPlugins, node.contentType)
 			: [];
+
 	const selectedViewExists =
 		selectedFileView === "default" ||
+		(selectedFileView === "details" && isEditable) ||
 		(selectedFileView === "preview" && hasHtmlPreview) ||
-		fileViewMatches.some((match) => file_view_tab_id(match) === selectedFileView);
+		fileViewMatches.some((match) => file_view_id(match) === selectedFileView);
 	const activeFileView = selectedViewExists ? selectedFileView : "default";
 	const isEditorActive = activeFileView === "default";
-	const hasAlternateViews = hasHtmlPreview || fileViewMatches.length > 0;
-	const handleTabChange = useFn((id: string | null | undefined) => {
-		if (id?.startsWith(`${tabId}-`)) {
-			onFileViewChange(id.slice(tabId.length + 1));
+
+	const editorOptions = isEditable ? get_editor_view_options(node.textKind) : [];
+	const viewOptions = [
+		...editorOptions,
+		...(hasHtmlPreview ? [{ value: "preview", label: "Preview" }] : []),
+		{ value: isEditable ? "details" : "default", label: "File details" },
+		...fileViewMatches.map((match) => ({ value: file_view_id(match), label: match.fileView.title })),
+	];
+	const activePluginView = fileViewMatches.find((match) => file_view_id(match) === activeFileView);
+
+	const handleViewChange = useFn((value: string) => {
+		const editorOption = editorOptions.find((option) => option.value === value);
+		if (editorOption) {
+			onEditorModeChange(editorOption.value);
+		} else {
+			onFileViewChange(value);
 		}
 	});
+
 	const handlePreviewSnapshotChange = useFn(() => {
 		setPreviewRevision((revision) => revision + 1);
 	});
+
 	const getPreviewSnapshot = useFn(() => editorRef.current?.getPreviewSnapshot() ?? null);
 
 	useEffect(() => {
@@ -878,112 +967,100 @@ const FileNodeViewFile = memo(function FileNodeViewFile(props: FileNodeViewFile_
 				selectedNodeId={node._id}
 				fileNodesList={fileNodesList}
 				readOnlyAncestorIds={readOnlyAncestorIds}
-				editorMode={editorMode}
-				rootKind={node.textKind ?? "rich_text"}
 				filesSidebarOpen={filesSidebarOpen}
 				showFileControls={isEditable}
-				showEditorControls={isEditable && isEditorActive}
 				onlineUsers={onlineUsers}
-				onEditorModeChange={onEditorModeChange}
 				onNavigateNode={onNavigateNode}
 			/>
+			{createPortal(
+				<FileNodeViewViewSelect
+					options={viewOptions}
+					value={isEditable && isEditorActive ? editorMode : activeFileView}
+					onValueChange={handleViewChange}
+				/>,
+				viewSelectPortalHost,
+			)}
 			<div
 				className={cn(
-					"FileNodeViewFile-tabs" satisfies FileNodeViewFile_ClassNames,
+					"FileNodeViewFile" satisfies FileNodeViewFile_ClassNames,
 					isEditable &&
 						isEditorActive &&
 						editorMode === "rich_text_editor" &&
-						("FileNodeViewFile-tabs-rich-text" satisfies FileNodeViewFile_ClassNames),
+						("FileNodeViewFile-rich-text" satisfies FileNodeViewFile_ClassNames),
 				)}
 			>
-				{/* Keep Monaco mounted. Moving tab focus must not run HTML or start a plugin session. */}
-				<MyTabs selectedId={`${tabId}-${activeFileView}`} setSelectedId={handleTabChange} selectOnMove={false}>
-					<div
-						className={"FileNodeViewFile-tabs-bar" satisfies FileNodeViewFile_ClassNames}
-						hidden={!hasAlternateViews}
-					>
-						<MyTabsList aria-label="File views">
-							<MyTabsTab id={`${tabId}-default`}>{isEditable ? "Editor" : "File details"}</MyTabsTab>
-							{hasHtmlPreview && <MyTabsTab id={`${tabId}-preview`}>Preview</MyTabsTab>}
-							{fileViewMatches.map((match) => (
-								<MyTabsTab key={file_view_tab_id(match)} id={`${tabId}-${file_view_tab_id(match)}`}>
-									{match.fileView.title}
-								</MyTabsTab>
-							))}
-						</MyTabsList>
+				{/* Keep the editor and its local draft mounted while another view is active. */}
+				<div
+					ref={primaryPanelRef}
+					className={"FileNodeViewFile-panel" satisfies FileNodeViewFile_ClassNames}
+					role="region"
+					aria-label={isEditable ? "File editor" : "Stored file"}
+					tabIndex={-1}
+					hidden={!isEditorActive}
+					inert={!isEditorActive}
+				>
+					{isEditable ? (
+						<FileNodeViewFileEditor
+							ref={editorRef}
+							isActive={isEditorActive}
+							nodeId={node._id}
+							writeBlockedReason={node.writeBlockedReason}
+							pendingUpdateId={pendingUpdateId}
+							rootKind={node.textKind}
+							monacoLanguageId={files_monaco_language_id_of_content_type(node.contentType)}
+							nonCollaborative={node.collaborationEnabled === false}
+							committedAssetId={committedAssetId}
+							pendingUpdatesLoaded={pendingUpdatesLoaded}
+							serverSequence={serverSequence}
+							yjsLastSequenceId={yjsLastSequenceId}
+							topSafeArea={topSafeArea}
+							editorMode={editorMode}
+							presenceStore={presenceStore}
+							commentsPortalHost={commentsPortalHost}
+							toolbarPortalHost={toolbarPortalHost}
+							onEditorModeChange={onEditorModeChange}
+							onAutomaticEditorModeChange={onAutomaticEditorModeChange}
+							onPreviewSnapshotChange={hasHtmlPreview ? handlePreviewSnapshotChange : undefined}
+						/>
+					) : (
+						<FileNodeViewStoredFile node={node} asset={asset} />
+					)}
+				</div>
+				{isEditable && activeFileView === "details" && (
+					<div className={"FileNodeViewFile-panel" satisfies FileNodeViewFile_ClassNames}>
+						<FileNodeViewStoredFile node={node} asset={asset} />
 					</div>
-					<MyTabsPanels className={"FileNodeViewFile-tabs-panels" satisfies FileNodeViewFile_ClassNames}>
-						<MyTabsPanel
-							ref={primaryPanelRef}
-							className={"FileNodeViewFile-tabs-panel" satisfies FileNodeViewFile_ClassNames}
-							tabId={`${tabId}-default`}
-							aria-label={isEditable ? "File editor" : "File details"}
-						>
-							{isEditable ? (
-								<FileNodeViewFileEditor
-									ref={editorRef}
-									isActive={isEditorActive}
-									nodeId={node._id}
-									writeBlockedReason={node.writeBlockedReason}
-									pendingUpdateId={pendingUpdateId}
-									rootKind={node.textKind}
-									monacoLanguageId={files_monaco_language_id_of_content_type(node.contentType)}
-									nonCollaborative={node.collaborationEnabled === false}
-									committedAssetId={committedAssetId}
-									pendingUpdatesLoaded={pendingUpdatesLoaded}
-									serverSequence={serverSequence}
-									yjsLastSequenceId={yjsLastSequenceId}
-									topSafeArea={topSafeArea}
-									editorMode={editorMode}
-									presenceStore={presenceStore}
-									commentsPortalHost={commentsPortalHost}
-									toolbarPortalHost={toolbarPortalHost}
-									onEditorModeChange={onEditorModeChange}
-									onAutomaticEditorModeChange={onAutomaticEditorModeChange}
-									onPreviewSnapshotChange={hasHtmlPreview ? handlePreviewSnapshotChange : undefined}
-								/>
-							) : (
-								<FileNodeViewStoredFile node={node} asset={asset} />
-							)}
-						</MyTabsPanel>
-						{hasHtmlPreview && (
-							<MyTabsPanel
-								className={"FileNodeViewFile-tabs-panel" satisfies FileNodeViewFile_ClassNames}
-								tabId={`${tabId}-preview`}
-								unmountOnHide
-							>
-								<FileHtmlPreview
-									node={node}
-									getEditorSnapshot={getPreviewSnapshot}
-									editorRevision={previewRevision}
-									selectedSource={previewSource}
-									onSourceChange={setPreviewSource}
-								/>
-							</MyTabsPanel>
+				)}
+				{hasHtmlPreview && activeFileView === "preview" && (
+					<div className={"FileNodeViewFile-panel" satisfies FileNodeViewFile_ClassNames}>
+						<FileHtmlPreview
+							node={node}
+							getEditorSnapshot={getPreviewSnapshot}
+							editorRevision={previewRevision}
+							selectedSource={previewSource}
+							onSourceChange={setPreviewSource}
+						/>
+					</div>
+				)}
+				{activePluginView && (
+					<div
+						className={cn(
+							"FileNodeViewFile-panel" satisfies FileNodeViewFile_ClassNames,
+							"app-scrollable" satisfies AppClassName,
 						)}
-						{fileViewMatches.map((match) => (
-							<MyTabsPanel
-								key={file_view_tab_id(match)}
-								className={cn(
-									"FileNodeViewFile-tabs-panel" satisfies FileNodeViewFile_ClassNames,
-									"app-scrollable" satisfies AppClassName,
-								)}
-								tabId={`${tabId}-${file_view_tab_id(match)}`}
-								unmountOnHide
-							>
-								<FileNodeViewPluginView
-									node={node}
-									contentType={match.contentType}
-									pluginName={match.plugin.pluginName}
-									pluginVersionId={match.plugin.pluginVersionId}
-									fileViewId={match.fileView.id}
-									fileViewTitle={match.fileView.title}
-									entry={match.fileView.entry}
-								/>
-							</MyTabsPanel>
-						))}
-					</MyTabsPanels>
-				</MyTabs>
+					>
+						<FileNodeViewPluginView
+							key={file_view_id(activePluginView)}
+							node={node}
+							contentType={activePluginView.contentType}
+							pluginName={activePluginView.plugin.pluginName}
+							pluginVersionId={activePluginView.plugin.pluginVersionId}
+							fileViewId={activePluginView.fileView.id}
+							fileViewTitle={activePluginView.fileView.title}
+							entry={activePluginView.fileView.entry}
+						/>
+					</div>
+				)}
 			</div>
 		</>
 	);
@@ -1190,7 +1267,7 @@ const FileNodeViewStoredFile = memo(function FileNodeViewStoredFile(props: FileN
  * Yes when the member's focus is already inside the view. Yes too when focus sits on the document
  * body, because that is where the browser leaves it after the iframe holding it is removed, and yes
  * when the document reports no focused element at all. No while the member is working somewhere else
- * on the screen: this view is one tab panel next to the files sidebar, and that sidebar cancels a
+ * on the screen: this view is one content panel next to the files sidebar, and that sidebar cancels a
  * rename when its input loses focus. The moves below run on events the member never asked for.
  */
 function can_take_focus(region: HTMLElement | null) {
@@ -1226,7 +1303,7 @@ const FileNodeViewPluginView = memo(function FileNodeViewPluginView(props: FileN
 	// The frame key the effect below has already handled. It is how that effect tells the first frame
 	// apart from a frame that replaced a running one. A plain "first run" flag would not do: React
 	// StrictMode runs a mount effect twice in development, so the second run would read the flag as a
-	// replacement and steal focus the first time the member opens this tab.
+	// replacement and steal focus the first time the member opens this view.
 	const handledFrameKeyRef = useRef(frameKey);
 
 	const handleRetry = useFn(() => {
@@ -1241,7 +1318,7 @@ const FileNodeViewPluginView = memo(function FileNodeViewPluginView(props: FileN
 	// nobody asked for it: the member can be reading the view with focus inside the iframe, and the
 	// browser then leaves them on the document body. The new frame is covered and inert while it
 	// starts, so there is nothing inside this view to tab to until the handshake finishes. Park focus
-	// on this view instead. The first frame is skipped: opening the tab took nobody's focus away.
+	// on this view instead. The first frame is skipped: opening the view took nobody's focus away.
 	useEffect(() => {
 		if (handledFrameKeyRef.current === frameKey) {
 			return;
@@ -1458,6 +1535,7 @@ type FileNodeViewFolder_Props = {
 	presenceStore: FileEditor_Props["presenceStore"];
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
+	viewSelectPortalHost: HTMLElement;
 	onEditorModeChange: (mode: FileEditor_Mode, options?: { replace?: boolean }) => void;
 };
 
@@ -1476,6 +1554,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 		presenceStore,
 		commentsPortalHost,
 		toolbarPortalHost,
+		viewSelectPortalHost,
 		onEditorModeChange,
 	} = props;
 	const { membershipId, organizationName, workspaceName } = AppTenantProvider.useContext();
@@ -1538,6 +1617,15 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 	const hiddenChildItemsCount = childItems.length - visibleChildItems.length;
 	const readmeNodeId = get_folder_readme_node_id(fileNodesList, folderItemId);
 	const readmeNode = fileNodesList?.find((node) => node._id === readmeNodeId);
+	const editorOptions =
+		readmeNode && files_node_has_editable_text_content(readmeNode) ? get_editor_view_options(readmeNode.textKind) : [];
+
+	const handleViewChange = useFn((value: string) => {
+		const editorOption = editorOptions.find((option) => option.value === value);
+		if (editorOption) {
+			onEditorModeChange(editorOption.value);
+		}
+	});
 
 	const handleShowMoreClick = useFn(() => {
 		setShowAllItems(true);
@@ -1745,6 +1833,11 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 					("FileNodeViewFolder-mode-monaco" satisfies FileNodeViewFolder_ClassNames),
 			)}
 		>
+			{editorOptions.length > 0 &&
+				createPortal(
+					<FileNodeViewViewSelect options={editorOptions} value={editorMode} onValueChange={handleViewChange} />,
+					viewSelectPortalHost,
+				)}
 			{editorMode !== "rich_text_editor" && readmeNodeId ? (
 				readmeEditor
 			) : (
@@ -1925,17 +2018,19 @@ const FileNodeViewToolbarFileDownloadAction = memo(function FileNodeViewToolbarF
 type FileNodeViewToolbar_ClassNames =
 	| "FileNodeViewToolbar"
 	| "FileNodeViewToolbar-surface"
+	| "FileNodeViewToolbar-view-select"
 	| "FileNodeViewToolbar-editor-actions";
 
 type FileNodeViewToolbar_Props = {
 	editorActionsRef: React.Ref<HTMLDivElement>;
+	viewSelectRef: React.Ref<HTMLDivElement>;
 	showEditorActions: boolean;
 	folderActionsSlot: React.ReactNode;
 	fileActionsSlot: React.ReactNode;
 };
 
 const FileNodeViewToolbar = memo(function FileNodeViewToolbar(props: FileNodeViewToolbar_Props) {
-	const { editorActionsRef, showEditorActions, folderActionsSlot, fileActionsSlot } = props;
+	const { editorActionsRef, viewSelectRef, showEditorActions, folderActionsSlot, fileActionsSlot } = props;
 
 	return (
 		<div className={"FileNodeViewToolbar" satisfies FileNodeViewToolbar_ClassNames}>
@@ -1944,6 +2039,10 @@ const FileNodeViewToolbar = memo(function FileNodeViewToolbar(props: FileNodeVie
 				aria-label="File actions"
 				className={"FileNodeViewToolbar-surface" satisfies FileNodeViewToolbar_ClassNames}
 			>
+				<div
+					ref={viewSelectRef}
+					className={"FileNodeViewToolbar-view-select" satisfies FileNodeViewToolbar_ClassNames}
+				></div>
 				{folderActionsSlot}
 				{fileActionsSlot}
 				<div
@@ -2907,6 +3006,7 @@ type FileNodeViewContent_Props = {
 	onlineUsers: FileEditor_OnlineUser[];
 	commentsPortalHost: HTMLElement | null;
 	toolbarPortalHost: HTMLElement;
+	viewSelectPortalHost: HTMLElement;
 	onEditorModeChange: (mode: FileEditor_Mode, options?: { replace?: boolean }) => void;
 	onAutomaticEditorModeChange: FileEditor_Props["onEditorModeChange"];
 	onFileViewChange: (view: string) => void;
@@ -2932,6 +3032,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 		onlineUsers,
 		commentsPortalHost,
 		toolbarPortalHost,
+		viewSelectPortalHost,
 		onEditorModeChange,
 		onAutomaticEditorModeChange,
 		onFileViewChange,
@@ -2945,13 +3046,9 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 					selectedNodeId={files_ROOT_ID}
 					fileNodesList={fileNodesList}
 					readOnlyAncestorIds={readOnlyAncestorIds}
-					editorMode={editorMode}
-					// The folder view's editor is the README.md, a rich text document by definition.
-					rootKind="rich_text"
 					filesSidebarOpen={filesSidebarOpen}
 					showFileControls={true}
 					onlineUsers={onlineUsers}
-					onEditorModeChange={onEditorModeChange}
 					onNavigateNode={onNavigateNode}
 				/>
 				<FileNodeViewFolder
@@ -2968,6 +3065,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 					presenceStore={presenceStore}
 					commentsPortalHost={commentsPortalHost}
 					toolbarPortalHost={toolbarPortalHost}
+					viewSelectPortalHost={viewSelectPortalHost}
 					onEditorModeChange={onEditorModeChange}
 				/>
 			</>
@@ -2985,13 +3083,9 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 					selectedNodeId={node._id}
 					fileNodesList={fileNodesList}
 					readOnlyAncestorIds={readOnlyAncestorIds}
-					editorMode={editorMode}
-					// The folder view's editor is the README.md, a rich text document by definition.
-					rootKind="rich_text"
 					filesSidebarOpen={filesSidebarOpen}
 					showFileControls={true}
 					onlineUsers={onlineUsers}
-					onEditorModeChange={onEditorModeChange}
 					onNavigateNode={onNavigateNode}
 				/>
 				<FileNodeViewFolder
@@ -3008,6 +3102,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 					presenceStore={presenceStore}
 					commentsPortalHost={commentsPortalHost}
 					toolbarPortalHost={toolbarPortalHost}
+					viewSelectPortalHost={viewSelectPortalHost}
 					onEditorModeChange={onEditorModeChange}
 				/>
 			</>
@@ -3033,6 +3128,7 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 			onlineUsers={onlineUsers}
 			commentsPortalHost={commentsPortalHost}
 			toolbarPortalHost={toolbarPortalHost}
+			viewSelectPortalHost={viewSelectPortalHost}
 			onEditorModeChange={onEditorModeChange}
 			onAutomaticEditorModeChange={onAutomaticEditorModeChange}
 			onFileViewChange={onFileViewChange}
@@ -3121,6 +3217,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const filesSidebarState: FileNodeView_SidebarState = filesSidebarOpen ? "expanded" : "closed";
 	const [commentsPortalHost, setCommentsPortalHost] = useState<HTMLElement | null>(null);
 	const [toolbarPortalHost, setToolbarPortalHost] = useState<HTMLElement | null>(null);
+	const [viewSelectPortalHost, setViewSelectPortalHost] = useState<HTMLElement | null>(null);
 
 	const [lastOpenNodeId, setLastOpenNodeId] = useAppLocalStorageStateValue(
 		`app_state::files_last_open::scope::${membershipId}`,
@@ -3241,6 +3338,10 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 
 	const handleToolbarPortalHostChange = useFn((element: HTMLDivElement | null) => {
 		setToolbarPortalHost(element);
+	});
+
+	const handleViewSelectPortalHostChange = useFn((element: HTMLDivElement | null) => {
+		setViewSelectPortalHost(element);
 	});
 
 	// The pager/floating bar reviews diffs, so count only content-bearing rows; pure moves are
@@ -3479,6 +3580,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const renderContent = (
 		presenceProps: Parameters<FileEditorPresenceSupplier_Props["children"]>[0],
 		toolbarPortalHost: HTMLElement,
+		viewSelectPortalHost: HTMLElement,
 	) => {
 		return resolvedNodeId ? (
 			<FileNodeViewContent
@@ -3500,6 +3602,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				onlineUsers={presenceProps.onlineUsers}
 				commentsPortalHost={commentsPortalHost}
 				toolbarPortalHost={toolbarPortalHost}
+				viewSelectPortalHost={viewSelectPortalHost}
 				onEditorModeChange={navigateToView}
 				onAutomaticEditorModeChange={handleAutomaticEditorModeChange}
 				onFileViewChange={handleFileViewChange}
@@ -3581,6 +3684,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 								{(folderActionsSlot) => (
 									<FileNodeViewToolbar
 										editorActionsRef={handleToolbarPortalHostChange}
+										viewSelectRef={handleViewSelectPortalHostChange}
 										showEditorActions={isEditorActive}
 										folderActionsSlot={folderActionsSlot}
 										fileActionsSlot={<FileNodeViewToolbarFileDownloadAction node={resolvedNode} />}
@@ -3592,13 +3696,13 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 									{topStickyFloatingSlot}
 								</FileNodeViewTopStickyFloatingContainer>
 							) : null}
-							{/* Wait for the toolbar action slot before mounting editor content so editor portals receive a host. */}
-							{toolbarPortalHost && activeEditorNodeId ? (
+							{/* Mount both toolbar hosts before the content that fills them. */}
+							{toolbarPortalHost && viewSelectPortalHost && activeEditorNodeId ? (
 								<FileEditorPresenceSupplier userId={authenticated.userId} nodeId={activeEditorNodeId}>
-									{(presenceProps) => renderContent(presenceProps, toolbarPortalHost)}
+									{(presenceProps) => renderContent(presenceProps, toolbarPortalHost, viewSelectPortalHost)}
 								</FileEditorPresenceSupplier>
-							) : toolbarPortalHost ? (
-								renderContent({ presenceStore: null, onlineUsers: [] }, toolbarPortalHost)
+							) : toolbarPortalHost && viewSelectPortalHost ? (
+								renderContent({ presenceStore: null, onlineUsers: [] }, toolbarPortalHost, viewSelectPortalHost)
 							) : null}
 						</MyPanel>
 						<MyPanelResizeHandle
