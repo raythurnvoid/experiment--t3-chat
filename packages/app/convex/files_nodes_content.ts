@@ -6317,31 +6317,6 @@ async function db_delete_superseded_yjs_asset(
 	await ctx.db.delete("files_r2_assets", asset._id);
 }
 
-/**
- * Transfer the late-PUT deadline before node or tenant deletion removes this asset.
- * The caller owns deleting the node's snapshots and the asset doc.
- */
-export async function files_nodes_db_handoff_yjs_cleanup_task(ctx: MutationCtx, task: Doc<"files_yjs_cleanup_tasks">) {
-	const asset = await ctx.db.get("files_r2_assets", task.supersededYjsAssetId);
-	if (asset) {
-		await r2_enqueue_object_deletion_job(ctx, {
-			organizationId: task.organizationId,
-			workspaceId: task.workspaceId,
-			r2Key:
-				asset.r2Key ??
-				r2_create_asset_key({
-					organizationId: task.organizationId,
-					workspaceId: task.workspaceId,
-					assetId: asset._id,
-				}),
-			reason: "untracked_asset_event",
-			putMayArriveUntil: task.putMayArriveUntil ?? undefined,
-		});
-	}
-
-	await ctx.db.delete("files_yjs_cleanup_tasks", task._id);
-}
-
 export const cleanup_file_yjs_task = internalMutation({
 	args: { taskId: v.id("files_yjs_cleanup_tasks") },
 	returns: v.null(),

@@ -2216,6 +2216,31 @@ export async function files_nodes_db_is_eager_node_safe_to_hard_delete(
  * destinations are fresh near-empty nodes, so no batching is needed. Missing/mismatched nodes
  * are a no-op so discard stays idempotent.
  */
+/**
+ * Transfer the late-PUT deadline before node or tenant deletion removes this asset.
+ * The caller owns deleting the node's snapshots and the asset doc.
+ */
+export async function files_nodes_db_handoff_yjs_cleanup_task(ctx: MutationCtx, task: Doc<"files_yjs_cleanup_tasks">) {
+	const asset = await ctx.db.get("files_r2_assets", task.supersededYjsAssetId);
+	if (asset) {
+		await r2_enqueue_object_deletion_job(ctx, {
+			organizationId: task.organizationId,
+			workspaceId: task.workspaceId,
+			r2Key:
+				asset.r2Key ??
+				r2_create_asset_key({
+					organizationId: task.organizationId,
+					workspaceId: task.workspaceId,
+					assetId: asset._id,
+				}),
+			reason: "untracked_asset_event",
+			putMayArriveUntil: task.putMayArriveUntil ?? undefined,
+		});
+	}
+
+	await ctx.db.delete("files_yjs_cleanup_tasks", task._id);
+}
+
 export async function files_nodes_db_hard_delete_node(
 	ctx: MutationCtx,
 	args: {
@@ -2349,7 +2374,6 @@ export async function files_nodes_db_hard_delete_node(
 		assetIds.add(snapshot.assetId);
 	}
 	// Transfer the late-PUT deadline before deleting the retired snapshot asset.
-	const { files_nodes_db_handoff_yjs_cleanup_task } = await import("./files_nodes_content.ts");
 	for (const task of yjsCleanupTasks) {
 		assetIds.add(task.supersededYjsAssetId);
 		await files_nodes_db_handoff_yjs_cleanup_task(ctx, task);

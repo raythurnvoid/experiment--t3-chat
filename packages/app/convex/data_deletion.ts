@@ -28,7 +28,11 @@ import {
 	plugins_data_db_get_scope_cleanup_pairs,
 } from "./plugins_data.ts";
 import { plugins_db_delete_anonymized_review_if_unlinked } from "./plugins.ts";
-import { files_nodes_db_hard_delete_node, files_nodes_db_is_eager_node_safe_to_hard_delete } from "./files_nodes.ts";
+import {
+	files_nodes_db_handoff_yjs_cleanup_task,
+	files_nodes_db_hard_delete_node,
+	files_nodes_db_is_eager_node_safe_to_hard_delete,
+} from "./files_nodes.ts";
 import { files_pending_update_db_release_replacement_asset } from "./files_pending_updates.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { users_db_delete_auth_and_billing_state } from "./users.ts";
@@ -734,7 +738,6 @@ async function db_purge_organization_workspace_content_batch(
 		)
 		.take(Math.min(batchSize, 32));
 	if (yjsCleanupTasks.length > 0) {
-		const { files_nodes_db_handoff_yjs_cleanup_task } = await import("./files_nodes_content.ts");
 		await Promise.all(yjsCleanupTasks.map((task) => files_nodes_db_handoff_yjs_cleanup_task(ctx, task)));
 		return { done: false, deletedCount: yjsCleanupTasks.length };
 	}
