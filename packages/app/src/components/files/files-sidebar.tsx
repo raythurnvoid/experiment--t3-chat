@@ -1,7 +1,7 @@
 import "./files-sidebar.css";
 import { FilesSearchInput, type FilesSearchInput_Props } from "./files-search-input.tsx";
 import { useFilesSearchMetadata } from "@/hooks/files-search-hooks.ts";
-import { parse_search_query, search_filter_matches_item, search_path_filter } from "@/lib/files-search.ts";
+import { detect_search_query_mode, search_filter_matches_item, search_path_filter } from "@/lib/files-search.ts";
 import React, {
 	memo,
 	useCallback,
@@ -3766,7 +3766,7 @@ function get_tree_items_list_after_optimistic_rename(args: {
 /**
  * Match a search query against the tree.
  *
- * The free text matches by its shape (see `parse_search_query`). A `file.*` filter matches a tree
+ * The free text matches by its shape (see `detect_search_query_mode`). A `file.*` filter matches a tree
  * field. A metadata filter matches the node ids its server query returned, looked up by the
  * filter's raw token in `metadataNodeIds`. A filter with no entry yet matches nothing, and the
  * tree says "Searching…" until every entry is there. Files and folders match their own metadata.
@@ -3792,7 +3792,7 @@ function get_search_matches(args: {
 	const hasMetadataFilter = filters.some((filter) => filter.key.namespace !== "file");
 	// Quotes in the free text only group words. A text of quotes alone asks for nothing.
 	const text = parsed.text.replace(/"/gu, "").trim();
-	const textQuery = text.length > 0 ? parse_search_query(text) : null;
+	const textQuery = text.length > 0 ? detect_search_query_mode(text) : null;
 	if (filters.length === 0 && textQuery === null) {
 		return { visibleFileIds: new Set<string>(), topMatchId: null, matchCount: 0 };
 	}
@@ -7497,39 +7497,39 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 	});
 
-	describe("parse_search_query", () => {
+	describe("detect_search_query_mode", () => {
 		test("treats a plain word as a name query", () => {
-			expect(parse_search_query("  API.md ")).toEqual({ mode: "name", value: "api.md" });
+			expect(detect_search_query_mode("  API.md ")).toEqual({ mode: "name", value: "api.md" });
 		});
 
 		test("treats anything with a slash as a path query", () => {
-			expect(parse_search_query("/Docs/api.md")).toEqual({ mode: "path", value: "/docs/api.md" });
-			expect(parse_search_query("docs/api")).toEqual({ mode: "path", value: "docs/api" });
+			expect(detect_search_query_mode("/Docs/api.md")).toEqual({ mode: "path", value: "/docs/api.md" });
+			expect(detect_search_query_mode("docs/api")).toEqual({ mode: "path", value: "docs/api" });
 		});
 
 		test("treats a long lowercase alphanumeric string as a node id query", () => {
-			expect(parse_search_query("k5701abcdefghijklmnop")).toEqual({
+			expect(detect_search_query_mode("k5701abcdefghijklmnop")).toEqual({
 				mode: "node",
 				value: "k5701abcdefghijklmnop",
 			});
 		});
 
 		test("unwraps a pasted node-id link", () => {
-			expect(parse_search_query("http://localhost:5173/w/acme/main/files?nodeId=k5701abc&view=diff_editor")).toEqual({
+			expect(detect_search_query_mode("http://localhost:5173/w/acme/main/files?nodeId=k5701abc&view=diff_editor")).toEqual({
 				mode: "node",
 				value: "k5701abc",
 			});
 		});
 
 		test("unwraps a pasted path link and decodes its segments", () => {
-			expect(parse_search_query("https://app.test/w/acme/main/files/Docs/api%20notes.md")).toEqual({
+			expect(detect_search_query_mode("https://app.test/w/acme/main/files/Docs/api%20notes.md")).toEqual({
 				mode: "path",
 				value: "/docs/api notes.md",
 			});
 		});
 
 		test("leaves a link that carries no file reference as a path query that matches nothing", () => {
-			expect(parse_search_query("https://app.test/w/acme/main/chat")).toEqual({
+			expect(detect_search_query_mode("https://app.test/w/acme/main/chat")).toEqual({
 				mode: "path",
 				value: "https://app.test/w/acme/main/chat",
 			});

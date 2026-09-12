@@ -270,6 +270,7 @@ $argsJson = @{ id = "<id>" } | ConvertTo-Json -Compress
 vp env exec node node_modules/convex/bin/main.js run --typecheck disable --codegen disable "<module:function>" $argsJson
 Pop-Location
 ```
+
 - When a migration depends on deployment config, follow the admin-ops skill. Confirm secret presence without printing its value, and do not infer a target from memory.
 - Before destructive cleanup in an explicitly approved deployment, decide with the operator whether an export is required. When it is, follow the admin-ops [recovery snapshot workflow](../convex-admin-ops/SKILL.md#export-and-import-recovery-snapshots) before the write.
 - Treat table renames as full data migrations, not symbol renames:

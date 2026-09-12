@@ -17,7 +17,7 @@ type SearchMode = "name" | "path" | "node";
  * link. Reading the shape means they never have to learn a prefix syntax for each case.
  * A pasted link is unwrapped first into the node id or the path it carries.
  */
-export function parse_search_query(rawQuery: string): { mode: SearchMode; value: string } {
+export function detect_search_query_mode(rawQuery: string): { mode: SearchMode; value: string } {
 	const query = rawQuery.trim();
 
 	const link = url_parse_file_link(query);

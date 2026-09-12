@@ -26,6 +26,7 @@ describe("ai_chat_tool_budget_apply", () => {
 		);
 		expect(write).toHaveBeenCalledTimes(2);
 		expect(budget.exhausted).toBe(true);
+
 		finish();
 		await expect(first).resolves.toMatchObject({ metadata: { pendingUpdateId: "pending-1" } });
 		await expect(second).resolves.toMatchObject({ metadata: { pendingUpdateId: "pending-1" } });
@@ -107,6 +108,7 @@ describe("ai_chat_tool_budget_apply", () => {
 describe("ai_chat_message_fits_storage", () => {
 	test("counts JSON escapes and UTF-8 bytes instead of JavaScript characters", () => {
 		expect(ai_chat_message_fits_storage({ parts: [{ type: "text", text: "a".repeat(890 * 1024) }] })).toBe(true);
+		// "é" is 2 UTF-8 bytes; the NUL char JSON-escapes to 6, so both overshoot the limit.
 		expect(ai_chat_message_fits_storage({ parts: [{ type: "text", text: "é".repeat(460 * 1024) }] })).toBe(false);
 		expect(ai_chat_message_fits_storage({ parts: [{ type: "text", text: "\u0000".repeat(160 * 1024) }] })).toBe(false);
 	});

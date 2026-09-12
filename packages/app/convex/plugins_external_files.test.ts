@@ -201,6 +201,7 @@ describe("public conditional file writes", () => {
 				contentHash: await crypto_sha256_hex(content),
 			},
 		};
+
 		const sent = await t.fetch("/api/v1/files/write", { method: "POST", headers, body: JSON.stringify(body) });
 		expect(sent.status, await sent.clone().text()).toBe(200);
 		const saved = (await sent.json()) as {
@@ -209,9 +210,11 @@ describe("public conditional file writes", () => {
 			receipt: { contentRevision: string };
 		};
 		expect(saved.contentType).toBe("text/plain;charset=utf-8");
+
 		const replay = await t.fetch("/api/v1/files/write", { method: "POST", headers, body: JSON.stringify(body) });
 		expect(replay.status, await replay.clone().text()).toBe(200);
 		expect(await replay.json()).toEqual(saved);
+
 		for (const changed of [
 			{ contentType: "application/json" },
 			{ nonCollaborative: false },
@@ -224,6 +227,7 @@ describe("public conditional file writes", () => {
 			});
 			expect(conflict.status, await conflict.clone().text()).toBe(409);
 		}
+
 		for (const maxBytes of [100_000, 200_000]) {
 			const inspected = await t.fetch("/api/v1/files/plugin-writers/inspect", {
 				method: "POST",
@@ -240,6 +244,7 @@ describe("public conditional file writes", () => {
 				});
 		}
 		expect(await t.run(async (ctx) => await ctx.db.query("plugins_external_file_receipts").collect())).toHaveLength(1);
+
 		const updatedContent = "Updated project notes\n";
 		const updated = await t.fetch("/api/v1/files/write", {
 			method: "POST",
@@ -300,6 +305,7 @@ describe("public conditional file writes", () => {
 				yjsRootKind: "plain_text",
 			});
 			if (prepared._nay) throw new Error(prepared._nay.message);
+
 			if (changed === "contentType")
 				await t.run(
 					async (ctx) =>
@@ -307,6 +313,7 @@ describe("public conditional file writes", () => {
 							contentType: "application/json;charset=utf-8",
 						}),
 				);
+
 			const result = await t.mutation(internal.public_api.publish_file_write, {
 				stageId: prepared._yay.stageId,
 				targetAnchor: prepared._yay.targetAnchor,
@@ -333,12 +340,14 @@ describe("public conditional file writes", () => {
 			"X-Bonobo-Service-Authorization": `Bearer ${SECRET}`,
 			"Content-Type": "application/json",
 		};
+
 		const incomplete = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers,
 			body: JSON.stringify({ path: `${rootPath}/report.txt`, content: "Notes", writer: { writerId: root.writerId } }),
 		});
 		expect(incomplete.status, await incomplete.clone().text()).toBe(400);
+
 		const malformed = await t.fetch("/api/v1/files/plugin-writers/inspect", {
 			method: "POST",
 			headers,
@@ -346,6 +355,7 @@ describe("public conditional file writes", () => {
 		});
 		expect(malformed.status, await malformed.clone().text()).toBe(400);
 		expect(malformed.headers.get("Cache-Control")).toBe("no-store");
+
 		for (const route of [
 			"/api/v1/files/write",
 			"/api/v1/files/plugin-folders/ensure",
@@ -379,6 +389,7 @@ describe("public plugin writer access", () => {
 			"X-Bonobo-Service-Authorization": `Bearer ${SECRET}`,
 			"Content-Type": "application/json",
 		};
+
 		const applied = await t.fetch("/api/v1/files/plugin-access/set", {
 			method: "POST",
 			headers,
@@ -394,6 +405,7 @@ describe("public plugin writer access", () => {
 			}),
 		});
 		expect(applied.status, await applied.clone().text()).toBe(200);
+
 		await t.run(async (ctx) => {
 			const version = await ctx.db.get("plugins_versions", fixture.pluginVersionId);
 			const { _id: _oldId, _creationTime: _oldTime, ...fields } = version!;
@@ -411,6 +423,7 @@ describe("public plugin writer access", () => {
 			now: Date.now(),
 		});
 		if (minted._nay) throw new Error(minted._nay.message);
+
 		const undo = await t.fetch("/api/v1/files/plugin-access/undo", {
 			method: "POST",
 			headers: { ...headers, Authorization: `Bearer ${minted._yay.token}` },
@@ -468,6 +481,7 @@ describe("public plugin writer access", () => {
 			});
 			return { installationId, serviceAccountId };
 		});
+
 		expect(
 			(
 				await owner.mutation(api.access_control.set_service_account_grant, {
@@ -499,6 +513,7 @@ describe("public plugin writer access", () => {
 			Authorization: `Bearer ${minted._yay.token}`,
 			"X-Bonobo-Service-Authorization": "Bearer report-service-secret",
 		};
+
 		const ensured = await t.fetch("/api/v1/files/plugin-folders/ensure", {
 			method: "POST",
 			headers: otherHeaders,
@@ -506,6 +521,7 @@ describe("public plugin writer access", () => {
 		});
 		expect(ensured.status, await ensured.clone().text()).toBe(200);
 		const otherRoot = (await ensured.json()) as { writer: { writerId: string } };
+
 		for (const request of [
 			{ headers, writerId: otherRoot.writer.writerId, path: `${rootPath}/report.txt`, status: 403 },
 			{ headers: otherHeaders, writerId: root.writerId, path: "/daily-reports/report.txt", status: 403 },
@@ -563,35 +579,39 @@ describe("public plugin writer access", () => {
 			writer: { resourceKey: "restricted project notes", rootNodeId: root.rootNodeId },
 			access: { readers: [reader], readOnly: true },
 		};
+
 		const ensured = await t.fetch("/api/v1/files/plugin-folders/ensure", {
 			method: "POST",
 			headers,
 			body: JSON.stringify(ensureBody),
 		});
 		expect(ensured.status, await ensured.clone().text()).toBe(200);
-		const scope = (await ensured.json()) as {
+		const ensuredFolder = (await ensured.json()) as {
 			nodeId: Id<"files_nodes">;
 			writer: { writerId: Id<"plugins_external_file_writers"> };
 		};
+
 		const retry = await t.fetch("/api/v1/files/plugin-folders/ensure", {
 			method: "POST",
 			headers,
 			body: JSON.stringify(ensureBody),
 		});
 		expect(retry.status, await retry.clone().text()).toBe(200);
-		expect(await retry.json()).toMatchObject({ nodeId: scope.nodeId, created: false });
+		expect(await retry.json()).toMatchObject({ nodeId: ensuredFolder.nodeId, created: false });
+
 		const filePath = `${path}/notes.txt`;
 		const inspected = await t.fetch("/api/v1/files/plugin-writers/inspect", {
 			method: "POST",
 			headers,
-			body: JSON.stringify({ writerId: scope.writer.writerId, path: filePath, maxBytes: 1000 }),
+			body: JSON.stringify({ writerId: ensuredFolder.writer.writerId, path: filePath, maxBytes: 1000 }),
 		});
 		expect(inspected.status, await inspected.clone().text()).toBe(200);
 		expect(await inspected.json()).toMatchObject({
 			nodeId: null,
-			expectedParentNodeId: scope.nodeId,
+			expectedParentNodeId: ensuredFolder.nodeId,
 			readerRevision: 1,
 		});
+
 		const written = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers,
@@ -600,9 +620,9 @@ describe("public plugin writer access", () => {
 				content: "Private project notes",
 				contentType: "text/plain",
 				nonCollaborative: true,
-				expectedParentNodeId: scope.nodeId,
+				expectedParentNodeId: ensuredFolder.nodeId,
 				writer: {
-					writerId: scope.writer.writerId,
+					writerId: ensuredFolder.writer.writerId,
 					operationId: "private-notes",
 					writerGeneration: 1,
 					sequence: 1,
@@ -615,10 +635,11 @@ describe("public plugin writer access", () => {
 		});
 		expect(written.status, await written.clone().text()).toBe(200);
 		const savedFile = (await written.json()) as { nodeId: Id<"files_nodes"> };
+
 		const savedAccess = await t.run(async (ctx) => ({
 			file: await ctx.db.get("files_nodes", savedFile.nodeId),
 			grants: (await ctx.db.query("access_control_permission_grants").collect())
-				.filter((grant) => grant.resourceId === scope.nodeId)
+				.filter((grant) => grant.resourceId === ensuredFolder.nodeId)
 				.map((grant) => ({
 					principalKind: grant.principalKind,
 					userId: grant.userId,
@@ -626,7 +647,7 @@ describe("public plugin writer access", () => {
 					permission: grant.permission,
 				})),
 		}));
-		expect(savedAccess.file?.restrictedScopeNodeId).toBe(scope.nodeId);
+		expect(savedAccess.file?.restrictedScopeNodeId).toBe(ensuredFolder.nodeId);
 		expect(savedAccess.grants).toEqual(
 			expect.arrayContaining([
 				{ principalKind: "user", userId: reader.userId, serviceAccountId: undefined, permission: "content.read" },
@@ -639,6 +660,7 @@ describe("public plugin writer access", () => {
 			]),
 		);
 		expect(savedAccess.grants).toHaveLength(4);
+
 		const access = await t.fetch("/api/v1/files/plugin-access/set", {
 			method: "POST",
 			headers,
@@ -646,7 +668,7 @@ describe("public plugin writer access", () => {
 				path,
 				access: { readers: [] },
 				writer: {
-					writerId: scope.writer.writerId,
+					writerId: ensuredFolder.writer.writerId,
 					operationId: "remove-reader",
 					writerGeneration: 1,
 					expectedReaderRevision: 1,
@@ -655,6 +677,7 @@ describe("public plugin writer access", () => {
 		});
 		expect(access.status, await access.clone().text()).toBe(200);
 		const applied = (await access.json()) as { receipt: { _id: string } };
+
 		await t.run(async (ctx) => {
 			const version = await ctx.db.get("plugins_versions", fixture.pluginVersionId);
 			const { _id: _oldId, _creationTime: _oldTime, ...fields } = version!;
@@ -674,11 +697,12 @@ describe("public plugin writer access", () => {
 		if (minted._nay) throw new Error(minted._nay.message);
 		const currentHeaders = { ...headers, Authorization: `Bearer ${minted._yay.token}` };
 		const undoBody = {
-			writerId: scope.writer.writerId,
+			writerId: ensuredFolder.writer.writerId,
 			operationId: "undo-readers",
 			writerGeneration: 1,
 			receiptId: applied.receipt._id,
 		};
+
 		const undo = await t.fetch("/api/v1/files/plugin-access/undo", {
 			method: "POST",
 			headers: currentHeaders,
@@ -686,11 +710,12 @@ describe("public plugin writer access", () => {
 		});
 		expect(undo.status, await undo.clone().text()).toBe(200);
 		expect(await undo.json()).toMatchObject({ restored: true, readerRevision: 3, detached: false });
+
 		const advance = await t.fetch("/api/v1/files/plugin-writers/advance", {
 			method: "POST",
 			headers: currentHeaders,
 			body: JSON.stringify({
-				writerId: scope.writer.writerId,
+				writerId: ensuredFolder.writer.writerId,
 				operationId: "restart-export",
 				writerGeneration: 1,
 				nextGeneration: 2,
@@ -737,7 +762,9 @@ describe("public plugin writer archive", () => {
 			"X-Bonobo-Service-Authorization": `Bearer ${SECRET}`,
 			"Content-Type": "application/json",
 		};
+
 		for (const [index, file] of files.entries()) {
+			// The public_api_principal bucket holds 20 tokens; resetting every 15 keeps the loop under the cap.
 			if (index % 15 === 0)
 				await t.run(
 					async (ctx) =>
@@ -763,12 +790,14 @@ describe("public plugin writer archive", () => {
 			expect(archived.status, await archived.clone().text()).toBe(200);
 			expect(await archived.json()).toMatchObject({ archivedNodes: 1, receipt: { nodeId: file.nodeId } });
 		}
+
 		const first = files[0]!;
 		const replacementId = await t.run(async (ctx) => {
 			const archived = await ctx.db.get("files_nodes", first.nodeId);
 			const { _id: _nodeId, _creationTime: _nodeTime, ...fields } = archived!;
 			return await ctx.db.insert("files_nodes", { ...fields, archiveOperationId: null });
 		});
+
 		const replay = await t.fetch("/api/v1/files/plugin-archive", {
 			method: "POST",
 			headers,
@@ -784,6 +813,7 @@ describe("public plugin writer archive", () => {
 			}),
 		});
 		expect(replay.status, await replay.clone().text()).toBe(200);
+
 		expect(await t.run(async (ctx) => (await ctx.db.get("files_nodes", replacementId))?.archiveOperationId)).toBeNull();
 		expect(
 			await t.run(async (ctx) =>
@@ -796,6 +826,7 @@ describe("public plugin writer archive", () => {
 describe("external file writes", () => {
 	test("creates an output root once and does not adopt it for another resource", async () => {
 		const { t, credentials, root } = await setup();
+
 		expect(
 			await t.mutation(internal.plugins_external_files.ensure_writer, {
 				...credentials,
@@ -805,6 +836,7 @@ describe("external file writes", () => {
 				rootNodeId: null,
 			}),
 		).toEqual({ _yay: { ...root, created: false } });
+
 		expect(
 			(
 				await t.mutation(internal.plugins_external_files.ensure_writer, {
@@ -816,6 +848,7 @@ describe("external file writes", () => {
 				})
 			)._nay?.name,
 		).toBe("stale_write");
+
 		expect(await t.run(async (ctx) => (await ctx.db.query("plugins_external_file_writers").collect()).length)).toBe(1);
 	});
 
@@ -844,6 +877,7 @@ describe("external file writes", () => {
 			"X-Bonobo-Service-Authorization": `Bearer ${SECRET}`,
 			"Content-Type": "application/json",
 		};
+
 		const sent = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers,
@@ -851,6 +885,7 @@ describe("external file writes", () => {
 		});
 		expect(sent.status, await sent.clone().text()).toBe(200);
 		const receipt = (await sent.json()).receipt as { nodeId: Id<"files_nodes">; contentRevision: string };
+
 		const replay = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers,
@@ -859,6 +894,7 @@ describe("external file writes", () => {
 		expect(replay.status, await replay.clone().text()).toBe(200);
 		expect((await replay.json()).receipt).toEqual(receipt);
 		expect(await t.run(async (ctx) => (await ctx.db.query("plugins_external_file_receipts").collect()).length)).toBe(1);
+
 		const second = {
 			...request,
 			content: "# general\n\nUpdated\n",
@@ -878,6 +914,7 @@ describe("external file writes", () => {
 		});
 		expect(saved.status, await saved.clone().text()).toBe(200);
 		expect((await saved.json()).receipt).toMatchObject({ nodeId: receipt.nodeId, sequence: 2 });
+
 		const snapshot = await t.query(internal.plugins_external_files.inspect, {
 			...credentials,
 			writerId: root.writerId,
@@ -885,12 +922,14 @@ describe("external file writes", () => {
 		});
 		expect(snapshot._yay?.node?._id).toBe(receipt.nodeId);
 		expect(snapshot._yay?.contentRevision).not.toBe(receipt.contentRevision);
+
 		const stale = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers,
 			body: JSON.stringify({ ...second, writer: { ...second.writer, operationId: "stale-content", sequence: 3 } }),
 		});
 		expect(stale.status).toBe(409);
+
 		expect(
 			(
 				await t.mutation(internal.plugins_external_files.change_scope, {
@@ -902,6 +941,7 @@ describe("external file writes", () => {
 				})
 			)._nay?.name,
 		).toBe("stale_write");
+
 		const untouched = await t.query(internal.plugins_external_files.inspect, {
 			...credentials,
 			writerId: root.writerId,
@@ -936,6 +976,7 @@ describe("external file writes", () => {
 				contentHash: await crypto_sha256_hex("# general\n\nOriginal\n"),
 			},
 		};
+
 		const first = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers,
@@ -943,12 +984,14 @@ describe("external file writes", () => {
 		});
 		expect(first.status, await first.clone().text()).toBe(200);
 		const firstReceipt = (await first.json()).receipt as { nodeId: Id<"files_nodes">; contentRevision: string };
+
 		const fence = await t.fetch("/api/v1/files/plugin-writers/advance", {
 			method: "POST",
 			headers,
 			body: JSON.stringify({ writerId: root.writerId, operationId: "fence-2", writerGeneration: 1, nextGeneration: 2 }),
 		});
 		expect(fence.status, await fence.clone().text()).toBe(200);
+
 		const replacement = {
 			...request,
 			content: "# general\n\nRebuilt\n",
@@ -962,6 +1005,7 @@ describe("external file writes", () => {
 				contentHash: await crypto_sha256_hex("# general\n\nRebuilt\n"),
 			},
 		};
+
 		const old = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers,
@@ -971,6 +1015,7 @@ describe("external file writes", () => {
 			}),
 		});
 		expect(old.status).toBe(409);
+
 		const rebuilt = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers,
@@ -980,6 +1025,7 @@ describe("external file writes", () => {
 		const rebuiltReceipt = (await rebuilt.json()).receipt as { nodeId: Id<"files_nodes">; contentRevision: string };
 		expect(rebuiltReceipt.nodeId).toBe(firstReceipt.nodeId);
 		expect(rebuiltReceipt.contentRevision).not.toBe(firstReceipt.contentRevision);
+
 		const changedArchive = await t.fetch("/api/v1/files/plugin-archive", {
 			method: "POST",
 			headers,
@@ -996,6 +1042,7 @@ describe("external file writes", () => {
 			}),
 		});
 		expect(changedArchive.status, await changedArchive.clone().text()).toBe(409);
+
 		const stale = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers,
@@ -1009,6 +1056,7 @@ describe("external file writes", () => {
 			}),
 		});
 		expect(stale.status).toBe(409);
+
 		const staleArchive = await t.fetch("/api/v1/files/plugin-archive", {
 			method: "POST",
 			headers,
@@ -1024,12 +1072,14 @@ describe("external file writes", () => {
 			}),
 		});
 		expect(staleArchive.status).toBe(409);
+
 		const nextFence = await t.fetch("/api/v1/files/plugin-writers/advance", {
 			method: "POST",
 			headers,
 			body: JSON.stringify({ writerId: root.writerId, operationId: "fence-3", writerGeneration: 2, nextGeneration: 3 }),
 		});
 		expect(nextFence.status, await nextFence.clone().text()).toBe(200);
+
 		const oldArchive = await t.fetch("/api/v1/files/plugin-archive", {
 			method: "POST",
 			headers,
@@ -1045,6 +1095,7 @@ describe("external file writes", () => {
 			}),
 		});
 		expect(oldArchive.status).toBe(409);
+
 		const archived = await t.fetch("/api/v1/files/plugin-archive", {
 			method: "POST",
 			headers,
@@ -1109,9 +1160,11 @@ describe("external file writes", () => {
 			},
 		};
 		const options = { method: "POST", headers, body: JSON.stringify(request) };
+
 		const sent = await t.fetch("/api/v1/files/write", options);
 		expect(sent.status, await sent.clone().text()).toBe(200);
 		const receipt = (await sent.json()).receipt as { nodeId: Id<"files_nodes">; contentRevision: string };
+
 		const readers = await t.fetch("/api/v1/files/plugin-access/set", {
 			method: "POST",
 			headers,
@@ -1127,6 +1180,7 @@ describe("external file writes", () => {
 			}),
 		});
 		expect(readers.status, await readers.clone().text()).toBe(200);
+
 		const saved = await t.run(async (ctx) => ({
 			nodes: await ctx.db.query("files_nodes").collect(),
 			receipts: await ctx.db.query("plugins_external_file_receipts").collect(),
@@ -1134,6 +1188,7 @@ describe("external file writes", () => {
 		const replayed = await t.fetch("/api/v1/files/write", options);
 		expect(replayed.status, await replayed.clone().text()).toBe(200);
 		expect((await replayed.json()).receipt).toEqual(receipt);
+
 		const stale = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers,
@@ -1150,6 +1205,7 @@ describe("external file writes", () => {
 		});
 		expect(stale.status, await stale.clone().text()).toBe(409);
 		expect(await stale.json()).toEqual({ message: "The file readers changed" });
+
 		expect(
 			await t.run(async (ctx) => ({
 				nodes: await ctx.db.query("files_nodes").collect(),
@@ -1190,6 +1246,7 @@ describe("external file writes", () => {
 			yjsRootKind: "rich_text",
 		});
 		if (prepared._nay) throw new Error(prepared._nay.message);
+
 		expect(
 			(
 				await t.mutation(internal.plugins_external_files.change_scope, {
@@ -1201,6 +1258,7 @@ describe("external file writes", () => {
 				})
 			)._nay,
 		).toBeUndefined();
+
 		const published = await t.mutation(internal.public_api.publish_file_write, {
 			stageId: prepared._yay.stageId,
 			targetAnchor: prepared._yay.targetAnchor,
@@ -1208,6 +1266,7 @@ describe("external file writes", () => {
 			nonCollaborative: true,
 		});
 		expect(published._nay?.name).toBe("stale_write");
+
 		expect(
 			await t.run(async (ctx) =>
 				ctx.db
@@ -1252,6 +1311,7 @@ describe("archive", () => {
 				contentHash: await crypto_sha256_hex("# general\n\nSaved\n"),
 			},
 		};
+
 		const published = await t.fetch("/api/v1/files/write", {
 			method: "POST",
 			headers,
@@ -1259,6 +1319,7 @@ describe("archive", () => {
 		});
 		expect(published.status, await published.clone().text()).toBe(200);
 		const file = (await published.json()).receipt as { nodeId: Id<"files_nodes">; contentRevision: string };
+
 		expect(
 			(
 				await owner.mutation(api.files_nodes.set_node_write_policy, {
@@ -1276,6 +1337,7 @@ describe("archive", () => {
 				})
 			)._nay,
 		).toBeUndefined();
+
 		if (replace) {
 			const replacement = await t.fetch("/api/v1/files/write", {
 				method: "POST",
@@ -1284,6 +1346,7 @@ describe("archive", () => {
 			});
 			expect(replacement.status, await replacement.clone().text()).toBe(200);
 		}
+
 		const before = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());
 		const archive = {
 			path,
@@ -1296,6 +1359,7 @@ describe("archive", () => {
 				expectedContentRevision: file.contentRevision,
 			},
 		};
+
 		const changed = await t.fetch("/api/v1/files/plugin-archive", {
 			method: "POST",
 			headers,
@@ -1303,6 +1367,7 @@ describe("archive", () => {
 		});
 		expect(changed.status, await changed.clone().text()).toBe(409);
 		expect(await changed.json()).toEqual({ message: "The file changed" });
+
 		const response = await t.fetch("/api/v1/files/plugin-archive", {
 			method: "POST",
 			headers,
@@ -1311,6 +1376,7 @@ describe("archive", () => {
 		expect(response.status, await response.clone().text()).toBe(200);
 		const receipt = (await response.json()).receipt;
 		expect(receipt).toMatchObject({ nodeId: file.nodeId, operation: "archive", sequence: 3 });
+
 		const replay = await t.fetch("/api/v1/files/plugin-archive", {
 			method: "POST",
 			headers,
@@ -1318,6 +1384,7 @@ describe("archive", () => {
 		});
 		expect(replay.status, await replay.clone().text()).toBe(200);
 		expect((await replay.json()).receipt).toEqual(receipt);
+
 		expect(await t.run(async (ctx) => await ctx.db.query("files_nodes").collect())).toEqual(before);
 	});
 
@@ -1332,6 +1399,7 @@ describe("archive", () => {
 				"X-Bonobo-Service-Authorization": `Bearer ${SECRET}`,
 				"Content-Type": "application/json",
 			};
+
 			const published = await t.fetch("/api/v1/files/write", {
 				method: "POST",
 				headers,
@@ -1354,6 +1422,7 @@ describe("archive", () => {
 			});
 			expect(published.status, await published.clone().text()).toBe(200);
 			const file = (await published.json()).receipt as { nodeId: Id<"files_nodes">; contentRevision: string };
+
 			const archive = {
 				path,
 				writer: {
@@ -1371,6 +1440,7 @@ describe("archive", () => {
 				body: JSON.stringify(archive),
 			});
 			expect(archived.status, await archived.clone().text()).toBe(200);
+
 			if (condition === "account grant") {
 				expect(
 					(
@@ -1392,6 +1462,7 @@ describe("archive", () => {
 					)._nay,
 				).toBeUndefined();
 			}
+
 			const before = await t.run(async (ctx) => ({
 				nodes: await ctx.db.query("files_nodes").collect(),
 				receipts: await ctx.db.query("plugins_external_file_receipts").collect(),
@@ -1408,6 +1479,7 @@ describe("archive", () => {
 				expect(blocked.status, await blocked.clone().text()).toBe(condition === "account grant" ? 403 : 409);
 				if (condition !== "account grant") expect(await blocked.json()).toEqual({ message: "This item is read-only." });
 			}
+
 			expect(
 				await t.run(async (ctx) => ({
 					nodes: await ctx.db.query("files_nodes").collect(),
@@ -1435,6 +1507,7 @@ describe("archive", () => {
 			"X-Bonobo-Service-Authorization": `Bearer ${SECRET}`,
 			"Content-Type": "application/json",
 		};
+
 		for (const name of ["protected", "current"]) {
 			const path = `${folderPath}/${name}.md`;
 			const published = await t.fetch("/api/v1/files/write", {
@@ -1486,6 +1559,7 @@ describe("archive", () => {
 					)._nay,
 				).toBeUndefined();
 		}
+
 		const before = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());
 		for (const target of [
 			{ path: folderPath, nodeId: folder.folderNodeId, message: "The file changed" },
@@ -1512,6 +1586,7 @@ describe("archive", () => {
 			expect(blocked.status, await blocked.clone().text()).toBe(409);
 			expect(await blocked.json()).toEqual({ message: target.message });
 		}
+
 		expect(await t.run(async (ctx) => await ctx.db.query("files_nodes").collect())).toEqual(before);
 		expect(before.find((node) => node._id === folder.folderNodeId)?.archiveOperationId).toBeNull();
 	});
@@ -1557,6 +1632,7 @@ describe("ensure_writer", () => {
 					updatedAt: Date.now(),
 				});
 			});
+
 			const before = await t.run(async (ctx) => ({
 				nodes: await ctx.db.query("files_nodes").collect(),
 				writers: await ctx.db.query("plugins_external_file_writers").collect(),
@@ -1577,6 +1653,7 @@ describe("ensure_writer", () => {
 				}),
 			});
 			expect(denied.status, await denied.clone().text()).toBe(403);
+
 			expect(
 				await t.run(async (ctx) => ({
 					nodes: await ctx.db.query("files_nodes").collect(),
@@ -1604,9 +1681,11 @@ describe("ensure_writer", () => {
 			},
 			body: JSON.stringify(request),
 		};
+
 		const sent = await t.fetch("/api/v1/files/plugin-folders/ensure", options);
 		expect(sent.status, await sent.clone().text()).toBe(200);
 		const created = (await sent.json()) as { nodeId: Id<"files_nodes"> };
+
 		expect(
 			(
 				await owner.mutation(api.access_control.remove_service_account_grant, {
@@ -1623,6 +1702,7 @@ describe("ensure_writer", () => {
 			grants: await ctx.db.query("access_control_permission_grants").collect(),
 		}));
 		const writer = saved.writers.find((writer) => writer.resourceKey === "private")!;
+
 		// The worker retries its saved request without using the lost response's IDs.
 		const repeated = await t.fetch("/api/v1/files/plugin-folders/ensure", options);
 		expect(repeated.status, await repeated.clone().text()).toBe(200);
@@ -1639,6 +1719,7 @@ describe("ensure_writer", () => {
 				detached: false,
 			},
 		});
+
 		expect(
 			await t.run(async (ctx) => ({
 				nodes: await ctx.db.query("files_nodes").collect(),
@@ -1647,6 +1728,7 @@ describe("ensure_writer", () => {
 				grants: await ctx.db.query("access_control_permission_grants").collect(),
 			})),
 		).toEqual(saved);
+
 		expect(
 			(
 				await t.query(internal.plugins_external_files.inspect, {
@@ -1674,8 +1756,10 @@ describe("ensure_writer", () => {
 				writer: { resourceKey: "private", rootNodeId: root.rootNodeId },
 			}),
 		};
+
 		const sent = await t.fetch("/api/v1/files/plugin-folders/ensure", options);
 		expect(sent.status, await sent.clone().text()).toBe(200);
+
 		const writer = await t.run(
 			async (ctx) =>
 				await ctx.db
@@ -1703,6 +1787,7 @@ describe("ensure_writer", () => {
 				})
 			)._nay,
 		).toBeUndefined();
+
 		if (change === "nonempty") {
 			expect(
 				(
@@ -1735,9 +1820,11 @@ describe("ensure_writer", () => {
 				).toBeUndefined();
 			}
 		}
+
 		const before = await t.run(async (ctx) => await ctx.db.query("files_nodes").collect());
 		const repeated = await t.fetch("/api/v1/files/plugin-folders/ensure", options);
 		expect(repeated.status, await repeated.clone().text()).toBe(change === "moved" ? 409 : 403);
+
 		expect(await t.run(async (ctx) => await ctx.db.query("files_nodes").collect())).toEqual(before);
 	});
 
@@ -1756,8 +1843,10 @@ describe("ensure_writer", () => {
 				writer: { resourceKey: "private", rootNodeId: root.rootNodeId },
 			}),
 		};
+
 		const sent = await t.fetch("/api/v1/files/plugin-folders/ensure", options);
 		expect(sent.status, await sent.clone().text()).toBe(200);
+
 		if (change === "deleted") {
 			await t.mutation(internal.data_deletion.init_user_deletion, { userId: fixture.userId, nowTs: Date.now() });
 		} else {
@@ -1785,6 +1874,7 @@ describe("ensure_writer", () => {
 				await t.run(async (ctx) => (await ctx.db.get("organizations_workspaces_users", fixture.membershipId))?.active),
 			).toBe(true);
 		}
+
 		const repeated = await t.fetch("/api/v1/files/plugin-folders/ensure", options);
 		expect(repeated.status, await repeated.clone().text()).toBe(change === "deleted" ? 401 : 403);
 	});
@@ -1815,6 +1905,7 @@ describe("rollback_readers", () => {
 					})
 				)._nay,
 			).toBeUndefined();
+
 			if (condition !== "unseen") {
 				expect(
 					(
@@ -1828,6 +1919,7 @@ describe("rollback_readers", () => {
 					)._nay,
 				).toBeUndefined();
 			}
+
 			const next = await t.run(async (ctx) => {
 				const version = (await ctx.db.get("plugins_versions", fixture.pluginVersionId))!;
 				const { _id, _creationTime, ...fields } = version;
@@ -1847,6 +1939,7 @@ describe("rollback_readers", () => {
 					})
 				)._nay,
 			).toBeUndefined();
+
 			const current = await t.mutation(internal.public_api.create_plugin_service_grant, {
 				organizationId: fixture.organizationId,
 				workspaceId: fixture.workspaceId,
@@ -1873,9 +1966,11 @@ describe("rollback_readers", () => {
 					originalReaderOperationId: "before-upgrade",
 				}),
 			};
+
 			const old = await t.fetch("/api/v1/files/plugin-access/undo", options);
 			expect(old.status, await old.clone().text()).toBe(401);
 			expect(await old.json()).toEqual({ message: "Unauthenticated", code: "reader_proof_mismatch" });
+
 			if (condition === "manual") {
 				const reader = await t.run(
 					async (ctx) => await test_mocks_fill_db_with.membership(ctx, { organizationName: "manual-reader" }),
@@ -1937,11 +2032,13 @@ describe("rollback_readers", () => {
 			} else if (condition === "expired") {
 				vi.spyOn(Date, "now").mockReturnValue(current._yay.expiresAt + 1);
 			}
+
 			const before = await t.run(async (ctx) => ({
 				grants: await ctx.db.query("access_control_permission_grants").collect(),
 				bindings: await ctx.db.query("plugins_external_file_bindings").collect(),
 			}));
 			headers.Authorization = `Bearer ${current._yay.token}`;
+
 			const result = await t.fetch("/api/v1/files/plugin-access/undo", options);
 			const expectedStatus =
 				condition === "expired"
@@ -1960,6 +2057,7 @@ describe("rollback_readers", () => {
 					})),
 				).toEqual(before);
 			}
+
 			if (expectedStatus === 200) {
 				const receipt = await result.json();
 				expect(receipt).toMatchObject({
@@ -2000,6 +2098,7 @@ describe("rollback_readers", () => {
 				}
 				return readers;
 			});
+
 			const ensured = await t.mutation(internal.plugins_external_files.ensure_writer, {
 				...credentials,
 				path: `${ROOT}/team`,
@@ -2025,6 +2124,7 @@ describe("rollback_readers", () => {
 				"X-Bonobo-Service-Authorization": `Bearer ${SECRET}`,
 				"Content-Type": "application/json",
 			};
+
 			const changed = await t.fetch("/api/v1/files/plugin-access/set", {
 				method: "POST",
 				headers,
@@ -2041,6 +2141,7 @@ describe("rollback_readers", () => {
 			});
 			expect(changed.status, await changed.clone().text()).toBe(200);
 			const receipt = (await changed.json()).receipt as { _id: string; readerRevision: number };
+
 			const rotated = await t.mutation(internal.public_api.rotate_plugin_service_grant, {
 				presented: token,
 				now: Date.now(),
@@ -2066,6 +2167,7 @@ describe("rollback_readers", () => {
 					})
 				)._nay,
 			).toBeUndefined();
+
 			const ordinary = await t.fetch("/api/v1/files/plugin-access/set", {
 				method: "POST",
 				headers: { ...headers, Authorization: `Bearer ${rotated._yay.token}` },
@@ -2081,6 +2183,7 @@ describe("rollback_readers", () => {
 				}),
 			});
 			expect(ordinary.status, await ordinary.clone().text()).toBe(403);
+
 			vi.spyOn(Date, "now").mockReturnValue(rotated._yay.expiresAt + 1);
 			const options = {
 				method: "POST",
@@ -2092,6 +2195,7 @@ describe("rollback_readers", () => {
 					...(lookup === "receipt" ? { receiptId: receipt._id } : { originalReaderOperationId: "add-reader" }),
 				}),
 			};
+
 			const rolledBack = await t.fetch("/api/v1/files/plugin-access/undo", options);
 			expect(rolledBack.status, await rolledBack.clone().text()).toBe(200);
 			expect(await rolledBack.json()).toMatchObject({
@@ -2099,6 +2203,7 @@ describe("rollback_readers", () => {
 				detached: false,
 				readerRevision: receipt.readerRevision + 1,
 			});
+
 			const grants = await t.run(
 				async (ctx) =>
 					await ctx.db
@@ -2116,6 +2221,7 @@ describe("rollback_readers", () => {
 				readers[0]!.userId,
 			]);
 			expect(grants.filter((grant) => grant.principalKind === "service_account")).toHaveLength(3);
+
 			const repeated = await t.fetch("/api/v1/files/plugin-access/undo", options);
 			expect(repeated.status, await repeated.clone().text()).toBe(200);
 			expect(await repeated.json()).toMatchObject({ restored: true, readerRevision: receipt.readerRevision + 1 });
@@ -2145,6 +2251,7 @@ describe("rollback_readers", () => {
 					})
 				)._nay,
 			).toBeUndefined();
+
 			const headers = {
 				Authorization: `Bearer ${token}`,
 				"X-Bonobo-Service-Authorization": `Bearer ${SECRET}`,
@@ -2164,6 +2271,7 @@ describe("rollback_readers", () => {
 					originalReaderOperationId: "delayed-readers",
 				}),
 			};
+
 			if (condition === "rotated") {
 				const rotated = await t.mutation(internal.public_api.rotate_plugin_service_grant, {
 					presented: token,
@@ -2203,10 +2311,12 @@ describe("rollback_readers", () => {
 					)._nay,
 				).toBeUndefined();
 			}
+
 			const cancelled = await t.fetch("/api/v1/files/plugin-access/undo", options);
 			expect(cancelled.status, await cancelled.clone().text()).toBe(200);
 			const acknowledgement = await cancelled.json();
 			expect(acknowledgement).toMatchObject({ restored: true, detached: false, readerRevision: 1 });
+
 			const delayed = await t.fetch("/api/v1/files/plugin-access/set", {
 				method: "POST",
 				headers,
@@ -2228,6 +2338,7 @@ describe("rollback_readers", () => {
 					bindings: await ctx.db.query("plugins_external_file_bindings").collect(),
 				})),
 			).toEqual(before);
+
 			const repeated = await t.fetch("/api/v1/files/plugin-access/undo", options);
 			expect(repeated.status, await repeated.clone().text()).toBe(200);
 			expect(await repeated.json()).toEqual(acknowledgement);
@@ -2266,6 +2377,7 @@ describe("rollback_readers", () => {
 			});
 			return { userId, lifetimeId };
 		});
+
 		const ensured = await t.mutation(internal.plugins_external_files.ensure_writer, {
 			...credentials,
 			path: `${ROOT}/team`,
@@ -2286,6 +2398,7 @@ describe("rollback_readers", () => {
 				})
 			)._nay,
 		).toBeUndefined();
+
 		const applied = await t.mutation(internal.plugins_external_files.change_scope, {
 			...credentials,
 			writerId: ensured._yay.writerId,
@@ -2294,6 +2407,7 @@ describe("rollback_readers", () => {
 			change: { kind: "readers", expectedReaderRevision: 1, readers: [] },
 		});
 		if (applied._nay) throw new Error(applied._nay.message);
+
 		if (change === "manual") {
 			expect(
 				(
@@ -2362,6 +2476,7 @@ describe("rollback_readers", () => {
 				)._nay,
 			).toBeUndefined();
 		}
+
 		const before = await t.run(async (ctx) => await ctx.db.query("access_control_permission_grants").collect());
 		const result = await t.fetch("/api/v1/files/plugin-access/undo", {
 			method: "POST",
@@ -2377,6 +2492,7 @@ describe("rollback_readers", () => {
 				receiptId: applied._yay._id,
 			}),
 		});
+
 		const expectedStatus =
 			change === "manual" || change === "old-lifetime"
 				? 200
@@ -2434,6 +2550,7 @@ describe("external file readers", () => {
 		});
 		if (privateScope._nay) throw new Error(privateScope._nay.message);
 		const nodeId = privateScope._yay.folderNodeId;
+
 		const otherAccount = await t.run(
 			async (ctx) =>
 				await ctx.db.insert("access_control_service_accounts", {
@@ -2456,6 +2573,7 @@ describe("external file readers", () => {
 				})
 			)._nay,
 		).toBeDefined();
+
 		expect(
 			(
 				await owner.mutation(api.access_control.set_service_account_grant, {
@@ -2466,6 +2584,7 @@ describe("external file readers", () => {
 				})
 			)._nay,
 		).toBeUndefined();
+
 		expect(
 			(
 				await owner.mutation(api.files_sharing.set_node_share_grant, {
@@ -2476,6 +2595,7 @@ describe("external file readers", () => {
 				})
 			)._nay,
 		).toBeDefined();
+
 		expect(
 			(
 				await owner.mutation(api.files_sharing.set_node_share_grant, {
@@ -2486,6 +2606,7 @@ describe("external file readers", () => {
 				})
 			)._nay,
 		).toBeUndefined();
+
 		const grants = await t.run(
 			async (ctx) =>
 				await ctx.db
@@ -2503,7 +2624,9 @@ describe("external file readers", () => {
 			grants.filter((grant) => grant.principalKind === "user" && grant.permission === "content.read"),
 		).toHaveLength(50);
 		expect(grants.filter((grant) => grant.principalKind === "service_account")).toHaveLength(3);
+
 		for (const reader of readers.slice(0, 50)) {
+			// files_sharing_write holds 8 tokens, so 50 sequential shares need a reset per call.
 			await t.run(
 				async (ctx) =>
 					await ctx.runMutation(components.rate_limiter.lib.resetRateLimit, {
@@ -2522,6 +2645,7 @@ describe("external file readers", () => {
 				)._nay,
 			).toBeUndefined();
 		}
+
 		const promoted = await t.run(
 			async (ctx) =>
 				await ctx.db
@@ -2537,6 +2661,7 @@ describe("external file readers", () => {
 		);
 		expect(promoted).toHaveLength(153);
 		const lastUserId = promoted.filter((grant) => grant.principalKind === "user").at(-1)!.userId!;
+
 		expect(
 			(
 				await owner.mutation(api.files_sharing.remove_node_share_grant, {
@@ -2563,6 +2688,7 @@ describe("external file readers", () => {
 						.collect(),
 			),
 		).toEqual([]);
+
 		// A detached folder uses the normal cap, including the remaining account.
 		expect(
 			(
@@ -2574,6 +2700,7 @@ describe("external file readers", () => {
 				})
 			)._nay,
 		).toBeDefined();
+
 		expect(
 			(
 				await owner.mutation(api.access_control.remove_service_account_grant, {
@@ -2583,6 +2710,7 @@ describe("external file readers", () => {
 				})
 			)._nay,
 		).toBeUndefined();
+
 		expect(
 			(
 				await owner.mutation(api.files_sharing.set_node_share_grant, {
@@ -2593,6 +2721,7 @@ describe("external file readers", () => {
 				})
 			)._nay,
 		).toBeUndefined();
+
 		expect(
 			(
 				await owner.mutation(api.access_control.set_service_account_grant, {
@@ -2648,6 +2777,7 @@ describe("external file readers", () => {
 				})
 			)._nay,
 		).toBeUndefined();
+
 		const interactive = await t.mutation(internal.public_api.create_plugin_service_grant, {
 			organizationId: fixture.organizationId,
 			workspaceId: fixture.workspaceId,
@@ -2668,6 +2798,7 @@ describe("external file readers", () => {
 				})
 			)._nay,
 		).toBeUndefined();
+
 		const tables = [
 			"plugins_external_file_reader_changes",
 			"plugins_external_file_writers",
@@ -2677,6 +2808,7 @@ describe("external file readers", () => {
 		] as const;
 		for (const table of tables)
 			expect(await t.run(async (ctx) => (await ctx.db.query(table).collect()).length)).toBeGreaterThan(0);
+
 		const requestId = await t.run(
 			async (ctx) =>
 				await data_deletion_db_request(ctx, {
@@ -2694,6 +2826,7 @@ describe("external file readers", () => {
 			).done;
 		}
 		expect(done).toBe(true);
+
 		for (const table of tables) expect(await t.run(async (ctx) => await ctx.db.query(table).collect())).toEqual([]);
 	});
 
@@ -2727,6 +2860,7 @@ describe("external file readers", () => {
 		});
 		if (ensured._nay) throw new Error(ensured._nay.message);
 		const nodeId = ensured._yay.folderNodeId;
+
 		const canRead = async () =>
 			await t.run(
 				async (ctx) =>
@@ -2739,15 +2873,18 @@ describe("external file readers", () => {
 					}),
 			);
 		expect(await canRead()).toBe(true);
+
 		await t.run(
 			async (ctx) =>
 				await ctx.db.patch("organizations_membership_lifetimes", user.lifetimeId, { active: false, lifetime: 2 }),
 		);
 		expect(await canRead()).toBe(false);
+
 		await t.run(
 			async (ctx) => await ctx.db.patch("organizations_membership_lifetimes", user.lifetimeId, { active: true }),
 		);
 		expect(await canRead()).toBe(false);
+
 		expect(
 			(
 				await owner.mutation(api.access_control.set_service_account_grant, {
@@ -2758,6 +2895,7 @@ describe("external file readers", () => {
 				})
 			)._nay,
 		).toBeUndefined();
+
 		expect(
 			(
 				await t.mutation(internal.plugins_external_files.change_scope, {
@@ -2773,6 +2911,7 @@ describe("external file readers", () => {
 				})
 			)._nay?.name,
 		).toBe("stale_write");
+
 		const binding = await t.run(
 			async (ctx) =>
 				await ctx.db
@@ -2781,6 +2920,7 @@ describe("external file readers", () => {
 					.first(),
 		);
 		expect(binding?.detachedAt).toBeNull();
+
 		expect(
 			(
 				await owner.mutation(api.files_sharing.set_node_share_grant, {
@@ -2792,6 +2932,7 @@ describe("external file readers", () => {
 			)._nay,
 		).toBeUndefined();
 		expect(await canRead()).toBe(true);
+
 		const repeated = await t.mutation(internal.plugins_external_files.ensure_writer, {
 			...credentials,
 			path: `${ROOT}/private/team`,
@@ -2801,6 +2942,7 @@ describe("external file readers", () => {
 			rootNodeId: root.rootNodeId,
 		});
 		expect(repeated._yay?.detached).toBe(true);
+
 		expect(
 			(
 				await t.mutation(internal.plugins_external_files.change_scope, {
@@ -2812,6 +2954,7 @@ describe("external file readers", () => {
 				})
 			)._nay?.name,
 		).toBe("stale_write");
+
 		expect(await canRead()).toBe(true);
 	});
 });

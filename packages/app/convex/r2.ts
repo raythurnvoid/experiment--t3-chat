@@ -1640,12 +1640,14 @@ export const retire_missing_upload = internalMutation({
 		if (!asset || asset.kind !== "upload" || asset.r2Key !== undefined || asset.uploadRetiredAt !== undefined) {
 			return null;
 		}
+
 		const now = args._test_now ?? Date.now();
 		const startedAt =
 			(asset.uploadUrlExpiresAt ?? asset._creationTime + UPLOAD_SIGNED_URL_TTL_MS) - UPLOAD_SIGNED_URL_TTL_MS;
 		if (now - startedAt < UNFINALIZED_UPLOAD_RECOVERY_MAX_WINDOW_MS) {
 			return null;
 		}
+
 		const scope = r2_require_real_scope(asset.organizationId, asset.workspaceId);
 		const node = await ctx.db
 			.query("files_nodes")
@@ -1656,6 +1658,7 @@ export const retire_missing_upload = internalMutation({
 		if (!node) {
 			return null;
 		}
+
 		// Background cleanup cannot act as a selected writer. Keep protected placeholders.
 		if (node.writePolicyScopeNodeId !== null) {
 			await ctx.db.patch("files_r2_assets", asset._id, {
@@ -1663,6 +1666,7 @@ export const retire_missing_upload = internalMutation({
 			});
 			return null;
 		}
+
 		const target = await public_api_service_uploads_db_get_target_by_asset(ctx, asset._id);
 		const keepPlaceholder = target?.state === "pending" && target.assetId === asset._id;
 		await r2_enqueue_object_deletion_job(ctx, {
@@ -1673,6 +1677,7 @@ export const retire_missing_upload = internalMutation({
 			putMayArriveUntil: (asset.uploadUrlExpiresAt ?? now) + r2_PUT_MAY_ARRIVE_MARGIN_MS,
 			mode: "ensure",
 		});
+
 		if (keepPlaceholder) {
 			await ctx.db.patch("files_r2_assets", asset._id, { uploadRetiredAt: now, updatedAt: now });
 		} else {

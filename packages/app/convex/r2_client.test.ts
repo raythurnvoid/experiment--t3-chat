@@ -95,6 +95,7 @@ describe("direct upload publication", () => {
 			vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
 				if (init?.method === "PUT") {
 					expect(input).toBe(upload.url);
+					// If-None-Match: * is the create-only precondition; a second PUT on the key must fail.
 					if (object && new Headers(init.headers).get("If-None-Match") === "*") {
 						return new Response(null, { status: 412 });
 					}
@@ -107,9 +108,9 @@ describe("direct upload publication", () => {
 			}),
 		);
 		expect((await fetch(upload.url, { method: "PUT", headers: upload.headers, body: "first" })).status).toBe(200);
-		expect(
-			(await fetch(upload.url, { method: "PUT", headers: upload.headers, body: "second-bytes" })).status,
-		).toBe(412);
+		expect((await fetch(upload.url, { method: "PUT", headers: upload.headers, body: "second-bytes" })).status).toBe(
+			412,
+		);
 		const results = await Promise.all([
 			post_event(t, upload, { id: "first", size: 5, etag: "first-etag" }),
 			post_event(t, upload, { id: "duplicate", size: 5, etag: "first-etag" }),
@@ -137,6 +138,7 @@ describe("direct upload publication", () => {
 			etag: "same-etag",
 		});
 	});
+
 	test("an existing empty object with Content-Length zero needs no range request", async () => {
 		const t = test_convex();
 		const upload = await create_upload(t);

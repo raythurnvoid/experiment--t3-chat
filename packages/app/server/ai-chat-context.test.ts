@@ -123,9 +123,11 @@ describe("ai_chat_context_read_instructions", () => {
 		expect(await ai_chat_context_read_instructions(f.ctx, first.context, ["/a/file"])).toContain("SAME");
 		expect(await ai_chat_context_read_instructions(f.ctx, first.context, ["/a/file"])).toBe("");
 		expect(await ai_chat_context_read_instructions(f.ctx, first.context, ["/b/file"])).toContain("SAME");
+
 		f.files.set("/a/AGENTS.md", "CHANGED");
 		expect(await ai_chat_context_read_instructions(f.ctx, first.context, ["/a/file"])).toContain("CHANGED");
 		expect(await ai_chat_context_read_instructions(f.ctx, second.context, ["/b/file"])).toContain("SAME");
+
 		f.files.delete("/a/AGENTS.md");
 		expect(await ai_chat_context_read_instructions(f.ctx, first.context, ["/a/file"])).toBe("");
 	});
@@ -158,6 +160,7 @@ describe("ai_chat_context_read_instructions", () => {
 		f.files.set("/a/AGENTS.md", "x".repeat(ai_chat_skills_LIMITS.instruction + 1));
 		const { context } = await f.create();
 		expect(await ai_chat_context_read_instructions(f.ctx, context, ["/a/file"])).toContain("could not be read");
+
 		f.runQuery.mockClear();
 		const deepPath = `/${Array.from({ length: 1000 }, (_, index) => `dir${index}`).join("/")}`;
 		expect(await ai_chat_context_read_instructions(f.ctx, context, [deepPath])).toContain("incomplete");

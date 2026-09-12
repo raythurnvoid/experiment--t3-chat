@@ -444,7 +444,7 @@ class FileEditorDiffWidgetAcceptDiscard_Monaco implements monaco_editor.IContent
 			return;
 		}
 
-		// File tabs and status rows can move the editor below the page header.
+		// Anchor the widget to the editor's own top; page rows above must not push it down.
 		this.node.style.top = `calc(anchor(top) + ${coordinate.top}px)`;
 		this.node.style.transform = `translate3d(102px, 0, 0)`;
 		this.node.style.display = "flex";
@@ -1568,6 +1568,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 				: null,
 		};
 	});
+
 	const handlePreviewSnapshotChange = useFn(() => onPreviewSnapshotChange?.());
 
 	// No `editable` guard here on purpose: this runs only after the backend already committed the
@@ -2381,8 +2382,7 @@ const FileEditorDiffInner = memo(function FileEditorDiffInner(props: FileEditorD
 						modified={initialUnstagedMarkdown}
 						originalLanguage={monacoLanguageId}
 						modifiedLanguage={monacoLanguageId}
-						// We own our own models, so we need to keep them alive even after the editor is disposed,
-						// because we dispose them manually
+						// We dispose the models ourselves, so they must outlive the editor.
 						keepCurrentOriginalModel={true}
 						keepCurrentModifiedModel={true}
 						options={diffEditorOptions}
@@ -2852,7 +2852,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 		setPreparationAttempt((attempt) => attempt + 1);
 	});
 
-	// Decode the old family first so a failed preparation still has text to read and copy.
+	// Prepare the proposal text first, so a failed preparation still has text to read and copy.
 	// Each request belongs to one proposal and one document; a later query cancels its result.
 	useEffect(() => {
 		if (!isActive) return;
@@ -2905,7 +2905,6 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 		isActive,
 	]);
 
-	// Reset state when `nodeId` changes
 	useLayoutEffect(() => {
 		setFileContentData(undefined);
 		setRemoteEditorContentState(undefined);
@@ -2919,7 +2918,7 @@ export const FileEditorDiff = memo(function FileEditorDiff(props: FileEditorDiff
 		setLoadedBaseAssetId(undefined);
 	}, [nodeId]);
 
-	// Fetch file content for initial load and `nodeId` changes
+	// Fetch file content on load, on `nodeId` changes, and when the live Yjs state advances.
 	useEffect(() => {
 		// A file with collaboration off has no Yjs state, and its review needs only the proposal's
 		// branches. The bootstrap below does not wait for `fileContentData` in that mode.
@@ -3579,6 +3578,7 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 			pendingUpdate: null,
 		};
 	});
+
 	const handlePreviewSnapshotChange = useFn(() => onPreviewSnapshotChange?.());
 
 	// No `editable` guard here on purpose: this runs only after the backend already committed the
@@ -3851,8 +3851,7 @@ const FileEditorDiffNonCollabInner = memo(function FileEditorDiffNonCollabInner(
 						modified={initialData.text}
 						originalLanguage={monacoLanguageId}
 						modifiedLanguage={monacoLanguageId}
-						// We own our own models, so we need to keep them alive even after the editor is disposed,
-						// because we dispose them manually
+						// We dispose the models ourselves, so they must outlive the editor.
 						keepCurrentOriginalModel={true}
 						keepCurrentModifiedModel={true}
 						options={diffEditorOptions}

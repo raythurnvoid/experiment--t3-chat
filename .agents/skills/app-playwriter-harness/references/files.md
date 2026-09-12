@@ -35,8 +35,9 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 
 - Detailed editor-surface notes: [file-node-view.md](file-node-view.md).
 - Rich text editable content: `.FileEditorRichText-editor-content`. **Use that exact class, never bare
-  `.ProseMirror` and never `main`.** The route mounts two ProseMirror editors — the file, and the AI
-  chat composer (`.AiChatComposer-editor-content`) — so `querySelector(".ProseMirror")` can answer
+  `.ProseMirror` and never `main`.** The route mounts at least three ProseMirror editors — the file,
+  the AI chat composer (`.AiChatComposer-editor-content`), and the comment composer
+  (`.FileEditorCommentsComposerControl-editor`) — so `querySelector(".ProseMirror")` can answer
   with the composer, and `main.innerText` returns the file text glued to the whole agent panel
   transcript. Either way a `text.includes(marker)` check reads as a pass on content the file does
   not hold. Verified 2026-09-01 while proving a Chitchat transcript write.
@@ -45,7 +46,7 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
 - Review changes button: `[data-testid="review-changes-button"]`.
 - Tables in the rich editor: plain `table`, `th`, `td` selectors inside `.FileEditorRichText-editor-content`.
 - Table commands menu: toolbar `getByRole("button", { name: "Table commands" })`; items are `Add row above`, `Add row below`, `Add column left`, `Add column right`, `Delete row`, `Delete column`, `Toggle header row`, `Delete table` (disabled while the caret is outside a table).
-- Properties button in the breadcrumb: `getByRole("button", { name: /^Properties of / })`. It still carries `data-file-read-only` with the node's lock state. Its `.click()` can hang on "visible, enabled and stable" while `hitTest` shows the button itself on top and nothing covers it (hit 2026-08-21). Read its box in page context and click the middle with `page.mouse.click(x, y)`.
+- Properties button in the breadcrumb: `getByRole("button", { name: /^Properties of / })`. It still carries `data-file-write-policy` with the node's lock state. Its `.click()` can hang on "visible, enabled and stable" while `hitTest` shows the button itself on top and nothing covers it (hit 2026-08-21). Read its box in page context and click the middle with `page.mouse.click(x, y)`.
 
 ### Sidebar And Folder Browser
 
@@ -95,17 +96,17 @@ Deterministic assets in `.agents/skills/app-playwriter-harness/assets/files/`:
 
 Plain-text document QA fixtures (plain-text-docs §11.5). Upload them in the throwaway non-default org, not the user's workspace. Bytes are pinned — regenerate only with the recorded generator, never by hand:
 
-| Fixture | Purpose | Bytes | Lines | SHA-256 |
-| --- | --- | --- | --- | --- |
-| `qa-plain.json` | Pretty JSON becomes an editable plain-text document; token `BONOBO_QA_PLAIN_JSON_2026`. | 106 | 6 | `983e9aed87de77edbe28410e7351ac063799d69da26bbb1d83022ccc9da8ac89` |
-| `qa-plain.yaml` | Starts with `---` to prove plain-text YAML never enters frontmatter parsing; token `BONOBO_QA_PLAIN_YAML_2026`. | 88 | 7 | `197253fd06f6c2c9e26f30577acff0252c07d9edb3396ed12a55fa973b48909b` |
-| `qa-plain.csv` | CSV upload conversion; token `BONOBO_QA_PLAIN_CSV_2026`. | 65 | 3 | `37493e05d743d87b8a3a3a8c079f54849935423a3b7499da488f19a8f13a9791` |
-| `qa-plain.txt` | Plain `.txt` upload conversion; token `BONOBO_QA_PLAIN_TXT_2026`. | 118 | 3 | `1f437490ce737b637202e432afb01f544ac6361b4d3a3c9fc21727b9fc2d2961` |
-| `qa-plain-bom.csv` | UTF-8 BOM + CRLF bytes; the stored document must be LF text without the BOM; token `BONOBO_QA_PLAIN_BOM_CSV_2026`. | 54 | 2 | `d002e97a17daf90711b1aca0f9d092afd84e60c5772c8b590d4e148fc9956042` |
-| `qa-plain-minified.json` | One line, no trailing newline; token `BONOBO_QA_PLAIN_MINIFIED_JSON_2026`. | 85 | 1 | `dbb7640688394098fbce3383fffe56de03ecb71b83f190a03507275262829fd7` |
-| `qa-plain-invalid-utf8.txt` | Carries one lone `0xFF` byte, so the upload conversion's fatal UTF-8 decode fails: the node keeps the stored blob (no editable conversion), and the fallback settle still dispatches the plugin upload event. | 15 | 1 | `cb1715d56c0e816cbca6f4299a0a3edadc3fc9bf96e337fe49f0f4092d515dca` |
-| `qa-frontmatter-overcap.md` | Markdown with 129 frontmatter keys — one over `files_metadata_MAX_FRONTMATTER_FIELDS` (128); token `BONOBO_QA_FRONTMATTER_OVERCAP_2026`. | 2418 | 135 | `8cb33857771b68cee0dfce80ca73a28214ed3af89f134a0f24db429c28d4d599` |
-| `qa-frontmatter-values-overcap.md` | Markdown with one `tags` array of 600 unique values — over `files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS` (512); token `BONOBO_QA_FRONTMATTER_VALUES_OVERCAP_2026`. | 7295 | 607 | `c3cd45983e3432693a91a9b9270f1a70e8add08c2e6a39948436db3ad3c855aa` |
+| Fixture                            | Purpose                                                                                                                                                                                                       | Bytes | Lines | SHA-256                                                            |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- | ----- | ------------------------------------------------------------------ |
+| `qa-plain.json`                    | Pretty JSON becomes an editable plain-text document; token `BONOBO_QA_PLAIN_JSON_2026`.                                                                                                                       | 106   | 6     | `983e9aed87de77edbe28410e7351ac063799d69da26bbb1d83022ccc9da8ac89` |
+| `qa-plain.yaml`                    | Starts with `---` to prove plain-text YAML never enters frontmatter parsing; token `BONOBO_QA_PLAIN_YAML_2026`.                                                                                               | 88    | 7     | `197253fd06f6c2c9e26f30577acff0252c07d9edb3396ed12a55fa973b48909b` |
+| `qa-plain.csv`                     | CSV upload conversion; token `BONOBO_QA_PLAIN_CSV_2026`.                                                                                                                                                      | 65    | 3     | `37493e05d743d87b8a3a3a8c079f54849935423a3b7499da488f19a8f13a9791` |
+| `qa-plain.txt`                     | Plain `.txt` upload conversion; token `BONOBO_QA_PLAIN_TXT_2026`.                                                                                                                                             | 118   | 3     | `1f437490ce737b637202e432afb01f544ac6361b4d3a3c9fc21727b9fc2d2961` |
+| `qa-plain-bom.csv`                 | UTF-8 BOM + CRLF bytes; the stored document must be LF text without the BOM; token `BONOBO_QA_PLAIN_BOM_CSV_2026`.                                                                                            | 54    | 2     | `d002e97a17daf90711b1aca0f9d092afd84e60c5772c8b590d4e148fc9956042` |
+| `qa-plain-minified.json`           | One line, no trailing newline; token `BONOBO_QA_PLAIN_MINIFIED_JSON_2026`.                                                                                                                                    | 85    | 1     | `dbb7640688394098fbce3383fffe56de03ecb71b83f190a03507275262829fd7` |
+| `qa-plain-invalid-utf8.txt`        | Carries one lone `0xFF` byte, so the upload conversion's fatal UTF-8 decode fails: the node keeps the stored blob (no editable conversion), and the fallback settle still dispatches the plugin upload event. | 15    | 1     | `cb1715d56c0e816cbca6f4299a0a3edadc3fc9bf96e337fe49f0f4092d515dca` |
+| `qa-frontmatter-overcap.md`        | Markdown with 129 frontmatter keys — one over `files_metadata_MAX_FRONTMATTER_FIELDS` (128); token `BONOBO_QA_FRONTMATTER_OVERCAP_2026`.                                                                      | 2418  | 135   | `8cb33857771b68cee0dfce80ca73a28214ed3af89f134a0f24db429c28d4d599` |
+| `qa-frontmatter-values-overcap.md` | Markdown with one `tags` array of 600 unique values — over `files_metadata_MAX_FRONTMATTER_INDEX_DOCUMENTS` (512); token `BONOBO_QA_FRONTMATTER_VALUES_OVERCAP_2026`.                                         | 7295  | 607   | `c3cd45983e3432693a91a9b9270f1a70e8add08c2e6a39948436db3ad3c855aa` |
 
 Generator (records the exact bytes): `../t3-chat-+personal/+ai/plain-text-docs-2026-08-09/generate-qa-fixtures.mjs`.
 
@@ -133,10 +134,13 @@ To prove an upload converted byte-exactly, hash the served content instead of re
 // Call 1 (page context): sign the download as the user, park the URL on state.
 state.dl = await state.page.evaluate(async (nodeId) => {
 	const m = await import("/src/lib/app-convex-client.ts");
-	const membership = await m.app_convex.query(m.app_convex_api.organizations.get_membership_by_organization_workspace_name, {
-		organizationName: "personal",
-		workspaceName: "home",
-	});
+	const membership = await m.app_convex.query(
+		m.app_convex_api.organizations.get_membership_by_organization_workspace_name,
+		{
+			organizationName: "personal",
+			workspaceName: "home",
+		},
+	);
 	const r = await m.app_convex.action(m.app_convex_api.r2.create_signed_download_url, {
 		membershipId: membership._id,
 		fileNodeId: nodeId,
@@ -208,12 +212,16 @@ also changes that set. Prefer the new `nodeId` in the route after creation, then
 
 ```js
 // Call 1: snapshot ids, click New file.
-state.beforeIds = await state.page.evaluate(() => Array.from(document.querySelectorAll("[role=treeitem][data-file-id]")).map((t) => t.getAttribute("data-file-id")));
+state.beforeIds = await state.page.evaluate(() =>
+	Array.from(document.querySelectorAll("[role=treeitem][data-file-id]")).map((t) => t.getAttribute("data-file-id")),
+);
 await state.page.locator('.FilesSidebarTopSection-actions-icon-button[aria-label="New file"]').click();
 
 // Call 2 (poll): the fresh id is the one not in the snapshot.
 const created = await state.page.evaluate((prev) => {
-	const fresh = Array.from(document.querySelectorAll("[role=treeitem][data-file-id]")).find((t) => !prev.includes(t.getAttribute("data-file-id")));
+	const fresh = Array.from(document.querySelectorAll("[role=treeitem][data-file-id]")).find(
+		(t) => !prev.includes(t.getAttribute("data-file-id")),
+	);
 	return fresh ? { id: fresh.getAttribute("data-file-id"), label: fresh.getAttribute("aria-label") } : null;
 }, state.beforeIds);
 ```
@@ -225,12 +233,22 @@ Do not press `F2` while the new file's editor is still mounting. The create-then
 When the check does not care about the sidebar itself, skip the id diff and the rename: create the file with its final name from page context, the same door the sidebar button calls (verified 2026-09-05). The result carries the node id, so open it straight away with `?nodeId=<id>&view=rich_text_editor`.
 
 ```js
-const r = await state.page.evaluate(async (name) => {
-	const m = await import("/src/lib/app-convex-client.ts");
-	const membership = await m.app_convex.query(m.app_convex_api.organizations.get_membership_by_organization_workspace_name, { organizationName: "personal", workspaceName: "home" });
-	const created = await m.app_convex.action(m.app_convex_api.files_nodes_content.create_text_node, { membershipId: membership._id, parentId: "root", path: name });
-	return { membershipId: membership._id, nodeId: created._yay?.nodeId ?? null, nay: created._nay ?? null };
-}, "qa-" + Date.now().toString(36) + ".md");
+const r = await state.page.evaluate(
+	async (name) => {
+		const m = await import("/src/lib/app-convex-client.ts");
+		const membership = await m.app_convex.query(
+			m.app_convex_api.organizations.get_membership_by_organization_workspace_name,
+			{ organizationName: "personal", workspaceName: "home" },
+		);
+		const created = await m.app_convex.action(m.app_convex_api.files_nodes_content.create_text_node, {
+			membershipId: membership._id,
+			parentId: "root",
+			path: name,
+		});
+		return { membershipId: membership._id, nodeId: created._yay?.nodeId ?? null, nay: created._nay ?? null };
+	},
+	"qa-" + Date.now().toString(36) + ".md",
+);
 ```
 
 Archive it the same way at the end: `m.app_convex.mutation(m.app_convex_api.files_nodes.archive_nodes, { membershipId, nodeIds: [nodeId] })`.

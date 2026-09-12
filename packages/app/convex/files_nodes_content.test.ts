@@ -602,6 +602,7 @@ describe("materialize_file_content and restore_snapshot_r2", () => {
 				}
 				return await baseFetch(input, init);
 			});
+
 			const restoring = asUser.action(api.files_nodes_content.restore_snapshot_r2, {
 				membershipId: db.membershipId,
 				nodeId,
@@ -671,6 +672,7 @@ describe("materialize_file_content and restore_snapshot_r2", () => {
 				releaseOldYjsPut.resolve();
 				releaseUploads.resolve();
 			}
+
 			const result = await restoring;
 			fetchMock.mockImplementation(baseFetch);
 			expect(pausedUploads).toBe(2);
@@ -1062,6 +1064,7 @@ describe("restore_snapshot_r2", () => {
 			const before = await readProposals();
 			expect(before.pending).toHaveLength(2);
 			const restoredText = "Restored text\n";
+
 			const versionId = await t.run(async (ctx) => {
 				const assetId = await ctx.db.insert("files_r2_assets", {
 					organizationId: db.organizationId,
@@ -1087,6 +1090,7 @@ describe("restore_snapshot_r2", () => {
 					collaborationEnabled: true,
 				});
 			});
+
 			for (const [restoreId, rootKind, text] of [
 				[versionId, targetRootKind, restoredText],
 				[snapshotId, sourceRootKind, "Original text\n"],

@@ -289,10 +289,7 @@ function stub_r2_and_modal_fetch(
 
 			if (url === `${process.env.PLUGIN_RUNNER_URL}/internal/plugin-runner/run`) {
 				const body = JSON.parse(String(init?.body ?? "{}")) as Record<string, unknown>;
-				return (
-					(await onPluginRunnerRequest?.(body)) ??
-					plugin_runner_event_response(String(body.pluginRunId))
-				);
+				return (await onPluginRunnerRequest?.(body)) ?? plugin_runner_event_response(String(body.pluginRunId));
 			}
 
 			return new Response(null, { status: 404 });
@@ -2445,6 +2442,7 @@ describe("r2 asset content", () => {
 		if (upload._nay) {
 			throw new Error(upload._nay.message);
 		}
+
 		const existingGeneratedId = await t.run(async (ctx) =>
 			ctx.db.insert("files_nodes", {
 				...test_mocks.files.base(),
@@ -2477,6 +2475,7 @@ describe("r2 asset content", () => {
 				archiveOperationId: null,
 			}),
 		);
+
 		const installation = await t.run((ctx) => ctx.db.get("plugins_workspace_installations", installationId));
 		if (!installation) {
 			throw new Error("Expected plugin installation");
@@ -2490,6 +2489,7 @@ describe("r2 asset content", () => {
 				level: "manage",
 			}),
 		).toEqual({ _yay: null });
+
 		const asset = await t.run(async (ctx) => ctx.db.get("files_r2_assets", upload._yay.assetId));
 		if (!asset) {
 			throw new Error("Expected upload asset");
@@ -2499,6 +2499,7 @@ describe("r2 asset content", () => {
 			workspaceId: db.workspaceId,
 			assetId: asset._id,
 		});
+
 		stub_r2_and_modal_fetch({
 			onPluginRunnerRequest: async (body) => {
 				const host = body.host as { token: string };
@@ -2518,6 +2519,7 @@ describe("r2 asset content", () => {
 				return plugin_runner_event_response(String(body.pluginRunId));
 			},
 		});
+
 		const response = await t.fetch("/api/r2/event", {
 			method: "POST",
 			headers: {
@@ -3130,6 +3132,7 @@ describe("cleanup_expired_unfinalized_assets", () => {
 		const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 		const upload = await create_upload_fixture(t, db, "history.png");
 		const bucket = await t.run(async (ctx) => (await ctx.db.get("files_r2_assets", upload.assetId))?.r2Bucket ?? "");
+
 		expect(
 			(
 				await post_r2_put_event(t, {
@@ -3140,6 +3143,7 @@ describe("cleanup_expired_unfinalized_assets", () => {
 				})
 			).status,
 		).toBe(204);
+
 		await t.run(async (ctx) => {
 			await ctx.db.insert("files_snapshots", {
 				organizationId: db.organizationId,
@@ -3156,6 +3160,7 @@ describe("cleanup_expired_unfinalized_assets", () => {
 			// A stale cleanup deadline must not erase bytes kept by history.
 			await ctx.db.patch("files_r2_assets", upload.assetId, { unfinalizedExpiresAt: Date.now() - 1 });
 		});
+
 		await t.mutation(internal.r2.cleanup_expired_unfinalized_assets, {
 			_test_now: Date.now() + 365 * DAY_MS,
 		});
@@ -3702,6 +3707,7 @@ describe("process_uploaded_asset_event accepted upload", () => {
 			await ctx.db.patch("files_r2_assets", upload.assetId, { r2Key: upload.key, processingWorkId: null });
 			return (await ctx.db.get("files_r2_assets", upload.assetId))!.r2Bucket;
 		});
+
 		const response = await post_r2_put_event(t, {
 			bucket,
 			key: upload.key,

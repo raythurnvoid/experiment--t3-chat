@@ -425,6 +425,7 @@ async function files_pending_row_accept(
 			nodeId: pendingUpdate.fileNodeId,
 		});
 	}
+
 	if (pendingUpdate.contentNeedsRebase) {
 		return Result({ _nay: { message: files_PENDING_UPDATE_STALE_BASE_MESSAGE } });
 	}
@@ -445,12 +446,12 @@ async function files_pending_row_accept(
 		// captured doc is stale: the content publish below anchors `reviewedUpdatedAt` on the
 		// version that exists now. A vanished doc means the row was settled elsewhere between
 		// the calls — that is a done row, not a failure.
-		const settled = await convex.query(app_convex_api.files_pending_updates.get_file_pending_update, {
+		const currentDoc = await convex.query(app_convex_api.files_pending_updates.get_file_pending_update, {
 			membershipId,
 			nodeId: pendingUpdate.fileNodeId,
 			pendingUpdateId: pendingUpdate._id,
 		});
-		if (!settled) {
+		if (!currentDoc) {
 			return Result({ _yay: null });
 		}
 		// The settle only clears `pendingMove` and bumps `updatedAt`; the content branches and
@@ -458,14 +459,14 @@ async function files_pending_row_accept(
 		// proposal between the review and this click — publishing it would accept content the
 		// user never saw, so refuse like the reviewed-version guard does.
 		if (
-			settled.baseStateId !== pendingUpdate.baseStateId ||
-			settled.stagedStateId !== pendingUpdate.stagedStateId ||
-			settled.unstagedStateId !== pendingUpdate.unstagedStateId ||
-			settled.pendingReplacement?.assetId !== pendingUpdate.pendingReplacement?.assetId
+			currentDoc.baseStateId !== pendingUpdate.baseStateId ||
+			currentDoc.stagedStateId !== pendingUpdate.stagedStateId ||
+			currentDoc.unstagedStateId !== pendingUpdate.unstagedStateId ||
+			currentDoc.pendingReplacement?.assetId !== pendingUpdate.pendingReplacement?.assetId
 		) {
 			return Result({ _nay: { message: "Pending changes were revised, review the latest version" } });
 		}
-		updatedPendingUpdate = settled;
+		updatedPendingUpdate = currentDoc;
 	}
 
 	// A whole-file copy is accepted as a whole. There are no hunks to stage.

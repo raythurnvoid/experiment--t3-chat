@@ -25,6 +25,7 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
 		if (!result.success) return;
 		const message = result.data;
 		if (message.type === "hello") {
+			// The first hello binds the session and parent origin for this frame's whole life.
 			if (sessionId !== null && (sessionId !== message.sessionId || parentOrigin !== event.origin)) return;
 			parentOrigin = event.origin;
 			sessionId = message.sessionId;
@@ -39,6 +40,7 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
 		try {
 			const frame = document.createElement("iframe");
 			frame.title = "HTML preview document";
+			// allow-same-origin stays off so the untrusted document keeps an opaque origin.
 			frame.sandbox.add("allow-scripts");
 			frame.referrerPolicy = "no-referrer";
 			frame.srcdoc = file_preview_create_document(message.html, message.loadId, window.location.origin);
@@ -58,10 +60,12 @@ window.addEventListener("message", (event: MessageEvent<unknown>) => {
 		return;
 	}
 
+	// A sandboxed frame has no real origin, so its messages arrive with origin "null".
 	if (event.source !== currentFrame?.contentWindow || event.origin !== "null" || !sessionId) return;
 	const result = file_preview_DocumentMessageSchema.safeParse(event.data);
 	if (!result.success || result.data.loadId !== currentLoadId) return;
 	const message = result.data;
+	// An error is terminal for this load: a late "loaded" must not overwrite it.
 	if (message.type === "loaded" && loadFailed) return;
 	if (message.type === "error") loadFailed = true;
 	send({

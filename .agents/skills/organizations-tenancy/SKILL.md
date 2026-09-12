@@ -183,11 +183,11 @@ keeps the account and binding; it is not a workspace purge.
 - `packages/app/convex/data_deletion.test.ts` — user deletion + shared deletion-request behavior.
 - `packages/app/convex/crons.ts` — `data_deletion.enqueue_deletion_requests_processing` (Workpool-backed user, organization, then workspace purge batches).
 
-## Purge worker index rule
+# Purge worker index rule
 
 - Prefer **narrow index reads** per `(organizationId, workspaceId)` and eligible queue docs by due time. If a new tenant-scoped table can grow, add the purge index when adding the table or include a parent-doc batching strategy that never collects the whole tenant.
 
-## Account-deletion retention TODO
+# Account-deletion retention TODO
 
 - Today, phase 2 still runs after the fixed retention window even if a paid subscription was only scheduled to end at billing-period close.
 - In the future, once long-running plans such as yearly subscriptions exist, phase 2 should wait until subscription end when that is later than retention so paid users do not lose their data before the paid term finishes.

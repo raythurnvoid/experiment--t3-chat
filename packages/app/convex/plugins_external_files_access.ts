@@ -123,6 +123,7 @@ export async function plugins_external_files_db_authorize(
 		parentPath = server_path_parent_of(parentPath);
 	}
 	const aclNode = node ?? parentNode;
+	// The plugin-name stamp on the node (or nearest folder) is the ownership proof for this scope.
 	if (
 		aclNode &&
 		(await files_metadata_db_read_entry(ctx, {
@@ -246,10 +247,12 @@ export async function plugins_external_files_db_check_write(
 		path: args.path,
 	});
 	if (facts._nay) return facts;
+
 	const writer = await ctx.db.get("plugins_external_file_writers", args.write.writerId);
 	if (!writer || writer.installationId !== facts._yay.installation._id) {
 		return Result({ _nay: { message: "Permission denied" } });
 	}
+
 	const [root, folder, binding] = await Promise.all([
 		ctx.db.get("files_nodes", writer.rootNodeId),
 		ctx.db.get("files_nodes", writer.folderNodeId),
@@ -271,6 +274,7 @@ export async function plugins_external_files_db_check_write(
 	) {
 		return Result({ _nay: { name: "stale_write", message: "The output folder or writer changed" } });
 	}
+
 	const receipt = await ctx.db
 		.query("plugins_external_file_receipts")
 		.withIndex("by_writer_operationId", (q) => q.eq("writerId", writer._id).eq("operationId", args.write.operationId))
@@ -294,9 +298,11 @@ export async function plugins_external_files_db_check_write(
 		}
 		return Result({ _yay: { ...facts._yay, writer, binding, fingerprint, receipt } });
 	}
+
 	if (binding && binding.detachedAt === null && binding.revision !== args.write.expectedReaderRevision) {
 		return Result({ _nay: { name: "stale_write", message: "The file readers changed" } });
 	}
+
 	// A fenced rebuild may reuse its source sequence. Ordering is local to the current writer generation.
 	const latest = await ctx.db
 		.query("plugins_external_file_receipts")
@@ -308,6 +314,7 @@ export async function plugins_external_files_db_check_write(
 	if (latest && latest.sequence >= args.write.sequence) {
 		return Result({ _nay: { name: "stale_write", message: "A newer file write already exists" } });
 	}
+
 	const node = facts._yay.node;
 	if (
 		(node?._id ?? null) !== args.write.expectedNodeId ||
@@ -315,6 +322,7 @@ export async function plugins_external_files_db_check_write(
 	) {
 		return Result({ _nay: { name: "stale_write", message: "The file changed during the write" } });
 	}
+
 	return Result({ _yay: { ...facts._yay, writer, binding, fingerprint, receipt: null } });
 }
 

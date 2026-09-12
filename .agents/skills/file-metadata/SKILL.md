@@ -245,7 +245,7 @@ The map holds member-defined labels and details recorded by creation flows.
 
 - **Properties modal**: `packages/app/src/components/files/files-properties-modal.tsx`.
   One dialog per node, opened from the sidebar row menu (`Properties`) or the breadcrumb button. It
-  holds the node's facts, the read-only checkbox, and a Monaco YAML editor for the map. The editor
+  holds the node's facts, the local write-policy control, and a Monaco YAML editor for the map. The editor
   section renders for files and folders. Its editor name is `Metadata YAML`. Collaboration controls stay file-only. It replaced the sidebar
   `Metadata` tab and the separate `Read-only settings` modal; both are gone.
 - **Agent tool**: `set_file_metadata` in `packages/app/server/server-ai-tools.ts`. It is in
@@ -431,7 +431,7 @@ Two mistakes a model makes, both found by driving the real agent, both fixed in 
 - No public HTTP API route. `packages/app/convex/public_api.ts` does not expose metadata. Adding it
   is a follow-up, not an oversight.
 - No quota or billing accounting. `set_entries` shares the `files_tree_write` bucket and writes up to
-  ~384 index docs per call. `set_node_read_only` has no quota leg either, so this is consistent —
+  ~384 index docs per call. `set_node_write_policy` has no quota leg either, so this is consistent —
   revisit it as a product decision, not as a hole.
 - `cp` does not copy metadata to the new file.
 - No dedicated chat renderer for the tool call. It falls back to the generic unknown-tool disclosure,
@@ -450,4 +450,4 @@ Two mistakes a model makes, both found by driving the real agent, both fixed in 
 - `packages/app/server/server-ai-tools.test.ts` — the `set_file_metadata` tool.
 - `packages/app/server/bash-meta-command.test.ts` — `metadata.*` field parsing.
 - `packages/app/src/components/files/files-properties-modal.test.tsx` — the Properties dialog: the
-  read-only checkbox in each of its four states, and the YAML draft reconciliation.
+  write-policy control in each of its four states, and the YAML draft reconciliation.

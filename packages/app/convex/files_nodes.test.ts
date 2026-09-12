@@ -3408,8 +3408,12 @@ describe("files_nodes.create_upload_nodes", () => {
 		expect(normalized._yay.created).toHaveLength(0);
 		expect(normalized._yay.skipped).toHaveLength(1);
 		const single = await asUser.mutation(api.files_nodes.create_upload_node, {
-			membershipId: db.membershipId, parentId: files_ROOT_ID,
-			filename: input, contentType: "text/markdown", size: 1, onConflict: "fail",
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: input,
+			contentType: "text/markdown",
+			size: 1,
+			onConflict: "fail",
 		});
 		expect(single._nay).toBeUndefined();
 		const uploadedNode = await t.run(async (ctx) => await ctx.db.get("files_nodes", single._yay!.nodeId));
@@ -5230,10 +5234,10 @@ test("files_snapshot_write rate limit runs before restore snapshot validation", 
 		}
 	}
 
+	// The rate limit must win before any file or lineage validation.
 	const blocked = await asUser.mutation(internal.files_nodes_content.restore_snapshot, {
 		membershipId: db.membershipId,
 		nodeId: db.files.file_root_1._id,
-		// The rate limit must win before any file or lineage validation.
 		expectedYjsLastSequenceId: restoreAssets.expectedYjsLastSequenceId,
 		expectedLastSequence: 0,
 		snapshotId: restoreAssets.snapshotId,
@@ -7631,7 +7635,7 @@ describe("non-collaborative files", () => {
 		if (freshText._nay) throw new Error(freshText._nay.message);
 		expect(freshText._yay).toBe(markdown);
 
-		// Both toggles are idempotent, like the read-only checkbox beside them.
+		// Both toggles are idempotent, like the write-policy control beside them.
 		const onAgain = await asUser.action(api.files_nodes_content.set_file_collaborative, {
 			membershipId: db.membershipId,
 			nodeId,
@@ -10219,6 +10223,7 @@ describe("folder metadata", () => {
 			path: "/destination",
 		});
 		if (destination._nay) throw new Error(destination._nay.message);
+
 		const search = (pathPrefix?: string) =>
 			t.query(internal.files_metadata.search, {
 				...scope,
@@ -10227,6 +10232,7 @@ describe("folder metadata", () => {
 				numItems: 10,
 				cursor: null,
 			});
+
 		const assertScope = async (paths: string[], archived: boolean) => {
 			const docs = await t.run(async (ctx) =>
 				(await ctx.db.query("files_metadata_docs").collect()).filter(
@@ -10241,6 +10247,7 @@ describe("folder metadata", () => {
 			}
 			expect((await search()).items.map((item) => item.path).sort()).toEqual(archived ? [] : paths.slice().sort());
 		};
+
 		expect(
 			(
 				await asOwner.mutation(api.files_nodes.rename_node, {
@@ -10251,6 +10258,7 @@ describe("folder metadata", () => {
 			)._nay,
 		).toBeUndefined();
 		await assertScope(["/folder-metadata", "/folder-metadata/inner"], false);
+
 		expect(
 			(
 				await asOwner.mutation(api.files_nodes.rename_node, {
@@ -10262,6 +10270,7 @@ describe("folder metadata", () => {
 		).toBeUndefined();
 		await assertScope(["/renamed", "/renamed/inner"], false);
 		expect((await search("/folder-metadata")).items).toEqual([]);
+
 		expect(
 			(
 				await asOwner.mutation(api.files_nodes.move_nodes, {
@@ -10274,6 +10283,7 @@ describe("folder metadata", () => {
 		await assertScope(["/destination/renamed", "/destination/renamed/inner"], false);
 		expect((await search("/renamed")).items).toEqual([]);
 		expect((await search("/destination/renamed")).items).toHaveLength(2);
+
 		await t.mutation(components.rate_limiter.lib.resetRateLimit, { name: "files_tree_write", key: db.userId });
 		expect(
 			(
@@ -10292,6 +10302,7 @@ describe("folder metadata", () => {
 				prefix: "",
 			}),
 		).toEqual([]);
+
 		expect(
 			(
 				await asOwner.mutation(api.files_nodes.rename_node, {
@@ -10362,6 +10373,7 @@ describe("folder metadata", () => {
 				})
 			)._nay,
 		).toBeUndefined();
+
 		const read = (path: string, userId: Id<"users">) =>
 			t.query(internal.files_metadata.get_by_path, {
 				...scope,
@@ -10396,6 +10408,7 @@ describe("folder metadata", () => {
 				remove: [],
 			}),
 		).toMatchObject({ _nay: { message: "Not found" } });
+
 		expect(
 			(
 				await asOwner.mutation(api.files_pending_updates.apply_file_pending_move, {
@@ -18680,6 +18693,7 @@ describe("member controls on plugin-labeled nodes", () => {
 		const f = await seed_labeled_folders(t);
 		const args = { membershipId: f.db.membershipId, nodeId: f.folderId };
 		const writePolicy = { mode: "writer", writer: { kind: "user", userId: f.member.userId } } as const;
+		// Stamp the same writer twice: the repeat must leave the metadata map untouched.
 		for (let i = 0; i < 2; i += 1) {
 			expect(
 				(await f.asOwner.mutation(api.files_nodes.set_node_write_policy, { ...args, writePolicy }))._nay,

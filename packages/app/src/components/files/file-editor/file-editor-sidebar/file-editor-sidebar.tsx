@@ -45,12 +45,12 @@ export const FileEditorSidebar = memo(function FileEditorSidebar(props: FileEdit
 	// it shows Comments, and it keeps Details next to it, because the stored-file card does not
 	// render for editable nodes and those rows would otherwise have no owner at all.
 	const isEditableTextFile = node !== null && node.kind === "file" && files_node_has_editable_text_content(node);
-	const showsCommentsTab = !isEditableTextFile || node.textKind !== "plain_text";
+	const hasCommentsTab = !isEditableTextFile || node.textKind !== "plain_text";
 	const showsDetailsTab =
 		isEditableTextFile && (node.textKind === "plain_text" || !files_node_has_editable_yjs_state(node));
 	const availableTabIds: AppElementId[] = (
 		[
-			showsCommentsTab ? FILE_EDITOR_SIDEBAR_TAB_ID_COMMENTS : null,
+			hasCommentsTab ? FILE_EDITOR_SIDEBAR_TAB_ID_COMMENTS : null,
 			showsDetailsTab ? FILE_EDITOR_SIDEBAR_TAB_ID_DETAILS : null,
 			FILE_EDITOR_SIDEBAR_TAB_ID_AGENT,
 			FILE_EDITOR_SIDEBAR_TAB_ID_PENDING,
@@ -80,7 +80,7 @@ export const FileEditorSidebar = memo(function FileEditorSidebar(props: FileEdit
 						className={cn("FileEditorSidebar-tabs-list" satisfies FileEditorSidebar_ClassNames)}
 						aria-label="Sidebar tabs"
 					>
-						{showsCommentsTab ? <MyTabsTab id={FILE_EDITOR_SIDEBAR_TAB_ID_COMMENTS}>Comments</MyTabsTab> : null}
+						{hasCommentsTab ? <MyTabsTab id={FILE_EDITOR_SIDEBAR_TAB_ID_COMMENTS}>Comments</MyTabsTab> : null}
 						{showsDetailsTab ? <MyTabsTab id={FILE_EDITOR_SIDEBAR_TAB_ID_DETAILS}>Details</MyTabsTab> : null}
 						<MyTabsTab id={FILE_EDITOR_SIDEBAR_TAB_ID_AGENT}>Agent</MyTabsTab>
 						<MyTabsTab id={FILE_EDITOR_SIDEBAR_TAB_ID_PENDING}>
@@ -90,7 +90,7 @@ export const FileEditorSidebar = memo(function FileEditorSidebar(props: FileEdit
 					</MyTabsList>
 				</div>
 				<MyTabsPanels className={cn("FileEditorSidebar-tabs-panels" satisfies FileEditorSidebar_ClassNames)}>
-					{showsCommentsTab ? (
+					{hasCommentsTab ? (
 						<MyTabsPanel
 							className={cn("FileEditorSidebar-panel" satisfies FileEditorSidebar_ClassNames)}
 							tabId={FILE_EDITOR_SIDEBAR_TAB_ID_COMMENTS}

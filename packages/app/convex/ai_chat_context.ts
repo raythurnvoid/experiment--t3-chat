@@ -86,6 +86,7 @@ export const discover_sources = internalQuery({
 				return path && SKILL_PATH_REGEX.test(path) ? [[node._id, path] as const] : [];
 			}),
 		);
+
 		const readable = await access_control_db_filter_readable_file_nodes(ctx, {
 			organizationId,
 			workspaceId,

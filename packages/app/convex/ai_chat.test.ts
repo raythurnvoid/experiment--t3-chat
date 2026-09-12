@@ -200,17 +200,23 @@ describe("ai_chat thread state", () => {
 		const result = await asUser.mutation(api.ai_chat.thread_messages_add, {
 			membershipId: seeded.membershipId,
 			threadId,
-			messages: [{
-				clientGeneratedMessageId: "client_oversized_message",
-				content: {
-					id: "client_oversized_message",
-					role: "assistant",
-					parts: [{ type: "text", text: "\"".repeat(460 * 1024) }],
+			messages: [
+				{
+					clientGeneratedMessageId: "client_oversized_message",
+					content: {
+						id: "client_oversized_message",
+						role: "assistant",
+						// A quote JSON-escapes to \" so the stored size is twice the text length.
+						parts: [{ type: "text", text: '"'.repeat(460 * 1024) }],
+					},
 				},
-			}],
+			],
 		});
 		expect(result._nay?.message).toContain("Message is too large to store");
-		const listed = await asUser.query(api.ai_chat.thread_messages_list, { membershipId: seeded.membershipId, threadId });
+		const listed = await asUser.query(api.ai_chat.thread_messages_list, {
+			membershipId: seeded.membershipId,
+			threadId,
+		});
 		expect(listed?.messages).toHaveLength(0);
 	});
 

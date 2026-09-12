@@ -59,10 +59,8 @@ const hookMocks = vi.hoisted(() => {
 			content: ai_chat_UiMessage;
 		}>,
 		mutation: vi.fn(
-			(): Promise<
-				| { _yay: { threadId: string }; _nay?: never }
-				| { _nay: { code: string }; _yay?: never }
-			> => Promise.resolve({ _yay: { threadId: "thread_branch" } }),
+			(): Promise<{ _yay: { threadId: string }; _nay?: never } | { _nay: { code: string }; _yay?: never }> =>
+				Promise.resolve({ _yay: { threadId: "thread_branch" } }),
 		),
 		renderSelectedThreadId: vi.fn(),
 		chatInstances: [] as MockChatInstance[],
@@ -222,7 +220,12 @@ const QUEUE_IMAGE_FILE_PART = {
 	url: "data:image/png;base64,cXVldWVk",
 } satisfies FileUIPart;
 
-function createThread(args: { id: string; title?: string | null; clientGeneratedId?: string | null; archived?: boolean }) {
+function createThread(args: {
+	id: string;
+	title?: string | null;
+	clientGeneratedId?: string | null;
+	archived?: boolean;
+}) {
 	return {
 		_id: args.id,
 		_creationTime: 1,
@@ -534,9 +537,7 @@ function RuntimeQueueProbe() {
 			<div data-testid="queue-paused">{controller.isMessageQueuePaused ? "yes" : "no"}</div>
 			<div data-testid="queue-composer-action">{controller.isQueueingUserText ? "queue" : "send"}</div>
 			<div data-testid="queue-failed-message">{failedSendUserMessageId ?? "null"}</div>
-			<div data-testid="queue-failed-text">
-				{failedMessage ? ai_chat_get_message_text(failedMessage) : "null"}
-			</div>
+			<div data-testid="queue-failed-text">{failedMessage ? ai_chat_get_message_text(failedMessage) : "null"}</div>
 			<button type="button" onClick={() => controller.startNewChat()}>
 				new queue probe
 			</button>
@@ -885,8 +886,7 @@ function RuntimeQueueProbe() {
 						role: "assistant",
 						parts: [],
 						metadata: {
-							convexParentId:
-								failedUserMessage.metadata?.convexId ?? null,
+							convexParentId: failedUserMessage.metadata?.convexId ?? null,
 							parentClientGeneratedId: failedUserMessage.id,
 						},
 					} satisfies ai_chat_UiMessage);
@@ -1308,9 +1308,7 @@ describe("AiChatController", () => {
 
 		const fetchMock = vi
 			.fn<typeof fetch>()
-			.mockResolvedValueOnce(
-				Response.json({ message: "Rate limit exceeded", retryAfterMs: 1 }, { status: 429 }),
-			)
+			.mockResolvedValueOnce(Response.json({ message: "Rate limit exceeded", retryAfterMs: 1 }, { status: 429 }))
 			.mockResolvedValueOnce(new Response("ok"));
 		vi.stubGlobal("fetch", fetchMock);
 
@@ -1337,10 +1335,7 @@ describe("AiChatController", () => {
 			throw new Error("Expected chat transport fetch");
 		}
 
-		const rateLimitResponse = Response.json(
-			{ message: "Rate limit exceeded", retryAfterMs: "later" },
-			{ status: 429 },
-		);
+		const rateLimitResponse = Response.json({ message: "Rate limit exceeded", retryAfterMs: "later" }, { status: 429 });
 		const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(rateLimitResponse);
 		vi.stubGlobal("fetch", fetchMock);
 
@@ -1369,9 +1364,7 @@ describe("AiChatController", () => {
 
 		const fetchMock = vi
 			.fn<typeof fetch>()
-			.mockResolvedValue(
-				Response.json({ message: "Rate limit exceeded", retryAfterMs: 60_000 }, { status: 429 }),
-			);
+			.mockResolvedValue(Response.json({ message: "Rate limit exceeded", retryAfterMs: 60_000 }, { status: 429 }));
 		vi.stubGlobal("fetch", fetchMock);
 		const abortController = new AbortController();
 
@@ -1823,9 +1816,7 @@ describe("AiChatController", () => {
 		fireEvent.click(screen.getByRole("button", { name: "persist assistant queue probe" }));
 
 		await waitFor(() => {
-			expect(
-				AiChatController.useStore.getState().threadById.get("thread_queue_fifo")?.activeRequestToken,
-			).toBeNull();
+			expect(AiChatController.useStore.getState().threadById.get("thread_queue_fifo")?.activeRequestToken).toBeNull();
 		});
 		expect(chat.sendMessage).toHaveBeenCalledTimes(5);
 		expect(chat.activeRequestCount).toBe(0);
@@ -1864,9 +1855,7 @@ describe("AiChatController", () => {
 		fireEvent.click(screen.getByRole("button", { name: "change queued edit probe" }));
 
 		await waitFor(() => {
-			expect(screen.getByTestId("queue-edit").textContent).toMatch(
-				/^ai_message-.*:Second edited:gpt-5\.4-mini:ask$/,
-			);
+			expect(screen.getByTestId("queue-edit").textContent).toMatch(/^ai_message-.*:Second edited:gpt-5\.4-mini:ask$/);
 		});
 		expect(screen.getByTestId("queue-draft").textContent).toBe("Normal draft");
 		expect(screen.getByTestId("queue-texts").textContent).toBe("Second|Third");
@@ -2852,7 +2841,6 @@ describe("AiChatController", () => {
 		expect(screen.getByTestId("queue-texts").textContent).toBe("Second|Third");
 	});
 
-
 	test("keeps the model and mode selected when a message was queued", async () => {
 		hookMocks.holdChatRequests = true;
 		render(
@@ -2885,7 +2873,6 @@ describe("AiChatController", () => {
 		expect(queuedMessage?.metadata?.selectedModelId).toBe("gpt-5.4-nano");
 		expect(queuedMessage?.metadata?.selectedModeId).toBe("agent");
 	});
-
 
 	test("limits the queue to ten messages and stop pauses it until resume", async () => {
 		hookMocks.holdChatRequests = true;
@@ -2920,9 +2907,7 @@ describe("AiChatController", () => {
 		fireEvent.click(screen.getByRole("button", { name: "settle request queue probe" }));
 
 		await waitFor(() => {
-			expect(
-				AiChatController.useStore.getState().threadById.get("thread_queue_limit")?.activeRequestToken,
-			).toBeNull();
+			expect(AiChatController.useStore.getState().threadById.get("thread_queue_limit")?.activeRequestToken).toBeNull();
 		});
 		expect(chat.error).toBeUndefined();
 		expect(chat.sendMessage).toHaveBeenCalledOnce();
@@ -2965,9 +2950,7 @@ describe("AiChatController", () => {
 		expect(screen.getByTestId("queue-texts").textContent).toBe("Second");
 		expect(screen.getByTestId("queue-paused").textContent).toBe("yes");
 
-		fireEvent.click(
-			screen.getByRole("button", { name: "settle stopped request with empty assistant queue probe" }),
-		);
+		fireEvent.click(screen.getByRole("button", { name: "settle stopped request with empty assistant queue probe" }));
 		fireEvent.click(screen.getByRole("button", { name: "resume queue probe" }));
 
 		await waitFor(() => {
@@ -2999,14 +2982,11 @@ describe("AiChatController", () => {
 		}
 
 		fireEvent.click(screen.getByRole("button", { name: "stop queue probe" }));
-		fireEvent.click(
-			screen.getByRole("button", { name: "settle stopped request with empty assistant queue probe" }),
-		);
+		fireEvent.click(screen.getByRole("button", { name: "settle stopped request with empty assistant queue probe" }));
 
 		await waitFor(() => {
 			expect(
-				AiChatController.useStore.getState().threadById.get("thread_queue_send_after_stop")
-					?.activeRequestToken,
+				AiChatController.useStore.getState().threadById.get("thread_queue_send_after_stop")?.activeRequestToken,
 			).toBeNull();
 		});
 		expect(screen.getByTestId("queue-paused").textContent).toBe("yes");
@@ -3128,14 +3108,11 @@ describe("AiChatController", () => {
 		}
 
 		fireEvent.click(screen.getByRole("button", { name: "stop queue probe" }));
-		fireEvent.click(
-			screen.getByRole("button", { name: "settle stopped request with empty assistant queue probe" }),
-		);
+		fireEvent.click(screen.getByRole("button", { name: "settle stopped request with empty assistant queue probe" }));
 
 		await waitFor(() => {
 			expect(
-				AiChatController.useStore.getState().threadById.get("thread_queue_stopped_empty_assistant")
-					?.activeRequestToken,
+				AiChatController.useStore.getState().threadById.get("thread_queue_stopped_empty_assistant")?.activeRequestToken,
 			).toBeNull();
 		});
 		expect(chat.sendMessage).toHaveBeenCalledOnce();
@@ -3176,9 +3153,9 @@ describe("AiChatController", () => {
 
 		await waitFor(() => {
 			expect(hookMocks.mutation).toHaveBeenCalled();
-			expect(AiChatController.useStore.getState().threadById.get("thread_queue_archive_failure")?.isArchivePending).toBe(
-				false,
-			);
+			expect(
+				AiChatController.useStore.getState().threadById.get("thread_queue_archive_failure")?.isArchivePending,
+			).toBe(false);
 		});
 		expect(screen.getByTestId("queue-texts").textContent).toBe("Second");
 		expect(chat.stop).not.toHaveBeenCalled();
@@ -3212,9 +3189,7 @@ describe("AiChatController", () => {
 		fireEvent.click(screen.getByRole("button", { name: "complete client response queue probe" }));
 
 		await waitFor(() => {
-			expect(
-				AiChatController.useStore.getState().threadById.get(optimisticThreadId)?.activeRequestToken,
-			).toBeNull();
+			expect(AiChatController.useStore.getState().threadById.get(optimisticThreadId)?.activeRequestToken).toBeNull();
 		});
 		expect(screen.getByTestId("queue-texts").textContent).toBe("Third|Second");
 		expect(screen.getByTestId("queue-edit").textContent).toMatch(/:Second edited:/);
@@ -3254,9 +3229,7 @@ describe("AiChatController", () => {
 		await waitFor(() => {
 			expect(screen.getByTestId("queue-texts").textContent).toBe("Second edited");
 		});
-		const upgradedChat = hookMocks.chatInstances.find(
-			(item) => item.id === "thread_queue_upgraded_after_settle",
-		);
+		const upgradedChat = hookMocks.chatInstances.find((item) => item.id === "thread_queue_upgraded_after_settle");
 		expect(upgradedChat?.sendMessage).toHaveBeenCalledTimes(2);
 		const sentMessage = upgradedChat?.sendMessage.mock.calls[1]?.[0] as ai_chat_UiMessage | undefined;
 		expect(sentMessage?.parts).toContainEqual({ type: "text", text: "Third" });

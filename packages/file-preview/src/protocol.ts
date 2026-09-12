@@ -19,6 +19,7 @@ export const file_preview_HostMessageSchema = z.discriminatedUnion("type", [
 		loadId: z.uuid(),
 		html: z
 			.string()
+			// .max counts UTF-16 units; the refine enforces the real UTF-8 byte cap.
 			.max(file_preview_MaxHtmlBytes)
 			.refine((html) => new TextEncoder().encode(html).byteLength <= file_preview_MaxHtmlBytes),
 	}),

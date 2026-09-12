@@ -30,6 +30,7 @@ export function file_preview_create_document(source: string, loadId: string, run
 		loadId,
 		runtimeOrigin,
 		maxErrorLength: file_preview_MaxErrorLength,
+		// Escape "<" so a "</script>" inside the JSON cannot break out of the relay script.
 	}).replaceAll("<", "\\u003c");
 	defaultTreeAdapter.insertText(
 		relay,
@@ -53,6 +54,7 @@ export function file_preview_create_document(source: string, loadId: string, run
 		{ name: "name", value: "referrer" },
 		{ name: "content", value: "no-referrer" },
 	]);
+	// Both elements go before the head's first child so the relay's listeners precede file scripts.
 	const firstChild = head.childNodes[0];
 	if (firstChild) {
 		defaultTreeAdapter.insertBefore(head, relay, firstChild);
@@ -61,6 +63,7 @@ export function file_preview_create_document(source: string, loadId: string, run
 		defaultTreeAdapter.appendChild(head, relay);
 		defaultTreeAdapter.appendChild(head, referrer);
 	}
+
 	return document.childNodes
 		.map((node) => {
 			if (defaultTreeAdapter.isDocumentTypeNode(node)) {

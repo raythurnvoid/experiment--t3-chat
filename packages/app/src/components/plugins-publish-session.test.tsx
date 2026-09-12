@@ -145,7 +145,7 @@ const workspaceRoute = createRoute({
 		const publishSession = PluginsPublishSessionProvider.useContext();
 		const focusTargetRef = useRef<HTMLElement>(null);
 		const workspaceKey = `${organizationName}/${workspaceName}`;
-		const setFocusTargetRef = (target: HTMLElement | null) => {
+		const handleFocusTargetRef = (target: HTMLElement | null) => {
 			focusTargetRef.current = target;
 			publishSession.setWorkspaceFocusTarget(target, workspaceKey);
 		};
@@ -157,7 +157,7 @@ const workspaceRoute = createRoute({
 
 		if (routerPermission === undefined) {
 			return (
-				<main ref={setFocusTargetRef} role="status" tabIndex={-1}>
+				<main ref={handleFocusTargetRef} role="status" tabIndex={-1}>
 					Loading {organizationName}/{workspaceName}
 				</main>
 			);
@@ -165,7 +165,7 @@ const workspaceRoute = createRoute({
 
 		if (routerPermission === false) {
 			return (
-				<main ref={setFocusTargetRef} role="alert" aria-label="Organization access denied" tabIndex={-1}>
+				<main ref={handleFocusTargetRef} role="alert" aria-label="Organization access denied" tabIndex={-1}>
 					No access to {organizationName}/{workspaceName}
 				</main>
 			);
@@ -173,7 +173,7 @@ const workspaceRoute = createRoute({
 
 		return (
 			<div
-				ref={setFocusTargetRef}
+				ref={handleFocusTargetRef}
 				data-testid="workspace-content"
 				role="region"
 				aria-label={`${organizationName}/${workspaceName} workspace content`}

@@ -11,7 +11,10 @@ import {
 import { github_codeload_url } from "../server/github.ts";
 import { path_tree_prefix_upper_bound } from "../server/server-utils.ts";
 import { files_MAX_TEXT_CONTENT_BYTES } from "../shared/files.ts";
-import { organizations_GLOBAL_ORGANIZATION_ID, organizations_GLOBAL_GITHUB_WORKSPACE_ID } from "../shared/organizations.ts";
+import {
+	organizations_GLOBAL_ORGANIZATION_ID,
+	organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+} from "../shared/organizations.ts";
 import { users_SYSTEM_AUTHOR } from "../shared/users.ts";
 import type { Id } from "./_generated/dataModel.js";
 
@@ -243,9 +246,9 @@ describe("github_mount_classify_rel_path", () => {
 
 describe("github_mount_is_lfs_pointer", () => {
 	test("detects an LFS pointer header", () => {
-		expect(
-			github_mount_is_lfs_pointer("version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 1\n"),
-		).toBe(true);
+		expect(github_mount_is_lfs_pointer("version https://git-lfs.github.com/spec/v1\noid sha256:abc\nsize 1\n")).toBe(
+			true,
+		);
 		expect(github_mount_is_lfs_pointer("just normal text\n")).toBe(false);
 	});
 });
@@ -363,9 +366,7 @@ describe("list_mounts", () => {
 		// Name order comes from the by_name index; callers mount only mounts with lastCommitSha set,
 		// so the in-progress first sync stays invisible to bash while still being listed here.
 		const mounts = await t.query(internal.github_mounts.list_mounts, {});
-		expect(
-			mounts.map((mount) => ({ name: mount.name, lastCommitSha: mount.lastCommitSha })),
-		).toEqual([
+		expect(mounts.map((mount) => ({ name: mount.name, lastCommitSha: mount.lastCommitSha }))).toEqual([
 			{ name: "alpha-mount", lastCommitSha: null },
 			{ name: "zeta-mount", lastCommitSha: COMMIT_1 },
 		]);
@@ -377,6 +378,7 @@ describe("list_mounts", () => {
 // #region pending-root barrier + gc
 
 describe("clear_pending_root_batch", () => {
+	// "😀" is above the BMP and "￿" is its last code point; both sit at the edges of path ordering.
 	test.each(["😀", "\uffff"])("removes a partial root with a %s descendant", async (suffix) => {
 		const t = test_convex();
 		install_fetch({ commitSha: COMMIT_2, treeSha: TREE_2, zip: build_repo_zip(COMMIT_2, {}) });
@@ -399,6 +401,7 @@ describe("clear_pending_root_batch", () => {
 		);
 		expect(nodes).toHaveLength(3);
 		expect(nodes.map((node) => node.path)).toContain(path);
+
 		let done = false;
 		for (let pass = 0; pass < 10 && !done; pass++) {
 			const batch = await t.mutation(internal.github_mounts.clear_pending_root_batch, {
@@ -411,6 +414,7 @@ describe("clear_pending_root_batch", () => {
 			done = batch.done;
 		}
 		expect(done).toBe(true);
+
 		const remaining = await t.run((ctx) => Promise.all(nodes.map((node) => ctx.db.get("files_nodes", node._id))));
 		expect(remaining).toEqual([null, null, null]);
 	});
@@ -464,7 +468,9 @@ describe("clear_pending_root_batch", () => {
 			const assets = await ctx.db
 				.query("files_r2_assets")
 				.withIndex("by_organization_workspace", (q) =>
-					q.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID).eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID),
+					q
+						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+						.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID),
 				)
 				.collect();
 			return assets.length;
@@ -555,7 +561,9 @@ describe("clear_pending_root_batch", () => {
 			const assets = await ctx.db
 				.query("files_r2_assets")
 				.withIndex("by_organization_workspace", (q) =>
-					q.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID).eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID),
+					q
+						.eq("organizationId", organizations_GLOBAL_ORGANIZATION_ID)
+						.eq("workspaceId", organizations_GLOBAL_GITHUB_WORKSPACE_ID),
 				)
 				.collect();
 			return assets.length;

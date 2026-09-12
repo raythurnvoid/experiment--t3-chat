@@ -2291,6 +2291,7 @@ function RoutePluginsPlugin() {
 			? { membershipId, serviceAccountId: installedItem.installation.serviceAccountId }
 			: "skip",
 	);
+
 	const handleRebind = useFn(() => {
 		if (
 			!installedItem ||
@@ -2326,6 +2327,7 @@ function RoutePluginsPlugin() {
 			})
 			.finally(() => setRebinding(false));
 	});
+
 	const showInstall =
 		plugin !== null && canManagePlugins === true && (!installedVersion || installedVersion.version !== plugin.version);
 

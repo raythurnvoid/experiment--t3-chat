@@ -32,7 +32,7 @@ Read install state from the page text: the detail page shows `Installed` plus a 
   council 0.2.2 a day after 0.2.3 became `isLatest`, so a Council check there was measuring the old
   plugin and reading as a pass. The detail page shows `Installed version x.y.z` under the version
   heading whenever the two differ; from the CLI, compare `plugins_workspace_installations
-  .pluginVersionId` with the `isLatest` row for that name. The consent modal on the update names what
+.pluginVersionId` with the `isLatest` row for that name. The consent modal on the update names what
   changed — for 0.2.3 it flagged `https://council.bonobo-senate.com` as a new UI outbound origin.
 - Install: click `Install` (`exact: true`), then the consent modal's `Accept and install`.
 - Update: click `Update` (`exact: true`), then `Accept and update`. Match `/Accept and (install|update)/` when the flow may be either.
@@ -179,10 +179,10 @@ client (this runs as the signed-in user, so it is a user path, not a bypass):
 ```js
 const { app_convex, app_convex_api } = await import("/src/lib/app-convex-client.ts");
 const { app_fetch_main_api_url } = await import("/src/lib/fetch.ts");
-const membership = await app_convex.query(
-	app_convex_api.organizations.get_membership_by_organization_workspace_name,
-	{ organizationName: "personal", workspaceName: "home" },
-);
+const membership = await app_convex.query(app_convex_api.organizations.get_membership_by_organization_workspace_name, {
+	organizationName: "personal",
+	workspaceName: "home",
+});
 const views = await app_convex.query(app_convex_api.plugins_ui.list_file_views, {
 	membershipId: membership._id,
 });
@@ -208,21 +208,24 @@ from the app origin:
 ```js
 state.convexHttp = "https://<deployment>.convex.site"; // VITE_CONVEX_HTTP_URL in packages/app/.env.local
 state.pdWrite = async (key, body) =>
-	await state.page.evaluate(async (a) => {
-		const r = await fetch(a.origin + "/api/v1/plugin-data/write", {
-			method: "POST",
-			headers: { Authorization: "Bearer " + a.key, "Content-Type": "application/json" },
-			body: JSON.stringify(a.body),
-		});
-		return { status: r.status, body: await r.json() };
-	}, { origin: state.convexHttp, key, body });
+	await state.page.evaluate(
+		async (a) => {
+			const r = await fetch(a.origin + "/api/v1/plugin-data/write", {
+				method: "POST",
+				headers: { Authorization: "Bearer " + a.key, "Content-Type": "application/json" },
+				body: JSON.stringify(a.body),
+			});
+			return { status: r.status, body: await r.json() };
+		},
+		{ origin: state.convexHttp, key, body },
+	);
 ```
 
 What a user API key can and cannot reach, so a check is not designed around an impossible refusal:
 
 - The body **must** name `installationId` for a user API key, and the installation must have accepted
   the matching `plugin.data.*` capability. Omitting it is a 400 `installationId is required for an API
-  key`; the plugin token kinds carry their own installation and are refused for naming a second.
+key`; the plugin token kinds carry their own installation and are refused for naming a second.
 - Read the installation id from `vp env exec pnpx convex data plugins_workspace_installations`; it is
   not in the DOM.
 - Ordered writes (`/write-versioned`, `/delete-versioned`) and reservations (`/reserve`) require a
@@ -254,13 +257,13 @@ instead of touching a pre-existing one, and never uninstall an installation you 
    `plugins_data_reservations`, `plugins_data_append_replay_receipts`,
    `plugins_data_revision_tombstones`, `plugins_data`, `plugin_service_grants`,
    `plugins_file_access_bindings`, `access_control_permission_grants` (`resourceKind:
-   "plugin_scope"`), `plugins_data_scopes`, `plugins_data_released_scope_ranges`,
+"plugin_scope"`), `plugins_data_scopes`, `plugins_data_released_scope_ranges`,
    `plugins_data_member_usage`, `plugins_data_usage` — and confirm the other installation's rows are
    untouched. Counting a subset passes while scopes, grants, bindings, or receipts survive.
 6. Clean up: delete any QA documents under an installation you will keep, revoke both keys, and delete
-	the scratch workspace through the switcher's `More actions for workspace: <name>` -> `Delete` (it
-	deletes immediately, with no confirmation step). Do not call `/delete` for the scratch installation
-	after uninstall; that installation and its plugin data are already gone.
+   the scratch workspace through the switcher's `More actions for workspace: <name>` -> `Delete` (it
+   deletes immediately, with no confirmation step). Do not call `/delete` for the scratch installation
+   after uninstall; that installation and its plugin data are already gone.
 
 The first accepted write **creates** a `plugins_data_usage` row for that installation, and deleting the
 last document only zeroes it. A pre-existing installation may therefore keep one zeroed accounting row;
@@ -296,7 +299,10 @@ steps. Claim the repository, then open the reviewed-commit dialog:
 await state.page.getByRole("textbox", { name: /GitHub repository URL/i }).fill(repoUrl);
 await state.page.getByRole("button", { name: "Claim", exact: true }).click();
 // The button's accessible name includes the repository, for example `Publish octo/new-plugin`.
-await state.page.getByRole("button", { name: /^Publish / }).first().click();
+await state.page
+	.getByRole("button", { name: /^Publish / })
+	.first()
+	.click();
 ```
 
 The app reads the candidate default-branch HEAD before it opens `Publish <owner>/<repo>`. Initial
@@ -351,10 +357,13 @@ and a blob a plugin service stored (a `plugin_service_storage_targets` row owns 
 Use an image instead. A 1×1 PNG is enough and needs no fixture file:
 
 ```js
-const PNG_B64 =
-	"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 const input = state.page.locator('input[type="file"][aria-hidden="true"]').first();
-await input.setInputFiles({ name: `probe-${Date.now()}.png`, mimeType: "image/png", buffer: Buffer.from(PNG_B64, "base64") });
+await input.setInputFiles({
+	name: `probe-${Date.now()}.png`,
+	mimeType: "image/png",
+	buffer: Buffer.from(PNG_B64, "base64"),
+});
 ```
 
 Allow about 30 seconds after the upload: the R2 event, the conversion pass and the plugin dispatch are
@@ -383,7 +392,7 @@ the page token for a service grant at Convex `/api/v1/plugins/service-grants/exc
   bucket (STRICT_WRITE: capacity 2, 12/min, keyed per user — the user's own open plugin tabs share it).
   Retry recovers in seconds; it is not a Worker or exchange fault.
 - An alert naming the exchange (`Convex /api/v1/plugins/service-grants/exchange returned HTTP
-  401`) means the Worker reached Convex and Convex refused. The exchange 401s for: a Worker-side
+401`) means the Worker reached Convex and Convex refused. The exchange 401s for: a Worker-side
   `COUNCIL_SERVICE_EXCHANGE_SECRET` that does not hash-match the publisher's service registration, a
   bad bearer, or a dead page token. Since the registration migration there is NO Convex env var to
   check: `plugins_service_registrations` stores only the SHA-256 hash of the registered secret, and
@@ -423,7 +432,7 @@ click provably does nothing, not before.
   never has the code. Reading the row first looks like the invite is gone. Verified 2026-08-27.
 - On the GitHub Pages app origin, `navigator.clipboard.writeText` from `page.evaluate` can hang until
   the CLI timeout (it does not always reject). Copy with a host-page textarea and
-  `document.execCommand("copy")`. Scratch Chrome only *reads* the clipboard, on the Worker origin.
+  `document.execCommand("copy")`. Scratch Chrome only _reads_ the clipboard, on the Worker origin.
   Verified 2026-08-27.
 - Clicks inside the Council frame time out at the 5 s CLI budget when the QA tab is not the front
   tab (seen 2026-09-10: the create click hung at "performing click action" and `state.out` stayed
@@ -485,12 +494,12 @@ click provably does nothing, not before.
   must fail visibly without unlocking: keep the lock, wait ~5 s, and assert the row is `Delete failed`
   with the failure reason on the row (`role="status"`). Unlocking first would hide the hang that Round
   2 found. Read-only ground truth: `vp env exec pnpx wrangler d1 execute bonobo-council --remote --json
-  --command "SELECT id, status, title, failure_reason FROM meetings WHERE id = '<id>'"`. There is no
+--command "SELECT id, status, title, failure_reason FROM meetings WHERE id = '<id>'"`. There is no
   `deleted_at` column — selecting one fails the whole query with `SQLITE_ERROR 7500`. Verified
   2026-08-16 on a `ready` meeting with a real recorded transcript.
 - Recorded-meeting host-only E2E (verified 2026-08-16): create/open via the page UI, then join the room
   in a scratch Chrome launched with `--use-fake-ui-for-media-capture --use-fake-device-for-media-capture
-  --use-file-for-fake-audio-capture=<wav> --autoplay-policy=no-user-gesture-required` plus a scratch
+--use-file-for-fake-audio-capture=<wav> --autoplay-policy=no-user-gesture-required` plus a scratch
   `--user-data-dir` and `--remote-debugging-port=9223` (`session new --direct 127.0.0.1:9223`). Mint the
   room ticket only AFTER that browser is up (2-minute TTL). Two verified handoffs (2026-08-16): a fresh
   direct-CDP session can list the launched tab as one page with an EMPTY url (`context.pages()` →
@@ -503,7 +512,7 @@ click provably does nothing, not before.
   (real origin for the grant, and the query makes the later hash-carrying `location.assign` a full
   document load that consumes the ticket), then read the clipboard in-page and `location.assign` it;
   clear the clipboard afterwards. The link never appears in CLI output or on disk.
-  Direct-CDP `grantPermissions(["clipboard-read"])` works on the Worker origin; `clipboard.writeText` there throws `NotAllowedError`. Copy join codes and room links from the app host page (extension mode), then only *read* them in the scratch session. Clear the clipboard from the host page afterwards.
+  Direct-CDP `grantPermissions(["clipboard-read"])` works on the Worker origin; `clipboard.writeText` there throws `NotAllowedError`. Copy join codes and room links from the app host page (extension mode), then only _read_ them in the scratch session. Clear the clipboard from the host page afterwards.
   Do not Join from the Edge QA profile: `grantPermissions` cannot grant the microphone there, the
   permission prompt wedges `getUserMedia`, Join stays disabled, and later Council iframe CDP calls
   hang. Keep Edge on the Council page only. Join in the scratch Chrome.
@@ -520,7 +529,7 @@ click provably does nothing, not before.
   machine captured DISPLAY1 (`1680x1050` at `X=-1680`). Do not set both flags. After Share is
   pressed, read host `#share-video` `videoWidth`/`videoHeight`. If that size is a monitor, move the
   fixture Chrome onto that monitor and pin it topmost (`HWND_TOPMOST`) so the live share shows the
-  fixture text. Unpin when the meeting ends. Prove the host stage shows the fixture *before*
+  fixture text. Unpin when the meeting ends. Prove the host stage shows the fixture _before_
   recording. Chrome's floating Stop sharing bar ends the capture without clicking Share. After that
   stop, `#share-button` must have `aria-pressed="false"` even though `toggleScreenShare` did not
   run. A failed in-app stop must not say to check the screen-share permission. `assets/files/speakers.wav` is documented but may be absent; generate a short speech
@@ -548,7 +557,7 @@ click provably does nothing, not before.
   permission first (403 `You do not have permission to create meetings in this workspace...` for a
   `viewer`; 503 `Council is reloading its credentials` inside the cached minute after a Worker secret
   rotation; 502 `Council could not check your access` when `verify-live` itself failed; 401 `Council is
-  not authorized for this workspace` when the host refused the grant or the plugin), then seals the
+not authorized for this workspace` when the host refused the grant or the plugin), then seals the
   processing grant (502 `Council could not prepare storage for this meeting`), then creates the provider
   meeting. Open, the host room link, close, and delete answer the same `viewer` case with 403 and
   `You do not have permission to open/host/close/delete meetings in this workspace...`; every other
@@ -565,7 +574,7 @@ Use this when a person wants a real call with guests and files in `/meetings/<id
 fake-audio scratch-Chrome loop above.
 
 - **Paid plan first.** Service uploads refuse Free and anonymous users (`This workspace's plan does
-  not include plugin service file storage`). Only `Pay As You Go` and `Pro` store recording files. Prove it
+not include plugin service file storage`). Only `Pay As You Go` and `Pro` store recording files. Prove it
   from the signed-in account: `app_convex.query(app_convex_api.billing.get_current_user_subscription)`
   is null for anonymous, and that session is treated as Free. Do not start a recorded call on the QA
   Edge anonymous tab and expect Files to fill.
@@ -603,14 +612,14 @@ fake-audio scratch-Chrome loop above.
   `destinationPath` at create time. Recordings appear in Files only on the first successful upload.
   Installed Council 0.2.0 still prints `Saved to` on every card even when `artifactCount` is 0.
   Current plugin source hides the path unless `artifacts.length > 0` and says `Council saved no
-  files for this meeting.` instead. The Files tree can still show `meeting.md`, written by the
+files for this meeting.` instead. The Files tree can still show `meeting.md`, written by the
   Council Worker itself, for that same meeting. The card label next to it is `Ended` (close time),
   not a Files destination.
 - **Meeting note Files tree (no Join).** The Council Worker writes each meeting's note to
   `/meetings/<meetingId>/meeting.md` through its sealed service grant on `/api/v1/files/write` —
   the host copies nothing any more. The Worker writes the note at create and on every later state
   change, and its `*/15` sweep retries a note that is behind (D1 `meetings.note_written_revision <
-  note_revision` since migration `0011`; the columns were named `file_projection_*` before). To
+note_revision` since migration `0011`; the columns were named `file_projection_*` before). To
   check: open
   `/w/personal/home/files?nodeId=root` in an owned tab. Root shows
   `meetings, contains read-only items` (not `meetings, read-only`). `Add file` / `Add folder` on
@@ -642,11 +651,13 @@ fake-audio scratch-Chrome loop above.
   `UPLOADING`, but a hang looks like `UPLOADING` plus `recording_duration: 0`, no `download_url`,
   and a null `err_message` long after `stopped_time`. That same shape was still live on a
   2026-08-16 track recording ten days later.
+
   **Close order (deployed 2026-08-26, Worker `39a33ead`).** `council_close_meeting`
   now stops the recording while the session is still live, then kicks everyone. Room
   End meeting, dashboard Close, and the deadline cron all use this one function. A
   refused first stop still kicks and still hands the meeting to processing. Do not
   wait for `UPLOADED` inside close — the room has a 30 second budget.
+
   **Live proof failed (verified 2026-08-27).** Stop-then-kick did not fix the hang.
   Title `Stop first 27 Aug`, same flow: host records alone, guest joins about two
   minutes later, stay ~13 minutes (791 s), End meeting, no Stop. RealtimeKit was
@@ -654,7 +665,9 @@ fake-audio scratch-Chrome loop above.
   file size at 67 s after `stopped_time`, and still the same at 343 s. D1 stayed
   `processing` generation 1 with 2 participants. The kick-order guess is wrong.
   Next RK-only step was the start path: composite `POST /recordings` instead of
-  track. **Live proof passed (verified 2026-08-27).** Title `Composite first 27 Aug`,
+  track.
+
+  **Live proof passed (verified 2026-08-27).** Title `Composite first 27 Aug`,
   same long flow (~14 minutes 37 seconds, no Stop). RealtimeKit was `UPLOADED`
   with duration above 0, a string `download_url`, and an `audio_download_url`.
   Council discovered `recording.mp4` and `recording-audio.m4a`. The hang is gone
@@ -671,6 +684,7 @@ fake-audio scratch-Chrome loop above.
   Council tab can show the plugin iframe in the DOM while `page.frames()` still
   lists only the host — open an owned tab so the frame attaches. Do not
   snapshot the plugin iframe.
+
   **Live hang before the fix (verified 2026-08-26).** The hang is not only the old TEST
   meeting. A new ~13 minute call that copied that flow reproduced it on the first try
   with kick-then-stop. RealtimeKit went to `UPLOADING` with `recording_duration: 0`,
@@ -687,7 +701,7 @@ fake-audio scratch-Chrome loop above.
   still polling. If that happens, set the row back to `processing` on the same generation so a
   later `UPLOADED` can still write `ready`. A Workflow that stays `Running` on one sleep step
   for far longer than 30 seconds may be paused: `wrangler workflows instances resume
-  bonobo-council-workflow <instanceId> --config packages/council/wrangler.jsonc`
+bonobo-council-workflow <instanceId> --config packages/council/wrangler.jsonc`
   unstuck generation 2 of the 2026-08-26 TEST meeting. Do not start `wrangler tail` to watch
   this. The hung-upload recovery is deployed. Generation 3 of that TEST meeting finished
   `ready` from the provider transcript after every poll stayed `UPLOADING` with
@@ -746,7 +760,7 @@ Windows and CAS (verified 2026-08-17, two-user E2E on 0.1.3):
   remote arrival appends without collapsing loaded history. Since 0.1.4 the windows run inside the
   page on the SDK's own Convex client — there is no data bridge to observe (see below). Since
   Chitchat 0.7.0 the page reads `watch_documents_page` through `usePaginatedQuery`, so the `Load
-  older` button is that hook's `loadMore` (see `chitchat.md`).
+older` button is that hook's `loadMore` (see `chitchat.md`).
 - Channel rename/archive are hover-revealed row actions: `li.channel-item` holds
   `aria-label="Rename #<name>"` / `"Archive #<name>"` buttons. Rename is compare-and-set: save from
   a dialog opened before someone else's rename keeps the dialog open with a `role="alert"` reading
@@ -802,7 +816,7 @@ Windows and CAS (verified 2026-08-17, two-user E2E on 0.1.3):
   2.6 s after resume, the host saw one `bonobo:token-refresh-request` 1.5 s after resume and
   minted S2 4.9 s after resume; the frame kept its nonce, its draft, an enabled composer, and zero
   exchange requests. The frame's client first logged `Failed to authenticate: … Token expired 9
-  seconds ago` for the old JWT, then authenticated with the delivered one, and a message sent from
+seconds ago` for the old JWT, then authenticated with the delivered one, and a message sent from
   a second tab arrived in the first frame.
 
 Offline session re-mint recipe (Windows, updated 2026-09-02):
@@ -813,7 +827,7 @@ Offline session re-mint recipe (Windows, updated 2026-09-02):
 2. Temporarily set `SESSION_TTL_MS` in `plugins_ui.ts` to 90 seconds (the JWT expires with the
    session, so this is the only clock), push with
    `vp env exec pnpm --dir packages/app exec convex dev --once`, and require `Convex functions
-   ready`. Restore 30 minutes and push again as soon as the run ends.
+ready`. Restore 30 minutes and push again as soon as the run ends.
 3. Navigate to the plugin page, record T0 after the host document loads, wait 10 seconds, and record
    the frame nonce, one unsent draft, and the one `plugins_ui_sessions` doc S1. A stale doc makes the
    result ambiguous; navigate away and revoke it before restarting.
@@ -920,7 +934,10 @@ Read it with a real `Frame` handle (never `snapshot()`, see `known-hazards.md`),
 the host's computed value in the same call:
 
 ```js
-const frame = state.page.frames().filter((f) => f.url().includes("/plugins-ui/")).at(-1);
+const frame = state.page
+	.frames()
+	.filter((f) => f.url().includes("/plugins-ui/"))
+	.at(-1);
 const inFrame = await frame.evaluate(() => {
 	const r = document.documentElement;
 	return {
@@ -973,7 +990,10 @@ paginationOpts: { numItems: 3, cursor: null } })` answered 3 documents with `isD
 runner is `t3-chat-+personal/+ai/plugin-infra-primitives-2026-09-02/probe-frame.js`.
 
 ```js
-const frame = state.page.frames().filter((f) => f.url().includes("/plugins-ui/")).at(-1);
+const frame = state.page
+	.frames()
+	.filter((f) => f.url().includes("/plugins-ui/"))
+	.at(-1);
 const out = await frame.evaluate(async () => {
 	const container = document.getElementById("root");
 	const key = Object.keys(container).find((k) => k.startsWith("__reactContainer$"));
@@ -1035,7 +1055,7 @@ answers.unrouted = { status: unrouted.status, bodyIsNull: unrouted.body === null
 - **`plugin-data/list` only works in a frame that consented to `plugin.data.read`.** Gallery and
   Video Player both declare `workspace.files.read` alone, so in their frames that probe answers 403
   and proves nothing about the body shape. Swap it for `client.fetchJson("/api/v1/files/list", {
-  limit: 3, kind: "file" })`, whose 200 body carries `items`, `cursor` and `isDone`.
+limit: 3, kind: "file" })`, whose 200 body carries `items`, `cursor` and `isDone`.
 - The `files/write` probe is the one with teeth, and it needs a path no plugin owns (`/never.md`):
   the route answers 403 `Permission denied` before it looks at anything, and the point is that the
   answer arrives as a resolved value. Verified 2026-09-03 on Chitchat 0.7.5, on the dev host and on
@@ -1077,8 +1097,8 @@ websocket. The claim to check is that pressing the page's "load more" control se
 the frame's own resource timeline instead:
 
 ```js
-await frame.evaluate(() =>
-	performance.getEntriesByType("resource").filter((e) => e.name.includes("/api/v1/plugin-data/list")).length,
+await frame.evaluate(
+	() => performance.getEntriesByType("resource").filter((e) => e.name.includes("/api/v1/plugin-data/list")).length,
 );
 ```
 
@@ -1133,21 +1153,32 @@ origin — so from inside **one** open frame you can fetch any other version's b
 page load, no session per plugin.
 
 ```js
-const frame = state.page.frames().filter((f) => f.url().includes("/plugins-ui/")).at(-1);
-const rows = await frame.evaluate(async (versions) => {
-	const out = {};
-	for (const [name, id] of Object.entries(versions)) {
-		const resp = await fetch(`/plugins-ui/${id}/dist/frontend/assets/index.js`);
-		if (!resp.ok) { out[name] = { status: resp.status }; continue; }
-		const buf = await resp.arrayBuffer();
-		const digest = await crypto.subtle.digest("SHA-256", buf);
-		out[name] = {
-			bytes: buf.byteLength,
-			sha256: Array.from(new Uint8Array(digest)).map((b) => b.toString(16).padStart(2, "0")).join(""),
-		};
-	}
-	return out;
-}, { chitchat: "<versionId>", gallery: "<versionId>" /* … */ });
+const frame = state.page
+	.frames()
+	.filter((f) => f.url().includes("/plugins-ui/"))
+	.at(-1);
+const rows = await frame.evaluate(
+	async (versions) => {
+		const out = {};
+		for (const [name, id] of Object.entries(versions)) {
+			const resp = await fetch(`/plugins-ui/${id}/dist/frontend/assets/index.js`);
+			if (!resp.ok) {
+				out[name] = { status: resp.status };
+				continue;
+			}
+			const buf = await resp.arrayBuffer();
+			const digest = await crypto.subtle.digest("SHA-256", buf);
+			out[name] = {
+				bytes: buf.byteLength,
+				sha256: Array.from(new Uint8Array(digest))
+					.map((b) => b.toString(16).padStart(2, "0"))
+					.join(""),
+			};
+		}
+		return out;
+	},
+	{ chitchat: "<versionId>", gallery: "<versionId>" /* … */ },
+);
 ```
 
 Compare against `sha256sum plugins/<plugin>/dist/frontend/assets/index.js` and `wc -c` on the same
@@ -1193,16 +1224,28 @@ const out = await frame.evaluate(async () => {
 		if (!node || typeof node !== "object" || seen.has(node)) continue;
 		seen.add(node);
 		const candidate = node.memoizedProps?.client ?? node.props?.client;
-		if (candidate?.context) { client = candidate; break; }
-		for (const next of [node.child, node.sibling, node._component, ...(Array.isArray(node._children) ? node._children : [])]) {
+		if (candidate?.context) {
+			client = candidate;
+			break;
+		}
+		for (const next of [
+			node.child,
+			node.sibling,
+			node._component,
+			...(Array.isArray(node._children) ? node._children : []),
+		]) {
 			if (next) queue.push(next);
 		}
 	}
 	const attempts = [];
 	for (let i = 0; i < 5; i += 1) {
 		const startedAt = Date.now();
-		try { await client.refreshToken(); attempts.push({ i, ms: Date.now() - startedAt, outcome: "ok" }); }
-		catch (error) { attempts.push({ i, ms: Date.now() - startedAt, outcome: String(error?.message ?? error) }); }
+		try {
+			await client.refreshToken();
+			attempts.push({ i, ms: Date.now() - startedAt, outcome: "ok" });
+		} catch (error) {
+			attempts.push({ i, ms: Date.now() - startedAt, outcome: String(error?.message ?? error) });
+		}
 	}
 	return attempts;
 });

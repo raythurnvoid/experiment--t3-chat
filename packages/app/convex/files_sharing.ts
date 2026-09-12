@@ -188,6 +188,7 @@ async function db_detach_file_access_binding(ctx: MutationCtx, nodeId: Id<"files
 	if (binding) {
 		await ctx.db.delete("plugins_file_access_bindings", binding._id);
 	}
+
 	const externalBinding = await ctx.db
 		.query("plugins_external_file_bindings")
 		.withIndex("by_node", (q) => q.eq("nodeId", nodeId))

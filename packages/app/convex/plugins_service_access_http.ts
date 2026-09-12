@@ -16,6 +16,7 @@ import { server_request_json_parse_and_validate } from "../server/server-utils.t
 import { public_api_PLUGIN_UI_TOKEN_REGEX } from "../shared/public-api.ts";
 
 if (!process.env.VITE_CONVEX_HTTP_URL) throw new Error("VITE_CONVEX_HTTP_URL is not set in Convex env");
+// Signed by this deployment but not registered in auth.config: these routes verify it by hand.
 const JWT_ISSUER = `${process.env.VITE_CONVEX_HTTP_URL}/plugins-services`;
 
 function bearer(request: Request, header: string) {
@@ -62,6 +63,7 @@ async function read_request<Body>(request: Request, validator: z.ZodSchema<Body>
 const lease_body_validator = z
 	.object({ exchangeId: z.string().min(1).max(128), requestedExpiresAt: z.number().int().positive() })
 	.strict();
+
 export type plugins_service_access_http_lease_Body = z.infer<typeof lease_body_validator>;
 
 export async function plugins_service_access_http_lease(ctx: ActionCtx, request: Request) {
@@ -109,6 +111,7 @@ const snapshot_body_validator = z
 		startRevision: z.number().int().nonnegative().nullable(),
 	})
 	.strict();
+
 export type plugins_service_access_http_snapshot_Body = z.infer<typeof snapshot_body_validator>;
 
 export async function plugins_service_access_http_snapshot(ctx: ActionCtx, request: Request) {
@@ -138,6 +141,7 @@ const events_body_validator = z
 		limit: z.number().int().min(1).max(100),
 	})
 	.strict();
+
 export type plugins_service_access_http_events_Body = z.infer<typeof events_body_validator>;
 
 export async function plugins_service_access_http_events(ctx: ActionCtx, request: Request) {

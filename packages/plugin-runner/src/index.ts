@@ -114,12 +114,15 @@ export type Env = {
 	PLUGIN_RUNNER_DISABLED?: string;
 };
 
+// The invoke reply's wire key stays "runId"; it carries the same value internals call pluginRunId.
 export type pluginRunner_InvokeReply = {
 	runId: string;
 	pluginStatus: number;
 	output: string;
 };
 
+// smallResponseBytes and metadataBytes are reply-envelope caps the test suite asserts, not
+// runtime checks; the rest are enforced in this file.
 export const LIMITS = {
 	bodyBytes: 64_000,
 	artifactBytes: 1_000_000,
@@ -414,6 +417,7 @@ async function read_plugin_response(
 				filled += count;
 				offset += count;
 				if (filled === block.byteLength) {
+					// stream:true keeps a multi-byte character split across a block boundary intact.
 					parts.push(decoder.decode(block, { stream: true }));
 					filled = 0;
 				}
@@ -454,12 +458,15 @@ function encode_invoke_reply(reply: pluginRunner_InvokeReply, deadline: ReturnTy
 	};
 
 	append(`{"runId":${JSON.stringify(reply.runId)},"pluginStatus":${reply.pluginStatus},"output":"`);
+	// Escape the output in slices so one huge string is never JSON-stringified in one pass.
 	for (let start = 0; start < reply.output.length; ) {
 		deadline.check();
 		let end = Math.min(start + 16 * 1024, reply.output.length);
 		const last = reply.output.charCodeAt(end - 1);
 		const next = reply.output.charCodeAt(end);
+		// Never split a surrogate pair across two slices.
 		if (last >= 0xd800 && last <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) end--;
+		// slice(1, -1) strips the quotes JSON.stringify adds around the slice.
 		append(JSON.stringify(reply.output.slice(start, end)).slice(1, -1));
 		start = end;
 	}
@@ -1010,6 +1017,7 @@ const routes = {
 							return response;
 						}),
 					);
+					// The reply contract needs a real HTTP status; a plugin can return anything.
 					if (pluginResponse.status < 200 || pluginResponse.status > 599) {
 						void pluginResponse.body?.cancel().catch(() => {});
 						throw new Error("Plugin response status is invalid");

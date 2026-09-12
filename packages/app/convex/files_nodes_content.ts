@@ -4264,6 +4264,7 @@ async function db_install_file_content_replacement(
 			nodeId,
 		});
 	}
+
 	if (files_node_has_editable_yjs_state(fileNode)) {
 		// Stop the queued materialization of the old document. It would work on content that is
 		// gone after this write.
@@ -4887,9 +4888,7 @@ export const restore_snapshot = internalMutation({
 		const snapshotFields = file_node_snapshot_fields(fileNode);
 		const restoredContentType = snapshotContent.contentType;
 
-		// Restoring snapshots can be destructive and we defensively store
-		// the current state as a backup snapshot
-		// so the user can revert to it if needed.
+		// Restoring is destructive, so the current state is stored as a backup the user can revert to.
 		const [, , , , , restoredYjsSequenceResult] = await Promise.all([
 			ctx.db.patch("files_r2_assets", args.currentSnapshotAssetId, {
 				r2Key: r2_create_asset_key({
@@ -4911,7 +4910,6 @@ export const restore_snapshot = internalMutation({
 				unfinalizedExpiresAt: undefined,
 				updatedAt: now,
 			}),
-			// Store current state as a backup snapshot
 			store_version_snapshot(ctx, {
 				organizationId: membership.organizationId,
 				workspaceId: membership.workspaceId,

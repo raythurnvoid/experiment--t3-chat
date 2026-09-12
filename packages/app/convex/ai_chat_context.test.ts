@@ -56,6 +56,7 @@ async function fixture() {
 		if (created._nay) throw new Error(created._nay.message);
 		return created._yay.nodeId;
 	}
+
 	async function member(read: boolean) {
 		return await t.run(async (ctx) => {
 			const userId = await ctx.db.insert("users", { clerkUserId: "second-user" });
@@ -77,6 +78,7 @@ async function fixture() {
 			return { userId, membershipId };
 		});
 	}
+
 	async function move(
 		nodeId: Id<"files_nodes">,
 		destParentId: Id<"files_nodes"> | typeof files_ROOT_ID,
@@ -95,6 +97,7 @@ async function fixture() {
 			});
 		});
 	}
+
 	async function system() {
 		return await t.action(async (ctx) => {
 			const result = await ai_chat_context_create(ctx, scope);

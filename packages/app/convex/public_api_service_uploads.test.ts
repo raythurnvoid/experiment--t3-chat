@@ -25,7 +25,7 @@ const DELETE_PATH = "/api/v1/files/service-uploads/delete";
 const ARCHIVE_PATH = "/api/v1/files/service-uploads/archive-destination";
 
 /**
- * The value `setup-env.test.ts` puts in the environment for the whole convex project.
+ * The secret the seeded registration's hash is made from.
  */
 const EXCHANGE_SECRET = "SERVICE_EXCHANGE_SECRET_TEST";
 
@@ -482,6 +482,7 @@ describe("service upload authorization", () => {
 				});
 			}
 		});
+
 		for (const [path, body] of [
 			[CREATE_TARGET_PATH, target_body()],
 			[REMINT_PATH, { idempotencyKey: "meeting-1", targetKey: "recording" }],
@@ -491,6 +492,7 @@ describe("service upload authorization", () => {
 		] as const) {
 			expect((await call(t, path, sealed, body)).status, path).toBe(401);
 		}
+
 		expect(await read_targets(t)).toEqual(targetsBefore);
 		const grants = await t.run((ctx) => ctx.db.query("plugin_service_grants").collect());
 		expect(grants.every((grant) => grant.serviceAccountId === fixture.serviceAccountId)).toBe(true);
@@ -513,6 +515,7 @@ describe("service upload authorization", () => {
 				}),
 			).toMatchObject({ _yay: { changed: true } });
 		});
+
 		for (const [path, body] of [
 			[CREATE_TARGET_PATH, target_body({ targetKey: "next", path: "/meetings/meeting-1/next.mp4" })],
 			[REMINT_PATH, { idempotencyKey: "meeting-1", targetKey: "recording" }],
@@ -522,7 +525,9 @@ describe("service upload authorization", () => {
 		] as const) {
 			expect((await call(t, path, sealed, body)).status, path).toBe(403);
 		}
+
 		expect(await read_targets(t)).toEqual([target]);
+
 		await simulate_finalizer(t, fixture, target, { size: 2 * MIB });
 		expect((await read_targets(t))[0]).toMatchObject({ state: "committed", actualBytes: 2 * MIB });
 		expect((await read_quota(t, fixture))?.usedCount).toBe(2 * MIB);
@@ -1035,13 +1040,23 @@ describe("service upload drain", () => {
 });
 
 describe("service upload targets", () => {
-	test.each([["skill.md", "SKILL.md"], ["readme", "README.md"]])("normalizes special name %s before target identity and path checks", async (input, name) => {
+	test.each([
+		["skill.md", "SKILL.md"],
+		["readme", "README.md"],
+	])("normalizes special name %s before target identity and path checks", async (input, name) => {
 		const t = test_convex();
 		const fixture = await seed_installation(t);
 		const sealed = await seal_token(t, fixture);
-		const response = await call(t, CREATE_TARGET_PATH, sealed, target_body({
-			path: `/meetings/.AGENTS/skills/one/${input}`, contentType: "text/markdown", size: 1,
-		}));
+		const response = await call(
+			t,
+			CREATE_TARGET_PATH,
+			sealed,
+			target_body({
+				path: `/meetings/.AGENTS/skills/one/${input}`,
+				contentType: "text/markdown",
+				size: 1,
+			}),
+		);
 		expect(response.status, await response.clone().text()).toBe(200);
 		expect(await response.json()).toMatchObject({ path: `/meetings/.agents/skills/one/${name}` });
 	});
@@ -1159,6 +1174,7 @@ describe("service upload targets", () => {
 			return created._yay;
 		});
 		const sealed = await seal_token(t, fixture);
+
 		const response = await call(t, CREATE_TARGET_PATH, sealed, target_body({ readOnly: true }));
 		expect(response.status, await response.clone().text()).toBe(200);
 		const target = (await read_targets(t))[0]!;
@@ -1166,6 +1182,7 @@ describe("service upload targets", () => {
 			restrictedScopeNodeId: destinationId,
 			writePolicy: { mode: "writer", writer: { kind: "service_account", serviceAccountId: fixture.serviceAccountId } },
 		});
+
 		expect((await call(t, ARCHIVE_PATH, sealed, {})).status).toBe(200);
 	});
 
@@ -1187,6 +1204,7 @@ describe("service upload targets", () => {
 				}),
 			).toMatchObject({ _yay: { changed: true } });
 		});
+
 		expect(
 			(
 				await call(
@@ -1204,6 +1222,7 @@ describe("service upload targets", () => {
 		expect((await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete", targetKey: "recording" })).status).toBe(403);
 		expect((await call(t, ARCHIVE_PATH, sealed, {})).status).toBe(403);
 		expect((await t.run((ctx) => ctx.db.get("files_nodes", protectedTarget.nodeId)))?.writePolicy).not.toBeNull();
+
 		expect(
 			(
 				await call(
@@ -1231,6 +1250,7 @@ describe("service upload targets", () => {
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: fixture.userId });
 		const args = { membershipId: fixture.membershipId, nodeId: target.nodeId };
 		const before = await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId));
+
 		expect(
 			await asUser.mutation(api.files_nodes.set_node_write_policy, {
 				...args,
@@ -1241,6 +1261,7 @@ describe("service upload targets", () => {
 			}),
 		).toEqual({ _yay: null });
 		expect(await t.run((ctx) => ctx.db.get("files_nodes", target.nodeId))).toEqual(before);
+
 		expect(await asUser.mutation(api.files_nodes.set_node_write_policy, { ...args, writePolicy: null })).toEqual({
 			_yay: null,
 		});
@@ -1248,6 +1269,7 @@ describe("service upload targets", () => {
 			writePolicy: null,
 			writePolicyScopeNodeId: null,
 		});
+
 		expect(
 			await asUser.mutation(api.files_nodes.set_node_write_policy, { ...args, writePolicy: { mode: "read_only" } }),
 		).toEqual({ _yay: null });
@@ -1399,6 +1421,7 @@ describe("service upload targets", () => {
 				},
 			}),
 		).toEqual({ _yay: null });
+
 		const refused = await call(
 			t,
 			CREATE_TARGET_PATH,
@@ -1958,10 +1981,12 @@ describe("service upload delete", () => {
 		const sealed = await seal_token(t, fixture);
 		expect((await call(t, CREATE_TARGET_PATH, sealed, target_body({ readOnly: true }))).status).toBe(200);
 		const target = (await read_targets(t))[0]!;
+
 		await t.run((ctx) =>
 			ctx.db.patch("plugin_service_storage_targets", target._id, { destinationNodeId: target.nodeId }),
 		);
 		expect((await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete", targetKey: "recording" })).status).toBe(409);
+
 		await t.run((ctx) =>
 			ctx.db.patch("plugin_service_storage_targets", target._id, { destinationNodeId: target.destinationNodeId }),
 		);
@@ -1971,6 +1996,7 @@ describe("service upload delete", () => {
 			await asUser.mutation(api.files_nodes.set_node_write_policy, { ...args, writePolicy: { mode: "read_only" } }),
 		).toEqual({ _yay: null });
 		expect((await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete", targetKey: "recording" })).status).toBe(409);
+
 		expect(
 			await asUser.mutation(api.files_nodes.set_node_write_policy, {
 				...args,
@@ -2888,6 +2914,7 @@ describe("service upload archive", () => {
 		for (const target of targets) {
 			await simulate_finalizer(t, fixture, target, { size: MIB });
 		}
+
 		expect((await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete-first", targetKey: "first" })).status).toBe(
 			200,
 		);
@@ -2902,9 +2929,11 @@ describe("service upload archive", () => {
 		expect(deleted.node).toMatchObject({ archiveOperationId: expect.any(String), writePolicy: null });
 		expect(deleted.asset).toMatchObject({ _id: first.assetId, size: MIB });
 		expect(deleted.attempts).toHaveLength(2);
+
 		const response = await call(t, ARCHIVE_PATH, sealed, {});
 		expect(response.status, await response.clone().text()).toBe(200);
 		expect(await response.json()).toEqual({ archivedNodes: 2 });
+
 		const after = await t.run(async (ctx) => ({
 			target: await ctx.db.get("plugin_service_storage_targets", first._id),
 			node: await ctx.db.get("files_nodes", first.nodeId),
@@ -2913,6 +2942,7 @@ describe("service upload archive", () => {
 			attempts: await ctx.db.query("plugin_service_storage_attempts").collect(),
 		}));
 		expect(after).toEqual(deleted);
+
 		const archived = await t.run(async (ctx) => ({
 			destination: await ctx.db.get("files_nodes", second.destinationNodeId),
 			remaining: await ctx.db.get("files_nodes", second.nodeId),
@@ -2933,6 +2963,7 @@ describe("service upload archive", () => {
 		const target = (await read_targets(t))[0]!;
 		await simulate_finalizer(t, fixture, target, { size: MIB });
 		expect((await call(t, DELETE_PATH, sealed, { idempotencyKey: "delete", targetKey: "recording" })).status).toBe(200);
+
 		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: fixture.userId });
 		expect(
 			await asUser.mutation(api.files_nodes.unarchive_nodes, {
@@ -2940,6 +2971,7 @@ describe("service upload archive", () => {
 				nodeIds: [target.nodeId],
 			}),
 		).toEqual({ _yay: null });
+
 		const before = await t.run(async (ctx) => ({
 			nodes: await ctx.db.query("files_nodes").collect(),
 			targets: await ctx.db.query("plugin_service_storage_targets").collect(),

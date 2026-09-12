@@ -1,7 +1,9 @@
 import type { ToolSet } from "ai";
 
 const encoder = new TextEncoder();
+// One tool call's serialized input cap.
 const TOOL_INPUT_MAX_BYTES = 64 * 1024;
+// Headroom inside the run budget kept for tool results, so inputs can never spend it all.
 const TOOL_RESULT_RESERVED_BYTES = 128 * 1024;
 
 function serialized_bytes(value: unknown) {

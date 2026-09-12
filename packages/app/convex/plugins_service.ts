@@ -576,6 +576,7 @@ const recover_body_validator = z
 		destinationPathPrefix: z.string().optional(),
 	})
 	.strict();
+
 export type plugins_service_http_recover_Body = z.infer<typeof recover_body_validator>;
 
 /**
@@ -587,6 +588,7 @@ export async function plugins_service_http_recover(ctx: ActionCtx, request: Requ
 		key: `${rate_limiter_http_client_key(request)}:service-grant-recovery`,
 	});
 	if (limited) return { status: 429, body: { message: limited.message, retryAfterMs: limited.retryAfterMs } } as const;
+
 	const presented = get_bearer_token(request);
 	const secret = get_service_secret(request);
 	if (
@@ -596,11 +598,14 @@ export async function plugins_service_http_recover(ctx: ActionCtx, request: Requ
 	) {
 		return { status: 401, body: { message: "Unauthorized" } } as const;
 	}
+
 	const body = await server_request_json_parse_and_validate(request, recover_body_validator);
 	if (body._nay) return { status: 400, body: { message: body._nay.message } } as const;
+
 	if ((body._yay.operation === "seal") !== (body._yay.destinationPathPrefix !== undefined)) {
 		return { status: 400, body: { message: "Only seal recovery needs a destination" } } as const;
 	}
+
 	const result = await ctx.runMutation(internal.plugins_service_grant_requests.recover, {
 		presented,
 		operation: body._yay.operation,
@@ -613,6 +618,7 @@ export async function plugins_service_http_recover(ctx: ActionCtx, request: Requ
 	});
 	if (result._nay) return grant_failure(result._nay.message);
 	if (!result._yay) return { status: 404, body: { message: "No saved grant response" } } as const;
+
 	return { status: 200, body: result._yay, headers: { "Cache-Control": "no-store" } } as const;
 }
 

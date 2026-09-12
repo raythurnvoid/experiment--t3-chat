@@ -21,7 +21,7 @@ function RouteTenantOrganizationWorkspaceLayout() {
 	const focusTargetWasFocusedRef = useRef(false);
 	const workspaceKey = `${organizationName}/${workspaceName}`;
 	const setWorkspaceFocusTarget = useFn(publishSessionManager.setWorkspaceFocusTarget);
-	const setFocusTargetRef = useFn((target: HTMLElement | null) => {
+	const handleFocusTargetRef = useFn((target: HTMLElement | null) => {
 		focusTargetRef.current = target;
 		setWorkspaceFocusTarget(target, workspaceKey);
 		// Transfer only focus that fell because React replaced the registered target.
@@ -29,12 +29,12 @@ function RouteTenantOrganizationWorkspaceLayout() {
 			target.focus();
 		}
 	});
-	const setFocusScopeRef = useFn((target: HTMLElement | null) => {
+	const handleFocusScopeRef = useFn((target: HTMLElement | null) => {
 		focusScopeRef.current = target;
 	});
-	const setStandaloneFocusTargetRef = useFn((target: HTMLElement | null) => {
-		setFocusScopeRef(target);
-		setFocusTargetRef(target);
+	const handleStandaloneFocusTargetRef = useFn((target: HTMLElement | null) => {
+		handleFocusScopeRef(target);
+		handleFocusTargetRef(target);
 	});
 	const handleWorkspaceFocusCapture = useFn(() => {
 		// React focus follows the component tree, so this also owns workspace menus and dialogs
@@ -46,6 +46,7 @@ function RouteTenantOrganizationWorkspaceLayout() {
 		setWorkspaceFocusTarget(focusTargetRef.current, workspaceKey);
 		return () => setWorkspaceFocusTarget(null, workspaceKey);
 	}, [setWorkspaceFocusTarget, workspaceKey]);
+
 	useLayoutEffect(() => {
 		// Record focus anywhere in the loaded workspace before React removes that whole subtree.
 		const handleFocusIn = (event: FocusEvent) => {
@@ -66,7 +67,7 @@ function RouteTenantOrganizationWorkspaceLayout() {
 	if (membership === undefined) {
 		return (
 			<main
-				ref={setStandaloneFocusTargetRef}
+				ref={handleStandaloneFocusTargetRef}
 				role="status"
 				aria-live="polite"
 				aria-label="Organization loading"
@@ -79,7 +80,7 @@ function RouteTenantOrganizationWorkspaceLayout() {
 
 	if (membership === null) {
 		return (
-			<main ref={setStandaloneFocusTargetRef} role="alert" aria-label="Organization access denied" tabIndex={-1}>
+			<main ref={handleStandaloneFocusTargetRef} role="alert" aria-label="Organization access denied" tabIndex={-1}>
 				You do not have access to this organization/workspace.
 			</main>
 		);
@@ -97,14 +98,14 @@ function RouteTenantOrganizationWorkspaceLayout() {
 			workspaceName={workspaceName}
 		>
 			<div
-				ref={setFocusScopeRef}
+				ref={handleFocusScopeRef}
 				className={cn("RootLayout" satisfies RootLayout_ClassNames)}
 				onFocusCapture={handleWorkspaceFocusCapture}
 			>
 				<MainAppHeader />
 				<MainAppSidebar />
 				<div
-					ref={setFocusTargetRef}
+					ref={handleFocusTargetRef}
 					className={"RootLayout-content" satisfies RootLayout_ClassNames}
 					role="region"
 					aria-label={`${organizationName}/${workspaceName} workspace content`}

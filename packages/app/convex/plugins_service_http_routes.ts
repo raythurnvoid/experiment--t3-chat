@@ -12,9 +12,7 @@ import type {
 
 export function plugins_service_http_routes(router: { route: HttpRouter["route"] }) {
 	return {
-		...((
-			/* iife */ path = "/api/v1/plugins/service-grants/recover" as const satisfies api_schemas_Main_Path,
-		) => ({
+		...((/* iife */ path = "/api/v1/plugins/service-grants/recover" as const satisfies api_schemas_Main_Path) => ({
 			[path]: {
 				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
 					[method]: ((/* iife */) => {
@@ -22,12 +20,15 @@ export function plugins_service_http_routes(router: { route: HttpRouter["route"]
 						type PathParams = never;
 						type Headers = { Authorization: string; "X-Bonobo-Service-Authorization": string };
 						type Body = import("./plugins_service.ts").plugins_service_http_recover_Body;
+
 						const handler = httpAction(async (ctx, request) => {
 							const { plugins_service_http_recover } = await import("./plugins_service.ts");
 							const result = await plugins_service_http_recover(ctx, request);
 							return Response.json(result.body, result);
 						});
+
 						router.route({ path, method, handler });
+
 						return {} as {
 							pathParams: PathParams;
 							searchParams: SearchParams;
@@ -41,9 +42,7 @@ export function plugins_service_http_routes(router: { route: HttpRouter["route"]
 				}))(),
 			},
 		}))(),
-		...((
-			/* iife */ path = "/api/v1/plugins/service-grants/exchange" as const satisfies api_schemas_Main_Path,
-		) => ({
+		...((/* iife */ path = "/api/v1/plugins/service-grants/exchange" as const satisfies api_schemas_Main_Path) => ({
 			[path]: {
 				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
 					[method]: ((/* iife */) => {
@@ -132,9 +131,7 @@ export function plugins_service_http_routes(router: { route: HttpRouter["route"]
 				}))(),
 			},
 		}))(),
-		...((
-			/* iife */ path = "/api/v1/plugins/service-grants/verify-live" as const satisfies api_schemas_Main_Path,
-		) => ({
+		...((/* iife */ path = "/api/v1/plugins/service-grants/verify-live" as const satisfies api_schemas_Main_Path) => ({
 			[path]: {
 				...((/* iife */ method = "POST" as const satisfies RouteSpec["method"]) => ({
 					[method]: ((/* iife */) => {

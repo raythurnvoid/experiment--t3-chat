@@ -1120,9 +1120,9 @@ function bash_shell_create(ctx: ActionCtx, args: { fs: MountableFs; cwd: string;
 				stdout: "",
 				stderr: `${error instanceof Error ? error.message : String(error)}\n`,
 				exitCode: bash_COMMAND_EXIT_FAILURE,
-					env: {
-						PWD: cwd,
-					},
+				env: {
+					PWD: cwd,
+				},
 			}));
 			return result;
 		},
@@ -1138,6 +1138,7 @@ export async function bash_run_plugin_review_command(
 	if (!/^\/review-[a-f0-9]{32}$/u.test(args.reviewRoot)) {
 		throw new Error("Invalid plugin review root");
 	}
+
 	const currentWorkspacePath = `${bash_PLUGINS_MOUNT_ROOT}/review`;
 	const sourceFs = new bash_DbFilesFs({
 		ctx,
@@ -1162,6 +1163,7 @@ export async function bash_run_plugin_review_command(
 			{ mountPoint: bash_TMP_MOUNT, filesystem: tmpFs },
 		],
 	});
+
 	const cwd = (await nearest_existing_dir(fs, args.cwd)) ?? currentWorkspacePath;
 	const shell = bash_shell_create(ctx, {
 		fs,
@@ -1176,17 +1178,21 @@ export async function bash_run_plugin_review_command(
 			},
 		},
 	});
+
 	const result = await shell.run_command(args.command);
 	for (const diagnostic of shell.app_command_diagnostics()) {
 		if (!result.stdout.includes(diagnostic.stderr.trim()) && !result.stderr.includes(diagnostic.stderr.trim())) {
 			result.stderr += `${diagnostic.name} exited ${diagnostic.exitCode}: ${diagnostic.stderr}`;
 		}
 	}
+
 	result.stderr += await tmp_fs_evict_to_limits(tmpFs);
 	const nextCwd = (await nearest_existing_dir(fs, result.env.PWD || cwd)) ?? currentWorkspacePath;
+
 	// Return the bounded scratch snapshot to this review, without creating a UI chat thread.
 	tmpFs.baselinePaths.clear();
 	const { fileNodes, fileNodesContentDict } = await tmp_fs_delta_payload(tmpFs);
+
 	return {
 		output: format_bash_output({
 			command: args.command,

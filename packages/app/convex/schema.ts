@@ -2803,11 +2803,20 @@ const app_convex_schema = defineSchema({
 
 	// #region access control
 
+	/**
+	 * One doc (key `"main"`) that versions the change feed below. Created with the first remote
+	 * lease; writers bump `revision` in the same transaction that appends `access_control_changes`.
+	 **/
 	access_control_change_state: defineTable({
 		key: v.literal("main"),
 		revision: v.number(),
 		oldestRevision: v.number(),
 	}).index("by_key", ["key"]),
+
+	/**
+	 * Ordered feed of access-control events. Remote plugin hosts replay it by `revision` to refresh
+	 * their cached permission, installation, and member state after a lease gap.
+	 **/
 	access_control_changes: defineTable({
 		revision: v.number(),
 		createdAt: v.number(),
@@ -2856,6 +2865,10 @@ const app_convex_schema = defineSchema({
 		.index("by_revision", ["revision"])
 		.index("by_createdAt", ["createdAt"]),
 
+	/**
+	 * Service identities scoped to an organization + workspace. Plugin installations act through
+	 * these accounts so their file and data access is checked like a member's.
+	 **/
 	access_control_service_accounts: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
@@ -3072,6 +3085,10 @@ const app_convex_schema = defineSchema({
 		.index("by_active_organization_workspace_user", ["active", "organizationId", "workspaceId", "userId"])
 		.index("by_active_user_organization_workspace", ["active", "userId", "organizationId", "workspaceId"]),
 
+	/**
+	 * One doc per (workspace, user). `lifetime` bumps every time the member leaves and rejoins, so
+	 * remote hosts can tell a fresh membership apart from the previous one with the same user.
+	 **/
 	organizations_membership_lifetimes: defineTable({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),

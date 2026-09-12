@@ -202,7 +202,6 @@ describe("AiChatMessage", () => {
 		});
 	});
 
-
 	test("shows Thinking without actions before the assistant message exists", () => {
 		render(<AiChatMessagePendingAssistant />);
 

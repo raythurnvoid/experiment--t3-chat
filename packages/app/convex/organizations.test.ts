@@ -2902,6 +2902,7 @@ describe("remove_user_from_organization", () => {
 						updatedAt: now,
 					}),
 				]);
+
 			for (let index = 0; index < 100; index += 1) {
 				const inProjectWorkspace = index % 2 === 0;
 				await ctx.db.insert("plugin_service_grants", {
@@ -3029,7 +3030,7 @@ describe("remove_user_from_organization", () => {
 		expect(afterRemove[8]?._id).toBe(seededAccess.keptSessionId);
 		expect(afterRemove[10]?._id).toBe(seededAccess.keptServiceGrantId);
 
-		const readServiceGrantDrainState = () =>
+		const cancelContinuationsAndReadDrainState = () =>
 			t.run(async (ctx) => {
 				const [memberships, homeGrants, projectGrants, jobs] = await Promise.all([
 					ctx.db
@@ -3069,7 +3070,7 @@ describe("remove_user_from_organization", () => {
 				};
 			});
 
-		const afterFirstBatch = await readServiceGrantDrainState();
+		const afterFirstBatch = await cancelContinuationsAndReadDrainState();
 		expect(afterFirstBatch.serviceGrantCount).toBe(1);
 		expect(afterFirstBatch.continuationCount).toBe(2);
 		expect(afterFirstBatch.memberships).toHaveLength(2);
@@ -3085,7 +3086,7 @@ describe("remove_user_from_organization", () => {
 				userId: memberId,
 			}),
 		);
-		const afterSecondBatch = await readServiceGrantDrainState();
+		const afterSecondBatch = await cancelContinuationsAndReadDrainState();
 		expect(afterSecondBatch.serviceGrantCount).toBe(0);
 		expect(afterSecondBatch.continuationCount).toBe(1);
 		expect(afterSecondBatch.memberships).toHaveLength(2);
@@ -3101,7 +3102,7 @@ describe("remove_user_from_organization", () => {
 				userId: memberId,
 			}),
 		);
-		const afterZeroPass = await readServiceGrantDrainState();
+		const afterZeroPass = await cancelContinuationsAndReadDrainState();
 		expect(afterZeroPass.serviceGrantCount).toBe(0);
 		expect(afterZeroPass.continuationCount).toBe(0);
 		expect(afterZeroPass.memberships).toHaveLength(0);
@@ -3319,6 +3320,7 @@ describe("remove_user_from_organization", () => {
 					updatedAt: now,
 				});
 			}
+
 			await ctx.db.insert("access_control_permission_grants", {
 				organizationId: created._yay!.organizationId,
 				workspaceId: created._yay!.defaultWorkspaceId,
@@ -3330,6 +3332,7 @@ describe("remove_user_from_organization", () => {
 				createdAt: now,
 				updatedAt: now,
 			});
+
 			for (let index = 0; index < 100; index += 1) {
 				await ctx.db.insert("access_control_permission_grants", {
 					organizationId: created._yay!.organizationId,

@@ -703,6 +703,7 @@ export const set_plugin_access = internalMutation({
 		if (writable._nay) {
 			return writable;
 		}
+
 		const binding = await ctx.db
 			.query("plugins_file_access_bindings")
 			.withIndex("by_node", (q) => q.eq("nodeId", node._id))
@@ -710,6 +711,7 @@ export const set_plugin_access = internalMutation({
 		if (binding && binding.installationId !== installation._id) {
 			return Result({ _nay: { name: "conflict", message: "This item has a different plugin reader binding" } });
 		}
+
 		const prepared = await db_prepare_plugin_access(ctx, {
 			installation,
 			node,
@@ -722,6 +724,7 @@ export const set_plugin_access = internalMutation({
 		if (prepared._nay) {
 			return prepared;
 		}
+
 		const applied = await db_apply_plugin_access(ctx, { installation, node, writeContext, prepared: prepared._yay });
 		if (applied._nay) {
 			return applied;
@@ -1213,6 +1216,7 @@ export async function public_api_plugin_files_http_set_access(
 			body: await fail({ status: 400, message: "Path must not be the workspace root.", errorCode: "invalid_input" }),
 		} as const;
 	}
+
 	if (body._yay.writer) {
 		if (principal.kind !== "plugin_service")
 			return {

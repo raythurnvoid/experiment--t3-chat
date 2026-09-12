@@ -124,6 +124,12 @@ export const bash_READ_INLINE_MAX_BYTES = 64 * 1024;
  * Must match the backend `files_READ_RANGE_MAX_LINES`.
  */
 export const bash_READ_HEAD_LARGE_FILE_MAX_LINES = 500;
+
+/**
+ * Cap on distinct paths one Bash call records for scoped-guidance lookup. Each path fans out to
+ * ancestor AGENTS.md reads afterwards, so the cap bounds that work per call.
+ */
+const bash_OBSERVED_PATHS_MAX = 100;
 export const bash_COMMAND_EXIT_FAILURE = 1;
 export const bash_COMMAND_EXIT_USAGE = 2;
 export const bash_COMMAND_EXIT_CANNOT_EXECUTE = 126;
@@ -407,7 +413,9 @@ export class bash_DbFilesFs implements IFileSystem {
 	pathIndexTruncated = false;
 	private entryCache = new Map<string, DbFilesCacheEntry>();
 	private contentCache = new Map<string, string>();
+	/** App paths this call touched, collected so the result can load their scoped AGENTS.md guidance. */
 	readonly observedPaths = new Set<string>();
+	/** Set when the observed-path cap above dropped entries. */
 	observedPathsTruncated = false;
 	private overlayPromise: Promise<files_PendingPathOverlay> | null = null;
 	/** Command-owned per-run caches (cat's content cache) cleared together with resetProposalCaches. */
@@ -421,7 +429,8 @@ export class bash_DbFilesFs implements IFileSystem {
 		this.readOnlySource = options.readOnlySource;
 		this.overlayUserId = options.readOnlySource == null ? options.ctxData.userId : undefined;
 		this.dbFilesPathPrefix = options.dbFilesPathPrefix == null ? "" : bash_normalize_path(options.dbFilesPathPrefix);
-		this.dbFilesRootPath = this.dbFilesPathPrefix === "" || this.dbFilesPathPrefix === "/" ? "/" : this.dbFilesPathPrefix;
+		this.dbFilesRootPath =
+			this.dbFilesPathPrefix === "" || this.dbFilesPathPrefix === "/" ? "/" : this.dbFilesPathPrefix;
 		this.seedRootEntry();
 	}
 
@@ -637,8 +646,11 @@ export class bash_DbFilesFs implements IFileSystem {
 			dbFilesPath = files_normalize_special_node_path("file", requestedDbFilesPath);
 			if (dbFilesPath !== requestedDbFilesPath) {
 				dbFilesPath = await this.ctx.runQuery(internal.files_nodes.resolve_new_node_path, {
-					organizationId: this.ctxData.organizationId, workspaceId: this.ctxData.workspaceId,
-					path: requestedDbFilesPath, normalizedPath: dbFilesPath, overlayUserId: this.overlayUserId,
+					organizationId: this.ctxData.organizationId,
+					workspaceId: this.ctxData.workspaceId,
+					path: requestedDbFilesPath,
+					normalizedPath: dbFilesPath,
+					overlayUserId: this.overlayUserId,
 				});
 				if (dbFilesPath === requestedDbFilesPath) {
 					throw new Error(`cannot write '${shellPath}': Permission denied`);
@@ -689,7 +701,10 @@ export class bash_DbFilesFs implements IFileSystem {
 		// Writes only run for the tenant app db-files root: the mounted sources threw above,
 		// so the scope here is never reserved. Narrow the union for the workspace-only functions.
 		const { organizationId, workspaceId, userId, threadId } = this.ctxData;
-		if (organizations_is_global_organization_id(organizationId) || organizations_is_reserved_workspace_id(workspaceId)) {
+		if (
+			organizations_is_global_organization_id(organizationId) ||
+			organizations_is_reserved_workspace_id(workspaceId)
+		) {
 			throw should_never_happen("app file write reached the reserved mount scope", { organizationId, workspaceId });
 		}
 
@@ -780,6 +795,7 @@ export class bash_DbFilesFs implements IFileSystem {
 			if (prepared._nay) {
 				throw new Error(`cannot write '${shellPath}': ${prepared._nay.message}${await eager_created_failure_note()}`);
 			}
+
 			// Use full chunks, not capped readFile output. Keep exact Markdown bytes when
 			// available; the Yjs action is the fallback for text not served by chunks.
 			let currentContent: {
@@ -812,6 +828,7 @@ export class bash_DbFilesFs implements IFileSystem {
 					`cannot write '${shellPath}': the file changed while the command was running. Re-run the command.${await eager_created_failure_note()}`,
 				);
 			}
+
 			const newText = mode === "append" ? currentContent.content + normalizedChunk : normalizedChunk;
 			if (files_get_utf8_byte_size(newText) > files_MAX_TEXT_CONTENT_BYTES) {
 				throw new Error(
@@ -893,8 +910,11 @@ export class bash_DbFilesFs implements IFileSystem {
 		const normalizedDbFilesPath = files_normalize_special_node_path("folder", dbFilesPath);
 		if (!existing && normalizedDbFilesPath !== dbFilesPath) {
 			dbFilesPath = await this.ctx.runQuery(internal.files_nodes.resolve_new_node_path, {
-				organizationId: this.ctxData.organizationId, workspaceId: this.ctxData.workspaceId,
-				path: dbFilesPath, normalizedPath: normalizedDbFilesPath, overlayUserId: this.overlayUserId,
+				organizationId: this.ctxData.organizationId,
+				workspaceId: this.ctxData.workspaceId,
+				path: dbFilesPath,
+				normalizedPath: normalizedDbFilesPath,
+				overlayUserId: this.overlayUserId,
 			});
 			if (dbFilesPath === requestedDbFilesPath) {
 				throw new Error(`cannot create '${this.shellPathOf(dbFilesPath)}': Permission denied`);
@@ -948,7 +968,10 @@ export class bash_DbFilesFs implements IFileSystem {
 		// source roots pass allowDbFilesMkdir=false and threw above, so the scope here is never
 		// reserved. Narrow the union before the workspace-only mutation, which declares strict ids.
 		const { organizationId, workspaceId, userId } = this.ctxData;
-		if (organizations_is_global_organization_id(organizationId) || organizations_is_reserved_workspace_id(workspaceId)) {
+		if (
+			organizations_is_global_organization_id(organizationId) ||
+			organizations_is_reserved_workspace_id(workspaceId)
+		) {
 			throw should_never_happen("mkdir reached the reserved mount scope", { organizationId, workspaceId });
 		}
 		const created = (await this.ctx.runMutation(internal.files_nodes.create_folder_node_by_path, {
@@ -1146,7 +1169,7 @@ export class bash_DbFilesFs implements IFileSystem {
 
 	observePath(path: string) {
 		if (this.readOnlySource != null) return;
-		if (this.observedPaths.size >= 100 && !this.observedPaths.has(path)) {
+		if (this.observedPaths.size >= bash_OBSERVED_PATHS_MAX && !this.observedPaths.has(path)) {
 			this.observedPathsTruncated = true;
 			return;
 		}

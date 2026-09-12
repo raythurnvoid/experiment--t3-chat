@@ -62,6 +62,7 @@ async function live_installation(
 		!crypto_timing_safe_equal(registration.exchangeSecretHash, args.serviceSecretHash)
 	)
 		return null;
+	// Keep in sync with SCOPE_GATING_CAPABILITY in plugins_service.ts.
 	const capability = {
 		"files:write": "workspace.files.write",
 		"plugin_data:read": "plugin.data.read",
@@ -111,6 +112,11 @@ export async function plugins_service_grant_requests_db_source(
 		: null;
 }
 
+/**
+ * Replay a stored grant response for a caller that lost the original one. The receipt lookup, the
+ * live-grant check, and the decrypt all bind the presented credential, operation, requestId, and
+ * fingerprint, so a receipt cannot be replayed under a different request.
+ **/
 export async function plugins_service_grant_requests_db_recover(
 	ctx: QueryCtx,
 	args: {
@@ -150,6 +156,7 @@ export async function plugins_service_grant_requests_db_recover(
 	if (receipt.expiresAt <= Date.now() || receipt.ciphertext === null || receipt.nonce === null) {
 		return Result({ _nay: { message: "Reconnect Files sync" } });
 	}
+	// The stored ciphertext is AEAD-bound to this request's identity, not just the caller's token.
 	const token = await crypto_decrypt_secret_value(
 		{ ciphertext: receipt.ciphertext, nonce: receipt.nonce },
 		JSON.stringify([credentialHash, args.operation, args.requestId, args.fingerprint]),
@@ -186,6 +193,7 @@ export async function plugins_service_grant_requests_db_save(
 		args.token,
 		JSON.stringify([credentialHash, args.operation, args.requestId, args.fingerprint]),
 	);
+	// A receipt never outlives the grant it replays.
 	const expiresAt = Math.min(Date.now() + 24 * 60 * 60 * 1000, args.grant.expiresAt);
 	await ctx.db.insert("plugin_service_grant_requests", {
 		organizationId: args.grant.organizationId,

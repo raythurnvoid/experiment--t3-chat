@@ -38,6 +38,7 @@ export const rollback = internalMutation({
 	handler: async (ctx, args) => {
 		if ((args.receiptId === undefined) === (args.originalReaderOperationId === undefined))
 			return Result({ _nay: { message: "Choose one reader operation" } });
+
 		const receipt = args.receiptId
 			? await ctx.db.get("plugins_external_file_receipts", args.receiptId)
 			: await ctx.db
@@ -52,6 +53,7 @@ export const rollback = internalMutation({
 					.withIndex("by_receipt", (q) => q.eq("receiptId", receipt._id))
 					.first()
 			: null;
+
 		if (
 			(args.receiptId && !receipt) ||
 			(receipt &&
@@ -60,8 +62,10 @@ export const rollback = internalMutation({
 					(receipt.operation !== "readers" && receipt.operation !== "cancel_readers")))
 		)
 			return Result({ _nay: { message: "Unauthenticated" } });
+
 		const writer = await ctx.db.get("plugins_external_file_writers", args.writerId);
 		if (!writer) return Result({ _nay: { message: "Unauthenticated" } });
+
 		const installation = await ctx.db.get("plugins_workspace_installations", writer.installationId);
 		if (
 			!installation ||
@@ -79,6 +83,7 @@ export const rollback = internalMutation({
 		) {
 			return Result({ _nay: { message: "Unauthenticated" } });
 		}
+
 		const [workspace, registration] = await Promise.all([
 			ctx.db.get("organizations_workspaces", installation.workspaceId),
 			ctx.db
@@ -94,6 +99,7 @@ export const rollback = internalMutation({
 			!crypto_timing_safe_equal(registration.exchangeSecretHash, args.serviceSecretHash)
 		)
 			return Result({ _nay: { message: "Unauthenticated" } });
+
 		const grant = change
 			? await ctx.db.get("plugin_service_grants", change.grantId)
 			: await ctx.db
@@ -101,6 +107,7 @@ export const rollback = internalMutation({
 					.withIndex("by_tokenHash", (q) => q.eq("tokenHash", args.tokenHash))
 					.first();
 		const proof = change ?? grant;
+
 		// Report a proof mismatch only to the current registered service.
 		if (
 			!proof ||
@@ -112,6 +119,7 @@ export const rollback = internalMutation({
 					grant.destinationPathPrefix !== writer.rootPath))
 		)
 			return Result({ _nay: { name: "reader_proof_mismatch", message: "Unauthenticated" } });
+
 		// An old bearer proves only this undo. It cannot authorize new Files work.
 		const matchesProof =
 			crypto_timing_safe_equal(proof.tokenHash, args.tokenHash) ||
@@ -140,12 +148,14 @@ export const rollback = internalMutation({
 				return Result({ _nay: { message: "Permission denied" } });
 			recoveryGrant = presented;
 		}
+
 		const authority = recoveryGrant ?? proof;
 		const rateLimit = await rate_limiter_limit_by_key(ctx, {
 			name: "public_api_principal",
 			key: `${installation._id}:rollback-readers`,
 		});
 		if (rateLimit) return Result({ _nay: { name: "rate_limit", message: rateLimit.message } });
+
 		const originalOperationId = receipt?.operationId ?? args.originalReaderOperationId!;
 		if (originalOperationId === args.operationId)
 			return Result({ _nay: { name: "stale_write", message: "Use a separate rollback operation" } });
@@ -163,6 +173,7 @@ export const rollback = internalMutation({
 			return Result({
 				_yay: { _id: completed._id, readerRevision: completed.readerRevision!, detached: false, restored: true },
 			});
+
 		const [root, folder, binding] = await Promise.all([
 			ctx.db.get("files_nodes", writer.rootNodeId),
 			ctx.db.get("files_nodes", writer.folderNodeId),
@@ -182,8 +193,10 @@ export const rollback = internalMutation({
 			!binding
 		)
 			return Result({ _nay: { name: "stale_write", message: "The output folder changed" } });
+
 		if (binding.detachedAt !== null)
 			return Result({ _yay: { _id: null, readerRevision: binding.revision, detached: true, restored: false } });
+
 		if (
 			recoveryGrant &&
 			!(await access_control_db_can_act_on_file_node(ctx, {
@@ -196,11 +209,13 @@ export const rollback = internalMutation({
 			}))
 		)
 			return Result({ _nay: { message: "Permission denied" } });
+
 		if (
 			writer.generation !== args.writerGeneration ||
 			(receipt && (receipt.writerGeneration !== args.writerGeneration || binding.revision !== receipt.readerRevision))
 		)
 			return Result({ _nay: { name: "stale_write", message: "A newer file access change exists" } });
+
 		for (const node of [root, folder]) {
 			if (
 				(await files_metadata_db_read_entry(ctx, {
@@ -212,6 +227,7 @@ export const rollback = internalMutation({
 			)
 				return Result({ _nay: { message: "Permission denied" } });
 		}
+
 		const writable = await files_nodes_db_require_writable(ctx, {
 			organizationId: writer.organizationId,
 			workspaceId: writer.workspaceId,
@@ -224,6 +240,7 @@ export const rollback = internalMutation({
 			target: { kind: "node", node: folder },
 		});
 		if (writable._nay) return writable;
+
 		let readerRevision = binding.revision;
 		let originalReceiptId = receipt?._id;
 		if (change) {
@@ -233,6 +250,7 @@ export const rollback = internalMutation({
 					workspaceId: writer.workspaceId,
 					userId: reader.userId,
 				});
+				// A member who left and rejoined has a new lifetime: their old read grant stays dropped.
 				if (membership?.active && membership.lifetime === reader.membershipLifetime) readers.push(reader);
 			}
 			await plugins_external_files_db_replace_readers(ctx, { installation, nodeId: folder._id, readers });
@@ -260,6 +278,7 @@ export const rollback = internalMutation({
 				createdAt: Date.now(),
 			});
 		}
+
 		const id = await ctx.db.insert("plugins_external_file_receipts", {
 			organizationId: writer.organizationId,
 			workspaceId: writer.workspaceId,
@@ -276,6 +295,7 @@ export const rollback = internalMutation({
 			readerRevision,
 			createdAt: Date.now(),
 		});
+
 		if (change) {
 			await ctx.db.patch("plugins_external_file_reader_changes", change._id, { rollbackReceiptId: id });
 		} else {
@@ -295,9 +315,11 @@ export const rollback = internalMutation({
 				rollbackReceiptId: id,
 			});
 		}
+
 		return Result({ _yay: { _id: id, readerRevision, detached: false, restored: true } });
 	},
 });
+
 type rollback_Result = typeof rollback extends RegisteredMutation<infer _V, infer _A, infer R> ? Awaited<R> : never;
 
 const body_validator = z
@@ -313,6 +335,7 @@ const body_validator = z
 		(body) => (body.receiptId === undefined) !== (body.originalReaderOperationId === undefined),
 		"Choose one reader operation",
 	);
+
 export type plugins_external_file_readers_http_undo_Body = z.infer<typeof body_validator>;
 
 export async function plugins_external_file_readers_http_undo(ctx: ActionCtx, request: Request) {

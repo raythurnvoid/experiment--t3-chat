@@ -62,6 +62,7 @@ export async function organizations_membership_lifetimes_db_ensure(
 		.first();
 
 	if (existing) {
+		// Bump only when a new membership replaces an active one; a same-doc reactivation keeps it.
 		const lifetime = existing.lifetime + (existing.active && existing.membershipId !== membership._id ? 1 : 0);
 		if (!existing.active || existing.membershipId !== membership._id) {
 			await ctx.db.patch("organizations_membership_lifetimes", existing._id, {

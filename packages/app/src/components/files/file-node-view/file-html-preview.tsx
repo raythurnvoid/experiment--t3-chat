@@ -206,6 +206,7 @@ export const FileHtmlPreview = memo(function FileHtmlPreview(props: {
 		node.textKind === "plain_text" &&
 		files_node_has_editable_text_content(node) &&
 		node.archiveOperationId === null;
+	// A loaded snapshot is stale the moment any of these inputs change.
 	const scope = JSON.stringify([membershipId, node._id, node.yjsLastSequenceId, node.collaborationEnabled, eligible]);
 	const hasProposal = files_pending_update_has_content(pendingUpdate);
 	const pendingKey = pending_content_key(pendingUpdate ?? null);
@@ -213,6 +214,7 @@ export const FileHtmlPreview = memo(function FileHtmlPreview(props: {
 		hasProposal &&
 		(files_pending_update_content_is_stale(pendingUpdate, node) ||
 			pendingUpdate.currentYjsLastSequenceId !== node.yjsLastSequenceId);
+	// undefined is a real fourth state: no source chosen yet, and the checks below test `!== undefined`.
 	const [editorSource, setEditorSource] = useState<"editor_draft" | "proposed_changes" | null>();
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -502,6 +504,7 @@ const FileHtmlPreviewFrame = memo(function FileHtmlPreviewFrame(props: {
 				ref={frameRef}
 				className={"FileHtmlPreview-frame" satisfies FileHtmlPreview_ClassNames}
 				title={`HTML preview: ${name}`}
+				// allow-same-origin is safe only because preview_runtime_url() refuses the app's own origin.
 				sandbox="allow-scripts allow-same-origin"
 				referrerPolicy="no-referrer"
 			/>

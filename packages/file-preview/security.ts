@@ -10,6 +10,7 @@ export function file_preview_security_config(value: string | undefined, local: b
 			throw new Error("FILE_PREVIEW_PARENT_ORIGINS must contain exact HTTPS origins, or the documented local origins.");
 		}
 	}
+
 	const csp = [
 		"default-src 'self'",
 		"script-src 'self' 'unsafe-inline' https://esm.sh",
@@ -35,6 +36,7 @@ export function file_preview_security_config(value: string | undefined, local: b
 		"Cross-Origin-Opener-Policy": "same-origin",
 		"Origin-Agent-Cluster": "?1",
 	};
+
 	const headerLines = Object.entries(headers).map(([name, content]) => `  ${name}: ${content}`);
 	if (headerLines.some((line) => line.length > 2_000))
 		throw new Error("The preview header exceeds the static host limit.");

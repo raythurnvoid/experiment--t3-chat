@@ -19,7 +19,7 @@ import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { FilesTreeProvider } from "@/lib/files-tree-context.tsx";
 import type { AppClassName } from "@/lib/dom-utils.ts";
 import { files_ROOT_ID, files_create_tree_items_list_from_nodes, files_is_node } from "@/lib/files.ts";
-import { parse_search_query, search_filter_matches_item } from "@/lib/files-search.ts";
+import { detect_search_query_mode, search_filter_matches_item } from "@/lib/files-search.ts";
 import { app_local_storage_set_value } from "@/lib/storage.ts";
 import { cn } from "@/lib/utils.ts";
 import { files_search_query_parse, files_search_query_serialize } from "../../../shared/files-search-query.ts";
@@ -72,7 +72,7 @@ const FilesSearchPaletteContent = memo(function FilesSearchPaletteContent(props:
 	} = useFilesSearchMetadata(membershipId, debouncedQuery, treeItems);
 	const parsed = useMemo(() => files_search_query_parse(debouncedQuery), [debouncedQuery]);
 	const text = `${parsed.text.replace(/"/gu, "").trim()}`;
-	const textQuery = parse_search_query(text);
+	const textQuery = detect_search_query_mode(text);
 	const hasFilters = parsed.filters.length > 0;
 	const hasInvalidFilter = parsed.filters.some((filter) => filter.problem !== null);
 	const isActive = searchQuery.trim().length > 0;

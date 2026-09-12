@@ -69,6 +69,7 @@ export async function plugins_external_files_db_replace_readers(
 			updatedAt: Date.now(),
 		});
 	}
+	// The surviving user grants seed the caller's `previousReaders` for a later rollback.
 	return existing.flatMap((grant) =>
 		grant.principalKind === "user" && grant.userId && grant.externalPluginMembershipLifetime !== undefined
 			? [{ userId: grant.userId, membershipLifetime: grant.externalPluginMembershipLifetime }]
@@ -443,6 +444,7 @@ export const change_scope = internalMutation({
 	handler: async (ctx, args) => {
 		const writer = await ctx.db.get("plugins_external_file_writers", args.writerId);
 		if (!writer) return Result({ _nay: { message: "Permission denied" } });
+
 		const path = args.change.kind === "archive" ? args.change.path : writer.path;
 		const existing = await ctx.db
 			.query("plugins_external_file_receipts")
@@ -455,12 +457,14 @@ export const change_scope = internalMutation({
 			exactNodeId: args.change.kind === "archive" ? args.change.nodeId : undefined,
 		});
 		if (facts._nay) return facts;
+
 		if (
 			writer.installationId !== facts._yay.installation._id ||
 			(args.expectedPath !== undefined && args.expectedPath !== writer.path) ||
 			!(path === writer.path || server_path_parent_of(path) === writer.path)
 		)
 			return Result({ _nay: { message: "Permission denied" } });
+
 		const [root, folder, binding] = await Promise.all([
 			ctx.db.get("files_nodes", writer.rootNodeId),
 			ctx.db.get("files_nodes", writer.folderNodeId),
@@ -479,18 +483,23 @@ export const change_scope = internalMutation({
 		) {
 			return Result({ _nay: { name: "stale_write", message: "The output folder changed" } });
 		}
+
 		if (args.change.kind === "archive") {
 			const node = facts._yay.node;
 			if (!node || node.kind !== "file" || node._id === writer.rootNodeId || node.parentId !== folder._id)
 				return Result({ _nay: { name: "stale_write", message: "The file changed" } });
 		}
+
 		const fingerprint = JSON.stringify([args.writerGeneration, args.change]);
+		// A retry is accepted only when it repeats the original operation and payload exactly.
 		if (existing)
 			return existing.operation === args.change.kind && existing.fingerprint === fingerprint
 				? Result({ _yay: existing })
 				: Result({ _nay: { name: "stale_write", message: "This operation was already used" } });
+
 		if (writer.generation !== args.writerGeneration)
 			return Result({ _nay: { name: "stale_write", message: "The file writer changed" } });
+
 		let readerRevision = binding?.revision ?? null;
 		let previousReaders: { userId: Id<"users">; membershipLifetime: number }[] | null = null;
 		let generation = writer.generation;
@@ -505,6 +514,7 @@ export const change_scope = internalMutation({
 			if (!binding || binding.detachedAt !== null || binding.revision !== args.change.expectedReaderRevision) {
 				return Result({ _nay: { name: "stale_write", message: "The file reader binding changed" } });
 			}
+
 			if (
 				!facts._yay.installation.acceptedCapabilities.includes("workspace.files.own-access") ||
 				!(await access_control_db_can_act_on_file_node(ctx, {
@@ -517,12 +527,14 @@ export const change_scope = internalMutation({
 				}))
 			)
 				return Result({ _nay: { message: "Permission denied" } });
+
 			if (
 				args.change.readers.length > MAX_READERS ||
 				new Set(args.change.readers.map((reader) => reader.userId)).size !== args.change.readers.length
 			) {
 				return Result({ _nay: { message: "Invalid file readers" } });
 			}
+
 			for (const reader of args.change.readers) {
 				const membership = await organizations_membership_lifetimes_db_get(ctx, {
 					workspaceId: writer.workspaceId,
@@ -531,6 +543,7 @@ export const change_scope = internalMutation({
 				if (!membership?.active || membership.lifetime !== reader.membershipLifetime)
 					return Result({ _nay: { name: "stale_write", message: "The file readers changed" } });
 			}
+
 			previousReaders = await plugins_external_files_db_replace_readers(ctx, {
 				installation: facts._yay.installation,
 				nodeId: folder._id,
@@ -548,8 +561,11 @@ export const change_scope = internalMutation({
 				(await plugins_external_files_db_content_revision(ctx, node)) !== args.change.expectedContentRevision
 			)
 				return Result({ _nay: { name: "stale_write", message: "The file changed" } });
+
 			if (binding?.detachedAt != null)
 				return Result({ _nay: { name: "stale_write", message: "The file readers are managed in Files" } });
+
+			// Sequences only order writes inside one writer generation; a new generation restarts them.
 			const latest = await ctx.db
 				.query("plugins_external_file_receipts")
 				.withIndex("by_writer_path_writerGeneration_sequence", (q) =>
@@ -560,6 +576,7 @@ export const change_scope = internalMutation({
 			if (latest && latest.sequence >= args.change.sequence) {
 				return Result({ _nay: { name: "stale_write", message: "A newer file write already exists" } });
 			}
+
 			nodeId = node._id;
 			// An earlier Files archive already did the work. Keep its identity and dates.
 			if (node.archiveOperationId === null)
@@ -569,6 +586,7 @@ export const change_scope = internalMutation({
 					now: Date.now(),
 				});
 		}
+
 		const id = await ctx.db.insert("plugins_external_file_receipts", {
 			organizationId: writer.organizationId,
 			workspaceId: writer.workspaceId,
@@ -585,6 +603,7 @@ export const change_scope = internalMutation({
 			readerRevision,
 			createdAt: Date.now(),
 		});
+
 		if (args.change.kind === "readers" && previousReaders !== null) {
 			await ctx.db.insert("plugins_external_file_reader_changes", {
 				organizationId: writer.organizationId,
@@ -602,6 +621,7 @@ export const change_scope = internalMutation({
 				rollbackReceiptId: null,
 			});
 		}
+
 		return Result({ _yay: (await ctx.db.get("plugins_external_file_receipts", id))! });
 	},
 });

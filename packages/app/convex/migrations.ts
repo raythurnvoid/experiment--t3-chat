@@ -890,10 +890,7 @@ export const delete_legacy_plugins_data_member_usage = app_migrations.define({
 	},
 });
 
-function migrations_plugin_scope_append_sequence_is_valid(
-	value: number | undefined,
-	minimum: number,
-): value is number {
+function migrations_plugin_scope_append_sequence_is_valid(value: number | undefined, minimum: number): value is number {
 	return value !== undefined && Number.isSafeInteger(value) && value >= minimum;
 }
 
@@ -918,6 +915,7 @@ export const backfill_plugin_scope_last_append_from_documents = app_migrations.d
 		if (document.scopeId === undefined || document.userWriteRequestId === undefined) {
 			return;
 		}
+
 		const scopeId = document.scopeId;
 		const at = plugins_data_parse_append_key_at(document.key);
 		if (at === null) {
@@ -927,9 +925,7 @@ export const backfill_plugin_scope_last_append_from_documents = app_migrations.d
 		// A released scope has no live row. Never turn retained private history into live activity.
 		const scopes = await ctx.db
 			.query("plugins_data_scopes")
-			.withIndex("by_installation_scope", (q) =>
-				q.eq("installationId", document.installationId).eq("scopeId", scopeId),
-			)
+			.withIndex("by_installation_scope", (q) => q.eq("installationId", document.installationId).eq("scopeId", scopeId))
 			.take(plugins_data_MAX_COLLECTIONS);
 		const scope = scopes.find(
 			(row) => row.collection === document.collection && document.key.startsWith(row.keyPrefix),
@@ -977,10 +973,7 @@ const PLUGIN_SCOPE_AUDIT_PAGE_SIZE = 20;
 
 async function migrations_plugin_scope_for_append(
 	ctx: QueryCtx,
-	document: Pick<
-		Doc<"plugins_data">,
-		"installationId" | "scopeId" | "collection" | "key"
-	>,
+	document: Pick<Doc<"plugins_data">, "installationId" | "scopeId" | "collection" | "key">,
 ) {
 	if (document.scopeId === undefined) {
 		return null;
@@ -988,13 +981,9 @@ async function migrations_plugin_scope_for_append(
 	const scopeId = document.scopeId;
 	const scopes = await ctx.db
 		.query("plugins_data_scopes")
-		.withIndex("by_installation_scope", (q) =>
-			q.eq("installationId", document.installationId).eq("scopeId", scopeId),
-		)
+		.withIndex("by_installation_scope", (q) => q.eq("installationId", document.installationId).eq("scopeId", scopeId))
 		.take(plugins_data_MAX_COLLECTIONS);
-	return (
-		scopes.find((row) => row.collection === document.collection && document.key.startsWith(row.keyPrefix)) ?? null
-	);
+	return scopes.find((row) => row.collection === document.collection && document.key.startsWith(row.keyPrefix)) ?? null;
 }
 
 function migrations_plugin_scope_installation_id(
@@ -1418,13 +1407,14 @@ export const run_delete_plugins_data_member_usage = app_migrations.runner(
 export const run_delete_legacy_plugins_data_member_usage = app_migrations.runner(
 	internal.migrations.delete_legacy_plugins_data_member_usage,
 );
+
 const plugin_scope_append_activity_migrations = [
 	internal.migrations.backfill_plugin_scope_last_append_from_documents,
 	internal.migrations.default_plugin_scope_last_append,
 ];
-export const run_backfill_plugin_scope_append_activity = app_migrations.runner(
-	plugin_scope_append_activity_migrations,
-);
+
+export const run_backfill_plugin_scope_append_activity = app_migrations.runner(plugin_scope_append_activity_migrations);
+
 export const run_delete_orphan_plugin_scope_grants = app_migrations.runner(
 	internal.migrations.delete_orphan_plugin_scope_grants,
 );

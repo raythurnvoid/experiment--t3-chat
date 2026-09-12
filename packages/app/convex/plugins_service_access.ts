@@ -97,6 +97,7 @@ async function db_check_connection(
 	if (!registration || !crypto_timing_safe_equal(registration.exchangeSecretHash, serviceSecretHash)) return false;
 
 	const installation = await ctx.db.get("plugins_workspace_installations", connection.installationId);
+	// A deleted installation fails its own checks elsewhere; the connection doc itself is consistent.
 	return (
 		!installation ||
 		(installation.pluginName === registration.pluginName &&

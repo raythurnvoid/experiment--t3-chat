@@ -506,6 +506,7 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 			pendingUpdate: null,
 		};
 	});
+
 	const handlePreviewSnapshotChange = useFn(() => onPreviewSnapshotChange?.());
 
 	// No `editable` guard here on purpose: this runs only after the backend already committed the
@@ -559,7 +560,9 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 			}
 
 			if (remoteData.yjsLastSequenceId !== yjsLastSequenceIdRef.current) {
-				toast.error("This file changed while you were editing. Copy your local changes before reloading, then try again.");
+				toast.error(
+					"This file changed while you were editing. Copy your local changes before reloading, then try again.",
+				);
 				return;
 			}
 
@@ -798,7 +801,9 @@ const FileEditorPlainTextInner = memo(function FileEditorPlainTextInner(props: F
 			}
 
 			if (remoteData.yjsLastSequenceId !== yjsLastSequenceIdRef.current) {
-				toast.error("This file changed while you were editing. Copy your local changes before reloading, then try again.");
+				toast.error(
+					"This file changed while you were editing. Copy your local changes before reloading, then try again.",
+				);
 				return;
 			}
 

@@ -1534,7 +1534,7 @@ for (const path of ["workspace", "organization", "reset"] as const) {
 		expect(
 			(await t.run((ctx) => review_count_original_rows(ctx, seeded.inventory))).filter((row) => row.count > 0),
 		).toEqual([]);
-		const budgetRows = await t.run(async (ctx) =>
+		const quotaRows = await t.run(async (ctx) =>
 			(
 				await ctx.db
 					.query("quotas")
@@ -1544,7 +1544,7 @@ for (const path of ["workspace", "organization", "reset"] as const) {
 				(row) => row.quotaName === "public_api_upload_bytes" || row.quotaName === "plugin_service_storage_bytes",
 			),
 		);
-		expect(budgetRows).toEqual([]);
+		expect(quotaRows).toEqual([]);
 		if (path === "organization")
 			expect(await t.run((ctx) => ctx.db.get("organizations", seeded.organizationId))).toBeNull();
 		if (path === "reset") {
@@ -1960,6 +1960,7 @@ describe("anonymous auth finalization", () => {
 			if (userRecord === "retained") {
 				expect(await t.run((ctx) => ctx.db.get("users_anon_tokens", user.tokenId))).not.toBeNull();
 				expect(await t.run((ctx) => ctx.db.get("billing_usage_snapshots", billingSnapshot._id))).not.toBeNull();
+				// Called twice: a second tombstone purge must be a harmless no-op.
 				await t.mutation(internal.users.purge_deleted_user_tombstone, { userId: user.userId });
 				await t.mutation(internal.users.purge_deleted_user_tombstone, { userId: user.userId });
 			}

@@ -7,11 +7,12 @@ describe("ai_chat_context_ENABLED", () => {
 	test("turns the feature off when the optional environment value is unset", async () => {
 		const t = test_convex();
 		const db = await t.run((ctx) => test_mocks_fill_db_with.membership(ctx));
+		// The flag is read once at module load, so the env is stubbed and the registry reset before import.
 		vi.stubEnv("AI_CHAT_WORKSPACE_INSTRUCTIONS_ENABLED", undefined);
 		vi.resetModules();
 		try {
-			const module = await import("./ai_chat_context.ts");
-			expect(module.ai_chat_context_ENABLED).toBe(false);
+			const contextModule = await import("./ai_chat_context.ts");
+			expect(contextModule.ai_chat_context_ENABLED).toBe(false);
 			expect(
 				(await t.query(internal.ai_chat_context.discover_sources, { membershipId: db.membershipId, userId: db.userId }))
 					._nay?.name,

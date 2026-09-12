@@ -15,10 +15,7 @@ import { crypto_random_hex, crypto_sha256_hex } from "./crypto-utils.ts";
 import { files_normalize_ai_edit_content, files_normalize_lf_newlines } from "./files.ts";
 import { files_node_has_editable_text_content } from "../shared/files.ts";
 import { ai_chat_GENERATED_IMAGE_FORMAT } from "../shared/ai-chat.ts";
-import {
-	ai_chat_context_read_instructions,
-	type ai_chat_context_Context,
-} from "./ai-chat-context.ts";
+import { ai_chat_context_read_instructions, type ai_chat_context_Context } from "./ai-chat-context.ts";
 import {
 	bash_EXTERNAL_MOUNTS_ROOT,
 	bash_PLUGINS_MOUNT_ROOT,
@@ -37,6 +34,9 @@ type Replacer = (content: string, find: string) => Generator<string, void, unkno
 
 const SINGLE_CANDIDATE_SIMILARITY_THRESHOLD = 0.0;
 const MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD = 0.3;
+
+// 256 bytes of headroom under 64 KiB for JSON escaping and the truncation warning callers append.
+const ai_chat_INSTRUCTIONS_READ_MAX_BYTES = 64 * 1024 - 256;
 
 /**
  * Calculate the similarity between two strings.
@@ -598,13 +598,20 @@ export function ai_chat_tool_create_bash(
 				workspaceName: ctxData.workspaceName,
 				allowDbFilesMkdir: options.allowDbFilesMkdir,
 			});
+
 			const context = ctxData.getWorkspaceContext?.();
 			let instructions = context
-				? await ai_chat_context_read_instructions(ctx, context, result.metadata.observedPaths, 64 * 1024 - 256)
+				? await ai_chat_context_read_instructions(
+						ctx,
+						context,
+						result.metadata.observedPaths,
+						ai_chat_INSTRUCTIONS_READ_MAX_BYTES,
+					)
 				: "";
 			if (context && result.metadata.observedPathsTruncated) {
 				instructions += `${instructions ? "\n\n" : ""}Workspace guidance is incomplete: inspect fewer app paths per Bash call.`;
 			}
+
 			const {
 				observedPaths: _observedPaths,
 				observedPathsTruncated: _observedPathsTruncated,
@@ -689,9 +696,7 @@ export function ai_chat_tool_create_edit_file(
 			- This tool saves a pending update for human review.`,
 
 		inputSchema: z.object({
-			path: z
-				.string()
-				.describe('Absolute path to the file (must start with "/"): an editable text file.'),
+			path: z.string().describe('Absolute path to the file (must start with "/"): an editable text file.'),
 			oldString: z.string().describe("The exact text to replace"),
 			newString: z.string().describe("The replacement text"),
 			replaceAll: z.boolean().optional().default(false),
@@ -738,6 +743,7 @@ export function ai_chat_tool_create_edit_file(
 					`Cannot edit ${normalizedPath}: this file's content type ('${node.contentType ?? "unknown"}') is not editable as text`,
 				);
 			}
+
 			for (let attempt = 0; ; attempt += 1) {
 				const prepared = (await ctx.runAction(internal.files_pending_updates.prepare_file_pending_update_for_agent, {
 					organizationId: ctxData.organizationId,
@@ -751,6 +757,7 @@ export function ai_chat_tool_create_edit_file(
 						{ cause: prepared._nay },
 					);
 				}
+
 				const currentFileContent = await ctx.runAction(
 					internal.files_nodes_content.get_file_last_available_text_content_by_path,
 					{
@@ -810,6 +817,7 @@ export function ai_chat_tool_create_edit_file(
 						cause: written._nay,
 					});
 				}
+
 				const nextPendingUpdate = await ctx.runQuery(internal.files_pending_updates.get_file_pending_update_internal, {
 					organizationId: ctxData.organizationId,
 					workspaceId: ctxData.workspaceId,
@@ -821,7 +829,7 @@ export function ai_chat_tool_create_edit_file(
 				const replacedCount = args.replaceAll ? `Replaced ${matches} occurrences` : "Replaced 1 occurrence";
 				const context = ctxData.getWorkspaceContext?.();
 				const instructions = context
-					? await ai_chat_context_read_instructions(ctx, context, [normalizedPath], 64 * 1024 - 256)
+					? await ai_chat_context_read_instructions(ctx, context, [normalizedPath], ai_chat_INSTRUCTIONS_READ_MAX_BYTES)
 					: "";
 				return {
 					title: normalizedPath,
@@ -940,7 +948,7 @@ export function ai_chat_tool_create_set_file_metadata(
 			const entries = written._yay.entries;
 			const context = ctxData.getWorkspaceContext?.();
 			const instructions = context
-				? await ai_chat_context_read_instructions(ctx, context, [normalizedPath], 64 * 1024 - 256)
+				? await ai_chat_context_read_instructions(ctx, context, [normalizedPath], ai_chat_INSTRUCTIONS_READ_MAX_BYTES)
 				: "";
 			return {
 				title: normalizedPath,
@@ -959,7 +967,8 @@ export function ai_chat_tool_create_set_file_metadata(
 }
 
 type ai_chat_tool_create_set_file_metadata_Tool = ReturnType<typeof ai_chat_tool_create_set_file_metadata>;
-export type ai_chat_tool_create_set_file_metadata_ToolInput = InferToolInput<ai_chat_tool_create_set_file_metadata_Tool>;
+export type ai_chat_tool_create_set_file_metadata_ToolInput =
+	InferToolInput<ai_chat_tool_create_set_file_metadata_Tool>;
 export type ai_chat_tool_create_set_file_metadata_ToolOutput =
 	InferToolOutput<ai_chat_tool_create_set_file_metadata_Tool>;
 // #endregion set file metadata
@@ -1239,7 +1248,9 @@ async function execute_code(
 			headers: { "Content-Type": "application/json", Authorization: `Bearer ${secret}` },
 			signal: abortSignal,
 			body: JSON.stringify({
-				executionId, code: args.code, input: args.input ?? null,
+				executionId,
+				code: args.code,
+				input: args.input ?? null,
 				network: { mode: "public_http" },
 				app: { origin: appOrigin, token: publicApiGrantToken },
 			}),

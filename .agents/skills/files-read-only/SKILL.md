@@ -43,7 +43,6 @@ There is no policy history counter. Every final write checks the current policy.
 not make later work stale once the current writer is allowed. Credential, ACL, scope, and content
 staleness checks still apply. Editable `plugin-name` metadata changes neither policies nor grants.
 
-
 ## Upload fields
 
 On `files_r2_assets`:
@@ -226,7 +225,6 @@ idempotent success. Management stays separate from effective content write acces
   Compaction retries five times with the existing delay, then shows the final refusal on the sixth.
 - Pending proposals remain visible through policy changes. Save, Accept, and rebase can resume when
   every affected node allows the writer. Whole-proposal Discard stays available.
-
 
 # Accepted Upload Completion
 

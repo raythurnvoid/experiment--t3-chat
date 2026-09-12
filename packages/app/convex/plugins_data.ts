@@ -5240,7 +5240,7 @@ export const watch_my_scopes = query({
 
 // #region user reads
 
-/**
+/*
  * Member reads from a plugin frame. Both frame kinds reach these doors, the same way they reach the
  * write doors above: a plugin page and a file view.
  *

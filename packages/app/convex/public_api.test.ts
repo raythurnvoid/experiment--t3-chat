@@ -553,6 +553,7 @@ describe("service-bound API credentials", () => {
 		}
 		const headers = auth_headers(key._yay.credential);
 		const writePolicy = { mode: "writer", writer: { kind: "service_account", serviceAccountId } };
+
 		const policy = await t.fetch("/api/v1/files/write-policy/set", {
 			method: "POST",
 			headers,
@@ -574,6 +575,7 @@ describe("service-bound API credentials", () => {
 		});
 		expect(read.status).toBe(200);
 		expect(await read.json()).toMatchObject({ content: expect.stringContaining("Second run") });
+
 		const personal = await asUser.mutation(api.public_api.api_credential_create, {
 			membershipId: db.membershipId,
 			serviceAccountId: null,
@@ -589,6 +591,7 @@ describe("service-bound API credentials", () => {
 			body: JSON.stringify({ path: "/logs/run.md", content: "Human overwrite" }),
 		});
 		expect(humanWrite.status).toBe(409);
+
 		vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000);
 		const writeOnly = await asUser.mutation(api.public_api.api_credential_create, {
 			membershipId: db.membershipId,
@@ -605,6 +608,7 @@ describe("service-bound API credentials", () => {
 			body: JSON.stringify({ nodeId, writePolicy: null }),
 		});
 		expect(refusedPolicy.status).toBe(403);
+
 		expect(
 			(
 				await t.fetch("/api/v1/files/write-policy/set", {
@@ -620,6 +624,7 @@ describe("service-bound API credentials", () => {
 			body: JSON.stringify({ path: "/logs/run.md", content: "Blocked overwrite" }),
 		});
 		expect(blocked.status).toBe(409);
+
 		const stored = await t.run(async (ctx) => ({
 			node: await ctx.db.get("files_nodes", nodeId),
 			installations: await ctx.db.query("plugins_workspace_installations").collect(),
@@ -895,10 +900,14 @@ describe("mark_credential_used", () => {
 		expect(await t.run(async (ctx) => await ctx.db.get("api_credentials", credentialId))).toEqual(firstUse);
 
 		await t.mutation(internal.public_api.mark_credential_used, { credentialId, now: now + 60_000 });
-		expect((await t.run(async (ctx) => await ctx.db.get("api_credentials", credentialId)))?.lastUsedAt).toBe(now + 60_000);
+		expect((await t.run(async (ctx) => await ctx.db.get("api_credentials", credentialId)))?.lastUsedAt).toBe(
+			now + 60_000,
+		);
 
 		await t.mutation(internal.public_api.mark_credential_used, { credentialId, now: now + 30_000 });
-		expect((await t.run(async (ctx) => await ctx.db.get("api_credentials", credentialId)))?.lastUsedAt).toBe(now + 60_000);
+		expect((await t.run(async (ctx) => await ctx.db.get("api_credentials", credentialId)))?.lastUsedAt).toBe(
+			now + 60_000,
+		);
 	});
 });
 
@@ -1659,12 +1668,22 @@ describe("public files API", () => {
 			expect(response.status, `${route}: ${await response.text()}`).toBe(200);
 		}
 		const paths = await t.run(async (ctx) => (await ctx.db.query("files_nodes").collect()).map((node) => node.path));
-		expect(paths).toEqual(expect.arrayContaining([
-			"/.agents/AGENTS.md", "/.agents/skills/one/SKILL.md", "/.agents/README.md", "/uploads/AGENTS.md",
-			"/single/README.md", "/batch/README.md", "/empty/README.md", "/uploads/README.md",
-		]));
+		expect(paths).toEqual(
+			expect.arrayContaining([
+				"/.agents/AGENTS.md",
+				"/.agents/skills/one/SKILL.md",
+				"/.agents/README.md",
+				"/uploads/AGENTS.md",
+				"/single/README.md",
+				"/batch/README.md",
+				"/empty/README.md",
+				"/uploads/README.md",
+			]),
+		);
 		const invalid = await t.fetch("/api/v1/files/write", {
-			method: "POST", headers, body: JSON.stringify({ path: "/Bad Folder/agents.md", content: "text" }),
+			method: "POST",
+			headers,
+			body: JSON.stringify({ path: "/Bad Folder/agents.md", content: "text" }),
 		});
 		expect(invalid.status).toBe(400);
 	});
@@ -1683,7 +1702,10 @@ describe("public files API", () => {
 			const db = await seed_signed_in_membership({ t, clerkUserId: `clerk-literal-${door}` });
 			const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
 			const credential = await asUser.mutation(api.public_api.api_credential_create, {
-				serviceAccountId: null, membershipId: db.membershipId, name: "Literal writer", scopes: ["files:read", "files:write"],
+				serviceAccountId: null,
+				membershipId: db.membershipId,
+				name: "Literal writer",
+				scopes: ["files:read", "files:write"],
 			});
 			expect(credential._nay).toBeUndefined();
 			const headers = auth_headers(credential._yay!.credential);
@@ -1695,19 +1717,40 @@ describe("public files API", () => {
 				? await seed_markdown_file({ t, ...db, path: canonicalPath, committedMarkdown: "Canonical text\n" })
 				: null;
 			const content = "Updated legacy text\n";
-			const body = door === "touch" ? { paths: [literalPath] } : door === "write-many" ? { files: [{ path: literalPath, content }] } : { path: literalPath, content };
+			const body =
+				door === "touch"
+					? { paths: [literalPath] }
+					: door === "write-many"
+						? { files: [{ path: literalPath, content }] }
+						: { path: literalPath, content };
 			const response = await t.fetch(`/api/v1/files/${door}`, { method: "POST", headers, body: JSON.stringify(body) });
 			expect(response.status).toBe(200);
 			const result: unknown = await response.json();
 			const expected = { path: literalPath, nodeId: literalId };
-			expect(result).toMatchObject(door === "touch" ? { files: [{ ...expected, created: false }] } : door === "write-many" ? { written: [expected], errors: [] } : expected);
-			const read = await t.fetch("/api/v1/files/read", { method: "POST", headers, body: JSON.stringify({ path: literalPath }) });
+			expect(result).toMatchObject(
+				door === "touch"
+					? { files: [{ ...expected, created: false }] }
+					: door === "write-many"
+						? { written: [expected], errors: [] }
+						: expected,
+			);
+			const read = await t.fetch("/api/v1/files/read", {
+				method: "POST",
+				headers,
+				body: JSON.stringify({ path: literalPath }),
+			});
 			expect(await read.json()).toMatchObject({ content: door === "touch" ? "Legacy text\n" : content });
-			const nodes = await t.run(async (ctx) => (await ctx.db.query("files_nodes").collect()).filter((node) => node.archiveOperationId === null));
+			const nodes = await t.run(async (ctx) =>
+				(await ctx.db.query("files_nodes").collect()).filter((node) => node.archiveOperationId === null),
+			);
 			expect(nodes.find((node) => node.path === literalPath)?._id).toBe(literalId);
 			expect(nodes.find((node) => node.path === canonicalPath)?._id ?? null).toBe(canonicalId);
 			if (canonicalId) {
-				const readCanonical = await t.fetch("/api/v1/files/read", { method: "POST", headers, body: JSON.stringify({ path: canonicalPath }) });
+				const readCanonical = await t.fetch("/api/v1/files/read", {
+					method: "POST",
+					headers,
+					body: JSON.stringify({ path: canonicalPath }),
+				});
 				expect(await readCanonical.json()).toMatchObject({ content: "Canonical text\n" });
 			}
 		}
@@ -1761,8 +1804,14 @@ describe("public files API", () => {
 			body: JSON.stringify({ fileNodeIds: [writtenBody.nodeId], expiresInSeconds: 60 }),
 		});
 		expect(download.status).toBe(200);
-		const downloadBody = (await download.json()) as { items: Array<{ url: string; fileNodeId: string; name: string; contentType: string }> };
-		expect(downloadBody.items[0]).toMatchObject({ fileNodeId: writtenBody.nodeId, name: "report.md", contentType: "text/markdown;charset=utf-8" });
+		const downloadBody = (await download.json()) as {
+			items: Array<{ url: string; fileNodeId: string; name: string; contentType: string }>;
+		};
+		expect(downloadBody.items[0]).toMatchObject({
+			fileNodeId: writtenBody.nodeId,
+			name: "report.md",
+			contentType: "text/markdown;charset=utf-8",
+		});
 		const downloaded = await fetch(downloadBody.items[0]!.url);
 		expect(await downloaded.text()).toBe(normalizedContent);
 
@@ -3742,42 +3791,56 @@ describe("files upload-urls", () => {
 		expect(quota).toBeNull();
 	});
 
-	test.each([["readme", "README.md"], ["agents.md", "AGENTS.md"]])("replaces an existing literal %s upload without changing its canonical sibling", async (literalName, canonicalName) => {
-		for (const withCanonicalSibling of [false, true]) {
-			const t = test_convex();
-			install_r2_object_reads();
-			const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-upload-literal" });
-			const { credential } = await seed_write_credential({ t, db, clerkSubject: "upload-literal" });
-			const literalPath = `/${literalName}`;
-			const canonicalPath = `/${canonicalName}`;
-			// These saved names were accepted before conventional casing was added.
-			const literalId = await seed_markdown_file({ t, ...db, path: literalPath, committedMarkdown: "Legacy text\n" });
-			const canonicalId = withCanonicalSibling
-				? await seed_markdown_file({ t, ...db, path: canonicalPath, committedMarkdown: "Canonical text\n" })
-				: null;
-			const canonicalBefore = canonicalId ? await t.run((ctx) => ctx.db.get("files_nodes", canonicalId)) : null;
-			const files = [{ path: literalPath, contentType: "text/markdown", size: 1 }];
-			const response = await t.fetch("/api/v1/files/upload-urls", {
-				method: "POST", headers: auth_headers(credential),
-				body: JSON.stringify({ files: [...files, { path: "/fresh/readme", contentType: "text/markdown", size: 1 }], overwrite: "replace" }),
-			});
-			expect(response.status).toBe(200);
-			expect(await response.json()).toMatchObject({ files: [{ path: literalPath }, { path: "/fresh/README.md" }] });
-			await t.run(async (ctx) => {
-				const nodes = (await ctx.db.query("files_nodes").collect()).filter((node) => node.archiveOperationId === null);
-				const replacement = nodes.find((node) => node.path === literalPath);
-				expect(replacement).toMatchObject({ name: literalName });
-				expect(replacement?._id).not.toBe(literalId);
-				expect((await ctx.db.get("files_nodes", literalId))?.archiveOperationId).not.toBeNull();
-				expect(nodes.find((node) => node.path === canonicalPath) ?? null).toEqual(canonicalBefore);
-			});
-			const refused = await t.fetch("/api/v1/files/upload-urls", {
-				method: "POST", headers: auth_headers(credential), body: JSON.stringify({ files, overwrite: "fail" }),
-			});
-			expect(refused.status).toBe(409);
-			expect(await refused.json()).toEqual({ message: "A file already exists at this path", path: literalPath });
-		}
-	});
+	test.each([
+		["readme", "README.md"],
+		["agents.md", "AGENTS.md"],
+	])(
+		"replaces an existing literal %s upload without changing its canonical sibling",
+		async (literalName, canonicalName) => {
+			for (const withCanonicalSibling of [false, true]) {
+				const t = test_convex();
+				install_r2_object_reads();
+				const db = await seed_signed_in_membership({ t, clerkUserId: "clerk-upload-literal" });
+				const { credential } = await seed_write_credential({ t, db, clerkSubject: "upload-literal" });
+				const literalPath = `/${literalName}`;
+				const canonicalPath = `/${canonicalName}`;
+				// These saved names were accepted before conventional casing was added.
+				const literalId = await seed_markdown_file({ t, ...db, path: literalPath, committedMarkdown: "Legacy text\n" });
+				const canonicalId = withCanonicalSibling
+					? await seed_markdown_file({ t, ...db, path: canonicalPath, committedMarkdown: "Canonical text\n" })
+					: null;
+				const canonicalBefore = canonicalId ? await t.run((ctx) => ctx.db.get("files_nodes", canonicalId)) : null;
+				const files = [{ path: literalPath, contentType: "text/markdown", size: 1 }];
+				const response = await t.fetch("/api/v1/files/upload-urls", {
+					method: "POST",
+					headers: auth_headers(credential),
+					body: JSON.stringify({
+						files: [...files, { path: "/fresh/readme", contentType: "text/markdown", size: 1 }],
+						overwrite: "replace",
+					}),
+				});
+				expect(response.status).toBe(200);
+				expect(await response.json()).toMatchObject({ files: [{ path: literalPath }, { path: "/fresh/README.md" }] });
+				await t.run(async (ctx) => {
+					const nodes = (await ctx.db.query("files_nodes").collect()).filter(
+						(node) => node.archiveOperationId === null,
+					);
+					const replacement = nodes.find((node) => node.path === literalPath);
+					expect(replacement).toMatchObject({ name: literalName });
+					expect(replacement?._id).not.toBe(literalId);
+					expect((await ctx.db.get("files_nodes", literalId))?.archiveOperationId).not.toBeNull();
+					expect(nodes.find((node) => node.path === canonicalPath) ?? null).toEqual(canonicalBefore);
+				});
+				const refused = await t.fetch("/api/v1/files/upload-urls", {
+					method: "POST",
+					headers: auth_headers(credential),
+					body: JSON.stringify({ files, overwrite: "fail" }),
+				});
+				expect(refused.status).toBe(409);
+				expect(await refused.json()).toEqual({ message: "A file already exists at this path", path: literalPath });
+			}
+		},
+	);
 
 	test("rejects an invalid content type before writing any upload files or assets", async () => {
 		const t = test_convex();
@@ -5153,33 +5216,70 @@ describe("files read-only locks", () => {
 		return ((await response.json()) as { content: string }).content;
 	}
 
-	test.each(["write", "write-many", "touch", "upload-urls"] as const)("%s refuses a hidden literal target instead of changing its canonical sibling", async (door) => {
-		const t = test_convex();
-		install_r2_object_reads();
-		const writer = await seed_locks_member_writer({ t, clerkUserId: `clerk-hidden-literal-${door}` });
-		const literalPath = door === "upload-urls" ? "/readme" : "/agents.md";
-		const canonicalPath = door === "upload-urls" ? "/README.md" : "/AGENTS.md";
-		const literalId = await seed_markdown_file({ t, ...writer.db, path: literalPath, committedMarkdown: "Hidden legacy text\n" });
-		const canonicalId = await seed_markdown_file({ t, ...writer.db, path: canonicalPath, committedMarkdown: "Visible canonical text\n" });
-		await t.run((ctx) => ctx.db.patch("files_nodes", literalId, { restrictedScopeNodeId: literalId }));
-		expect(await t.query(internal.files_nodes.get_by_path, {
-			organizationId: writer.db.organizationId, workspaceId: writer.db.workspaceId,
-			visibilityUserId: writer.userId, path: literalPath,
-		})).toBeNull();
-		const body = door === "upload-urls" ? { files: [{ path: literalPath, contentType: "text/markdown", size: 1 }], overwrite: "replace" } : door === "touch" ? { paths: [literalPath] } : door === "write-many" ? { files: [{ path: literalPath, content: "Changed\n" }] } : { path: literalPath, content: "Changed\n" };
-		const refused = await t.fetch(`/api/v1/files/${door}`, { method: "POST", headers: auth_headers(writer.credential), body: JSON.stringify(body) });
-		if (door === "write-many") {
-			expect(refused.status).toBe(200);
-			expect(await refused.json()).toMatchObject({ written: [], errors: [{ path: literalPath, errorCode: "permission_denied" }] });
-		} else expect(refused.status).toBe(403);
-		for (const [path, nodeId, content] of [[literalPath, literalId, "Hidden legacy text\n"], [canonicalPath, canonicalId, "Visible canonical text\n"]] as const) {
-			expect((await find_active_node({ t, db: writer.db, path }))?._id).toBe(nodeId);
-			const read = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
-				organizationId: writer.db.organizationId, workspaceId: writer.db.workspaceId, userId: writer.db.userId, path,
+	test.each(["write", "write-many", "touch", "upload-urls"] as const)(
+		"%s refuses a hidden literal target instead of changing its canonical sibling",
+		async (door) => {
+			const t = test_convex();
+			install_r2_object_reads();
+			const writer = await seed_locks_member_writer({ t, clerkUserId: `clerk-hidden-literal-${door}` });
+			const literalPath = door === "upload-urls" ? "/readme" : "/agents.md";
+			const canonicalPath = door === "upload-urls" ? "/README.md" : "/AGENTS.md";
+			const literalId = await seed_markdown_file({
+				t,
+				...writer.db,
+				path: literalPath,
+				committedMarkdown: "Hidden legacy text\n",
 			});
-			expect(read?.content).toBe(content);
-		}
-	});
+			const canonicalId = await seed_markdown_file({
+				t,
+				...writer.db,
+				path: canonicalPath,
+				committedMarkdown: "Visible canonical text\n",
+			});
+			await t.run((ctx) => ctx.db.patch("files_nodes", literalId, { restrictedScopeNodeId: literalId }));
+			expect(
+				await t.query(internal.files_nodes.get_by_path, {
+					organizationId: writer.db.organizationId,
+					workspaceId: writer.db.workspaceId,
+					visibilityUserId: writer.userId,
+					path: literalPath,
+				}),
+			).toBeNull();
+			const body =
+				door === "upload-urls"
+					? { files: [{ path: literalPath, contentType: "text/markdown", size: 1 }], overwrite: "replace" }
+					: door === "touch"
+						? { paths: [literalPath] }
+						: door === "write-many"
+							? { files: [{ path: literalPath, content: "Changed\n" }] }
+							: { path: literalPath, content: "Changed\n" };
+			const refused = await t.fetch(`/api/v1/files/${door}`, {
+				method: "POST",
+				headers: auth_headers(writer.credential),
+				body: JSON.stringify(body),
+			});
+			if (door === "write-many") {
+				expect(refused.status).toBe(200);
+				expect(await refused.json()).toMatchObject({
+					written: [],
+					errors: [{ path: literalPath, errorCode: "permission_denied" }],
+				});
+			} else expect(refused.status).toBe(403);
+			for (const [path, nodeId, content] of [
+				[literalPath, literalId, "Hidden legacy text\n"],
+				[canonicalPath, canonicalId, "Visible canonical text\n"],
+			] as const) {
+				expect((await find_active_node({ t, db: writer.db, path }))?._id).toBe(nodeId);
+				const read = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+					organizationId: writer.db.organizationId,
+					workspaceId: writer.db.workspaceId,
+					userId: writer.db.userId,
+					path,
+				});
+				expect(read?.content).toBe(content);
+			}
+		},
+	);
 
 	test("a locked file answers the public write with a 409 conflict while the internal name stays read_only", async () => {
 		const t = test_convex();
@@ -7019,6 +7119,7 @@ describe("service file writes", () => {
 					})
 				)._nay,
 			).toBeUndefined();
+
 			if (refusal === "missing consent") {
 				await t.run((ctx) =>
 					ctx.db.patch("plugins_workspace_installations", service.installationId, {
@@ -7064,6 +7165,7 @@ describe("service file writes", () => {
 					)._nay,
 				).toBeUndefined();
 			}
+
 			const beforeNode = await t.run((ctx) => ctx.db.get("files_nodes", upload._yay.nodeId));
 			const response = await service_write({
 				t,

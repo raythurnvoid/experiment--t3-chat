@@ -7,7 +7,6 @@ import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
 
-
 // The mention popup reads the workspace tree through a Convex subscription;
 // serve a small fixed tree instead of a live client. Tests can override the
 // mock per test (for example to render the loading state).

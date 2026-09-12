@@ -1533,8 +1533,8 @@ export const remove_user_from_organization = mutation({
 			// A per-member plugin storage row names the member, so it must not outlive their membership.
 			// The documents it counted stay: they belong to the workspace, and the counters they fed are
 			// installation-wide. A later credit that names this member finds no row and does nothing.
-			pluginDataMemberUsagePromise.then((rows) =>
-				Promise.all(rows.flat().map((row) => ctx.db.delete("plugins_data_member_usage", row._id))),
+			pluginDataMemberUsagePromise.then((usageDocs) =>
+				Promise.all(usageDocs.flat().map((usageDoc) => ctx.db.delete("plugins_data_member_usage", usageDoc._id))),
 			),
 			// Delete these quota docs so a later invite creates counters with `usedCount: 0`.
 			apiCredentialQuotasPromise.then((quotaDocs) =>

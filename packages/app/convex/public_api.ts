@@ -1891,7 +1891,8 @@ export const mark_credential_used = internalMutation({
 		// Frequent timestamp writes make concurrent file writes retry on the same credential doc.
 		if (
 			credential &&
-			(credential.lastUsedAt === null || args.now - credential.lastUsedAt >= API_CREDENTIAL_LAST_USED_UPDATE_INTERVAL_MS)
+			(credential.lastUsedAt === null ||
+				args.now - credential.lastUsedAt >= API_CREDENTIAL_LAST_USED_UPDATE_INTERVAL_MS)
 		) {
 			await ctx.db.patch("api_credentials", credential._id, { lastUsedAt: args.now });
 		}
@@ -5380,6 +5381,7 @@ export async function public_api_http_read_many(ctx: ActionCtx, request: Request
 }
 
 const get_file_write_policy_body_validator = z.object({ nodeId: z.string() });
+
 export type public_api_http_get_file_write_policy_Body = z.infer<typeof get_file_write_policy_body_validator>;
 
 export async function public_api_http_get_file_write_policy(
@@ -5433,6 +5435,7 @@ const set_file_write_policy_body_validator = z.object({
 		}),
 	]),
 });
+
 export type public_api_http_set_file_write_policy_Body = z.infer<typeof set_file_write_policy_body_validator>;
 
 export async function public_api_http_set_file_write_policy(

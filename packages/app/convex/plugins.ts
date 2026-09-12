@@ -760,6 +760,7 @@ const REVIEW_VERDICT_SCHEMA = z.object({
 		.max(32),
 });
 const REVIEW_VERDICT_JSON_SCHEMA = zodSchema(REVIEW_VERDICT_SCHEMA).jsonSchema;
+
 const REVIEW_COMPACT_SCHEMA = z.object({ summary: z.string().trim().min(1).max(12_000) });
 const REVIEW_COMPACT_JSON_SCHEMA = zodSchema(REVIEW_COMPACT_SCHEMA).jsonSchema;
 const REVIEW_COMPACT_DESCRIPTION =
@@ -1861,6 +1862,7 @@ export const run_version_review = internalAction({
 						completedReview.failure = "Plugin review did not finish within its time limit; try again";
 						throw new Error(completedReview.failure);
 					}
+
 					const history = pruneMessages({ messages: messages.slice(historyStart), reasoning: "all" }).map((message) => {
 						if (message.role !== "assistant" || typeof message.content === "string") return message;
 						return {
@@ -1869,6 +1871,7 @@ export const run_version_review = internalAction({
 							content: message.content.map((part) => ({ ...part, providerOptions: undefined })),
 						};
 					});
+
 					const sentinel = make_review_sentinel([
 						facts,
 						inventory,
@@ -1881,6 +1884,7 @@ export const run_version_review = internalAction({
 						completedReview.failure = "Plugin review could not create a safe prompt boundary; try again";
 						throw new Error(completedReview.failure);
 					}
+
 					const prompt = review_agent_prompt({
 						sentinel,
 						facts,
@@ -1890,6 +1894,7 @@ export const run_version_review = internalAction({
 						diff: diffText,
 					});
 					const conversation: ModelMessage[] = [{ role: "user", content: prompt.prompt }, ...history];
+
 					let inputTokens: number;
 					try {
 						inputTokens = await plugins_ai_review.count_input_tokens({
@@ -1905,6 +1910,7 @@ export const run_version_review = internalAction({
 						completedReview.failure = `Plugin review input exceeds the ${REVIEW_INPUT_MAX_TOKENS}-token limit`;
 						throw new Error(completedReview.failure);
 					}
+
 					const hasBudget = await plugins_ai_review.wait_for_token_budget({
 						windows: tokenRateLimits,
 						requestTokens: Math.max(inputTokens, REVIEW_MAX_OUTPUT_TOKENS),
@@ -1914,6 +1920,7 @@ export const run_version_review = internalAction({
 						completedReview.failure = "Plugin review did not finish within its time limit; try again";
 						throw new Error(completedReview.failure);
 					}
+
 					return {
 						system: prompt.system,
 						messages: conversation,

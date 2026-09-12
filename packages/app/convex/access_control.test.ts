@@ -726,6 +726,7 @@ describe("access_control_db_has_permission service accounts", () => {
 		const serviceAccountId = created._yay!.serviceAccountId;
 		const nodeId = await access_control_test_seed_open_folder(fixture, { name: "exact" });
 		const otherId = await access_control_test_seed_open_folder(fixture, { name: "other" });
+
 		await t.run(async (ctx) => {
 			const node = (await ctx.db.get("files_nodes", nodeId))!;
 			const other = (await ctx.db.get("files_nodes", otherId))!;
@@ -760,12 +761,14 @@ describe("access_control_db_has_permission service accounts", () => {
 					permission: "content.write",
 				}),
 			).toBe(false);
+
 			await access_control_db_set_service_account_grant(ctx, {
 				...common,
 				serviceAccountId,
 				resource: { kind: "file", nodeId },
 				level: "read",
 			});
+
 			expect(await check(node)).toBe(true);
 			expect(await check(node, "content.write")).toBe(false);
 			expect(await check(other)).toBe(false);
@@ -779,13 +782,16 @@ describe("access_control_db_has_permission service accounts", () => {
 					})
 				).map((item) => item._id),
 			).toEqual([nodeId]);
+
 			await access_control_db_set_service_account_grant(ctx, {
 				...common,
 				serviceAccountId,
 				resource: { kind: "workspace" },
 				level: "write",
 			});
+
 			expect(await check(other, "content.write")).toBe(true);
+
 			const assignments = await ctx.db
 				.query("access_control_role_assignments")
 				.withIndex("by_organization_workspace_user", (q) =>
@@ -798,6 +804,7 @@ describe("access_control_db_has_permission service accounts", () => {
 			for (const assignment of assignments) {
 				await ctx.db.delete("access_control_role_assignments", assignment._id);
 			}
+
 			for (const permission of ["content.read", "content.write"] as const) {
 				await ctx.db.insert("access_control_permission_grants", {
 					organizationId: fixture.organizationId,
@@ -829,9 +836,11 @@ describe("access_control_db_has_permission service accounts", () => {
 					permission: "content.write",
 				}),
 			).toBe(true);
+
 			await ctx.db.patch("files_nodes", otherId, { restrictedScopeNodeId: otherId });
 			const restricted = (await ctx.db.get("files_nodes", otherId))!;
 			expect(await check(restricted)).toBe(false);
+
 			await access_control_db_set_service_account_grant(ctx, {
 				...common,
 				serviceAccountId,
@@ -857,7 +866,9 @@ describe("access_control_db_has_permission service accounts", () => {
 					permission: "content.write",
 				}),
 			).toBe(false);
+
 			await ctx.db.patch("access_control_service_accounts", serviceAccountId, { revokedAt: 1 });
+
 			expect(await check(node)).toBe(false);
 			expect(await check(restricted)).toBe(false);
 		});
@@ -894,19 +905,24 @@ describe("set_node_share_grant service accounts", () => {
 			});
 			return await ctx.db.get("plugins_file_access_bindings", id);
 		});
+
 		const args = {
 			membershipId: fixture.ownerMembershipId,
 			nodeId,
 			principal: { kind: "service_account" as const, serviceAccountId },
 		};
+
 		await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, { ...args, level: "write" });
 		expect(await t.run(async (ctx) => await ctx.db.get("plugins_file_access_bindings", binding!._id))).toEqual(binding);
+
 		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
 		await fixture.asOwner.mutation(api.files_sharing.remove_node_share_grant, args);
 		expect(await t.run(async (ctx) => await ctx.db.get("plugins_file_access_bindings", binding!._id))).toEqual(binding);
+
 		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
 		await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, { ...args, level: "write" });
 		const grants = await t.run(async (ctx) => await ctx.db.query("access_control_permission_grants").collect());
+
 		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
 		expect(
 			(
@@ -939,6 +955,7 @@ describe("set_node_share_grant service accounts", () => {
 			nodeId,
 			principal: { kind: "service_account" as const, serviceAccountId },
 		};
+
 		expect(
 			(await fixture.asOwner.mutation(api.files_sharing.set_node_share_grant, { ...args, level: "manage" }))._nay,
 		).toBeUndefined();
@@ -952,10 +969,12 @@ describe("set_node_share_grant service accounts", () => {
 			canShareWithServiceAccounts: true,
 			serviceGrantableLevels: ["read", "write", "manage"],
 		});
+
 		await t.run(async (ctx) => {
 			await ctx.db.patch("files_nodes", scopeId, { restrictedScopeNodeId: scopeId });
 			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: scopeId, parentId: scopeId });
 		});
+
 		expect(
 			(
 				await fixture.asOwner.query(api.access_control.get_service_account_grant_management_state, {
@@ -965,6 +984,7 @@ describe("set_node_share_grant service accounts", () => {
 				})
 			)?.resource,
 		).toEqual({ kind: "file", nodeId: scopeId });
+
 		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
 		expect((await fixture.asOwner.mutation(api.files_sharing.remove_node_share_grant, args))._nay).toBeUndefined();
 		expect(

@@ -30,6 +30,7 @@ const FilesTreeProvider = Object.assign(
 			nodes: typeof results;
 		} | null>(null);
 		const clearCompleteTree = consumerCount === 0 || completeTree?.membershipId !== membershipId;
+
 		if (status === "Exhausted" && completeTree?.nodes !== results) {
 			setCompleteTree({ membershipId, nodes: results });
 		} else if (clearCompleteTree && completeTree !== null) {

@@ -95,7 +95,7 @@ Before the first attempt at a new interaction type (upload, download, screenshot
 
 - **`setInputFiles` works under a Windows relay — try it first for uploads.** Verified 2026-08-08: `locator(".FilesSidebar input[type=file]:not([webkitdirectory])").setInputFiles("C:/absolute/windows/path")` uploaded files through the sidebar's hidden input, no dialog, no menu click — select the target folder row first, since the handler uploads into the selected folder. That input has no `multiple` attribute, so `setInputFiles([a, b])` fails with `Non-multiple file input can only accept single file`: pass one path per call and wait ~2.5 s for the row before the next (10 files this way on 2026-09-05). The 2026-08-02 finding that this is impossible (`Protocol error (DOM.setFileInputFiles): Not allowed`, plus WSL path ENOENTs) was recorded while the relay ran in WSL; do not treat it as a property of extension mode. If `setInputFiles` does fail, check `session list` for a WSL relay before switching recipes, and only then fall back to the DataTransfer route: construct `File` objects in `page.evaluate`, `Object.defineProperty(file, "path", { value: "folder/name.ext" })` (file-selector's `toFileWithPath` keeps a pre-set `path`), put them in a `DataTransfer`, assign `input.files = dt.files`, and dispatch a bubbling `change` event on the real input. Verified 2026-08-02 on the Files sidebar folder import.
 - A sonner toast action button sitting at the bottom edge of the viewport (progress toasts on `/files`) can have its center below the viewport bottom; `locator.click()` then reports the click blocked by `.AiChatThread-composer` even though the toaster's z-index (999999999) is on top and a real user clicks it fine. Click the visible part instead: `locator("[data-sonner-toast] button[data-action]").click({ position: { x: 26, y: 6 } })`. Verified 2026-08-02.
-- **A tab the app opens with `window.open` never appears in `context.pages()`.** The extension only sees tabs it is attached to, so a `window.open(url, "_blank", "noopener,noreferrer")` (the billing `Select plan` button does exactly this) lands a real tab in the user's Edge that your run cannot read, and the click looks like it did nothing: same URL, no new page, no console log, no snapshot change. Do not retry the click — you are just piling up tabs the user has to close. Get the URL yourself and open it in a page the run owns: `await state.page.evaluate(async () => { const m = await import("/src/lib/app-convex-client.ts"); ... })` reaches any app module through the Vite dev server, so you can call the same Convex action the button calls and then `context.newPage()` + `goto` it. Read the button's source first and pass every argument it passes — the billing checkout button sends `subscriptionId` on a `Free -> paid` upgrade, and omitting it makes Polar create a *second* active subscription, which the app treats as an impossible state. Verified 2026-08-21.
+- **A tab the app opens with `window.open` never appears in `context.pages()`.** The extension only sees tabs it is attached to, so a `window.open(url, "_blank", "noopener,noreferrer")` (the billing `Select plan` button does exactly this) lands a real tab in the user's Edge that your run cannot read, and the click looks like it did nothing: same URL, no new page, no console log, no snapshot change. Do not retry the click — you are just piling up tabs the user has to close. Get the URL yourself and open it in a page the run owns: `await state.page.evaluate(async () => { const m = await import("/src/lib/app-convex-client.ts"); ... })` reaches any app module through the Vite dev server, so you can call the same Convex action the button calls and then `context.newPage()` + `goto` it. Read the button's source first and pass every argument it passes — the billing checkout button sends `subscriptionId` on a `Free -> paid` upgrade, and omitting it makes Polar create a _second_ active subscription, which the app treats as an impossible state. Verified 2026-08-21.
 - **Stripe's payment iframe answers nothing through the relay.** On the Polar checkout page, `frameLocator('iframe[title="Secure payment input frame"]').locator("input")`, `frame.evaluate(...)`, the iframe element screenshot, and even a full-page `screenshot()` of that tab all hang until the CLI timeout with no error. `snapshot()` works but shows the frame as one opaque `iframepresentational` node. Type blind instead: read the iframe's `boundingBox()`, `mouse.click(box.x + 200, box.y + 30)` for the card number field, then `keyboard.type` the number, the expiry, and the CVC in three calls — Stripe advances between its own fields. Verify by submitting, not by reading the frame. Verified 2026-08-21 with the sandbox card `4242 4242 4242 4242`, `12/30`, `123`.
 - A `page.evaluate` fired while a previous call's fire-and-forget `goto`/`reload` is still in flight dies with `Execution context was destroyed, most likely because of a navigation`, and its DOM side effects may still have landed. Poll for the route's content (non-zero `[role="treeitem"]` count on `/files`) before the next evaluate, and after this error re-read state instead of blindly re-running a dispatch.
 - Keep editor-transition waits in the Playwriter runner, outside `page.evaluate`. Awaiting an 800 ms page-context timer killed the tab twice during diff checks. Use short runner-side waits between separate reads instead, for example `await new Promise((resolve) => setTimeout(resolve, 250))`. Re-read state after a lost evaluate result; a save or discard may already have landed.
@@ -224,7 +224,7 @@ Hit 2026-08-24 while swapping a plugin bundle. Two separate failures, one recove
   repeating a write: both folder replacements had completed despite the lost session.
 - **`page.route` itself fails once the plugin OOPIF is attached**, with
   `Protocol error (Network.setCacheDisabled): No tab found for method Network.setCacheDisabled
-  sessionId: <hex>`. Playwright turns the cache off on every attached session and the extension
+sessionId: <hex>`. Playwright turns the cache off on every attached session and the extension
   relay cannot address the separate plugin target. **Navigating away does not fix it** — the
   connection still tracks the dead session and the next `page.route` fails with the same session
   id. Only `playwriter session reset <id>` clears it. So the working order is: reset, reinstall the
@@ -275,11 +275,14 @@ tree showed the swap had never happened.
 So make the route handler record what it was asked for, and read that back after every load:
 
 ```js
-state.seen = []
-await state.page.route((url) => url.pathname.startsWith(prefix), async (route) => {
-	state.seen.push(new URL(route.request().url()).pathname.slice(prefix.length))
-	// …
-})
+state.seen = [];
+await state.page.route(
+	(url) => url.pathname.startsWith(prefix),
+	async (route) => {
+		state.seen.push(new URL(route.request().url()).pathname.slice(prefix.length));
+		// …
+	},
+);
 ```
 
 `state.seen` holding one entry means the subresources went around you. And prove the swap itself
@@ -296,9 +299,9 @@ Compute the script's own `sha256-` and add just that, copying the rest of the po
 the published response:
 
 ```js
-const scriptInner = "\n" + script + "\n"
-const hash = crypto.createHash("sha256").update(scriptInner, "utf8").digest("base64")
-const csp = "default-src 'none'; script-src 'self' 'sha256-" + hash + "'; …"
+const scriptInner = "\n" + script + "\n";
+const hash = crypto.createHash("sha256").update(scriptInner, "utf8").digest("base64");
+const csp = "default-src 'none'; script-src 'self' 'sha256-" + hash + "'; …";
 ```
 
 **Hash the exact bytes that go between the tags.** CSP hashes the element's text content, so
@@ -326,7 +329,7 @@ Two things made it visible, and both are worth keeping:
   built. It matched an older variant exactly, which is what turned a vague suspicion into a fact:
 
   ```js
-  await frame.evaluate(() => performance.getEntriesByType("navigation")[0].encodedBodySize)
+  await frame.evaluate(() => performance.getEntriesByType("navigation")[0].encodedBodySize);
   ```
 
 - **Tag the served HTML.** `swap-plugin-bundle-v3.js` now writes
@@ -380,10 +383,10 @@ Chitchat's message rows keep their actions at `opacity: 0; pointer-events: none`
 it is not, and hit-testing it will not explain it. Hover the row first, wait a moment, then click:
 
 ```js
-const row = fl.locator("[role=log] li").filter({ hasText: "second message" })
-await row.hover()
-await state.page.waitForTimeout(400)
-await row.getByRole("button", { name: "Add reaction" }).click({ timeout: 15000 })
+const row = fl.locator("[role=log] li").filter({ hasText: "second message" });
+await row.hover();
+await state.page.waitForTimeout(400);
+await row.getByRole("button", { name: "Add reaction" }).click({ timeout: 15000 });
 ```
 
 Before filing a finding like this, check the owning stylesheet for a hover-revealed actions block.
@@ -423,7 +426,7 @@ disk — `readFileSync` on the OS temp folder killed the whole CLI invocation he
 `fs` entries under Playwriter Availability). Then:
 
 ```js
-const report = await frame.evaluate(async () => await window.axe.run(document, { resultTypes: ["violations"] }))
+const report = await frame.evaluate(async () => await window.axe.run(document, { resultTypes: ["violations"] }));
 ```
 
 Read `window.axe.version` back and put it in the evidence — see the pinning entry above.
@@ -440,9 +443,10 @@ Object.keys(schema.nodes); // registered node names
 schema.nodes.image?.isInline; // and per-node spec facts
 ```
 
-  Poll it: the editor mounts a few seconds after `domcontentloaded`, and until then `pmViewDesc` is undefined, which reads the same as "the node is missing".
+Poll it: the editor mounts a few seconds after `domcontentloaded`, and until then `pmViewDesc` is undefined, which reads the same as "the node is missing".
+
 - **Editing a rich-text editor module and letting HMR apply it crashes the app tree** with `useAppAuth must be used within AppAuthProvider` (a pageerror, followed by a `ConvexProviderWithAuth` error-boundary warning) and leaves no `.ProseMirror` mounted at all. Verified 2026-08-04 after a hot update of `file-editor-rich-text.tsx`. Do a full `reload(...)` after touching editor modules instead of trusting the hot update, and do not read the post-HMR blank state as a fault in the change.
-- **Editing a route module (`src/routes/**`) makes the next navigation in an open tab log `Cannot access 'rootRouteImport' before initialization` and `Cannot read properties of undefined (reading 'routesById')` page errors** (TanStack Router's generated route tree hot update; seen 2026-09-05 after an edit to the files route's `validateSearch`). The page still renders, and a fresh `goto` afterwards shows no error. Reload once before reading results, and do not report these as a fault in the change.
+- **Editing a route module (`src/routes/**`) makes the next navigation in an open tab log `Cannot access 'rootRouteImport' before initialization`and`Cannot read properties of undefined (reading 'routesById')`page errors** (TanStack Router's generated route tree hot update; seen 2026-09-05 after an edit to the files route's`validateSearch`). The page still renders, and a fresh `goto` afterwards shows no error. Reload once before reading results, and do not report these as a fault in the change.
 - That crash's damage outlives the blank screen: the dead React tree took the Convex auth refresh loop with it, so on that same page a later `page.evaluate` Convex action answers `Unauthenticated` even though the user is signed in and a fresh tab works fine. Always `goto`/`reload` first and wait for the route content, then run evaluate-driven Convex calls. Hit twice on `create_text_node` 2026-08-08.
 - The sidebar `New file` / `New folder` buttons being disabled on every cold page load was an app bug, found 2026-08-04 and fixed 2026-08-08: `files-sidebar.tsx` called the `canWriteParentId` useFn during render, so the React Compiler cached the first render's answer from before the write-permission query resolved. If a permission-gated control looks wrongly disabled again, run this differential first — it separates a real permission refusal from a frozen render value in one minute: (1) probe the backend answer directly from page context (`app_convex.query(app_convex_api.access_control.get_current_user_workspace_permission, { membershipId, permission: "content.write" })`); (2) client-navigate away and back (two link clicks, no reload). Backend true + enabled-after-remount means a useFn (or other stable-identity function) is being called during render and the compiler memoized it.
 - Creating fixtures through the app's own Convex client from page context (`await import("/src/lib/app-convex-client.ts")`) works for any mutation the signed-in user may call, and is the fastest route when UI would need many steps. Get the membershipId with `organizations.get_membership_by_organization_workspace_name({ organizationName, workspaceName })`.
@@ -604,17 +608,17 @@ hunting for a styling bug that does not exist.
 Convert through real pixels instead. Paint the colour on a 1×1 canvas and read it back:
 
 ```js
-const cv = document.createElement("canvas")
-cv.width = 1
-cv.height = 1
-const ctx = cv.getContext("2d")
+const cv = document.createElement("canvas");
+cv.width = 1;
+cv.height = 1;
+const ctx = cv.getContext("2d");
 const rgb = (color) => {
-	ctx.fillStyle = "#000" // A colour the canvas refuses leaves the previous value in place.
-	ctx.fillStyle = color
-	ctx.fillRect(0, 0, 1, 1)
-	const d = ctx.getImageData(0, 0, 1, 1).data
-	return [d[0], d[1], d[2]]
-}
+	ctx.fillStyle = "#000"; // A colour the canvas refuses leaves the previous value in place.
+	ctx.fillStyle = color;
+	ctx.fillRect(0, 0, 1, 1);
+	const d = ctx.getImageData(0, 0, 1, 1).data;
+	return [d[0], d[1], d[2]];
+};
 ```
 
 `getComputedStyle(el).backgroundColor` is `rgba(0, 0, 0, 0)` on most elements, so walk up to the
@@ -676,7 +680,7 @@ and Playwright waits the full 60 s for it to become visible before failing. Two 
 - `page.locator("button").filter({ hasText: /^Save$/ })` matched
   `MainAppHeaderOrganizationSwitcherModalEditModal`'s hidden **Save** while the target was the file
   toolbar's Save. The call log names the offender — read the `locator resolved to <button disabled …
-  form="MainAppHeaderOrganizationSwitcherModal…">` line before assuming the button is missing.
+form="MainAppHeaderOrganizationSwitcherModal…">` line before assuming the button is missing.
 
 Scope every such click to the owning region: `.FileNodeViewToolbar button` for the file Save,
 `form[aria-label="New document comment"] button[type="submit"]` for the comment submit.
@@ -736,7 +740,10 @@ one node inside it. Before harness 0.6.4 the call had no way to say otherwise, a
 host page instead: a clean report about a route nobody screened. Pass the frame:
 
 ```js
-const frame = state.page.frames().filter((f) => f.url().includes("/plugins-ui/")).at(-1);
+const frame = state.page
+	.frames()
+	.filter((f) => f.url().includes("/plugins-ui/"))
+	.at(-1);
 await state.appPlaywriterHarness.auditAccessibility({ frame, selector: "body" });
 ```
 
@@ -843,7 +850,7 @@ before trusting one more result. Hit 2026-08-24.
 
 **Somebody else's restart looks different, and worse.** When another agent restarts the relay while
 your sessions are alive, your next call answers `404 {"text":"Session N not found. Run 'playwriter
-session new' first."}` and exits 9 with the libuv assertion, while `session list` shows the *other*
+session new' first."}` and exits 9 with the libuv assertion, while `session list` shows the _other_
 repo's sessions sitting there — so it reads as "my session id is wrong", not as "the relay was
 replaced". Do not run relay recovery for this and do not touch the other repo's rows. Create a new
 session on the same browser key, re-install the harness, and re-open your own tabs; the tabs you had
@@ -970,7 +977,7 @@ Playwriter relay was up, so every harness check said "ready". Repo `CLAUDE.md` s
 `pnpm run dev`; let the user run it manually", so the session could not unblock itself.
 
 - Probe the app before you spend a call on Playwriter: `Invoke-WebRequest http://localhost:5173/
-  -TimeoutSec 5 -UseBasicParsing`, or list the listening ports
+-TimeoutSec 5 -UseBasicParsing`, or list the listening ports
   (`Get-NetTCPConnection -State Listen | Where-Object LocalPort -in 5173,4173,3000,8787`). A refused
   connection means no server, which is a different problem from the wrong-checkout one below.
 - Do not start it, and do not start a `vite preview` or a second port as a workaround. Report the
@@ -990,7 +997,7 @@ below costs one call. Make it the first thing a browser run does, and name the s
 report evidence.
 
 The pull toward the wrong port is structural, not carelessness: repo `CLAUDE.md` documents
-`http://localhost:5173/` as *the* dev address, so an agent told nothing else goes there by default. If
+`http://localhost:5173/` as _the_ dev address, so an agent told nothing else goes there by default. If
 your task brief names a different port, the brief wins.
 
 Observed 2026-08-22: `localhost:5173` was a healthy Vite dev server — react-refresh live, `/@vite/client` served, every route rendering — and it was rooted at **another copy of the repo**, at `t3-chat-+personal/+ai/council-production-room-2026-08-22/final-maintenance/packages/app/`. An agent verifying a frontend edit there saw its change missing from the DOM and had no reason to suspect the server rather than the edit.
@@ -1153,7 +1160,7 @@ longer exist, and the guard built on them blocks sends that would have worked:
 ## `download.saveAs()` fails in extension mode even under a Windows relay
 
 Extends the download entry above. `saveAs` throws `ENOENT … copyfile 'C:\…\Temp\playwright-artifacts-…\<uuid>' -> <dest>`,
-and writing into `os.tmpdir()` first does not help, because the missing file is the *source*
+and writing into `os.tmpdir()` first does not help, because the missing file is the _source_
 artifact, not the destination. The download itself does succeed and lands in `C:\Users\rt0\Downloads\<suggestedFilename>`
 (verified byte-exact against `blob.size` twice, 2026-08-18). The reliable recipe is a page-context
 Blob download followed by `Move-Item` from `~/Downloads`.
@@ -1166,7 +1173,7 @@ fine, but every `state.appPlaywriterHarness.*` helper still targets whatever tab
 that is plainly on screen — and it fails the same way on `.FilesSidebar`, so the message points at
 the selector while the real cause is the binding. Hit 2026-08-18.
 
-Worse: the timeout is the *loud* version. Until harness 0.6.5, `install-harness.js` seeded its
+Worse: the timeout is the _loud_ version. Until harness 0.6.5, `install-harness.js` seeded its
 pinned page from the global `page` when `state.page` did not exist yet, so installing the harness
 before you opened your tab pinned whatever unrelated app the shared browser already had open.
 Every helper then answered about that tab without failing — `auditAccessibility` returned a clean
@@ -1260,7 +1267,7 @@ this from growing.
 
 The relay process is shared across repositories, and whichever one started it owns its working
 directory. A runner that builds a fixture path with `path.resolve(".agents/skills/...")` then points
-at the *other* repo — hit 2026-08-18 as
+at the _other_ repo — hit 2026-08-18 as
 `ENOENT … 'C:\Users\rt0\Documents\workspace\rt0\personal-market-radar\.agents\skills\…'` while
 running from `t3-chat`. Write fixture paths as absolute literals. This is the same relay-ownership
 root cause as the WSL entry above, in a form that survives a Windows-only relay, so `session list`
@@ -1327,9 +1334,13 @@ finding whose blocker is an unnamed element outside `body` is noise. To confirm,
 audit, and put it back:
 
 ```js
-await state.page.evaluate(() => { document.querySelector("[data-playwriter-toolbar]").style.display = "none"; });
+await state.page.evaluate(() => {
+	document.querySelector("[data-playwriter-toolbar]").style.display = "none";
+});
 const report = await state.appPlaywriterHarness.auditAccessibility({});
-await state.page.evaluate(() => { document.querySelector("[data-playwriter-toolbar]").style.display = ""; });
+await state.page.evaluate(() => {
+	document.querySelector("[data-playwriter-toolbar]").style.display = "";
+});
 ```
 
 The toolbar's own "Close Playwriter toolbar" button is not clickable through Playwright: it lives in
@@ -1354,7 +1365,7 @@ in `blockedHitTargets`, covered by its own `div.view-line`. A `MyCheckboxButton`
 A control that disables itself while its own async work runs looks correct and tests green, but the
 browser blurs a focused element the moment it becomes disabled, and nothing restores focus when it
 is re-enabled. In a modal that is a focus-trap escape: the next Tab restarts from the top of the
-document. Found 2026-08-19 on the read-only checkbox in the file Properties dialog, on the happy
+document. Found 2026-08-19 on the write-policy control in the file Properties dialog, on the happy
 path, not only on a refusal.
 
 jsdom does not reproduce the blur, so a unit test asserting focus passes while the real app fails.
@@ -1375,7 +1386,7 @@ real `disabled` property for static reasons that are already true before the con
 **Headless Chromium gets this timing wrong too, in the opposite direction, so it produces false
 findings.** jsdom misses the blur entirely (above), but headless does something worse: it reports
 the blur late. Measured 2026-08-22, disabling a focused button in headless left `document.activeElement`
-on that button until the *second* `requestAnimationFrame`, while the user's real Edge blurred it
+on that button until the _second_ `requestAnimationFrame`, while the user's real Edge blurred it
 **synchronously** (`["focus","leave-button"],["sync","BODY"]`). A reviewer used the headless result to
 conclude that an `activeElement === document.body` guard was unreachable and the comment beside it
 was factually wrong — a P2 report that was about to be filed against correct code. The headless
@@ -1425,10 +1436,10 @@ looks like proof the grant does not work.
 Read it from inside the child instead. There the answer is exact, and
 `document.featurePolicy.getAllowlistForFeature("clipboard-write")` shows the delegated origin:
 
-| frame | `allowsFeature` inside the child | allowlist |
-| --- | --- | --- |
-| with `allow="clipboard-write"` | `true` | `["http://localhost:5199"]` |
-| without `allow` | `false` | `[]` |
+| frame                          | `allowsFeature` inside the child | allowlist                   |
+| ------------------------------ | -------------------------------- | --------------------------- |
+| with `allow="clipboard-write"` | `true`                           | `["http://localhost:5199"]` |
+| without `allow`                | `false`                          | `[]`                        |
 
 You do not need the real host app to test this. `http://localhost:<port>` and `http://[::1]:<port>` are
 the same server on two different origins, so any local page can embed another cross-origin with the
@@ -1530,7 +1541,7 @@ read from the live DOM cannot drift out of scale; a pixel counted on an image ca
 
 A tab that is not the frontmost one may not composite new frames. `Page.captureScreenshot` against it
 can return the last painted frame or an empty one, so a shot taken right after a viewport change or a
-state change shows the state *before* it — which reads as "the fix did nothing".
+state change shows the state _before_ it — which reads as "the fix did nothing".
 
 Call `bringToFront()` on the page before capturing, and re-check that the content you expect is in the
 DOM at capture time rather than trusting the image alone. This matters most in a sweep across several
@@ -1679,7 +1690,6 @@ starting point stays wherever it was. Click a non-focusable element at the top o
 
 Verified 2026-08-22 while walking both Council surfaces in real Edge.
 
-
 ## A wrong `vp.exe` path makes every mutation read as KILLED, so the package looks perfectly tested
 
 `vp.exe` is at `C:/Users/rt0/.vite-plus/bin/vp.exe`. It is **not** under `WindowsApps`. A mutation
@@ -1791,10 +1801,10 @@ This fails in the direction of a finding, so it invents accessibility bugs rathe
 Measured 2026-08-23 in the attached Edge on the Council room, on a `<p>` in the room header that was
 given `tabindex="-1"` at runtime so it could take focus at all:
 
-| how focus was given | `matches(":focus-visible")` | computed outline |
-| --- | --- | --- |
-| `el.focus()` from `page.evaluate`, no prior key press | `false` | `none 3px rgb(244, 245, 247)` |
-| real `Tab` presses first, then the same `el.focus()` | `true` | `solid 3px rgb(142, 171, 255)` |
+| how focus was given                                   | `matches(":focus-visible")` | computed outline               |
+| ----------------------------------------------------- | --------------------------- | ------------------------------ |
+| `el.focus()` from `page.evaluate`, no prior key press | `false`                     | `none 3px rgb(244, 245, 247)`  |
+| real `Tab` presses first, then the same `el.focus()`  | `true`                      | `solid 3px rgb(142, 171, 255)` |
 
 Same element, same page, opposite conclusions. So: **reach the control with real
 `page.keyboard.press("Tab")` before reading any ring**, and calibrate on a control you know is styled —
@@ -1926,12 +1936,21 @@ const order = [];
 const walk = (rules) => {
 	for (const rule of rules) {
 		const kind = rule.constructor?.name ?? "";
-		if (kind === "CSSLayerStatementRule") { for (const n of rule.nameList) if (!order.includes(n)) order.push(n); }
-		else if (kind === "CSSLayerBlockRule") { if (rule.name && !order.includes(rule.name)) order.push(rule.name); walk(rule.cssRules); }
-		else if (kind === "CSSMediaRule" || kind === "CSSSupportsRule") walk(rule.cssRules);
+		if (kind === "CSSLayerStatementRule") {
+			for (const n of rule.nameList) if (!order.includes(n)) order.push(n);
+		} else if (kind === "CSSLayerBlockRule") {
+			if (rule.name && !order.includes(rule.name)) order.push(rule.name);
+			walk(rule.cssRules);
+		} else if (kind === "CSSMediaRule" || kind === "CSSSupportsRule") walk(rule.cssRules);
 	}
 };
-for (const sheet of document.styleSheets) { try { walk(sheet.cssRules); } catch { /* cross-origin */ } }
+for (const sheet of document.styleSheets) {
+	try {
+		walk(sheet.cssRules);
+	} catch {
+		/* cross-origin */
+	}
+}
 ```
 
 To measure the damage rather than infer it, walk the same sheets for rules inside `components` /
@@ -1940,7 +1959,10 @@ with `getComputedStyle`. Anything computing to `0px 0px 0px 0px` is being overri
 legitimately compute to zero (`.MyPopoverContent` under the link setter, and the chat composer's
 `--AiChatComposer-editor-content-padding: 0px`), so a nonzero result is not automatically a bug —
 check the source before reporting one.
-- **A CDP command sent to a suspended renderer wedges the Playwriter extension for the whole Edge profile.** During the offline re-mint recipe (2026-09-02) a `page.evaluate` control ran while the tab's renderer was suspended with `suspend-process.ps1`, then `context.setOffline(false)` ran right after resume. From then on every command in that session, and in a brand-new session on the same profile, failed with `browserType.connectOverCDP: Timeout 30000ms exceeded`; `playwriter session reset <id>` crashed the CLI with a libuv assertion; ending the tab's renderers did not help; `playwriter browser list` still showed the extension as connected. The other profile's sessions kept working. Recovery needs the Playwriter extension reloaded in that profile or Edge restarted — coordinate first, because the relay and the Edge instance are shared with other agents. Prove a suspension from thread states (`(Get-Process -Id <pid>).Threads` all `WaitReason` `Suspended`) instead, and send no CDP command until every renderer is resumed.
+
+## A CDP command sent to a suspended renderer wedges the Playwriter extension for the whole Edge profile
+
+During the offline re-mint recipe (2026-09-02) a `page.evaluate` control ran while the tab's renderer was suspended with `suspend-process.ps1`, then `context.setOffline(false)` ran right after resume. From then on every command in that session, and in a brand-new session on the same profile, failed with `browserType.connectOverCDP: Timeout 30000ms exceeded`; `playwriter session reset <id>` crashed the CLI with a libuv assertion; ending the tab's renderers did not help; `playwriter browser list` still showed the extension as connected. The other profile's sessions kept working. Recovery needs the Playwriter extension reloaded in that profile or Edge restarted — coordinate first, because the relay and the Edge instance are shared with other agents. Prove a suspension from thread states (`(Get-Process -Id <pid>).Threads` all `WaitReason` `Suspended`) instead, and send no CDP command until every renderer is resumed.
 
 ## Playwright clicks and key presses on the diff review toolbar can wedge the tab
 

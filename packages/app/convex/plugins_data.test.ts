@@ -947,7 +947,7 @@ describe("public API routes", () => {
 			],
 		});
 
-		// The page token is §8.1's phase-1 consumer of this door, so page 1 goes through it.
+		// The page token is this door's interactive consumer, so page 1 goes through it.
 		const page1 = await t.fetch("/api/v1/plugin-data/list", {
 			method: "POST",
 			headers: service_headers(minted._yay.token),
@@ -1990,6 +1990,7 @@ describe("invoke file write preconditions", () => {
 					if (created._nay) throw new Error(created._nay.message);
 					nodeId = created._yay.nodeId;
 				}
+
 				const beforeNode = nodeId ? await t.run((ctx) => ctx.db.get("files_nodes", nodeId!)) : null;
 				const prepared = await prepare_file(t, fixture);
 				if (prepared._nay) throw new Error(prepared._nay.message);
@@ -2038,6 +2039,7 @@ describe("invoke file write preconditions", () => {
 						expect(replacement._yay.nodeId).not.toBe(fixture.parentId);
 					}
 				}
+
 				const published =
 					mode !== "create"
 						? await t.mutation(internal.public_api.publish_file_fill, {
@@ -2504,6 +2506,7 @@ describe("plugin-data credential revalidation", () => {
 				.withIndex("by_workspace_quotaName", (q) => q.eq("workspaceId", fixture.workspaceId))
 				.collect(),
 		);
+
 		const authorize = public_api_http_auth.public_api_authorize_request;
 		const paused = vi
 			.spyOn(public_api_http_auth, "public_api_authorize_request")
@@ -2598,6 +2601,7 @@ describe("plugin-data credential revalidation", () => {
 				}
 				return auth;
 			});
+
 		try {
 			const response = await t.fetch(`/api/v1/plugin-data/${operation}`, {
 				method: "POST",
@@ -5165,10 +5169,6 @@ describe("db_authorize", () => {
 	});
 });
 
-/**
- * An installation whose version declares and whose workspace accepted the user-write door, owned
- * by a signed-in member. The door takes app auth, so calls go through `asUser`.
- */
 let page_session_seed_counter = 0;
 
 /**
@@ -5209,6 +5209,10 @@ async function seed_page_session(
 	return { sessionId, asPage } as const;
 }
 
+/**
+ * An installation whose version declares and whose workspace accepted the user-write door, owned
+ * by a signed-in member. The door takes app auth, so calls go through `asUser`.
+ */
 async function seed_user_write_door(
 	t: ReturnType<typeof test_convex>,
 	args: { organizationName?: string; clerkUserId?: string } = {},

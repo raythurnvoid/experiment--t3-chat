@@ -1,5 +1,11 @@
 # Chitchat plugin page
 
+Driving `plugins/bonobo-plugin-chitchat` in its real frame. Read
+`references/plugin-marketplace.md` first for the bundle-swap background, and the
+plugin-frame section of `references/known-hazards.md` before the first frame
+command — `snapshot()` answers about the wrong surface inside any iframe,
+sometimes silently.
+
 ## Current rebuild contract (2026-09-09)
 
 Chitchat now uses its own Convex backend. Read the current
@@ -151,11 +157,6 @@ Verified with the published 0.8.1 frame on 2026-09-08:
 The remaining recipes preserve earlier observations. Old store/invoke API calls, cached root paths,
 and data-repair steps are not instructions for the native rebuild. Revalidate selectors before reuse.
 
-Driving `plugins/bonobo-plugin-chitchat` in its real frame. Read
-`references/plugin-marketplace.md` first for the bundle-swap background, and the plugin-frame
-section of `references/known-hazards.md` before the first frame command — `snapshot()` answers about
-the wrong surface inside any iframe, sometimes silently.
-
 Verified 2026-08-24 against Chitchat 0.1.6 on the dev deployment, and again the same day against the
 working-tree 0.1.8 build served through the bundle swap. The private-channel sections were verified the
 same day against the working-tree 0.2.0 build, with two signed-in identities. The unreads/views/mentions
@@ -191,26 +192,26 @@ on selectors, rows, threads, theme and transcripts still do.
 
 Everything below lives inside the frame.
 
-| What | Selector |
-| --- | --- |
-| Channel rail button | `locator("button.channel-link", { hasText: "#alpha" })` — do NOT use an end-anchored `getByRole` name regex, see the unread-suffix note below |
-| Create channel | `getByRole("button", { name: "Create channel" })`, then `getByLabel("Channel name")`, then `getByRole("button", { name: "Create", exact: true })`. Waiting on `[data-dialog-initial="true"]` can hang even when the dialog is already on screen (verified 2026-08-26). For a private channel, `getByLabel("Private channel").check()` before Create |
-| Composer | `textarea.composer-input` — with a thread open there are TWO of them, so scope: the channel one by its aria-label `Message #<channel>`, the thread one as `section.thread textarea.composer-input` (aria-label `Reply in thread`). Since 0.5.0 (Ariakit-combobox mention picker) the composer carries `role="combobox"` with `aria-expanded` — the quickest live proof of a 0.5.0 frame. That role replaces the textarea's default one, so `getByRole("textbox")` matches NOTHING on this page and a locator built from it just hangs until the call times out. Use the class selector above. Typing `@` in a single-member workspace opens NO menu (the picker excludes the sender), `aria-expanded` stays `"false"`, and no `[role=listbox]` enters the DOM — verified 2026-08-25 |
-| Message row | `li.message`, with `.is-leader` or `.is-continuation`, and `data-key` carrying the document key |
-| Day divider | `li.day-divider` |
-| Message body | `.message-text` |
-| Message row actions | `.message-actions` holding buttons named `Reply in thread`, `Add reaction`, and for your own messages `Edit` / `Delete` — hover-revealed. Delete opens a confirm; click `getByRole("button", { name: "Delete message", exact: true })`. A click on `name: "Delete"` matches both the row action and the confirm and is a strict-mode violation |
-| Reaction palette | `span.reaction-palette` (`role=group`, aria-label `Choose a reaction`), inline INSIDE the row — items are `button.reaction-palette-item` named `Thumbs up`, `Heart`, `Laugh`, `Wow`, `Sad` |
-| Reaction chip | `button.reaction-chip` (aria-label `<name>, N reaction`), `.is-mine` when you reacted, count in `.reaction-chip-count` |
-| Channel row | `.channel-item`, name in `.channel-name` |
-| Row actions | one trigger, `button.ChannelRowMenu-trigger` (aria-label `Actions for #<name>`) — hidden at rest, see below. Its items are `role=menuitem` named `People in #<name>` (private rows only), `Rename #<name>`, and `Archive #<name>` / `Unarchive #<name>` |
-| Row action menu | `.ChannelRowMenu-popover` (`role=menu`, same aria-label as the trigger) — portalled to the frame's `body`, so it is NOT inside `.channel-item` |
-| Any dialog | `[role=dialog]` — only one is ever mounted, so this needs no open-state filter |
-| Privacy line | `.channel-privacy` |
-| Thread summary | `.message-thread-summary` — body content on a root with replies, so it needs no hover |
-| Thread panel | `section.thread` (NOT `.thread-panel`) |
-| Resize handle | `[role=separator][aria-label="Resize thread panel"]` |
-| Load older control | `getByRole("button", { name: "Load older", exact: true })`, inside `.log-older` |
+| What                | Selector                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Channel rail button | `locator("button.channel-link", { hasText: "#alpha" })` — do NOT use an end-anchored `getByRole` name regex, see the unread-suffix note below                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Create channel      | `getByRole("button", { name: "Create channel" })`, then `getByLabel("Channel name")`, then `getByRole("button", { name: "Create", exact: true })`. Waiting on `[data-dialog-initial="true"]` can hang even when the dialog is already on screen (verified 2026-08-26). For a private channel, `getByLabel("Private channel").check()` before Create                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Composer            | `textarea.composer-input` — with a thread open there are TWO of them, so scope: the channel one by its aria-label `Message #<channel>`, the thread one as `section.thread textarea.composer-input` (aria-label `Reply in thread`). Since 0.5.0 (Ariakit-combobox mention picker) the composer carries `role="combobox"` with `aria-expanded` — the quickest live proof of a 0.5.0 frame. That role replaces the textarea's default one, so `getByRole("textbox")` matches NOTHING on this page and a locator built from it just hangs until the call times out. Use the class selector above. Typing `@` in a single-member workspace opens NO menu (the picker excludes the sender), `aria-expanded` stays `"false"`, and no `[role=listbox]` enters the DOM — verified 2026-08-25 |
+| Message row         | `li.message`, with `.is-leader` or `.is-continuation`, and `data-key` carrying the document key                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Day divider         | `li.day-divider`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Message body        | `.message-text`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Message row actions | `.message-actions` holding buttons named `Reply in thread`, `Add reaction`, and for your own messages `Edit` / `Delete` — hover-revealed. Delete opens a confirm; click `getByRole("button", { name: "Delete message", exact: true })`. A click on `name: "Delete"` matches both the row action and the confirm and is a strict-mode violation                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Reaction palette    | `span.reaction-palette` (`role=group`, aria-label `Choose a reaction`), inline INSIDE the row — items are `button.reaction-palette-item` named `Thumbs up`, `Heart`, `Laugh`, `Wow`, `Sad`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| Reaction chip       | `button.reaction-chip` (aria-label `<name>, N reaction`), `.is-mine` when you reacted, count in `.reaction-chip-count`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Channel row         | `.channel-item`, name in `.channel-name`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Row actions         | one trigger, `button.ChannelRowMenu-trigger` (aria-label `Actions for #<name>`) — hidden at rest, see below. Its items are `role=menuitem` named `People in #<name>` (private rows only), `Rename #<name>`, and `Archive #<name>` / `Unarchive #<name>`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| Row action menu     | `.ChannelRowMenu-popover` (`role=menu`, same aria-label as the trigger) — portalled to the frame's `body`, so it is NOT inside `.channel-item`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Any dialog          | `[role=dialog]` — only one is ever mounted, so this needs no open-state filter                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| Privacy line        | `.channel-privacy`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Thread summary      | `.message-thread-summary` — body content on a root with replies, so it needs no hover                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Thread panel        | `section.thread` (NOT `.thread-panel`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Resize handle       | `[role=separator][aria-label="Resize thread panel"]`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Load older control  | `getByRole("button", { name: "Load older", exact: true })`, inside `.log-older`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 
 **There is only one "Load older" button since 0.7.0.** The separate "Load older messages" HTTP
 control is gone with the deep-history door, so an older recipe that presses two different buttons
@@ -245,7 +246,10 @@ the row, click `Add reaction`, then click the palette item by its accessible nam
 const row = fl.locator("li.message").nth(i);
 await row.hover();
 await row.getByRole("button", { name: "Add reaction" }).click();
-await row.locator("[role=group][aria-label='Choose a reaction']").getByRole("button", { name: "Heart", exact: true }).click();
+await row
+	.locator("[role=group][aria-label='Choose a reaction']")
+	.getByRole("button", { name: "Heart", exact: true })
+	.click();
 ```
 
 ## Theme: the host's light class does not mean a light plugin
@@ -264,13 +268,13 @@ root to say `light` under the host's light theme is reading the old bug, not a r
 Check it by reading both sides:
 
 ```js
-await state.page.evaluate(() => document.documentElement.className) // "light" or "dark"
+await state.page.evaluate(() => document.documentElement.className); // "light" or "dark"
 await frame.evaluate(() => ({
 	cls: document.documentElement.className, // "dark" or "light", set by the SDK
 	scales: [...document.documentElement.style].filter((n) => n.startsWith("--color-")).length, // 104
 	base: document.documentElement.style.getPropertyValue("--color-base-1-01"), // oklch(...)
 	surface: getComputedStyle(document.documentElement).getPropertyValue("--cc-surface").trim(),
-}))
+}));
 ```
 
 `surface` must equal the host's own `getComputedStyle(document.documentElement).getPropertyValue("--color-base-1-01").trim()`.
@@ -280,12 +284,12 @@ class — the frame's observer watches `class` only, so a style-only change send
 
 ```js
 await state.page.evaluate(() => {
-	const de = document.documentElement
-	de.style.setProperty("--color-base-1-01", "oklch(0.98 0 0)")
-	de.style.setProperty("--color-base-1-03", "oklch(0.95 0 0)")
-	de.classList.remove("light")
-	de.classList.add("dark")
-})
+	const de = document.documentElement;
+	de.style.setProperty("--color-base-1-01", "oklch(0.98 0 0)");
+	de.style.setProperty("--color-base-1-03", "oklch(0.95 0 0)");
+	de.classList.remove("light");
+	de.classList.add("dark");
+});
 ```
 
 The frame then reports `light` while the host class says `dark`, which is the whole point. Remove
@@ -379,7 +383,7 @@ line at all.
 is cheap to prove from inside the frame:
 
 ```js
-performance.getEntriesByType("resource").filter((e) => e.name.includes("/api/v1/plugin-data/list")).length
+performance.getEntriesByType("resource").filter((e) => e.name.includes("/api/v1/plugin-data/list")).length;
 ```
 
 Measured 2026-09-02 on published Chitchat 0.7.0 (`personal` / `home`, channel `#deephist`, 103
@@ -493,19 +497,20 @@ subresource requests:
 
 ```js
 await frame.evaluate(() => {
-	window.__ccCaptured = []
-	const orig = window.fetch
+	window.__ccCaptured = [];
+	const orig = window.fetch;
 	window.fetch = async (...args) => {
-		const res = await orig(...args)
-		const url = typeof args[0] === "string" ? args[0] : (args[0] && args[0].url) || ""
+		const res = await orig(...args);
+		const url = typeof args[0] === "string" ? args[0] : (args[0] && args[0].url) || "";
 		if (url.includes("/plugin-data/list")) {
-			res.clone()
+			res
+				.clone()
 				.text()
-				.then((t) => window.__ccCaptured.push(JSON.parse(t)))
+				.then((t) => window.__ccCaptured.push(JSON.parse(t)));
 		}
-		return res
-	}
-})
+		return res;
+	};
+});
 ```
 
 Take it off again — or reload the frame — before running any other network probe, because a patched
@@ -558,7 +563,7 @@ inside the same swapped response with `state.axeUrl` (v3 of the swap runner inli
 CSP hash). Then:
 
 ```js
-const report = await frame.evaluate(async () => await window.axe.run(document, { resultTypes: ["violations"] }))
+const report = await frame.evaluate(async () => await window.axe.run(document, { resultTypes: ["violations"] }));
 ```
 
 Read `window.axe.version` back into the evidence. A clean run on 2026-08-24 was axe 4.12.1, zero
@@ -661,7 +666,7 @@ all four collections. Two things follow for QA:
   scratch browser, never in the signed-in profile the user works in. Two anonymous members in
   `qa-browser` is enough: invite both, create the private channel as one of them with nobody else
   ticked, then open Chitchat as the other. If `create_organization` answers `Organization quota
-  reached`, invite into `qa-browser` instead of making a new org.
+reached`, invite into `qa-browser` instead of making a new org.
 
 Use the channel row's `Actions for #<name>` menu and `People in #<name>` for native membership
 checks. Add a person with the picker; remove them with the `Remove` button in their `.people-item`
@@ -739,8 +744,8 @@ persistence check:
   design — capabilities come from the installation record, so a bundle swap cannot change them. On
   such an install, drive the mention path with
   `client.convex.mutation(client.api.plugins_data.user_append_document, { collection: "messages",
-  keyPrefix: "<channelKey>:", value: { text, attachments: [], editedAt: null, deletedAt: null,
-  mentions: [<userId>] }, clientRequestId: crypto.randomUUID() })` — the same write the composer
+keyPrefix: "<channelKey>:", value: { text, attachments: [], editedAt: null, deletedAt: null,
+mentions: [<userId>] }, clientRequestId: crypto.randomUUID() })` — the same write the composer
   makes — and leave the menu to the unit tests.
 - **The swap runner's `versionId` is a hardcoded constant.** `swap-plugin-bundle-v3.js` routes on the
   asset prefix of one published version, and the installed version moved when 0.3.0 was published
@@ -1003,14 +1008,14 @@ Two things that will mislead you while setting this up, both hit 2026-09-01:
   frontend bundle writes messages straight to the plugin store over `/api/v1/plugin-data/*`, so a
   message appears with no run at all. Check `plugins_event_runs` (and `plugins_event_run_calls` for
   the per-route outcome) to see whether a run happened — `convex data plugins_event_runs --limit 5
-  --order desc`, then compare `_creationTime` against now. On 0.6.0 the send itself IS the
+--order desc`, then compare `_creationTime` against now. On 0.6.0 the send itself IS the
   `message-send` invoke (`channel-view.tsx:212`) and the backend mints the message key, so there a
   delivered message really does prove the backend ran. Read the installed version before using
   either rule.
 - **The plugins LIST shows the catalog version with an "Installed" badge**, which reads as "0.6.0 is
   installed" even when the installation is older. A behind installation keeps the old
   `acceptedCapabilities`: `qa-browser` held only `["plugin.data.read", "plugin.data.user-write",
-  "workspace.files.read", "workspace.members.read"]` — no `plugin.backend.invoke` — so no run fired on
+"workspace.files.read", "workspace.members.read"]` — no `plugin.backend.invoke` — so no run fired on
   send and nothing projected, with no error anywhere in the UI. Confirm on the plugin DETAIL page
   (an "Update" button means you are behind) or read the installation's `acceptedCapabilities` from
   `plugins_workspace_installations`.

@@ -1219,7 +1219,6 @@ Sweep counts 2–5 against widths 320–410 before writing any chip rule. That s
 the featured tile is 123px wide at 320x256 and shows the chip whole, three-person rooms give 97px
 side tiles, and from 410px the two side tiles are back to 90px.
 
-
 ## Two checks that only fail in a state you have to drive to
 
 Both come from the round-9 review, and both exist because the default state of the room passes the
