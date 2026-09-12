@@ -2,24 +2,221 @@
 	/* #region root */
 	.AiChatMarkdown {
 		color: var(--color-fg-11);
+		font-size: 16px;
+		line-height: 1.625;
+	}
+
+	.AiChatMarkdown ::selection {
+		background: var(--color-base-1-10);
+		color: var(--color-fg-12);
+	}
+
+	.AiChatMarkdown-content {
+		/* Keep the text scale and neutral surfaces in step with the Files rich text editor. */
+		h1,
+		h2,
+		h3,
+		h4,
+		h5,
+		h6 {
+			margin: 24px 0 10px;
+			color: var(--color-fg-12);
+			font-weight: 650;
+		}
+
+		h1,
+		h2 {
+			padding-bottom: 8px;
+			border-bottom: 1px solid var(--color-base-1-07);
+		}
+
+		h1 {
+			font-size: 30px;
+			line-height: 38px;
+			font-weight: 700;
+			letter-spacing: -0.025em;
+		}
+
+		h2 {
+			font-size: 23px;
+			line-height: 31px;
+			letter-spacing: -0.015em;
+		}
+
+		h3 {
+			font-size: 19px;
+			line-height: 27px;
+		}
+
+		h4 {
+			font-size: 17px;
+			line-height: 25px;
+		}
+
+		h5 {
+			font-size: 15.5px;
+			line-height: 24px;
+			font-weight: 700;
+			letter-spacing: 0.04em;
+		}
+
+		h6 {
+			font-size: 14px;
+			line-height: 22px;
+			font-weight: 700;
+			letter-spacing: 0.04em;
+		}
+
+		:is(h1, h2, h3, h4, h5, h6) + :is(h1, h2, h3, h4, h5, h6) {
+			margin-top: 10px;
+		}
+
+		> h1:first-child {
+			padding-bottom: 0;
+			border-bottom: 0;
+		}
+
+		p {
+			margin: 10px 0;
+		}
+
+		strong {
+			font-weight: 700;
+		}
+
+		/* Keep Streamdown's link checks; its link button uses the primary color token. */
+		[data-streamdown="link"] {
+			--primary: var(--color-accent-07);
+
+			color: var(--primary);
+			cursor: pointer;
+			text-decoration-thickness: 1px;
+			text-underline-offset: 3px;
+
+			&:hover {
+				--primary: var(--color-accent-08);
+
+				text-decoration-thickness: 2px;
+			}
+
+			&:focus-visible {
+				outline: 2px solid var(--color-accent-07);
+				outline-offset: 2px;
+			}
+		}
+
+		blockquote {
+			margin: 16px 0;
+			padding: 12px 16px;
+			border: 1px solid var(--color-base-1-07);
+			border-left: 3px solid var(--color-fg-07);
+			border-radius: 6px;
+			background: var(--color-base-1-03);
+
+			blockquote {
+				margin: 8px 0 0;
+				padding: 4px 12px;
+				border-width: 0 0 0 2px;
+				border-radius: 0;
+				background: transparent;
+			}
+
+			> :first-child {
+				margin-top: 0;
+			}
+
+			> :last-child {
+				margin-bottom: 0;
+			}
+		}
+
+		ul,
+		ol {
+			margin: 10px 0;
+			padding-inline-start: 28px;
+		}
+
+		li {
+			margin: 4px 0;
+
+			&::marker {
+				color: var(--color-fg-09);
+			}
+
+			p,
+			ul,
+			ol {
+				margin: 4px 0;
+			}
+
+			ul {
+				list-style-type: circle;
+			}
+		}
+
+		.contains-task-list {
+			padding-inline-start: 0;
+
+			/* GFM allows ordinary items and tasks in the same list. */
+			> li:not(.task-list-item) {
+				margin-inline-start: 28px;
+			}
+		}
+
+		.task-list-item {
+			padding-inline-start: 24px;
+			list-style: none;
+
+			/* A hanging checkbox also keeps wrapped and loose task text aligned. */
+			input[type="checkbox"] {
+				float: inline-start;
+				width: 16px;
+				height: 16px;
+				margin-block: 5px 0;
+				margin-inline: -24px 0;
+				color-scheme: dark;
+				accent-color: var(--color-fg-11);
+			}
+		}
+
+		[data-streamdown="image-wrapper"]:has([data-streamdown="image-fallback"]) {
+			width: 100%;
+			padding: 16px;
+			border: 1px solid var(--color-base-1-07);
+			border-radius: 6px;
+			background: var(--color-base-1-04);
+		}
+
+		[data-streamdown="image-fallback"] {
+			--muted-foreground: var(--color-fg-09);
+		}
+
+		> :first-child {
+			margin-top: 0;
+		}
+
+		> :last-child {
+			margin-bottom: 0;
+		}
 	}
 	/* #endregion root */
 
 	/* #region code */
 	.AiChatMarkdown-inline-code {
 		border-radius: 4px;
-		background: var(--color-base-1-04);
+		background: var(--color-base-1-05);
 		padding: 0.125em 0.35em;
-		color: var(--color-fg-10);
-		font-family: monospace;
-		font-size: 0.92em;
+		color: var(--color-fg-11);
+		font-family: var(--app-font-monospace);
+		font-size: 0.875em;
 	}
 	/* #endregion code */
 
 	/* #region pre */
 	.AiChatMarkdown-code-block {
 		overflow: hidden;
-		border: 1px solid var(--color-base-1-06);
+		margin: 12px 0 16px;
+		border: 1px solid var(--color-base-1-07);
 		border-radius: 6px;
 		background: var(--color-base-1-03);
 		color: var(--color-fg-10);
@@ -31,14 +228,14 @@
 		justify-content: space-between;
 		gap: 8px;
 		min-height: 32px;
-		padding: 4px 6px 4px 10px;
+		padding: 4px 6px 4px 16px;
 		background: transparent;
-		color: var(--color-fg-07);
+		color: var(--color-fg-08);
 	}
 
 	.AiChatMarkdown-code-header-language {
 		overflow: hidden;
-		font-family: monospace;
+		font-family: var(--app-font-monospace);
 		font-size: 12px;
 		line-height: 1;
 		text-overflow: ellipsis;
@@ -55,13 +252,14 @@
 	.AiChatMarkdown-pre {
 		overflow: auto;
 		margin: 0;
-		border-top: 1px solid var(--color-base-1-06);
-		background: var(--color-base-1-02);
-		padding: 12px 14px;
+		border-top: 1px solid var(--color-base-1-07);
+		background: var(--color-base-1-03);
+		padding: 16px;
 		color: var(--color-fg-10);
-		font-family: monospace;
+		font-family: var(--app-font-monospace);
 		font-size: 13px;
-		line-height: 1.5;
+		line-height: 21px;
+		tab-size: 4;
 	}
 
 	.AiChatMarkdown-code {
@@ -72,46 +270,60 @@
 	/* #endregion pre */
 
 	/* #region hr */
-	/* Block spacing comes from Streamdown's space-y wrapper (utilities layer), which
-	   overrides any margin set here. Only style the divider line itself. */
 	.AiChatMarkdown-hr {
+		margin: 24px 0;
 		border: none;
-		border-top: 1px solid var(--color-base-1-06);
+		border-top: 1px solid var(--color-base-1-07);
 	}
 	/* #endregion hr */
 
 	/* #region table */
 	.AiChatMarkdown-table-wrapper {
 		overflow-x: auto;
-		border: 1px solid var(--color-base-1-06);
+		margin: 16px 0;
+		border: 1px solid var(--color-base-1-07);
 		border-radius: 6px;
+		background: var(--color-base-1-02);
 	}
 
 	.AiChatMarkdown-table {
 		width: 100%;
-		border-collapse: collapse;
-		font-size: 0.875rem;
+		border-collapse: separate;
+		border-spacing: 0;
+		font-size: 14px;
+		line-height: 22px;
 	}
 
 	.AiChatMarkdown-thead {
-		border-bottom: 1px solid var(--color-base-1-06);
-		background: var(--color-base-1-04);
+		background: var(--color-base-1-05);
+		color: var(--color-fg-12);
 	}
 
 	/* Keep the last row open so the wrapper border closes the table. */
-	.AiChatMarkdown-tbody .AiChatMarkdown-tr:not(:last-child) {
-		border-bottom: 1px solid var(--color-base-1-05);
+	.AiChatMarkdown-tbody .AiChatMarkdown-tr:last-child > .AiChatMarkdown-td {
+		border-bottom: 0;
+	}
+
+	.AiChatMarkdown-tbody .AiChatMarkdown-tr:nth-child(even) {
+		background: var(--color-base-1-03);
+	}
+
+	.AiChatMarkdown-th,
+	.AiChatMarkdown-td {
+		padding: 8px 14px;
+		border-right: 1px solid var(--color-base-1-07);
+		border-bottom: 1px solid var(--color-base-1-07);
+		vertical-align: top;
+
+		&:last-child {
+			border-right: 0;
+		}
 	}
 
 	.AiChatMarkdown-th {
-		padding: 8px 16px;
 		text-align: start;
-		font-weight: 600;
+		font-weight: 650;
 		white-space: nowrap;
-	}
-
-	.AiChatMarkdown-td {
-		padding: 8px 16px;
 	}
 	/* #endregion table */
 }

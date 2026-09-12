@@ -1,5 +1,6 @@
 import { configDefaults, defineConfig } from "vitest/config";
 import { playwright } from "@vitest/browser-playwright";
+import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath } from "node:url";
 
 export default defineConfig({
@@ -48,6 +49,8 @@ export default defineConfig({
 			},
 			{
 				extends: true,
+				// Browser layout tests need the same utility styles as the app.
+				plugins: [tailwindcss({ optimize: false })],
 				test: {
 					include: ["src/**/*.browser.test.{ts,tsx}"],
 					name: "browser",

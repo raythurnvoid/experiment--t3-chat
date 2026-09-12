@@ -95,6 +95,14 @@ function AiChatMarkdownPre(props: ComponentPropsWithoutRef<"pre"> & { node?: unk
 }
 // #endregion pre
 
+// #region task checkbox
+function AiChatMarkdownTaskCheckbox(props: ComponentPropsWithoutRef<"input"> & { node?: unknown }) {
+	const { node: _node, ...rest } = props;
+
+	return <input aria-label="Task completion" {...rest} />;
+}
+// #endregion task checkbox
+
 // #region ul
 /**
  * Streamdown's default list components use `list-inside` (list-style-position: inside),
@@ -238,6 +246,17 @@ export type AiChatMarkdown_ClassNames =
 	| "AiChatMarkdown-sup";
 
 const ai_chat_markdown_components = {
+	// Plain elements let the app CSS own typography without Streamdown's utilities.
+	h1: "h1",
+	h2: "h2",
+	h3: "h3",
+	h4: "h4",
+	h5: "h5",
+	h6: "h6",
+	strong: "strong",
+	blockquote: "blockquote",
+	li: "li",
+	input: AiChatMarkdownTaskCheckbox,
 	code: AiChatMarkdownCode,
 	pre: AiChatMarkdownPre,
 	ul: AiChatMarkdownUl,
@@ -270,7 +289,12 @@ export const AiChatMarkdown = memo(function AiChatMarkdown(props: AiChatMarkdown
 		>
 			<Streamdown
 				mode="static"
-				className={cn("AiChatMarkdown-content" satisfies AiChatMarkdown_ClassNames, contentClassName)}
+				// Undo the wrapper's utility margins so component CSS controls block spacing.
+				className={cn(
+					"AiChatMarkdown-content" satisfies AiChatMarkdown_ClassNames,
+					"[&>*]:[margin-block:revert-layer]",
+					contentClassName,
+				)}
 				remarkPlugins={remarkPlugins}
 				components={ai_chat_markdown_components}
 			>

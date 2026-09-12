@@ -60,6 +60,16 @@ The current agent is a Convex-backed AI chat runtime that streams AI SDK 6 UI me
 
 The files system is a db-backed file/folder model scoped by organization/workspace membership. Folders are tree nodes only. Editable text files — Markdown (`rich_text`) and the plain-text extensions (`plain_text`, e.g. `.json`, `.yaml`, `.ts`) — have Yjs snapshots/updates, exact text chunks, and plain-text search chunks; committed current content is read from the chunks, and R2 keeps only Yjs and version snapshot objects for editable files. Uploaded source files preserve the original binary in R2. Enabled `files.upload.completed` plugins may create ordinary visible Markdown siblings.
 
+# Markdown Replies
+
+`../../../packages/app/src/components/ai-chat/ai-chat-markdown.tsx` and its paired CSS own assistant Markdown in both full-page chat and the Files agent sidebar.
+
+- Match the Files rich text editor's Warm charcoal style: 16px text with a 26px line height; heading sizes 30, 23, 19, 17, 15.5, and 14px; light headings; H1/H2 section lines; boxed quotes; neutral code blocks and table grids. Use the existing app tokens. Orange belongs only to links.
+- Plain Streamdown element overrides let component CSS own heading, bold, quote, and list-item styles. The wrapper's `revert-layer` margin utility removes Streamdown's default block spacing. Keep the paragraph renderer because it handles image wrappers.
+- Preserve Streamdown's HTML sanitizing, link checks, and image handling. Style its link buttons through their own primary token. Keep code Copy buttons and horizontal scrolling for wide tables.
+- Task checkboxes are named, disabled status markers. Do not turn them into editable tasks or show bullets beside them. Wrapped and loose task text stays aligned.
+- These are display rules. Do not rewrite saved replies or add Markdown syntax support as part of a style change.
+
 # Main Request Flow
 
 For `POST /api/chat`:
