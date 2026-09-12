@@ -272,7 +272,7 @@ export const BillingActivePlan = memo(function BillingActivePlan(props: BillingA
 		snapshotMeter && snapshotSubscription
 			? {
 					due: format_cents(snapshotMeter.amountDueCents, snapshotSubscription.currency),
-					creditsLeft: format_cents(snapshotMeter.balance, snapshotSubscription.currency),
+					creditsLeft: format_cents(Math.max(0, snapshotMeter.balance), snapshotSubscription.currency),
 				}
 			: null;
 

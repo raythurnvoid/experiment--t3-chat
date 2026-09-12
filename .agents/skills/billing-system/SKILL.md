@@ -481,6 +481,7 @@ The main billing UI lives in [billing-account-management-panel.tsx](../../../pac
 
 ## Product and usage presentation
 
+- The header and billing panel show remaining credits as at least zero (`Math.max(0, meter.balance)`). `Due` shows the usage amount owed. Keep the stored signed balance for billing and credit checks.
 - [billing-product-card.tsx](../../../packages/app/src/components/billing/billing-product-card.tsx) renders included usage from `billing_get_recurring_credits_cents` (the Convex monthly credits engine is the only code path that grants recurring credits, while Polar event idempotency is the authority for already-granted periods).
 - [billing-active-plan.tsx](../../../packages/app/src/components/billing/billing-active-plan.tsx) renders due amount and remaining credits from the local usage snapshot, and uses `billing_get_recurring_credits_cents` for the included-usage line.
 - The billing panel uses the local usage snapshot populated from `customer.state_changed` to show current due amount, remaining credits, and renewal timing. It uses the subscription mirror's `pendingUpdate` field from subscription webhooks to show scheduled plan changes.

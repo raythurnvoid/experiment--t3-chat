@@ -222,7 +222,7 @@ export const MainAppHeaderBillingIndicator = memo(function MainAppHeaderBillingI
 	const currency = billingUsageSnapshot.subscription.currency;
 	const dueText = format_cents(billingUsageSnapshot.meter.amountDueCents, currency);
 	const remainingCents = billingUsageSnapshot.meter.balance;
-	const creditsLeftText = format_cents(remainingCents, currency);
+	const creditsLeftText = format_cents(Math.max(0, remainingCents), currency);
 	const isExhausted = remainingCents < 0;
 
 	return (
