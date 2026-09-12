@@ -10186,6 +10186,7 @@ describe("upsert_file_pending_move_in_db", () => {
 			destPath: "/move-upsert-dest/moved.md",
 			replacesExistingOccupant: false,
 			cancelledExistingMove: false,
+			appliedImmediately: false,
 		});
 
 		const pendingRow = await t.run((ctx) =>
@@ -10540,6 +10541,7 @@ describe("upsert_file_pending_move_in_db", () => {
 			destPath: "/move-replace-dest.md",
 			replacesExistingOccupant: true,
 			cancelledExistingMove: false,
+			appliedImmediately: false,
 		});
 
 		const row = await t.run((ctx) =>
@@ -10976,6 +10978,7 @@ describe("upsert_file_pending_move_in_db", () => {
 			destPath: "/cancel-move-src.md",
 			replacesExistingOccupant: false,
 			cancelledExistingMove: true,
+			appliedImmediately: false,
 		});
 
 		await t.run(async (ctx) => {
@@ -17000,18 +17003,28 @@ describe("structural rows on content collapse", () => {
 		if (upserted._nay) {
 			throw new Error(upserted._nay.message);
 		}
-		const moved = await upsert_file_pending_move_for_test({
-			t,
-			organizationId: dest.organizationId,
-			workspaceId: dest.workspaceId,
-			userId: dest.userId,
-			nodeId: dest.nodeId,
-			destParentId: files_ROOT_ID,
-			destName: "collapse-copy-renamed.md",
+		// Stage the pending move directly: `upsert_file_pending_move_in_db` applies moves on
+		// pending-created nodes immediately now, so a copy row can no longer reach this shape
+		// through it — patch the field the collapse branch reads.
+		await t.run(async (ctx) => {
+			const pendingRow = await read_pending_update_row({
+				ctx,
+				organizationId: dest.organizationId,
+				workspaceId: dest.workspaceId,
+				userId: dest.userId,
+				nodeId: dest.nodeId,
+			});
+			if (!pendingRow) {
+				throw new Error("Expected the copy row to exist before staging its pending move");
+			}
+			await ctx.db.patch("files_pending_updates", pendingRow._id, {
+				pendingMove: {
+					destParentId: files_ROOT_ID,
+					destName: "collapse-copy-renamed.md",
+					fromPath: "/collapse-copy-dest.md",
+				},
+			});
 		});
-		if (moved._nay) {
-			throw new Error(moved._nay.message);
-		}
 
 		// Reverting the content to base must NOT hit the pure-move degrade branch: the copy row
 		// keeps its yjs fields, so it can never become a copiedFrom row without content.
@@ -20217,5 +20230,341 @@ describe("pending update read-only checks", () => {
 			expect((await ctx.db.get("files_nodes", seeded.fileNodeId))?.archiveOperationId).toBeNull();
 			expect((await ctx.db.get("files_nodes", seeded.folderId))?.archiveOperationId).toBeNull();
 		});
+	});
+});
+
+describe("pending file that was moved while pending", () => {
+	test("accept saves content onto the moved node", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/qa-mv-repro.md",
+				name: "qa-mv-repro.md",
+				markdown: "# Base",
+			}),
+		);
+		const destFolderId = await t.run(async (ctx) =>
+			seed_folder_node({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				path: "/qa-mv-dest",
+				name: "qa-mv-dest",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown: `${seeded.baseMarkdown}\n\nAgent content`,
+			unstagedMarkdown: `${seeded.baseMarkdown}\n\nAgent content`,
+			eagerCreatedCommittedSequence: 0,
+		});
+		if (upserted._nay) {
+			throw new Error(upserted._nay.message);
+		}
+		const moved = await asUser.mutation(api.files_nodes.move_nodes, {
+			membershipId: seeded.membershipId,
+			itemIds: [seeded.nodeId],
+			targetParentId: destFolderId,
+		});
+		if (moved._nay) {
+			throw new Error(moved._nay.message);
+		}
+		const node = await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId));
+		expect(node?.path).toBe("/qa-mv-dest/qa-mv-repro.md");
+		const saved = await asUser.action(api.files_pending_updates.save_file_pending_update, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+		});
+		expect(saved._nay).toBeUndefined();
+		const row = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		expect(row).toBeNull();
+	});
+
+	test("discard hard-deletes the moved eager node", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/qa-mv-repro2.md",
+				name: "qa-mv-repro2.md",
+				markdown: "# Base",
+			}),
+		);
+		const destFolderId = await t.run(async (ctx) =>
+			seed_folder_node({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				path: "/qa-mv-dest2",
+				name: "qa-mv-dest2",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown: `${seeded.baseMarkdown}\n\nAgent content`,
+			unstagedMarkdown: `${seeded.baseMarkdown}\n\nAgent content`,
+			eagerCreatedCommittedSequence: 0,
+		});
+		if (upserted._nay) {
+			throw new Error(upserted._nay.message);
+		}
+		const moved = await asUser.mutation(api.files_nodes.move_nodes, {
+			membershipId: seeded.membershipId,
+			itemIds: [seeded.nodeId],
+			targetParentId: destFolderId,
+		});
+		if (moved._nay) {
+			throw new Error(moved._nay.message);
+		}
+		const discarded = await asUser.mutation(api.files_pending_updates.discard_file_pending_structural, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+		});
+		expect(discarded._nay).toBeUndefined();
+		const node = await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId));
+		expect(node).toBeNull();
+	});
+	test("agent mv on an eager created file applies the move directly and keeps the Added row", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/qa-mv-src/qa-mv-eager.md",
+				name: "qa-mv-eager.md",
+				markdown: "# Base",
+			}),
+		);
+		const srcFolderId = await t.run(async (ctx) =>
+			seed_folder_node({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				path: "/qa-mv-src",
+				name: "qa-mv-src",
+			}),
+		);
+		const destFolderId = await t.run(async (ctx) =>
+			seed_folder_node({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				path: "/qa-mv-dst",
+				name: "qa-mv-dst",
+			}),
+		);
+		const asUser = t.withIdentity({
+			issuer: "https://clerk.test",
+			external_id: seeded.userId,
+			name: "Test User",
+		});
+		const threadA = await t.run((ctx) =>
+			seed_chat_thread({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+			}),
+		);
+		const threadB = await t.run((ctx) =>
+			seed_chat_thread({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+			}),
+		);
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown: `${seeded.baseMarkdown}\n\nAgent content`,
+			unstagedMarkdown: `${seeded.baseMarkdown}\n\nAgent content`,
+			eagerCreatedCommittedSequence: 0,
+			eagerCreatedAncestorIds: [srcFolderId],
+			threadId: threadA,
+		});
+		if (upserted._nay) {
+			throw new Error(upserted._nay.message);
+		}
+		const rowBeforeMove = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		// The agent's mv applies the move directly: the node only exists as this user's pending
+		// create, so there is no committed state to review the move against. The moving thread
+		// still joins the doc's contributor set so the row shows under it in the source filter.
+		const proposed = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			destParentId: destFolderId,
+			destName: "qa-mv-eager.md",
+			threadId: threadB,
+		});
+		if (proposed._nay) {
+			throw new Error(proposed._nay.message);
+		}
+		expect(proposed._yay.appliedImmediately).toBe(true);
+		const node = await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId));
+		expect(node?.path).toBe("/qa-mv-dst/qa-mv-eager.md");
+		// The doc keeps its content proposal with no pendingMove; the row follows the node path.
+		const rowAfterMove = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		expect(rowAfterMove?.pendingMove).toBeUndefined();
+		expect(rowAfterMove?.stagedStateId).not.toBeNull();
+		expect(rowAfterMove?.threadIds).toEqual([threadA, threadB]);
+		expect(rowAfterMove?.updatedAt).toBeGreaterThan(rowBeforeMove?.updatedAt ?? 0);
+		const saved = await asUser.action(api.files_pending_updates.save_file_pending_update, {
+			membershipId: seeded.membershipId,
+			nodeId: seeded.nodeId,
+		});
+		expect(saved._nay).toBeUndefined();
+		const rowAfterSave = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		expect(rowAfterSave).toBeNull();
+	});
+
+	test("agent mv of an eager created file onto an occupied path stays a reviewable pending move", async () => {
+		const t = test_convex();
+		const seeded = await t.run(async (ctx) =>
+			seed_file_with_markdown({
+				ctx,
+				path: "/qa-mv-src2/qa-mv-eager2.md",
+				name: "qa-mv-eager2.md",
+				markdown: "# Base",
+			}),
+		);
+		const srcFolderId = await t.run(async (ctx) =>
+			seed_folder_node({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				path: "/qa-mv-src2",
+				name: "qa-mv-src2",
+			}),
+		);
+		const destFolderId = await t.run(async (ctx) =>
+			seed_folder_node({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				path: "/qa-mv-dst2",
+				name: "qa-mv-dst2",
+			}),
+		);
+		// A committed occupant already owns the destination path.
+		await t.run(async (ctx) => {
+			const occupant = await seed_file_with_markdown({
+				ctx,
+				path: "/qa-mv-dst2/qa-mv-eager2.md",
+				name: "qa-mv-eager2.md",
+				markdown: "# Existing",
+				membership: {
+					userId: seeded.userId,
+					organizationId: seeded.organizationId,
+					workspaceId: seeded.workspaceId,
+					membershipId: seeded.membershipId,
+				},
+			});
+			await ctx.db.patch("files_nodes", occupant.nodeId, { parentId: destFolderId });
+		});
+		const upserted = await upsert_file_pending_update_internal_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			stagedMarkdown: `${seeded.baseMarkdown}\n\nAgent content`,
+			unstagedMarkdown: `${seeded.baseMarkdown}\n\nAgent content`,
+			eagerCreatedCommittedSequence: 0,
+			eagerCreatedAncestorIds: [srcFolderId],
+		});
+		if (upserted._nay) {
+			throw new Error(upserted._nay.message);
+		}
+		const proposed = await upsert_file_pending_move_for_test({
+			t,
+			organizationId: seeded.organizationId,
+			workspaceId: seeded.workspaceId,
+			userId: seeded.userId,
+			nodeId: seeded.nodeId,
+			destParentId: destFolderId,
+			destName: "qa-mv-eager2.md",
+			replace: true,
+		});
+		if (proposed._nay) {
+			throw new Error(proposed._nay.message);
+		}
+		// The occupant's fate is reviewable, so the move stays a proposal.
+		expect(proposed._yay.appliedImmediately).toBe(false);
+		expect(proposed._yay.replacesExistingOccupant).toBe(true);
+		const node = await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId));
+		expect(node?.path).toBe("/qa-mv-src2/qa-mv-eager2.md");
+		const row = await t.run((ctx) =>
+			read_pending_update_row({
+				ctx,
+				organizationId: seeded.organizationId,
+				workspaceId: seeded.workspaceId,
+				userId: seeded.userId,
+				nodeId: seeded.nodeId,
+			}),
+		);
+		expect(row?.pendingMove?.destName).toBe("qa-mv-eager2.md");
 	});
 });

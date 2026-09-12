@@ -1393,7 +1393,6 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 // #region tree item primary content
 type FilesSidebarTreeItemPrimaryContent_ClassNames =
 	| "FilesSidebarTreeItemPrimaryContent"
-	| "FilesSidebarTreeItemPrimaryContent-added"
 	| "FilesSidebarTreeItemPrimaryContent-processing"
 	| "FilesSidebarTreeItemPrimaryContent-read-only";
 
@@ -1401,7 +1400,6 @@ type FilesSidebarTreeItemPrimaryContent_Props = {
 	title: string;
 	kind: files_TreeItem["kind"];
 	nodeId: app_convex_Id<"files_nodes"> | null;
-	isAddedFile: boolean;
 	renameInputProps: ReturnType<FilesSidebarTreeItem_Instance["getRenameInputProps"]>;
 	isRenaming: boolean;
 	isRestricted: boolean;
@@ -1417,7 +1415,6 @@ const FilesSidebarTreeItemPrimaryContent = memo(function FilesSidebarTreeItemPri
 		title,
 		kind,
 		nodeId,
-		isAddedFile,
 		renameInputProps,
 		isRenaming,
 		isRestricted,
@@ -1452,13 +1449,6 @@ const FilesSidebarTreeItemPrimaryContent = memo(function FilesSidebarTreeItemPri
 				renameError={renameError}
 				onRenameErrorClear={onRenameErrorClear}
 			/>
-			{isAddedFile ? (
-				<div
-					className={"FilesSidebarTreeItemPrimaryContent-added" satisfies FilesSidebarTreeItemPrimaryContent_ClassNames}
-				>
-					Added
-				</div>
-			) : null}
 			{isProcessing ? (
 				<div
 					className={
@@ -1879,16 +1869,6 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 	const updatedByDisplayName = displayNameByUserId.get(itemData.updatedBy) ?? "Unknown";
 	const shouldRenderPlaceholder = !isSearchActive && itemData.kind === "folder" && !hasChildren && isExpanded;
 
-	// Convex dedupes this subscription across rows; eagerCreated marks files that exist
-	// only as this user's pending Added proposal (bash writes, write_file, cp). Computed
-	// here so the row's aria label announces the Added state like the archived one.
-	const { membershipId } = AppTenantProvider.useContext();
-	const pendingUpdates = useQuery(app_convex_api.files_pending_updates.list_files_pending_updates, { membershipId });
-	const isAddedFile =
-		files_is_node(itemData) &&
-		(pendingUpdates ?? []).some(
-			(pendingUpdate) => pendingUpdate.fileNodeId === itemId && pendingUpdate.eagerCreated != null,
-		);
 	const wrapperElementRef = useRef<HTMLDivElement | null>(null);
 	const handleWrapperRef = useFn((element: HTMLDivElement | null) => {
 		wrapperElementRef.current = element;
@@ -1927,7 +1907,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 		writeBlockedReason: itemData.writeBlockedReason,
 		hasVisibleReadOnlyDescendant,
 	});
-	const label = `${itemData.name}${isAddedFile ? " added" : ""}${isRestricted ? " restricted" : ""}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}${isArchived ? " archived" : ""}`;
+	const label = `${itemData.name}${isRestricted ? " restricted" : ""}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}${isArchived ? " archived" : ""}`;
 
 	const handleCreateFileClick = useFn<FilesSidebarTreeItemSecondaryAction_Props["onClick"]>(() => {
 		onCreateNode(itemId, "file");
@@ -2126,7 +2106,6 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 							title={itemData.name}
 							kind={itemData.kind}
 							nodeId={files_is_node(itemData) ? (itemId as app_convex_Id<"files_nodes">) : null}
-							isAddedFile={isAddedFile}
 							renameInputProps={renameInputProps}
 							isRenaming={isRenaming}
 							isRestricted={isRestricted}

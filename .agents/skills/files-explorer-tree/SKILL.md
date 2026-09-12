@@ -197,7 +197,7 @@ Tree-item components:
 - Folder primary action navigates to the folder screen.
 - The selection anchor drives active-track highlighting.
 - The current route/navigated row uses a stable row-left accent rail instead of bold text. Keep row labels regular weight so selection does not change text metrics. The rail belongs only to navigated rows. The navigated row's fill is a neutral base gradient, not an accent tint: the rail alone carries the accent "current" signal. Internal Headless Tree focus and pointer hover are not selection and must not paint the selected row surface after pointer clicks; hover can brighten row text, while `:focus-visible` keeps the keyboard interaction surface. Idle non-selected rows use one quieter foreground shade and brighten to the navigated-row lightness on hover, selected, and navigated states. Keyboard focus must stay as the top visual layer: keep the focus ring continuous, keep the rail visible just inside it, and remove idle title input chrome so row names render as plain text outside rename mode. The disabled title input must inherit the row color; otherwise only icons dim while filenames remain too bright.
-- Rows are single-line: only the icon, the name, and the inline `Added`/`Processing` badges. The updated-when/by info lives in the row tooltip, not in the row itself.
+- Rows are single-line: only the icon, the name, and the inline `Processing` badge. The tree never marks pending-change state — that lives in the Pending changes panel only. The updated-when/by info lives in the row tooltip, not in the row itself.
 
 ## Create, Rename, Archive, Unarchive
 

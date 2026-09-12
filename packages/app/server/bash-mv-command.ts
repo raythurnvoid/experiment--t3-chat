@@ -4,12 +4,33 @@ import type { ActionCtx } from "../convex/_generated/server.js";
 import type { Id } from "../convex/_generated/dataModel";
 import type { files_nodes_get_by_path_Result } from "../convex/files_nodes.ts";
 import type { upsert_file_pending_move_in_db_Result } from "../convex/files_pending_updates.ts";
-import { files_ROOT_ID, files_SYNTHETIC_ROOT_FOLDER, files_get_normalized_node_path_segments } from "../shared/files.ts";
-import { organizations_is_global_organization_id, organizations_is_reserved_workspace_id } from "../shared/organizations.ts";
+import {
+	files_ROOT_ID,
+	files_SYNTHETIC_ROOT_FOLDER,
+	files_get_normalized_node_path_segments,
+} from "../shared/files.ts";
+import {
+	organizations_is_global_organization_id,
+	organizations_is_reserved_workspace_id,
+} from "../shared/organizations.ts";
 import { should_never_happen } from "../shared/shared-utils.ts";
 import { path_name_of } from "../shared/paths.ts";
 import { path_join } from "./server-utils.ts";
-import { bash_create_glob_syntax_unsupported_message, bash_current_workspace_path_to_db_files_path, bash_db_files_path_to_current_workspace_path, bash_GLOB_METACHARACTER_REGEX, bash_is_path_under_current_workspace_path, bash_is_path_under_read_only_mounts, bash_parse_cp_mv_operands, bash_resolve_path, bash_shell_arg_quote, bash_read_only_mount_error, bash_COMMAND_EXIT_FAILURE, bash_COMMAND_EXIT_USAGE, type bash_DbFilesRoots } from "./bash-utils.ts";
+import {
+	bash_create_glob_syntax_unsupported_message,
+	bash_current_workspace_path_to_db_files_path,
+	bash_db_files_path_to_current_workspace_path,
+	bash_GLOB_METACHARACTER_REGEX,
+	bash_is_path_under_current_workspace_path,
+	bash_is_path_under_read_only_mounts,
+	bash_parse_cp_mv_operands,
+	bash_resolve_path,
+	bash_shell_arg_quote,
+	bash_read_only_mount_error,
+	bash_COMMAND_EXIT_FAILURE,
+	bash_COMMAND_EXIT_USAGE,
+	type bash_DbFilesRoots,
+} from "./bash-utils.ts";
 import { bash_delegate_builtin_command } from "./bash-delegate.ts";
 
 /**
@@ -68,7 +89,10 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 		}
 
 		for (const operand of appOperands) {
-			const path = bash_current_workspace_path_to_db_files_path(currentWorkspacePath, bash_resolve_path(commandCtx.cwd, operand));
+			const path = bash_current_workspace_path_to_db_files_path(
+				currentWorkspacePath,
+				bash_resolve_path(commandCtx.cwd, operand),
+			);
 			if (path != null) dbFilesRoots.app.fs.observePath(path);
 			if (bash_GLOB_METACHARACTER_REGEX.test(operand)) {
 				return {
@@ -429,15 +453,17 @@ export function bash_mv_command_create(ctx: ActionCtx, dbFilesRoots: bash_DbFile
 		// when the source or the destination folder has its own pending move. A cancel clears the
 		// move, so the committed destPath is the visible path again.
 		return {
-			stdout: proposed._yay.cancelledExistingMove
-				? `pending move cancelled: the file stays at ${proposed._yay.destPath}\n`
-				: proposed._yay.replacesExistingOccupant
-					? // Only same-kind replacements ever validate, so the source kind names the occupant
-						// (the replaced occupant can be a newcomer the pre-mutation reads never saw).
-						sourceNode.kind === "folder"
-						? `pending move created: ${sourceDbFilesPath} -> ${intendedDestPath} — replaces the empty folder when accepted; review in Files\n`
-						: `pending move created: ${sourceDbFilesPath} -> ${intendedDestPath} — replaces the existing file when accepted; review in Files\n`
-					: `pending move created: ${sourceDbFilesPath} -> ${intendedDestPath} — review in Files\n`,
+			stdout: proposed._yay.appliedImmediately
+				? `moved ${sourceDbFilesPath} -> ${intendedDestPath}\n`
+				: proposed._yay.cancelledExistingMove
+					? `pending move cancelled: the file stays at ${proposed._yay.destPath}\n`
+					: proposed._yay.replacesExistingOccupant
+						? // Only same-kind replacements ever validate, so the source kind names the occupant
+							// (the replaced occupant can be a newcomer the pre-mutation reads never saw).
+							sourceNode.kind === "folder"
+							? `pending move created: ${sourceDbFilesPath} -> ${intendedDestPath} — replaces the empty folder when accepted; review in Files\n`
+							: `pending move created: ${sourceDbFilesPath} -> ${intendedDestPath} — replaces the existing file when accepted; review in Files\n`
+						: `pending move created: ${sourceDbFilesPath} -> ${intendedDestPath} — review in Files\n`,
 			stderr: "",
 			exitCode: 0,
 		};

@@ -429,6 +429,7 @@ async function files_pending_row_accept(
 		return Result({ _nay: { message: files_PENDING_UPDATE_STALE_BASE_MESSAGE } });
 	}
 
+	let updatedPendingUpdate = pendingUpdate;
 	if (pendingUpdate.pendingMove) {
 		const moved = await convex.mutation(app_convex_api.files_pending_updates.apply_file_pending_move, {
 			membershipId,
@@ -440,18 +441,43 @@ async function files_pending_row_accept(
 		if (moved._nay || (!files_pending_update_has_content(pendingUpdate) && !pendingUpdate.pendingReplacement)) {
 			return moved;
 		}
-	}
-
-	// A whole-file copy is accepted as a whole. There are no hunks to stage.
-	if (pendingUpdate.pendingReplacement) {
-		return await convex.action(app_convex_api.files_pending_updates.accept_file_pending_replacement, {
+		// Applying the move settled the structural aspect and bumped `updatedAt`, so the
+		// captured doc is stale: the content publish below anchors `reviewedUpdatedAt` on the
+		// version that exists now. A vanished doc means the row was settled elsewhere between
+		// the calls — that is a done row, not a failure.
+		const settled = await convex.query(app_convex_api.files_pending_updates.get_file_pending_update, {
 			membershipId,
 			nodeId: pendingUpdate.fileNodeId,
 			pendingUpdateId: pendingUpdate._id,
 		});
+		if (!settled) {
+			return Result({ _yay: null });
+		}
+		// The settle only clears `pendingMove` and bumps `updatedAt`; the content branches and
+		// replacement asset stay untouched. A different state id means the agent revised the
+		// proposal between the review and this click — publishing it would accept content the
+		// user never saw, so refuse like the reviewed-version guard does.
+		if (
+			settled.baseStateId !== pendingUpdate.baseStateId ||
+			settled.stagedStateId !== pendingUpdate.stagedStateId ||
+			settled.unstagedStateId !== pendingUpdate.unstagedStateId ||
+			settled.pendingReplacement?.assetId !== pendingUpdate.pendingReplacement?.assetId
+		) {
+			return Result({ _nay: { message: "Pending changes were revised, review the latest version" } });
+		}
+		updatedPendingUpdate = settled;
 	}
 
-	return await files_pending_accept_and_save(convex, membershipId, pendingUpdate, rootKind);
+	// A whole-file copy is accepted as a whole. There are no hunks to stage.
+	if (updatedPendingUpdate.pendingReplacement) {
+		return await convex.action(app_convex_api.files_pending_updates.accept_file_pending_replacement, {
+			membershipId,
+			nodeId: updatedPendingUpdate.fileNodeId,
+			pendingUpdateId: updatedPendingUpdate._id,
+		});
+	}
+
+	return await files_pending_accept_and_save(convex, membershipId, updatedPendingUpdate, rootKind);
 }
 
 /**
@@ -1224,7 +1250,8 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 	// everything (a delete supersedes the doc's other aspects). The replace indicator wins the
 	// next slot: a move onto an occupied destination archives that file, so mark it as Replaced.
 	// Copy and replacement rows also show Replaced: accepting them installs a whole-file replacement
-	// (content and type). Plain edits show Modified. Old proposals point the owner to Review.
+	// (content and type). A content-plus-move row compounds: the edits stay Modified (or Added) and
+	// the move adds Moved. Plain edits show Modified. Old proposals point the owner to Review.
 	// An archived target still accepts — the file stays archived — so the row says so.
 	const caption =
 		(kind === "delete"
@@ -1233,17 +1260,17 @@ const FileEditorSidebarPendingItem = memo(function FileEditorSidebarPendingItem(
 				? "Review to update"
 				: replacedNodeId != null
 					? "Replaced"
-					: isAddedFile
-						? "Added"
-						: kind === "content_and_move"
-							? "Moved"
+					: kind === "content_and_move"
+						? `${isAddedFile ? "Added" : "Modified"} · Moved`
+						: isAddedFile
+							? "Added"
 							: kind === "copy" || kind === "replacement"
 								? "Replaced"
 								: "Modified") + (isArchived ? " · Archived" : "");
 
 	// Content-plus-move rows show the same red → green move label as move-only rows; the link
 	// still opens the diff. Delete rows always show only their own path. The stale suffix gives
-	// assistive tech the caption's meaning, like the tree's " added" suffix.
+	// assistive tech the caption's meaning.
 	const rowLabel =
 		(kind === "move" || kind === "content_and_move") && moveDestinationPath != null
 			? `${path} → ${moveDestinationPath}`

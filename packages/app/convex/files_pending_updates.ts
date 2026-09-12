@@ -25,6 +25,7 @@ import {
 	files_nodes_db_require_user_writable,
 	type files_nodes_get_user_file_write_access_Result,
 	files_nodes_db_apply_pending_move,
+	files_nodes_db_apply_node_move,
 	files_nodes_db_archive_nodes,
 	files_nodes_db_can_act_on_swept_nodes,
 	files_nodes_db_collect_descendants,
@@ -3637,6 +3638,8 @@ export const upsert_file_pending_move_in_db = internalMutation({
 			replacesExistingOccupant: v.boolean(),
 			/** True when the mv targeted the node's committed path and only cancelled its pending move. */
 			cancelledExistingMove: v.boolean(),
+			/** True when the node only exists as a pending create and the move applied immediately. */
+			appliedImmediately: v.boolean(),
 		}),
 	}),
 	handler: async (ctx, args) => {
@@ -3701,6 +3704,7 @@ export const upsert_file_pending_move_in_db = internalMutation({
 						destPath: sourceNode.path,
 						replacesExistingOccupant: false,
 						cancelledExistingMove: true,
+						appliedImmediately: false,
 					},
 				});
 			}
@@ -3788,17 +3792,85 @@ export const upsert_file_pending_move_in_db = internalMutation({
 		});
 
 		const now = Date.now();
+		// Contributor set: an agent mv records its thread once per doc; client moves pass no threadId.
+		const nextThreadIds =
+			args.threadId && !existingPendingUpdate?.threadIds?.includes(args.threadId)
+				? [...(existingPendingUpdate?.threadIds ?? []), args.threadId]
+				: undefined;
+
+		// A pending-created node has no committed file to review a move against: the move applies
+		// to its pending change directly, like a manual sidebar move — the Added row follows the
+		// new path. Only when the committed destination is free: a path the visible tree shows as
+		// free because of another pending move still belongs to a committed node, and replacing an
+		// occupant stays reviewable, so both fall through to the proposal below.
+		if (existingPendingUpdate?.eagerCreated != null && !replacesNode) {
+			const committedOccupant = await ctx.db
+				.query("files_nodes")
+				.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+					q
+						.eq("organizationId", args.organizationId)
+						.eq("workspaceId", args.workspaceId)
+						.eq("parentId", args.destParentId)
+						.eq("name", args.destName)
+						.eq("archiveOperationId", null),
+				)
+				.first();
+			if (!committedOccupant || committedOccupant._id === node._id) {
+				// The pending path defers this check to accept; an immediate move asks it now.
+				const authorizedLeaving = await authorize_leaving_restricted_scope(ctx, {
+					userAuth: { id: args.userId },
+					membership,
+					fileNode: node,
+					destParentId: args.destParentId,
+				});
+				if (authorizedLeaving._nay) {
+					return authorizedLeaving;
+				}
+				await files_nodes_db_apply_node_move(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					node,
+					destParentId: args.destParentId,
+					destName: args.destName,
+					destPath,
+					updatedBy: args.userId,
+					now,
+				});
+				// A pending move already on the doc (staged before this rule) is settled for real.
+				if (existingPendingUpdate.pendingMove) {
+					await files_pending_update_db_settle_move_row(ctx, { pendingUpdate: existingPendingUpdate });
+				}
+				// The mv still touched this proposal: record its thread and refresh the row's
+				// expiry, or a moved Added file could die on the creation-time deadline.
+				const settledAt = Date.now();
+				await Promise.all([
+					ctx.db.patch("files_pending_updates", existingPendingUpdate._id, {
+						...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
+						updatedAt: settledAt,
+					}),
+					files_db_schedule_pending_update_cleanup(ctx, {
+						pendingUpdateId: existingPendingUpdate._id,
+						expectedUpdatedAt: settledAt,
+					}),
+				]);
+				return Result({
+					_yay: {
+						fromPath: node.path,
+						destPath,
+						replacesExistingOccupant: false,
+						cancelledExistingMove: false,
+						appliedImmediately: true,
+					},
+				});
+			}
+		}
+
 		const pendingMove = {
 			destParentId: args.destParentId,
 			destName: args.destName,
 			fromPath: node.path,
 			...(replacesNode ? { replacesNodeId: replacesNode._id } : {}),
 		};
-		// Contributor set: an agent mv records its thread once per doc; client moves pass no threadId.
-		const nextThreadIds =
-			args.threadId && !existingPendingUpdate?.threadIds?.includes(args.threadId)
-				? [...(existingPendingUpdate?.threadIds ?? []), args.threadId]
-				: undefined;
 		if (!existingPendingUpdate) {
 			const pendingUpdateId = await ctx.db.insert("files_pending_updates", {
 				organizationId: args.organizationId,
@@ -3835,6 +3907,7 @@ export const upsert_file_pending_move_in_db = internalMutation({
 				destPath,
 				replacesExistingOccupant: replacesNode != null,
 				cancelledExistingMove: false,
+				appliedImmediately: false,
 			},
 		});
 	},

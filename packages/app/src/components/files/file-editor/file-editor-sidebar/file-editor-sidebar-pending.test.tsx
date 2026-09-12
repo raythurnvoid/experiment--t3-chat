@@ -12,6 +12,7 @@ const {
 	treeNodesMock,
 	actionMock,
 	mutationMock,
+	queryMock,
 	fetchFileYjsStateAndTextMock,
 	fetchPendingStateMock,
 	upsertPendingMock,
@@ -23,6 +24,7 @@ const {
 	treeNodesMock: vi.fn(),
 	actionMock: vi.fn(),
 	mutationMock: vi.fn(),
+	queryMock: vi.fn(),
 	fetchFileYjsStateAndTextMock: vi.fn(),
 	fetchPendingStateMock: vi.fn(),
 	upsertPendingMock: vi.fn(),
@@ -40,7 +42,7 @@ vi.mock("convex/react", () => ({
 		),
 		...((useQueriesMock(queries) as Record<string, unknown> | undefined) ?? {}),
 	}),
-	useConvex: () => ({ action: actionMock, mutation: mutationMock }),
+	useConvex: () => ({ action: actionMock, mutation: mutationMock, query: queryMock }),
 }));
 
 // Feed the complete tree separately from the pending-update queries.
@@ -69,6 +71,7 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 		},
 		files_pending_updates: {
 			list_files_pending_updates: "list_files_pending_updates",
+			get_file_pending_update: "get_file_pending_update",
 			discard_file_pending_content: "discard_file_pending_content",
 			upsert_file_pending_update: "upsert_file_pending_update",
 			save_file_pending_update: "save_file_pending_update",
@@ -151,6 +154,8 @@ import { files_u8_to_array_buffer } from "@/lib/files.ts";
  * component decodes them through the real byte->text bridge.
  */
 const pendingStateBytesByStateId = new Map<string, ArrayBuffer>();
+// Fixture docs by id so the get_file_pending_update mock can serve the post-move version.
+const pendingDocsById = new Map<string, app_convex_Doc<"files_pending_updates">>();
 function registerPendingState(stateId: string, text: string) {
 	// Always overwrite: tests reuse fixture ids with different texts.
 	const yjsDoc = files_yjs_doc_create_from_text({ text, rootKind: "rich_text" });
@@ -179,7 +184,7 @@ function makePendingUpdate(args: {
 	baseAssetId?: string;
 	contentNeedsRebase?: true;
 }): app_convex_Doc<"files_pending_updates"> {
-	return {
+	const doc = {
 		_id: args.id,
 		_creationTime: 0,
 		organizationId: "organization_1",
@@ -205,6 +210,8 @@ function makePendingUpdate(args: {
 		size: 0,
 		updatedAt: 1,
 	} as unknown as app_convex_Doc<"files_pending_updates">;
+	pendingDocsById.set(doc._id, doc);
+	return doc;
 }
 
 function makeThread(args: { id: string; title: string | null; archived?: boolean; lastMessageAt?: number }) {
@@ -284,6 +291,15 @@ beforeEach(() => {
 	actionMock.mockResolvedValue({ _yay: null });
 	mutationMock.mockReset();
 	mutationMock.mockResolvedValue({ _yay: null });
+	queryMock.mockReset();
+	// Mirror `files_pending_update_db_settle_move_row`: a settled move clears `pendingMove`
+	// and bumps `updatedAt`, so the re-read returns a newer version than the captured doc.
+	queryMock.mockImplementation(async (_ref: unknown, args: { pendingUpdateId?: string }) => {
+		const doc = args.pendingUpdateId ? pendingDocsById.get(args.pendingUpdateId) : undefined;
+		return doc
+			? { ...doc, pendingMove: undefined, updatedAt: doc.updatedAt + 1, currentYjsLastSequenceId: null }
+			: null;
+	});
 	fetchFileYjsStateAndTextMock.mockReset();
 	fetchFileYjsStateAndTextMock.mockResolvedValue({ text: { _yay: "Committed content\n" } });
 	fetchPendingStateMock.mockReset();
@@ -1518,7 +1534,7 @@ describe("FileEditorSidebarPending", () => {
 		});
 	});
 
-	test("mixed row keeps the accordion and shows the from → dest move label", () => {
+	test("mixed row keeps the accordion, compounds the caption, and shows the from → dest move label", () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({
 				id: "pu_mixed",
@@ -1537,9 +1553,29 @@ describe("FileEditorSidebarPending", () => {
 		expect(link.getAttribute("title")).toBe("/a.md → /b.md");
 		expect(container.querySelector(".FileEditorSidebarPending-item-move-label-from")?.textContent).toBe("/a.md");
 		expect(container.querySelector(".FileEditorSidebarPending-item-move-label-to")?.textContent).toBe("/b.md");
-		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Moved");
+		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Modified · Moved");
 		expect(container.querySelector("details")).toBeTruthy();
 		expect(screen.getByText("Accept")).toBeTruthy();
+	});
+
+	test("mixed row on a pending-created file compounds the caption as Added · Moved", () => {
+		// Reachable only through the occupied-destination fallback: mv on an Added file moves it
+		// directly now, so the compound shape needs a pending move staged onto an eager doc.
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_mixed_added",
+				fileNodeId: "node_a",
+				staged: "s",
+				unstaged: "u",
+				eagerCreated: { committedSequence: 0 },
+				pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md" },
+			}),
+		]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+
+		const { container } = render(<FileEditorSidebarPending />);
+
+		expect(container.querySelector(".FileEditorSidebarPending-item-caption")?.textContent).toBe("Added · Moved");
 	});
 
 	test("move row ignores a declared target that left the destination path", () => {
@@ -1888,7 +1924,7 @@ describe("FileEditorSidebarPending", () => {
 		expect(mutationMock).not.toHaveBeenCalled();
 	});
 
-	test("mixed Accept applies the move first, then accepts and saves the content", async () => {
+	test("mixed Accept applies the move first, then re-reads the doc and saves the content", async () => {
 		useQueryMock.mockReturnValue([
 			makePendingUpdate({
 				id: "pu_mixed",
@@ -1909,11 +1945,18 @@ describe("FileEditorSidebarPending", () => {
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
 		});
+		// The move settle bumped the doc's `updatedAt`; the publish must anchor on the
+		// re-read version (2), not the version the row was rendered with (1).
+		expect(queryMock).toHaveBeenCalledWith("get_file_pending_update", {
+			membershipId: MEMBERSHIP_ID,
+			nodeId: "node_a",
+			pendingUpdateId: "pu_mixed",
+		});
 		expect(upsertPendingMock).toHaveBeenCalledWith({
 			membershipId: MEMBERSHIP_ID,
 			nodeId: "node_a",
 			pendingUpdateId: "pu_mixed",
-			reviewedUpdatedAt: 1,
+			reviewedUpdatedAt: 2,
 			stagedText: "UNSTAGED_MD\n",
 			unstagedText: "UNSTAGED_MD\n",
 		});
@@ -1923,9 +1966,57 @@ describe("FileEditorSidebarPending", () => {
 			pendingUpdateId: "pu_mixed",
 			reviewedUpdatedAt: 2,
 		});
-		expect(mutationMock.mock.invocationCallOrder[0] ?? 0).toBeLessThan(
-			upsertPendingMock.mock.invocationCallOrder[0] ?? 0,
+		expect(mutationMock.mock.invocationCallOrder[0] ?? 0).toBeLessThan(queryMock.mock.invocationCallOrder[0] ?? 0);
+		expect(queryMock.mock.invocationCallOrder[0] ?? 0).toBeLessThan(upsertPendingMock.mock.invocationCallOrder[0] ?? 0);
+	});
+
+	test("mixed Accept is a no-op success when the doc was settled elsewhere after the move applied", async () => {
+		useQueryMock.mockReturnValue([
+			makePendingUpdate({
+				id: "pu_mixed",
+				fileNodeId: "node_a",
+				staged: "STAGED_MD",
+				unstaged: "UNSTAGED_MD",
+				pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md" },
+			}),
+		]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+		queryMock.mockResolvedValue(null);
+
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByText("Accept"));
+
+		// The row was settled by another accept between the move and the re-read — a done row,
+		// not a failure.
+		await waitFor(() => expect(mutationMock).toHaveBeenCalledWith("apply_file_pending_move", expect.anything()));
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(toast.error).not.toHaveBeenCalled();
+		expect(upsertPendingMock).not.toHaveBeenCalled();
+		expect(actionMock).not.toHaveBeenCalled();
+	});
+
+	test("mixed Accept refuses when the agent revised the content between view and click", async () => {
+		const doc = makePendingUpdate({
+			id: "pu_mixed",
+			fileNodeId: "node_a",
+			staged: "STAGED_MD",
+			unstaged: "UNSTAGED_MD",
+			pendingMove: { destParentId: "root", destName: "b.md", fromPath: "/a.md" },
+		});
+		useQueryMock.mockReturnValue([doc]);
+		treeNodesMock.mockReturnValue([makeNode({ id: "node_a", path: "/a.md" })]);
+		// The agent wrote a new revision after the user reviewed: the re-read doc carries
+		// different state ids, so the publish must not accept content the user never saw.
+		queryMock.mockResolvedValue({ ...doc, pendingMove: undefined, unstagedStateId: "u2" });
+
+		render(<FileEditorSidebarPending />);
+		fireEvent.click(screen.getByText("Accept"));
+
+		await waitFor(() =>
+			expect(toast.error).toHaveBeenCalledWith("Pending changes were revised, review the latest version"),
 		);
+		expect(upsertPendingMock).not.toHaveBeenCalled();
+		expect(actionMock).not.toHaveBeenCalled();
 	});
 
 	test("mixed Discard reverts the content first, then discards the move", async () => {

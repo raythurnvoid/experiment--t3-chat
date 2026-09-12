@@ -3898,7 +3898,7 @@ export async function files_nodes_db_validate_pending_move_target_for_accept(
 /**
  * Patch one node to its destination and fan out the denormalized paths (chunk scope, descendants).
  **/
-async function db_apply_node_move(
+export async function files_nodes_db_apply_node_move(
 	ctx: MutationCtx,
 	args: {
 		organizationId: Id<"organizations">;
@@ -4218,7 +4218,7 @@ export async function files_nodes_db_apply_pending_move(
 					finalPaths.push(`/${segments.join("/")}`);
 				}
 				for (const [index, move] of finalMoves.entries()) {
-					await db_apply_node_move(ctx, {
+					await files_nodes_db_apply_node_move(ctx, {
 						organizationId: args.organizationId,
 						workspaceId: args.workspaceId,
 						node: move.node,
@@ -4290,7 +4290,7 @@ export async function files_nodes_db_apply_pending_move(
 			now,
 		});
 	}
-	await db_apply_node_move(ctx, {
+	await files_nodes_db_apply_node_move(ctx, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
 		node,
@@ -4838,7 +4838,7 @@ export const move_nodes = mutation({
 					writePolicy: null,
 				});
 			}
-			// Same rule as `db_apply_node_move`: the node inherits the restricted scope of where it
+			// Same rule as `files_nodes_db_apply_node_move`: the node inherits the restricted scope of where it
 			// landed, unless it is the restricted node itself, which carries its own subtree with it.
 			// This mutation patches nodes by hand instead of going through that helper, so the rule has
 			// to be applied here too.
@@ -5580,11 +5580,7 @@ function get_public_node_fields(
 	readableSource: Pick<Doc<"files_nodes">, "_id" | "path"> | null,
 	writeBlockedReason: "permission" | "read_only" | null,
 ) {
-	const {
-		writePolicyScopeNodeId,
-		writePolicy: _writePolicy,
-		...rest
-	} = fileNode;
+	const { writePolicyScopeNodeId, writePolicy: _writePolicy, ...rest } = fileNode;
 
 	// Keep these values as exact literals so they match the return validator.
 	const writePolicyState =
@@ -6804,7 +6800,11 @@ async function files_read_prefix_from_ordered_chunks(
 		const bytes = new TextEncoder().encode(content);
 		if (bytes.byteLength > maxBytes) {
 			// Streaming decode drops an unfinished UTF-8 character at the byte boundary.
-			return { hasChunks, content: new TextDecoder().decode(bytes.subarray(0, maxBytes), { stream: true }), moreLines: true };
+			return {
+				hasChunks,
+				content: new TextDecoder().decode(bytes.subarray(0, maxBytes), { stream: true }),
+				moreLines: true,
+			};
 		}
 	}
 	return { hasChunks, content, moreLines: false };
@@ -7173,9 +7173,18 @@ export const read_file_content_from_chunks = internalQuery({
 						.withIndex("by_pendingUpdate_chunkIndex", (q) => q.eq("pendingUpdateId", pendingUpdate._id));
 
 					if (args.mode.kind === "prefix") {
-						const prefix = await files_read_prefix_from_ordered_chunks(chunks, Math.max(0, Math.min(files_READ_RANGE_MAX_BYTES, args.mode.maxBytes)));
+						const prefix = await files_read_prefix_from_ordered_chunks(
+							chunks,
+							Math.max(0, Math.min(files_READ_RANGE_MAX_BYTES, args.mode.maxBytes)),
+						);
 						if (prefix == null || (!prefix.hasChunks && pendingUpdate.size > 0)) return null;
-						return { nodeId: fileNode._id, content: prefix.content, moreLines: prefix.moreLines, pendingUpdateId: pendingUpdate._id, pendingUpdateBaseStateId };
+						return {
+							nodeId: fileNode._id,
+							content: prefix.content,
+							moreLines: prefix.moreLines,
+							pendingUpdateId: pendingUpdate._id,
+							pendingUpdateBaseStateId,
+						};
 					}
 
 					if (args.mode.kind === "full") {
@@ -7268,13 +7277,25 @@ export const read_file_content_from_chunks = internalQuery({
 
 		if (args.mode.kind === "prefix") {
 			const prefix = await files_read_prefix_from_ordered_chunks(
-				ctx.db.query("files_text_chunks").withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
-					q.eq("organizationId", args.organizationId).eq("workspaceId", args.workspaceId).eq("sourceKind", "committed").eq("fileNodeId", fileNode._id),
-				),
+				ctx.db
+					.query("files_text_chunks")
+					.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
+						q
+							.eq("organizationId", args.organizationId)
+							.eq("workspaceId", args.workspaceId)
+							.eq("sourceKind", "committed")
+							.eq("fileNodeId", fileNode._id),
+					),
 				Math.max(0, Math.min(files_READ_RANGE_MAX_BYTES, args.mode.maxBytes)),
 			);
 			if (prefix == null || (!prefix.hasChunks && byteSize > 0)) return null;
-			return { nodeId: fileNode._id, content: prefix.content, moreLines: prefix.moreLines, pendingUpdateId: null, pendingUpdateBaseStateId };
+			return {
+				nodeId: fileNode._id,
+				content: prefix.content,
+				moreLines: prefix.moreLines,
+				pendingUpdateId: null,
+				pendingUpdateBaseStateId,
+			};
 		}
 
 		if (args.mode.kind === "full") {
