@@ -101,6 +101,7 @@ Main sections:
 Tree-item components:
 
 - `FilesSidebarTreeItem`
+- `FilesSidebarTreeRow`
 - `FilesSidebarTreeItemArrow`
 - `FilesSidebarTreeItemTitle`
 - `FilesSidebarTreeItemIcon`
@@ -348,6 +349,14 @@ Do not call `parent.getChildren()` for this check in each row: it loads every si
   `role="presentation"`. Drop-zone height and target checks still use the full visible row list.
 - `FilesSidebarTree` uses `use no memo` because the virtualizer returns a mutable instance. Its row
   components keep their normal memoization. Do not add per-row measurement: heights are fixed.
+- `FilesSidebarTreeItem` reads the current tree values on every tree update. `FilesSidebarTreeRow`
+  compares those snapshots before rendering the row UI. Compare every new render prop, callback,
+  ARIA value, and guide-line set. Never compare old and new values by reading the same mutable tree.
+- Only the active rename row receives rename input props. Idle titles must not receive the global
+  rename value or a fresh rename props object on every keystroke.
+- Arrow and action groups use native disabled fieldsets while pending. This keeps the child menu
+  and tooltip components stable. Keep permission-specific disabling on each create button.
+  Check native disabled state with `:disabled` or Playwright `isDisabled()`, not `button.disabled`.
 
 # Architectural Invariants
 

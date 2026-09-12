@@ -588,6 +588,10 @@
 
 	/* #region tree item arrow */
 	.FilesSidebarTreeItemArrow {
+		min-width: 0;
+		margin: 0;
+		padding: 0;
+		border: 0;
 		grid-row: 1;
 		grid-column: 1;
 
@@ -611,6 +615,10 @@
 
 	/* #region tree item actions */
 	.FilesSidebarTreeItemActions {
+		min-width: 0;
+		margin: 0;
+		padding: 0;
+		border: 0;
 		grid-row: 1;
 		grid-column: 3;
 

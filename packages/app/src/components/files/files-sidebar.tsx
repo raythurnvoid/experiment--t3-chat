@@ -154,6 +154,7 @@ import {
 	type files_YjsRootKind,
 } from "@/lib/files.ts";
 import { format_relative_time } from "@/lib/date.ts";
+import { objects_equal_shallow } from "@/lib/object.ts";
 import { files_search_query_parse } from "../../../shared/files-search-query.ts";
 import { async_all_settled_with_limit } from "@/lib/async.ts";
 import { files_prepare_image_upload_file } from "@/lib/files-image-compression.ts";
@@ -976,14 +977,13 @@ type FilesSidebarTreeItemMoreAction_ClassNames = "FilesSidebarTreeItemMoreAction
 
 type FilesSidebarTreeItemMoreAction_Props = {
 	label: string;
-	isPending: boolean;
 	isFocused: boolean;
 };
 
 const FilesSidebarTreeItemMoreAction = memo(function FilesSidebarTreeItemMoreAction(
 	props: FilesSidebarTreeItemMoreAction_Props,
 ) {
-	const { label, isPending, isFocused } = props;
+	const { label, isFocused } = props;
 
 	return (
 		<MyContextMenuButtonTrigger tabIndex={isFocused ? 0 : -1}>
@@ -991,7 +991,6 @@ const FilesSidebarTreeItemMoreAction = memo(function FilesSidebarTreeItemMoreAct
 				className={cn("FilesSidebarTreeItemMoreAction" satisfies FilesSidebarTreeItemMoreAction_ClassNames)}
 				variant="ghost-highlightable"
 				tooltip={"More actions"}
-				disabled={isPending}
 				aria-label={`More actions for ${label}`}
 			>
 				<MyIconButtonIcon>
@@ -1238,7 +1237,11 @@ const FilesSidebarTreeItemArrow = memo(function FilesSidebarTreeItemArrow(props:
 	const actionLabel = isExpanded ? "Collapse folder" : "Expand folder";
 
 	return (
-		<div className={"FilesSidebarTreeItemArrow" satisfies FilesSidebarTreeItemArrow_ClassNames}>
+		<fieldset
+			className={"FilesSidebarTreeItemArrow" satisfies FilesSidebarTreeItemArrow_ClassNames}
+			disabled={isPending}
+			role="presentation"
+		>
 			<MyIconButton
 				id={files_sidebar_tree_item_arrow_dom_id(itemId)}
 				className={"FilesSidebarTreeItemArrow-icon-button" satisfies FilesSidebarTreeItemArrow_ClassNames}
@@ -1246,13 +1249,12 @@ const FilesSidebarTreeItemArrow = memo(function FilesSidebarTreeItemArrow(props:
 				tooltipSide="bottom"
 				variant="ghost-highlightable"
 				tabIndex={isFocused ? 0 : -1}
-				disabled={isPending}
 				aria-label={`${actionLabel} ${label}`}
 				onClick={onClick}
 			>
 				<MyIconButtonIcon>{isExpanded ? <ChevronDown /> : <ChevronRight />}</MyIconButtonIcon>
 			</MyIconButton>
-		</div>
+		</fieldset>
 	);
 });
 // #endregion tree item arrow
@@ -1261,8 +1263,12 @@ const FilesSidebarTreeItemArrow = memo(function FilesSidebarTreeItemArrow(props:
 type FilesSidebarTreeItemTitle_ClassNames = "FilesSidebarTreeItemTitle" | "FilesSidebarTreeItemTitle-input";
 
 type FilesSidebarTreeItemTitle_Props = {
-	renameInputProps: ReturnType<FilesSidebarTreeItem_Instance["getRenameInputProps"]>;
-	isRenaming: boolean;
+	renameInputProps: {
+		ref: ComponentProps<"input">["ref"];
+		value: string;
+		onChange: (event: { target: { value: string } }) => void;
+		onBlur: () => void;
+	} | null;
 	title: string;
 	kind: files_TreeItem["kind"];
 	renameError: string | undefined;
@@ -1270,9 +1276,10 @@ type FilesSidebarTreeItemTitle_Props = {
 };
 
 const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props: FilesSidebarTreeItemTitle_Props) {
-	const { renameInputProps, isRenaming, title, kind, renameError, onRenameErrorClear } = props;
+	const { renameInputProps, title, kind, renameError, onRenameErrorClear } = props;
 
-	const value = isRenaming ? (renameInputProps.value ?? "") : title;
+	const isRenaming = renameInputProps !== null;
+	const value = isRenaming ? renameInputProps.value : title;
 	const renameInputElementRef = useRef<HTMLInputElement | null>(null);
 
 	const handleRenameInputRef = useFn((element: HTMLInputElement | null) => {
@@ -1365,7 +1372,7 @@ const FilesSidebarTreeItemTitle = memo(function FilesSidebarTreeItemTitle(props:
 				>
 					<MyInputBackground />
 					<FilesNameInputControl
-						{...(isRenaming ? renameInputProps : null)}
+						{...renameInputProps}
 						ref={handleRenameInputRef}
 						kind={kind}
 						className={"FilesSidebarTreeItemTitle-input" satisfies FilesSidebarTreeItemTitle_ClassNames}
@@ -1400,8 +1407,7 @@ type FilesSidebarTreeItemPrimaryContent_Props = {
 	title: string;
 	kind: files_TreeItem["kind"];
 	nodeId: app_convex_Id<"files_nodes"> | null;
-	renameInputProps: ReturnType<FilesSidebarTreeItem_Instance["getRenameInputProps"]>;
-	isRenaming: boolean;
+	renameInputProps: FilesSidebarTreeItemTitle_Props["renameInputProps"];
 	isRestricted: boolean;
 	readOnlyTooltip: string | null;
 	renameError: string | undefined;
@@ -1411,17 +1417,8 @@ type FilesSidebarTreeItemPrimaryContent_Props = {
 const FilesSidebarTreeItemPrimaryContent = memo(function FilesSidebarTreeItemPrimaryContent(
 	props: FilesSidebarTreeItemPrimaryContent_Props,
 ) {
-	const {
-		title,
-		kind,
-		nodeId,
-		renameInputProps,
-		isRenaming,
-		isRestricted,
-		readOnlyTooltip,
-		renameError,
-		onRenameErrorClear,
-	} = props;
+	const { title, kind, nodeId, renameInputProps, isRestricted, readOnlyTooltip, renameError, onRenameErrorClear } =
+		props;
 	const { membershipId } = AppTenantProvider.useContext();
 
 	const activities = useFileNodeActivities({ membershipId, nodeId });
@@ -1443,7 +1440,6 @@ const FilesSidebarTreeItemPrimaryContent = memo(function FilesSidebarTreeItemPri
 			) : null}
 			<FilesSidebarTreeItemTitle
 				renameInputProps={renameInputProps}
-				isRenaming={isRenaming}
 				title={title}
 				kind={kind}
 				renameError={renameError}
@@ -1566,9 +1562,10 @@ const FilesSidebarTreeItemActions = memo(function FilesSidebarTreeItemActions(
 	const { label, isPending, isFocused, canCreateChildren, canCreate, onCreateFile, onCreateFolder } = props;
 
 	return (
-		<div
+		<fieldset
 			className={"FilesSidebarTreeItemActions" satisfies FilesSidebarTreeItemActions_ClassNames}
-			role="group"
+			// Disable the native buttons together without rerendering their menus and tooltips.
+			disabled={isPending}
 			aria-label={`Actions for ${label}`}
 		>
 			{canCreateChildren ? (
@@ -1577,20 +1574,20 @@ const FilesSidebarTreeItemActions = memo(function FilesSidebarTreeItemActions(
 						kind="file"
 						label={label}
 						isActive={isFocused}
-						disabled={isPending || !canCreate}
+						disabled={!canCreate}
 						onClick={onCreateFile}
 					/>
 					<FilesSidebarTreeItemSecondaryActionCreateFile
 						kind="folder"
 						label={label}
 						isActive={isFocused}
-						disabled={isPending || !canCreate}
+						disabled={!canCreate}
 						onClick={onCreateFolder}
 					/>
 				</>
 			) : null}
-			<FilesSidebarTreeItemMoreAction label={label} isPending={isPending} isFocused={isFocused} />
-		</div>
+			<FilesSidebarTreeItemMoreAction label={label} isFocused={isFocused} />
+		</fieldset>
 	);
 });
 // #endregion tree item actions
@@ -1760,61 +1757,15 @@ type FilesSidebarTreeItem_Props = {
 };
 
 const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSidebarTreeItem_Props) {
-	const {
-		item,
-		displayNameByUserId,
-		trackActiveFileIds,
-		selectedNodeId,
-		isSelected,
-		isSearchActive,
-		isBusy,
-		isDropZoneIncluded,
-		pendingActionNodeIds,
-		renameError,
-		isTreeDragging,
-		isFallbackTabStop,
-		expandedFolderActionsVisible,
-		canWrite,
-		canUnarchive,
-		hasVisibleReadOnlyDescendant,
-		onCreateNode,
-		onStartRename,
-		onRenameErrorClear,
-		onMenuOpenChange,
-		onCopy,
-		onCopyLink,
-		onCopyNodeId,
-		onShare,
-		onProperties,
-		onArchive,
-		onUnarchive,
-	} = props;
+	const { tree: _tree, item, displayNameByUserId, selectedNodeId, isBusy, pendingActionNodeIds, ...rowProps } = props;
 
 	const itemId = useVal(() => item.getId());
 	const itemData = useVal(() => item.getItemData());
 	const itemProps = useVal(() => item.getProps());
 
-	// Split Headless Tree's item props. The wrapper div is the treeitem for assistive tech, so it
-	// takes the role, aria attributes, roving tabIndex, and the focus element ref. Only the pointer
-	// and drag handlers stay on the overlay hit-area. This keeps every row child (title, rename
-	// input, arrow, actions) inside the treeitem, which is the only structure role=tree allows.
-	const {
-		ref: itemElementRef,
-		role: itemRole,
-		tabIndex: itemTabIndex,
-		"aria-setsize": itemAriaSetSize,
-		"aria-posinset": itemAriaPosInSet,
-		"aria-selected": _itemAriaSelected,
-		"aria-label": _itemAriaLabel,
-		"aria-level": itemAriaLevel,
-		"aria-expanded": itemAriaExpanded,
-		onClick: _itemOnClick,
-		...itemInteractionProps
-	} = itemProps;
-
-	const renameInputProps = useVal(() => item.getRenameInputProps());
 	const isRenaming = useVal(() => item.isRenaming());
-	const isArchived = itemData.archiveOperationId !== null;
+	// Idle titles do not need the tree's changing rename value or a fresh props object.
+	const renameInputProps = useVal(() => (isRenaming ? item.getRenameInputProps() : null));
 	const isNavigated = selectedNodeId === itemId;
 	const isPending = isBusy || pendingActionNodeIds.has(itemId);
 	const isFocused = useVal(() => item.isFocused());
@@ -1830,10 +1781,6 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 	const canCollapseSubtree = useVal(
 		() => itemData.kind === "folder" && isExpanded && item.getChildren().some((child) => child.isExpanded()),
 	);
-	// Only the node that carries the restriction is marked: everything under it would repeat the same
-	// thing on every row, and the folder above already says it.
-	const isRestricted = files_is_node(itemData) && itemData.restrictedScopeNodeId === itemData._id;
-
 	const ancestorIds = useVal(() => {
 		const result: string[] = [];
 		let parent = undefined;
@@ -1859,337 +1806,478 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 	});
 	const hiddenTrackFileIds = useVal(() => tree_item_get_hidden_track_file_ids_for_descendants(item.getParent()));
 
-	// While the row menu is open, the row shows as selected so the menu target stays visible.
-	const [isMenuOpen, setIsMenuOpen] = useState(false);
-	const handleMenuOpenChange = useFn((isOpen: boolean) => {
-		setIsMenuOpen(isOpen);
-		onMenuOpenChange(itemId, isOpen);
-	});
-
-	const updatedByDisplayName = displayNameByUserId.get(itemData.updatedBy) ?? "Unknown";
-	const shouldRenderPlaceholder = !isSearchActive && itemData.kind === "folder" && !hasChildren && isExpanded;
-
-	const wrapperElementRef = useRef<HTMLDivElement | null>(null);
-	const handleWrapperRef = useFn((element: HTMLDivElement | null) => {
-		wrapperElementRef.current = element;
-		// Give Headless Tree the wrapper so it can focus the row and scroll it into view.
-		forward_ref(element, itemElementRef);
-	});
-
-	const capabilities = files_get_read_only_capabilities({
-		canWrite,
-		hasVisibleReadOnlyDescendant,
-	});
-	const canRename = files_is_node(itemData) && capabilities.canRelocateOrRename;
-
-	useEffect(() => {
-		if (isRenaming && !canRename) {
-			item.getTree().abortRenaming();
-			queueMicrotask(() => wrapperElementRef.current?.focus());
-
-			if (!itemData.canWrite) {
-				toast.info(`Rename canceled. ${itemData.name} is read-only.`);
-			} else if (hasVisibleReadOnlyDescendant) {
-				toast.info(`Rename canceled. ${itemData.name} contains read-only items.`);
-			} else {
-				toast.info("You no longer have permission to edit this");
-			}
-		}
-	}, [canRename, hasVisibleReadOnlyDescendant, isRenaming, item, itemData.name, itemData.canWrite]);
-	// The synthetic root is not a real node, so there is nothing to share it with. Not gated on
-	// `canWrite`: `get_node_share_state` answers for anybody who may read the node, on purpose, so a
-	// reader can see who else can open it. Gating here would only make this disagree with the header
-	// button in `file-node-view.tsx`, which opens the same dialog and asks nothing.
-	const canShare = files_is_node(itemData);
-
-	const readOnlyLabels = files_get_read_only_row_labels({
-		canWrite,
-		writeBlockedReason: itemData.writeBlockedReason,
-		hasVisibleReadOnlyDescendant,
-	});
-	const label = `${itemData.name}${isRestricted ? " restricted" : ""}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}${isArchived ? " archived" : ""}`;
-
-	const handleCreateFileClick = useFn<FilesSidebarTreeItemSecondaryAction_Props["onClick"]>(() => {
-		onCreateNode(itemId, "file");
-	});
-
-	const handleCreateFolderClick = useFn<FilesSidebarTreeItemSecondaryAction_Props["onClick"]>(() => {
-		onCreateNode(itemId, "folder");
-	});
-
-	const handleCopyClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onCopy"]>(() => {
-		onCopy(itemId);
-	});
-
-	const handleCopyLinkClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onCopyLink"]>(() => {
-		onCopyLink(itemId);
-	});
-
-	const handleCopyNodeIdClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onCopyNodeId"]>(() => {
-		onCopyNodeId(itemId);
-	});
-
-	const handleRenameClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onRename"]>(() => {
-		onStartRename(itemId);
-	});
-
-	const handleShareClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onShare"]>(() => {
-		onShare(itemId);
-	});
-
-	const handleRenameErrorClear = useFn(() => {
-		onRenameErrorClear(itemId);
-	});
-
-	const handleExpandSubtreeClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onExpandSubtree"]>(() => {
-		item.expand();
-		// Expand only the immediate children of the item
-		Promise.try(() => item.getTree().loadChildrenIds(itemId))
-			.then(() => {
-				for (const child of item.getChildren()) {
-					child.expand();
-				}
-			})
-			.catch((error) => {
-				console.error("[FilesSidebarTreeItem.handleExpandSubtreeClick] Failed to expand subtree", { error, itemId });
-			});
-	});
-
-	const handleCollapseSubtreeClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onCollapseSubtree"]>(() => {
-		// Collapse only the immediate children of the item
-		Promise.try(() => item.getTree().loadChildrenIds(itemId))
-			.then(() => {
-				for (const child of item.getChildren()) {
-					child.collapse();
-				}
-			})
-			.catch((error) => {
-				console.error("[FilesSidebarTreeItem.handleCollapseSubtreeClick] Failed to collapse subtree", {
-					error,
-					itemId,
-				});
-			});
-	});
-
-	const handleArchiveClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onArchive"]>(() => {
-		onArchive(itemId);
-	});
-
-	const handleUnarchiveClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onUnarchive"]>(() => {
-		onUnarchive(itemId);
-	});
-
-	const handlePropertiesClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onProperties"]>(() => {
-		if (files_is_node(itemData)) {
-			onProperties(itemData._id, wrapperElementRef.current);
-		}
-	});
-
-	const handleRowContextMenu = useFn<MyContextMenuTrigger_Props["onContextMenu"]>((event) => {
-		if (event.shiftKey) {
-			// Native browser menu.
-			return;
-		}
-
-		item.setFocused();
-	});
-
-	const handlePrimaryActionClick = useFn<NonNullable<ComponentProps<"div">["onClick"]>>((event) => {
-		itemProps.onClick?.(event);
-		// The old row button took DOM focus on click by itself. The overlay div does not, so move
-		// focus to the treeitem here or arrow-key navigation goes dead right after a mouse click.
-		wrapperElementRef.current?.focus();
-	});
-
-	const handleWrapperFocus = useFn(() => {
-		// Row controls also need their row kept mounted while they hold focus.
-		item.setFocused();
-	});
-
-	const handleWrapperKeyDown = useFn<NonNullable<ComponentProps<"div">["onKeyDown"]>>((event) => {
-		// The old row was a native button, so Enter and Space clicked it. The wrapper div does not,
-		// so run the row click behavior here. Only react to keys pressed on the wrapper itself, not
-		// on the rename input or the action buttons inside the row.
-		if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) {
-			return;
-		}
-
-		// Mirror the old button's disabled state for pending rows.
-		if (isPending && !isFocused) {
-			return;
-		}
-
-		// Keep Space from scrolling the tree.
-		event.preventDefault();
-		itemProps.onClick?.(event);
-	});
-
-	const handleTreeItemArrowClick = useFn<FilesSidebarTreeItemArrow_Props["onClick"]>(() => {
-		if (isExpanded) {
-			item.collapse();
-		} else {
-			item.expand();
-		}
-	});
-
-	const handlePlaceholderDragEnter = useFn<ComponentProps<"div">["onDragEnter"]>((event) => {
-		itemProps.onDragEnter?.(event);
-	});
-
-	const handlePlaceholderDragOver = useFn<ComponentProps<"div">["onDragOver"]>((event) => {
-		itemProps.onDragOver?.(event);
-	});
-
-	const handlePlaceholderDragLeave = useFn<ComponentProps<"div">["onDragLeave"]>((event) => {
-		itemProps.onDragLeave?.(event);
-	});
-
-	const handlePlaceholderDrop = useFn<ComponentProps<"div">["onDrop"]>((event) => {
-		itemProps.onDrop?.(event);
-	});
-
 	return (
-		<>
-			<MyContextMenu setOpen={handleMenuOpenChange}>
-				<MyContextMenuTrigger onContextMenu={handleRowContextMenu}>
-					<div
-						ref={handleWrapperRef}
-						className={cn(
-							"FilesSidebarTreeItem" satisfies FilesSidebarTreeItem_ClassNames,
-							isNavigated && ("FilesSidebarTreeItem-content-navigated" satisfies FilesSidebarTreeItem_ClassNames),
-							isArchived && ("FilesSidebarTreeItem-content-archived" satisfies FilesSidebarTreeItem_ClassNames),
-							isRenaming && ("FilesSidebarTreeItem-content-renaming" satisfies FilesSidebarTreeItem_ClassNames),
-						)}
-						style={sx({
-							"--FilesSidebarTreeItem-content-depth": depth,
-						} satisfies Partial<FilesSidebar_CssVars>)}
-						role={itemRole}
-						// Keep one row Tab-reachable when the focused item is no longer rendered (e.g. archived away).
-						tabIndex={isFallbackTabStop ? 0 : itemTabIndex}
-						aria-setsize={itemAriaSetSize}
-						aria-posinset={itemAriaPosInSet}
-						aria-level={itemAriaLevel}
-						aria-expanded={itemAriaExpanded}
-						aria-selected={isSelected || isMenuOpen ? "true" : "false"}
-						aria-label={label}
-						aria-disabled={(isPending && !isFocused) || undefined}
-						data-focused={isFocused || undefined}
-						onFocus={handleWrapperFocus}
-						onKeyDown={handleWrapperKeyDown}
-						{...({
-							"data-files-sidebar-tree-context": "",
-							"data-file-id": itemId,
-						} satisfies Partial<CustomAttributes & FilesSidebarTreeItem_CustomAttributes>)}
-					>
-						<FilesSidebarTreeItemPrimaryAction
-							interactionProps={itemInteractionProps}
-							onClick={handlePrimaryActionClick}
-							itemId={itemId}
-							updatedAt={itemData.updatedAt}
-							updatedByDisplayName={updatedByDisplayName}
-							isPending={isPending}
-							isSelected={isSelected || isMenuOpen}
-							isRestricted={isRestricted}
-							isDropZoneIncluded={isDropZoneIncluded}
-							isTreeDragging={isTreeDragging}
-							isFocused={isFocused}
-						/>
-
-						<FilesSidebarTreeItemTrack
-							trackFileIds={ancestorIds}
-							trackActiveFileIds={trackActiveFileIds}
-							terminalTrackFileId={terminalTrackFileId}
-							hiddenTrackFileIds={hiddenTrackFileIds}
-						/>
-
-						<FilesSidebarTreeItemPrimaryContent
-							title={itemData.name}
-							kind={itemData.kind}
-							nodeId={files_is_node(itemData) ? (itemId as app_convex_Id<"files_nodes">) : null}
-							renameInputProps={renameInputProps}
-							isRenaming={isRenaming}
-							isRestricted={isRestricted}
-							readOnlyTooltip={readOnlyLabels?.tooltip ?? null}
-							renameError={renameError}
-							onRenameErrorClear={handleRenameErrorClear}
-						/>
-
-						{itemData.kind === "folder" ? (
-							<FilesSidebarTreeItemArrow
-								itemId={itemId}
-								label={label}
-								isExpanded={isExpanded}
-								isPending={isPending}
-								isFocused={isFocused}
-								onClick={handleTreeItemArrowClick}
-							/>
-						) : (
-							<div
-								className={"FilesSidebarTreeItemArrow" satisfies FilesSidebarTreeItemArrow_ClassNames}
-								aria-hidden="true"
-							/>
-						)}
-
-						<FilesSidebarTreeItemActions
-							label={label}
-							isPending={isPending}
-							isFocused={isFocused}
-							canCreateChildren={itemData.kind === "folder"}
-							canCreate={capabilities.canReceiveChildren}
-							onCreateFile={handleCreateFileClick}
-							onCreateFolder={handleCreateFolderClick}
-						/>
-
-						{isNavigated ? (
-							<div
-								className={"FilesSidebarTreeItemNavigatedRail" satisfies FilesSidebarTreeItem_ClassNames}
-								aria-hidden="true"
-							/>
-						) : null}
-					</div>
-				</MyContextMenuTrigger>
-
-				<FilesSidebarTreeItemMenuPopover
-					kind={itemData.kind}
-					label={label}
-					archiveOperationId={itemData.archiveOperationId}
-					canCreate={capabilities.canReceiveChildren}
-					canRename={canRename}
-					canShare={canShare}
-					canArchive={capabilities.canArchiveOrRestore && (isArchived ? canUnarchive : true)}
-					canExpandSubtree={canExpandSubtree}
-					canCollapseSubtree={canCollapseSubtree}
-					expandedFolderActionsVisible={expandedFolderActionsVisible}
-					onCreateFile={handleCreateFileClick}
-					onCreateFolder={handleCreateFolderClick}
-					onCopy={handleCopyClick}
-					onCopyLink={handleCopyLinkClick}
-					onCopyNodeId={handleCopyNodeIdClick}
-					onRename={handleRenameClick}
-					onShare={handleShareClick}
-					onProperties={handlePropertiesClick}
-					onExpandSubtree={handleExpandSubtreeClick}
-					onCollapseSubtree={handleCollapseSubtreeClick}
-					onArchive={handleArchiveClick}
-					onUnarchive={handleUnarchiveClick}
-				/>
-			</MyContextMenu>
-
-			{shouldRenderPlaceholder ? (
-				<FilesSidebarTreeItemPlaceholder
-					itemId={itemId}
-					ancestorIds={ancestorIds}
-					trackActiveFileIds={trackActiveFileIds}
-					hiddenTrackFileIds={hiddenTrackFileIds}
-					onDragEnter={handlePlaceholderDragEnter}
-					onDragOver={handlePlaceholderDragOver}
-					onDragLeave={handlePlaceholderDragLeave}
-					onDrop={handlePlaceholderDrop}
-				/>
-			) : null}
-		</>
+		<FilesSidebarTreeRow
+			{...rowProps}
+			item={item}
+			itemId={itemId}
+			itemData={itemData}
+			itemProps={itemProps}
+			renameInputProps={renameInputProps}
+			isNavigated={isNavigated}
+			isPending={isPending}
+			isFocused={isFocused}
+			isExpanded={isExpanded}
+			depth={depth}
+			hasChildren={hasChildren}
+			canExpandSubtree={canExpandSubtree}
+			canCollapseSubtree={canCollapseSubtree}
+			ancestorIds={ancestorIds}
+			terminalTrackFileId={terminalTrackFileId}
+			hiddenTrackFileIds={hiddenTrackFileIds}
+			updatedByDisplayName={displayNameByUserId.get(itemData.updatedBy) ?? "Unknown"}
+		/>
 	);
 });
+
+type FilesSidebarTreeRow_Props = Omit<
+	FilesSidebarTreeItem_Props,
+	"tree" | "displayNameByUserId" | "selectedNodeId" | "isBusy" | "pendingActionNodeIds"
+> & {
+	itemId: string;
+	itemData: files_TreeItem;
+	itemProps: ReturnType<FilesSidebarTreeItem_Instance["getProps"]>;
+	renameInputProps: FilesSidebarTreeItemTitle_Props["renameInputProps"];
+	isNavigated: boolean;
+	isPending: boolean;
+	isFocused: boolean;
+	isExpanded: boolean;
+	depth: number;
+	hasChildren: boolean;
+	canExpandSubtree: boolean;
+	canCollapseSubtree: boolean;
+	ancestorIds: string[];
+	terminalTrackFileId: string | undefined;
+	hiddenTrackFileIds: Set<string>;
+	updatedByDisplayName: string;
+};
+
+const FilesSidebarTreeRow = memo(
+	function FilesSidebarTreeRow(props: FilesSidebarTreeRow_Props) {
+		const {
+			item,
+			itemId,
+			itemData,
+			itemProps,
+			renameInputProps,
+			isNavigated,
+			isPending,
+			isFocused,
+			isExpanded,
+			depth,
+			hasChildren,
+			canExpandSubtree,
+			canCollapseSubtree,
+			ancestorIds,
+			terminalTrackFileId,
+			hiddenTrackFileIds,
+			updatedByDisplayName,
+			trackActiveFileIds,
+			isSelected,
+			isSearchActive,
+			isDropZoneIncluded,
+			renameError,
+			isTreeDragging,
+			isFallbackTabStop,
+			expandedFolderActionsVisible,
+			canWrite,
+			canUnarchive,
+			hasVisibleReadOnlyDescendant,
+			onCreateNode,
+			onStartRename,
+			onRenameErrorClear,
+			onMenuOpenChange,
+			onCopy,
+			onCopyLink,
+			onCopyNodeId,
+			onShare,
+			onProperties,
+			onArchive,
+			onUnarchive,
+		} = props;
+
+		// The wrapper owns the tree semantics and focus. Its overlay only handles pointer and drag events.
+		const {
+			ref: itemElementRef,
+			role: itemRole,
+			tabIndex: itemTabIndex,
+			"aria-setsize": itemAriaSetSize,
+			"aria-posinset": itemAriaPosInSet,
+			"aria-selected": _itemAriaSelected,
+			"aria-label": _itemAriaLabel,
+			"aria-level": itemAriaLevel,
+			"aria-expanded": itemAriaExpanded,
+			onClick: _itemOnClick,
+			...itemInteractionProps
+		} = itemProps;
+		const isRenaming = renameInputProps !== null;
+		const isArchived = itemData.archiveOperationId !== null;
+		// Mark only the node carrying the restriction, not every child below it.
+		const isRestricted = files_is_node(itemData) && itemData.restrictedScopeNodeId === itemData._id;
+
+		// While the row menu is open, the row shows as selected so the menu target stays visible.
+		const [isMenuOpen, setIsMenuOpen] = useState(false);
+		const handleMenuOpenChange = useFn((isOpen: boolean) => {
+			setIsMenuOpen(isOpen);
+			onMenuOpenChange(itemId, isOpen);
+		});
+
+		const shouldRenderPlaceholder = !isSearchActive && itemData.kind === "folder" && !hasChildren && isExpanded;
+
+		const wrapperElementRef = useRef<HTMLDivElement | null>(null);
+		const handleWrapperRef = useFn((element: HTMLDivElement | null) => {
+			wrapperElementRef.current = element;
+			// Give Headless Tree the wrapper so it can focus the row and scroll it into view.
+			forward_ref(element, itemElementRef);
+		});
+
+		const capabilities = files_get_read_only_capabilities({
+			canWrite,
+			hasVisibleReadOnlyDescendant,
+		});
+		const canRename = files_is_node(itemData) && capabilities.canRelocateOrRename;
+
+		useEffect(() => {
+			if (isRenaming && !canRename) {
+				item.getTree().abortRenaming();
+				queueMicrotask(() => wrapperElementRef.current?.focus());
+
+				if (!itemData.canWrite) {
+					toast.info(`Rename canceled. ${itemData.name} is read-only.`);
+				} else if (hasVisibleReadOnlyDescendant) {
+					toast.info(`Rename canceled. ${itemData.name} contains read-only items.`);
+				} else {
+					toast.info("You no longer have permission to edit this");
+				}
+			}
+		}, [canRename, hasVisibleReadOnlyDescendant, isRenaming, item, itemData.name, itemData.canWrite]);
+		// The synthetic root is not a real node, so there is nothing to share it with. Not gated on
+		// `canWrite`: `get_node_share_state` answers for anybody who may read the node, on purpose, so a
+		// reader can see who else can open it. Gating here would only make this disagree with the header
+		// button in `file-node-view.tsx`, which opens the same dialog and asks nothing.
+		const canShare = files_is_node(itemData);
+
+		const readOnlyLabels = files_get_read_only_row_labels({
+			canWrite,
+			writeBlockedReason: itemData.writeBlockedReason,
+			hasVisibleReadOnlyDescendant,
+		});
+		const label = `${itemData.name}${isRestricted ? " restricted" : ""}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}${isArchived ? " archived" : ""}`;
+
+		const handleCreateFileClick = useFn<FilesSidebarTreeItemSecondaryAction_Props["onClick"]>(() => {
+			onCreateNode(itemId, "file");
+		});
+
+		const handleCreateFolderClick = useFn<FilesSidebarTreeItemSecondaryAction_Props["onClick"]>(() => {
+			onCreateNode(itemId, "folder");
+		});
+
+		const handleCopyClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onCopy"]>(() => {
+			onCopy(itemId);
+		});
+
+		const handleCopyLinkClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onCopyLink"]>(() => {
+			onCopyLink(itemId);
+		});
+
+		const handleCopyNodeIdClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onCopyNodeId"]>(() => {
+			onCopyNodeId(itemId);
+		});
+
+		const handleRenameClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onRename"]>(() => {
+			onStartRename(itemId);
+		});
+
+		const handleShareClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onShare"]>(() => {
+			onShare(itemId);
+		});
+
+		const handleRenameErrorClear = useFn(() => {
+			onRenameErrorClear(itemId);
+		});
+
+		const handleExpandSubtreeClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onExpandSubtree"]>(() => {
+			item.expand();
+			// Expand only the immediate children of the item
+			Promise.try(() => item.getTree().loadChildrenIds(itemId))
+				.then(() => {
+					for (const child of item.getChildren()) {
+						child.expand();
+					}
+				})
+				.catch((error) => {
+					console.error("[FilesSidebarTreeItem.handleExpandSubtreeClick] Failed to expand subtree", { error, itemId });
+				});
+		});
+
+		const handleCollapseSubtreeClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onCollapseSubtree"]>(() => {
+			// Collapse only the immediate children of the item
+			Promise.try(() => item.getTree().loadChildrenIds(itemId))
+				.then(() => {
+					for (const child of item.getChildren()) {
+						child.collapse();
+					}
+				})
+				.catch((error) => {
+					console.error("[FilesSidebarTreeItem.handleCollapseSubtreeClick] Failed to collapse subtree", {
+						error,
+						itemId,
+					});
+				});
+		});
+
+		const handleArchiveClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onArchive"]>(() => {
+			onArchive(itemId);
+		});
+
+		const handleUnarchiveClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onUnarchive"]>(() => {
+			onUnarchive(itemId);
+		});
+
+		const handlePropertiesClick = useFn<FilesSidebarTreeItemMenuPopover_Props["onProperties"]>(() => {
+			if (files_is_node(itemData)) {
+				onProperties(itemData._id, wrapperElementRef.current);
+			}
+		});
+
+		const handleRowContextMenu = useFn<MyContextMenuTrigger_Props["onContextMenu"]>((event) => {
+			if (event.shiftKey) {
+				// Native browser menu.
+				return;
+			}
+
+			item.setFocused();
+		});
+
+		const handlePrimaryActionClick = useFn<NonNullable<ComponentProps<"div">["onClick"]>>((event) => {
+			itemProps.onClick?.(event);
+			// The old row button took DOM focus on click by itself. The overlay div does not, so move
+			// focus to the treeitem here or arrow-key navigation goes dead right after a mouse click.
+			wrapperElementRef.current?.focus();
+		});
+
+		const handleWrapperFocus = useFn(() => {
+			// Row controls also need their row kept mounted while they hold focus.
+			item.setFocused();
+		});
+
+		const handleWrapperKeyDown = useFn<NonNullable<ComponentProps<"div">["onKeyDown"]>>((event) => {
+			// The old row was a native button, so Enter and Space clicked it. The wrapper div does not,
+			// so run the row click behavior here. Only react to keys pressed on the wrapper itself, not
+			// on the rename input or the action buttons inside the row.
+			if (event.target !== event.currentTarget || (event.key !== "Enter" && event.key !== " ")) {
+				return;
+			}
+
+			// Mirror the old button's disabled state for pending rows.
+			if (isPending && !isFocused) {
+				return;
+			}
+
+			// Keep Space from scrolling the tree.
+			event.preventDefault();
+			itemProps.onClick?.(event);
+		});
+
+		const handleTreeItemArrowClick = useFn<FilesSidebarTreeItemArrow_Props["onClick"]>(() => {
+			if (isExpanded) {
+				item.collapse();
+			} else {
+				item.expand();
+			}
+		});
+
+		const handlePlaceholderDragEnter = useFn<ComponentProps<"div">["onDragEnter"]>((event) => {
+			itemProps.onDragEnter?.(event);
+		});
+
+		const handlePlaceholderDragOver = useFn<ComponentProps<"div">["onDragOver"]>((event) => {
+			itemProps.onDragOver?.(event);
+		});
+
+		const handlePlaceholderDragLeave = useFn<ComponentProps<"div">["onDragLeave"]>((event) => {
+			itemProps.onDragLeave?.(event);
+		});
+
+		const handlePlaceholderDrop = useFn<ComponentProps<"div">["onDrop"]>((event) => {
+			itemProps.onDrop?.(event);
+		});
+
+		return (
+			<>
+				<MyContextMenu setOpen={handleMenuOpenChange}>
+					<MyContextMenuTrigger onContextMenu={handleRowContextMenu}>
+						<div
+							ref={handleWrapperRef}
+							className={cn(
+								"FilesSidebarTreeItem" satisfies FilesSidebarTreeItem_ClassNames,
+								isNavigated && ("FilesSidebarTreeItem-content-navigated" satisfies FilesSidebarTreeItem_ClassNames),
+								isArchived && ("FilesSidebarTreeItem-content-archived" satisfies FilesSidebarTreeItem_ClassNames),
+								isRenaming && ("FilesSidebarTreeItem-content-renaming" satisfies FilesSidebarTreeItem_ClassNames),
+							)}
+							style={sx({
+								"--FilesSidebarTreeItem-content-depth": depth,
+							} satisfies Partial<FilesSidebar_CssVars>)}
+							role={itemRole}
+							// Keep one row Tab-reachable when the focused item is no longer rendered (e.g. archived away).
+							tabIndex={isFallbackTabStop ? 0 : itemTabIndex}
+							aria-setsize={itemAriaSetSize}
+							aria-posinset={itemAriaPosInSet}
+							aria-level={itemAriaLevel}
+							aria-expanded={itemAriaExpanded}
+							aria-selected={isSelected || isMenuOpen ? "true" : "false"}
+							aria-label={label}
+							aria-disabled={(isPending && !isFocused) || undefined}
+							data-focused={isFocused || undefined}
+							onFocus={handleWrapperFocus}
+							onKeyDown={handleWrapperKeyDown}
+							{...({
+								"data-files-sidebar-tree-context": "",
+								"data-file-id": itemId,
+							} satisfies Partial<CustomAttributes & FilesSidebarTreeItem_CustomAttributes>)}
+						>
+							<FilesSidebarTreeItemPrimaryAction
+								interactionProps={itemInteractionProps}
+								onClick={handlePrimaryActionClick}
+								itemId={itemId}
+								updatedAt={itemData.updatedAt}
+								updatedByDisplayName={updatedByDisplayName}
+								isPending={isPending}
+								isSelected={isSelected || isMenuOpen}
+								isRestricted={isRestricted}
+								isDropZoneIncluded={isDropZoneIncluded}
+								isTreeDragging={isTreeDragging}
+								isFocused={isFocused}
+							/>
+
+							<FilesSidebarTreeItemTrack
+								trackFileIds={ancestorIds}
+								trackActiveFileIds={trackActiveFileIds}
+								terminalTrackFileId={terminalTrackFileId}
+								hiddenTrackFileIds={hiddenTrackFileIds}
+							/>
+
+							<FilesSidebarTreeItemPrimaryContent
+								title={itemData.name}
+								kind={itemData.kind}
+								nodeId={files_is_node(itemData) ? (itemId as app_convex_Id<"files_nodes">) : null}
+								renameInputProps={renameInputProps}
+								isRestricted={isRestricted}
+								readOnlyTooltip={readOnlyLabels?.tooltip ?? null}
+								renameError={renameError}
+								onRenameErrorClear={handleRenameErrorClear}
+							/>
+
+							{itemData.kind === "folder" ? (
+								<FilesSidebarTreeItemArrow
+									itemId={itemId}
+									label={label}
+									isExpanded={isExpanded}
+									isPending={isPending}
+									isFocused={isFocused}
+									onClick={handleTreeItemArrowClick}
+								/>
+							) : (
+								<div
+									className={"FilesSidebarTreeItemArrow" satisfies FilesSidebarTreeItemArrow_ClassNames}
+									aria-hidden="true"
+								/>
+							)}
+
+							<FilesSidebarTreeItemActions
+								label={label}
+								isPending={isPending}
+								isFocused={isFocused}
+								canCreateChildren={itemData.kind === "folder"}
+								canCreate={capabilities.canReceiveChildren}
+								onCreateFile={handleCreateFileClick}
+								onCreateFolder={handleCreateFolderClick}
+							/>
+
+							{isNavigated ? (
+								<div
+									className={"FilesSidebarTreeItemNavigatedRail" satisfies FilesSidebarTreeItem_ClassNames}
+									aria-hidden="true"
+								/>
+							) : null}
+						</div>
+					</MyContextMenuTrigger>
+
+					<FilesSidebarTreeItemMenuPopover
+						kind={itemData.kind}
+						label={label}
+						archiveOperationId={itemData.archiveOperationId}
+						canCreate={capabilities.canReceiveChildren}
+						canRename={canRename}
+						canShare={canShare}
+						canArchive={capabilities.canArchiveOrRestore && (isArchived ? canUnarchive : true)}
+						canExpandSubtree={canExpandSubtree}
+						canCollapseSubtree={canCollapseSubtree}
+						expandedFolderActionsVisible={expandedFolderActionsVisible}
+						onCreateFile={handleCreateFileClick}
+						onCreateFolder={handleCreateFolderClick}
+						onCopy={handleCopyClick}
+						onCopyLink={handleCopyLinkClick}
+						onCopyNodeId={handleCopyNodeIdClick}
+						onRename={handleRenameClick}
+						onShare={handleShareClick}
+						onProperties={handlePropertiesClick}
+						onExpandSubtree={handleExpandSubtreeClick}
+						onCollapseSubtree={handleCollapseSubtreeClick}
+						onArchive={handleArchiveClick}
+						onUnarchive={handleUnarchiveClick}
+					/>
+				</MyContextMenu>
+
+				{shouldRenderPlaceholder ? (
+					<FilesSidebarTreeItemPlaceholder
+						itemId={itemId}
+						ancestorIds={ancestorIds}
+						trackActiveFileIds={trackActiveFileIds}
+						hiddenTrackFileIds={hiddenTrackFileIds}
+						onDragEnter={handlePlaceholderDragEnter}
+						onDragOver={handlePlaceholderDragOver}
+						onDragLeave={handlePlaceholderDragLeave}
+						onDrop={handlePlaceholderDrop}
+					/>
+				) : null}
+			</>
+		);
+	},
+	// Compare rendered values, not the mutable tree. Headless Tree returns fresh props on each read.
+	(previous, next) => {
+		const {
+			itemData: previousData,
+			itemProps: previousItemProps,
+			renameInputProps: previousRename,
+			ancestorIds: previousAncestors,
+			hiddenTrackFileIds: previousHidden,
+			trackActiveFileIds: previousActive,
+			...previousRest
+		} = previous;
+		const {
+			itemData: nextData,
+			itemProps: nextItemProps,
+			renameInputProps: nextRename,
+			ancestorIds: nextAncestors,
+			hiddenTrackFileIds: nextHidden,
+			trackActiveFileIds: nextActive,
+			...nextRest
+		} = next;
+		return (
+			objects_equal_shallow(previousRest, nextRest) &&
+			objects_equal_shallow(previousData, nextData) &&
+			objects_equal_shallow(previousItemProps, nextItemProps) &&
+			(previousRename === nextRename ||
+				(previousRename !== null && nextRename !== null && objects_equal_shallow(previousRename, nextRename))) &&
+			objects_equal_shallow(previousAncestors, nextAncestors) &&
+			previousHidden.size === nextHidden.size &&
+			previousHidden.isSubsetOf(nextHidden) &&
+			previousActive.size === nextActive.size &&
+			previousActive.isSubsetOf(nextActive)
+		);
+	},
+);
 // #endregion tree item
 
 // #region tree drop zone area
@@ -6739,7 +6827,12 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const treeRef = React.createRef<TreeInstance<files_TreeItem>>();
 			const virtualizerRef = React.createRef<Virtualizer<HTMLDivElement, HTMLDivElement>>();
 			const handleAction = vi.fn();
-			function TestTree(props: { isSearchActive?: boolean; selectedNodeId?: string; dialogNodeId?: string }) {
+			function TestTree(props: {
+				isSearchActive?: boolean;
+				selectedNodeId?: string;
+				dialogNodeId?: string;
+				canWrite?: boolean;
+			}) {
 				const scrollElementRef = useRef<HTMLDivElement | null>(null);
 				const tree = useTree<files_TreeItem>({
 					rootItemId: files_ROOT_ID,
@@ -6784,7 +6877,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 								isUploadingFile={false}
 								pendingActionNodeIds={new Set()}
 								renameErrorByNodeId={new Map()}
-								canWriteItem={() => true}
+								canWriteItem={() => props.canWrite ?? true}
 								canUnarchiveItem={() => true}
 								readOnlyAncestorIds={new Set()}
 								onCreateNode={handleAction}
@@ -6831,6 +6924,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				act(() => treeRef.current?.getItemInstance("child-2000").startRenaming());
 				await waitFor(() => expect(view.getByRole("textbox")).toBeTruthy());
 				const renameInput = view.getByRole("textbox");
+				fireEvent.change(renameInput, { target: { value: "changed-name" } });
+				expect(treeRef.current?.getRenamingValue()).toBe("changed-name");
+				expect((view.getByRole("textbox") as HTMLInputElement).value).toBe("changed-name");
 				act(() => virtualizerRef.current?.scrollToIndex(4_000));
 				expect(renameInput.isConnected).toBe(true);
 				act(() => treeRef.current?.abortRenaming());
@@ -6866,6 +6962,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				act(() => virtualizerRef.current?.scrollToIndex(0));
 				expect(arrowButton.isConnected).toBe(true);
 				expect(document.activeElement).toBe(arrowButton);
+
+				act(() => treeRef.current?.getItemInstance("child-1001").startRenaming());
+				await waitFor(() => expect(view.getByRole("textbox")).toBeTruthy());
+				view.rerender(<TestTree selectedNodeId="child-1000" canWrite={false} />);
+				await waitFor(() => expect(view.queryByRole("textbox")).toBeNull());
+				expect(treeRef.current?.getState().renamingItem).toBeNull();
+				expect(view.getByRole("treeitem", { name: "child-1001, read-only" })).toBeTruthy();
 			} finally {
 				cleanup();
 				vi.restoreAllMocks();
@@ -7515,7 +7618,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 		});
 
 		test("unwraps a pasted node-id link", () => {
-			expect(detect_search_query_mode("http://localhost:5173/w/acme/main/files?nodeId=k5701abc&view=diff_editor")).toEqual({
+			expect(
+				detect_search_query_mode("http://localhost:5173/w/acme/main/files?nodeId=k5701abc&view=diff_editor"),
+			).toEqual({
 				mode: "node",
 				value: "k5701abc",
 			});

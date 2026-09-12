@@ -164,9 +164,11 @@ Compare against the table's pinned SHA-256. Two caveats: the comparison holds on
 - Uploaded source files and generated `.md` siblings can share filename prefixes. Use exact role-name locators for per-node actions, such as `getByRole("button", { name: "More actions for qa.pdf", exact: true })`.
 - The folder explorer and sidebar tree can expose duplicate action names. Scope to the owning tree row, folder row, or panel before clicking.
 - Inline create/rename inputs may stop matching by old value after `fill(...)`; re-locate by the new value or use `state.page.keyboard.press("Enter")` after confirming focus.
+- Submitting an empty inline rename closes it without saving. To check visible validation, submit a duplicate sibling name; the input stays focused with an error. After Escape, wait for focus to return to the row before testing arrow keys or F2 again.
 - When a folder is selected, `New file` and `New folder` exist twice: once in the sidebar toolbar and once in the folder view toolbar. `getByRole("button", { name: "New file" })` is then a strict-mode violation. Scope to the sidebar with `.FilesSidebarTopSection-actions-icon-button[aria-label="New file"]`.
 - A folder-explorer row's visible name (`span.FileNodeViewFolderExplorer-link`) is covered by a full-row overlay link, so clicking the text reports `intercepts pointer events`. Click the overlay by its accessible name instead: `getByRole("link", { name: "Open <name>" })`. That error message is also the quickest way to read a fixture's `nodeId`, because the overlay's `href` carries it.
-- The sidebar toolbar `New file` / `New folder` buttons always create at root with a generated `new-file*.md` / `new-folder*` name and do not open rename mode, so there is no create dialog to type a name into. Build deep fixtures in two steps: create, then row menu `Rename` and type a slash path such as `qa-root/docs/api.md`. Path-shaped renames move the node and create the missing folders. The rename input is `input[aria-label="Rename <current name>"]`.
+- The sidebar toolbar `New file` / `New folder` buttons create at root with a generated `new-file*.md` / `new-folder*` name. After saving, they select the new node, navigate to it, and open inline rename. Wait for `input[aria-label="Rename <current name>"]` before typing. There is no create dialog. A slash path such as `qa-root/docs/api.md` moves the node and creates missing folders.
+- Pending row controls inherit disabled state from their fieldsets. Use `locator.isDisabled()` or `element.matches(":disabled")`; `button.disabled` only reads the button's own attribute. Check focus after a focused action becomes pending, then check menu and arrow access again after it finishes.
 - Archived rows expose the restore action as menu item `Restore`, not `Unarchive`, and their row button label gains a suffix: `More actions for <name> archived`. Reveal them first with the sidebar `More options` menu item `Show N item(s) archived`.
 - Use real drag gestures for drag/drop checks. Do not use `dispatchEvent`, DOM `element.click()`, or forced clicks.
 
@@ -201,14 +203,14 @@ Use this after changing the right sidebar, tabs, panel group, or chat layout.
 ### Create File Or Folder
 
 - Bind one `/files` tab and use a unique `aaa-pw-qa-*` temporary folder.
-- Create a folder from root; verify the default name is selected and the route does not unexpectedly navigate.
+- Create a folder from root; verify the route selects the new node and its default name is selected in the inline rename input.
 - Inside the temp folder, create a file and verify the basename selection for `new-file.md`.
 - Try duplicate deep paths: duplicate file should show `This file already exists.`, duplicate folder should show `This folder already exists.`.
 - Archive the temp folder when done.
 
 ### Sidebar Create Then Rename By Id
 
-The sidebar `New file` button creates immediately at root with a generated `new-file*.md` name and no rename mode, so never locate the new row by a guessed name — harvest its id by diffing the `data-file-id` sets (verified 2026-08-10):
+The sidebar `New file` button saves a generated `new-file*.md` name, navigates to the new node, and opens inline rename. Read its id from the new route. The older DOM-diff recipe below also works in small trees:
 
 Use this DOM-diff recipe only in a small tree where every row is mounted. In a virtual tree, scrolling
 also changes that set. Prefer the new `nodeId` in the route after creation, then confirm the exact row.
@@ -229,7 +231,7 @@ const created = await state.page.evaluate((prev) => {
 }, state.beforeIds);
 ```
 
-Then rename by id: click `[role="treeitem"][data-file-id="<id>"] .FilesSidebarTreeItemPrimaryAction`, press `F2`, wait until `document.activeElement`'s `aria-label` starts with `Rename`, `fill` the focused input (`state.page.locator(":focus")`), press `Enter`.
+Wait for the new row's rename input, click it, fill it, and press `Enter`. If rename has already closed, click `[role="treeitem"][data-file-id="<id>"] .FilesSidebarTreeItemPrimaryAction`, press `F2`, and wait for the focused rename input before typing.
 
 Do not press `F2` while the new file's editor is still mounting. The create-then-rename race crashed `FileEditorInner` (`NotFoundError: removeChild`, caught by the route error boundary) twice in ~12 editor mount transitions on 2026-08-10 — a filed app follow-up, not a harness bug. Wait for the editor surface first (`.FileEditorRichText-editor-content` or `.monaco-editor`); if the boundary appears, `Try again` recovers.
 
