@@ -202,6 +202,7 @@ Use this after changing the right sidebar, tabs, panel group, or chat layout.
 
 ### Create File Or Folder
 
+- For dev rendering experiments, use the profiling skill's one-tab variant recipe. Time the same starting view, keep the mounted row count fixed, and retain the normal create/rename checks before treating an experiment as a fix.
 - Bind one `/files` tab and use a unique `aaa-pw-qa-*` temporary folder.
 - Create a folder from root; verify the route selects the new node and its default name is selected in the inline rename input.
 - Inside the temp folder, create a file and verify the basename selection for `new-file.md`.

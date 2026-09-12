@@ -59,6 +59,19 @@ Ready-to-use scripts live in `scripts/` next to this file:
 3. Attribute before optimizing: remove extension overhead, separate dev-only costs, then test changes in the build the task targets. Keep both timing evidence and render counts so a quieter measurement setup cannot be mistaken for a code improvement.
 4. Use a dedicated fresh tab for measurements and close it after — never instrument the user's tab (they may navigate and wipe the rig mid-run).
 
+## Test A Small Dev Variant In One Tab
+
+Use a page-scoped request route for a short diagnostic change when other tasks share the checkout.
+Fetch the observed Vite module response, require exactly one match for the changed expression,
+and fulfill that request with the replacement. Match the compiled response, not the original TSX;
+the React Compiler may rename variables. Route the baseline through the same handler too.
+
+Add a temporary page marker for the served variant, reload, and verify the marker before measuring.
+Repeat variants in alternating order with the same route and viewport. Keep every result. A variant
+that skips behavior only shows that behavior's cost; it is not a safe fix. For example, bypassing a
+row's busy state does not preserve disabled controls. Report React work and total latency separately.
+Remove the exact route handler, reload, and verify the marker is gone before final QA and cleanup.
+
 ## Compare A Production Build Without Replacing The Dev Server
 
 Use an owned Playwriter tab with page-specific request routes when other work still needs the dev server.
