@@ -129,7 +129,7 @@ Do not store secrets, cookies, tokens, user-private payloads, run diaries, raw c
 - Read `references/snippets.md` for short Playwriter commands.
 - Read `references/r2-file-content-regression.md` for deep R2-backed files, uploads, comments, and agent regression QA.
 - Read `references/bash-tool-agent-eval.md` for the Bash agent fixture, scenario matrix, scoring, and acceptance loop.
-- Read `references/bash-cursor-value-store-plan.md` as historical context for the Bash cursor-alias design and its live evaluation.
+- Read `references/bash-cursor-value-store-plan.md` for the current cursor store, expiry, invalidation, and live checks.
 - Read `references/files-sidebar-smoke.md` for a historical files-sidebar smoke recipe.
 - Read `references/comment-thread-persistence.md` for a historical comment persistence recipe.
 - Read `references/rich-text-slash-command-keyboard.md` for a historical rich-text slash-menu keyboard recipe.

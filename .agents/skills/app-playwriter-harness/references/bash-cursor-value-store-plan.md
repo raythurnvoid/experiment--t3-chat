@@ -1,79 +1,54 @@
-# Bash Cursor Value Store Plan
+# Bash Cursor Value Store
 
-## Summary
+## Current behavior
 
-Replace long raw Convex pagination cursors in Bash `Next page:` commands with short aliases backed by a simple internal Convex `value_store` table. Bash should print `--cursor @<value_store_id>`, resolve that id back to the raw cursor before querying Convex, and keep raw old-style cursors working for historical outputs.
+Bash prints short `value_store` IDs in `Next page:` commands. There is no `@` prefix. Run the exact printed command; raw Convex cursors are not accepted as an alternative.
 
-The goal is agent smoothness: reduce cursor copy failures without changing DB-backed pagination semantics, limits, search behavior, glob/regex behavior, or adding JavaScript filtering.
+`packages/app/server/bash-utils.ts` owns cursor creation and resolution. Each new cursor explicitly gets a 24-hour lifetime. Reads do not renew it. Every resolution reads Convex so expiry and explicit removal apply across action runtimes. There is no separate cursor memory cache.
 
-## Implementation
+Missing, removed, malformed, and expired IDs use the existing Bash recovery error. Rerun the original command to get a fresh cursor. The underlying Convex query still checks access and cursor validity.
 
-- Add `value_store: defineTable({ value: v.string() })` in `packages/app/convex/schema.ts`.
-- Do not add custom indexes. Use Convex `_id` as the alias and built-in `_creationTime` plus built-in `by_creation_time` for TTL cleanup.
-- Add `packages/app/convex/value_store.ts` with internal-only functions:
-  - `put`: internal mutation that inserts `{ value }` and returns the row id.
-  - `get`: internal query that accepts a string id, uses `ctx.db.normalizeId("value_store", id)`, and returns `{ value, createdAt } | null`.
-  - `get` returns `null` for malformed, missing, or older-than-one-day ids.
-  - `cleanup_expired`: internal mutation that deletes rows older than one day in a bounded batch using `by_creation_time`.
-- Add a daily cron in `packages/app/convex/crons.ts` calling `internal.value_store.cleanup_expired`.
-- Update `packages/app/convex/bash.ts`:
-  - Add a bounded module-level in-memory `Map` from alias id to raw cursor.
-  - For `--cursor @<id>`, resolve from the map first, then fall back to `internal.value_store.get`.
-  - Treat the map as a best-effort optimization only; correctness must come from Convex.
-  - When `search`, `ls`, `find`, or `tree` receives a `continueCursor`, store it with `internal.value_store.put`, cache it in memory, and print `--cursor @<id>`.
-  - If alias resolution fails, return a normal Bash error that tells the agent to rerun the original command for a fresh cursor.
-- Update guidance in `packages/app/server/server-ai-tools.ts`, `packages/app/convex/ai_chat.ts`, `.agents/skills/ai-chat-agent/SKILL.md`, and `.agents/skills/app-playwriter-harness/references/bash-tool-agent-eval.md` so the agent treats `@...` cursors as normal app Bash syntax and runs the exact printed `Next page:` command.
+## Internal store
 
-## Tests
+`packages/app/convex/value_store.ts` exposes internal functions only. Browser clients and plugins cannot call these functions directly.
 
-- Run codegen after the schema/module changes:
+| Function | Contract |
+| --- | --- |
+| `put({ value, ttl })` | Insert a string and return its generated ID. TTL is required, in milliseconds. `null` means no expiry; zero means immediately expired. Negative and non-finite durations are rejected. |
+| `get({ id })` | Return `{ value, createdAt }` or null. Reject expiry at `expiresAt <= Date.now()`. Reading does not delete or renew the value. |
+| `remove({ id })` | Delete one value and its expiry metadata in one transaction. Repeated removal is harmless. |
+| `remove_all({ before? })` | Delete values created at or before a fixed cutoff, defaulting to now. Delete five per batch and schedule the remaining batches. Values in later batches remain readable until their batch runs. Newer values survive. |
+| `cleanup_expired({ expiresAt? })` | Scan expiry metadata and delete expired values in batches of ten. Keep the first cutoff across scheduled batches. Return `{ deletedCount, done }` for each batch. |
 
-```powershell
-vp env exec --node 24.16.0 -- pnpm.CMD --dir packages/app exec convex codegen
-```
+`value_store` holds `value: string`, `expiresAt: number | null`, and `metadataId: Id | null`. All fields are required and top-level. A get reads only this doc, including its expiry.
 
-- Add focused tests for:
-  - `value_store.put/get` stores and retrieves values.
-  - malformed, missing, and expired ids return `null`.
-  - `cleanup_expired` deletes old rows and keeps fresh rows.
-  - `search`, `ls`, `find`, and `tree` print `--cursor @...` instead of raw cursors.
-  - `--cursor @...` resolves to the original raw cursor before the existing Convex pagination query.
-  - raw old-style cursors still work.
-  - missing or expired aliases produce clear recovery guidance.
-  - memory cache hit avoids the value-store query; cache miss falls back to the query.
+Only expiring values have a companion `value_store_metadata` doc with `valueId` and the same `expiresAt`, indexed by `by_expiresAt`. Compute the deadline once, then insert both docs and link them in the same mutation. The payload is stored only in `value_store`. Permanent values have null expiry and null metadata ID. Reads trust the atomic writer and do not load metadata or compare the two copies.
 
-- Run:
+Convex deletion reads the old value. Expiry cleanup scans small metadata docs first, so ten values fit per batch. Global removal scans full values first and deletes five per batch. These limits keep large strings within the transaction read limit. Removal deletes both linked docs in one transaction. Single-value removal checks existence first because deleting a missing doc would throw. The daily cron at 04:30 UTC starts expiry cleanup; scheduled batches remove the remaining expired values.
+
+The store has no user or workspace ownership fields. Keep it internal. Do not expose it as a public key-value API without a separate scope and access contract. Custom keys and plugin-data changes are separate work.
+
+## Verification
+
+Run the focused store and Bash tests, then full app lint:
 
 ```powershell
-vp env exec --node 24.16.0 -- pnpm.CMD --dir packages/app exec vitest run --project convex convex/bash.ts convex/value_store.ts convex/ai_chat.ts server/server-ai-tools.test.ts
-vp env exec --node 24.16.0 -- pnpm.CMD --dir packages/app run lint
+vp env exec -- pnpm --dir packages/app exec vitest run --project convex convex/value_store.test.ts server/bash.test.ts
+vp env exec -- pnpm --dir packages/app run lint
 git diff --check
 ```
 
-## Live Evaluation
+The store tests cover matching expiry copies and links, no expiry, zero TTL, invalid durations, expiry boundaries, repeated removal of both docs, fixed cutoffs, scheduled batches, and large values with transaction limits enabled. Bash tests cover the explicit 24-hour policy, continuation, removed IDs, and expiry recovery.
 
-- Deploy local Convex functions before browser evaluation:
+Use [the Bash evaluation recipe](bash-tool-agent-eval.md) for live checks:
 
-```powershell
-vp env exec --node 24.16.0 -- pnpm.CMD --dir packages/app exec convex dev --once --typecheck disable
-```
+1. Use the configured QA profile and a verified folder with enough files to paginate.
+2. Run `ls --limit 1 <folder>` through the in-app agent, then exactly one printed continuation.
+3. Check search and tree continuations, plus immediate-child ordering with `ls -t`.
+4. Read `expiresAt` on the new cursor doc and its linked metadata doc. The copies must match exactly. The deadline should be 24 hours after creation, allowing the sub-millisecond difference between `_creationTime` and `Date.now()`.
+5. Remove only an ID created for this QA run through `value_store.remove`. Replay its exact continuation in the same chat and check the recovery error.
+6. Keep run evidence in the personal task folder. Do not clear unrelated cursor IDs for a test.
 
-- Use the lightweight Playwriter protocol from `.agents/skills/app-playwriter-harness/references/bash-tool-agent-eval.md`: bind to the existing app tab, start a fresh chat, send one prompt, capture evidence, and score manually.
-- Run each targeted scenario 3 times:
-  - `tree <fixture> --limit 3`, then exactly one printed continuation.
-  - `search --limit 1 <broad-token>`, then exactly one printed continuation.
-  - `find <fixture> -type f --limit 1`, then exactly one printed continuation.
-  - `ls --limit 1 <fixture>`, then exactly one printed continuation.
-- Always rerun canaries:
-  - `ls -t <fixture>` remains immediate-child recency.
-  - search cursor continuation works.
-  - tree cursor continuation works.
-- Record before/after metrics in `../t3-chat-+personal/+ai/bash-tool-smoothness-eval.md`.
-- Accept only if cursor correctness improves and no canary regresses.
+Keep prompts within the selected model's tool-call limit. If the chat says a call was not run because the tool budget was reached, send that exact command in a new message. It is not a Bash failure.
 
-## Assumptions
-
-- `value_store.value` is string-only for v1.
-- TTL is one day for all value-store entries.
-- The value store is internal-only and accessed only through `packages/app/convex/value_store.ts`.
-- No Cloudflare KV, schema migration, pagination semantic change, glob/regex behavior change, or JavaScript-side filtering is included.
+For table-wide readback, paginate each table in a separate inline query. Convex permits only one paginated query per function. Check `isDone` for each table before reporting complete counts.

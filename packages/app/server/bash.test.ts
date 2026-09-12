@@ -1309,7 +1309,7 @@ describe("bash_run_command", () => {
 		expect(result.stderr).toContain("Copy the exact --cursor value from the latest Next page command and retry");
 	});
 
-	test("resolves stored cursor ids from memory before querying value_store", async () => {
+	test("resolves stored cursor ids through value_store with an explicit 24-hour TTL", async () => {
 		const { run, runQuery, runMutation } = await create_bash_runner();
 
 		const firstPage = await run(`ls --limit 1 ${test_db_files_mount}/docs`);
@@ -1329,7 +1329,11 @@ describe("bash_run_command", () => {
 
 		expect(secondPage.metadata.exitCode).toBe(0);
 		expect(secondPage.stdout).toContain("readme.md");
-		expect(runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "value_store:get")).toBe(false);
+		expect(runMutation).toHaveBeenCalledWith(internal.value_store.put, {
+			value: rawCursor,
+			ttl: 24 * 60 * 60 * 1000,
+		});
+		expect(runQuery).toHaveBeenCalledWith(internal.value_store.get, { id: cursorId });
 		expect(runQuery).toHaveBeenCalledWith(
 			expect.anything(),
 			expect.objectContaining({
@@ -1338,44 +1342,43 @@ describe("bash_run_command", () => {
 		);
 	});
 
-	test("falls back to value_store when a cursor id is not in memory", async () => {
-		const { run, runQuery, runMutation, t } = await create_bash_runner();
+	test("rejects a removed cursor even after it has been used", async () => {
+		const { run, runQuery, t } = await create_bash_runner();
 
 		const firstPage = await run(`ls --limit 1 ${test_db_files_mount}/docs`);
-		const warmedCursorId = firstPage.stdout.match(/--cursor '?([^' ]+)'?/u)?.[1];
-		if (warmedCursorId == null) {
+		const cursorId = firstPage.stdout.match(/--cursor '?([^' ]+)'?/u)?.[1];
+		if (cursorId == null) {
 			throw new Error("expected a cursor id in the first page stdout");
 		}
-		const rawCursor = runMutation.mock.calls
-			.map(([ref, mutationArgs]) => (function_name_of(ref) === "value_store:put" ? mutationArgs.value : null))
-			.find((value): value is string => typeof value === "string");
-		if (rawCursor == null) {
-			throw new Error("expected the first page cursor to be stored in value_store");
-		}
-
-		let cursorId = "";
-		await t.run(async (ctx) => {
-			// Earlier isolated Convex test runners can cache the first generated ids.
-			for (let index = 0; index < 25; index++) {
-				cursorId = String(await ctx.db.insert("value_store", { value: rawCursor }));
-			}
-		});
-		runQuery.mockClear();
 		const secondPage = await run(`ls --limit 1 --cursor '${cursorId}' ${test_db_files_mount}/docs`);
-
 		expect(secondPage.metadata.exitCode).toBe(0);
-		expect(secondPage.stdout).toContain("readme.md");
-		expect(
-			runQuery.mock.calls.some(
-				([ref, queryArgs]) => function_name_of(ref) === "value_store:get" && queryArgs.id === cursorId,
-			),
-		).toBe(true);
-		expect(runQuery).toHaveBeenCalledWith(
-			expect.anything(),
-			expect.objectContaining({
-				cursor: rawCursor,
-			}),
-		);
+		await t.mutation(internal.value_store.remove, { id: cursorId as Id<"value_store"> });
+		runQuery.mockClear();
+		const removedPage = await run(`ls --limit 1 --cursor '${cursorId}' ${test_db_files_mount}/docs`);
+
+		expect(removedPage.metadata.exitCode).toBe(1);
+		expect(removedPage.stderr).toContain("expired, is unavailable, or was copied incorrectly");
+		expect(runQuery).toHaveBeenCalledWith(internal.value_store.get, { id: cursorId });
+	});
+
+	test("rejects a cursor at its 24-hour expiry", async () => {
+		const { run } = await create_bash_runner();
+		const now = Date.now();
+		const dateNow = vi.spyOn(Date, "now").mockReturnValue(now);
+		try {
+			const firstPage = await run(`ls --limit 1 ${test_db_files_mount}/docs`);
+			const cursorId = firstPage.stdout.match(/--cursor '?([^' ]+)'?/u)?.[1];
+			if (cursorId == null) {
+				throw new Error("expected a cursor id in the first page stdout");
+			}
+			dateNow.mockReturnValue(now + 24 * 60 * 60 * 1000);
+			const expiredPage = await run(`ls --limit 1 --cursor '${cursorId}' ${test_db_files_mount}/docs`);
+
+			expect(expiredPage.metadata.exitCode).toBe(1);
+			expect(expiredPage.stderr).toContain("expired, is unavailable, or was copied incorrectly");
+		} finally {
+			dateNow.mockRestore();
+		}
 	});
 
 	test("reports missing cursor ids with recovery guidance", async () => {

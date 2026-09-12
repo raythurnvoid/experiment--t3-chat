@@ -144,6 +144,7 @@ const rebrand_cleanup_tables = [
 	"quotas",
 	"users_anon_tokens",
 	"value_store",
+	"value_store_metadata",
 	"organizations_workspaces_users",
 	"organizations_workspaces",
 	"organizations",

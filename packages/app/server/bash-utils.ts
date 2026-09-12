@@ -52,7 +52,7 @@ import {
 	files_pending_update_has_content,
 	type files_PendingPathOverlay,
 } from "../shared/files.ts";
-import { LruCache, math_clamp, should_never_happen } from "../shared/shared-utils.ts";
+import { math_clamp, should_never_happen } from "../shared/shared-utils.ts";
 import { path_name_of } from "../shared/paths.ts";
 import {
 	organizations_is_reserved_workspace_id,
@@ -139,7 +139,7 @@ export const bash_TERMINAL_LINE_ENDING_REGEX = /\r\n?/g;
 export const bash_SHELL_COMMENT_LINE_REGEX = /^\s*#.*$/gm;
 export const bash_WHITESPACE_RUN_REGEX = /\s+/u;
 
-const PAGINATION_CURSORS_CACHE_MAX_ENTRIES = 500;
+const PAGINATION_CURSOR_TTL_MS = 24 * 60 * 60 * 1000;
 const BACKSLASH_REGEX = /\\/g;
 const SINGLE_QUOTE_REGEX = /'/g;
 const SIGNED_INTEGER_REGEX = /^-?\d+$/u;
@@ -150,12 +150,6 @@ const SHELL_ARG_SAFE_UNQUOTED_REGEX = /^[A-Za-z0-9_/:.,=+@-]+$/;
 const LISTING_PAGE_LIMIT_MAX = 200;
 const BASH_REGEX_PATTERN_MAX_LENGTH = 200;
 const textEncoder = new TextEncoder();
-
-/**
- * In-memory LRU cache for stored pagination cursors. `value_store` remains the
- * durable fallback when this per-runtime cache is empty.
- */
-const pagination_cursors_cache = new LruCache<string, string>(PAGINATION_CURSORS_CACHE_MAX_ENTRIES);
 
 /**
  * Return one clean absolute path for Bash, db files, and cache keys.
@@ -2246,13 +2240,10 @@ export async function files_agent_write_file_text(
  * shell commands reliably, so bash output exposes only this value_store id.
  */
 export async function bash_cursor_id_create(ctx: ActionCtx, cursor: string) {
-	// Persist first so the cursor id survives runtime cache eviction or restart.
-	const id = (await ctx.runMutation(internal.value_store.put, {
+	return (await ctx.runMutation(internal.value_store.put, {
 		value: cursor,
+		ttl: PAGINATION_CURSOR_TTL_MS,
 	})) as Id<"value_store">;
-	// Warm the local LRU for the common case where the next command lands here.
-	pagination_cursors_cache.set(id, cursor);
-	return id;
 }
 
 /**
@@ -2269,12 +2260,7 @@ export async function bash_cursor_id_resolve(ctx: ActionCtx, cursor: string) {
 		});
 	}
 
-	const cached = pagination_cursors_cache.get(id);
-	if (cached != null) {
-		return Result({ _yay: cached });
-	}
-
-	// Fall back to durable storage because Convex action runtimes may not share memory.
+	// Read Convex every time so expiry and removal also apply across action runtimes.
 	const stored = (await ctx.runQuery(internal.value_store.get, { id })) as { value: string; createdAt: number } | null;
 	if (!stored) {
 		return Result({
@@ -2287,8 +2273,6 @@ export async function bash_cursor_id_resolve(ctx: ActionCtx, cursor: string) {
 		});
 	}
 
-	// Refill the local LRU after durable lookup for subsequent page requests.
-	pagination_cursors_cache.set(id, stored.value);
 	return Result({ _yay: stored.value });
 }
 

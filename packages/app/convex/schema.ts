@@ -292,7 +292,19 @@ const app_convex_schema = defineSchema({
 	// #region value store
 	value_store: defineTable({
 		value: v.string(),
+		/**
+		 * Copied here so reads need only this doc. Null means no expiry.
+		 */
+		expiresAt: v.union(v.number(), v.null()),
+		metadataId: v.union(v.id("value_store_metadata"), v.null()),
 	}),
+	/**
+	 * Only expiring values have metadata, so cleanup scans small docs.
+	 */
+	value_store_metadata: defineTable({
+		valueId: v.id("value_store"),
+		expiresAt: v.number(),
+	}).index("by_expiresAt", ["expiresAt"]),
 	// #endregion value store
 
 	// #region files
