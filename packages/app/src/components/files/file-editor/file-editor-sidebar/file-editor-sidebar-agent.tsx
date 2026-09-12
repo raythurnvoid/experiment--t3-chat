@@ -473,16 +473,18 @@ const FileEditorSidebarAgentHeaderActions = memo(function FileEditorSidebarAgent
 			currentThreads,
 			streamingTitleByThreadId: controller.streamingTitleByThreadId,
 		});
-		app_local_storage_set_value(selectedTabStorageKey, threadId);
 		if (!inOpenTabs) {
 			app_local_storage_set_value(openTabsStorageKey, (previousTabs) => [...previousTabs, { id: threadId, title }]);
 		}
+		app_local_storage_set_value(selectedTabStorageKey, threadId);
 	});
 
 	const handleNewChat = () => {
 		const threadId = controller.startNewChat();
 		onOptimisticThreadCreated(threadId);
-		app_local_storage_set_value(selectedTabStorageKey, threadId);
+		// The open tab must reach other tabs before the selection does: a peer that
+		// sees selectedTab change while its openTabs snapshot still lacks the id
+		// falls back to its own controller selection and writes that stale id back.
 		app_local_storage_set_value(openTabsStorageKey, (previousTabs) => {
 			if (previousTabs.some((tab) => tab.id === threadId)) {
 				return previousTabs;
@@ -490,6 +492,7 @@ const FileEditorSidebarAgentHeaderActions = memo(function FileEditorSidebarAgent
 
 			return [...previousTabs, { id: threadId, title: "New chat" }];
 		});
+		app_local_storage_set_value(selectedTabStorageKey, threadId);
 	};
 
 	return (
@@ -601,8 +604,8 @@ const FileEditorSidebarAgentHeaderTabs = memo(function FileEditorSidebarAgentHea
 
 			const newThreadId = controller.startNewChat();
 			onOptimisticThreadCreated(newThreadId);
-			app_local_storage_set_value(selectedTabStorageKey, newThreadId);
 			app_local_storage_set_value(openTabsStorageKey, [{ id: newThreadId, title: "New chat" }]);
+			app_local_storage_set_value(selectedTabStorageKey, newThreadId);
 			return;
 		}
 
