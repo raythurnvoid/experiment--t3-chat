@@ -4339,6 +4339,7 @@ export async function files_nodes_db_apply_pending_move(
 			});
 		}
 	}
+
 	await files_nodes_db_apply_node_move(ctx, {
 		organizationId: args.organizationId,
 		workspaceId: args.workspaceId,
@@ -4349,6 +4350,7 @@ export async function files_nodes_db_apply_pending_move(
 		updatedBy: args.updatedBy,
 		now,
 	});
+
 	// The hard-deleted eager occupant's created folders are checked only after the source
 	// lands: the destination chain holds the moved node now and must not be removed.
 	if (occupantEagerPendingUpdate?.eagerCreated) {

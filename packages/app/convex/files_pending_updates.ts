@@ -3817,6 +3817,7 @@ export const upsert_file_pending_move_in_db = internalMutation({
 						.eq("archiveOperationId", null),
 				)
 				.first();
+
 			// The occupant collapses only while it is still the near-empty node its proposal
 			// created. Anything real on it — committed content, another member's pending doc, a
 			// staged move or delete, or its own restricted scope — keeps the replace reviewable.
@@ -3846,6 +3847,7 @@ export const upsert_file_pending_move_in_db = internalMutation({
 					collapsibleOccupantPendingUpdate = occupantPendingUpdate;
 				}
 			}
+
 			if (!committedOccupant || committedOccupant._id === node._id || collapsibleOccupantPendingUpdate) {
 				// The pending path defers this check to accept; an immediate move asks it now.
 				const authorizedLeaving = await authorize_leaving_restricted_scope(ctx, {
@@ -3857,8 +3859,10 @@ export const upsert_file_pending_move_in_db = internalMutation({
 				if (authorizedLeaving._nay) {
 					return authorizedLeaving;
 				}
+
 				const vacatedAncestorIds = existingPendingUpdate.eagerCreated.createdAncestorIds ?? [];
 				const occupantAncestorIds = collapsibleOccupantPendingUpdate?.eagerCreated?.createdAncestorIds ?? [];
+
 				if (collapsibleOccupantPendingUpdate && committedOccupant) {
 					// The hard delete takes the occupant's pending doc with it and hands its staged
 					// copy asset to the deletion ledger.
@@ -3868,6 +3872,7 @@ export const upsert_file_pending_move_in_db = internalMutation({
 						nodeId: committedOccupant._id,
 					});
 				}
+
 				await files_nodes_db_apply_node_move(ctx, {
 					organizationId: args.organizationId,
 					workspaceId: args.workspaceId,
@@ -3878,6 +3883,7 @@ export const upsert_file_pending_move_in_db = internalMutation({
 					updatedBy: args.userId,
 					now,
 				});
+
 				let survivingAncestorIds: Id<"files_nodes">[] | undefined;
 				if (collapsibleOccupantPendingUpdate) {
 					// The folders either create committed are cleaned up now if they were left
@@ -3896,6 +3902,7 @@ export const upsert_file_pending_move_in_db = internalMutation({
 						userId: args.userId,
 						createdAncestorIds: occupantAncestorIds,
 					});
+
 					survivingAncestorIds = (
 						await Promise.all(
 							[...new Set([...vacatedAncestorIds, ...occupantAncestorIds])].map((ancestorId) =>
@@ -3910,10 +3917,12 @@ export const upsert_file_pending_move_in_db = internalMutation({
 						.sort((a, b) => b.pathDepth - a.pathDepth)
 						.map((ancestor) => ancestor._id);
 				}
+
 				// A pending move already on the doc (staged before this rule) is settled for real.
 				if (existingPendingUpdate.pendingMove) {
 					await files_pending_update_db_settle_move_row(ctx, { pendingUpdate: existingPendingUpdate });
 				}
+
 				// The mv still touched this proposal: record its thread and refresh the row's
 				// expiry, or a moved Added file could die on the creation-time deadline. A
 				// collapsed occupant's contributing threads move onto the surviving row.
@@ -3926,6 +3935,7 @@ export const upsert_file_pending_move_in_db = internalMutation({
 							]),
 						]
 					: nextThreadIds;
+
 				await Promise.all([
 					ctx.db.patch("files_pending_updates", existingPendingUpdate._id, {
 						...(mergedThreadIds && mergedThreadIds.length > 0 ? { threadIds: mergedThreadIds } : {}),

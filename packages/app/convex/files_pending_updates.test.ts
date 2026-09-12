@@ -11644,6 +11644,7 @@ describe("apply_file_pending_move", () => {
 		if (upserted._nay) {
 			throw new Error(upserted._nay.message);
 		}
+
 		const occupantRow = await t.run((ctx) =>
 			read_pending_update_row({
 				ctx,
@@ -11734,6 +11735,7 @@ describe("apply_file_pending_move", () => {
 		if (upserted._nay) {
 			throw new Error(upserted._nay.message);
 		}
+
 		// Another member's pending doc on the eager occupant makes it shared work: the accept
 		// archives it like any other replace instead of hard-deleting.
 		const otherRowId = await t.run((ctx) =>
@@ -20623,8 +20625,10 @@ describe("pending file that was moved while pending", () => {
 			throw new Error(proposed._nay.message);
 		}
 		expect(proposed._yay.appliedImmediately).toBe(true);
+
 		const node = await t.run((ctx) => ctx.db.get("files_nodes", seeded.nodeId));
 		expect(node?.path).toBe("/qa-mv-dst/qa-mv-eager.md");
+
 		// The doc keeps its content proposal with no pendingMove; the row follows the node path.
 		const rowAfterMove = await t.run((ctx) =>
 			read_pending_update_row({
@@ -20639,11 +20643,13 @@ describe("pending file that was moved while pending", () => {
 		expect(rowAfterMove?.stagedStateId).not.toBeNull();
 		expect(rowAfterMove?.threadIds).toEqual([threadA, threadB]);
 		expect(rowAfterMove?.updatedAt).toBeGreaterThan(rowBeforeMove?.updatedAt ?? 0);
+
 		const saved = await asUser.action(api.files_pending_updates.save_file_pending_update, {
 			membershipId: seeded.membershipId,
 			nodeId: seeded.nodeId,
 		});
 		expect(saved._nay).toBeUndefined();
+
 		const rowAfterSave = await t.run((ctx) =>
 			read_pending_update_row({
 				ctx,
@@ -20844,8 +20850,10 @@ describe("pending file that was moved while pending", () => {
 			});
 			expect(destRow).toBeNull();
 		});
+
 		const node = await t.run((ctx) => ctx.db.get("files_nodes", source.nodeId));
 		expect(node?.path).toBe("/eager-collapse-dst.md");
+
 		const row = await t.run((ctx) =>
 			read_pending_update_row({
 				ctx,
@@ -20950,6 +20958,7 @@ describe("pending file that was moved while pending", () => {
 			throw new Error(moved._nay.message);
 		}
 		expect(moved._yay.appliedImmediately).toBe(true);
+
 		await t.run(async (ctx) => {
 			// The folder the source's create made is empty now, so it goes. The destination chain
 			// holds the moved file, so it stays and becomes the surviving row's created ancestors.
@@ -21043,6 +21052,7 @@ describe("pending file that was moved while pending", () => {
 		}
 		expect(moved._yay.appliedImmediately).toBe(false);
 		expect(moved._yay.replacesExistingOccupant).toBe(true);
+
 		await t.run(async (ctx) => {
 			expect(await ctx.db.get("files_nodes", dest.nodeId)).not.toBeNull();
 			expect(await ctx.db.get("files_pending_updates", otherRowId)).not.toBeNull();
@@ -21087,6 +21097,7 @@ describe("pending file that was moved while pending", () => {
 				throw new Error(upserted._nay.message);
 			}
 		}
+
 		// A save committed content to the destination after its proposal: the stamp no longer
 		// matches, so the occupant is real and the replace stays reviewable.
 		await t.run(async (ctx) => {
@@ -21153,6 +21164,7 @@ describe("pending file that was moved while pending", () => {
 				throw new Error(upserted._nay.message);
 			}
 		}
+
 		// A `cp` staged a whole-file copy on the destination: the published staged asset must
 		// reach the deletion ledger when the occupant is hard-deleted.
 		const stagedAssetId = await t.run(async (ctx) => {
@@ -21209,6 +21221,7 @@ describe("pending file that was moved while pending", () => {
 			throw new Error(moved._nay.message);
 		}
 		expect(moved._yay.appliedImmediately).toBe(true);
+
 		await t.run(async (ctx) => {
 			expect(await ctx.db.get("files_r2_assets", stagedAssetId)).toBeNull();
 			const jobs = await ctx.db.query("files_r2_object_deletion_jobs").collect();
