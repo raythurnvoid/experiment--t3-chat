@@ -8,6 +8,7 @@ Read a repository's own `AGENTS.md` before working inside it. Prefer its README,
 
 | Repository | Use it for | Start here |
 | --- | --- | --- |
+| [action-cache](action-cache/) | Convex action caching, argument-based keys, expiry, and refresh behavior | [README](action-cache/README.md), [examples](action-cache/example/convex/example.ts), [source](action-cache/src/) |
 | [action-retrier](action-retrier/) | Convex action retries, backoff, and completion behavior | [README](action-retrier/README.md), [source](action-retrier/src/) |
 | [agent](agent/) | Convex Agent threads, messages, tools, and workflows | [README](agent/README.md), [docs](agent/docs/), [source](agent/src/) |
 | [ai](ai/) | Vercel AI SDK APIs, providers, tool calling, and examples | [docs](ai/content/docs/), [provider docs](ai/content/providers/), [examples](ai/examples/) |
