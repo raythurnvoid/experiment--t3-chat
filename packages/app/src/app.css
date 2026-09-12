@@ -535,6 +535,7 @@
 			white-space: pre-wrap;
 		}
 
+		/* Headings inherit the text color; the app surface stays dark in both theme modes. */
 		h1 {
 			font-size: 2em;
 			line-height: 2;
@@ -545,33 +546,18 @@
 			font-size: 1.6em;
 			font-weight: 400;
 			line-height: 1.6;
-			color: var(--color-fg-02);
-
-			.dark & {
-				color: var(--color-fg-11);
-			}
 		}
 
 		h3 {
 			font-size: 1.4em;
 			font-weight: 400;
 			line-height: 1.6;
-			color: var(--color-fg-02);
-
-			.dark & {
-				color: var(--color-fg-11);
-			}
 		}
 
 		h4 {
 			font-size: 1.3em;
 			font-weight: 500;
 			line-height: 1.6;
-			color: var(--color-fg-02);
-
-			.dark & {
-				color: var(--color-fg-11);
-			}
 		}
 
 		h5 {

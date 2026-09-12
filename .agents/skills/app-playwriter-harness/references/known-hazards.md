@@ -5,7 +5,7 @@ Use this file for reusable problems that affect app browser QA.
 Before the first attempt at a new interaction type (upload, download, screenshot, toast, tooltip, hovercard, dialog, navigation, sign-in), search this file for that word — the recipe often already exists, and finding it before the attempt is much cheaper than after the failure. Routing hints:
 
 - **File upload / folder import** — try `setInputFiles` under a Windows relay first; use the fallback under Playwriter Availability only after an actual failure.
-- **Screenshots / downloads** — the sandbox never writes where you point it; use the Buffer + temp-dir recipe under Playwriter Availability.
+- **Screenshots / downloads** — check the relay host first. Absolute Windows paths work with a Windows relay; use the Buffer transfer recipe under Playwriter Availability for a WSL relay.
 - **Toasts** — bottom-edge action buttons need an offset click, and a toast must be read in the same execute call as the click that causes it (Playwriter Availability, Interaction Discipline).
 - **Tooltips / hovercards** — they need a real pointer position change; see the Ariakit entries under Interaction Discipline.
 - **Dialogs** — many stay mounted while closed; never trust the first `[role=dialog]` match (Interaction Discipline).
@@ -20,6 +20,10 @@ Before the first attempt at a new interaction type (upload, download, screenshot
 
 ## Playwriter Availability
 
+- `playwriter session reset <id>` clears `state`. Run `install-harness.js` again, then bind the page before using `state.appPlaywriterHarness`. A successful reconnect does not restore the helper namespace.
+- Vitest browser failure screenshots can be refused by Vite's file allowlist when `--browser.screenshotDirectory` points to the personal folder. Use `--browser.screenshotFailures=false` for an expected failing check, and capture needed images with Playwriter. Keep screenshot output outside the repo.
+- A Files screenshot can time out after reporting `fonts loaded`, even when the page is still usable. Check the current URL and scroll position, then retry the capture in a separate call. This worked after navigation and scrolling on 2026-09-12. Check that the output file exists before calling the capture complete.
+- If a Files screenshot jumps back to the focused editor block or checkbox, focus a header control first, then scroll and capture. `Copy path` can receive focus without activating it.
 - **A new headless session may have a separate browser context.** After compaction, first list sessions and inspect the exact owned fixture's current account and workspace. Do not assume a fresh headless session shares its anonymous account. A surviving owned fixture can be reused after that check; delete only an unused session you just created. Keep fixture IDs in the task notes so cleanup cannot target another account.
 - **Large console values can be truncated before the shell saves them.** Redirecting CLI output to a file does not make a large JSON log complete. For preservation checks, print bounded pages or a compact ID/path/hash list and verify its entry count. A truncated full-row log is not a complete baseline.
 - **Assertions in runners:** Playwriter 0.5.0 allows `require("assert")` but refuses the `node:assert/strict` subpath. Also, `deepStrictEqual` can reject equal arrays returned by `page.evaluate` because the sandbox and browser results have different prototypes. For a fixed JSON result, compare `JSON.stringify` values with `strictEqual`, or assert each scalar field. Neither harness failure counts as a failed product assertion. Fix the assertion and rerun the check.

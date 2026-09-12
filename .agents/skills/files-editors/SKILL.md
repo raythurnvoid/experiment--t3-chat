@@ -103,3 +103,9 @@ Diff hunk controls are Monaco content widgets. The editor CSS sets `anchor-name`
 `packages/app/src/routes/__root.tsx` owns `app_tiptap_hoisting_container` and `app_monaco_hoisting_container`. Editors use these DOM containers for menus and overflow widgets. For focus or outside-click bugs, trace the portal target and event handling as well as the visible editor.
 
 Mounted Tiptap editors use `injectCSS: false`. Keep their styles in app-owned CSS layers. Headless conversion editors keep `element: null`. Follow the editor CSS rules in `AGENTS.md`.
+
+The Files rich editor uses warm neutral styles in `file-editor-rich-text.css`, shared by both editor variants. Body text uses `fg-11` and headings use `fg-12`. Quotes and code blocks use `base-1-03` with `base-1-07` borders. Tables use `base-1-05` headers and alternate `base-1-02` / `base-1-03` rows. Only links use the accent color; code syntax and default highlights stay neutral. Explicit colors saved in text and highlight marks still apply.
+
+Keep document styles scoped to the two rich editor content classes. The global `.ProseMirror` / `.app-doc` rules also serve other editors and chat. Task-list and horizontal-rule spacing belongs in the Files CSS, without competing utility classes in the browser extension list. Code blocks expose their existing language as `data-language` for a CSS label; this adds no document text and does not change Markdown serialization. Code and frontmatter labels use `::before`, so the node selection fill uses `::after`.
+
+The app surface stays dark with either the `light` or `dark` theme class. Check both classes and both rich editor variants when changing these styles.

@@ -15,6 +15,7 @@ import {
 } from "novel";
 import { cx } from "class-variance-authority";
 import { common, createLowlight } from "lowlight";
+import { mergeAttributes } from "@tiptap/core";
 import { Plugin } from "@tiptap/pm/state";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
 import { files_get_tiptap_shared_extensions } from "../../../../../shared/files-tiptap.ts";
@@ -59,20 +60,22 @@ const nonCollabStarterKit = StarterKit.configure({
 	...starterKitSharedOptions,
 });
 
-const taskList = TaskList.configure({
-	HTMLAttributes: {
-		class: cx("not-prose pl-2 "),
-	},
-});
+const taskList = TaskList;
 
 const taskItem = TaskItem.configure({
-	HTMLAttributes: {
-		class: cx("flex gap-2 items-start my-4"),
-	},
 	nested: true,
 });
 
-const codeBlockLowlight = CodeBlockLowlight.configure({
+const codeBlockLowlight = CodeBlockLowlight.extend({
+	// Show the language in CSS without adding text to the document or changing its Markdown.
+	renderHTML({ node, HTMLAttributes }) {
+		return [
+			"pre",
+			mergeAttributes(this.options.HTMLAttributes, HTMLAttributes, { "data-language": node.attrs.language }),
+			["code", { class: node.attrs.language ? this.options.languageClassPrefix + node.attrs.language : null }, 0],
+		];
+	},
+}).configure({
 	// configure lowlight: common /  all / use highlightJS in case there is a need to specify certain language grammars only
 	// common: covers 37 language grammars which should be good enough in most cases
 	lowlight: createLowlight(common),
@@ -103,7 +106,15 @@ const mathematics = Mathematics.configure({
 
 const characterCount = CharacterCount.configure();
 
-type FileEditorRichTextFrontmatter_ClassNames = "FileEditorRichTextFrontmatter-key" | "FileEditorRichTextFrontmatter-focused";
+const horizontalRule = sharedExtensions.horizontalRule.configure({
+	HTMLAttributes: {
+		class: null,
+	},
+});
+
+type FileEditorRichTextFrontmatter_ClassNames =
+	| "FileEditorRichTextFrontmatter-key"
+	| "FileEditorRichTextFrontmatter-focused";
 
 /**
  * Browser-only polish for the shared frontmatter node: tint YAML keys and brighten the
@@ -194,7 +205,7 @@ const extensionsAfterStarterKit = [
 	DragHandle,
 	sharedExtensions.textAlign,
 	sharedExtensions.typography,
-	sharedExtensions.horizontalRule,
+	horizontalRule,
 	frontmatter,
 ];
 

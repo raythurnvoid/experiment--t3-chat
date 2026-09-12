@@ -80,32 +80,321 @@
 		.prosemirror-dropcursor-block,
 		.prosemirror-dropcursor-inline,
 		.prosemirror-dropcursor-vertical {
-			background-color: var(--color-accent-07);
+			background-color: var(--color-fg-09);
 			border-radius: 4px;
 		}
 	}
 	/* #endregion root */
 
 	/* #region editor content */
+	.FileEditorRichText-editor-content ::selection,
+	.FileEditorRichTextNonCollab-editor-content ::selection {
+		background: var(--color-base-1-10);
+		color: var(--color-fg-12);
+	}
+
 	.FileEditorRichText-editor-content,
 	.FileEditorRichTextNonCollab-editor-content {
 		width: 100%;
 
 		/* Add a large bottom safe area so the shared FileNodeView scroller can move
 		   the final editable block above bubble menus and anchored comment cards. */
-		padding: max(16px, var(--FileEditor-top-safe-area, 0px)) 64px var(--FileEditorRichText-safe-bottom-padding) 64px;
+		padding: max(16px, var(--FileEditor-top-safe-area, 0px)) min(64px, 8%) var(--FileEditorRichText-safe-bottom-padding);
 
-		color: var(--FileEditorRichText-text-color-fg-default);
+		color: var(--color-fg-11);
+		font-size: 16px;
+		line-height: 1.625;
 
 		/* Editor content styles */
+		h1,
+		h2,
+		h3,
+		h4,
+		h5,
+		h6 {
+			margin: 24px 0 10px;
+			color: var(--color-fg-12);
+			font-weight: 650;
+		}
+
+		h1,
+		h2 {
+			padding-bottom: 8px;
+			border-bottom: 1px solid var(--color-base-1-07);
+		}
+
+		h1 {
+			font-size: 30px;
+			line-height: 38px;
+			font-weight: 700;
+			letter-spacing: -0.025em;
+		}
+
+		h2 {
+			font-size: 23px;
+			line-height: 31px;
+			letter-spacing: -0.015em;
+		}
+
+		h3 {
+			font-size: 19px;
+			line-height: 27px;
+		}
+
+		h4 {
+			font-size: 17px;
+			line-height: 25px;
+		}
+
+		h5 {
+			font-size: 15.5px;
+			line-height: 24px;
+			font-weight: 700;
+			letter-spacing: 0.04em;
+		}
+
+		h6 {
+			font-size: 14px;
+			line-height: 22px;
+			font-weight: 700;
+			letter-spacing: 0.04em;
+		}
+
+		:is(h1, h2, h3, h4, h5, h6) + :is(h1, h2, h3, h4, h5, h6) {
+			margin-top: 10px;
+		}
+
+		> h1:first-child {
+			padding-bottom: 0;
+			border-bottom: 0;
+		}
+
+		p {
+			margin: 10px 0;
+		}
+
+		strong {
+			font-weight: 700;
+		}
+
+		code {
+			padding: 0.125em 0.35em;
+			border-radius: 4px;
+			background: var(--color-base-1-05);
+			color: var(--color-fg-11);
+			font-family: var(--app-font-monospace);
+			font-size: 0.875em;
+		}
+
+		/* Explicit colors on saved marks still take priority over these neutral defaults. */
+		mark {
+			padding: 0.125em 0.2em;
+			border-radius: 3px;
+			background: var(--color-base-1-08);
+			color: inherit;
+		}
+
+		blockquote {
+			margin: 16px 0;
+			padding: 12px 16px;
+			border: 1px solid var(--color-base-1-07);
+			border-left: 3px solid var(--color-fg-07);
+			border-radius: 6px;
+			background: var(--color-base-1-03);
+
+			blockquote {
+				margin: 8px 0 0;
+				padding: 4px 12px;
+				border-width: 0 0 0 2px;
+				border-radius: 0;
+				background: transparent;
+			}
+
+			> :first-child {
+				margin-top: 0;
+			}
+
+			> :last-child {
+				margin-bottom: 0;
+			}
+		}
+
+		ul,
+		ol {
+			margin: 10px 0;
+			padding-inline-start: 28px;
+		}
+
+		li {
+			margin: 4px 0;
+
+			&::marker {
+				color: var(--color-fg-09);
+			}
+
+			p,
+			ul,
+			ol {
+				margin: 4px 0;
+			}
+
+			ul {
+				list-style-type: circle;
+			}
+		}
+
+		ul[data-type="taskList"] {
+			padding-inline-start: 0;
+			list-style: none;
+
+			/* Task item node views omit data-type on the li. */
+			> li {
+				display: flex;
+				align-items: flex-start;
+				gap: 8px;
+
+				> label {
+					flex-shrink: 0;
+					margin-top: 1px;
+				}
+
+				> div {
+					flex: 1;
+					min-width: 0;
+
+					> p:first-child {
+						margin-top: 0;
+					}
+
+					> p:last-child {
+						margin-bottom: 0;
+					}
+				}
+			}
+
+			input[type="checkbox"] {
+				color-scheme: dark;
+				accent-color: var(--color-fg-11);
+
+				&:focus-visible {
+					outline: 2px solid var(--color-fg-09);
+					outline-offset: 3px;
+				}
+			}
+		}
+
+		hr {
+			margin: 24px 0;
+			border: 0;
+			border-top: 1px solid var(--color-base-1-07);
+		}
+
+		table {
+			margin: 16px 0;
+			border: 1px solid var(--color-base-1-07);
+			border-collapse: separate;
+			border-spacing: 0;
+			border-radius: 6px;
+			overflow: hidden;
+			background: var(--color-base-1-02);
+			font-size: 14px;
+			line-height: 22px;
+		}
+
+		th,
+		td {
+			padding: 8px 14px;
+			border: 0;
+			border-right: 1px solid var(--color-base-1-07);
+			border-bottom: 1px solid var(--color-base-1-07);
+
+			&:last-child {
+				border-right: 0;
+			}
+
+			p {
+				margin: 0;
+			}
+		}
+
+		tr:last-child > :is(th, td) {
+			border-bottom: 0;
+		}
+
+		tr:nth-child(odd) td {
+			background: var(--color-base-1-03);
+		}
+
+		th {
+			background: var(--color-base-1-05);
+			color: var(--color-fg-12);
+			font-weight: 650;
+		}
+
+		.selectedCell::after {
+			background: var(--color-base-1-10);
+		}
+
+		pre:not([data-frontmatter]) {
+			margin: 12px 0 16px;
+			padding: 16px;
+			border: 1px solid var(--color-base-1-07);
+			border-radius: 6px;
+			background: var(--color-base-1-03);
+			color: var(--color-fg-10);
+			font-family: var(--app-font-monospace);
+			font-size: 13px;
+			line-height: 21px;
+			tab-size: 4;
+
+			&[data-language]::before {
+				content: attr(data-language);
+				display: block;
+				margin-bottom: 8px;
+				color: var(--color-fg-08);
+				font-family: var(--app-font-sans);
+				font-size: 12px;
+				line-height: 16px;
+				text-align: right;
+				pointer-events: none;
+			}
+
+			.hljs-keyword,
+			.hljs-title,
+			.hljs-literal {
+				color: var(--color-fg-11);
+			}
+
+			.hljs-string,
+			.hljs-number {
+				color: var(--color-fg-09);
+			}
+
+			.hljs-comment {
+				color: var(--color-fg-08);
+			}
+		}
+
+		pre code {
+			padding: 0;
+			border-radius: 0;
+			background: transparent;
+			color: inherit;
+			font: inherit;
+		}
+
+		> :first-child {
+			margin-top: 0;
+		}
 
 		.FileEditorRichText-editor-content-container:focus-within & .ProseMirror-selectednode,
 		.FileEditorRichTextNonCollab-editor-content-container:focus-within & .ProseMirror-selectednode {
 			position: relative;
 
-			&::before {
+			/* Code and frontmatter labels use ::before. Keep selection behind a separate element. */
+			&::after {
 				content: "";
-				background-color: color-mix(in oklch, var(--color-accent-04) 25%, transparent);
+				background-color: color-mix(in oklch, var(--color-base-1-10) 35%, transparent);
 				border-radius: 8px;
 
 				position: absolute;
@@ -115,42 +404,12 @@
 
 			/* Suppress the native text-selection highlight on the node-selected block so the soft
 			   block fill above is the only selection indicator. Otherwise the node selection paints
-			   a second, clashing accent-alt highlight over the text on top of the fill. */
+			   a second highlight over the text on top of the fill. */
 			&::selection,
 			& ::selection {
 				background-color: transparent;
 				color: currentColor;
 			}
-		}
-
-		h2 {
-			--FileEditorRichText-text-color-fg-default: var(--color-fg-02);
-
-			.dark & {
-				--FileEditorRichText-text-color-fg-default: var(--color-fg-11);
-			}
-
-			color: var(--FileEditorRichText-text-color-fg-default);
-		}
-
-		h3 {
-			--FileEditorRichText-text-color-fg-default: var(--color-fg-02);
-
-			.dark & {
-				--FileEditorRichText-text-color-fg-default: var(--color-fg-11);
-			}
-
-			color: var(--FileEditorRichText-text-color-fg-default);
-		}
-
-		h4 {
-			--FileEditorRichText-text-color-fg-default: var(--color-fg-02);
-
-			.dark & {
-				--FileEditorRichText-text-color-fg-default: var(--color-fg-11);
-			}
-
-			color: var(--FileEditorRichText-text-color-fg-default);
 		}
 
 		pre[data-frontmatter] {
@@ -196,7 +455,7 @@
 			}
 
 			.FileEditorRichTextFrontmatter-key {
-				color: var(--color-accent-09);
+				color: var(--color-fg-11);
 			}
 		}
 
@@ -271,7 +530,7 @@
 				padding: 8px 12px;
 				border: 1px dashed var(--color-base-1-07);
 				border-radius: 8px;
-				background-color: var(--color-base-1-03);
+				background-color: var(--color-base-1-04);
 
 				font-family: var(--app-font-sans);
 				font-size: 13px;
@@ -314,7 +573,7 @@
 			}
 
 			&:focus-visible {
-				outline: 2px solid var(--color-accent-09);
+				outline: 2px solid var(--color-fg-09);
 				outline-offset: 1px;
 			}
 		}
@@ -344,8 +603,8 @@
 			height: 14px;
 			display: none;
 
-			border-right: 3px solid var(--color-accent-09);
-			border-bottom: 3px solid var(--color-accent-09);
+			border-right: 3px solid var(--color-fg-09);
+			border-bottom: 3px solid var(--color-fg-09);
 			border-bottom-right-radius: 7px;
 
 			cursor: nwse-resize;
@@ -387,7 +646,7 @@
 			}
 
 			&:focus-visible {
-				outline: 2px solid var(--color-accent-09);
+				outline: 2px solid var(--color-fg-09);
 				outline-offset: 1px;
 			}
 		}
@@ -410,7 +669,7 @@
 			color: var(--color-fg-09);
 
 			&:focus-visible {
-				outline: 2px solid var(--color-accent-09);
+				outline: 2px solid var(--color-fg-09);
 				outline-offset: 1px;
 			}
 		}
@@ -461,14 +720,14 @@
 			color: var(--color-fg-10);
 
 			.lb-tiptap-thread-mark-selected {
-				background: var(--color-accent-01);
+				background: var(--color-base-1-09);
 			}
 
 			&:hover {
 				background: var(--color-base-1-10);
 
 				.lb-tiptap-thread-mark-selected {
-					background: var(--color-accent-02);
+					background: var(--color-base-1-10);
 				}
 			}
 		}

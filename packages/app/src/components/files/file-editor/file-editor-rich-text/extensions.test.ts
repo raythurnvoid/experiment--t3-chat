@@ -12,6 +12,43 @@ import {
 	table_code_span_markdown_active,
 } from "../../../../../shared/files-table-markdown-fixtures.ts";
 
+describe("browser code block language label", () => {
+	test.each([
+		["collaborative", defaultExtensions],
+		["non-collaborative", nonCollaborativeExtensions],
+	])("keeps the label out of the %s document and saved Markdown", (_name, extensions) => {
+		const markdown = '```javascript\nconst name = "Markdown";\n```\n\n```\nPlain code\n```';
+		const editor = new Editor({
+			element: null,
+			extensions,
+			content: {
+				type: "doc",
+				content: [
+					{
+						type: "codeBlock",
+						attrs: { language: "javascript" },
+						content: [{ type: "text", text: 'const name = "Markdown";' }],
+					},
+					{ type: "codeBlock", content: [{ type: "text", text: "Plain code" }] },
+				],
+			},
+		});
+		try {
+			const html = document.createElement("div");
+			html.innerHTML = editor.getHTML();
+			const blocks = html.querySelectorAll("pre");
+			expect(blocks).toHaveLength(2);
+			expect(blocks[0].dataset.language).toBe("javascript");
+			expect(blocks[0].querySelector("code")?.className).toBe("language-javascript");
+			expect(blocks[0].textContent).toBe('const name = "Markdown";');
+			expect(blocks[1].hasAttribute("data-language")).toBe(false);
+			expect(editor.markdown?.serialize(editor.getJSON())).toBe(markdown);
+		} finally {
+			editor.destroy();
+		}
+	});
+});
+
 describe("browser extension list table schema", () => {
 	// For a non-collaborative file the browser serializer is the only writer of the stored bytes,
 	// so a table node missing from `defaultExtensions` would silently drop every table on save
