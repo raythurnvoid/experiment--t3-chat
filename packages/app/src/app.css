@@ -160,18 +160,19 @@
 	--color-base-2-11: oklch(0.909 0.004 85);
 	--color-base-2-12: oklch(0.95 0.002 85);
 
+	/* Cool gray surfaces keep floating controls distinct from the warm workspace. */
 	--color-base-alt-1-01: oklch(0.14 0.002 260);
 	--color-base-alt-1-02: oklch(0.18 0.003 260);
 	--color-base-alt-1-03: oklch(0.2 0.005 260);
 	--color-base-alt-1-04: oklch(0.22 0.006 260);
-	--color-base-alt-1-05: oklch(0.25 0.008 260);
-	--color-base-alt-1-06: oklch(0.27 0.009 260);
-	--color-base-alt-1-07: oklch(0.305 0.011 260);
-	--color-base-alt-1-08: oklch(0.335 0.012 260);
-	--color-base-alt-1-09: oklch(0.365 0.013 260);
-	--color-base-alt-1-10: oklch(0.395 0.015 260);
-	--color-base-alt-1-11: oklch(0.43 0.016 260);
-	--color-base-alt-1-12: oklch(0.47 0.018 260);
+	--color-base-alt-1-05: oklch(0.255 0.012 260);
+	--color-base-alt-1-06: oklch(0.295 0.017 260);
+	--color-base-alt-1-07: oklch(0.325 0.016 260);
+	--color-base-alt-1-08: oklch(0.35 0.018 260);
+	--color-base-alt-1-09: oklch(0.36 0.018 260);
+	--color-base-alt-1-10: oklch(0.385 0.024 260);
+	--color-base-alt-1-11: oklch(0.395 0.022 260);
+	--color-base-alt-1-12: oklch(0.43 0.024 260);
 
 	--color-base-alt-2-01: oklch(0.05 0.001 260);
 	--color-base-alt-2-02: oklch(0.1 0.002 260);

@@ -607,6 +607,8 @@ One dialog holding the file's facts, its write policy, and the flat key-value ma
 
 - Two ways in: right-click a sidebar row (or click its ⋮ button, `getByRole("button", { name: "More actions for <name>" })`)
   and pick `Properties`, or click the breadcrumb button, `getByRole("button", { name: /^Properties of / })`.
+- When the folder browser shows the same node, its row repeats the sidebar's action button name.
+  Scope the sidebar button to `getByRole("tree", { name: "Files", exact: true })` before opening its menu.
 - **Two dialogs are mounted**, the sidebar's and the file view's, and the closed one keeps its class
   and its `data-files-properties-modal` attribute at `display: none`. Scope every query to
   `[data-files-properties-modal][data-open="true"]`. A plain `.FilesPropertiesModal` resolves to the

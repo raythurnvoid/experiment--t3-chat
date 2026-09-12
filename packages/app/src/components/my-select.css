@@ -27,7 +27,7 @@
 		grid-row: 2;
 
 		font-size: 0.75rem;
-		color: var(--color-fg-09);
+		color: var(--color-fg-10);
 	}
 	/* #endregion item content secondary */
 
@@ -78,7 +78,7 @@
 		padding: 6px;
 		border-radius: 4px;
 
-		color: var(--color-fg-08);
+		color: var(--color-fg-11);
 
 		font-size: 0.875rem;
 		line-height: 1.25;
@@ -87,10 +87,7 @@
 		outline: none;
 		user-select: none;
 
-		background: linear-gradient(
-			var(--MySelectItem-background-start),
-			var(--MySelectItem-background-end)
-		);
+		background: linear-gradient(var(--MySelectItem-background-start), var(--MySelectItem-background-end));
 
 		transition:
 			--MySelectItem-background-start 0.15s linear,
@@ -104,14 +101,14 @@
 
 		&[aria-selected="true"] {
 			--MySelectItem-background-start: var(--color-base-alt-1-08);
-			--MySelectItem-background-end: var(--color-base-alt-1-08);
+			--MySelectItem-background-end: var(--color-base-alt-1-07);
 
-			color: var(--color-fg-10);
+			color: var(--color-fg-11);
 		}
 
 		&[data-active-item] {
 			--MySelectItem-background-start: var(--color-base-alt-1-11);
-			--MySelectItem-background-end: var(--color-base-alt-1-10);
+			--MySelectItem-background-end: var(--color-base-alt-1-09);
 
 			color: var(--color-fg-11);
 		}

@@ -73,7 +73,7 @@
 		width: 100%;
 		padding: 6px 12px;
 		border-radius: 4px;
-		color: var(--color-fg-09);
+		color: var(--color-fg-11);
 
 		font-size: 0.875rem;
 		line-height: 1.25;
@@ -92,12 +92,12 @@
 		}
 
 		&[aria-selected="true"] {
-			background: var(--color-base-alt-1-08);
-			color: var(--color-fg-10);
+			background: linear-gradient(var(--color-base-alt-1-08), var(--color-base-alt-1-07));
+			color: var(--color-fg-11);
 		}
 
 		&[data-active-item] {
-			background: linear-gradient(var(--color-base-alt-1-11), var(--color-base-alt-1-10));
+			background: linear-gradient(var(--color-base-alt-1-11), var(--color-base-alt-1-09));
 			color: var(--color-fg-11);
 		}
 
