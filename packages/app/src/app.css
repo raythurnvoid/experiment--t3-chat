@@ -67,7 +67,10 @@
 			display: none;
 		}
 	}
+}
 
+@layer base {
+	/* Keep the focus radius after Tailwind's reset for buttons and inputs. */
 	*:focus-visible {
 		outline-color: var(--color-fg-12);
 		border-radius: 4px;

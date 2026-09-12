@@ -256,6 +256,13 @@
 				> label {
 					flex-shrink: 0;
 					margin-top: 1px;
+
+					/* Native checkboxes ignore corner radii, so draw the focus ring on the label. */
+					&:has(input:focus-visible) {
+						border-radius: 4px;
+						outline: 2px solid var(--color-fg-12);
+						outline-offset: -1px;
+					}
 				}
 
 				> div {
@@ -277,8 +284,7 @@
 				accent-color: var(--color-fg-11);
 
 				&:focus-visible {
-					outline: 2px solid var(--color-fg-09);
-					outline-offset: 3px;
+					outline: none;
 				}
 			}
 		}
@@ -573,7 +579,7 @@
 			}
 
 			&:focus-visible {
-				outline: 2px solid var(--color-fg-09);
+				outline: 2px solid var(--color-fg-12);
 				outline-offset: 1px;
 			}
 		}
@@ -646,7 +652,7 @@
 			}
 
 			&:focus-visible {
-				outline: 2px solid var(--color-fg-09);
+				outline: 2px solid var(--color-fg-12);
 				outline-offset: 1px;
 			}
 		}
@@ -669,7 +675,7 @@
 			color: var(--color-fg-09);
 
 			&:focus-visible {
-				outline: 2px solid var(--color-fg-09);
+				outline: 2px solid var(--color-fg-12);
 				outline-offset: 1px;
 			}
 		}

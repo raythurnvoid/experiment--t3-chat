@@ -106,6 +106,8 @@ Mounted Tiptap editors use `injectCSS: false`. Keep their styles in app-owned CS
 
 The Files rich editor uses warm neutral styles in `file-editor-rich-text.css`, shared by both editor variants. Body text uses `fg-11` and headings use `fg-12`. Quotes and code blocks use `base-1-03` with `base-1-07` borders. Tables use `base-1-05` headers and alternate `base-1-02` / `base-1-03` rows. Only links use the accent color; code syntax and default highlights stay neutral. Explicit colors saved in text and highlight marks still apply.
 
+Focus outlines use the shared 4px radius from `app.css`, after Tailwind's reset. Use `fg-12` for non-link focus outlines, matching shared buttons and inputs; links keep the accent color. Native task checkboxes ignore corner radii, so their existing labels draw the rounded outline with `:has(input:focus-visible)`. Keep the input's own outline hidden only while that label outline is shown.
+
 Keep document styles scoped to the two rich editor content classes. The global `.ProseMirror` / `.app-doc` rules also serve other editors and chat. Task-list and horizontal-rule spacing belongs in the Files CSS, without competing utility classes in the browser extension list. Code blocks expose their existing language as `data-language` for a CSS label; this adds no document text and does not change Markdown serialization. Code and frontmatter labels use `::before`, so the node selection fill uses `::after`.
 
 The app surface stays dark with either the `light` or `dark` theme class. Check both classes and both rich editor variants when changing these styles.
