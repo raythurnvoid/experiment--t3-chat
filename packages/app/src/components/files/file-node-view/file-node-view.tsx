@@ -3362,7 +3362,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 		pendingUpdates.length > 1 || (pendingUpdates.length === 1 && !hasCurrentPendingUpdates);
 	const reviewPagerLabel = hasCurrentPendingUpdates
 		? `${activePendingUpdateIndex + 1} of ${pendingUpdates.length}`
-		: "Review pending updates";
+		: "Review";
 
 	const readOnlyMessage = resolvedNode
 		? !resolvedNode.canWrite
