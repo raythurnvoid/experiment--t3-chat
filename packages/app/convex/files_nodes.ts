@@ -4080,6 +4080,7 @@ export async function files_nodes_db_apply_pending_move(
 
 	// Update the node once and then rebase descendants under the new materialized path.
 	const now = Date.now();
+	let occupantEagerPendingUpdate: Doc<"files_pending_updates"> | null = null;
 	if (validated._yay.replacesNode) {
 		// An occupant that is itself the source of this user's chained pending move must
 		// move away first: archiving it here would silently break that other proposal.
@@ -4308,11 +4309,35 @@ export async function files_nodes_db_apply_pending_move(
 			return occupantSubtreeWritable;
 		}
 
-		await files_nodes_db_archive_nodes(ctx, {
-			nodeIds: [validated._yay.replacesNode._id],
-			updatedBy: args.updatedBy,
-			now,
-		});
+		// An occupant that only exists as the accepting user's own unaccepted eager create has
+		// no committed state to protect: it is hard-deleted and its pending row dies with the
+		// node instead of lingering as an archived one. Anything real on it — committed content,
+		// another member's proposal, a staged delete, a restricted scope — keeps the archive.
+		occupantEagerPendingUpdate =
+			occupantPendingUpdate?.eagerCreated &&
+			!occupantPendingUpdate.pendingArchive &&
+			validated._yay.replacesNode.restrictedScopeNodeId !== validated._yay.replacesNode._id &&
+			(await files_nodes_db_is_eager_node_safe_to_hard_delete(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				nodeId: validated._yay.replacesNode._id,
+				pendingUpdate: occupantPendingUpdate,
+			}))
+				? occupantPendingUpdate
+				: null;
+		if (occupantEagerPendingUpdate) {
+			await files_nodes_db_hard_delete_node(ctx, {
+				organizationId: args.organizationId,
+				workspaceId: args.workspaceId,
+				nodeId: validated._yay.replacesNode._id,
+			});
+		} else {
+			await files_nodes_db_archive_nodes(ctx, {
+				nodeIds: [validated._yay.replacesNode._id],
+				updatedBy: args.updatedBy,
+				now,
+			});
+		}
 	}
 	await files_nodes_db_apply_node_move(ctx, {
 		organizationId: args.organizationId,
@@ -4324,6 +4349,16 @@ export async function files_nodes_db_apply_pending_move(
 		updatedBy: args.updatedBy,
 		now,
 	});
+	// The hard-deleted eager occupant's created folders are checked only after the source
+	// lands: the destination chain holds the moved node now and must not be removed.
+	if (occupantEagerPendingUpdate?.eagerCreated) {
+		await files_nodes_db_remove_created_ancestor_folders_if_safe(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: occupantEagerPendingUpdate.userId,
+			createdAncestorIds: occupantEagerPendingUpdate.eagerCreated.createdAncestorIds ?? [],
+		});
+	}
 	return Result({ _yay: { destPath, cycleMemberPendingUpdates: [] as Doc<"files_pending_updates">[] } });
 }
 

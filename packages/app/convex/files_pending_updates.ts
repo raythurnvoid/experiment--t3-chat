@@ -3802,8 +3802,10 @@ export const upsert_file_pending_move_in_db = internalMutation({
 		// to its pending change directly, like a manual sidebar move — the Added row follows the
 		// new path. Only when the committed destination is free: a path the visible tree shows as
 		// free because of another pending move still belongs to a committed node, and replacing an
-		// occupant stays reviewable, so both fall through to the proposal below.
-		if (existingPendingUpdate?.eagerCreated != null && !replacesNode) {
+		// occupant stays reviewable, so both fall through to the proposal below — except an
+		// occupant that is itself only this user's unaccepted eager create: that replace applies
+		// for real, the occupant is hard-deleted, and one Added row survives.
+		if (existingPendingUpdate?.eagerCreated != null) {
 			const committedOccupant = await ctx.db
 				.query("files_nodes")
 				.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
@@ -3815,7 +3817,36 @@ export const upsert_file_pending_move_in_db = internalMutation({
 						.eq("archiveOperationId", null),
 				)
 				.first();
-			if (!committedOccupant || committedOccupant._id === node._id) {
+			// The occupant collapses only while it is still the near-empty node its proposal
+			// created. Anything real on it — committed content, another member's pending doc, a
+			// staged move or delete, or its own restricted scope — keeps the replace reviewable.
+			let collapsibleOccupantPendingUpdate: app_convex_Doc<"files_pending_updates"> | null = null;
+			if (
+				committedOccupant &&
+				committedOccupant._id !== node._id &&
+				committedOccupant.restrictedScopeNodeId !== committedOccupant._id
+			) {
+				const occupantPendingUpdate = await files_db_get_pending_update(ctx, {
+					organizationId: args.organizationId,
+					workspaceId: args.workspaceId,
+					userId: args.userId,
+					nodeId: committedOccupant._id,
+				});
+				if (
+					occupantPendingUpdate?.eagerCreated &&
+					!occupantPendingUpdate.pendingMove &&
+					!occupantPendingUpdate.pendingArchive &&
+					(await files_nodes_db_is_eager_node_safe_to_hard_delete(ctx, {
+						organizationId: args.organizationId,
+						workspaceId: args.workspaceId,
+						nodeId: committedOccupant._id,
+						pendingUpdate: occupantPendingUpdate,
+					}))
+				) {
+					collapsibleOccupantPendingUpdate = occupantPendingUpdate;
+				}
+			}
+			if (!committedOccupant || committedOccupant._id === node._id || collapsibleOccupantPendingUpdate) {
 				// The pending path defers this check to accept; an immediate move asks it now.
 				const authorizedLeaving = await authorize_leaving_restricted_scope(ctx, {
 					userAuth: { id: args.userId },
@@ -3825,6 +3856,17 @@ export const upsert_file_pending_move_in_db = internalMutation({
 				});
 				if (authorizedLeaving._nay) {
 					return authorizedLeaving;
+				}
+				const vacatedAncestorIds = existingPendingUpdate.eagerCreated.createdAncestorIds ?? [];
+				const occupantAncestorIds = collapsibleOccupantPendingUpdate?.eagerCreated?.createdAncestorIds ?? [];
+				if (collapsibleOccupantPendingUpdate && committedOccupant) {
+					// The hard delete takes the occupant's pending doc with it and hands its staged
+					// copy asset to the deletion ledger.
+					await files_nodes_db_hard_delete_node(ctx, {
+						organizationId: args.organizationId,
+						workspaceId: args.workspaceId,
+						nodeId: committedOccupant._id,
+					});
 				}
 				await files_nodes_db_apply_node_move(ctx, {
 					organizationId: args.organizationId,
@@ -3836,16 +3878,65 @@ export const upsert_file_pending_move_in_db = internalMutation({
 					updatedBy: args.userId,
 					now,
 				});
+				let survivingAncestorIds: Id<"files_nodes">[] | undefined;
+				if (collapsibleOccupantPendingUpdate) {
+					// The folders either create committed are cleaned up now if they were left
+					// empty (off the destination chain); the destination chain itself holds the
+					// moved file, so those folders stay and become the surviving row's created
+					// ancestors for a later discard.
+					await files_nodes_db_remove_created_ancestor_folders_if_safe(ctx, {
+						organizationId: args.organizationId,
+						workspaceId: args.workspaceId,
+						userId: args.userId,
+						createdAncestorIds: vacatedAncestorIds,
+					});
+					await files_nodes_db_remove_created_ancestor_folders_if_safe(ctx, {
+						organizationId: args.organizationId,
+						workspaceId: args.workspaceId,
+						userId: args.userId,
+						createdAncestorIds: occupantAncestorIds,
+					});
+					survivingAncestorIds = (
+						await Promise.all(
+							[...new Set([...vacatedAncestorIds, ...occupantAncestorIds])].map((ancestorId) =>
+								ctx.db.get("files_nodes", ancestorId),
+							),
+						)
+					)
+						.filter(
+							(ancestor): ancestor is NonNullable<typeof ancestor> =>
+								ancestor != null && destPath.startsWith(`${ancestor.path}/`),
+						)
+						.sort((a, b) => b.pathDepth - a.pathDepth)
+						.map((ancestor) => ancestor._id);
+				}
 				// A pending move already on the doc (staged before this rule) is settled for real.
 				if (existingPendingUpdate.pendingMove) {
 					await files_pending_update_db_settle_move_row(ctx, { pendingUpdate: existingPendingUpdate });
 				}
 				// The mv still touched this proposal: record its thread and refresh the row's
-				// expiry, or a moved Added file could die on the creation-time deadline.
+				// expiry, or a moved Added file could die on the creation-time deadline. A
+				// collapsed occupant's contributing threads move onto the surviving row.
 				const settledAt = Date.now();
+				const mergedThreadIds = collapsibleOccupantPendingUpdate
+					? [
+							...new Set([
+								...(nextThreadIds ?? existingPendingUpdate.threadIds ?? []),
+								...(collapsibleOccupantPendingUpdate.threadIds ?? []),
+							]),
+						]
+					: nextThreadIds;
 				await Promise.all([
 					ctx.db.patch("files_pending_updates", existingPendingUpdate._id, {
-						...(nextThreadIds ? { threadIds: nextThreadIds } : {}),
+						...(mergedThreadIds && mergedThreadIds.length > 0 ? { threadIds: mergedThreadIds } : {}),
+						...(survivingAncestorIds
+							? {
+									eagerCreated: {
+										committedSequence: existingPendingUpdate.eagerCreated.committedSequence,
+										createdAncestorIds: survivingAncestorIds,
+									},
+								}
+							: {}),
 						updatedAt: settledAt,
 					}),
 					files_db_schedule_pending_update_cleanup(ctx, {
