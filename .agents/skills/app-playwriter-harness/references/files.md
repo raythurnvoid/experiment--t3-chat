@@ -42,6 +42,9 @@ Use this file as a quick testing map for `/files`. Keep it short and selector-or
   transcript. Either way a `text.includes(marker)` check reads as a pass on content the file does
   not hold. Verified 2026-09-01 while proving a Chitchat transcript write.
 - Comments region: `getByRole("complementary", { name: "Document comments" })`.
+- View picker: `[aria-label^="View:"]` in the toolbar; options render in `.FileNodeViewViewSelect-popover`
+  (labels like `Rich text`, `Markdown`, `Review changes`, `File details`). Scope clicks to that
+  popover — bare `[role=option]` also matches the agent panel's listboxes.
 - Diff editor root: `[aria-label="File diff editor"]`.
 - Review changes button: `[data-testid="review-changes-button"]`.
 - Tables in the rich editor: plain `table`, `th`, `td` selectors inside `.FileEditorRichText-editor-content`.

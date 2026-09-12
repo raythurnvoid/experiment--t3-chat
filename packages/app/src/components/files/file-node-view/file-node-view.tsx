@@ -3141,28 +3141,28 @@ const FileNodeViewContent = memo(function FileNodeViewContent(props: FileNodeVie
 // #region top sticky floating container
 type FileNodeViewTopStickyFloatingContainer_ClassNames =
 	| "FileNodeViewTopStickyFloatingContainer"
-	| "FileNodeViewTopStickyFloatingContainer-mode-diff";
+	| "FileNodeViewTopStickyFloatingContainer-mode-inner-scrollbar";
 
 type FileNodeViewTopStickyFloatingContainer_Props = {
 	/**
-	 * The floating row sits over the Monaco diff panes: the surface loses its chrome and the
-	 * row moves left so the content stays clear of the editor's vertical scrollbar.
+	 * The view under the row keeps a scrollbar at the content panel's right edge (a Monaco
+	 * editor or a scrolling file panel): shift the controls left so they stay clear of it.
 	 */
-	diffEditor: boolean;
+	innerScrollbar: boolean;
 	children: React.ReactNode;
 };
 
 const FileNodeViewTopStickyFloatingContainer = memo(function FileNodeViewTopStickyFloatingContainer(
 	props: FileNodeViewTopStickyFloatingContainer_Props,
 ) {
-	const { diffEditor, children } = props;
+	const { innerScrollbar, children } = props;
 
 	return (
 		<div
 			className={cn(
 				"FileNodeViewTopStickyFloatingContainer" satisfies FileNodeViewTopStickyFloatingContainer_ClassNames,
-				diffEditor &&
-					("FileNodeViewTopStickyFloatingContainer-mode-diff" satisfies FileNodeViewTopStickyFloatingContainer_ClassNames),
+				innerScrollbar &&
+					("FileNodeViewTopStickyFloatingContainer-mode-inner-scrollbar" satisfies FileNodeViewTopStickyFloatingContainer_ClassNames),
 			)}
 		>
 			{children}
@@ -3423,6 +3423,14 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const handleNavigatePendingUpdatesNext = useFn(() => {
 		handleNavigatePendingUpdatesDirection("next");
 	});
+
+	// Monaco editors and the non-editor file panels keep a scrollbar at the content panel's
+	// right edge; rich text and folder views scroll on the shared editor-area scroller, whose
+	// bar sits outside the row.
+	const topFloatingInnerScrollbar =
+		resolvedNode?.kind === "file"
+			? !resolvedNodeHasEditableTextContent || !isEditorActive || effectiveView !== "rich_text_editor"
+			: activeEditorNodeId != null && effectiveView !== "rich_text_editor";
 
 	// One shared floating surface; the component hides itself when there is nothing to show.
 	const topStickyFloatingSlot = (
@@ -3692,7 +3700,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 								)}
 							</FileNodeViewToolbarCreateNodeActions>
 							{topStickyFloatingSlot ? (
-								<FileNodeViewTopStickyFloatingContainer diffEditor={effectiveView === "diff_editor"}>
+								<FileNodeViewTopStickyFloatingContainer innerScrollbar={topFloatingInnerScrollbar}>
 									{topStickyFloatingSlot}
 								</FileNodeViewTopStickyFloatingContainer>
 							) : null}

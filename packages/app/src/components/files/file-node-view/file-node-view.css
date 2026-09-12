@@ -90,21 +90,23 @@
 		}
 	}
 
-	.FileNodeViewTopStickyFloatingContainer-mode-diff {
-		/* The diff editor's vertical scrollbar sits at the panel's right edge, so the
-		   row gets another 16px of clearance on top of the shared inset. */
-		padding-right: 32px;
-
-		/* Same background as the Monaco panes, so content under the row does not
-		   show through around the floating controls. */
+	/* While a status is showing, paint the shared surface color so content scrolling
+	   under the row does not show through around the floating controls. */
+	.FileNodeViewTopStickyFloatingContainer:has(.FileNodeViewTopFloating) {
 		background: var(--color-base-1-02);
 	}
 
-	.FileNodeViewTopStickyFloatingContainer-mode-diff .FileNodeViewTopFloating {
-		/* Drop the surface chrome so the content reads as drawn on the diff editor below. */
+	/* The status reads as part of the surface underneath, not as an elevated card. */
+	.FileNodeViewTopStickyFloatingContainer .FileNodeViewTopFloating {
 		background: none;
 		border: none;
 		box-shadow: none;
+	}
+
+	.FileNodeViewTopStickyFloatingContainer-mode-inner-scrollbar {
+		/* A view with its own scrollbar at the panel's right edge (a Monaco editor or a
+		   scrolling file panel) gets another 16px of clearance on top of the shared inset. */
+		padding-right: 32px;
 	}
 
 	.FileNodeView-editor-sidebar-panel {
