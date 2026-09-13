@@ -31,6 +31,7 @@ Use this reference for `packages/app/src/**` React components and frontend lib u
 - Keep browser-only DOM, layout, storage, and measurement code in `packages/app/src/lib/**` or component code. Do not move it to `packages/app/shared/**`, which must stay portable across browser and server runtimes.
 - Keep pure app-only helpers with their browser integration when splitting them would create unnecessary cross-boundary churn.
 - In React component files, keep one-caller rendering glue local. Extract a shared component only after there is a second real caller or the local component becomes meaningfully complex.
+- Keep module-wide React context definitions together after the imports, outside regions. They let components share values without passing them through unrelated components.
 
 ## Helper Granularity
 

@@ -174,6 +174,15 @@ Compare against the table's pinned SHA-256. Two caveats: the comparison holds on
 
 ## High-Value Recipes
 
+### Check Row Controls While Creating
+
+Use an owned tab and an empty test folder. To hold the busy state, wrap that tab's
+`app_convex.mutation`: await the real create result, then wait on a promise before returning it.
+Click the normal sidebar `New folder` button. Check native button disabling and the row's
+`aria-disabled` and pointer hit-area's `data-disabled`; the focused row stays usable.
+Release the promise and restore the original method in `finally`. Check automatic rename focus
+and enabled controls, then archive the unchanged empty test folder. Keep this delay out of timings.
+
 ### Insert A Table
 
 In an editable collaborative `.md` file, type `/table` in an empty paragraph and pick the

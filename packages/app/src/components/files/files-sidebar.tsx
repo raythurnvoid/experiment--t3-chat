@@ -3,8 +3,10 @@ import { FilesSearchInput, type FilesSearchInput_Props } from "./files-search-in
 import { useFilesSearchMetadata } from "@/hooks/files-search-hooks.ts";
 import { detect_search_query_mode, search_filter_matches_item, search_path_filter } from "@/lib/files-search.ts";
 import React, {
+	createContext,
 	memo,
 	useCallback,
+	useContext,
 	useDeferredValue,
 	useEffect,
 	useImperativeHandle,
@@ -158,6 +160,9 @@ import { objects_equal_shallow } from "@/lib/object.ts";
 import { files_search_query_parse } from "../../../shared/files-search-query.ts";
 import { async_all_settled_with_limit } from "@/lib/async.ts";
 import { files_prepare_image_upload_file } from "@/lib/files-image-compression.ts";
+
+// Only the DOM controls subscribe, so global busy updates leave row menus and tooltips cached.
+const FilesSidebarTreeBusyContext = createContext(false);
 
 type FilesSidebarTree_Shared = () => TreeInstance<files_TreeItem>;
 type FilesSidebarTreeItem_Instance = ReturnType<TreeInstance<files_TreeItem>["getItemInstance"]>;
@@ -1216,6 +1221,16 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 });
 // #endregion tree item menu popover
 
+// #region tree item busy controls
+const FilesSidebarTreeItemActionGroup = memo(function FilesSidebarTreeItemActionGroup(
+	props: ComponentProps<"fieldset">,
+) {
+	const { disabled, ...rest } = props;
+	const isBusy = useContext(FilesSidebarTreeBusyContext);
+	return <fieldset {...rest} disabled={isBusy || disabled} />;
+});
+// #endregion tree item busy controls
+
 // #region tree item arrow
 type FilesSidebarTreeItemArrow_ClassNames = "FilesSidebarTreeItemArrow" | "FilesSidebarTreeItemArrow-icon-button";
 
@@ -1237,7 +1252,7 @@ const FilesSidebarTreeItemArrow = memo(function FilesSidebarTreeItemArrow(props:
 	const actionLabel = isExpanded ? "Collapse folder" : "Expand folder";
 
 	return (
-		<fieldset
+		<FilesSidebarTreeItemActionGroup
 			className={"FilesSidebarTreeItemArrow" satisfies FilesSidebarTreeItemArrow_ClassNames}
 			disabled={isPending}
 			role="presentation"
@@ -1254,7 +1269,7 @@ const FilesSidebarTreeItemArrow = memo(function FilesSidebarTreeItemArrow(props:
 			>
 				<MyIconButtonIcon>{isExpanded ? <ChevronDown /> : <ChevronRight />}</MyIconButtonIcon>
 			</MyIconButton>
-		</fieldset>
+		</FilesSidebarTreeItemActionGroup>
 	);
 });
 // #endregion tree item arrow
@@ -1483,6 +1498,19 @@ type FilesSidebarTreeItemPrimaryAction_Props = {
 	isFocused: boolean;
 };
 
+/**
+ * Reads the busy context here so busy updates only rerender the pointer area,
+ * keeping the outer action and its tooltip cached.
+ */
+const FilesSidebarTreeItemPrimaryActionInner = memo(function FilesSidebarTreeItemPrimaryActionInner(
+	props: ComponentProps<"div"> & { isPending: boolean; isFocused: boolean },
+) {
+	const { isPending, isFocused, ...rest } = props;
+	const isBusy = useContext(FilesSidebarTreeBusyContext);
+	// A div has no native disabled; CSS turns this into pointer-events: none.
+	return <div {...rest} data-disabled={((isBusy || isPending) && !isFocused) || undefined} />;
+});
+
 const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrimaryAction(
 	props: FilesSidebarTreeItemPrimaryAction_Props,
 ) {
@@ -1512,8 +1540,10 @@ const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrim
 			{/* focusable=false keeps Ariakit from adding a tabindex: this overlay is only a
 			    pointer hit-area, and the treeitem wrapper owns keyboard focus. */}
 			<MyTooltipTrigger focusable={false}>
-				<div
+				<FilesSidebarTreeItemPrimaryActionInner
 					{...interactionProps}
+					isPending={isPending}
+					isFocused={isFocused}
 					onClick={onClick}
 					className={cn(
 						"FilesSidebarTreeItemPrimaryAction" satisfies FilesSidebarTreeItemPrimaryAction_ClassNames,
@@ -1523,8 +1553,6 @@ const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrim
 					// The wrapper announces the row; this hit-area would only repeat it.
 					aria-hidden="true"
 					data-selected={isSelected || undefined}
-					// A div has no native disabled; CSS turns this into pointer-events: none.
-					data-disabled={(isPending && !isFocused) || undefined}
 					{...({
 						"data-file-id": itemId,
 					} satisfies Partial<FilesSidebarTreeItem_CustomAttributes>)}
@@ -1535,7 +1563,7 @@ const FilesSidebarTreeItemPrimaryAction = memo(function FilesSidebarTreeItemPrim
 						}
 						aria-hidden="true"
 					/>
-				</div>
+				</FilesSidebarTreeItemPrimaryActionInner>
 			</MyTooltipTrigger>
 			<MyTooltipContent unmountOnHide>{tooltipContent}</MyTooltipContent>
 		</MyTooltip>
@@ -1562,7 +1590,7 @@ const FilesSidebarTreeItemActions = memo(function FilesSidebarTreeItemActions(
 	const { label, isPending, isFocused, canCreateChildren, canCreate, onCreateFile, onCreateFolder } = props;
 
 	return (
-		<fieldset
+		<FilesSidebarTreeItemActionGroup
 			className={"FilesSidebarTreeItemActions" satisfies FilesSidebarTreeItemActions_ClassNames}
 			// Disable the native buttons together without rerendering their menus and tooltips.
 			disabled={isPending}
@@ -1587,7 +1615,7 @@ const FilesSidebarTreeItemActions = memo(function FilesSidebarTreeItemActions(
 				</>
 			) : null}
 			<FilesSidebarTreeItemMoreAction label={label} isFocused={isFocused} />
-		</fieldset>
+		</FilesSidebarTreeItemActionGroup>
 	);
 });
 // #endregion tree item actions
@@ -1733,7 +1761,6 @@ type FilesSidebarTreeItem_Props = {
 	selectedNodeId: string | null;
 	isSelected: boolean;
 	isSearchActive: boolean;
-	isBusy: boolean;
 	isDropZoneIncluded: boolean;
 	pendingActionNodeIds: Set<string>;
 	renameError: string | undefined;
@@ -1757,7 +1784,7 @@ type FilesSidebarTreeItem_Props = {
 };
 
 const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSidebarTreeItem_Props) {
-	const { tree: _tree, item, displayNameByUserId, selectedNodeId, isBusy, pendingActionNodeIds, ...rowProps } = props;
+	const { tree: _tree, item, displayNameByUserId, selectedNodeId, pendingActionNodeIds, ...rowProps } = props;
 
 	const itemId = useVal(() => item.getId());
 	const itemData = useVal(() => item.getItemData());
@@ -1767,7 +1794,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 	// Idle titles do not need the tree's changing rename value or a fresh props object.
 	const renameInputProps = useVal(() => (isRenaming ? item.getRenameInputProps() : null));
 	const isNavigated = selectedNodeId === itemId;
-	const isPending = isBusy || pendingActionNodeIds.has(itemId);
+	const isPending = pendingActionNodeIds.has(itemId);
 	const isFocused = useVal(() => item.isFocused());
 	const isExpanded = useVal(() => item.isExpanded());
 
@@ -1832,7 +1859,7 @@ const FilesSidebarTreeItem = memo(function FilesSidebarTreeItem(props: FilesSide
 
 type FilesSidebarTreeRow_Props = Omit<
 	FilesSidebarTreeItem_Props,
-	"tree" | "displayNameByUserId" | "selectedNodeId" | "isBusy" | "pendingActionNodeIds"
+	"tree" | "displayNameByUserId" | "selectedNodeId" | "pendingActionNodeIds"
 > & {
 	itemId: string;
 	itemData: files_TreeItem;
@@ -1851,6 +1878,26 @@ type FilesSidebarTreeRow_Props = Omit<
 	hiddenTrackFileIds: Set<string>;
 	updatedByDisplayName: string;
 };
+
+/**
+ * Reads the busy context here to update the row's disabled state and keyboard handling
+ * without rerendering the full row and its context menu.
+ */
+const FilesSidebarTreeItemInner = memo(function FilesSidebarTreeItemInner(
+	props: ComponentProps<"div"> & { isPending: boolean; isFocused: boolean },
+) {
+	const { isPending, isFocused, onKeyDown, ...rest } = props;
+	const isBusy = useContext(FilesSidebarTreeBusyContext);
+	const isDisabled = (isBusy || isPending) && !isFocused;
+	const handleKeyDown = useFn<NonNullable<ComponentProps<"div">["onKeyDown"]>>((event) => {
+		if (isDisabled && event.target === event.currentTarget && (event.key === "Enter" || event.key === " ")) {
+			return;
+		}
+		onKeyDown?.(event);
+	});
+
+	return <div {...rest} aria-disabled={isDisabled || undefined} onKeyDown={handleKeyDown} />;
+});
 
 const FilesSidebarTreeRow = memo(
 	function FilesSidebarTreeRow(props: FilesSidebarTreeRow_Props) {
@@ -2069,11 +2116,6 @@ const FilesSidebarTreeRow = memo(
 				return;
 			}
 
-			// Mirror the old button's disabled state for pending rows.
-			if (isPending && !isFocused) {
-				return;
-			}
-
 			// Keep Space from scrolling the tree.
 			event.preventDefault();
 			itemProps.onClick?.(event);
@@ -2107,8 +2149,10 @@ const FilesSidebarTreeRow = memo(
 			<>
 				<MyContextMenu setOpen={handleMenuOpenChange}>
 					<MyContextMenuTrigger onContextMenu={handleRowContextMenu}>
-						<div
+						<FilesSidebarTreeItemInner
 							ref={handleWrapperRef}
+							isPending={isPending}
+							isFocused={isFocused}
 							className={cn(
 								"FilesSidebarTreeItem" satisfies FilesSidebarTreeItem_ClassNames,
 								isNavigated && ("FilesSidebarTreeItem-content-navigated" satisfies FilesSidebarTreeItem_ClassNames),
@@ -2127,7 +2171,6 @@ const FilesSidebarTreeRow = memo(
 							aria-expanded={itemAriaExpanded}
 							aria-selected={isSelected || isMenuOpen ? "true" : "false"}
 							aria-label={label}
-							aria-disabled={(isPending && !isFocused) || undefined}
 							data-focused={isFocused || undefined}
 							onFocus={handleWrapperFocus}
 							onKeyDown={handleWrapperKeyDown}
@@ -2200,7 +2243,7 @@ const FilesSidebarTreeRow = memo(
 									aria-hidden="true"
 								/>
 							) : null}
-						</div>
+						</FilesSidebarTreeItemInner>
 					</MyContextMenuTrigger>
 
 					<FilesSidebarTreeItemMenuPopover
@@ -2820,7 +2863,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 	}, [selectedNodeId, itemIndexById, virtualizer]);
 
 	return (
-		<>
+		<FilesSidebarTreeBusyContext.Provider value={isBusy}>
 			<div
 				ref={handleTreeRootRef}
 				className={cn(
@@ -2876,7 +2919,6 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 										isSelected={selectedNodeIds.has(itemId)}
 										isDropZoneIncluded={dropZoneItemIds.has(itemId)}
 										isSearchActive={isSearchActive}
-										isBusy={isBusy}
 										pendingActionNodeIds={pendingActionNodeIds}
 										renameError={renameErrorByNodeId.get(itemId)}
 										isTreeDragging={isTreeDragging}
@@ -2912,7 +2954,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 			{/* Keep the drag announcement live region outside the role=tree element: a tree may
 			    only own treeitems and groups, and this span is neither. */}
 			<AssistiveTreeDescription tree={tree()} />
-		</>
+		</FilesSidebarTreeBusyContext.Provider>
 	);
 });
 // #endregion tree
@@ -6832,6 +6874,8 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				selectedNodeId?: string;
 				dialogNodeId?: string;
 				canWrite?: boolean;
+				isBusy?: boolean;
+				pendingActionNodeIds?: Set<string>;
 			}) {
 				const scrollElementRef = useRef<HTMLDivElement | null>(null);
 				const tree = useTree<files_TreeItem>({
@@ -6873,9 +6917,9 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 								selectedNodeId={props.selectedNodeId ?? null}
 								selectedNodeIds={new Set(childIds)}
 								dialogNodeId={props.dialogNodeId ?? null}
-								isBusy={false}
+								isBusy={props.isBusy ?? false}
 								isUploadingFile={false}
-								pendingActionNodeIds={new Set()}
+								pendingActionNodeIds={props.pendingActionNodeIds ?? new Set()}
 								renameErrorByNodeId={new Map()}
 								canWriteItem={() => props.canWrite ?? true}
 								canUnarchiveItem={() => true}
@@ -6905,6 +6949,33 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				expect(firstRow.getAttribute("aria-setsize")).toBe("5000");
 				expect(firstRow.getAttribute("aria-posinset")).toBe("1");
 				expect(view.container.querySelectorAll(".FilesSidebarTreeItemPlaceholder")).toHaveLength(1);
+
+				view.rerender(<TestTree isBusy />);
+				expect(firstRow.hasAttribute("aria-disabled")).toBe(false);
+				const secondRow = view.getByRole("treeitem", { name: "child-1" });
+				expect(secondRow.getAttribute("aria-disabled")).toBe("true");
+				expect(secondRow.querySelector(".FilesSidebarTreeItemPrimaryAction")?.getAttribute("data-disabled")).toBe(
+					"true",
+				);
+				expect(view.getByRole("button", { name: "Expand folder child-1" }).closest("fieldset")?.disabled).toBe(true);
+				expect(view.getByRole("button", { name: "More actions for child-0" }).closest("fieldset")?.disabled).toBe(true);
+				act(() => treeRef.current?.getItemInstance("child-0").startRenaming());
+				await waitFor(() => expect(view.getByRole("textbox")).toBeTruthy());
+				expect((view.getByRole("textbox") as HTMLInputElement).disabled).toBe(false);
+				expect(document.activeElement).toBe(view.getByRole("textbox"));
+				act(() => treeRef.current?.abortRenaming());
+				view.rerender(<TestTree pendingActionNodeIds={new Set(["child-1"])} />);
+				expect(secondRow.getAttribute("aria-disabled")).toBe("true");
+				expect(view.getByRole("button", { name: "Expand folder child-1" }).closest("fieldset")?.disabled).toBe(true);
+				expect(view.getByRole("button", { name: "More actions for child-0" }).closest("fieldset")?.disabled).toBe(
+					false,
+				);
+				view.rerender(<TestTree />);
+				expect(secondRow.hasAttribute("aria-disabled")).toBe(false);
+				expect(secondRow.querySelector(".FilesSidebarTreeItemPrimaryAction")?.hasAttribute("data-disabled")).toBe(
+					false,
+				);
+				expect(view.getByRole("button", { name: "Expand folder child-1" }).closest("fieldset")?.disabled).toBe(false);
 
 				firstRow.focus();
 				fireEvent.keyDown(firstRow, { key: "End", code: "End" });

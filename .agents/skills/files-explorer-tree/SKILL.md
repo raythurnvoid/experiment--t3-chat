@@ -354,6 +354,10 @@ Do not call `parent.getChildren()` for this check in each row: it loads every si
   ARIA value, and guide-line set. Never compare old and new values by reading the same mutable tree.
 - Only the active rename row receives rename input props. Idle titles must not receive the global
   rename value or a fresh rename props object on every keystroke.
+- Global `isBusy` reaches only the row element, pointer hit-area, and native fieldsets through
+  `FilesSidebarTreeBusyContext`. Keep the full row and its menus outside that subscription.
+  The row's `isPending` prop covers only its own pending action. DOM controls combine both flags.
+  Keep the focused row usable and the active rename input enabled while global work is pending.
 - Arrow and action groups use native disabled fieldsets while pending. This keeps the child menu
   and tooltip components stable. Keep permission-specific disabling on each create button.
   Check native disabled state with `:disabled` or Playwright `isDisabled()`, not `button.disabled`.
