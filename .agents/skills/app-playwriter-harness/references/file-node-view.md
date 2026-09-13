@@ -19,6 +19,13 @@ Use this for the selected-file editor surface under `/files?nodeId=<file-id>`. K
 - Details tab: `#app_file_editor_sidebar_tabs_details` (since 2026-08-10). Rows are `.FileEditorSidebarDetails-row` with `-label` / `-value` slots. Sidebar tabs depend on the node: a plain-text node shows Details and no Comments (and Details is its default), a Markdown node shows Comments only while collaboration is on — a non-collaborative `.md` node shows Details and no Comments, exactly like a plain-text node; a stored selection naming a hidden tab falls back without being overwritten.
 - Download control: `.FileNodeViewToolbarFileDownloadAction-button`, an icon button with the tooltip `Download` and the accessible name `Download <file name>` (since 2026-08-13 it no longer shows the file name as visible text). It renders for any node that has an uploaded asset, in every node view. Locate it with `getByRole("button", { name: "Download <file name>" })`, and read the result with `page.waitForEvent("download")` — the file lands in the real `~/Downloads` folder (see `known-hazards.md`). A file whose stored asset is gone answers with a `Not found` toast, so read `[data-sonner-toast]` in the same execute call as the click.
 
+## Selected Node Loading QA
+
+- Use an owned folder and the page-scoped Vite variant recipe in the perf-profiling skill. Keep the real selected-node query running, but hold its exposed value at `undefined` with a temporary React state gate in that tab. Record the actual query state separately and release the gate with its state setter.
+- Wait for the full tree. An empty folder must show `No README.md` while the gate is held. Removing only the tree fallback must leave `Loading...` until release. This is a behavior check; do not use the delayed run as a timing sample.
+- Create an owned README, open Markdown, and make a local draft while the folder query is held. Store the editor and model references from `window.__qa.monaco().plainText`. Release the gate and check that both references, exact text, undo, and redo survive.
+- Remove the exact request route, reload, and check that the proof marker is gone. Check normal creation and direct links, then archive only the recorded fixture nodes after checking all child pages.
+
 ## View Dropdown QA
 
 These are required checks, not a record of a completed live run. Use disposable files and record each result in the personal task folder.
@@ -131,6 +138,7 @@ await state.page.getByRole("form", { name: "Reply to comment" }).waitFor({ state
 - Since 2026-08-10 this is a primary editor surface, not just the Markdown source view: every plain-text file (`.json`, `.yaml`, `.csv`, `.txt`, `.ts`, `.js`, `.css`, and any name whose stored type is not Markdown) opens in it by default, with Monaco language tokenization derived from the stored content type (`files_monaco_language_id_of_content_type`), so a renamed file keeps its language. A rich-text document reaches this surface through the **Markdown** option in the View dropdown. A plain-text document uses **Code** and has no **Rich text** option, even when renamed to `.md`.
 - Root: `.FileEditorPlainText`, holding a real Monaco editor (`.monaco-editor`), not a textarea. Drive and read it with the Monaco recipes in `known-hazards.md`: the keyed handle (`window.__qa.monaco().plainText`), `trigger`-typing, `executeEdits`, the sorted `.view-line` readback, and the `data-mode-id` language read.
 - Toolbar: `[aria-label="Text editor actions"]` (renamed from `Markdown editor actions` on 2026-08-10), holding `Save`, `Sync`, the size badge, and `Open file snapshots`.
+- For keyboard entry, focus `Open file snapshots`, press Tab, and require the focused control to be named `File content editor`. Then `Control+End` and `page.keyboard.insertText(...)` work; read the model to confirm. A direct click on Monaco's native editing proxy can stall because the visible text sits above it.
 - Dirty tracking is debounced: after an edit, `Save` shows a `Checking` spinner before it enables. Poll `save.isEnabled()` for a few 300ms rounds instead of clicking right away.
 - Save and Sync refusals surface as toasts; push refusals show the server `_nay` message verbatim, including the "This change is too large to compare safely" diff-budget message. Read `[data-sonner-toast]` in the same execute call as the click.
 - A refused content read renders a closed-editor alert instead of a fabricated empty document. Do not read a missing `.monaco-editor` as "still loading" without checking for that alert.
@@ -138,7 +146,7 @@ await state.page.getByRole("form", { name: "Reply to comment" }).waitFor({ state
 
 ### Sync And Undo QA
 
-Use this after changing how the plain editor writes content into its Monaco model. It proves that a sync keeps the user's undo history instead of resetting it. Runnable again since 2026-08-10 through the editor-handle route (synthetic keyboard input still never reaches Monaco — see `known-hazards.md`).
+Use this after changing how the plain editor writes content into its Monaco model. It proves that a sync keeps the user's undo history instead of resetting it. This recipe uses the editor handle to make each undo step explicit.
 
 1. Create a disposable `.md` file and open it with `view=plain_text_editor` (step 4 needs the rich editor, so a plain-text node cannot carry this flow).
 2. Make several local edits, each its own undo step. `ed.trigger("keyboard", "type", ...)` runs the same command path as typing, including the undo stack, and a cursor move ends the current Monaco undo group:
@@ -374,7 +382,7 @@ async function replyInSidebarThread(page, threadRootText, replyText) {
 ## Known Gotchas
 
 - Do not use `{ force: true }`, `dispatchEvent`, or DOM `element.click()` to bypass editor/sidebar blockers.
-- Synthetic clicks and keys still do not reach Monaco (`monaco-editor` 0.56.0, see `known-hazards.md`, Monaco section), but since 2026-08-10 the keyed editor handle drives it from page context: `window.__qa.monaco()` plus `trigger("keyboard", "type", …)` / `executeEdits`, read back with the sorted `.view-line` recipe or `getModel().getValue()`. `Sync And Undo QA` and `Content Size Cap QA` are rewritten above to use it and are runnable again. Rich-text (TipTap) typing still works normally. The pending-draft helper recipe in the Diff Editor section stays the route for creating a draft as server state.
+- For native Monaco input, use the keyboard entry recipe above and check focus before typing. For controlled edits and undo steps, use `window.__qa.monaco()` plus `trigger("keyboard", "type", …)` / `executeEdits`, then read `getModel().getValue()`. Rich-text (TipTap) typing works normally. The Diff Editor section has the recipe for creating a draft as server state.
 - The rich-text comment button depends on a live selection. If it is missing, reselect text and snapshot the toolbar/bubble controls.
 - Contenteditable TipTap editors may appear as textboxes in snapshots but still fail `getByRole("textbox")`; use the scoped `contenteditable` + `aria-label` selector above.
 - Right-sidebar content changes with the selected tab. Scope locators to comments or agent contexts after switching tabs.

@@ -128,6 +128,10 @@ Tree-item components:
   clears on membership changes, first-page resets, or when the last consumer closes. Only `isDone`
   ends paging; access checks can leave a page empty. Keep the native split fields so live imports can
   split growing pages safely.
+- `FileNodeView` uses the matching loaded tree node while `get_file_node_for_membership` is loading.
+  Keep that query running: its returned node or `null` always wins over the tree. A node absent from
+  the tree stays loading until the query answers. Do not add an archive filter; both queries return
+  readable archived nodes. Switching from the tree to the query must keep the same editor and draft.
 - Paging avoids the query read limit, but the first tree view still waits for every page. Virtual
   rows reduce mounted DOM; they do not reduce that initial data load. Measure initial loading and
   expansion after loading separately. A fast expansion does not prove a fast first visit.

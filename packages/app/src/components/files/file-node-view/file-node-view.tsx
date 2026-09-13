@@ -3238,7 +3238,7 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 	const fileNodesList = FilesTreeProvider.useContext();
 	const readOnlyAncestorIds = useMemo(() => files_collect_read_only_ancestor_ids(fileNodesList ?? []), [fileNodesList]);
 
-	const resolvedNode = useQuery(
+	const queriedNode = useQuery(
 		app_convex_api.files_nodes.get_file_node_for_membership,
 		searchNodeId && !isRootNodeSelected
 			? {
@@ -3247,6 +3247,9 @@ export const FileNodeView = memo(function FileNodeView(props: FileNodeView_Props
 				}
 			: "skip",
 	);
+	// Show the loaded tree node while the query starts. A null answer must still clear the view.
+	const resolvedNode =
+		queriedNode === undefined ? fileNodesList?.find((item) => item._id === searchNodeId) : queriedNode;
 	const resolvedNodeId = isRootNodeSelected ? files_ROOT_ID : (resolvedNode?._id ?? null);
 	// Keep create actions scoped to the visible folder/root selection; file views use this toolbar only for editor actions.
 	const targetFolderId = isRootNodeSelected ? files_ROOT_ID : resolvedNode?.kind === "folder" ? resolvedNode._id : null;

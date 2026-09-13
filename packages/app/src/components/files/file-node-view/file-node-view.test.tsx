@@ -169,7 +169,7 @@ const NODE = {
 	collaborationEnabled: false,
 	yjsSnapshotId: null,
 	yjsLastSequenceId: null,
-	archiveOperationId: null,
+	archiveOperationId: null as string | null,
 	restrictedScopeNodeId: null,
 	canWrite: true,
 	writeBlockedReason: null,
@@ -185,6 +185,7 @@ const PLUGIN = {
 };
 
 let node = NODE;
+let nodeQueryStatus: "loading" | "ready" | "missing";
 let treeNodes: (typeof NODE)[] | undefined;
 let plugins: (typeof PLUGIN)[] | undefined;
 let pendingUpdates: unknown[];
@@ -196,6 +197,7 @@ function pushQueryChanges() {
 
 beforeEach(() => {
 	node = NODE;
+	nodeQueryStatus = "ready";
 	treeNodes = undefined;
 	plugins = undefined;
 	pendingUpdates = [];
@@ -212,7 +214,7 @@ beforeEach(() => {
 			case "files_nodes:list_tree":
 				return treeNodes ?? [node];
 			case "files_nodes:get_file_node_for_membership":
-				return node;
+				return nodeQueryStatus === "loading" ? undefined : nodeQueryStatus === "missing" ? null : node;
 			case "files_pending_updates:list_files_pending_updates":
 				return pendingUpdates;
 			case "plugins_ui:list_file_views":
@@ -257,6 +259,135 @@ async function selectView(name: string) {
 	fireEvent.click(await screen.findByRole("option", { name }));
 	await waitFor(() => expect(screen.queryByRole("combobox", { name: "Search views" })).toBeNull());
 }
+
+describe("FileNodeView node loading", () => {
+	test.each([null, "archive_1"])(
+		"keeps a loaded file draft when its query answers (archive: %s)",
+		async (archiveOperationId) => {
+			node = { ...NODE, archiveOperationId };
+			treeNodes = [node];
+			nodeQueryStatus = "loading";
+			renderFileView();
+			const editor = await screen.findByRole("textbox", { name: "Code draft" });
+			fireEvent.change(editor, { target: { value: "Local draft" } });
+			expect(
+				queryMock.mock.calls.some(
+					([reference, args]) =>
+						getFunctionName(reference) === "files_nodes:get_file_node_for_membership" &&
+						args.membershipId === "membership_1" &&
+						args.fileNodeId === NODE._id,
+				),
+			).toBe(true);
+
+			node = { ...node };
+			nodeQueryStatus = "ready";
+			pushQueryChanges();
+			expect(screen.getByRole("textbox", { name: "Code draft" })).toBe(editor);
+			expect(editor).toHaveProperty("value", "Local draft");
+			expect(editorMountMock).toHaveBeenCalledTimes(1);
+			expect(editorUnmountMock).not.toHaveBeenCalled();
+		},
+	);
+
+	test("opens a loaded folder before its query answers", async () => {
+		node = { ...NODE, _id: "folder_1", name: "Docs", kind: "folder" };
+		nodeQueryStatus = "loading";
+		renderFileView({ nodeId: node._id });
+		expect(await screen.findByRole("heading", { name: "No README.md" })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "New file" })).toBeTruthy();
+	});
+
+	test("keeps a loaded folder README draft when the folder query answers", async () => {
+		node = { ...NODE, _id: "folder_1", name: "Docs", kind: "folder" };
+		treeNodes = [node, { ...NODE, _id: "readme_1", parentId: node._id, name: "README.md" }];
+		nodeQueryStatus = "loading";
+		renderFileView({ nodeId: node._id });
+		const editor = await screen.findByRole("textbox", { name: "Code draft" });
+		fireEvent.change(editor, { target: { value: "README draft" } });
+
+		node = { ...node };
+		nodeQueryStatus = "ready";
+		pushQueryChanges();
+		expect(screen.getByRole("textbox", { name: "Code draft" })).toBe(editor);
+		expect(editor).toHaveProperty("value", "README draft");
+		expect(editorMountMock).toHaveBeenCalledTimes(1);
+		expect(editorUnmountMock).not.toHaveBeenCalled();
+	});
+
+	test("uses the query's current shape and write access over an older tree node", async () => {
+		treeNodes = [NODE];
+		nodeQueryStatus = "loading";
+		renderFileView();
+		expect(await screen.findByRole("combobox", { name: "View: Code" })).toBeTruthy();
+
+		node = { ...NODE, textKind: "rich_text", contentType: "text/markdown", canWrite: false };
+		nodeQueryStatus = "ready";
+		pushQueryChanges();
+		expect(await screen.findByRole("combobox", { name: "View: Rich text" })).toBeTruthy();
+		expect(screen.getByText("You don't have permission to edit this file.")).toBeTruthy();
+	});
+
+	test("removes a loaded file and returns Home when its query returns null", async () => {
+		treeNodes = [NODE];
+		nodeQueryStatus = "loading";
+		const { onNavigateSearch } = renderFileView();
+		await screen.findByRole("textbox", { name: "Code draft" });
+
+		nodeQueryStatus = "missing";
+		pushQueryChanges();
+		await waitFor(() => expect(screen.queryByRole("textbox", { name: "Code draft" })).toBeNull());
+		expect(editorUnmountMock).toHaveBeenCalledTimes(1);
+		expect(onNavigateSearch).toHaveBeenCalledWith({ nodeId: "root", view: undefined, q: undefined });
+	});
+
+	test.each(["ready", "missing"] as const)("waits for an absent tree node's query to become %s", async (status) => {
+		treeNodes = [];
+		nodeQueryStatus = "loading";
+		const { onNavigateSearch } = renderFileView();
+		expect(await screen.findByText("Loading...")).toBeTruthy();
+		expect(screen.queryByTestId("editor")).toBeNull();
+		expect(onNavigateSearch).not.toHaveBeenCalled();
+
+		nodeQueryStatus = status;
+		pushQueryChanges();
+		if (status === "ready") {
+			expect(await screen.findByRole("textbox", { name: "Code draft" })).toBeTruthy();
+			expect(onNavigateSearch).not.toHaveBeenCalled();
+		} else {
+			expect(screen.queryByTestId("editor")).toBeNull();
+			expect(onNavigateSearch).toHaveBeenCalledWith({ nodeId: "root", view: undefined, q: undefined });
+		}
+	});
+
+	test.each([true, false])("switching nodes never keeps the previous draft (next node loaded: %s)", async (loaded) => {
+		const nextNode = { ...NODE, _id: "node_next", name: "next.html" };
+		treeNodes = loaded ? [NODE, nextNode] : [NODE];
+		nodeQueryStatus = "loading";
+		const { rerender, onNavigateSearch } = renderFileView();
+		const editor = await screen.findByRole("textbox", { name: "Code draft" });
+		fireEvent.change(editor, { target: { value: "First file draft" } });
+
+		rerender(<FileNodeView searchParams={{ nodeId: nextNode._id }} onNavigateSearch={onNavigateSearch} />);
+		if (!loaded) {
+			expect(screen.queryByRole("textbox", { name: "Code draft" })).toBeNull();
+			expect(screen.getByText("Loading...")).toBeTruthy();
+			treeNodes = [NODE, nextNode];
+			pushQueryChanges();
+		}
+		const nextEditor = await screen.findByRole("textbox", { name: "Code draft" });
+		expect(nextEditor).not.toBe(editor);
+		expect(nextEditor).toHaveProperty("value", "saved HTML");
+		expect(editorRenderMock.mock.calls.at(-1)![0].nodeId).toBe(nextNode._id);
+		expect(onNavigateSearch).not.toHaveBeenCalled();
+	});
+
+	test("opens Home while the selected-node query is skipped", async () => {
+		treeNodes = [];
+		const { onNavigateSearch } = renderFileView({ nodeId: "root" });
+		expect(await screen.findByRole("heading", { name: "No README.md" })).toBeTruthy();
+		expect(onNavigateSearch).not.toHaveBeenCalled();
+	});
+});
 
 describe("FileNodeView file views", () => {
 	test("the view picker searches plain option names", async () => {
