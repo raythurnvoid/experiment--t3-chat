@@ -4053,6 +4053,11 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 	const [showArchived, setShowArchived] = useState(false);
 
 	const [isCreatingFile, setIsCreatingFile] = useState(false);
+	const createRequestRef = useRef<{
+		membershipId: typeof membershipId;
+		fromNodeId: string | null;
+		nodeId: string | null;
+	} | null>(null);
 	const [isArchivingSelection, setIsArchivingSelection] = useState(false);
 	const [isUploadingSingleFile, setIsUploadingSingleFile] = useState(false);
 	const [uploadDraft, setUploadDraft] = useState<FilesSidebarUploadDraft | null>(null);
@@ -5402,6 +5407,8 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			treeItems,
 		});
 
+		const createRequest = { membershipId, fromNodeId: selectedNodeId, nodeId: null as string | null };
+		createRequestRef.current = createRequest;
 		setIsCreatingFile(true);
 		const createNodePromise =
 			kind === "folder"
@@ -5418,6 +5425,9 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 
 		createNodePromise
 			.then((result) => {
+				if (createRequestRef.current !== createRequest) {
+					return;
+				}
 				if (result._nay) {
 					console.error("[FilesSidebar.handleCreateNodeClick] Failed to create node", {
 						result,
@@ -5439,18 +5449,23 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					return;
 				}
 
+				createRequest.nodeId = result._yay.nodeId;
 				return navigate({
 					to: "/w/$organizationName/$workspaceName/files",
 					params: { organizationName, workspaceName },
 					search: { nodeId: result._yay.nodeId, view },
-				}).then(() => {
-					return startRename(result._yay.nodeId);
 				});
 			})
 			.catch((error) => {
+				createRequest.nodeId = null;
 				console.error("[FilesSidebar.handleCreateNodeClick] Error creating node", { error });
 			})
 			.finally(() => {
+				// Successful navigation can finish before the new row arrives. The rename effect finishes that request.
+				if (createRequestRef.current !== createRequest || createRequest.nodeId) {
+					return;
+				}
+				createRequestRef.current = null;
 				setIsCreatingFile(false);
 			});
 	});
@@ -5891,6 +5906,39 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			setExpandedItems([...nextExpandedItemsSet]);
 		}
 	}, [expandedItems, hasSelectedFileInTree, selectedNodeId, setExpandedItems, treeItems, visibleFileIds]);
+
+	useLayoutEffect(() => {
+		return () => {
+			createRequestRef.current = null;
+		};
+	}, []);
+
+	// Finish create selection and rename in the same commit once the new row is visible.
+	useLayoutEffect(() => {
+		const createRequest = createRequestRef.current;
+		if (!createRequest) {
+			return;
+		}
+		if (
+			createRequest.membershipId !== membershipId ||
+			(selectedNodeId !== createRequest.fromNodeId &&
+				(!createRequest.nodeId || selectedNodeId !== createRequest.nodeId))
+		) {
+			createRequestRef.current = null;
+			setIsCreatingFile(false);
+			return;
+		}
+		if (createRequest.nodeId && selectedNodeId === createRequest.nodeId) {
+			// Once the new route arrives, going back also cancels a request still waiting for its row.
+			createRequest.fromNodeId = selectedNodeId;
+			if (treeItems?.itemById.has(selectedNodeId) && visibleFileIds.has(selectedNodeId)) {
+				createRequestRef.current = null;
+				lastFocusedSelectedNodeIdRef.current = selectedNodeId;
+				setIsCreatingFile(false);
+				startRename(selectedNodeId);
+			}
+		}
+	}, [membershipId, visibleFileIds, selectedNodeId, treeItems]);
 
 	// Follow navigation, but keep keyboard focus through live node updates.
 	useEffect(() => {

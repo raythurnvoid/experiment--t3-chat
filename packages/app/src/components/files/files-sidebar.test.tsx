@@ -1,5 +1,11 @@
 import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import { createMemoryHistory, createRootRoute, createRouter, RouterContextProvider } from "@tanstack/react-router";
+import {
+	createMemoryHistory,
+	createRootRoute,
+	createRouter,
+	RouterContextProvider,
+	type AnyRouter,
+} from "@tanstack/react-router";
 import { useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { FunctionReference } from "convex/server";
@@ -8,8 +14,9 @@ import { FilesSidebar } from "./files-sidebar.tsx";
 import { files_ROOT_ID, files_SYNTHETIC_ROOT_FOLDER, type files_VisibleTreeNode } from "@/lib/files.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 
-const { treeState, createNode } = vi.hoisted(() => ({
+const { treeState, tenantState, createNode } = vi.hoisted(() => ({
 	treeState: { nodes: [] as files_VisibleTreeNode[], listeners: new Set<() => void>() },
+	tenantState: { membershipId: "membership" },
 	createNode: vi.fn(),
 }));
 
@@ -19,7 +26,7 @@ vi.mock("convex/react", async (importOriginal) => {
 	const queryResults = {};
 	return {
 		...original,
-		useConvex: () => ({ query: async () => [], mutation: createNode }),
+		useConvex: () => ({ query: async () => [], mutation: createNode, action: createNode }),
 		useQuery: (query: FunctionReference<"query">, args: unknown) => {
 			if (args === "skip") return undefined;
 			return getFunctionName(query) === "access_control:get_current_user_workspace_permission" ? true : [];
@@ -32,7 +39,7 @@ vi.mock("convex/react", async (importOriginal) => {
 vi.mock("@/lib/app-tenant-context.tsx", () => ({
 	AppTenantProvider: {
 		useContext: () => ({
-			membershipId: "membership",
+			membershipId: tenantState.membershipId,
 			organizationId: "organization",
 			organizationName: "organization",
 			workspaceId: "workspace",
@@ -62,6 +69,7 @@ vi.mock("@/lib/activities.ts", () => ({ useFileNodeActivities: () => [] }));
 
 beforeEach(() => {
 	createNode.mockReset();
+	tenantState.membershipId = "membership";
 	treeState.nodes = ["alpha", "bravo", "charlie", "delta"].map((name) => ({
 		...files_SYNTHETIC_ROOT_FOLDER,
 		_id: name as app_convex_Id<"files_nodes">,
@@ -89,56 +97,140 @@ afterEach(() => {
 });
 
 describe("FilesSidebar", () => {
-	test("keeps selection until create navigation arrives, then selects and renames the new folder", async () => {
+	function CreateSidebar(props: { router: AnyRouter; selectedNodeId: string }) {
+		const handleAction = () => {};
+		return (
+			<RouterContextProvider router={props.router}>
+				<FilesSidebar
+					selectedNodeId={props.selectedNodeId}
+					view="rich_text_editor"
+					initialSearchQuery=""
+					onClose={handleAction}
+					onArchive={handleAction}
+					onPrimaryAction={handleAction}
+					onSearchQueryChange={handleAction}
+				/>
+			</RouterContextProvider>
+		);
+	}
+
+	test.each([
+		["folder", "tree first"],
+		["folder", "route first"],
+		["file", "tree first"],
+		["file", "route first"],
+	] as const)("selects and renames a created %s with %s", async (kind, order) => {
 		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
 		const navigation = Promise.withResolvers<void>();
 		const navigate = vi.spyOn(router, "navigate").mockReturnValue(navigation.promise);
-		createNode.mockResolvedValue({ _yay: { nodeId: "new-folder" } });
-		const handleAction = vi.fn();
-		function TestSidebar(props: { selectedNodeId: string }) {
-			return (
-				<RouterContextProvider router={router}>
-					<FilesSidebar
-						selectedNodeId={props.selectedNodeId}
-						view="rich_text_editor"
-						initialSearchQuery=""
-						onClose={handleAction}
-						onArchive={handleAction}
-						onPrimaryAction={handleAction}
-						onSearchQueryChange={handleAction}
-					/>
-				</RouterContextProvider>
-			);
-		}
-
-		const view = render(<TestSidebar selectedNodeId="alpha" />);
+		const name = kind === "folder" ? "new-folder" : "new-file.md";
+		createNode.mockResolvedValue({ _yay: { nodeId: "created-node" } });
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
 		await waitFor(() =>
 			expect(view.getByRole("treeitem", { name: "alpha" }).getAttribute("aria-selected")).toBe("true"),
 		);
-		fireEvent.click(view.getByRole("button", { name: "New folder" }));
+		fireEvent.click(view.getByRole("button", { name: kind === "folder" ? "New folder" : "New file" }));
 		await waitFor(() => expect(navigate).toHaveBeenCalledOnce());
 		expect(view.getByRole("treeitem", { name: "alpha" }).getAttribute("aria-selected")).toBe("true");
 		expect(view.queryByRole("textbox")).toBeNull();
+		if (order === "route first") {
+			await act(async () => navigation.resolve());
+			view.rerender(<CreateSidebar router={router} selectedNodeId="created-node" />);
+			expect(view.queryByRole("textbox")).toBeNull();
+			expect(view.getByRole("button", { name: "New folder" }).matches(":disabled")).toBe(true);
+		}
 
 		act(() => {
 			treeState.nodes = [
 				...treeState.nodes,
 				{
 					...treeState.nodes[0],
-					_id: "new-folder" as app_convex_Id<"files_nodes">,
-					name: "new-folder",
-					path: "/new-folder",
-					treePath: "/new-folder/",
+					_id: "created-node" as app_convex_Id<"files_nodes">,
+					kind,
+					name,
+					path: `/${name}`,
+					treePath: `/${name}/`,
 				},
 			];
 			for (const listener of treeState.listeners) listener();
 		});
-		expect(view.getByRole("treeitem", { name: "alpha" }).getAttribute("aria-selected")).toBe("true");
-		view.rerender(<TestSidebar selectedNodeId="new-folder" />);
-		await act(async () => navigation.resolve());
-		await waitFor(() => expect(document.activeElement).toBe(view.getByRole("textbox", { name: "Rename new-folder" })));
-		expect(view.getByRole("treeitem", { name: "new-folder" }).getAttribute("aria-selected")).toBe("true");
+		if (order === "tree first") {
+			expect(view.getByRole("treeitem", { name: "alpha" }).getAttribute("aria-selected")).toBe("true");
+			view.rerender(<CreateSidebar router={router} selectedNodeId="created-node" />);
+		}
+		await waitFor(() => expect(document.activeElement).toBe(view.getByRole("textbox", { name: `Rename ${name}` })));
+		expect(view.getByRole("treeitem", { name }).getAttribute("aria-selected")).toBe("true");
 		expect(view.getByRole("treeitem", { name: "alpha" }).getAttribute("aria-selected")).toBe("false");
+		expect(view.getByRole("button", { name: "New folder" }).matches(":disabled")).toBe(false);
+		await act(async () => navigation.resolve());
+	});
+
+	test.each(["before response", "waiting for row", "workspace change", "unmount"])(
+		"cancels create navigation on leaving %s",
+		async (stage) => {
+			const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+			const navigation = Promise.withResolvers<void>();
+			const navigate = vi.spyOn(router, "navigate").mockReturnValue(navigation.promise);
+			const creation = Promise.withResolvers<{ _yay: { nodeId: string } }>();
+			createNode.mockReturnValue(creation.promise);
+			const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+			fireEvent.click(view.getByRole("button", { name: "New folder" }));
+			await waitFor(() => expect(createNode).toHaveBeenCalledOnce());
+			if (stage === "waiting for row") {
+				await act(async () => creation.resolve({ _yay: { nodeId: "new-folder" } }));
+				view.rerender(<CreateSidebar router={router} selectedNodeId="new-folder" />);
+				await act(async () => navigation.resolve());
+				expect(view.getByRole("button", { name: "New folder" }).matches(":disabled")).toBe(true);
+			}
+
+			if (stage === "unmount") {
+				view.unmount();
+			} else if (stage === "workspace change") {
+				tenantState.membershipId = "other-membership";
+				view.rerender(<CreateSidebar router={router} selectedNodeId="alpha" />);
+			} else {
+				view.rerender(
+					<CreateSidebar router={router} selectedNodeId={stage === "waiting for row" ? "alpha" : "bravo"} />,
+				);
+			}
+			await act(async () => creation.resolve({ _yay: { nodeId: "new-folder" } }));
+			expect(navigate).toHaveBeenCalledTimes(stage === "waiting for row" ? 1 : 0);
+			if (stage === "unmount") return;
+			expect(view.getByRole("button", { name: "New folder" }).matches(":disabled")).toBe(false);
+			act(() => {
+				treeState.nodes = [
+					...treeState.nodes,
+					{
+						...treeState.nodes[0],
+						_id: "new-folder" as app_convex_Id<"files_nodes">,
+						name: "new-folder",
+						path: "/new-folder",
+						treePath: "/new-folder/",
+					},
+				];
+				for (const listener of treeState.listeners) listener();
+			});
+			view.rerender(<CreateSidebar router={router} selectedNodeId="new-folder" />);
+			expect(view.queryByRole("textbox")).toBeNull();
+		},
+	);
+
+	test.each(["refused", "create failed", "navigation failed"])("clears create busy state when %s", async (failure) => {
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		vi.spyOn(console, "error").mockImplementation(() => {});
+		if (failure === "refused") {
+			createNode.mockResolvedValue({ _nay: { message: "Permission denied" } });
+		} else if (failure === "create failed") {
+			createNode.mockRejectedValue(new Error("Create failed"));
+		} else {
+			createNode.mockResolvedValue({ _yay: { nodeId: "new-folder" } });
+			vi.spyOn(router, "navigate").mockRejectedValue(new Error("Navigation failed"));
+		}
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		fireEvent.click(view.getByRole("button", { name: "New folder" }));
+		await waitFor(() => expect(console.error).toHaveBeenCalledOnce());
+		await waitFor(() => expect(view.getByRole("button", { name: "New folder" }).matches(":disabled")).toBe(false));
+		expect(view.queryByRole("textbox")).toBeNull();
 	});
 
 	test.each([
