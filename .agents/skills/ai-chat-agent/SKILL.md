@@ -22,6 +22,7 @@ Primary:
 - `../../../packages/app/server/bash-meta-command.ts`
 - `../../../packages/app/server/bash-mv-command.ts`
 - `../../../packages/app/server/bash-nested-shell-command.ts`
+- `../../../packages/app/server/bash-resolve-command.ts`
 - `../../../packages/app/server/bash-rm-command.ts`
 - `../../../packages/app/server/bash-sed-command.ts`
 - `../../../packages/app/server/bash-stat-command.ts`
@@ -146,6 +147,8 @@ Important limitation:
 - The prompt and tool description should tell the model that cwd persists across tool calls in the same chat and that it should use bare or relative commands instead of repeating `cd` when the previous Bash output already shows the desired cwd.
 - The prompt and tool description should describe `bash` as the normal shell for this environment, while explicitly warning that only app-mount files are db-backed and do not have full POSIX/GNU filesystem semantics.
 - For file inspection commands without a specific path, cwd is the target. New bash sessions start at the current workspace path, so bare or relative commands inspect app files by default without a special command-level fallback.
+- `resolve [--] NODE_ID_OR_APP_FILE_URL` maps one raw node ID or full HTTP(S) app Files URL to the current user's visible absolute Bash path. It works in Ask and Agent mode. Use it before any file listing or search. Quote both the reference and the path, then use an existing reader or editor: `p=$(resolve -- 'REFERENCE') && cat -- "$p"`. It reads no content and never fetches the URL. A URL must name the current organization/workspace; its origin gives no access. A single nonempty `nodeId` wins over the URL path. A path URL first finds the saved node, then follows that node's pending path. Cwd, `/tmp`, and read-only mounts do not change the lookup scope. Plugin reviews cannot use tenant lookup.
+- `resolve` checks current node access and the caller's fresh pending path overlay on each call. Pending moves follow identity; pending deletes and replaced targets return no path. Missing, archived, denied, and out-of-workspace nodes share one unavailable error (exit 1); malformed arguments/URLs use exit 2. Success prints only the path plus a newline and records it for folder instructions. Pass that absolute path unchanged to the next tool; do not turn it into an `@` mention. `resolve --help` prints usage. A failed lookup is not a reason to scan files or use `execute_code`. Explicit paths and `@/path` mentions keep their normal flow.
 - `/home/cloud-usr` is the bash home directory, `/home/cloud-usr/w` is the app mount, and `/home/cloud-usr/w/{organizationName}/{workspaceName}` is the current workspace path.
 - Bash command behavior is performance-first because app files are a db-backed virtual filesystem, not POSIX files. Match native command shape where practical, but prefer db indexes, then Convex `.filter()` when an index cannot express the condition, and use JavaScript filtering/sorting only as a last resort with an explicit reason.
 - When reporting Bash results, treat app-only flags such as `--limit`, `--cursor`, `--path-query`, and `--extension` as supported app Bash syntax. Do not warn that a successful app command is non-standard or replace it with native POSIX syntax.

@@ -384,6 +384,57 @@ export type files_nodes_get_by_path_Result =
 		? Awaited<ReturnValue>
 		: never;
 
+/**
+ * The chat route already proves workspace read access. This lookup checks the node and
+ * returns its path in the same user's pending tree.
+ */
+export const get_path_by_id = internalQuery({
+	args: {
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		visibilityUserId: v.id("users"),
+		/**
+		 * Keep raw IDs so invalid input returns null instead of an argument error.
+		 */
+		nodeId: v.string(),
+	},
+	returns: v.union(v.string(), v.null()),
+	handler: async (ctx, args) => {
+		const nodeId = ctx.db.normalizeId("files_nodes", args.nodeId);
+		if (!nodeId) {
+			return null;
+		}
+
+		const fileNode = await ctx.db.get("files_nodes", nodeId);
+		if (
+			!fileNode ||
+			fileNode.organizationId !== args.organizationId ||
+			fileNode.workspaceId !== args.workspaceId ||
+			fileNode.archiveOperationId !== null
+		) {
+			return null;
+		}
+
+		const [readable] = await access_control_db_filter_readable_file_nodes(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.visibilityUserId,
+			nodes: [fileNode],
+		});
+		if (!readable) {
+			return null;
+		}
+
+		const overlay = await files_db_build_pending_path_overlay(ctx, {
+			organizationId: args.organizationId,
+			workspaceId: args.workspaceId,
+			userId: args.visibilityUserId,
+		});
+		// Null hides pending deletes and replaced nodes. Never fall back to the saved path.
+		return files_pending_path_overlay_project_committed_path(overlay, fileNode.path);
+	},
+});
+
 export const resolve_new_node_path = internalQuery({
 	args: {
 		organizationId: doc(app_convex_schema, "files_nodes").fields.organizationId,

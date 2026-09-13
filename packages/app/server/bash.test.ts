@@ -3419,6 +3419,303 @@ describe("bash_run_command", () => {
 		expect(longFormat.stderr).toContain("Usage: stat [-c FORMAT] [--] FILE...");
 	});
 
+	describe("resolve", () => {
+		test("returns the Bash path for a raw node ID", async () => {
+			const runner = await create_bash_runner();
+			const nodeId = await get_seeded_node_id(runner, "/docs/readme.md");
+			runner.runQuery.mockClear();
+			vi.mocked(fetch).mockClear();
+
+			const result = await runner.run(`resolve '${nodeId}'`);
+
+			expect(result.metadata.exitCode, result.stderr).toBe(0);
+			expect(result.stdout).toBe(`${test_db_files_mount}/docs/readme.md\n`);
+			expect(result.stderr).toBe("");
+			expect(result.metadata.observedPaths).toEqual(["/docs/readme.md"]);
+			const queries = runner.runQuery.mock.calls.map(([ref]) => function_name_of(ref));
+			expect(queries).toContain("files_nodes:get_path_by_id");
+			expect(queries.some((name) => name?.startsWith("files_nodes:list"))).toBe(false);
+			expect(queries).not.toContain("files_nodes:read_file_content_from_chunks");
+			expect(fetch).not.toHaveBeenCalled();
+			expect(await list_pending_updates(runner)).toEqual([]);
+		});
+
+		test.each(["/docs", "/source.pdf"])("returns the path for %s without reading content", async (path) => {
+			const runner = await create_bash_runner();
+			const nodeId = await get_seeded_node_id(runner, path);
+			vi.mocked(fetch).mockClear();
+
+			const result = await runner.run(`resolve '${nodeId}'`);
+
+			expect(result.metadata.exitCode, result.stderr).toBe(0);
+			expect(result.stdout).toBe(`${test_db_files_mount}${path}\n`);
+			expect(fetch).not.toHaveBeenCalled();
+		});
+
+		test("accepts copied URLs and encoded saved paths without fetching them", async () => {
+			const path = "/docs/My 100% café.md";
+			const runner = await create_bash_runner({ extraFiles: [{ path, content: "encoded path marker\n" }] });
+			const nodeId = await get_seeded_node_id(runner, path);
+			vi.mocked(fetch).mockClear();
+
+			for (const reference of [
+				`http://localhost:5173/w/personal/home/files?nodeId=${nodeId}`,
+				`https://app.example/w/personal/home/files?view=preview&nodeId=${nodeId}#details`,
+				`https://other-host.example/w/%70ersonal/%68ome/files?nodeId=${nodeId}`,
+				"https://app.example/w/personal/home/files/docs/My%20100%25%20caf%C3%A9.md?view=preview#details",
+				`https://app.example/w/personal/home/files/docs/missing.md?nodeId=${nodeId}`,
+			]) {
+				const result = await runner.run(`resolve '${reference}'`);
+				expect(result.metadata.exitCode, result.stderr).toBe(0);
+				expect(result.stdout).toBe(`${test_db_files_mount}${path}\n`);
+				expect(result.metadata.observedPaths).toEqual([path]);
+			}
+			expect(fetch).not.toHaveBeenCalled();
+		});
+
+		test("reports usage mistakes without looking up a node", async () => {
+			const runner = await create_bash_runner();
+			for (const args of [
+				"",
+				"--unknown",
+				"one two",
+				"'http://['",
+				"'ftp://app.example/w/personal/home/files?nodeId=one'",
+				"'https://app.example/w/personal/home/chat?nodeId=one'",
+				"'https://app.example/w/personal/home/files'",
+				"'https://app.example/w/personal/home/files?nodeId='",
+				"'https://app.example/w/personal/home/files?nodeId=one&nodeId=two'",
+				"'https://app.example/w/personal/home/files/docs/%ZZ.md'",
+				"'https://app.example/w/%E0%A4%A/home/files?nodeId=one'",
+			]) {
+				runner.runQuery.mockClear();
+				const result = await runner.run(`resolve ${args}`);
+				expect(result.metadata.exitCode, result.stderr).toBe(bash_COMMAND_EXIT_USAGE);
+				expect(result.stdout).toBe("");
+				expect(result.stderr).toContain("resolve:");
+				expect(result.metadata.observedPaths).toEqual([]);
+				expect(
+					runner.runQuery.mock.calls.some(([ref]) => function_name_of(ref) === "files_nodes:get_path_by_id"),
+				).toBe(false);
+			}
+		});
+
+		test("supports help and the end-of-options marker", async () => {
+			const runner = await create_bash_runner();
+			const nodeId = await get_seeded_node_id(runner, "/docs/readme.md");
+
+			const help = await runner.run("resolve --help");
+			const found = await runner.run(`resolve -- '${nodeId}'`);
+			const literalHelp = await runner.run("resolve -- --help");
+
+			expect(help.metadata.exitCode).toBe(0);
+			expect(help.stdout).toContain("Usage: resolve [--]");
+			expect(help.stderr).toBe("");
+			expect(help.metadata.observedPaths).toEqual([]);
+			expect(found.metadata.exitCode).toBe(0);
+			expect(found.stdout).toBe(`${test_db_files_mount}/docs/readme.md\n`);
+			expect(literalHelp.metadata.exitCode).toBe(1);
+			expect(literalHelp.stdout).toBe("");
+		});
+
+		test("uses the same unavailable result for invalid, missing, and archived IDs", async () => {
+			const runner = await create_bash_runner();
+			const archivedId = await get_seeded_node_id(runner, "/reports/summary.md");
+			const missingId = await get_seeded_node_id(runner, "/uploaded.md");
+			const archived = await runner_as_user(runner).mutation(api.files_nodes.archive_nodes, {
+				membershipId: runner.seeded.membershipId,
+				nodeIds: [archivedId],
+			});
+			expect(archived._nay).toBeUndefined();
+			await runner.t.run((ctx) => ctx.db.delete("files_nodes", missingId));
+			const unavailable = await runner.run("resolve 'missing'");
+
+			for (const reference of ["", runner.seeded.userId, missingId, archivedId, files_ROOT_ID]) {
+				const result = await runner.run(`resolve '${reference}'`);
+				expect(result.metadata.exitCode, result.stderr).toBe(1);
+				expect(result.stdout).toBe("");
+				expect(result.stderr).toBe(unavailable.stderr);
+				expect(result.metadata.observedPaths).toEqual([]);
+			}
+		});
+
+		test("refuses another tenant's ID and URL without returning its path", async () => {
+			const runner = await create_bash_runner();
+			const other = await create_bash_runner({
+				shared: {
+					t: runner.t,
+					seeded: await runner.t.run((ctx) =>
+						test_mocks_fill_db_with.membership(ctx, { organizationName: "other", workspaceName: "elsewhere" }),
+					),
+				},
+				extraFiles: [{ path: "/private-marker.md", content: "private marker\n" }],
+			});
+			const otherId = await get_seeded_node_id(other, "/private-marker.md");
+			const ownId = await get_seeded_node_id(runner, "/docs/readme.md");
+			const unavailable = await runner.run("resolve 'missing'");
+
+			for (const reference of [
+				otherId,
+				`https://app.example/w/other/elsewhere/files?nodeId=${otherId}`,
+				`https://app.example/w/other/elsewhere/files?nodeId=${ownId}`,
+				"https://app.example/w/other/elsewhere/files/docs/readme.md",
+			]) {
+				const result = await runner.run(`resolve '${reference}'`);
+				expect(result.metadata.exitCode, result.stderr).toBe(1);
+				expect(result.stdout).toBe("");
+				expect(result.stderr).toBe(unavailable.stderr);
+				expect(result.metadata.observedPaths).toEqual([]);
+			}
+		});
+
+		test.each([true, false])("works in the app workspace from /tmp with writes enabled: %s", async (allowDbFilesMkdir) => {
+			const runner = await create_bash_runner({ allowDbFilesMkdir });
+			const nodeId = await get_seeded_node_id(runner, "/docs/readme.md");
+			await runner.t.run((ctx) =>
+				ctx.db.patch("files_nodes", nodeId, { writePolicyScopeNodeId: nodeId, writePolicy: { mode: "read_only" } }),
+			);
+
+			const result = await runner.run(`cd /tmp && resolve '${nodeId}'`);
+
+			expect(result.metadata.exitCode, result.stderr).toBe(0);
+			expect(result.stdout).toBe(`${test_db_files_mount}/docs/readme.md\n`);
+			expect(result.metadata.nextCwd).toBe("/tmp");
+			expect(await list_pending_updates(runner)).toEqual([]);
+		});
+
+		test("keeps spaces in quoted substitution and works in a nested shell", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: "/docs/Space name.md", content: "space marker\n" }],
+			});
+			const nodeId = await get_seeded_node_id(runner, "/docs/Space name.md");
+
+			const read = await runner.run(`p=$(resolve '${nodeId}') && cat "$p"`);
+			const nested = await runner.run(`bash -lc 'resolve "${nodeId}"'`);
+
+			expect(read.metadata.exitCode, read.stderr).toBe(0);
+			expect(read.stdout).toBe("space marker\n");
+			expect(nested.metadata.exitCode, nested.stderr).toBe(0);
+			expect(nested.stdout).toBe(`${test_db_files_mount}/docs/Space name.md\n`);
+			expect(nested.metadata.observedPaths).toEqual(["/docs/Space name.md"]);
+		});
+
+		test("sees chained moves in the same call and follows discard and accept", async () => {
+			const runner = await create_bash_runner();
+			const nodeId = await get_seeded_node_id(runner, "/docs/tutorial.md");
+			const moved = await runner.run(
+				`mv docs/tutorial.md docs/guide.md >/dev/null && resolve '${nodeId}' && ` +
+					`mv docs/guide.md reports/manual.md >/dev/null && p=$(resolve '${nodeId}') && cat "$p"`,
+			);
+			expect(moved.metadata.exitCode, moved.stderr).toBe(0);
+			expect(moved.stdout).toBe(`${test_db_files_mount}/docs/guide.md\nzeta\nalpha\nALPHA\n`);
+			expect((await get_seeded_node(runner, "/docs/tutorial.md"))._id).toBe(nodeId);
+
+			const discarded = await runner_as_user(runner).mutation(api.files_pending_updates.discard_file_pending_structural, {
+				membershipId: runner.seeded.membershipId,
+				nodeId,
+			});
+			expect(discarded._nay).toBeUndefined();
+			expect((await runner.run(`resolve '${nodeId}'`)).stdout).toBe(`${test_db_files_mount}/docs/tutorial.md\n`);
+			expect((await runner.run("mv docs/tutorial.md reports/manual.md")).metadata.exitCode).toBe(0);
+			const accepted = await runner_as_user(runner).mutation(api.files_pending_updates.apply_file_pending_move, {
+				membershipId: runner.seeded.membershipId,
+				nodeId,
+			});
+			expect(accepted._nay).toBeUndefined();
+			expect((await get_seeded_node(runner, "/reports/manual.md"))._id).toBe(nodeId);
+			expect((await runner.run(`resolve '${nodeId}'`)).stdout).toBe(`${test_db_files_mount}/reports/manual.md\n`);
+		});
+
+		test("follows pending ancestor moves for folder and child IDs", async () => {
+			const runner = await create_bash_runner();
+			const folderId = await get_seeded_node_id(runner, "/docs/nested");
+			const childId = await get_seeded_node_id(runner, "/docs/nested/deep.md");
+			expect((await runner.run("mv docs/nested reports/notes")).metadata.exitCode).toBe(0);
+
+			const folder = await runner.run(`resolve '${folderId}'`);
+			const child = await runner.run(`resolve '${childId}'`);
+
+			expect(folder.metadata.exitCode, folder.stderr).toBe(0);
+			expect(folder.stdout).toBe(`${test_db_files_mount}/reports/notes\n`);
+			expect(child.metadata.exitCode, child.stderr).toBe(0);
+			expect(child.stdout).toBe(`${test_db_files_mount}/reports/notes/deep.md\n`);
+			expect(child.metadata.observedPaths).toEqual(["/reports/notes/deep.md"]);
+		});
+
+		test("keeps a saved path URL attached to its original node during a pending swap", async () => {
+			const runner = await create_bash_runner();
+			for (const command of [
+				"mv docs/tutorial.md swap.md",
+				"mv reports/summary.md docs/tutorial.md",
+				"mv swap.md reports/summary.md",
+			]) {
+				const moved = await runner.run(command);
+				expect(moved.metadata.exitCode, moved.stderr).toBe(0);
+			}
+
+			const result = await runner.run("resolve 'https://app.example/w/personal/home/files/docs/tutorial.md'");
+
+			expect(result.metadata.exitCode, result.stderr).toBe(0);
+			expect(result.stdout).toBe(`${test_db_files_mount}/reports/summary.md\n`);
+			expect(result.metadata.observedPaths).toEqual(["/reports/summary.md"]);
+			expect((await runner.run(`cat '${result.stdout.trimEnd()}'`)).stdout).toBe("zeta\nalpha\nALPHA\n");
+		});
+
+		test("does not turn a replaced target ID or saved URL into its replacement", async () => {
+			const runner = await create_bash_runner();
+			const sourceId = await get_seeded_node_id(runner, "/docs/tutorial.md");
+			const targetId = await get_seeded_node_id(runner, "/reports/summary.md");
+			expect((await runner.run("mv -f docs/tutorial.md reports/summary.md")).metadata.exitCode).toBe(0);
+			const unavailable = await runner.run("resolve 'missing'");
+
+			for (const reference of [targetId, "https://app.example/w/personal/home/files/reports/summary.md"]) {
+				const result = await runner.run(`resolve '${reference}'`);
+				expect(result.metadata.exitCode, result.stderr).toBe(1);
+				expect(result.stdout).toBe("");
+				expect(result.stderr).toBe(unavailable.stderr);
+				expect(result.metadata.observedPaths).toEqual([]);
+			}
+			expect((await runner.run(`resolve '${sourceId}'`)).stdout).toBe(`${test_db_files_mount}/reports/summary.md\n`);
+		});
+
+		test("hides a pending-deleted folder but keeps a child moved out of it", async () => {
+			const runner = await create_bash_runner({
+				extraFiles: [{ path: "/docs/nested/hidden.md", content: "hidden marker\n" }],
+			});
+			const folderId = await get_seeded_node_id(runner, "/docs/nested");
+			const hiddenId = await get_seeded_node_id(runner, "/docs/nested/hidden.md");
+			const childId = await get_seeded_node_id(runner, "/docs/nested/deep.md");
+			expect((await runner.run("mv docs/nested/deep.md reports/survivor.md")).metadata.exitCode).toBe(0);
+			expect((await runner.run("rm -r docs/nested")).metadata.exitCode).toBe(0);
+
+			for (const nodeId of [folderId, hiddenId]) {
+				const result = await runner.run(`resolve '${nodeId}'`);
+				expect(result.metadata.exitCode, result.stderr).toBe(1);
+				expect(result.stdout).toBe("");
+				expect(result.metadata.observedPaths).toEqual([]);
+			}
+			expect((await runner.run(`resolve '${childId}'`)).stdout).toBe(`${test_db_files_mount}/reports/survivor.md\n`);
+			const discarded = await runner_as_user(runner).mutation(api.files_pending_updates.discard_file_pending_structural, {
+				membershipId: runner.seeded.membershipId,
+				nodeId: folderId,
+			});
+			expect(discarded._nay).toBeUndefined();
+			expect((await runner.run(`resolve '${hiddenId}'`)).stdout).toBe(`${test_db_files_mount}/docs/nested/hidden.md\n`);
+		});
+
+		test("is discoverable through which without adding a native executable", async () => {
+			const { run } = await create_bash_runner();
+
+			const which = await run("which resolve");
+			const nativePaths = await run("du -a /usr/bin");
+
+			expect(which.metadata.exitCode, which.stderr).toBe(0);
+			expect(which.stdout).toBe("/usr/bin/resolve\n");
+			expect(nativePaths.metadata.exitCode, nativePaths.stderr).toBe(0);
+			expect(nativePaths.stdout).not.toContain("/usr/bin/resolve");
+		});
+	});
+
 	test("caps the number of app files a single reader command fetches", async () => {
 		const { run, runAction } = await create_bash_runner();
 
@@ -8900,6 +9197,32 @@ describe("bash_run_command", () => {
 				expect(result.output).not.toContain("Otherreviewprivate");
 				expect(result.output).not.toContain("other.js");
 			}
+		});
+
+		test("resolve refuses tenant and reserved IDs in plugin review", async () => {
+			const { runner, run } = await create_review_runner();
+			const tenantId = await get_seeded_node_id(runner, "/docs/readme.md");
+			const reserved = await runner.t.query(internal.files_nodes.get_by_path, {
+				organizationId: "GLOBAL",
+				workspaceId: organizations_GLOBAL_PLUGINS_WORKSPACE_ID,
+				visibilityUserId: runner.seeded.userId,
+				path: `${reviewRoot}/dist/worker.js`,
+			});
+			expect(reserved).not.toBeNull();
+			vi.mocked(fetch).mockClear();
+
+			for (const nodeId of [tenantId, reserved!._id]) {
+				const result = await run(`resolve '${nodeId}'`);
+				expect(result.exitCode).toBe(1);
+				expect(result.output).toContain("unavailable in the current workspace");
+				expect(result.output).not.toContain("/docs/readme.md");
+				expect(result.output).not.toContain("dist/worker.js");
+			}
+			const tenantLookup = await runner.run(`resolve '${reserved!._id}'`);
+			expect(tenantLookup.metadata.exitCode).toBe(1);
+			expect(tenantLookup.stdout).toBe("");
+			expect(tenantLookup.metadata.observedPaths).toEqual([]);
+			expect(fetch).not.toHaveBeenCalled();
 		});
 
 		test("keeps cwd and scratch between calls without writing a chat thread", async () => {

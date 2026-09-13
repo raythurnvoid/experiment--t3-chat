@@ -6,7 +6,7 @@ The Bash tool is a mixed-path virtual shell. The app mount under `/home/cloud-us
 
 ## Non-Negotiables
 
-- Use the user's existing local app tab. Do not start the dev server from Codex.
+- Reuse the running local app servers and use an owned QA tab in the project's required browser profile. If a needed dev service is missing, start it through Vite Plus using the repository instructions. Do not stop or replace another running service.
 - **Prefer a signed-in account for this eval.** Observed 2026-07-25 on an anonymous account:
   reloading the app minted a new anonymous user, each one got its own freshly seeded
   `personal/home`, and the fixture became unreachable rather than deleted, so every later
@@ -50,6 +50,23 @@ The Bash tool is a mixed-path virtual shell. The app mount under `/home/cloud-us
 11. If accepted, run the smallest matrix that proves the change and update the ledger. Run the full matrix only for broad Bash behavior or prompt-surface changes.
 
 When a live run exposes weird behavior, add the smallest deterministic unit or prompt assertion test that protects the command behavior or durable guidance before continuing.
+
+## Resolve copied file links and node IDs
+
+Use a unique `qa-resolve-<runId>` folder with saved marker files, nested folders, a move destination, and a replacement target. Give three files a shared content token and create more than three tree entries for pagination. Verify each saved node ID, path, and marker before scoring. Uploads may normalize names; use actual saved names and test spaces/Unicode in the command suite too.
+
+1. Record the account, workspace, model, mode, deployment phase, and fixture IDs. Capture the old `resolve` command-not-found result before deploying. Reuse the same model and prompts after the change.
+2. Select one fixture row. Use `More actions for <name>` and the real `Copy link` or `Copy node id` action. Clear multi-selection first. Follow the clipboard capture rules in `known-hazards.md` if needed. Wait for the real clipboard write to finish before navigating away, then restore any temporary spy. Navigating too soon can cancel the write and leave old clipboard text.
+3. Select root or a neutral file, then start a fresh chat and confirm an empty transcript. The target path and marker must not be in selected-file context. Paste an actual copied URL and ID with `Control+v` in at least one case each. Check exact composer text before Send; the OS clipboard is shared.
+4. In both Ask and Agent mode, send `Read this file and tell me its marker: <reference>` with the URL and raw ID. Do not name `resolve` in these natural prompts. Repeat all four cases in fresh chats after the first passing run. Require `resolve`, then an existing reader, the correct marker, and no proposal. Record every attempt; URL fetching, broad scans, and `execute_code` are failures.
+5. Copy a link, rename its file in Files, then use the old link in a fresh chat. Resolve must return the new path. Ask Agent to change a marker by ID and leave it for review. Check the exact target proposal and unchanged saved content. A fresh Ask chat must read the pending marker.
+6. Propose a file move and an ancestor-folder move. Resolve the original ID from a fresh chat after each. Verify the pending path and content; Discard restores the saved path and Accept makes the new path permanent. Use only the fixture's own row actions. Also check a pending delete, discard recovery, an archived fixture, a folder with `ls`, and an uploaded binary when available.
+7. Use separate explicit command probes for bad arguments, malformed URLs/IDs, wrong-table IDs, and empty/repeated `nodeId`. Check exit status and empty stdout. From the first workspace, refuse both the ID and URL of a second owned workspace's fixture. Follow [second-user-fixtures.md](second-user-fixtures.md) for a non-owner restricted-file refusal, an unrestricted positive control, and success after a read grant. Never sign the user out; record a blocked identity setup as unverified.
+8. Run the existing known-path and `/tmp` canaries. Run `ls -t <fixture>` and check immediate-child recency. Run `search --limit 1 <shared-token>` and `tree <fixture> --limit 3`, each with exactly one printed continuation. Check actual output and command counts.
+
+Capture full command labels, terminal stdout/stderr, edit parameters/results, and final answers. Helper previews can truncate them. Confirm completion with sustained idle and stable tool results. For writes, use fresh authenticated readback as described in `known-hazards.md`; do not trust a cached React subscription or the model's summary. Reload only between deployment phases, then recheck identity and fixtures.
+
+Screen keyboard access, focus, copy-menu names, composer labels, and tool disclosures with the harness accessibility check. Discard remaining owned proposals, archive only the owned fixture folder, and close only owned tabs/sessions. Save evidence and a case-by-case result in the personal task folder. End the report with Process debt: friction, accessibility, and recipe updates.
 
 ## Playwriter Setup
 

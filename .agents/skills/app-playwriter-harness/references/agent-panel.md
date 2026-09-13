@@ -130,6 +130,10 @@ The Stop button blinks out between agent steps (tool-exec gaps), so a single "no
 
 `ai_chat_http` uses a token bucket (rate 4/min, capacity 1). The chat transport keeps an HTTP 429 inside the same AI SDK request: it reads the server's validated `retryAfterMs`, waits, then retries the same message id. Stop aborts this wait. Do not expect a queued message to disappear or show the failed-send UI for this normal rate-limit case.
 
+QA tabs using one account share this limit. Tabs in one browser profile also share the selected chat. Run one chat QA lane at a time and leave its peer tabs idle. Check the selected thread and saved prompt before scoring a result.
+
+Rapid fresh-chat checks can also log `ai_chat:thread_mark_read` rate limits and `Failed to move the read cursor`. A turn may still finish and save all tool results. Check that exact thread with a fresh `ai_chat.thread_messages_list` query before resubmitting the prompt.
+
 When later messages are queued, any other failed active turn pauses the queue. The failed user stays in the transcript with `Message failed to send.` and its normal Retry action. Every later queued row must keep its stable id, text, and order. This also applies when the thread is still optimistic, an empty assistant placeholder exists, or Convex persisted the failed user before the assistant stream failed. Resume retries the visible failed turn before the queue continues. The message Retry action follows the same path. If that retry fails, the queue pauses again without claiming a follower.
 
 Stop aborts the active turn and keeps later messages in a paused queue, but it does not show failed-send feedback. Verify that the tray, order, and text stay unchanged through sustained idle. Wait for the rate-limit bucket to refill, then click Resume and verify that draining follows the current queue order. The aborted active turn is not added back to the queue.
@@ -159,6 +163,10 @@ When evaluating through `/files`, the Agent sidebar tab is often more stable tha
 If a scenario asks the agent to edit an app file, manually accept and save pending edits before continuing unrelated browser work. The editor can show a pending-edits banner and a diff route with an `Accept all pending changes and save` button; leaving proposed edits unapplied can intentionally affect Bash pending-update scenarios but can also pollute later evals.
 
 For `/tmp` eviction scenarios, require a second Bash call after file creation. Eviction and oversized-file discard happen after a command flushes scratch state, so same-command `ls` can show files that will not survive to the next Bash call. Avoid using diagnostic commands that write extra `/tmp` files, such as `tee /tmp/list.txt`, unless the side effect is part of the scenario; those files count toward the same path and byte caps and can trigger another eviction.
+
+## Resolve Eval Recipe
+
+Use the [copied-link and node-ID recipe](bash-tool-agent-eval.md#resolve-copied-file-links-and-node-ids) for `resolve` changes. Select a neutral file and open a fresh empty chat before each scored request, so the target path is not already in context. Capture a real sidebar Copy link and Copy node id, paste each into the composer, and check the exact text before Send.
 
 ## Grep Eval Recipe
 

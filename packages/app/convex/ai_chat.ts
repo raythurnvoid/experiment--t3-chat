@@ -154,6 +154,7 @@ function ai_chat_system_prompt(args: {
 		"Use the available tools as the working interface for the organization.",
 		`Bash starts in the current workspace path at \`~/w/${args.organizationName}/${args.workspaceName}\` (\`${currentWorkspacePath}\`). \`~\` is \`${HOME}\`, the app mount is \`${appMountPath}\`, and \`/tmp\` is durable scratch scoped to this chat thread.`,
 		`User messages may reference app files with mentions written as \`@/path/to/file.md\` (any app file works the same, for example \`@/data/config.json\`); a trailing slash like \`@/docs/\` means a folder. Resolve them under the current workspace path (\`@/docs/api.md\` is \`${currentWorkspacePath}/docs/api.md\`) before using Bash or \`edit_file\`.`,
+		"When a user provides an app file URL or a node ID, first use Bash `resolve '<reference>'` to get its current path. Do not list or search files before resolving the reference. Then pass that exact absolute path to the existing file readers or editors. Do not turn it into an @ mention.",
 		`Link app files with Markdown URLs under \`/w/${args.organizationName}/${args.workspaceName}/files/\`, followed by their workspace-relative path with each path segment URL-encoded.`,
 		`For example, Bash path \`${currentWorkspacePath}/docs/Q3 notes.md\` links to \`/w/${args.organizationName}/${args.workspaceName}/files/docs/Q3%20notes.md\`; do not use Bash paths or bare relative paths as link URLs.`,
 		"The Bash tool description is the authority on its command surface, its flags, and how the db-backed app mount differs from `/tmp`. Follow it instead of assuming POSIX/GNU behavior, and never describe an app-mount limitation as a global Bash limitation.",
@@ -2958,6 +2959,32 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			expect(configuration.systemPrompt).toContain("loading and error UI");
 			expect(configuration.systemPrompt).toContain("normal file tools and pending review for HTML");
 			expect(configuration.systemPrompt).toContain("claim a preview was tested only when a tool actually tested it");
+		});
+
+		test.each(["ask", "agent"] as const)("describes resolve for node IDs and app URLs in %s mode", (modeId) => {
+			const { ctx } = makeCtx();
+			const configuration = build_agent_configuration({
+				ctx,
+				ctxData: build_agent_configuration_test_ctx_data,
+				args: { modelId: build_agent_configuration_test_model_id, modeId },
+				getThreadId: () => "thread_1" as Id<"ai_chat_threads">,
+			});
+			const agentSurface = [configuration.systemPrompt, configuration.tools.bash?.description]
+				.join("\n")
+				.replaceAll("`", "");
+
+			expect(agentSurface).toContain("first use Bash resolve '<reference>' to get its current path");
+			expect(agentSurface).toContain("Do not list or search files before resolving the reference");
+			expect(agentSurface).toContain("pass that exact absolute path to the existing file readers or editors");
+			expect(agentSurface).toContain("Do not turn it into an @ mention");
+			expect(agentSurface).toContain(
+				`For a text-read request using a node ID or app file URL, start with one Bash call: p=$(resolve '<reference>') && cat -- "$p"`,
+			);
+			expect(agentSurface).toContain("one raw node ID or full HTTP(S) app file URL");
+			expect(agentSurface).toContain("available in Ask and Agent modes");
+			expect(agentSurface).toContain("do not scan files, fetch the URL, or use execute_code to find a path");
+			expect(configuration.activeTools).toContain("bash");
+			expect(Object.keys(configuration.tools)).not.toContain("resolve");
 		});
 
 		test("describes bash as the app file shell without synonym rules", () => {

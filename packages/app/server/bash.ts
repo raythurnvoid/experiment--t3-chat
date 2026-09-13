@@ -68,6 +68,7 @@ import { bash_meta_command_create } from "./bash-meta-command.ts";
 import { bash_mv_command_create } from "./bash-mv-command.ts";
 import { bash_nested_shell_command_create } from "./bash-nested-shell-command.ts";
 import { bash_head_tail_wc_command_create } from "./bash-head-tail-wc-command.ts";
+import { bash_resolve_command_create } from "./bash-resolve-command.ts";
 import { bash_rm_command_create } from "./bash-rm-command.ts";
 import { bash_search_command_create } from "./bash-search-command.ts";
 import { bash_sed_command_create } from "./bash-sed-command.ts";
@@ -1056,6 +1057,7 @@ function bash_shell_create(ctx: ActionCtx, args: { fs: MountableFs; cwd: string;
 		commands: bash_ALLOWED_COMMANDS,
 		customCommands: [
 			// Indexed app discovery.
+			bash_resolve_command_create(ctx, dbFilesRoots),
 			bash_search_command_create(ctx, dbFilesRoots),
 			bash_meta_command_create(ctx, dbFilesRoots),
 			bash_ls_command_create(ctx, dbFilesRoots),

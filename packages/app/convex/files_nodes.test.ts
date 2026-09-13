@@ -967,6 +967,269 @@ describe("paginated bash listing queries", () => {
 	});
 });
 
+describe("get_path_by_id", () => {
+	test("returns paths for folders, text files, and read-only binary files", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
+		const [textId, binaryId] = await t.run(async (ctx) => {
+			const base = {
+				...test_mocks.files.base(),
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				createdBy: db.userId,
+				updatedBy: db.userId,
+				kind: "file" as const,
+			};
+			const textId = await ctx.db.insert("files_nodes", {
+				...base,
+				name: "notes.txt",
+				path: "/notes.txt",
+				treePath: "/notes.txt",
+				contentType: "text/plain",
+			});
+			const binaryId = await ctx.db.insert("files_nodes", {
+				...base,
+				name: "report.pdf",
+				path: "/report.pdf",
+				treePath: "/report.pdf",
+				contentType: "application/pdf",
+			});
+			await ctx.db.patch("files_nodes", binaryId, {
+				writePolicyScopeNodeId: binaryId,
+				writePolicy: { mode: "read_only" },
+			});
+			return [textId, binaryId];
+		});
+
+		const paths = await Promise.all(
+			[db.files.file_root_1._id, textId, binaryId].map((nodeId) =>
+				t.query(internal.files_nodes.get_path_by_id, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					visibilityUserId: db.userId,
+					nodeId,
+				}),
+			),
+		);
+		expect(paths).toEqual([db.files.file_root_1.path, "/notes.txt", "/report.pdf"]);
+	});
+
+	test("returns null for invalid, missing, archived, and out-of-scope IDs", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
+		const unavailableIds = await t.run(async (ctx) => {
+			const other = await test_mocks_fill_db_with.membership(ctx, { organizationName: "other-organization" });
+			const organization = await ctx.db.get("organizations", db.organizationId);
+			if (!organization?.defaultWorkspaceId) throw new Error("Expected the default workspace");
+			const base = {
+				...test_mocks.files.base(),
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				createdBy: db.userId,
+				updatedBy: db.userId,
+			};
+			const otherWorkspaceNodeId = await ctx.db.insert("files_nodes", {
+				...base,
+				workspaceId: organization.defaultWorkspaceId,
+			});
+			const otherOrganizationNodeId = await ctx.db.insert("files_nodes", {
+				...base,
+				organizationId: other.organizationId,
+				workspaceId: other.workspaceId,
+				createdBy: other.userId,
+				updatedBy: other.userId,
+			});
+			const reservedNodeId = await ctx.db.insert("files_nodes", {
+				...base,
+				organizationId: organizations_GLOBAL_ORGANIZATION_ID,
+				workspaceId: organizations_GLOBAL_GITHUB_WORKSPACE_ID,
+				createdBy: users_SYSTEM_AUTHOR,
+				updatedBy: users_SYSTEM_AUTHOR,
+			});
+			await ctx.db.delete("files_nodes", db.files.file_root_2._id);
+			await ctx.db.patch("files_nodes", db.files.file_root_1_child_2._id, {
+				archiveOperationId: "test-archive",
+			});
+			return [
+				"",
+				"not-a-node-id",
+				db.userId,
+				db.files.file_root_2._id,
+				db.files.file_root_1_child_2._id,
+				otherWorkspaceNodeId,
+				otherOrganizationNodeId,
+				reservedNodeId,
+			];
+		});
+
+		const paths = await Promise.all(
+			unavailableIds.map((nodeId) =>
+				t.query(internal.files_nodes.get_path_by_id, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					visibilityUserId: db.userId,
+					nodeId,
+				}),
+			),
+		);
+		expect(paths).toEqual(unavailableIds.map(() => null));
+	});
+
+	test("hides a restricted folder and its child until the member receives a grant", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
+		const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const memberId = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk_resolve_member" });
+			const now = Date.now();
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				active: true,
+				updatedAt: now,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				role: "viewer",
+				now,
+			});
+			return userId;
+		});
+		const nodes = [db.files.file_root_1, db.files.file_root_1_child_1];
+		const read = (visibilityUserId: Id<"users">) =>
+			Promise.all(
+				nodes.map((node) =>
+					t.query(internal.files_nodes.get_path_by_id, {
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						visibilityUserId,
+						nodeId: node._id,
+					}),
+				),
+			);
+
+		expect(
+			(
+				await asOwner.mutation(api.files_sharing.restrict_node, {
+					membershipId: db.membershipId,
+					nodeId: db.files.file_root_1._id,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(await read(db.userId)).toEqual(nodes.map((node) => node.path));
+		expect(await read(memberId)).toEqual([null, null]);
+
+		expect(
+			(
+				await asOwner.mutation(api.files_sharing.set_node_share_grant, {
+					membershipId: db.membershipId,
+					nodeId: db.files.file_root_1._id,
+					principal: { kind: "user", userId: memberId },
+					level: "read",
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(await read(memberId)).toEqual(nodes.map((node) => node.path));
+	});
+
+	test("uses the caller's pending folder move and hides a pending folder delete", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
+		const otherUserId = await t.run(async (ctx) => {
+			const userId = await ctx.db.insert("users", { clerkUserId: "clerk_resolve_other" });
+			const now = Date.now();
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				active: true,
+				updatedAt: now,
+			});
+			await access_control_db_ensure_role_assignment(ctx, {
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				userId,
+				role: "viewer",
+				now,
+			});
+			return userId;
+		});
+		const nodes = [db.files.file_root_1, db.files.file_root_1_child_1];
+		const read = (visibilityUserId: Id<"users">) =>
+			Promise.all(
+				nodes.map((node) =>
+					t.query(internal.files_nodes.get_path_by_id, {
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						visibilityUserId,
+						nodeId: node._id,
+					}),
+				),
+			);
+
+		expect(
+			(
+				await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId: db.userId,
+					nodeId: db.files.file_root_1._id,
+					destParentId: files_ROOT_ID,
+					destName: "moved",
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(await read(db.userId)).toEqual(["/moved", `/moved/${db.files.file_root_1_child_1.name}`]);
+		expect(await read(otherUserId)).toEqual(nodes.map((node) => node.path));
+
+		expect(
+			(
+				await t.mutation(internal.files_pending_updates.upsert_file_pending_archive_in_db, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId: db.userId,
+					nodeId: db.files.file_root_1._id,
+				})
+			)._nay,
+		).toBeUndefined();
+		expect(await read(db.userId)).toEqual([null, null]);
+		expect(await read(otherUserId)).toEqual(nodes.map((node) => node.path));
+	});
+
+	test("does not return a replaced node's saved path", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
+		expect(
+			(
+				await t.mutation(internal.files_pending_updates.upsert_file_pending_move_in_db, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId: db.userId,
+					nodeId: db.files.file_root_1._id,
+					destParentId: files_ROOT_ID,
+					destName: db.files.file_root_2.name,
+					replace: true,
+				})
+			)._nay,
+		).toBeUndefined();
+
+		const paths = await Promise.all(
+			[db.files.file_root_1._id, db.files.file_root_2._id].map((nodeId) =>
+				t.query(internal.files_nodes.get_path_by_id, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					visibilityUserId: db.userId,
+					nodeId,
+				}),
+			),
+		);
+		expect(paths).toEqual([db.files.file_root_2.path, null]);
+	});
+});
+
 test("generated sibling file is visible in the tree query", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
