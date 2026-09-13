@@ -21,6 +21,7 @@ import {
 	files_nodes_db_get_write_policy_management_state,
 	type files_nodes_WriteContext,
 	files_nodes_db_apply_pending_move,
+	files_nodes_db_move_nodes,
 	files_nodes_db_create_node_recursively_at_path,
 	files_nodes_db_hard_delete_node,
 	files_tail_lines_from_text,
@@ -1413,6 +1414,495 @@ test("rename_node leaves generated siblings independent from the source", async 
 	});
 });
 
+// #region move nodes
+
+describe("move_nodes", () => {
+	test.each([
+		{ access: "none", archived: false },
+		{ access: "read", archived: false },
+		{ access: "write", archived: false },
+		{ access: "owner", archived: false },
+		{ access: "none", archived: true },
+		{ access: "read", archived: true },
+		{ access: "write", archived: true },
+		{ access: "owner", archived: true },
+	] as const)(
+		"checks nested restricted descendants with $access access (archived: $archived)",
+		async ({ access, archived }) => {
+			const t = test_convex();
+			const db = await t.run((ctx) => test_mocks_fill_db_with.nested_files(ctx));
+			const asOwner = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+			const member = await t.run(async (ctx) => {
+				const userId = await ctx.db.insert("users", { clerkUserId: "nested-move-member" });
+				const now = Date.now();
+				const membershipId = await ctx.db.insert("organizations_workspaces_users", {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId,
+					active: true,
+					updatedAt: now,
+				});
+				await access_control_db_ensure_role_assignment(ctx, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					userId,
+					role: "member",
+					now,
+				});
+				return { userId, membershipId };
+			});
+			const source = db.files.file_root_1;
+			const restricted = db.files.file_root_1_child_1;
+			const child = db.files.file_root_1_child_1_deep_1;
+			const target = db.files.file_root_2;
+			const other = await asOwner.mutation(api.files_nodes.create_folder_node, {
+				membershipId: db.membershipId,
+				parentId: files_ROOT_ID,
+				path: "other-source",
+			});
+			if (other._nay) throw new Error(other._nay.message);
+			expect(
+				(
+					await asOwner.mutation(api.files_sharing.restrict_node, {
+						membershipId: db.membershipId,
+						nodeId: restricted._id,
+					})
+				)._nay,
+			).toBeUndefined();
+			if (access === "read" || access === "write") {
+				expect(
+					(
+						await asOwner.mutation(api.files_sharing.set_node_share_grant, {
+							membershipId: db.membershipId,
+							nodeId: restricted._id,
+							principal: { kind: "user", userId: member.userId },
+							level: access,
+						})
+					)._nay,
+				).toBeUndefined();
+			}
+			if (archived) {
+				expect(
+					(
+						await asOwner.mutation(api.files_nodes.archive_nodes, {
+							membershipId: db.membershipId,
+							nodeIds: [restricted._id],
+						})
+					)._nay,
+				).toBeUndefined();
+			}
+			const asUser =
+				access === "owner" ? asOwner : t.withIdentity({ issuer: "https://clerk.test", external_id: member.userId });
+			const membershipId = access === "owner" ? db.membershipId : member.membershipId;
+			const before = await t.run((ctx) => ctx.db.query("files_nodes").collect());
+			// An unchanged parent does not act on its hidden descendants.
+			expect(
+				(
+					await asUser.mutation(api.files_nodes.move_nodes, {
+						membershipId,
+						itemIds: [source._id],
+						targetParentId: files_ROOT_ID,
+					})
+				)._nay,
+			).toBeUndefined();
+			expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(before);
+			const result = await asUser.mutation(api.files_nodes.move_nodes, {
+				membershipId,
+				itemIds: [other._yay.nodeId, source._id],
+				targetParentId: target._id,
+			});
+			if (access === "none" || access === "read") {
+				expect(result._nay?.message).toBe("Permission denied");
+				expect(JSON.stringify(result)).not.toContain(restricted.name);
+				expect(await t.run((ctx) => ctx.db.query("files_nodes").collect())).toEqual(before);
+			} else {
+				expect(result._nay).toBeUndefined();
+				for (const node of [restricted, child]) {
+					expect(await t.run((ctx) => ctx.db.get("files_nodes", node._id))).toMatchObject({
+						path: `${target.path}${node.path}`,
+						restrictedScopeNodeId: restricted._id,
+						archiveOperationId: before.find((saved) => saved._id === node._id)!.archiveOperationId,
+					});
+				}
+				expect(await t.run((ctx) => ctx.db.get("files_nodes", other._yay.nodeId))).toMatchObject({
+					parentId: target._id,
+					path: `${target.path}/other-source`,
+				});
+			}
+		},
+	);
+
+	test("moves only the selected ancestor when a child and duplicate ids are selected", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const source = db.files.file_root_1_child_1;
+		const child = db.files.file_root_1_child_1_deep_1;
+		const target = db.files.file_root_2;
+
+		const result = await asUser.mutation(api.files_nodes.move_nodes, {
+			membershipId: db.membershipId,
+			itemIds: [child._id, source._id, source._id],
+			targetParentId: target._id,
+		});
+		expect(result._yay).toBe(null);
+		const moved = await t.run(async (ctx) => ctx.db.get("files_nodes", child._id));
+		expect(moved).toMatchObject({ parentId: source._id, path: `${target.path}/${source.name}/${child.name}` });
+	});
+
+	test.each(["self", "descendant"])(
+		"refuses a %s destination before moving another selected item",
+		async (targetKind) => {
+			const t = test_convex();
+			const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
+			const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+			const result = await asUser.mutation(api.files_nodes.move_nodes, {
+				membershipId: db.membershipId,
+				itemIds: [db.files.file_root_2._id, db.files.file_root_1._id],
+				targetParentId: targetKind === "self" ? db.files.file_root_1._id : db.files.file_root_1_child_1._id,
+			});
+			expect(result._nay?.message).toBe("Cannot move a folder into itself or its descendants.");
+			expect(await t.run(async (ctx) => ctx.db.get("files_nodes", db.files.file_root_2._id))).toEqual(
+				db.files.file_root_2,
+			);
+		},
+	);
+
+	test.each(["missing", "archived"])("refuses a %s source without moving the other source", async (sourceKind) => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const unavailable = db.files.file_root_1_child_2;
+		await t.run(async (ctx) => {
+			if (sourceKind === "missing") {
+				await ctx.db.delete("files_nodes", unavailable._id);
+			} else {
+				await ctx.db.patch("files_nodes", unavailable._id, { archiveOperationId: "archived-source" });
+			}
+		});
+		const result = await asUser.mutation(api.files_nodes.move_nodes, {
+			membershipId: db.membershipId,
+			itemIds: [db.files.file_root_1_child_1._id, unavailable._id],
+			targetParentId: db.files.file_root_2._id,
+		});
+		expect(result._nay?.message).toBe("Not found");
+		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", db.files.file_root_1_child_1._id))).toEqual(
+			db.files.file_root_1_child_1,
+		);
+	});
+
+	test("refuses an archived destination", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		await asUser.mutation(api.files_nodes.archive_nodes, {
+			membershipId: db.membershipId,
+			nodeIds: [db.files.file_root_2._id],
+		});
+		const result = await asUser.mutation(api.files_nodes.move_nodes, {
+			membershipId: db.membershipId,
+			itemIds: [db.files.file_root_1._id],
+			targetParentId: db.files.file_root_2._id,
+		});
+		expect(result._nay?.message).toBe("Not found");
+		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", db.files.file_root_1._id))).toEqual(
+			db.files.file_root_1,
+		);
+	});
+
+	test("counts archived descendants in the node limit and writes nothing above it", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const source = db.files.file_root_1_child_2;
+		await t.run(async (ctx) => {
+			for (let index = 0; index < 500; index += 1) {
+				await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					createdBy: db.userId,
+					updatedBy: db.userId,
+					parentId: source._id,
+					name: `child-${index}`,
+					path: `${source.path}/child-${index}`,
+					treePath: `${source.path}/child-${index}/`,
+					archiveOperationId: index === 499 ? "archived-child" : null,
+				});
+			}
+		});
+		const result = await asUser.mutation(api.files_nodes.move_nodes, {
+			membershipId: db.membershipId,
+			itemIds: [source._id],
+			targetParentId: db.files.file_root_2._id,
+		});
+		expect(result._nay?.name).toBe("move_too_large");
+		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", source._id))).toEqual(source);
+	});
+
+	test("counts UTF-8 search bytes across files before writing the batch", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const nodeIds = await t.run(async (ctx) => {
+			const ids: Array<Id<"files_nodes">> = [];
+			for (let index = 0; index < 3; index += 1) {
+				const path = `/large-${index}.txt`;
+				const nodeId = await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					createdBy: db.userId,
+					updatedBy: db.userId,
+					parentId: files_ROOT_ID,
+					kind: "file",
+					name: `large-${index}.txt`,
+					path,
+					treePath: path,
+				});
+				const inserted = await db_insert_file_text_content(ctx, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					nodeId,
+					path,
+					rootKind: "plain_text",
+					textContent: "字".repeat(270_000),
+				});
+				if (inserted._nay) throw new Error(inserted._nay.message);
+				ids.push(nodeId);
+			}
+			return ids;
+		});
+		const result = await asUser.mutation(api.files_nodes.move_nodes, {
+			membershipId: db.membershipId,
+			itemIds: nodeIds,
+			targetParentId: db.files.file_root_2._id,
+		});
+		expect(result._nay?.name).toBe("move_too_large");
+		await t.run(async (ctx) => {
+			expect((await ctx.db.get("files_nodes", nodeIds[0]))?.path).toBe("/large-0.txt");
+			const chunk = await ctx.db.query("files_plain_text_chunks").first();
+			expect(chunk?.path).toBe("/large-0.txt");
+		});
+	});
+
+	test("bounds the new paths' write bytes even when the source docs fit", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const { targetId, nodeIds } = await t.run(async (ctx) => {
+			const base = {
+				...test_mocks.files.base(),
+				organizationId: db.organizationId,
+				workspaceId: db.workspaceId,
+				createdBy: db.userId,
+				updatedBy: db.userId,
+			};
+			let parentId: Id<"files_nodes"> | "root" = files_ROOT_ID;
+			let path = "";
+			for (let depth = 0; depth < 30; depth += 1) {
+				const name = `folder-${depth}-${"x".repeat(90)}`;
+				path += `/${name}`;
+				parentId = await ctx.db.insert("files_nodes", {
+					...base,
+					name,
+					parentId,
+					path,
+					treePath: `${path}/`,
+					pathDepth: depth + 1,
+				});
+			}
+			const ids: Array<Id<"files_nodes">> = [];
+			for (let index = 0; index < 200; index += 1) {
+				const filePath = `/small-${index}.md`;
+				const nodeId = await ctx.db.insert("files_nodes", {
+					...base,
+					kind: "file",
+					parentId: files_ROOT_ID,
+					name: `small-${index}.md`,
+					path: filePath,
+					treePath: filePath,
+				});
+				ids.push(nodeId);
+				for (let field = 0; field < 7; field += 1) {
+					await ctx.db.insert("files_metadata_docs", {
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						fileNodeId: nodeId,
+						sourceKind: "committed",
+						docKind: "field",
+						fieldPath: `metadata.key-${field}`,
+						path: filePath,
+						treePath: filePath,
+					});
+				}
+			}
+			return { targetId: parentId, nodeIds: ids };
+		});
+		const result = await asUser.mutation(api.files_nodes.move_nodes, {
+			membershipId: db.membershipId,
+			itemIds: nodeIds,
+			targetParentId: targetId,
+		});
+		expect(result._nay?.name).toBe("move_too_large");
+		expect(await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeIds[0]))?.path)).toBe("/small-0.md");
+		expect(await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeIds[199]))?.path)).toBe("/small-199.md");
+	});
+
+	test("counts every selected file's metadata before writing the batch", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
+		const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
+		const nodeIds = await t.run(async (ctx) => {
+			const ids: Array<Id<"files_nodes">> = [];
+			for (let index = 0; index < 41; index += 1) {
+				const nodeId = await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					createdBy: db.userId,
+					updatedBy: db.userId,
+					parentId: files_ROOT_ID,
+					kind: "file",
+					name: `note-${index}.md`,
+					path: `/note-${index}.md`,
+					treePath: `/note-${index}.md`,
+				});
+				ids.push(nodeId);
+				for (let field = 0; field < 50; field += 1) {
+					await ctx.db.insert("files_metadata_docs", {
+						organizationId: db.organizationId,
+						workspaceId: db.workspaceId,
+						fileNodeId: nodeId,
+						sourceKind: "committed",
+						docKind: "field",
+						fieldPath: `metadata.key-${field}`,
+						path: `/note-${index}.md`,
+						treePath: `/note-${index}.md`,
+					});
+				}
+			}
+			return ids;
+		});
+		const result = await asUser.mutation(api.files_nodes.move_nodes, {
+			membershipId: db.membershipId,
+			itemIds: nodeIds,
+			targetParentId: db.files.file_root_2._id,
+		});
+		expect(result._nay?.name).toBe("move_too_large");
+		expect(await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeIds[0]))?.path)).toBe("/note-0.md");
+		expect(await t.run(async (ctx) => (await ctx.db.get("files_nodes", nodeIds[40]))?.path)).toBe("/note-40.md");
+	});
+});
+
+describe("files_nodes_db_move_nodes", () => {
+	test("moves 41 mixed files with final counter names and keeps their assets", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
+		const sources = await t.run(async (ctx) => {
+			const files: Array<{
+				nodeId: Id<"files_nodes">;
+				assetId: Id<"files_r2_assets">;
+				name: string;
+				destName: string;
+			}> = [];
+			const extensions = ["md", "txt", "png", "pdf", "mp4", "json"];
+			for (let index = 0; index < 41; index += 1) {
+				const name = `file-${index}.${extensions[index % extensions.length]}`;
+				const assetId = await ctx.db.insert("files_r2_assets", {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					kind: "upload",
+					r2Bucket: "test-bucket",
+					r2Key: `test-assets/${index}`,
+					size: 100,
+					createdBy: db.userId,
+					updatedAt: Date.now(),
+				});
+				const nodeId = await ctx.db.insert("files_nodes", {
+					...test_mocks.files.base(),
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					createdBy: db.userId,
+					updatedBy: db.userId,
+					kind: "file",
+					parentId: files_ROOT_ID,
+					name,
+					path: `/${name}`,
+					treePath: `/${name}`,
+					assetId,
+				});
+				files.push({
+					nodeId,
+					assetId,
+					name,
+					destName: `file-${index}-copy-1.${extensions[index % extensions.length]}`,
+				});
+			}
+			return files;
+		});
+		const result = await t.run(async (ctx) => {
+			const membership = await ctx.db.get("organizations_workspaces_users", db.membershipId);
+			if (!membership) throw new Error("Missing membership");
+			return await files_nodes_db_move_nodes(ctx, {
+				userAuth: { id: db.userId },
+				membership,
+				items: sources.map((source) => ({ nodeId: source.nodeId, destName: source.destName })),
+				targetParentId: db.files.file_root_2._id,
+			});
+		});
+		expect(result._yay?.moved).toHaveLength(41);
+		await t.run(async (ctx) => {
+			for (const source of sources) {
+				expect(await ctx.db.get("files_nodes", source.nodeId)).toMatchObject({
+					_id: source.nodeId,
+					assetId: source.assetId,
+					name: source.destName,
+					parentId: db.files.file_root_2._id,
+					path: `${db.files.file_root_2.path}/${source.destName}`,
+				});
+				expect((await ctx.db.get("files_r2_assets", source.assetId))?.size).toBe(100);
+			}
+		});
+	});
+
+	test("pins the source and destination paths", async () => {
+		const t = test_convex();
+		const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
+		const source = db.files.file_root_1_child_1;
+		const target = db.files.file_root_2;
+		const run = (expectedSourcePath: string, expectedTargetPath: string) =>
+			t.run(async (ctx) => {
+				const membership = await ctx.db.get("organizations_workspaces_users", db.membershipId);
+				if (!membership) throw new Error("Missing membership");
+				return await files_nodes_db_move_nodes(ctx, {
+					userAuth: { id: db.userId },
+					membership,
+					items: [
+						{
+							nodeId: source._id,
+							expected: { parentId: source.parentId, name: source.name, path: expectedSourcePath },
+							destName: "copied-folder-1",
+						},
+					],
+					targetParentId: target._id,
+					expectedTargetPath,
+				});
+			});
+		expect((await run("/old-parent/child", target.path))._nay?.name).toBe("source_changed");
+		expect((await run(source.path, "/old-target"))._nay?.name).toBe("destination_changed");
+		expect(await t.run(async (ctx) => ctx.db.get("files_nodes", source._id))).toEqual(source);
+		const result = await run(source.path, target.path);
+		expect(result._yay).toEqual({
+			moved: [{ nodeId: source._id, name: "copied-folder-1", path: `${target.path}/copied-folder-1` }],
+			unchangedNodeIds: [],
+		});
+		expect(
+			await t.run(async (ctx) => (await ctx.db.get("files_nodes", db.files.file_root_1_child_1_deep_1._id))?.path),
+		).toBe(`${target.path}/copied-folder-1/${db.files.file_root_1_child_1_deep_1.name}`);
+	});
+});
+
 test("move_nodes updates descendants materialized paths", async () => {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.nested_files(ctx));
@@ -2463,6 +2953,8 @@ test("create_file_by_path reports created ancestor folders deepest-first", async
 		expect(shallowFolder?.kind).toBe("folder");
 	});
 });
+
+// #endregion move nodes
 
 describe("files_nodes.remove_eager_created_node_if_safe", () => {
 	async function create_eager_node(t: ReturnType<typeof test_convex>, path: string) {

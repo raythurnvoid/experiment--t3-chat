@@ -206,6 +206,13 @@ The public API bills `file_save` the same way ("nothing is free"): `/api/v1/file
 
 For signed-in users there is no local credit debit after save; Polar usage events and subsequent customer-state refreshes are the only path that changes the synced meter. For anonymous users the shared ingest helper applies the same one-cent event locally after a successful save. Snapshot restore bills only when `db_insert_snapshot_restore_update` produced a new Yjs sequence. Do not reintroduce a shared `credits_FILE_SAVE_COST_CENTS` constant for the current one-cent file-save rule; keep the literal at the call sites unless the product rule changes. One exception: the public-API doors send their event through `billing_db_emit_file_save`, which holds the `amount: 1` literal for those sites. The five app save doors keep their own inline literal.
 
+Human clipboard Copy saves `files_transfer_items.billedUserId` at the first successful billing
+check for that file. Ownership or billing-mode changes affect later files; retries keep the saved
+payer. Before saving the copy, check that payer's current credits and the paid plan for stored
+files. Publish the file and emit one `file_save` event in the same mutation. The new content asset
+id is the event's version part. Repeated callbacks do not bill again. Cut and copied folders emit
+no file-save event. See [Files transfer runs](../files-explorer-tree/references/transfer.md#copied-content).
+
 R2 content materialization is storage bookkeeping for an already accepted save; it must not emit an additional billing event.
 
 For bulk imports, distinguish a saved file with a durable billing job from an event already accepted by Polar. A large sandbox queue can remain after all file checks pass. Check the current queue's workspace, payer, amount, unique event IDs, retry state, and worker progress; report pending events separately. A healthy pending queue alone does not require waiting for full drain to finish the file import. Failed or canceled jobs need investigation. Never disable billing, change rates, or mark jobs complete to speed up the import. See the [import guide](../convex-admin-ops/references/large-file-imports.md#billing-and-upload-finalization).

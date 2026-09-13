@@ -26,6 +26,7 @@ import {
 	files_INITIAL_CONTENT,
 	files_u8_to_array_buffer,
 	files_MAX_TEXT_CONTENT_BYTES,
+	files_MAX_UPLOADS_BYTES,
 	files_MAX_YJS_RECONSTRUCTED_STATE_BYTES,
 	files_MAX_YJS_REPAIR_RECONSTRUCTED_STATE_BYTES,
 	files_MAX_UNMATERIALIZED_YJS_UPDATE_BYTES,
@@ -60,11 +61,13 @@ import {
 } from "../shared/files-yjs.ts";
 import {
 	files_headless_tiptap_editor_create,
+	files_headless_tiptap_editor_get_markdown,
 	files_headless_tiptap_editor_set_content_from_markdown,
 	files_yjs_doc_create_from_text,
 	files_yjs_doc_get_text,
 	files_yjs_doc_update_from_text,
 } from "../shared/files-tiptap.ts";
+import { files_COMMENT_MARK_TYPE } from "../shared/files-tiptap-comments.ts";
 import { files_chunk_markdown } from "../server/files-markdown-chunking-mastra.ts";
 import { files_chunk_plain_text } from "../server/files-plain-text-chunking.ts";
 import { Result, Result_all } from "common/errors-as-values-utils.ts";
@@ -86,11 +89,17 @@ import { billing_event } from "../server/billing.ts";
 import { convex_error, v_result } from "../server/convex-utils.ts";
 import { organizations_db_get_membership } from "./organizations.ts";
 import { access_control_db_authorize_node, access_control_db_filter_readable_file_nodes } from "./access_control.ts";
-import { billing_db_check_credits, billing_pick_billed_user_id, billing_ingest_events } from "./billing_db.ts";
+import {
+	billing_db_check_credits,
+	billing_db_check_paid_plan,
+	billing_pick_billed_user_id,
+	billing_ingest_events,
+} from "./billing_db.ts";
 import { rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
 	files_metadata_db_delete_committed_frontmatter,
 	files_metadata_db_insert_committed,
+	files_metadata_db_read_entries,
 	files_metadata_entry_fields,
 } from "./files_metadata.ts";
 import {
@@ -111,6 +120,7 @@ import { files_nodes_reconstruct_latest_file_content_from_materialization_state 
 import {
 	r2,
 	r2_PUT_MAY_ARRIVE_MARGIN_MS,
+	r2_UNFINALIZED_ASSET_TTL_MS,
 	r2_copy_object_to_immutable_key,
 	r2_create_asset_key,
 	r2_enqueue_object_deletion_job,
@@ -142,6 +152,11 @@ import {
 	type get_file_content_materialization_state_Result,
 	type get_file_next_yjs_update_Result,
 } from "./files_nodes.ts";
+import {
+	files_transfer_db_complete_copy_item,
+	files_transfer_db_fail_copy_item,
+	files_transfer_db_prepare_copy_item,
+} from "./files_transfer.ts";
 
 // Make Convex reuse the loaded module between calls, so warm calls skip the module load cost.
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
@@ -1581,6 +1596,593 @@ async function action_create_file_node(
 		},
 	});
 }
+
+// #region transfer file copy
+
+async function db_resolve_transfer_copy_billed_user(
+	ctx: MutationCtx,
+	args: {
+		organizationId: Id<"organizations">;
+		userId: Id<"users">;
+		item: Doc<"files_transfer_items">;
+		storedFile: boolean;
+	},
+) {
+	const organization = await ctx.db.get("organizations", args.organizationId);
+	if (!organization) return Result({ _nay: { message: "Permission denied" } });
+
+	const billedUserId = args.item.billedUserId ?? billing_pick_billed_user_id({ userId: args.userId, organization });
+	const billedUser = await ctx.db.get("users", billedUserId);
+	if (!billedUser || billedUser.deletedAt !== undefined) return Result({ _nay: { message: "Permission denied" } });
+
+	const credits = await billing_db_check_credits(ctx, { userId: billedUserId, minimumRequiredCents: 1 });
+	if (!credits.hasCredits) return Result({ _nay: { message: "Insufficient funds" } });
+	if (args.storedFile && !(await billing_db_check_paid_plan(ctx, { userId: billedUserId })).hasPaidPlan) {
+		return Result({ _nay: { message: "This workspace's plan does not include file uploads" } });
+	}
+
+	// Ownership changes affect later files, not this file's work or retries.
+	if (args.item.billedUserId === null) {
+		await ctx.db.patch("files_transfer_items", args.item._id, { billedUserId });
+	}
+	return Result({ _yay: billedUser });
+}
+
+export const get_transfer_file_copy_data = internalMutation({
+	args: { itemId: v.id("files_transfer_items"), attempt: v.number() },
+	returns: v_result({
+		_yay: v.union(
+			v.null(),
+			v.object({
+				organizationId: v.id("organizations"),
+				workspaceId: v.id("organizations_workspaces"),
+				userId: v.id("users"),
+				sourceNode: doc(app_convex_schema, "files_nodes"),
+				asset: doc(app_convex_schema, "files_r2_assets"),
+				metadata: v.array(v.object(files_metadata_entry_fields)),
+				header: v.union(file_content_materialization_header_validator, v.null()),
+				content: v.optional(v.string()),
+			}),
+		),
+	}),
+	handler: async (ctx, args) => {
+		const prepared = await files_transfer_db_prepare_copy_item(ctx, args);
+		if (prepared._nay || prepared._yay === null) return prepared;
+
+		const { run, item, sourceNode } = prepared._yay;
+		// Only the first invocation owns this attempt's assets. Retries get a new attempt number.
+		if (item.stagedAssetIds.length > 0) return Result({ _yay: null });
+		if (sourceNode.kind !== "file" || !sourceNode.assetId) {
+			return Result({ _nay: { message: "The source file is not available" } });
+		}
+
+		const billed = await db_resolve_transfer_copy_billed_user(ctx, {
+			organizationId: run.organizationId,
+			userId: run.userId,
+			item,
+			storedFile: sourceNode.textKind === null,
+		});
+		if (billed._nay) return billed;
+
+		const asset = await ctx.db.get("files_r2_assets", sourceNode.assetId);
+		if (!asset?.r2Key) return Result({ _nay: { message: "The source file is still saving. Try again." } });
+		if (asset.size > (sourceNode.textKind === null ? files_MAX_UPLOADS_BYTES : files_MAX_TEXT_CONTENT_BYTES)) {
+			return Result({ _nay: { message: "This file is too large to copy" } });
+		}
+
+		const metadata = await files_metadata_db_read_entries(ctx, {
+			organizationId: run.organizationId,
+			workspaceId: run.workspaceId,
+			fileNodeId: sourceNode._id,
+		});
+
+		let header: get_file_content_materialization_header_Result = null;
+		if (files_node_has_editable_yjs_state(sourceNode)) {
+			const yjsLastSequenceDoc = await ctx.db.get("files_yjs_docs_last_sequences", sourceNode.yjsLastSequenceId);
+			if (!yjsLastSequenceDoc) {
+				const errorMessage = "Copy source has no Yjs sequence";
+				const errorData = { nodeId: sourceNode._id, yjsLastSequenceId: sourceNode.yjsLastSequenceId };
+				console.error(errorMessage, errorData);
+				throw should_never_happen(errorMessage, errorData);
+			}
+			header = (await ctx.runQuery(internal.files_nodes.get_file_content_materialization_header, {
+				organizationId: run.organizationId,
+				workspaceId: run.workspaceId,
+				nodeId: sourceNode._id,
+				targetSequence: yjsLastSequenceDoc.lastSequence,
+			})) as get_file_content_materialization_header_Result;
+		}
+
+		let content: string | undefined;
+		if (sourceNode.textKind !== null && (!header || header.throughSequence === header.yjsSnapshotDoc.sequence)) {
+			// Saved text is capped at 900 KB, so one file's committed chunks are bounded.
+			const chunks = await ctx.db
+				.query("files_text_chunks")
+				.withIndex("by_organization_workspace_source_fileNode_yjsSeq_chunk", (q) =>
+					q
+						.eq("organizationId", run.organizationId)
+						.eq("workspaceId", run.workspaceId)
+						.eq("sourceKind", "committed")
+						.eq("fileNodeId", sourceNode._id),
+				)
+				.collect();
+			content =
+				chunks.length > 0 ? (files_merge_contiguous_chunks(chunks) ?? undefined) : asset.size === 0 ? "" : undefined;
+		}
+		return Result({
+			_yay: {
+				organizationId: run.organizationId,
+				workspaceId: run.workspaceId,
+				userId: run.userId,
+				sourceNode,
+				asset,
+				metadata,
+				header,
+				content,
+			},
+		});
+	},
+});
+
+type get_transfer_file_copy_data_Result =
+	typeof get_transfer_file_copy_data extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+export const stage_transfer_file_copy_assets = internalMutation({
+	args: {
+		itemId: v.id("files_transfer_items"),
+		attempt: v.number(),
+		textKind: doc(app_convex_schema, "files_nodes").fields.textKind,
+		contentSize: v.number(),
+		yjsSnapshotSize: v.optional(v.number()),
+	},
+	returns: v_result({
+		_yay: v.union(
+			v.null(),
+			v.object({ contentAssetId: v.id("files_r2_assets"), yjsSnapshotAssetId: v.optional(v.id("files_r2_assets")) }),
+		),
+	}),
+	handler: async (ctx, args) => {
+		const prepared = await files_transfer_db_prepare_copy_item(ctx, args);
+		if (prepared._nay || prepared._yay === null) return prepared;
+
+		const { run, item } = prepared._yay;
+		// Only the first invocation owns this attempt's assets. Retries get a new attempt number.
+		if (item.stagedAssetIds.length > 0) return Result({ _yay: null });
+
+		const billed = await db_resolve_transfer_copy_billed_user(ctx, {
+			organizationId: run.organizationId,
+			userId: run.userId,
+			item,
+			storedFile: args.textKind === null,
+		});
+		if (billed._nay) return billed;
+
+		const now = Date.now();
+		const assetFields = {
+			organizationId: run.organizationId,
+			workspaceId: run.workspaceId,
+			r2Bucket: r2.config.bucket,
+			createdBy: run.userId,
+			unfinalizedExpiresAt: now + r2_UNFINALIZED_ASSET_TTL_MS,
+			updatedAt: now,
+		};
+		const contentAssetId = await ctx.db.insert("files_r2_assets", {
+			...assetFields,
+			kind: args.textKind === null ? "content" : "content_snapshot",
+			size: args.contentSize,
+		});
+		const yjsSnapshotAssetId =
+			args.yjsSnapshotSize === undefined
+				? undefined
+				: await ctx.db.insert("files_r2_assets", {
+						...assetFields,
+						kind: "yjs_snapshot",
+						size: args.yjsSnapshotSize,
+					});
+
+		await ctx.db.patch("files_transfer_items", item._id, {
+			stagedAssetIds: yjsSnapshotAssetId ? [contentAssetId, yjsSnapshotAssetId] : [contentAssetId],
+		});
+		return Result({ _yay: { contentAssetId, yjsSnapshotAssetId } });
+	},
+});
+
+type stage_transfer_file_copy_assets_Result =
+	typeof stage_transfer_file_copy_assets extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+export async function files_nodes_content_db_discard_transfer_file_attempt(
+	ctx: MutationCtx,
+	args: { itemId: Id<"files_transfer_items">; attempt: number },
+) {
+	const item = await ctx.db.get("files_transfer_items", args.itemId);
+	if (!item || item.attempt !== args.attempt || item.stagedAssetIds.length === 0) return;
+
+	for (const assetId of item.stagedAssetIds) {
+		const asset = await ctx.db.get("files_r2_assets", assetId);
+		// An asset with an r2Key was already published by a committed finalize — never delete it.
+		if (!asset || asset.r2Key !== undefined) continue;
+		await r2_enqueue_object_deletion_job(ctx, {
+			organizationId: item.organizationId,
+			workspaceId: item.workspaceId,
+			r2Key: r2_create_asset_key({ organizationId: item.organizationId, workspaceId: item.workspaceId, assetId }),
+			reason: "failed_create",
+			// A canceled worker's PUT can still land, so the deadline covers that in-flight window.
+			putMayArriveUntil: (item.attemptExpiresAt ?? Date.now()) + r2_PUT_MAY_ARRIVE_MARGIN_MS,
+		});
+		await ctx.db.delete("files_r2_assets", assetId);
+	}
+
+	await ctx.db.patch("files_transfer_items", item._id, { stagedAssetIds: [] });
+}
+
+export const discard_transfer_file_attempt = internalMutation({
+	args: { itemId: v.id("files_transfer_items"), attempt: v.number(), message: v.optional(v.string()) },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		await files_nodes_content_db_discard_transfer_file_attempt(ctx, args);
+		if (args.message !== undefined) await files_transfer_db_fail_copy_item(ctx, { ...args, message: args.message });
+		return null;
+	},
+});
+
+export const finalize_transfer_file_copy = internalMutation({
+	args: {
+		itemId: v.id("files_transfer_items"),
+		attempt: v.number(),
+		contentAssetId: v.id("files_r2_assets"),
+		yjsSnapshotAssetId: v.optional(v.id("files_r2_assets")),
+		contentType: v.string(),
+		textKind: doc(app_convex_schema, "files_nodes").fields.textKind,
+		collaborationEnabled: v.boolean(),
+		sourceYjsLastSequenceId: v.union(v.id("files_yjs_docs_last_sequences"), v.null()),
+		text: v.optional(v.string()),
+		metadata: v.array(v.object(files_metadata_entry_fields)),
+	},
+	returns: v_result({ _yay: v.null() }),
+	handler: async (ctx, args) => {
+		const prepared = await files_transfer_db_prepare_copy_item(ctx, args);
+		if (prepared._nay || prepared._yay === null) {
+			await files_nodes_content_db_discard_transfer_file_attempt(ctx, args);
+			return prepared._nay ? Result({ _nay: prepared._nay }) : Result({ _yay: null });
+		}
+
+		const { run, item, sourceNode, parentId, name, path } = prepared._yay;
+		const assetIds = args.yjsSnapshotAssetId ? [args.contentAssetId, args.yjsSnapshotAssetId] : [args.contentAssetId];
+		const now = Date.now();
+		if (
+			item.attemptExpiresAt === null ||
+			item.attemptExpiresAt <= now ||
+			assetIds.length !== item.stagedAssetIds.length ||
+			assetIds.some((assetId, index) => assetId !== item.stagedAssetIds[index])
+		) {
+			return Result({ _nay: { message: "This copy attempt expired. Try again." } });
+		}
+
+		// A normal edit may advance the sequence. A new document must never be mixed into this read.
+		if (sourceNode.yjsLastSequenceId !== args.sourceYjsLastSequenceId) {
+			return Result({ _nay: { message: "The source document changed while it was being copied. Try again." } });
+		}
+
+		const billed = await db_resolve_transfer_copy_billed_user(ctx, {
+			organizationId: run.organizationId,
+			userId: run.userId,
+			item,
+			storedFile: args.textKind === null,
+		});
+		if (billed._nay) return billed;
+
+		const contentAsset = await ctx.db.get("files_r2_assets", args.contentAssetId);
+		const yjsSnapshotAsset = args.yjsSnapshotAssetId
+			? await ctx.db.get("files_r2_assets", args.yjsSnapshotAssetId)
+			: null;
+		if (
+			!contentAsset ||
+			contentAsset.unfinalizedExpiresAt === undefined ||
+			contentAsset.unfinalizedExpiresAt <= now ||
+			(args.yjsSnapshotAssetId &&
+				(!yjsSnapshotAsset ||
+					yjsSnapshotAsset.unfinalizedExpiresAt === undefined ||
+					yjsSnapshotAsset.unfinalizedExpiresAt <= now))
+		) {
+			return Result({ _nay: { message: "This copy's prepared content expired. Try again." } });
+		}
+
+		const created = await files_nodes_db_create_node_recursively_at_path(ctx, {
+			organizationId: run.organizationId,
+			workspaceId: run.workspaceId,
+			userId: run.userId,
+			parentId,
+			path: name,
+			kind: "file",
+			contentType: args.contentType,
+			assetId: args.contentAssetId,
+			expectsTextContent: args.textKind === null ? undefined : true,
+			metadata: args.metadata,
+			now,
+		});
+		if (created._nay) return created;
+		const nodeId = created._yay;
+
+		if (args.textKind !== null) {
+			if (args.text === undefined) {
+				const errorMessage = "Text copy has no text";
+				const errorData = { itemId: item._id };
+				console.error(errorMessage, errorData);
+				throw should_never_happen(errorMessage, errorData);
+			}
+			await files_nodes_db_insert_file_content_docs(ctx, {
+				organizationId: run.organizationId,
+				workspaceId: run.workspaceId,
+				nodeId,
+				path,
+				parentId,
+				contentType: args.contentType,
+				rootKind: args.textKind,
+				textContent: args.text,
+				readOnly: false,
+				nonCollaborative: !args.collaborationEnabled,
+				yjsSnapshotAssetId: args.yjsSnapshotAssetId,
+				userId: run.userId,
+				now,
+			});
+			await files_nodes_db_finalize_editable_text_node_creation(ctx, {
+				organizationId: run.organizationId,
+				workspaceId: run.workspaceId,
+				nodeId,
+				userId: run.userId,
+				versionSnapshotAssetId: args.contentAssetId,
+				versionSnapshotSize: contentAsset.size,
+				yjsSnapshot: yjsSnapshotAsset ? { assetId: yjsSnapshotAsset._id, size: yjsSnapshotAsset.size } : undefined,
+			});
+		} else {
+			await ctx.db.patch("files_r2_assets", contentAsset._id, {
+				r2Key: r2_create_asset_key({
+					organizationId: run.organizationId,
+					workspaceId: run.workspaceId,
+					assetId: contentAsset._id,
+				}),
+				unfinalizedExpiresAt: undefined,
+				updatedAt: now,
+			});
+			await store_version_snapshot(ctx, {
+				organizationId: run.organizationId,
+				workspaceId: run.workspaceId,
+				nodeId,
+				assetId: contentAsset._id,
+				userId: run.userId,
+				contentType: args.contentType,
+				yjsRootKind: null,
+				collaborationEnabled: false,
+			});
+		}
+
+		await billing_ingest_events(ctx, {
+			billedUserEvents: [
+				{
+					billedUser: billed._yay,
+					event: billing_event({
+						name: "file_save",
+						externalCustomerId: billed._yay._id,
+						externalMemberId: run.userId,
+						externalId: composite_id(
+							"billing",
+							"file_save",
+							billed._yay._id,
+							run.userId,
+							run.organizationId,
+							run.workspaceId,
+							nodeId,
+							contentAsset._id,
+						),
+						metadata: {
+							amount: 1,
+							actorUserId: run.userId,
+							billedUserId: billed._yay._id,
+							organizationId: run.organizationId,
+							workspaceId: run.workspaceId,
+							nodeId,
+							version: contentAsset._id,
+						},
+					}),
+				},
+			],
+		});
+
+		await files_transfer_db_complete_copy_item(ctx, { itemId: item._id, attempt: args.attempt, nodeId, name, path });
+		return Result({ _yay: null });
+	},
+});
+
+type finalize_transfer_file_copy_Result =
+	typeof finalize_transfer_file_copy extends RegisteredMutation<infer _Visibility, infer _Args, infer ReturnValue>
+		? Awaited<ReturnValue>
+		: never;
+
+export const copy_transfer_file = internalAction({
+	args: { itemId: v.id("files_transfer_items"), attempt: v.number() },
+	returns: v.null(),
+	handler: async (ctx, args) => {
+		const prepared = (await ctx.runMutation(
+			internal.files_nodes_content.get_transfer_file_copy_data,
+			args,
+		)) as get_transfer_file_copy_data_Result;
+
+		// A throw leaves the item retryable through the workpool callback; fail() marks it failed with
+		// no retry.
+		const fail = async (message: string) => {
+			await ctx.runMutation(internal.files_nodes_content.discard_transfer_file_attempt, { ...args, message });
+			return null;
+		};
+		if (prepared._nay) return await fail(prepared._nay.message);
+		if (prepared._yay === null) return null;
+
+		const copyData = prepared._yay;
+		const contentType = copyData.sourceNode.contentType;
+		if (contentType === null) return await fail("The source file has no content type");
+
+		const rootKind = copyData.sourceNode.textKind;
+		let text: string | undefined;
+		let snapshotUpdate: ArrayBuffer | undefined;
+		if (rootKind !== null) {
+			let copiedText: string;
+			const header = copyData.header;
+			if (header && header.throughSequence > header.yjsSnapshotDoc.sequence) {
+				if (header.yjsSnapshotAsset.size > files_MAX_YJS_RECONSTRUCTED_STATE_BYTES)
+					return await fail("This file's document is too large to copy");
+				if (!header.yjsSnapshotAsset.r2Key) return await fail("The source file is still saving. Try again.");
+				const base = await r2_fetch_object_from_bucket({ key: header.yjsSnapshotAsset.r2Key }).then((response) =>
+					response.arrayBuffer(),
+				);
+				const yjsDoc = files_yjs_doc_create_from_array_buffer_update(base);
+				try {
+					let sequence = header.yjsSnapshotDoc.sequence;
+					let updateCount = 0;
+					let updateBytes = 0;
+					while (sequence < header.throughSequence) {
+						const next = (await ctx.runQuery(internal.files_nodes.get_file_next_yjs_update, {
+							organizationId: copyData.organizationId,
+							workspaceId: copyData.workspaceId,
+							nodeId: copyData.sourceNode._id,
+							afterSequence: sequence,
+							throughSequence: header.throughSequence,
+						})) as get_file_next_yjs_update_Result;
+						if (next.kind !== "row") throw new Error("The source file changed while reading saved edits. Try again.");
+						files_yjs_doc_apply_array_buffer_update(yjsDoc, next.row.update);
+						sequence = next.row.sequence;
+						updateCount += 1;
+						updateBytes += next.row.update.byteLength;
+
+						if (
+							updateCount > files_MAX_UNMATERIALIZED_YJS_UPDATE_COUNT ||
+							updateBytes > files_MAX_UNMATERIALIZED_YJS_UPDATE_BYTES ||
+							encodeStateAsUpdate(yjsDoc).byteLength > files_MAX_YJS_RECONSTRUCTED_STATE_BYTES
+						)
+							return await fail("This file's document is too large to copy");
+					}
+					const extracted = files_yjs_doc_get_text({ yjsDoc, rootKind });
+					if (extracted._nay) return await fail(extracted._nay.message);
+					copiedText = extracted._yay;
+				} finally {
+					yjsDoc.destroy();
+				}
+			} else {
+				copiedText =
+					copyData.content ??
+					(await r2_fetch_object_from_bucket({ key: copyData.asset.r2Key! }).then((response) => response.text()));
+			}
+
+			if (rootKind === "rich_text") {
+				const editor = files_headless_tiptap_editor_create({ initialContent: { markdown: copiedText } });
+				if (editor._nay) return await fail(editor._nay.message);
+				try {
+					// Drop only comment marks. Their text and all other formatting remain in the document.
+					const state = editor._yay.state;
+					editor._yay.view.updateState(
+						state.apply(
+							state.tr.removeMark(0, state.doc.content.size, editor._yay.schema.marks[files_COMMENT_MARK_TYPE]),
+						),
+					);
+					copiedText = files_headless_tiptap_editor_get_markdown({ mut_editor: editor._yay });
+				} finally {
+					editor._yay.destroy();
+				}
+				const frontmatter = files_metadata_preflight_frontmatter(copiedText);
+				if (frontmatter._yay && files_metadata_frontmatter_exceeds_index_caps(frontmatter._yay))
+					return await fail("Too many frontmatter fields");
+			}
+
+			if (copyData.sourceNode.collaborationEnabled) {
+				const document = files_yjs_doc_create_from_text({ text: copiedText, rootKind });
+				if ("_nay" in document) return await fail(document._nay.message);
+				try {
+					snapshotUpdate = files_u8_to_array_buffer(encodeStateAsUpdate(document));
+					if (snapshotUpdate.byteLength > files_MAX_YJS_RECONSTRUCTED_STATE_BYTES)
+						return await fail("This file's document is too large to copy");
+					const normalized = files_yjs_doc_get_text({ yjsDoc: document, rootKind });
+					if (normalized._nay) return await fail(normalized._nay.message);
+					copiedText = normalized._yay;
+				} finally {
+					document.destroy();
+				}
+			}
+
+			if (files_get_utf8_byte_size(copiedText) > files_MAX_TEXT_CONTENT_BYTES)
+				return await fail("This file's text is too large to copy");
+			text = copiedText;
+		}
+
+		const staged = (await ctx.runMutation(internal.files_nodes_content.stage_transfer_file_copy_assets, {
+			...args,
+			textKind: rootKind,
+			contentSize: text === undefined ? copyData.asset.size : files_get_utf8_byte_size(text),
+			yjsSnapshotSize: snapshotUpdate?.byteLength,
+		})) as stage_transfer_file_copy_assets_Result;
+		if (staged._nay) return await fail(staged._nay.message);
+		if (staged._yay === null) return null;
+
+		const assets = staged._yay;
+		try {
+			const contentKey = r2_create_asset_key({
+				organizationId: copyData.organizationId,
+				workspaceId: copyData.workspaceId,
+				assetId: assets.contentAssetId,
+			});
+			if (text === undefined) {
+				const copied = await r2_copy_object_to_immutable_key(ctx, {
+					sourceKey: copyData.asset.r2Key!,
+					destinationKey: contentKey,
+				});
+				if (copied.outcome !== "ready" || copied.size !== copyData.asset.size)
+					return await fail("The source file's content is not available");
+			} else {
+				const writes = await Promise.allSettled([
+					r2_put_object(ctx, {
+						key: contentKey,
+						body: text,
+						contentType,
+					}),
+					assets.yjsSnapshotAssetId && snapshotUpdate
+						? r2_put_object(ctx, {
+								key: r2_create_asset_key({
+									organizationId: copyData.organizationId,
+									workspaceId: copyData.workspaceId,
+									assetId: assets.yjsSnapshotAssetId,
+								}),
+								body: snapshotUpdate,
+								contentType: "application/octet-stream",
+							})
+						: Promise.resolve(),
+				]);
+				const failed = writes.find((write) => write.status === "rejected");
+				if (failed?.status === "rejected") throw failed.reason;
+			}
+
+			const finalized = (await ctx.runMutation(internal.files_nodes_content.finalize_transfer_file_copy, {
+				...args,
+				...assets,
+				contentType,
+				textKind: rootKind,
+				collaborationEnabled: copyData.sourceNode.collaborationEnabled === true,
+				sourceYjsLastSequenceId: copyData.sourceNode.yjsLastSequenceId,
+				text,
+				metadata: copyData.metadata,
+			})) as finalize_transfer_file_copy_Result;
+			if (finalized._nay) return await fail(finalized._nay.message);
+			return null;
+		} finally {
+			// If finalize committed but its response was lost, the publish already cleared
+			// stagedAssetIds and this discard is a no-op. Otherwise it removes this attempt's
+			// unpublished assets.
+			await ctx.runMutation(internal.files_nodes_content.discard_transfer_file_attempt, args);
+		}
+	},
+});
+
+// #endregion transfer file copy
 
 export const create_text_node = action({
 	args: {

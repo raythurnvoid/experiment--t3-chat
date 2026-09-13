@@ -1,4 +1,4 @@
-import type { ReactElement } from "react";
+import type { ReactElement, ReactNode } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
@@ -6,6 +6,10 @@ import { AiChatComposer } from "./ai-chat-composer.tsx";
 import { AppTenantProvider } from "@/lib/app-tenant-context.tsx";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { useAppGlobalStore } from "@/lib/app-global-store.ts";
+
+vi.mock("@/components/files/files-clipboard.tsx", () => ({
+	FilesClipboardProvider: (props: { children: ReactNode }) => props.children,
+}));
 
 // The mention popup reads the workspace tree through a Convex subscription;
 // serve a small fixed tree instead of a live client. Tests can override the

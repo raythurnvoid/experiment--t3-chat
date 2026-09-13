@@ -46,6 +46,11 @@ For operational calls that do not depend on local code changes, use:
 
 Use `--push` only when you intentionally need to deploy local Convex source changes before running the function.
 
+`convex run` uses automatic function dispatch and cannot call dashboard-only system mutations such
+as `_system/frontend/clearTablePage`. A missing-function error makes no changes. For an approved
+one-time table erase, use a bounded internal mutation in the owning module when no existing cleanup
+door fits. Fix the table name in its code, verify the empty table, then remove the temporary function.
+
 For a one-shot push in this repo, run `convex dev --once` with `--typecheck disable` after the normal repo lint/type check has passed. There is no `convex/tsconfig.json`; `--typecheck enable` prints that it skipped type checking and can exit successfully before it pushes anything. Require the final `Convex functions ready!` message, then verify the new schema or function with a readback.
 
 # Fresh Read Timing

@@ -1000,7 +1000,7 @@ async function review_seed_all_workspace_content(
 			...tenant,
 			userId: args.userId,
 			status: "succeeded",
-			source: { type: "plugin_run", id: runId, installationId, pluginName },
+			source: { kind: "plugin_run", id: runId, installationId, pluginName },
 			title: `Review ${i}`,
 			errorMessage: null,
 			targets: [],

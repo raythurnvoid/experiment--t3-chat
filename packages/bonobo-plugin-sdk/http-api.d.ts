@@ -38,10 +38,10 @@ export type BonoboHttpApi = {
 							value: {
 								[x: string]: any;
 							};
+							revision: number;
 							collection: string;
 							key: string;
 							byteSize: number;
-							revision: number;
 							writeMode: "normal" | "versioned";
 							ownership: "shared" | "owned";
 						}[];
@@ -139,10 +139,10 @@ export type BonoboHttpApi = {
 							value: {
 								[x: string]: any;
 							};
+							revision: number;
 							collection: string;
 							key: string;
 							byteSize: number;
-							revision: number;
 							writeMode: "normal" | "versioned";
 							ownership: "shared" | "owned";
 						} | null;

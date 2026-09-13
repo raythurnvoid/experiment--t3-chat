@@ -76,6 +76,7 @@ import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { FilesNameInputControl } from "./files-name-input.tsx";
 import { FilesShareModal } from "./files-share-modal.tsx";
 import { FilesPropertiesModal } from "./files-properties-modal.tsx";
+import { FilesClipboardMenuItems, FilesClipboardProvider, FilesClipboardToolbar } from "./files-clipboard.tsx";
 import { MyInput, MyInputArea, MyInputBackground, MyInputBox, MyInputHelperText } from "@/components/my-input.tsx";
 import { MyIconButton, MyIconButtonIcon, type MyIconButton_Props } from "@/components/my-icon-button.tsx";
 import { MyIcon } from "@/components/my-icon.tsx";
@@ -272,6 +273,13 @@ function can_unarchive_item(args: {
 			canManageRestrictedScope: args.canManageRestrictedScope,
 		})
 	);
+}
+
+function get_clipboard_source_ids(nodes: files_VisibleTreeNode[]) {
+	// A selected folder already includes its selected descendants.
+	return nodes
+		.filter((node) => !nodes.some((parent) => parent.kind === "folder" && node.path.startsWith(`${parent.path}/`)))
+		.map((node) => node._id);
 }
 
 function has_file_drop(dataTransfer: DataTransfer) {
@@ -1023,6 +1031,7 @@ type FilesSidebarTreeItemMenuPopover_Props = {
 	canExpandSubtree: boolean;
 	canCollapseSubtree: boolean;
 	expandedFolderActionsVisible: boolean;
+	clipboardSlot: React.ReactNode;
 	onCreateFile: () => void;
 	onCreateFolder: () => void;
 	onCopy: () => void;
@@ -1051,6 +1060,7 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 		canExpandSubtree,
 		canCollapseSubtree,
 		expandedFolderActionsVisible,
+		clipboardSlot,
 		onCreateFile,
 		onCreateFolder,
 		onCopy,
@@ -1130,6 +1140,7 @@ const FilesSidebarTreeItemMenuPopover = memo(function FilesSidebarTreeItemMenuPo
 						</MyMenuItemsGroup>
 					) : null}
 					<MyMenuItemsGroup separator={kind === "folder" && expandedFolderActionsVisible}>
+						{clipboardSlot}
 						<MyMenuItem hideOnClick onClick={onCopy}>
 							<MyMenuItemContent>
 								<MyMenuItemContentIcon>
@@ -1745,6 +1756,7 @@ type FilesSidebarTreeItem_ClassNames =
 	| "FilesSidebarTreeItem"
 	| "FilesSidebarTreeItem-content-navigated"
 	| "FilesSidebarTreeItem-content-archived"
+	| "FilesSidebarTreeItem-content-cut"
 	| "FilesSidebarTreeItem-content-renaming"
 	| "FilesSidebarTreeItemNavigatedRail";
 
@@ -1770,6 +1782,7 @@ type FilesSidebarTreeItem_Props = {
 	canWrite: boolean;
 	canUnarchive: boolean;
 	hasVisibleReadOnlyDescendant: boolean;
+	readOnlyAncestorIds: ReadonlySet<app_convex_Id<"files_nodes">>;
 	onCreateNode: (parentNodeId: string, kind: files_TreeItem["kind"]) => void;
 	onStartRename: (itemId: string) => void;
 	onRenameErrorClear: (itemId: string) => void;
@@ -1930,6 +1943,7 @@ const FilesSidebarTreeRow = memo(
 			canWrite,
 			canUnarchive,
 			hasVisibleReadOnlyDescendant,
+			readOnlyAncestorIds,
 			onCreateNode,
 			onStartRename,
 			onRenameErrorClear,
@@ -1959,6 +1973,15 @@ const FilesSidebarTreeRow = memo(
 		} = itemProps;
 		const isRenaming = renameInputProps !== null;
 		const isArchived = itemData.archiveOperationId !== null;
+		const { clipboard } = FilesClipboardProvider.useContext();
+		const isCut = clipboard?.mode === "cut" && clipboard.sourceIds.includes(itemId as app_convex_Id<"files_nodes">);
+		// A menu on a selected row acts on the whole selection, not just that row.
+		const sourceItems = (isSelected ? item.getTree().getSelectedItems() : [item]).map((selected) =>
+			selected.getItemData(),
+		);
+		const clipboardSourceIds = get_clipboard_source_ids(sourceItems.filter(files_is_node));
+		const canCopyItems =
+			clipboardSourceIds.length > 0 && sourceItems.every((selected) => selected.archiveOperationId === null);
 		// Mark only the node carrying the restriction, not every child below it.
 		const isRestricted = files_is_node(itemData) && itemData.restrictedScopeNodeId === itemData._id;
 
@@ -1983,6 +2006,12 @@ const FilesSidebarTreeRow = memo(
 			hasVisibleReadOnlyDescendant,
 		});
 		const canRename = files_is_node(itemData) && capabilities.canRelocateOrRename;
+		const canCutItems =
+			canCopyItems &&
+			canRename &&
+			sourceItems.every(
+				(selected) => selected.canWrite && files_is_node(selected) && !readOnlyAncestorIds.has(selected._id),
+			);
 
 		useEffect(() => {
 			if (isRenaming && !canRename) {
@@ -2009,7 +2038,7 @@ const FilesSidebarTreeRow = memo(
 			writeBlockedReason: itemData.writeBlockedReason,
 			hasVisibleReadOnlyDescendant,
 		});
-		const label = `${itemData.name}${isRestricted ? " restricted" : ""}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}${isArchived ? " archived" : ""}`;
+		const label = `${itemData.name}${isRestricted ? " restricted" : ""}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}${isArchived ? " archived" : ""}${isCut ? ", ready to move" : ""}`;
 
 		const handleCreateFileClick = useFn<FilesSidebarTreeItemSecondaryAction_Props["onClick"]>(() => {
 			onCreateNode(itemId, "file");
@@ -2160,6 +2189,7 @@ const FilesSidebarTreeRow = memo(
 								"FilesSidebarTreeItem" satisfies FilesSidebarTreeItem_ClassNames,
 								isNavigated && ("FilesSidebarTreeItem-content-navigated" satisfies FilesSidebarTreeItem_ClassNames),
 								isArchived && ("FilesSidebarTreeItem-content-archived" satisfies FilesSidebarTreeItem_ClassNames),
+								isCut && ("FilesSidebarTreeItem-content-cut" satisfies FilesSidebarTreeItem_ClassNames),
 								isRenaming && ("FilesSidebarTreeItem-content-renaming" satisfies FilesSidebarTreeItem_ClassNames),
 							)}
 							style={sx({
@@ -2260,6 +2290,16 @@ const FilesSidebarTreeRow = memo(
 						canExpandSubtree={canExpandSubtree}
 						canCollapseSubtree={canCollapseSubtree}
 						expandedFolderActionsVisible={expandedFolderActionsVisible}
+						clipboardSlot={
+							<FilesClipboardMenuItems
+								sourceIds={clipboardSourceIds}
+								canCut={canCutItems}
+								canCopy={canCopyItems}
+								targetParentId={itemData.kind === "folder" ? itemData._id : null}
+								targetName={itemData.kind === "folder" ? itemData.name : null}
+								canPaste={!isArchived && capabilities.canReceiveChildren}
+							/>
+						}
 						onCreateFile={handleCreateFileClick}
 						onCreateFolder={handleCreateFolderClick}
 						onCopy={handleCopyClick}
@@ -2930,6 +2970,7 @@ const FilesSidebarTree = memo(function FilesSidebarTree(props: FilesSidebarTree_
 										canWrite={canWriteItem(itemData)}
 										canUnarchive={canUnarchiveItem(itemData)}
 										hasVisibleReadOnlyDescendant={files_is_node(itemData) && readOnlyAncestorIds.has(itemData._id)}
+										readOnlyAncestorIds={readOnlyAncestorIds}
 										onCreateNode={onCreateNode}
 										onStartRename={onStartRename}
 										onRenameErrorClear={onRenameErrorClear}
@@ -3035,6 +3076,7 @@ type FilesSidebarTopSectionMoreAction_Props = {
 	selectedNodeIdsCount: number;
 	archivedCount: number;
 	showArchived: boolean;
+	clipboardSlot: React.ReactNode;
 	onArchiveToggleClick: () => void;
 	onArchiveSelectionClick: () => void;
 	onUploadFileClick: () => void;
@@ -3054,6 +3096,7 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 		selectedNodeIdsCount,
 		archivedCount,
 		showArchived,
+		clipboardSlot,
 		onArchiveToggleClick,
 		onArchiveSelectionClick,
 		onUploadFileClick,
@@ -3099,6 +3142,7 @@ const FilesSidebarTopSectionMoreAction = memo(function FilesSidebarTopSectionMor
 				unmountOnHide
 			>
 				<MyMenuPopoverContent>
+					{clipboardSlot}
 					{isMultiSelectionActive ? (
 						<MyMenuItem
 							variant="destructive"
@@ -3176,6 +3220,7 @@ type FilesSidebarTopSection_Props = {
 	isSearchLoading: boolean;
 	isSearchFailed: boolean;
 	searchMatchCount: number | null;
+	clipboardSlot: React.ReactNode;
 	onClose: () => void;
 	onSearchQueryChange: (searchQuery: string) => void;
 	onSearchSubmit: (searchQuery: string) => boolean;
@@ -3207,6 +3252,7 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 		isSearchLoading,
 		isSearchFailed,
 		searchMatchCount,
+		clipboardSlot,
 		onClose,
 		onSearchQueryChange,
 		onSearchSubmit,
@@ -3335,6 +3381,7 @@ const FilesSidebarTopSection = memo(function FilesSidebarTopSection(props: Files
 						selectedNodeIdsCount={selectedNodeIdsCount}
 						archivedCount={archivedCount}
 						showArchived={showArchived}
+						clipboardSlot={clipboardSlot}
 						onArchiveToggleClick={onArchiveToggleClick}
 						onArchiveSelectionClick={onArchiveSelectionClick}
 						onUploadFileClick={onUploadFileClick}
@@ -5289,6 +5336,38 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 			return item != null && canWriteItemInRender(item);
 		});
 	const selectionAnchorNodeId = tree().getDataRef<SelectionDataRef>().current.selectUpToAnchorId ?? null;
+	// Collapsing a folder does not clear its selected children.
+	const selectedSourceItems = tree()
+		.getSelectedItems()
+		.map((item) => item.getItemData())
+		.filter(files_is_node);
+	const canCopySelection =
+		!isBusy && selectedSourceItems.length > 0 && selectedSourceItems.every((item) => item.archiveOperationId === null);
+	const canCutSelection =
+		canCopySelection && selectedSourceItems.every((item) => getItemCapabilitiesInRender(item).canRelocateOrRename);
+
+	FilesClipboardProvider.useHotkeys({
+		target: treeScrollElementRef,
+		enabled: !isBusy && !renamingItem,
+		getSourceIds: (_event, mode) => {
+			if (is_tree_context_menu_open()) return [];
+			if (
+				selectedSourceItems.some(
+					(item) =>
+						item.archiveOperationId !== null || (mode === "cut" && !getItemCapabilities(item).canRelocateOrRename),
+				)
+			)
+				return [];
+			return get_clipboard_source_ids(selectedSourceItems);
+		},
+		getTargetParentId: () => {
+			if (is_tree_context_menu_open()) return null;
+			const item = tree().getFocusedItem()?.getItemData();
+			if (!item || item.archiveOperationId !== null) return null;
+			const parentId = item.kind === "folder" ? item._id : item.parentId;
+			return canWriteParentId(parentId) ? parentId : null;
+		},
+	});
 
 	useGlobalEventList(
 		FILES_SIDEBAR_SELECTION_CONTEXT_EVENTS,
@@ -5730,6 +5809,22 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 		? getItemCapabilitiesInRender(uploadTargetParentItem).canReceiveChildren
 		: false;
 
+	// The open folder can be archived, so Show archived can hide it from the tree index.
+	const pasteTargetNode =
+		!selectedNodeId || selectedNodeId === files_ROOT_ID
+			? files_SYNTHETIC_ROOT_FOLDER
+			: treeItemsList?.find((item) => item._id === selectedNodeId);
+	const pasteTargetParentId =
+		pasteTargetNode?.kind === "file" ? pasteTargetNode.parentId : (pasteTargetNode?._id ?? null);
+	const pasteTargetParent =
+		pasteTargetParentId === files_ROOT_ID
+			? files_SYNTHETIC_ROOT_FOLDER
+			: treeItemsList?.find((item) => item._id === pasteTargetParentId);
+	const canPasteIntoFolder =
+		pasteTargetParent !== undefined &&
+		pasteTargetParent.archiveOperationId === null &&
+		getItemCapabilitiesInRender(pasteTargetParent).canReceiveChildren;
+
 	const handleUploadFileClick = useFn(() => {
 		if (!canWriteParentId(resolveSelectedFolderParentId())) {
 			return;
@@ -6024,6 +6119,16 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				isSearchLoading={isSearchLoading}
 				isSearchFailed={isSearchFailed}
 				searchMatchCount={searchMatches?.matchCount ?? null}
+				clipboardSlot={
+					<FilesClipboardMenuItems
+						sourceIds={get_clipboard_source_ids(selectedSourceItems)}
+						canCut={canCutSelection}
+						canCopy={canCopySelection}
+						targetParentId={files_ROOT_ID}
+						targetName="root folder"
+						canPaste={canWriteRoot && !isBusy}
+					/>
+				}
 				onClose={onClose}
 				onSearchQueryChange={handleSearchQueryChange}
 				onSearchSubmit={handleSearchSubmit}
@@ -6038,6 +6143,14 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 				onImportFolderClick={handleImportFolderClick}
 			/>
 
+			<FilesClipboardToolbar
+				targetParentId={pasteTargetParentId}
+				targetName={
+					pasteTargetParentId === files_ROOT_ID ? "root folder" : (pasteTargetParent?.name ?? "selected folder")
+				}
+				canPaste={canPasteIntoFolder}
+				isBusy={isBusy}
+			/>
 			<div
 				ref={treeScrollElementRef}
 				className={cn(
@@ -6951,40 +7064,42 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				useImperativeHandle(treeRef, tree);
 				return (
 					<ConvexProvider client={app_convex}>
-						<div ref={scrollElementRef}>
-							<FilesSidebarTree
-								tree={tree}
-								scrollElementRef={scrollElementRef}
-								virtualizerRef={virtualizerRef}
-								isTreeLoading={false}
-								showEmptyState={false}
-								isSearchActive={props.isSearchActive ?? false}
-								isSearchLoading={false}
-								isSearchFailed={false}
-								displayNameByUserId={new Map()}
-								trackActiveFileIds={new Set()}
-								selectedNodeId={props.selectedNodeId ?? null}
-								selectedNodeIds={new Set(childIds)}
-								dialogNodeId={props.dialogNodeId ?? null}
-								isBusy={props.isBusy ?? false}
-								isUploadingFile={false}
-								pendingActionNodeIds={props.pendingActionNodeIds ?? new Set()}
-								renameErrorByNodeId={new Map()}
-								canWriteItem={() => props.canWrite ?? true}
-								canUnarchiveItem={() => true}
-								readOnlyAncestorIds={new Set()}
-								onCreateNode={handleAction}
-								onStartRename={handleAction}
-								onRenameErrorClear={handleAction}
-								onCopy={handleAction}
-								onCopyLink={handleAction}
-								onCopyNodeId={handleAction}
-								onShare={handleAction}
-								onProperties={handleAction}
-								onArchive={handleAction}
-								onUnarchive={handleAction}
-							/>
-						</div>
+						<FilesClipboardProvider membershipId={"membership" as app_convex_Id<"organizations_workspaces_users">}>
+							<div ref={scrollElementRef}>
+								<FilesSidebarTree
+									tree={tree}
+									scrollElementRef={scrollElementRef}
+									virtualizerRef={virtualizerRef}
+									isTreeLoading={false}
+									showEmptyState={false}
+									isSearchActive={props.isSearchActive ?? false}
+									isSearchLoading={false}
+									isSearchFailed={false}
+									displayNameByUserId={new Map()}
+									trackActiveFileIds={new Set()}
+									selectedNodeId={props.selectedNodeId ?? null}
+									selectedNodeIds={new Set(childIds)}
+									dialogNodeId={props.dialogNodeId ?? null}
+									isBusy={props.isBusy ?? false}
+									isUploadingFile={false}
+									pendingActionNodeIds={props.pendingActionNodeIds ?? new Set()}
+									renameErrorByNodeId={new Map()}
+									canWriteItem={() => props.canWrite ?? true}
+									canUnarchiveItem={() => true}
+									readOnlyAncestorIds={new Set()}
+									onCreateNode={handleAction}
+									onStartRename={handleAction}
+									onRenameErrorClear={handleAction}
+									onCopy={handleAction}
+									onCopyLink={handleAction}
+									onCopyNodeId={handleAction}
+									onShare={handleAction}
+									onProperties={handleAction}
+									onArchive={handleAction}
+									onUnarchive={handleAction}
+								/>
+							</div>
+						</FilesClipboardProvider>
 					</ConvexProvider>
 				);
 			}

@@ -24,6 +24,11 @@ also blocks operations that would rename, move, archive, or replace it through a
 files may still be copied out. A copy follows its destination policy and existing sharing rules.
 The synthetic root has no local policy.
 
+Human clipboard Copy can copy a readable protected source into a new file elsewhere. It does not
+copy the source's write policy or grants. Each saved copy checks the current destination access
+and every destination parent policy. Cut still needs permission to move the source, including
+its protected descendants. See [Files transfer runs](../files-explorer-tree/references/transfer.md#conflicts-and-concurrent-changes).
+
 # Data Model
 
 `files_nodes` stores these fields beside `restrictedScopeNodeId`:

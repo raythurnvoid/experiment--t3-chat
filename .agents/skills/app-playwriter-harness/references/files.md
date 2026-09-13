@@ -168,6 +168,8 @@ Compare against the table's pinned SHA-256. Two caveats: the comparison holds on
 - When a folder is selected, `New file` and `New folder` exist twice: once in the sidebar toolbar and once in the folder view toolbar. `getByRole("button", { name: "New file" })` is then a strict-mode violation. Scope to the sidebar with `.FilesSidebarTopSection-actions-icon-button[aria-label="New file"]`.
 - A folder-explorer row's visible name (`span.FileNodeViewFolderExplorer-link`) is covered by a full-row overlay link, so clicking the text reports `intercepts pointer events`. Click the overlay by its accessible name instead: `getByRole("link", { name: "Open <name>" })`. That error message is also the quickest way to read a fixture's `nodeId`, because the overlay's `href` carries it.
 - The sidebar toolbar `New file` / `New folder` buttons create at root with a generated `new-file*.md` / `new-folder*` name. After saving, they select the new node, navigate to it, and open inline rename. Wait for `input[aria-label="Rename <current name>"]` before typing. There is no create dialog. A slash path such as `qa-root/docs/api.md` moves the node and creates missing folders.
+- The folder view toolbar has a different create flow: scope to `toolbar "File actions"`, choose
+  `New folder`, fill the dialog's `Name` input, and press Enter. This creates inside the open folder.
 - Pending row controls inherit disabled state from their fieldsets. Use `locator.isDisabled()` or `element.matches(":disabled")`; `button.disabled` only reads the button's own attribute. Check focus after a focused action becomes pending, then check menu and arrow access again after it finishes.
 - Archived rows expose the restore action as menu item `Restore`, not `Unarchive`, and their row button label gains a suffix: `More actions for <name> archived`. Reveal them first with the sidebar `More options` menu item `Show N item(s) archived`.
 - Use real drag gestures for drag/drop checks. Do not use `dispatchEvent`, DOM `element.click()`, or forced clicks.
@@ -278,6 +280,84 @@ Use this when changing tree focus, context menus, selection, or route sync.
 - Open a row menu and the top more-options menu; multi-selection should remain visible while each menu is open.
 - On `nodeId=root`, outside interactions should clear temporary multi-selection to `[]`.
 - Do not click archive/delete menu items during this check.
+
+### File Cut, Copy, And Paste
+
+- Use a new QA folder with a source file and two destination folders. Scope duplicate row actions
+  to the Files tree or folder table. Open `More actions for <name>` and choose the exact `Copy` or
+  `Cut` item; `Copy path`, `Copy link`, and `Copy node id` are separate actions.
+- Control-click two sidebar rows, Copy from either selected row, then navigate elsewhere. The
+  toolbar must still say `2 ready to copy`. Copy from an unselected row must keep only that row.
+- Select a folder and its child. Cut and Copy from a row menu, top menu, or keyboard must keep
+  only the parent in the clipboard. A completed Cut must clear that parent from the clipboard.
+- Select files under separate folders, then collapse one parent without changing the selection.
+  Keyboard, selected-row menu, and top-menu Cut/Copy must all keep both selected files.
+- Folder-row `Paste` targets that folder. `Paste into root folder` targets root. Do not click that
+  root item on a real home tree. The sidebar `Paste files` toolbar targets the open folder, or the
+  open file's parent, and it unmounts when the sidebar is closed. The folder-view header Paste
+  targets the open folder only; a file view has no header Paste. Read `aria-describedby` to confirm
+  the destination. Check the resulting parent ids with Convex.
+- Sidebar Control+C / Control+X copy the **selected** rows, not the focused row. Arrow keys move
+  focus only. After clicking a folder, ArrowDown onto a child and Control+C still copies the folder.
+  A selected row's accessible name can end with `ready to move` after Control+X. Escape clears an
+  idle cut. In the folder table, focus `Open <name>` before the shortcut — that table uses the
+  focused row. Repeat shortcuts in Search files, rename, Monaco, rich text, and chat: they must
+  keep normal text behavior.
+- Open an archived QA folder with a non-empty clipboard. Header and sidebar Paste must both stay
+  disabled, and their descriptions must keep that folder's name with Show archived on or off.
+  A missing route target must also stay disabled without naming root. The Show archived checkbox
+  label is `Show N item(s) archived` / `Hide N item(s) archived`; press Escape after toggling it.
+- While a submitted New folder action is pending, Paste must say
+  `Wait for the current file operation to finish.` and become available when creation completes.
+  A Cut/Paste dialog can briefly say `Paste files` while loading, then `Move files`; it must never
+  show `Copy files` for that run. A MutationObserver installed before Paste can record this transition.
+- Closing the files sidebar unmounts the tree. Reopen with `Open files sidebar` before any
+  treeitem work. `.FilesTransferRunModal` has two `Close` buttons; scope the footer ghost
+  button or use `.nth()`.
+- Repeat Copy into the same destination to reach `.FilesTransferRunModal`. Each conflict is a
+  fieldset named after its full source path. Check same-name files from two folders have distinct
+  fieldset names. Click the visible radio label for `Keep both` or `Skip`.
+  `Apply to remaining name conflicts` starts at `Ask each time`. Continue stays disabled until
+  every visible conflict has a choice or a valid apply-to-remaining choice.
+- Hide the dialog and reopen it from Activity with `Review conflicts` or `View progress`. Reload
+  while a run is waiting: local clipboard marks disappear, but Activity must still reopen it.
+  A changed source offers Skip or Stop and must not expose Keep both.
+- After opening from Activity, scope choices and Stop to `.FilesTransferRunModal`: the Activity
+  popover may still contain a second Stop button. Radio `press("Space")` and button `press("Enter")`
+  exercise the keyboard flow. Keep both targets in the page; do not choose an unscoped first match.
+- Once at least one copy is published, stop with `Stop and keep completed copies` and read back both the run
+  and copied nodes. Completed copies stay. Canceled Activity says `Stopped`; only terminal runs
+  offer Dismiss. A failed Stop request must show an error without claiming the run stopped.
+- For offline Stop, create a QA name conflict and reload while it waits. Open Notifications with
+  focus + Enter if the Playwriter toolbar covers it. Use `getCDPSession({ page: state.page })`,
+  `Network.enable`, then `Network.emulateNetworkConditions` with `{ offline: true, latency: 0,
+downloadThroughput: -1, uploadThroughput: -1 }`. This affects only the owned QA tab.
+  Click Cancel in Activity. It must say `Stop requested. Waiting for the server…` and disable Cancel.
+  Open Review conflicts for the first time while offline: the dialog must keep that message even
+  before its run query loads. Hide and reopen both views; the message must stay. Restore the same
+  network settings with `offline: false`, then verify the saved result and final status. Do not
+  treat a click as server confirmation or use browser-context offline mode on a shared profile.
+- Check Activity with enough history to scroll. Each card must keep its full height, with readable
+  status and clickable progress/Stop controls. Flex shrinking previously clipped cards to a few
+  pixels; `.AppNotificationsActivityItem` now keeps its size while the list scrolls.
+- Read progress through `files_transfer.get({ membershipId, runId })` and enumerate all tree pages
+  after completion. Assert ids and parent ids for moves; new ids, names, and saved content for
+  copies. Clipboard readiness alone does not prove a successful paste.
+- For folder Cut permissions, use a [second member](second-user-fixtures.md). As owner, restrict a
+  child folder inside an ordinary source folder. With no child grant, member Cut/Paste of the parent
+  must fail with `Permission denied` and zero moved. Owner readback must show every original path
+  and scope unchanged. Give the member `write` on the restricted child and repeat: the move must
+  succeed and keep that child's scope. Unit tests also cover read-only grants and archived children.
+- For a small stored-file check, choose `Upload file` in an isolated folder and give its file chooser
+  a known `application/octet-stream` buffer named with a `.bin` extension. Copy it through the menu.
+  Sign both downloads, compare every byte, and check the copied file has a different asset id.
+- To check an unfinished upload, hold only that chooser upload's signed R2 PUT with a Playwright
+  route. Copy its parent into an empty QA destination while the PUT waits. Progress and Activity
+  must show `The source file is still saving. Try again.`; the completed parent folder stays.
+  Always release the held request, remove the route, and wait for the source upload to finish.
+- Check a long source path in the conflict dialog at a 390px viewport. Its legend must wrap, the
+  footer must fit, and radio labels must remain usable. The radio input itself is 18px; its label
+  supplies the 36px hit target. Restore the viewport before continuing.
 
 ### Folder Table Drag And Drop
 

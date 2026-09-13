@@ -4213,10 +4213,10 @@ describe("plugins Phase 0", () => {
 			errorMessage: null,
 			// The triggering file is a target from the start, so the feed can hide the activity when that
 			// file is restricted. The title names it, so an activity naming nothing would leak the name.
-			targets: [{ type: "file_node", id: fixture.upload.nodeId, path: "/expired.png", message: "" }],
+			targets: [{ kind: "file_node", id: fixture.upload.nodeId, path: "/expired.png", message: "" }],
 			userId: fixture.membership.userId,
 			source: {
-				type: "plugin_run",
+				kind: "plugin_run",
 				id: runId,
 				installationId: fixture.installationId,
 				pluginName: "media",
@@ -4245,8 +4245,8 @@ describe("plugins Phase 0", () => {
 		expect(filled.status).toBe(200);
 		const withTargets = await t.run((ctx) => ctx.db.get("activities", activityId));
 		expect(withTargets?.targets).toEqual([
-			{ type: "file_node", id: fixture.upload.nodeId, path: "/expired.png", message: "" },
-			{ type: "file_node", id: touchedBody.files[0].nodeId, path: "/expired.png.description.md", message: "" },
+			{ kind: "file_node", id: fixture.upload.nodeId, path: "/expired.png", message: "" },
+			{ kind: "file_node", id: touchedBody.files[0].nodeId, path: "/expired.png.description.md", message: "" },
 		]);
 
 		await t.mutation(internal.plugins_runtime.finish_event_run, {
@@ -4502,7 +4502,7 @@ describe("plugins Phase 0", () => {
 				userId: fixture.membership.userId,
 				status: "failed",
 				source: {
-					type: "plugin_run",
+					kind: "plugin_run",
 					id: oldRunId,
 					installationId: fixture.installationId,
 					pluginName: "media",
@@ -16303,7 +16303,7 @@ describe("plugins admin hard delete", () => {
 				userId: membership.userId,
 				status: "succeeded",
 				source: {
-					type: "plugin_run",
+					kind: "plugin_run",
 					id: runId,
 					installationId: installedMedia._yay.installationId,
 					pluginName: "media",

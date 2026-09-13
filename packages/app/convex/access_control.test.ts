@@ -187,7 +187,7 @@ async function access_control_test_seed_activity(
 	args: {
 		fileNodeId: Id<"files_nodes">;
 		/** Files this activity names. Left empty by default, which is an activity about the workspace itself. */
-		targets?: Array<{ type: "file_node"; id: Id<"files_nodes">; path: string; message: string }>;
+		targets?: Array<{ kind: "file_node"; id: Id<"files_nodes">; path: string; message: string }>;
 	},
 ) {
 	return await t.run(async (ctx) => {
@@ -278,7 +278,7 @@ async function access_control_test_seed_activity(
 			workspaceId: fixture.defaultWorkspaceId,
 			userId: fixture.ownerId,
 			status: "succeeded",
-			source: { type: "plugin_run", id: runId, installationId, pluginName: "media" },
+			source: { kind: "plugin_run", id: runId, installationId, pluginName: "media" },
 			title: "Media plugin · secret.png",
 			errorMessage: null,
 			targets: args.targets ?? [],
@@ -891,7 +891,7 @@ describe("set_node_share_grant service accounts", () => {
 		const activityId = await access_control_test_seed_activity(t, fixture, { fileNodeId: nodeId });
 		const binding = await t.run(async (ctx) => {
 			const activity = (await ctx.db.get("activities", activityId))!;
-			if (activity.source.type !== "plugin_run") {
+			if (activity.source.kind !== "plugin_run") {
 				throw new Error("Expected plugin activity");
 			}
 			await ctx.db.patch("files_nodes", nodeId, { restrictedScopeNodeId: nodeId });
@@ -8069,18 +8069,18 @@ describe("file sharing", () => {
 		// The third names the open file only, and that one has to survive.
 		await access_control_test_seed_activity(t, fixture, {
 			fileNodeId: childId,
-			targets: [{ type: "file_node", id: childId, path: "/closed/inside", message: "" }],
+			targets: [{ kind: "file_node", id: childId, path: "/closed/inside", message: "" }],
 		});
 		await access_control_test_seed_activity(t, fixture, {
 			fileNodeId: childId,
 			targets: [
-				{ type: "file_node", id: childId, path: "/closed/inside", message: "" },
-				{ type: "file_node", id: openId, path: "/open-notes", message: "" },
+				{ kind: "file_node", id: childId, path: "/closed/inside", message: "" },
+				{ kind: "file_node", id: openId, path: "/open-notes", message: "" },
 			],
 		});
 		await access_control_test_seed_activity(t, fixture, {
 			fileNodeId: openId,
-			targets: [{ type: "file_node", id: openId, path: "/open-notes", message: "" }],
+			targets: [{ kind: "file_node", id: openId, path: "/open-notes", message: "" }],
 		});
 
 		const [ownerListed, memberListed] = await Promise.all([
@@ -8116,7 +8116,7 @@ describe("file sharing", () => {
 
 		const staleActivityId = await access_control_test_seed_activity(t, fixture, {
 			fileNodeId: childId,
-			targets: [{ type: "file_node", id: childId, path: "/activity-old-scope/inside", message: "" }],
+			targets: [{ kind: "file_node", id: childId, path: "/activity-old-scope/inside", message: "" }],
 		});
 
 		await access_control_test_reset_write_rate_limit(t, fixture.ownerId);
@@ -8138,7 +8138,7 @@ describe("file sharing", () => {
 
 		const currentActivityId = await access_control_test_seed_activity(t, fixture, {
 			fileNodeId: childId,
-			targets: [{ type: "file_node", id: childId, path: "/activity-new-scope/inside", message: "" }],
+			targets: [{ kind: "file_node", id: childId, path: "/activity-new-scope/inside", message: "" }],
 		});
 		const [ownerListed, memberListed] = await Promise.all([
 			fixture.asOwner.query(api.activities.list_recent, { membershipId: fixture.ownerMembershipId }),
@@ -8163,7 +8163,7 @@ describe("file sharing", () => {
 		const { childId } = await seed_restricted_folder(t, fixture, { name: "closed" });
 		const hiddenActivityId = await access_control_test_seed_activity(t, fixture, {
 			fileNodeId: childId,
-			targets: [{ type: "file_node", id: childId, path: "/closed/inside", message: "" }],
+			targets: [{ kind: "file_node", id: childId, path: "/closed/inside", message: "" }],
 		});
 
 		// An activity about an open file, so a count of zero below cannot pass for the wrong reason:
@@ -8176,7 +8176,7 @@ describe("file sharing", () => {
 		expect(open._nay).toBeUndefined();
 		const openActivityId = await access_control_test_seed_activity(t, fixture, {
 			fileNodeId: open._yay!.nodeId,
-			targets: [{ type: "file_node", id: open._yay!.nodeId, path: "/open", message: "" }],
+			targets: [{ kind: "file_node", id: open._yay!.nodeId, path: "/open", message: "" }],
 		});
 
 		// The member sees only the open one, which is the rule the two mutations below have to match.
@@ -8231,11 +8231,11 @@ describe("file sharing", () => {
 		// One about the folder they get, one about an open folder they do not, one about no file at all.
 		await access_control_test_seed_activity(t, fixture, {
 			fileNodeId: childId,
-			targets: [{ type: "file_node", id: childId, path: "/shared-space/inside", message: "" }],
+			targets: [{ kind: "file_node", id: childId, path: "/shared-space/inside", message: "" }],
 		});
 		await access_control_test_seed_activity(t, fixture, {
 			fileNodeId: open._yay!.nodeId,
-			targets: [{ type: "file_node", id: open._yay!.nodeId, path: "/open-notes", message: "" }],
+			targets: [{ kind: "file_node", id: open._yay!.nodeId, path: "/open-notes", message: "" }],
 		});
 		await access_control_test_seed_activity(t, fixture, { fileNodeId: folderId });
 

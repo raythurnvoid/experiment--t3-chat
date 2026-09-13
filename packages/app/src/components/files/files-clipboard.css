@@ -1,0 +1,55 @@
+@layer components {
+	/* #region toolbar */
+	.FilesClipboardToolbar {
+		display: flex;
+		align-items: center;
+		gap: 4px;
+		min-width: 0;
+	}
+
+	.FilesClipboardToolbar-status {
+		font-size: 0.75rem;
+		color: var(--color-fg-09);
+	}
+	/* #endregion toolbar */
+
+	/* #region run modal */
+	.FilesTransferRunModal {
+		width: min(560px, calc(100vw - 32px));
+	}
+
+	.FilesTransferRunModal .MyModalFooter {
+		flex-wrap: wrap;
+	}
+
+	.FilesTransferRunModal-conflicts {
+		display: grid;
+		gap: 12px;
+		padding-block: 12px;
+	}
+
+	.FilesTransferRunModal-conflict {
+		min-width: 0;
+		padding: 12px;
+		border: 1px solid var(--color-fg-04);
+		border-radius: 8px;
+	}
+
+	.FilesTransferRunModal-path {
+		overflow-wrap: anywhere;
+		font-weight: 600;
+	}
+
+	.FilesTransferRunModal-choice {
+		display: inline-flex;
+		align-items: center;
+		gap: 8px;
+		min-height: 36px;
+		margin-right: 16px;
+	}
+
+	.FilesTransferRunModal-error {
+		color: var(--color-red-11);
+	}
+	/* #endregion run modal */
+}

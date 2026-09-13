@@ -30,6 +30,10 @@
 		   when rendering many items inside the tree */
 		contain: strict;
 	}
+
+	.FilesSidebar > .FilesClipboardToolbar {
+		padding: 0 16px 8px;
+	}
 	/* #endregion root */
 
 	/* #region top section more action */
@@ -508,6 +512,10 @@
 		color: var(--color-accent-08);
 		white-space: nowrap;
 		user-select: none;
+	}
+
+	.FilesSidebarTreeItem-content-cut > .FilesSidebarTreeItemPrimaryContent {
+		color: var(--color-fg-06);
 	}
 
 	.FilesSidebarTreeItemPrimaryContent-read-only {

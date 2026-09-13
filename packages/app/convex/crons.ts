@@ -27,7 +27,12 @@ crons.cron(
 );
 
 // Once daily at 06:00 UTC — organization/content purge plus eligible hard user-account deletes.
-crons.cron("unified delayed data deletion pipeline", "0 6 * * *", internal.data_deletion.enqueue_deletion_requests_processing, {});
+crons.cron(
+	"unified delayed data deletion pipeline",
+	"0 6 * * *",
+	internal.data_deletion.enqueue_deletion_requests_processing,
+	{},
+);
 
 // Once hourly — fail plugin runs whose executor died (crash/deploy) past their TTL.
 crons.cron("fail expired plugin event runs", "0 * * * *", internal.plugins_runtime.fail_expired_event_runs, {});
@@ -41,12 +46,7 @@ crons.cron(
 );
 
 // Once hourly — delete asset docs (and any landed bytes) whose R2 object was never confirmed.
-crons.cron(
-	"cleanup expired unfinalized assets",
-	"45 * * * *",
-	internal.r2.cleanup_expired_unfinalized_assets,
-	{},
-);
+crons.cron("cleanup expired unfinalized assets", "45 * * * *", internal.r2.cleanup_expired_unfinalized_assets, {});
 
 // Each hour, schedule up to 50 R2 deletion jobs whose retry time has passed.
 crons.cron(
@@ -77,8 +77,11 @@ crons.cron(
 	{},
 );
 
-// Every 5 minutes — close running activities past their caller-set deadline as "timeout".
+// Every 5 minutes — close plugin activities past their caller-set deadline as "timeout".
 crons.cron("timeout stale activities", "*/5 * * * *", internal.activities.timeout_stale_activities, {});
+
+// Every 5 minutes — recover expired Paste attempts, stop overdue runs, and delete expired run history.
+crons.cron("recover expired transfer runs", "*/5 * * * *", internal.files_transfer.recover_expired, {});
 
 // Every 15 minutes — crash/abandon fallback for paged pending states: expired temporary
 // states/batches/text inputs, expired trusted-update stages, and retired-state cleanup tasks.

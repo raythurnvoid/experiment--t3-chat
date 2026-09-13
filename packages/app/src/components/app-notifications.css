@@ -82,6 +82,8 @@
 	.AppNotificationsActivityItem {
 		display: flex;
 		flex-direction: column;
+		/* Let the list scroll instead of shrinking its cards. */
+		flex: 0 0 auto;
 
 		border: 1px solid var(--color-fg-03);
 		border-radius: 8px;
@@ -126,6 +128,16 @@
 
 	.AppNotificationsActivityItem-icon-status-timeout {
 		color: var(--color-red-09);
+	}
+
+	.AppNotificationsActivityItem-icon-status-canceled {
+		color: var(--color-fg-08);
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.AppNotificationsActivityItem-icon-status-running > svg {
+			animation: none;
+		}
 	}
 
 	.AppNotificationsActivityItem-title-group {
@@ -173,6 +185,19 @@
 		line-height: 1rem;
 		color: var(--color-red-11);
 		overflow-wrap: anywhere;
+	}
+
+	.AppNotificationsActivityItem-transfer {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 8px;
+		padding: 0 12px 12px;
+		font-size: 0.75rem;
+	}
+
+	.AppNotificationsActivityItem-transfer > p {
+		width: 100%;
+		margin: 0;
 	}
 
 	.AppNotificationsActivityItem-targets {

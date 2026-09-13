@@ -1329,10 +1329,10 @@ export type BonoboConvexApi = {
 				updatedAt: number;
 				createdAt: number;
 				value: Record<string, any>;
+				revision: number;
 				collection: string;
 				key: string;
 				byteSize: number;
-				revision: number;
 				writeMode: "normal" | "versioned";
 				ownership: "shared" | "owned";
 			}[];
@@ -1357,16 +1357,16 @@ export type BonoboConvexApi = {
 			updatedAt: number;
 			createdAt: number;
 			value: Record<string, any>;
+			revision: number;
 			collection: string;
 			key: string;
 			byteSize: number;
-			revision: number;
 			writeMode: "normal" | "versioned";
 			ownership: "shared" | "owned";
 		}>, string | undefined>;
 		watch_recent: import("convex/server").FunctionReference<"query", "public", {
-			scopeId?: string | undefined;
 			order?: "asc" | "desc" | undefined;
+			scopeId?: string | undefined;
 			before?: number | undefined;
 			since?: number | undefined;
 			collection: string;
@@ -1378,10 +1378,10 @@ export type BonoboConvexApi = {
 				updatedAt: number;
 				createdAt: number;
 				value: Record<string, any>;
+				revision: number;
 				collection: string;
 				key: string;
 				byteSize: number;
-				revision: number;
 				writeMode: "normal" | "versioned";
 				ownership: "shared" | "owned";
 			}[];
@@ -1399,10 +1399,10 @@ export type BonoboConvexApi = {
 				updatedAt: number;
 				createdAt: number;
 				value: Record<string, any>;
+				revision: number;
 				collection: string;
 				key: string;
 				byteSize: number;
-				revision: number;
 				writeMode: "normal" | "versioned";
 				ownership: "shared" | "owned";
 			}[];

@@ -3219,7 +3219,7 @@ export const publish_file_write = internalMutation({
 			});
 			await activities_db_add_target(ctx, {
 				sourceId: pluginRun._id,
-				target: { type: "file_node", id: created._yay, path: stage.path, message: "" },
+				target: { kind: "file_node", id: created._yay, path: stage.path, message: "" },
 				now,
 			});
 		}
@@ -3483,7 +3483,7 @@ export const publish_file_fill = internalMutation({
 			});
 			await activities_db_add_target(ctx, {
 				sourceId: pluginRun._id,
-				target: { type: "file_node", id: fileNode._id, path: stage.path, message: "" },
+				target: { kind: "file_node", id: fileNode._id, path: stage.path, message: "" },
 				now,
 			});
 		}
@@ -3693,7 +3693,7 @@ export const publish_file_touch = internalMutation({
 			if (pluginRun) {
 				await activities_db_add_target(ctx, {
 					sourceId: pluginRun._id,
-					target: { type: "file_node", id: activeNode._id, path: stage.path, message: "" },
+					target: { kind: "file_node", id: activeNode._id, path: stage.path, message: "" },
 					now,
 				});
 			}
@@ -3818,7 +3818,7 @@ export const publish_file_touch = internalMutation({
 		if (pluginRun) {
 			await activities_db_add_target(ctx, {
 				sourceId: pluginRun._id,
-				target: { type: "file_node", id: created._yay, path: stage.path, message: "" },
+				target: { kind: "file_node", id: created._yay, path: stage.path, message: "" },
 				now,
 			});
 		}
@@ -3973,13 +3973,13 @@ export const start_run_activity = internalMutation({
 			workspaceId: pluginRun.workspaceId,
 			userId: pluginRun.actorUserId,
 			source: {
-				type: "plugin_run",
+				kind: "plugin_run",
 				id: pluginRun._id,
 				installationId: pluginRun.installationId,
 				pluginName: version.name,
 			},
 			title: args.title || `${version.displayName} plugin · ${fileNode.name}`,
-			target: { type: "file_node", id: fileNode._id, path: fileNode.path, message: "" },
+			target: { kind: "file_node", id: fileNode._id, path: fileNode.path, message: "" },
 			timeoutAt: now + args.timeoutMs,
 			now,
 		});

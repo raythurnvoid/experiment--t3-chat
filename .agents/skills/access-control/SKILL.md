@@ -313,10 +313,12 @@ Rules that are easy to miss, all of which were real holes:
   another mutation does not: it already runs inside the caller's transaction. Watch the brand-new
   path in particular: the node walk only checks nodes that already exist, so when nothing is there
   yet the workspace is the only thing left to ask.
-- **A cascade is not covered by the node you named.** `archive_nodes` expands to every descendant by
-  path prefix, so it checks each distinct restricted scope it meets on the way down (once per scope,
-  not once per node). `rename_node` accepts a path and can re-parent, so it carries
-  `restrictedScopeNodeId` over exactly like `move_nodes`.
+- **A cascade is not covered by the node you named.** `archive_nodes` and `move_nodes` check
+  `content.write` on each distinct restricted scope in their affected descendants, once per scope.
+  Moves include archived descendants because their paths change too. A hidden restricted child
+  can refuse the whole move with `Permission denied`, without exposing its name. A move that keeps
+  the same parent and path does not change descendants. `rename_node` accepts a path and can re-parent,
+  so it carries `restrictedScopeNodeId` over exactly like `move_nodes`.
 - **Every refusal comes before the first write.** A Convex mutation that returns normally commits, so
   a `Result({ _nay })` after a write keeps that write and reports failure at the same time. Ask every
   question first. `create_upload_node` shows the shape: a filename may carry path segments, so it
@@ -344,13 +346,19 @@ exception, and they touch none of the five. `/api/v1/files/download-urls` signs 
 that answers with bytes. Keep `visibilityUserId` a required argument, so a later caller cannot forget
 to pass it. Count the readers before you trust this list: a sixth one added later is a sixth door.
 
-**Activities answer to the files they name.** `db_filter_visible_activities` in `convex/activities.ts`
+**Plugin activities answer to the files they name.** `db_filter_visible_activities` in `convex/activities.ts`
 is the one rule, used by `list_recent`, `archive_activity` and `archive_all_activities`. One
 unreadable target hides the whole activity, because the title usually carries the file's name. A
 target whose current path differs from its stored activity path also hides the whole activity: the
 stored path, title, target message, and error belong to the old location and cannot be made safe by
 current access alone. The two archive mutations use the same rule as the feed. `archivedAt` is one
 field on the doc rather than one per user, so "Dismiss all" must never reach hidden activities.
+
+Clipboard Activity is private to the requester, even from other workspace owners. Current
+membership is required. A folder guest can view and stop their own run, and dismiss it after it
+finishes, without workspace-wide write permission. These activities contain no file names or paths.
+The conflict dialog separately checks current source access before showing either. See
+[Files transfer runs](../files-explorer-tree/references/transfer.md#stop-activity-and-cleanup).
 
 **Comments answer to their file.** Every `chat_messages` row carries a required `fileNodeId`, and all
 six handlers in `convex/chat_messages.ts` check that node instead of the workspace: `content.write`

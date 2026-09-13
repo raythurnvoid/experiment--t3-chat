@@ -34,6 +34,7 @@ import type * as files_nodes_content from "../files_nodes_content.js";
 import type * as files_nodes_reconstruct_content from "../files_nodes_reconstruct_content.js";
 import type * as files_pending_updates from "../files_pending_updates.js";
 import type * as files_sharing from "../files_sharing.js";
+import type * as files_transfer from "../files_transfer.js";
 import type * as github_mounts from "../github_mounts.js";
 import type * as http from "../http.js";
 import type * as migrations from "../migrations.js";
@@ -114,6 +115,7 @@ declare const fullApi: ApiFromModules<{
   files_nodes_reconstruct_content: typeof files_nodes_reconstruct_content;
   files_pending_updates: typeof files_pending_updates;
   files_sharing: typeof files_sharing;
+  files_transfer: typeof files_transfer;
   github_mounts: typeof github_mounts;
   http: typeof http;
   migrations: typeof migrations;
@@ -197,6 +199,7 @@ export declare const components: {
   billing_workpool_usage_event: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"billing_workpool_usage_event">;
   files_content_materialization_workpool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"files_content_materialization_workpool">;
   files_upload_conversion_workpool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"files_upload_conversion_workpool">;
+  files_transfer_workpool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"files_transfer_workpool">;
   data_deletion_workpool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"data_deletion_workpool">;
   github_mounts_workpool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"github_mounts_workpool">;
   plugins_runtime_workpool: import("@convex-dev/workpool/_generated/component.js").ComponentApi<"plugins_runtime_workpool">;

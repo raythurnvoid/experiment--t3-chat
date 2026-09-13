@@ -34,6 +34,7 @@ import {
 	files_nodes_db_is_eager_node_safe_to_hard_delete,
 } from "./files_nodes.ts";
 import { files_pending_update_db_release_replacement_asset } from "./files_pending_updates.ts";
+import { files_transfer_db_delete_run_batch } from "./files_transfer.ts";
 import { data_deletion_db_request } from "./data_deletion_requests.ts";
 import { users_db_delete_auth_and_billing_state } from "./users.ts";
 import { r2_PUT_MAY_ARRIVE_MARGIN_MS, r2_create_asset_key, r2_enqueue_object_deletion_job } from "./r2_client.ts";
@@ -236,6 +237,18 @@ async function db_purge_organization_workspace_content_batch(
 				event: { kind: "revoked", reason: "workspace_deleted" },
 			},
 		]);
+	}
+
+	// Stop Paste workers and hand their staged assets to deletion jobs before deleting other file docs.
+	const transferRun = await ctx.db
+		.query("files_transfer_runs")
+		.withIndex("by_organization_workspace", (q) =>
+			q.eq("organizationId", organizationId).eq("workspaceId", workspaceId),
+		)
+		.first();
+	if (transferRun) {
+		const purged = await files_transfer_db_delete_run_batch(ctx, { runId: transferRun._id, batchSize });
+		return { done: false, deletedCount: purged.deletedCount };
 	}
 
 	// Paged pending-state families and their operation scaffolding go before the pending-update
@@ -1297,6 +1310,20 @@ async function db_prepare_user_for_deletion(
 }
 
 /**
+ * Stop and drain one Paste run before removing its user's memberships.
+ * Completed copies belong to the workspace and stay until its content is purged.
+ */
+async function db_drain_user_transfer_runs_batch(ctx: MutationCtx, args: { userId: Id<"users">; batchSize: number }) {
+	const run = await ctx.db
+		.query("files_transfer_runs")
+		.withIndex("by_user", (q) => q.eq("userId", args.userId))
+		.first();
+	if (!run) return 0;
+	const purged = await files_transfer_db_delete_run_batch(ctx, { runId: run._id, batchSize: args.batchSize });
+	return purged.deletedCount;
+}
+
+/**
  * Deletes one batch of a user's plugin UI page sessions. Both user-deletion paths call this until
  * no sessions remain before running `db_finalize_deleted_user`, so finalize never has to read
  * them.
@@ -1635,6 +1662,11 @@ async function db_drain_user_finalization_batch(
 	ctx: MutationCtx,
 	args: { userId: Id<"users">; now: number; batchSize: number },
 ) {
+	const transferRunCount = await db_drain_user_transfer_runs_batch(ctx, args);
+	if (transferRunCount > 0) {
+		return transferRunCount;
+	}
+
 	const serviceGrantCount = await db_drain_user_plugin_service_grants_batch(ctx, args);
 	if (serviceGrantCount > 0) {
 		return serviceGrantCount;
@@ -2803,6 +2835,11 @@ export const prepare_user_for_hard_deletion = internalMutation({
 		}
 
 		const batchSize = batch_size(args);
+		const deletedTransferRunCount = await db_drain_user_transfer_runs_batch(ctx, { userId: args.userId, batchSize });
+		if (deletedTransferRunCount > 0) {
+			return false;
+		}
+
 		const deletedSessionCount = await db_drain_user_plugin_ui_sessions_batch(ctx, {
 			userId: args.userId,
 			batchSize,

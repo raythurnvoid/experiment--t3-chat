@@ -12,6 +12,10 @@ vi.mock("@/lib/files-tree-context.tsx", () => ({
 	FilesTreeProvider: (props: { children: ReactNode }) => props.children,
 }));
 
+vi.mock("@/components/files/files-clipboard.tsx", () => ({
+	FilesClipboardProvider: (props: { children: ReactNode }) => props.children,
+}));
+
 const hookMocks = vi.hoisted(() => {
 	return {
 		messageById: new Map<string, ai_chat_UiMessage>(),

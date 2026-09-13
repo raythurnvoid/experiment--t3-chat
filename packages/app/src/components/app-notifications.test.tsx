@@ -1,14 +1,23 @@
 /**
  * @vitest-environment happy-dom
  */
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ComponentPropsWithRef, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-const { mutationMock, useQueriesMock, useQueryMock } = vi.hoisted(() => ({
+const { mutationMock, useQueriesMock, useQueryMock, openRunMock, stopMock, clipboardState } = vi.hoisted(() => ({
 	mutationMock: vi.fn(),
 	useQueriesMock: vi.fn(),
 	useQueryMock: vi.fn(),
+	openRunMock: vi.fn(),
+	stopMock: vi.fn(),
+	clipboardState: { pendingStopRunId: null as string | null },
+}));
+
+vi.mock("@/components/files/files-clipboard.tsx", () => ({
+	FilesClipboardProvider: {
+		useContext: () => ({ openRun: openRunMock, stop: stopMock, pendingStopRunId: clipboardState.pendingStopRunId }),
+	},
 }));
 
 vi.mock("@tanstack/react-router", () => ({
@@ -43,6 +52,7 @@ vi.mock("@/lib/app-convex-client.ts", () => ({
 			archive_all_activities: "activities.archive_all_activities",
 			list_recent: "activities.list_recent",
 		},
+		files_transfer: { stop: "files_transfer.stop" },
 		notifications: {
 			archive_all_notifications: "notifications.archive_all_notifications",
 			archive_notification: "notifications.archive_notification",
@@ -85,9 +95,7 @@ vi.mock("@/components/my-button.tsx", () => ({
 }));
 
 vi.mock("@/components/my-icon-button.tsx", () => ({
-	MyIconButton: function MyIconButton(
-		props: ComponentPropsWithRef<"button"> & { tooltip?: string; variant?: string },
-	) {
+	MyIconButton: function MyIconButton(props: ComponentPropsWithRef<"button"> & { tooltip?: string; variant?: string }) {
 		const { children, tooltip: _tooltip, variant: _variant, ...rest } = props;
 		return (
 			<button type="button" {...rest}>
@@ -110,6 +118,8 @@ import { AppNotifications } from "./app-notifications.tsx";
 
 describe("AppNotifications", () => {
 	beforeEach(() => {
+		clipboardState.pendingStopRunId = null;
+		stopMock.mockResolvedValue({ _yay: null });
 		useQueriesMock.mockReturnValue({});
 		useQueryMock.mockImplementation((query: unknown) => {
 			if (query === "notifications.list_current_notifications") return [];
@@ -119,6 +129,7 @@ describe("AppNotifications", () => {
 						_id: "activity_1",
 						_creationTime: Date.UTC(2026, 7, 2, 12, 0),
 						status: "failed",
+						source: { kind: "plugin_run", id: "plugin_run_1" },
 						title: "Export report",
 						errorMessage: "Export failed",
 						targets: [],
@@ -160,5 +171,96 @@ describe("AppNotifications", () => {
 		}
 
 		expect(mutationMock).not.toHaveBeenCalled();
+	});
+
+	test("lets the owner dismiss a stopped paste without workspace write", () => {
+		const originalQuery = useQueryMock.getMockImplementation()!;
+		useQueryMock.mockImplementation((query: unknown) =>
+			query === "activities.list_recent"
+				? [
+						{
+							_id: "copy_activity",
+							_creationTime: 1,
+							status: "canceled",
+							title: "Copy files",
+							errorMessage: null,
+							targets: [],
+							finishedAt: 2,
+							source: {
+								kind: "files_transfer_run",
+								id: "copy_run",
+								transferKind: "copy",
+								phase: "canceled",
+								total: 3,
+								completed: 1,
+								skipped: 0,
+								failed: 0,
+							},
+						},
+					]
+				: originalQuery(query),
+		);
+		render(<AppNotifications />);
+		expect(screen.getByText(/^Stopped/)).toBeTruthy();
+		const dismiss = screen.getByRole("button", { name: "Dismiss Copy files" });
+		expect(dismiss.getAttribute("aria-disabled")).toBeNull();
+		fireEvent.click(dismiss);
+		expect(mutationMock).toHaveBeenCalledWith("activities.archive_activity", {
+			membershipId: "membership_1",
+			activityId: "copy_activity",
+		});
+	});
+
+	test("reopens conflicts and shows a pending Stop from the shared clipboard", async () => {
+		let phase = "awaiting_choice";
+		let status = "running";
+		const originalQuery = useQueryMock.getMockImplementation()!;
+		useQueryMock.mockImplementation((query: unknown) =>
+			query === "activities.list_recent"
+				? [
+						{
+							_id: "copy_activity",
+							_creationTime: 1,
+							status,
+							title: "Copy files",
+							errorMessage: null,
+							targets: [],
+							finishedAt: null,
+							source: {
+								kind: "files_transfer_run",
+								id: "copy_run",
+								transferKind: "copy",
+								phase,
+								total: 3,
+								completed: 1,
+								skipped: 0,
+								failed: 0,
+							},
+						},
+					]
+				: originalQuery(query),
+		);
+		const response = Promise.withResolvers<{ _yay: null }>();
+		stopMock.mockReturnValue(response.promise);
+		const view = render(<AppNotifications />);
+		fireEvent.click(screen.getByRole("button", { name: "Review conflicts" }));
+		expect(openRunMock).toHaveBeenCalledWith("copy_run");
+		expect(screen.queryByRole("button", { name: "Dismiss Copy files" })).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Stop and keep completed copies" }));
+		expect(stopMock).toHaveBeenCalledWith("copy_run");
+		clipboardState.pendingStopRunId = "copy_run";
+		view.rerender(<AppNotifications key="reopened" />);
+		expect(screen.getByRole("status").textContent).toContain("Stop requested. Waiting for the server…");
+		expect(screen.getByRole("button", { name: "Stop and keep completed copies" }).matches(":disabled")).toBe(true);
+
+		phase = "stopping";
+		view.rerender(<AppNotifications key="stopping" />);
+		expect(screen.getByRole("status").textContent).toMatch(/^Stopping/);
+		status = "succeeded";
+		phase = "completed";
+		view.rerender(<AppNotifications key="completed" />);
+		expect(screen.getByRole("status").textContent).toMatch(/^Completed/);
+		expect(screen.queryByRole("button", { name: "Stop and keep completed copies" })).toBeNull();
+		await act(async () => response.resolve({ _yay: null }));
 	});
 });

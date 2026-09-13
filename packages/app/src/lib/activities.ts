@@ -29,7 +29,7 @@ function apply_feed_result(feed: ActivitiesFeed, result: activities_NodeSlice | 
 	const nextSlicesByNodeId = new Map<string, activities_NodeSlice>();
 	for (const activity of result) {
 		for (const target of activity.targets) {
-			if (target.type !== "file_node") {
+			if (target.kind !== "file_node") {
 				continue;
 			}
 			const slice = nextSlicesByNodeId.get(target.id);

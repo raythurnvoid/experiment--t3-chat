@@ -98,6 +98,7 @@ import {
 } from "./billing_db.ts";
 import { rate_limiter_check_by_key, rate_limiter_limit_by_key } from "./rate_limiter.ts";
 import {
+	files_normalize_file_rename_name,
 	files_normalize_markdown_name,
 	files_normalize_name,
 	files_normalize_special_node_path,
@@ -127,6 +128,10 @@ const files_content_materialization_workpool = new Workpool(components.files_con
 		maxAttempts: Number.POSITIVE_INFINITY,
 	} as const,
 });
+
+const MAX_MOVE_NODE_COUNT = 500;
+const MAX_MOVE_DOCUMENT_COUNT = 2000;
+const MAX_MOVE_BYTES = 4 * 1024 * 1024;
 
 /**
  * Rebase an absolute path from one base path to another.
@@ -4739,6 +4744,376 @@ export const rename_node = mutation({
 	},
 });
 
+// #region move nodes
+
+/**
+ * Move a bounded set in one transaction. Callers supply the current actor and live membership.
+ * Clipboard callers also pin placement and choose conflict names before calling this helper.
+ */
+export async function files_nodes_db_move_nodes(
+	ctx: MutationCtx,
+	args: {
+		userAuth: { id: Id<"users"> };
+		membership: Doc<"organizations_workspaces_users">;
+		items: Array<{
+			nodeId: Id<"files_nodes">;
+			expected?: { parentId: Doc<"files_nodes">["parentId"]; name: string; path: string };
+			destName?: string;
+		}>;
+		targetParentId: Doc<"files_nodes">["parentId"];
+		expectedTargetPath?: string;
+	},
+) {
+	const { userAuth, membership } = args;
+	if (args.items.length > MAX_MOVE_NODE_COUNT) {
+		return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+	}
+
+	// Leave room for permission checks, the caller's receipt, and Convex's document encoding.
+	let readDocumentCount = 0;
+	let readBytes = 0;
+	const nodesById = new Map<Id<"files_nodes">, Doc<"files_nodes">>();
+	function fitsReadBudget(value: object) {
+		readDocumentCount += 1;
+		readBytes += files_get_utf8_byte_size(JSON.stringify(value)) + 128;
+		return readDocumentCount <= MAX_MOVE_DOCUMENT_COUNT && readBytes <= MAX_MOVE_BYTES;
+	}
+
+	const authorizedTarget = await authorize_file_write(ctx, {
+		userAuth,
+		membership,
+		nodeId: args.targetParentId,
+	});
+	if (authorizedTarget._nay) {
+		return authorizedTarget;
+	}
+	const destinationNode =
+		args.targetParentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", args.targetParentId);
+	if (
+		args.targetParentId !== files_ROOT_ID &&
+		(!destinationNode || destinationNode.kind !== "folder" || destinationNode.archiveOperationId !== null)
+	) {
+		return Result({ _nay: { message: "Not found" } });
+	}
+	if (destinationNode) {
+		if (!fitsReadBudget(destinationNode)) {
+			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+		}
+		nodesById.set(destinationNode._id, destinationNode);
+	}
+	const targetParentPath = destinationNode?.path ?? "/";
+	if (args.expectedTargetPath !== undefined && args.expectedTargetPath !== targetParentPath) {
+		return Result({ _nay: { name: "destination_changed", message: "The destination changed. Start the move again." } });
+	}
+
+	const selectedById = new Map<Id<"files_nodes">, (typeof args.items)[number]>();
+	for (const item of args.items) {
+		if (selectedById.has(item.nodeId)) {
+			continue;
+		}
+		selectedById.set(item.nodeId, item);
+		const fileNode = nodesById.get(item.nodeId) ?? (await ctx.db.get("files_nodes", item.nodeId));
+		if (!fileNode) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		if (fileNode.organizationId !== membership.organizationId || fileNode.workspaceId !== membership.workspaceId) {
+			return Result({ _nay: { message: "Unauthorized" } });
+		}
+		if (!nodesById.has(item.nodeId) && !fitsReadBudget(fileNode)) {
+			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+		}
+		nodesById.set(item.nodeId, fileNode);
+	}
+
+	// Load parent chains once. This also bounds policy checks and catches ancestor moves.
+	for (const fileNode of nodesById.values()) {
+		if (fileNode.parentId === files_ROOT_ID || nodesById.has(fileNode.parentId)) {
+			continue;
+		}
+		const parent = await ctx.db.get("files_nodes", fileNode.parentId);
+		if (!parent) {
+			const errorMessage = "fileNode.parentId points to a missing files_nodes doc";
+			const errorData = { nodeId: fileNode._id, parentId: fileNode.parentId };
+			console.error(errorMessage, errorData);
+			throw should_never_happen(errorMessage, errorData);
+		}
+		if (!fitsReadBudget(parent)) {
+			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+		}
+		nodesById.set(parent._id, parent);
+	}
+
+	function isWritable(fileNode: Doc<"files_nodes">) {
+		let node: Doc<"files_nodes"> | undefined = fileNode;
+		while (node) {
+			const policy = node.writePolicy;
+			if (
+				policy !== null &&
+				(policy.mode !== "writer" || policy.writer.kind !== "user" || policy.writer.userId !== userAuth.id)
+			) {
+				return false;
+			}
+			node = node.parentId === files_ROOT_ID ? undefined : nodesById.get(node.parentId);
+		}
+		return true;
+	}
+	if (destinationNode && !isWritable(destinationNode)) {
+		return Result({ _nay: { name: "read_only", message: "This item is read-only." } });
+	}
+
+	const roots: Array<{ node: Doc<"files_nodes">; name: string; path: string }> = [];
+	const unchangedNodeIds: Array<Id<"files_nodes">> = [];
+	for (const item of selectedById.values()) {
+		const fileNode = nodesById.get(item.nodeId)!;
+		let parentId = fileNode.parentId;
+		let selectedAncestor = false;
+		while (parentId !== files_ROOT_ID) {
+			if (selectedById.has(parentId)) {
+				selectedAncestor = true;
+				break;
+			}
+			parentId = nodesById.get(parentId)!.parentId;
+		}
+		if (selectedAncestor) {
+			continue;
+		}
+		if (fileNode.archiveOperationId !== null) {
+			return Result({ _nay: { message: "Not found" } });
+		}
+		const authorizedNode = await access_control_db_authorize_membership(ctx, {
+			userAuth,
+			membership,
+			permission: "content.write",
+			fileNode,
+		});
+		if (authorizedNode._nay) {
+			return authorizedNode;
+		}
+		if (
+			item.expected &&
+			(item.expected.parentId !== fileNode.parentId ||
+				item.expected.name !== fileNode.name ||
+				item.expected.path !== fileNode.path)
+		) {
+			return Result({ _nay: { name: "source_changed", message: "A source changed. Start the move again." } });
+		}
+		let targetAncestor: Doc<"files_nodes"> | undefined = destinationNode ?? undefined;
+		while (targetAncestor) {
+			if (targetAncestor._id === fileNode._id) {
+				return Result({ _nay: { message: "Cannot move a folder into itself or its descendants." } });
+			}
+			targetAncestor = targetAncestor.parentId === files_ROOT_ID ? undefined : nodesById.get(targetAncestor.parentId);
+		}
+		if (!isWritable(fileNode)) {
+			return Result({ _nay: { name: "read_only", message: "This item is read-only." } });
+		}
+		const authorizedLeaving = await authorize_leaving_restricted_scope(ctx, {
+			userAuth,
+			membership,
+			fileNode,
+			destParentId: args.targetParentId,
+		});
+		if (authorizedLeaving._nay) {
+			return authorizedLeaving;
+		}
+		const name =
+			item.destName === undefined
+				? Result({ _yay: fileNode.name })
+				: fileNode.kind === "file"
+					? files_normalize_file_rename_name(item.destName)
+					: files_normalize_name(fileNode.kind, item.destName);
+		if (name._nay) {
+			return name;
+		}
+		const path = path_join(targetParentPath, name._yay);
+		// A same-parent, same-name move changes nothing. Do not patch it: stamping updatedBy would
+		// mark the node as touched by this user and wrongly block the eager hard-delete gate on
+		// discard/expiry.
+		if (path === fileNode.path && args.targetParentId === fileNode.parentId) {
+			unchangedNodeIds.push(item.nodeId);
+			continue;
+		}
+		roots.push({ node: fileNode, name: name._yay, path });
+	}
+
+	const rootById = new Map(roots.map((root) => [root.node._id, root]));
+	const paths = new Set<string>();
+	for (const root of roots) {
+		if (paths.has(root.path)) {
+			return Result({ _nay: { name: "nay", message: "Path already exists" } });
+		}
+		paths.add(root.path);
+		const occupant = await ctx.db
+			.query("files_nodes")
+			.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("path", root.path)
+					.eq("archiveOperationId", null),
+			)
+			.first();
+		if (occupant && !fitsReadBudget(occupant)) {
+			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+		}
+		// Check read access before reporting the conflict. A hidden occupant answers
+		// "Permission denied" so its path stays unrevealed.
+		if (occupant && !rootById.has(occupant._id)) {
+			const authorizedConflict = await access_control_db_authorize_membership(ctx, {
+				userAuth,
+				membership,
+				permission: "content.read",
+				fileNode: occupant,
+			});
+			return Result({
+				_nay: { name: "nay", message: authorizedConflict._nay ? "Permission denied" : "Path already exists" },
+			});
+		}
+	}
+
+	const movedNodes = roots.map((root) => root.node);
+	for (const fileNode of movedNodes) {
+		// Async iteration reads at most one document beyond our budget, never a whole large folder.
+		for await (const child of ctx.db
+			.query("files_nodes")
+			.withIndex("by_organization_workspace_parent_name_archiveOperation", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("parentId", fileNode._id),
+			)) {
+			if (movedNodes.length >= MAX_MOVE_NODE_COUNT || !fitsReadBudget(child)) {
+				return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+			}
+			nodesById.set(child._id, child);
+			movedNodes.push(child);
+			if (!isWritable(child)) {
+				const readable = await access_control_db_can_act_on_file_node(ctx, {
+					organizationId: membership.organizationId,
+					workspaceId: membership.workspaceId,
+					userId: userAuth.id,
+					fileNode: child,
+					permission: "content.read",
+				});
+				return Result({
+					_nay: {
+						name: readable ? "read_only" : "nay",
+						message: readable ? "This item is read-only." : "Permission denied",
+					},
+				});
+			}
+		}
+	}
+
+	// Moving a folder also changes its restricted descendants, including archived ones.
+	const canMoveDescendants = await files_nodes_db_can_act_on_swept_nodes(ctx, {
+		organizationId: membership.organizationId,
+		workspaceId: membership.workspaceId,
+		userId: userAuth.id,
+		rootScopeNodeId: null,
+		nodes: movedNodes,
+		permission: "content.write",
+	});
+	if (!canMoveDescendants) {
+		return Result({ _nay: { message: "Permission denied" } });
+	}
+
+	let writeBytes = 0;
+	let writeDocumentCount = 0;
+	const nodePatches = new Map<
+		Id<"files_nodes">,
+		Pick<
+			Doc<"files_nodes">,
+			"path" | "treePath" | "pathDepth" | "lowercaseExtension" | "restrictedScopeNodeId" | "writePolicyScopeNodeId"
+		> &
+			Partial<Pick<Doc<"files_nodes">, "parentId" | "name" | "updatedBy" | "updatedAt">>
+	>();
+	const chunkPatches: Array<{ id: Id<"files_plain_text_chunks">; path: string }> = [];
+	const metadataPatches: Array<{ id: Id<"files_metadata_docs">; path: string; treePath: string }> = [];
+	const now = Date.now();
+	function fitsWriteBudget(value: object) {
+		writeDocumentCount += 1;
+		writeBytes += files_get_utf8_byte_size(JSON.stringify(value)) + 128;
+		return writeDocumentCount <= MAX_MOVE_DOCUMENT_COUNT && writeBytes <= MAX_MOVE_BYTES;
+	}
+	for (const fileNode of movedNodes) {
+		const root = rootById.get(fileNode._id);
+		const parentPatch = fileNode.parentId === files_ROOT_ID ? undefined : nodePatches.get(fileNode.parentId);
+		const path = root?.path ?? path_join(parentPatch!.path, fileNode.name);
+		const treePath = derive_tree_path_for_file_node(path, fileNode.kind);
+		// A node that owns a scope keeps it. A moved root takes the destination's scope; every other
+		// descendant takes its patched parent's.
+		const patch = {
+			path,
+			treePath,
+			pathDepth: files_path_depth(path),
+			lowercaseExtension: files_lowercase_extension(path, fileNode.kind),
+			restrictedScopeNodeId:
+				fileNode.restrictedScopeNodeId === fileNode._id
+					? fileNode._id
+					: root
+						? (destinationNode?.restrictedScopeNodeId ?? null)
+						: parentPatch!.restrictedScopeNodeId,
+			writePolicyScopeNodeId:
+				fileNode.writePolicy !== null
+					? fileNode._id
+					: root
+						? (destinationNode?.writePolicyScopeNodeId ?? null)
+						: parentPatch!.writePolicyScopeNodeId,
+			...(root ? { parentId: args.targetParentId, name: root.name, updatedBy: userAuth.id, updatedAt: now } : {}),
+		};
+		if (!fitsWriteBudget({ ...fileNode, ...patch })) {
+			return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+		}
+		nodePatches.set(fileNode._id, patch);
+		if (fileNode.kind === "file") {
+			for await (const chunk of ctx.db
+				.query("files_plain_text_chunks")
+				.withIndex("by_organization_workspace_fileNode_chunkIndex", (q) =>
+					q
+						.eq("organizationId", membership.organizationId)
+						.eq("workspaceId", membership.workspaceId)
+						.eq("fileNodeId", fileNode._id),
+				)) {
+				if (!fitsReadBudget(chunk) || !fitsWriteBudget({ ...chunk, path })) {
+					return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+				}
+				chunkPatches.push({ id: chunk._id, path });
+			}
+		}
+		for await (const metadata of ctx.db
+			.query("files_metadata_docs")
+			.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+				q
+					.eq("organizationId", membership.organizationId)
+					.eq("workspaceId", membership.workspaceId)
+					.eq("fileNodeId", fileNode._id),
+			)) {
+			if (!fitsReadBudget(metadata) || !fitsWriteBudget({ ...metadata, path, treePath })) {
+				return Result({ _nay: { name: "move_too_large", message: "This move is too large. Select fewer items." } });
+			}
+			metadataPatches.push({ id: metadata._id, path, treePath });
+		}
+	}
+
+	// Every expected refusal is above this point. A thrown write failure rolls back the whole move.
+	for (const [nodeId, patch] of nodePatches) {
+		await ctx.db.patch("files_nodes", nodeId, patch);
+	}
+	for (const chunk of chunkPatches) {
+		await ctx.db.patch("files_plain_text_chunks", chunk.id, { path: chunk.path });
+	}
+	for (const metadata of metadataPatches) {
+		await ctx.db.patch("files_metadata_docs", metadata.id, { path: metadata.path, treePath: metadata.treePath });
+	}
+	return Result({
+		_yay: {
+			moved: roots.map((root) => ({ nodeId: root.node._id, name: root.name, path: root.path })),
+			unchangedNodeIds,
+		},
+	});
+}
+
 export const move_nodes = mutation({
 	args: {
 		membershipId: v.id("organizations_workspaces_users"),
@@ -4765,213 +5140,20 @@ export const move_nodes = mutation({
 			return Result({ _nay: { message: "Unauthorized" } });
 		}
 
-		// The destination is the first question: dropping into a folder writes into that folder. Each
-		// moved node is asked about separately below, because moving something is also a write to it.
-		const authorizedTarget = await authorize_file_write(ctx, {
+		const moved = await files_nodes_db_move_nodes(ctx, {
 			userAuth,
 			membership,
-			nodeId: args.targetParentId,
+			items: args.itemIds.map((nodeId) => ({ nodeId })),
+			targetParentId: args.targetParentId,
 		});
-		if (authorizedTarget._nay) {
-			return authorizedTarget;
-		}
-
-		// Write permission does not bypass read-only. The destination folder must be writable.
-		// The root cannot be locked, so it returns `null`.
-		const destinationNode =
-			args.targetParentId === files_ROOT_ID ? null : await ctx.db.get("files_nodes", args.targetParentId);
-		const destinationWritable = destinationNode
-			? await files_nodes_db_require_user_writable(ctx, { node: destinationNode, userId: userAuth.id })
-			: Result({ _yay: null });
-		if (destinationWritable._nay) {
-			return destinationWritable;
-		}
-
-		const targetParentPath = await resolve_parent_path_from_parent_id(ctx, {
-			organizationId: membership.organizationId,
-			workspaceId: membership.workspaceId,
-			parentId: args.targetParentId,
-		});
-		if (targetParentPath == null) {
-			return Result({ _yay: null });
-		}
-
-		const fileNodesToMove: Array<{ itemId: Id<"files_nodes">; fileNode: Doc<"files_nodes">; movedPath: string }> = [];
-
-		for (const itemId of args.itemIds) {
-			const fileNode = await ctx.db.get("files_nodes", itemId);
-			if (
-				!fileNode ||
-				fileNode.organizationId !== membership.organizationId ||
-				fileNode.workspaceId !== membership.workspaceId
-			) {
-				continue;
-			}
-
-			// A node the caller may not write refuses the whole call instead of being skipped quietly.
-			// A silent skip would leave the sidebar showing a move that never happened.
-			const authorizedNode = await access_control_db_authorize_membership(ctx, {
-				userAuth,
-				membership,
-				permission: "content.write",
-				fileNode,
-			});
-			if (authorizedNode._nay) {
-				return authorizedNode;
-			}
-
-			const authorizedLeaving = await authorize_leaving_restricted_scope(ctx, {
-				userAuth,
-				membership,
-				fileNode,
-				destParentId: args.targetParentId,
-			});
-			if (authorizedLeaving._nay) {
-				return authorizedLeaving;
-			}
-
-			// A move changes the node. Refuse the whole call when it is read-only.
-			const nodeWritable = await files_nodes_db_require_user_writable(ctx, { node: fileNode, userId: userAuth.id });
-			if (nodeWritable._nay) {
-				return nodeWritable;
-			}
-
-			const movedPath = path_join(targetParentPath, fileNode.name);
-			fileNodesToMove.push({ itemId, fileNode, movedPath });
-		}
-
-		// Move changes every descendant path, including archived descendants.
-		// Refuse before writing if any descendant is read-only.
-		for (const fileNodeToMove of fileNodesToMove) {
-			const subtreeWritable = await files_nodes_db_require_subtree_writable(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				writeContext: {
-					writer: { kind: "user", userId: userAuth.id },
-					actorUserId: userAuth.id,
-					resourceScope: { kind: "workspace" },
-					policyReach: "ancestors",
-				},
-				node: fileNodeToMove.fileNode,
-			});
-			if (subtreeWritable._nay) {
-				return subtreeWritable;
-			}
-		}
-
-		const movingNodeIds = new Set(fileNodesToMove.map((fileNodeToMove) => fileNodeToMove.itemId));
-		const movedPathByNodeId = new Map<string, Id<"files_nodes">>();
-		for (const fileNodeToMove of fileNodesToMove) {
-			if (fileNodeToMove.fileNode.archiveOperationId !== null) {
-				continue;
-			}
-
-			const duplicateTargetNodeId = movedPathByNodeId.get(fileNodeToMove.movedPath);
-			if (duplicateTargetNodeId && duplicateTargetNodeId !== fileNodeToMove.itemId) {
-				return Result({
-					_nay: {
-						name: "nay",
-						message: "Path already exists",
-					},
-				});
-			}
-			movedPathByNodeId.set(fileNodeToMove.movedPath, fileNodeToMove.itemId);
-
-			// Check whether an active file node already exists for the same path.
-			const activePathConflict = await ctx.db
-				.query("files_nodes")
-				.withIndex("by_organization_workspace_path_archiveOperation", (q) =>
-					q
-						.eq("organizationId", membership.organizationId)
-						.eq("workspaceId", membership.workspaceId)
-						.eq("path", fileNodeToMove.movedPath)
-						.eq("archiveOperationId", null),
-				)
-				.first();
-			if (activePathConflict && !movingNodeIds.has(activePathConflict._id)) {
-				// Check access before reporting the conflict. Keep a restricted child hidden.
-				const authorizedConflict = await access_control_db_authorize_membership(ctx, {
-					userAuth,
-					membership,
-					permission: "content.write",
-					fileNode: activePathConflict,
-				});
-				if (authorizedConflict._nay) {
-					return Result({ _nay: { name: "nay", message: "Permission denied" } });
-				}
-				return Result({
-					_nay: {
-						name: "nay",
-						message: "Path already exists",
-					},
-				});
-			}
-		}
-
-		const now = Date.now();
-		for (const fileNodeToMove of fileNodesToMove) {
-			// Same-parent drag: no structural change, so skip the patch entirely. Stamping
-			// updatedBy here would mark the node as touched by this user and wrongly block
-			// the eager hard-delete gate on discard/expiry.
-			if (
-				fileNodeToMove.movedPath === fileNodeToMove.fileNode.path &&
-				fileNodeToMove.fileNode.parentId === args.targetParentId
-			) {
-				continue;
-			}
-			await ctx.db.patch("files_nodes", fileNodeToMove.itemId, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				parentId: args.targetParentId,
-				path: fileNodeToMove.movedPath,
-				treePath: derive_tree_path_for_file_node(fileNodeToMove.movedPath, fileNodeToMove.fileNode.kind),
-				pathDepth: files_path_depth(fileNodeToMove.movedPath),
-				lowercaseExtension: files_lowercase_extension(fileNodeToMove.movedPath, fileNodeToMove.fileNode.kind),
-				updatedBy: userAuth.id,
-				updatedAt: now,
-			});
-			await db_patch_node_search_scope(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				nodeId: fileNodeToMove.itemId,
-				kind: fileNodeToMove.fileNode.kind,
-				path: fileNodeToMove.movedPath,
-			});
-			await cascade_file_descendants_path(ctx, {
-				organizationId: membership.organizationId,
-				workspaceId: membership.workspaceId,
-				parentId: fileNodeToMove.itemId,
-				parentPath: fileNodeToMove.movedPath,
-			});
-
-			if (fileNodeToMove.fileNode.writePolicy === null) {
-				await db_set_write_policy(ctx, {
-					node: { ...fileNodeToMove.fileNode, parentId: args.targetParentId },
-					writePolicy: null,
-				});
-			}
-			// Same rule as `files_nodes_db_apply_node_move`: the node inherits the restricted scope of where it
-			// landed, unless it is the restricted node itself, which carries its own subtree with it.
-			// This mutation patches nodes by hand instead of going through that helper, so the rule has
-			// to be applied here too.
-			if (fileNodeToMove.fileNode.restrictedScopeNodeId !== fileNodeToMove.itemId) {
-				const destScopeNodeId = await files_nodes_db_resolve_parent_restricted_scope(ctx, {
-					parentId: args.targetParentId,
-				});
-				if (destScopeNodeId !== fileNodeToMove.fileNode.restrictedScopeNodeId) {
-					await ctx.db.patch("files_nodes", fileNodeToMove.itemId, { restrictedScopeNodeId: destScopeNodeId });
-					await files_nodes_db_cascade_restricted_scope(ctx, {
-						organizationId: membership.organizationId,
-						workspaceId: membership.workspaceId,
-						parentId: fileNodeToMove.itemId,
-						scopeNodeId: destScopeNodeId,
-					});
-				}
-			}
+		if (moved._nay) {
+			return moved;
 		}
 		return Result({ _yay: null });
 	},
 });
+
+// #endregion move nodes
 
 // #region Archive nodes
 export async function files_nodes_db_archive_nodes(

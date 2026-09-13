@@ -1,9 +1,6 @@
-// Workspace activity feed: one doc per user-visible unit of background work (today plugin runs;
-// future internal processes add source variants). Producers call these helpers only from their
-// own mutations, in the same transaction as the domain state change they mirror, so an activity
-// can never drift from the real state. The activity's `source` points back at its producer
-// (looked up via the `by_source_id` index), and the producer owns the activity's whole
-// lifecycle, including deleting it on retention.
+// Workspace activity feed: plugin work and private transfer runs. Producers update activities
+// in the same mutation as their work, so progress and results stay in sync. The `source` field
+// links each activity to its run through `by_source_id`. Each producer owns expiry and cleanup.
 
 import { v } from "convex/values";
 import { doc } from "convex-helpers/validators";
@@ -24,7 +21,9 @@ import { Result } from "common/errors-as-values-utils.ts";
 // Does NOT work for http actions (see http.ts). No mutable module-level state allowed here.
 export const experimental_reuseContext = true;
 
-/** The longest an activity may run before the timeout cron closes it. */
+/**
+ * The plugin activity deadline limit. Transfer runs manage their own expiry.
+ */
 export const ACTIVITIES_TIMEOUT_MAX_MS = 5 * 60 * 1000;
 
 export async function activities_db_start(
@@ -37,9 +36,8 @@ export async function activities_db_start(
 		/** Status-neutral display text, e.g. "Video plugin · speakers.mp4". */
 		title: Doc<"activities">["title"];
 		/**
-		 * The file the work started from. Named here because the title usually carries its name, and
-		 * `list_recent` decides what to show from the targets: an activity that names nothing is read as
-		 * one about the whole workspace and goes to every reader, title and all.
+		 * The file the plugin work started from. Its name may appear in the title, so activity
+		 * visibility must follow access to this file.
 		 */
 		target: Doc<"activities">["targets"][number];
 		/** Caller-predicted deadline; must be at most ACTIVITIES_TIMEOUT_MAX_MS after now. */
@@ -115,15 +113,16 @@ export async function activities_db_add_target(
 	});
 }
 
-/** The feed stays short-lived (producers delete activities on retention), so a flat cap is enough. */
+/**
+ * Limit recent history. The caller's active transfer run is added if it falls outside this page.
+ */
 const ACTIVITIES_LIST_MAX = 50;
 
 /**
  * Keep only the activities the user may see.
  *
- * A target carries the file's path, and the activity title usually carries its name, so an activity
- * about a restricted file would say it exists and what it is called. An activity that names no file
- * is about the whole workspace, so workspace-wide read decides that one.
+ * Plugin activities follow file access. Those with no named file require workspace read.
+ * Transfer activities contain no file paths and are visible only to their requester.
  *
  * Every surface that reads or dismisses activities uses this, so the feed and the dismiss buttons
  * always agree on what exists. Without it "Dismiss all" would archive an activity the caller cannot
@@ -142,11 +141,12 @@ async function db_filter_visible_activities(
 	},
 ) {
 	// Each node named on the page is looked up once, and the filter answers once per restricted scope.
-	const targetNodeIds = [
-		...new Set(args.activities.flatMap((activity) => activity.targets.map((target) => target.id))),
-	];
+	const candidates = args.activities.filter(
+		(activity) => activity.source.kind !== "files_transfer_run" || activity.userId === args.userId,
+	);
+	const targetNodeIds = [...new Set(candidates.flatMap((activity) => activity.targets.map((target) => target.id)))];
 	if (targetNodeIds.length === 0) {
-		return args.hasWorkspaceRead ? [...args.activities] : [];
+		return candidates.filter((activity) => activity.source.kind === "files_transfer_run" || args.hasWorkspaceRead);
 	}
 
 	const targetNodes = (await Promise.all(targetNodeIds.map((nodeId) => ctx.db.get("files_nodes", nodeId)))).filter(
@@ -165,7 +165,10 @@ async function db_filter_visible_activities(
 		).map((fileNode) => fileNode._id),
 	);
 
-	return args.activities.filter((activity) => {
+	return candidates.filter((activity) => {
+		// Transfer activities belong to their requester and contain no file names or paths.
+		if (activity.source.kind === "files_transfer_run") return true;
+
 		// Only docs written before the target above became mandatory can be empty here.
 		if (activity.targets.length === 0) {
 			return args.hasWorkspaceRead;
@@ -197,15 +200,14 @@ export const list_recent = query({
 			return [];
 		}
 
-		// A failed check does not end the query here, same as `list_tree`. A guest holding one folder still
-		// reads the activities about it. What they must not get is an activity that names no file, because
-		// that one is about the workspace.
-		const authorized = await access_control_db_authorize_membership(ctx, {
+		// Folder guests can read activities about their files and their private transfer runs.
+		// Plugin activities with no named file still require workspace read.
+		const readAuthorized = await access_control_db_authorize_membership(ctx, {
 			userAuth,
 			membership,
 			permission: "content.read",
 		});
-		const hasWorkspaceRead = !authorized._nay;
+		const hasWorkspaceRead = !readAuthorized._nay;
 
 		// Newest activity first; running items bubble up because every change bumps updatedAt.
 		// Dismissed items (archivedAt > 0) stay in the table for their producers; the index skips them here.
@@ -216,6 +218,22 @@ export const list_recent = query({
 			)
 			.order("desc")
 			.take(ACTIVITIES_LIST_MAX);
+
+		// A long Paste must keep its Stop button even after newer activities fill the page.
+		const transferRun = await ctx.db
+			.query("files_transfer_runs")
+			.withIndex("by_user_workspace_active", (q) =>
+				q.eq("userId", userAuth.id).eq("workspaceId", membership.workspaceId).eq("active", true),
+			)
+			.unique();
+		if (transferRun) {
+			const transferActivity = await ctx.db
+				.query("activities")
+				.withIndex("by_source_id", (q) => q.eq("source.id", transferRun._id))
+				.unique();
+			if (transferActivity && !activities.some((activity) => activity._id === transferActivity._id))
+				activities.unshift(transferActivity);
+		}
 
 		return await db_filter_visible_activities(ctx, {
 			organizationId: membership.organizationId,
@@ -253,10 +271,6 @@ export const archive_activity = mutation({
 			membership,
 			permission: "content.write",
 		});
-		if (authorized._nay) {
-			return authorized;
-		}
-
 		const activity = await ctx.db.get("activities", args.activityId);
 		if (
 			!activity ||
@@ -264,6 +278,11 @@ export const archive_activity = mutation({
 			activity.workspaceId !== membership.workspaceId
 		) {
 			return Result({ _nay: { message: "Activity not found" } });
+		}
+		// Transfer activities are private to their requester, so their owner may dismiss one without
+		// workspace write permission.
+		if (authorized._nay && !(activity.source.kind === "files_transfer_run" && activity.userId === userAuth.id)) {
+			return authorized;
 		}
 
 		// Writing in the workspace is not the same as being allowed to see this activity, so ask the
@@ -326,10 +345,6 @@ export const archive_all_activities = mutation({
 			membership,
 			permission: "content.write",
 		});
-		if (authorized._nay) {
-			return authorized;
-		}
-
 		const active = await ctx.db
 			.query("activities")
 			.withIndex("by_organization_workspace_archivedAt_updatedAt", (q) =>
@@ -337,7 +352,13 @@ export const archive_all_activities = mutation({
 			)
 			.collect();
 		// Running activities still need to be visible, so bulk dismiss only covers finished ones.
-		const finished = active.filter((activity) => activity.status !== "running");
+		// Without workspace write permission, only the caller's own transfer activities qualify.
+		const finished = active.filter(
+			(activity) =>
+				activity.status !== "running" &&
+				(!authorized._nay || (activity.source.kind === "files_transfer_run" && activity.userId === userAuth.id)),
+		);
+		if (authorized._nay && finished.length === 0) return authorized;
 
 		// Dismiss only what the caller can see. `archivedAt` is one field on the doc and not one per
 		// user, so archiving an activity about a restricted file would take it away from the people who
@@ -364,7 +385,9 @@ export const archive_all_activities = mutation({
 	},
 });
 
-/** Cron: close running activities past their deadline, so a dead producer never leaves one running forever. */
+/**
+ * Close plugin activities past their deadline. Transfer recovery stops its own work first.
+ */
 export const timeout_stale_activities = internalMutation({
 	args: {},
 	returns: v.object({
@@ -372,10 +395,12 @@ export const timeout_stale_activities = internalMutation({
 	}),
 	handler: async (ctx) => {
 		const now = Date.now();
-		const stale = await ctx.db
+		const running = await ctx.db
 			.query("activities")
 			.withIndex("by_status_timeoutAt", (q) => q.eq("status", "running").lte("timeoutAt", now))
 			.collect();
+		// Transfer expiry must stop its producer before the activity can finish.
+		const stale = running.filter((activity) => activity.source.kind !== "files_transfer_run");
 
 		await Promise.all(
 			stale.map((activity) =>

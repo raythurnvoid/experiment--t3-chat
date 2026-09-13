@@ -1,6 +1,6 @@
 ---
 name: files-explorer-tree
-description: Practical guide for the current Files sidebar (`@headless-tree` + Convex) implementation. Use this when implementing or modifying sidebar behavior (search, selection, drag/drop, rename, archive/unarchive, create file/folder, and root-drop-zone interactions).
+description: Practical guide for the current Files sidebar (`@headless-tree` + Convex) implementation. Use this when implementing or modifying sidebar behavior (search, selection, Cut/Copy/Paste, drag/drop, rename, archive/unarchive, create file/folder, and root-drop-zone interactions).
 ---
 
 # Source Of Truth Files
@@ -10,10 +10,13 @@ Primary:
 - `../../../packages/app/src/components/files/files-sidebar.tsx`
 - `../../../packages/app/src/components/files/files-sidebar.css`
 - `../../../packages/app/src/components/files/files-name-input.tsx`
+- `../../../packages/app/src/components/files/files-clipboard.tsx`
+- `../../../packages/app/src/components/files/files-clipboard.css`
 - `../../../packages/app/src/components/files/file-node-view/file-node-view.tsx`
 - `../../../packages/app/src/components/files/file-node-view/file-node-view.css`
 - `../../../packages/app/src/routes/w/$organizationName/$workspaceName/files/index.tsx`
 - `../../../packages/app/convex/files_nodes.ts`
+- `../../../packages/app/convex/files_transfer.ts`
 - `../../../packages/app/convex/r2.ts`
 - `../../../packages/app/convex/plugins_runtime.ts`
 - `../../../packages/app/shared/files.ts`
@@ -198,6 +201,52 @@ Tree-item components:
 - `get_authorized_by_path` authorizes `content.read` with the loaded `fileNode` passed, like `get_file_node_for_membership`, so a path link cannot hand out a node id the id route would refuse.
 - Three copy actions, all multi-select aware in the sidebar and joined with newlines: Copy path (sidebar row menu and breadcrumb) copies the plain path for pasting into search or an AI chat message; Copy link (same two places) copies the absolute `?nodeId=` URL built from `url_path_file_by_node_id`, so a shared link survives rename and move; Copy node id (sidebar row menu only) copies the bare id.
 - Copy link deliberately does not emit the readable `/files/<path>` shape. That shape has no in-app producer: it exists so a hand-written or externally generated path can be opened, and the sidebar search still unwraps it when pasted.
+
+## File Cut, Copy, And Paste
+
+- `FilesClipboardProvider` lives inside `AppTenantProvider`, keyed by membership. It keeps source
+  node ids, mode, and a local revision in memory. Navigation keeps the clipboard; reload and
+  workspace or account changes clear it. It does not write to the operating system clipboard.
+- Sidebar row menus offer Cut and Copy. A selected row uses the full selection; an unselected row
+  uses only that row. The top selection menu uses the selection too. Copy path, Copy link, and
+  Copy node id keep their existing behavior. When a folder and its children are selected, all
+  menu and keyboard entry points keep only the top-level selected items in the clipboard. Collapsing
+  a folder keeps its selected children available to those clipboard actions.
+- Folder row menus offer Paste into that folder. The top `More options` menu pastes into the root
+  folder. The sidebar toolbar
+  pastes into the open folder or open file's parent. The folder-view header pastes into the open
+  folder; file views have no header Paste. File rows never act as folders.
+  Toolbar descriptions name the destination and explain disabled Paste buttons. Hiding archived
+  nodes does not change that destination. Both toolbars refuse an archived open folder; a missing
+  destination never falls back to root. A pending file action has its own wait message.
+- `FilesClipboardProvider.useHotkeys` scopes Mod+C, Mod+X, Mod+V, and Escape to file navigation.
+  Sidebar Paste uses the focused folder or focused file's parent. Folder-table shortcuts use the
+  focused row; the table does not add multi-selection. Search, rename, editors, chat, and other
+  editable controls keep normal text shortcuts. Copy and Cut also leave selected text alone.
+- Cut requires source move access, including visible protected descendants. Copy only needs read
+  access. Paste requires destination write access. The backend checks the full operation again.
+  A move also checks hidden and archived restricted descendants before changing any paths.
+  Cut rows are muted and their accessible names say `ready to move`. Clear removes either mode;
+  Escape clears only an idle cut while file navigation has focus.
+- Paste calls `files_transfer.start`. The provider keeps one request id after a lost response,
+  and blocks another start while this member has an active run in the workspace. Run progress
+  comes from `get` and `list_current`; tree changes still come from `list_tree`.
+- The progress dialog says `Paste files` until the saved run kind is available, then shows
+  `Copy files` or `Move files`, counts, and conflicts. Each conflict shows its full authorized source
+  path, so same-name files can be told apart. Name conflicts offer Keep both or Skip; changed
+  or unavailable sources and destinations offer only Skip or Stop. Apply to remaining name
+  conflicts starts unset. Choices reset on each server revision. Hide, X, and Escape close the
+  dialog without stopping the run. After any copy is published, the stop button says
+  `Stop and keep completed copies`; before that it says `Cancel`.
+- Activity can reopen the dialog after navigation or reload and can stop an active run. Clipboard
+  runs belong to their requester. Terminal runs can be dismissed without workspace write access.
+  Canceled runs say `Stopped` and use a neutral icon. Active runs cannot be dismissed.
+- A completed cut removes only the returned moved ids from the same clipboard revision. Opening
+  an older Activity dialog must not stop that update. A later Cut or Copy must stay intact. Copy
+  stays ready after completion so it can be pasted again.
+
+Backend rules, limits, billing, cleanup, and Activity privacy are in
+[Files transfer runs](references/transfer.md).
 
 ## Selection And Primary Action
 
@@ -403,6 +452,10 @@ Do not call `parent.getChildren()` for this check in each row: it loads every si
 - A pasted path URL opens the file, settles on `?nodeId=`, adds one history entry, and never flashes the not-found panel on a cold load.
 - An unknown, archived, or wrong-case path URL shows the not-found panel with a working "Search for this path" link.
 - Copy path yields the plain path; Copy link yields an absolute `?nodeId=` URL that reopens the same node; Copy node id yields the bare id. All three still work after the node is renamed or moved.
+- File Cut/Copy survives navigation. Paste uses the stated destination. Cut clears only moved ids,
+  preserves a newer clipboard, and marks rows accessibly. Normal text shortcuts still work.
+- Conflict choices carry the current revision. Hide does not stop a run; Activity can reopen it.
+  Stop keeps completed copies, reports an unconfirmed request, and waits for the server result.
 - Selection modes and anchor behavior are correct.
 - A tree with thousands of visible rows mounts only the viewport plus active rows. Home/End and
   arrow keys scroll and focus correctly. Scrolling keeps an active rename, menu, drag, or dialog

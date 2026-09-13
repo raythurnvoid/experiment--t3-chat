@@ -1,10 +1,15 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { ConvexProvider, ConvexReactClient } from "convex/react";
 import type { FunctionArgs, PaginationResult } from "convex/server";
+import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { app_convex_api, type app_convex_Id } from "@/lib/app-convex-client.ts";
 import { AppTenantProvider } from "./app-tenant-context.tsx";
 import { FilesTreeProvider } from "./files-tree-context.tsx";
+
+vi.mock("@/components/files/files-clipboard.tsx", () => ({
+	FilesClipboardProvider: (props: { children: ReactNode }) => props.children,
+}));
 
 type TreeArgs = FunctionArgs<typeof app_convex_api.files_nodes.list_tree>;
 type TestPage = PaginationResult<{ name: string }>;

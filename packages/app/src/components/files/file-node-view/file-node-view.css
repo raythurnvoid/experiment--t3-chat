@@ -772,6 +772,10 @@
 		filter: opacity(0.6);
 	}
 
+	.FileNodeViewFolderExplorer-row-cut .FileNodeViewFolderExplorer-link {
+		color: var(--color-fg-06);
+	}
+
 	.FileNodeViewFolderExplorer-row-drop-target {
 		background: var(--color-base-1-06);
 	}

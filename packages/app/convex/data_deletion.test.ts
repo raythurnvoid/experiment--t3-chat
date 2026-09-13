@@ -145,6 +145,42 @@ async function data_deletion_test_seed_page(
 	} as const;
 }
 
+async function data_deletion_test_start_transfer_run(
+	t: ReturnType<typeof test_convex>,
+	args: {
+		userId: Id<"users">;
+		organizationId: Id<"organizations">;
+		workspaceId: Id<"organizations_workspaces">;
+		tag: string;
+		count: number;
+	},
+) {
+	const { membershipId, sourceIds } = await t.run(async (ctx) => {
+		const membership = await ctx.db
+			.query("organizations_workspaces_users")
+			.withIndex("by_workspace_user_active", (q) => q.eq("workspaceId", args.workspaceId).eq("userId", args.userId))
+			.unique();
+		if (!membership) throw new Error("Expected workspace membership");
+		const sourceIds: Id<"files_nodes">[] = [];
+		for (let index = 0; index < args.count; index += 1) {
+			const page = await data_deletion_test_seed_page(ctx, { ...args, tag: `${args.tag}-${index}.md` });
+			sourceIds.push(page.nodeId);
+		}
+		return { membershipId: membership._id, sourceIds };
+	});
+	const started = await t
+		.withIdentity({ issuer: "https://clerk.test", subject: args.userId, external_id: args.userId })
+		.mutation(api.files_transfer.start, {
+			membershipId,
+			requestId: args.tag,
+			kind: "copy",
+			sourceIds,
+			targetParentId: "root",
+		});
+	if (started._nay) throw new Error(started._nay.message);
+	return { runId: started._yay.runId, membershipId, sourceIds };
+}
+
 async function data_deletion_test_seed_plugin_ui_sessions(
 	ctx: MutationCtx,
 	args: {
@@ -2565,6 +2601,128 @@ describe("process_user_deletion_request", () => {
 });
 
 describe("process_workspace_deletion_request", () => {
+	test("drains Paste runs before workspace files and keeps sibling runs", async () => {
+		const t = test_convex();
+		const cancelWork = vi.spyOn(Workpool.prototype, "cancel").mockResolvedValue(undefined);
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-clipboard-workspace",
+				displayName: "Clipboard Workspace",
+			}),
+		);
+		const sibling = await t.run((ctx) =>
+			organizations_db_create_workspace(ctx, {
+				userId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				name: "clipboard-sibling",
+				description: "",
+				now: Date.now(),
+			}),
+		);
+		if (sibling._nay) throw new Error(sibling._nay.message);
+		const victim = await data_deletion_test_start_transfer_run(t, {
+			userId: user.userId,
+			organizationId: user.defaultOrganizationId,
+			workspaceId: user.defaultWorkspaceId,
+			tag: "clipboard-victim",
+			count: 51,
+		});
+		const control = await data_deletion_test_start_transfer_run(t, {
+			userId: user.userId,
+			organizationId: user.defaultOrganizationId,
+			workspaceId: sibling._yay.workspaceId,
+			tag: "clipboard-control",
+			count: 1,
+		});
+		const workId = "clipboard-deletion-work" as WorkId;
+		const attemptExpiresAt = Date.now() + 60_000;
+		const { requestId, stagedAssetId, stagedKey } = await t.run(async (ctx) => {
+			const item = await ctx.db
+				.query("files_transfer_items")
+				.withIndex("by_run_order", (q) => q.eq("runId", victim.runId))
+				.first();
+			if (!item) throw new Error("Expected Paste item");
+			const stagedAssetId = await ctx.db.insert("files_r2_assets", {
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				kind: "content",
+				r2Bucket: "test-bucket",
+				size: 12,
+				createdBy: user.userId,
+				unfinalizedExpiresAt: attemptExpiresAt,
+				updatedAt: Date.now(),
+			});
+			await ctx.db.patch("files_transfer_items", item._id, {
+				state: "copying",
+				attempt: 1,
+				workId,
+				attemptExpiresAt,
+				stagedAssetIds: [stagedAssetId],
+				billedUserId: null,
+			});
+			await ctx.db.patch("files_transfer_runs", victim.runId, { phase: "running", inFlight: 1 });
+			const requestId = await data_deletion_db_request(ctx, {
+				userId: user.userId,
+				organizationId: user.defaultOrganizationId,
+				workspaceId: user.defaultWorkspaceId,
+				scope: "workspace",
+				eligibleAt: 0,
+			});
+			return {
+				requestId,
+				stagedAssetId,
+				stagedKey: r2_create_asset_key({
+					organizationId: user.defaultOrganizationId,
+					workspaceId: user.defaultWorkspaceId,
+					assetId: stagedAssetId,
+				}),
+			};
+		});
+
+		const first = await t.mutation(internal.data_deletion.process_workspace_deletion_request, { requestId });
+		const progress = await t.run(async (ctx) => ({
+			run: await ctx.db.get("files_transfer_runs", victim.runId),
+			items: await ctx.db
+				.query("files_transfer_items")
+				.withIndex("by_run_order", (q) => q.eq("runId", victim.runId))
+				.collect(),
+			stagedAsset: await ctx.db.get("files_r2_assets", stagedAssetId),
+			deletionJobs: await ctx.db.query("files_r2_object_deletion_jobs").collect(),
+			sources: await Promise.all(victim.sourceIds.map((nodeId) => ctx.db.get("files_nodes", nodeId))),
+		}));
+		expect(first).toEqual({ done: false, deletedCount: 50 });
+		expect(progress.run).toMatchObject({ active: false, phase: "canceled" });
+		expect(progress.items).toHaveLength(1);
+		expect(progress.stagedAsset).toBeNull();
+		expect(progress.deletionJobs).toEqual([
+			expect.objectContaining({ r2Key: stagedKey, putMayArriveUntil: attemptExpiresAt + r2_PUT_MAY_ARRIVE_MARGIN_MS }),
+		]);
+		expect(progress.sources.every(Boolean)).toBe(true);
+		expect(cancelWork.mock.calls.map((call) => call[1])).toContain(workId);
+
+		await data_deletion_test_process_workspace_request_until_done(t, { requestId });
+		const after = await t.run(async (ctx) => ({
+			run: await ctx.db.get("files_transfer_runs", victim.runId),
+			items: await ctx.db
+				.query("files_transfer_items")
+				.withIndex("by_run_order", (q) => q.eq("runId", victim.runId))
+				.collect(),
+			activities: await ctx.db.query("activities").collect(),
+			controlRun: await ctx.db.get("files_transfer_runs", control.runId),
+			controlItems: await ctx.db
+				.query("files_transfer_items")
+				.withIndex("by_run_order", (q) => q.eq("runId", control.runId))
+				.collect(),
+			controlFile: await ctx.db.get("files_nodes", control.sourceIds[0]!),
+		}));
+		expect(after.run).toBeNull();
+		expect(after.items).toEqual([]);
+		expect(after.activities.some((activity) => activity.source.id === victim.runId)).toBe(false);
+		expect(after.controlRun).toMatchObject({ active: true });
+		expect(after.controlItems).toHaveLength(1);
+		expect(after.controlFile).not.toBeNull();
+	});
+
 	test("removes invalid workspace requests without a workspace id", async () => {
 		const t = test_convex();
 		const user = await t.run((ctx) =>
@@ -3528,7 +3686,7 @@ describe("process_workspace_deletion_request", () => {
 				workspaceId: user.defaultWorkspaceId,
 				userId: user.userId,
 				status: "succeeded",
-				source: { type: "plugin_run", id: runId, installationId, pluginName: "media" },
+				source: { kind: "plugin_run", id: runId, installationId, pluginName: "media" },
 				title: "Media plugin · plugin-source.png",
 				errorMessage: null,
 				targets: [],
@@ -3553,7 +3711,7 @@ describe("process_workspace_deletion_request", () => {
 				workspaceId: siblingWorkspace._yay.workspaceId,
 				userId: user.userId,
 				status: "succeeded",
-				source: { type: "plugin_run", id: runId, installationId, pluginName: "media" },
+				source: { kind: "plugin_run", id: runId, installationId, pluginName: "media" },
 				title: "Media plugin · sibling.png",
 				errorMessage: null,
 				targets: [],
@@ -5658,6 +5816,109 @@ describe("hard_delete_user_data", () => {
 });
 
 describe("finalize_user_deletion_data", () => {
+	test("drains private Paste runs before memberships and keeps shared copies", async () => {
+		const t = test_convex();
+		const victim = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-clipboard-victim",
+				displayName: "Clipboard Victim",
+			}),
+		);
+		const survivor = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-delete-clipboard-survivor",
+				displayName: "Clipboard Survivor",
+			}),
+		);
+		const shared = await t.run(async (ctx) => {
+			const created = await organizations_db_create(ctx, {
+				userId: victim.userId,
+				name: "clipboard-shared",
+				description: "",
+				now: Date.now(),
+				default: false,
+			});
+			if (created._nay) throw new Error(created._nay.message);
+			await ctx.db.insert("organizations_workspaces_users", {
+				organizationId: created._yay.organizationId,
+				workspaceId: created._yay.defaultWorkspaceId,
+				userId: survivor.userId,
+				active: true,
+			});
+			return created._yay;
+		});
+		const scope = { organizationId: shared.organizationId, workspaceId: shared.defaultWorkspaceId };
+		const paste = await data_deletion_test_start_transfer_run(t, {
+			...scope,
+			userId: victim.userId,
+			tag: "clipboard-shared-victim",
+			count: 2,
+		});
+		const output = await t.run(async (ctx) => {
+			const output = await data_deletion_test_seed_page(ctx, { ...scope, userId: victim.userId, tag: "copied.md" });
+			const item = await ctx.db
+				.query("files_transfer_items")
+				.withIndex("by_run_order", (q) => q.eq("runId", paste.runId))
+				.first();
+			if (!item) throw new Error("Expected Paste item");
+			await ctx.db.patch("files_transfer_items", item._id, {
+				state: "completed",
+				outputId: output.nodeId,
+				outputName: "copied.md",
+				outputPath: "/copied.md",
+			});
+			await ctx.db.patch("files_transfer_runs", paste.runId, { phase: "running", completed: 1 });
+			return output;
+		});
+		const transferred = await t
+			.withIdentity({ issuer: "https://clerk.test", subject: victim.userId, external_id: victim.userId })
+			.mutation(api.access_control.transfer_organization_ownership, {
+				organizationId: shared.organizationId,
+				newOwnerUserId: survivor.userId,
+			});
+		expect(transferred._nay).toBeUndefined();
+		const control = await data_deletion_test_start_transfer_run(t, {
+			...scope,
+			userId: survivor.userId,
+			tag: "clipboard-shared-survivor",
+			count: 1,
+		});
+
+		for (const remainingCount of [1, 0, 0]) {
+			const done = await t.mutation(internal.data_deletion.finalize_user_deletion_data, {
+				userId: victim.userId,
+				_test_batchSize: 1,
+			});
+			const progress = await t.run(async (ctx) => ({
+				items: await ctx.db
+					.query("files_transfer_items")
+					.withIndex("by_run_order", (q) => q.eq("runId", paste.runId))
+					.collect(),
+				membership: await ctx.db.get("organizations_workspaces_users", paste.membershipId),
+				output: await ctx.db.get("files_nodes", output.nodeId),
+			}));
+			expect(done).toBe(false);
+			expect(progress.items).toHaveLength(remainingCount);
+			expect(progress.membership).not.toBeNull();
+			expect(progress.output).not.toBeNull();
+		}
+		await data_deletion_test_finalize_user_until_done(t, { userId: victim.userId, batchSize: 1 });
+		const after = await t.run(async (ctx) => ({
+			run: await ctx.db.get("files_transfer_runs", paste.runId),
+			activities: await ctx.db.query("activities").collect(),
+			membership: await ctx.db.get("organizations_workspaces_users", paste.membershipId),
+			output: await ctx.db.get("files_nodes", output.nodeId),
+			controlRun: await ctx.db.get("files_transfer_runs", control.runId),
+			workspace: await ctx.db.get("organizations_workspaces", scope.workspaceId),
+		}));
+		expect(after.run).toBeNull();
+		expect(after.activities.some((activity) => activity.source.id === paste.runId)).toBe(false);
+		expect(after.membership).toBeNull();
+		expect(after.output).toMatchObject({ _id: output.nodeId });
+		expect(after.controlRun).toMatchObject({ active: true });
+		expect(after.workspace).not.toBeNull();
+	});
+
 	test("drains service grants in bounded batches before memberships", async () => {
 		const t = test_convex();
 		const victim = await t.run((ctx) =>
@@ -8363,6 +8624,41 @@ describe("resolve_user after tombstone", () => {
 });
 
 describe("prepare_user_for_hard_deletion", () => {
+	test("drains Paste runs before provider deletion can begin", async () => {
+		const t = test_convex();
+		const user = await t.run((ctx) =>
+			data_deletion_test_bootstrap_user(ctx, {
+				clerkUserId: "clerk-user-hard-delete-clipboard",
+				displayName: "Clipboard Hard Delete",
+			}),
+		);
+		const paste = await data_deletion_test_start_transfer_run(t, {
+			userId: user.userId,
+			organizationId: user.defaultOrganizationId,
+			workspaceId: user.defaultWorkspaceId,
+			tag: "clipboard-hard-delete",
+			count: 1,
+		});
+		for (const expectedDone of [false, false, true]) {
+			const done = await t.mutation(internal.data_deletion.prepare_user_for_hard_deletion, {
+				userId: user.userId,
+				_test_batchSize: 1,
+			});
+			expect(done).toBe(expectedDone);
+		}
+		const after = await t.run(async (ctx) => ({
+			run: await ctx.db.get("files_transfer_runs", paste.runId),
+			items: await ctx.db
+				.query("files_transfer_items")
+				.withIndex("by_run_order", (q) => q.eq("runId", paste.runId))
+				.collect(),
+			user: await ctx.db.get("users", user.userId),
+		}));
+		expect(after.run).toBeNull();
+		expect(after.items).toEqual([]);
+		expect(after.user?.deletionFinalizationStartedAt).toBeTypeOf("number");
+	});
+
 	test("keeps the admin recovery fence until local finalization succeeds", async () => {
 		const t = test_convex();
 		const deletedUser = await t.run((ctx) =>

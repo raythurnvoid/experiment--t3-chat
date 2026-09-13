@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { FunctionReference } from "convex/server";
 
 import { FilesSidebar } from "./files-sidebar.tsx";
+import { FilesClipboardProvider } from "./files-clipboard.tsx";
 import { files_ROOT_ID, files_SYNTHETIC_ROOT_FOLDER, type files_VisibleTreeNode } from "@/lib/files.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 
@@ -29,6 +30,7 @@ vi.mock("convex/react", async (importOriginal) => {
 		useConvex: () => ({ query: async () => [], mutation: createNode, action: createNode }),
 		useQuery: (query: FunctionReference<"query">, args: unknown) => {
 			if (args === "skip") return undefined;
+			if (getFunctionName(query) === "files_transfer:get") return null;
 			return getFunctionName(query) === "access_control:get_current_user_workspace_permission" ? true : [];
 		},
 		useQueries: () => queryResults,
@@ -101,18 +103,194 @@ describe("FilesSidebar", () => {
 		const handleAction = () => {};
 		return (
 			<RouterContextProvider router={props.router}>
-				<FilesSidebar
-					selectedNodeId={props.selectedNodeId}
-					view="rich_text_editor"
-					initialSearchQuery=""
-					onClose={handleAction}
-					onArchive={handleAction}
-					onPrimaryAction={handleAction}
-					onSearchQueryChange={handleAction}
-				/>
+				<FilesClipboardProvider
+					key={tenantState.membershipId}
+					membershipId={tenantState.membershipId as app_convex_Id<"organizations_workspaces_users">}
+				>
+					<FilesSidebar
+						selectedNodeId={props.selectedNodeId}
+						view="rich_text_editor"
+						initialSearchQuery=""
+						onClose={handleAction}
+						onArchive={handleAction}
+						onPrimaryAction={handleAction}
+						onSearchQueryChange={handleAction}
+					/>
+				</FilesClipboardProvider>
 			</RouterContextProvider>
 		);
 	}
+
+	test("copies the tree selection and keeps its source IDs after navigation", async () => {
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		createNode.mockResolvedValue({ _yay: { runId: "run" } });
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		const alpha = await view.findByRole("treeitem", { name: "alpha" });
+		await waitFor(() => expect(alpha.getAttribute("aria-selected")).toBe("true"));
+		const bravo = view.getByRole("treeitem", { name: "bravo" });
+		fireEvent.click(bravo.querySelector(".FilesSidebarTreeItemPrimaryAction")!, { ctrlKey: true });
+		fireEvent.click(view.getByRole("button", { name: "More actions for bravo" }));
+		expect(await view.findByRole("menuitem", { name: "Copy path" })).toBeTruthy();
+		expect(view.getByRole("menuitem", { name: "Copy link" })).toBeTruthy();
+		expect(view.getByRole("menuitem", { name: "Copy node id" })).toBeTruthy();
+		fireEvent.click(view.getByRole("menuitem", { name: /^Copy$/ }));
+		await view.findByText("2 ready to copy");
+		view.rerender(<CreateSidebar router={router} selectedNodeId="delta" />);
+		fireEvent.click(view.getByRole("button", { name: "Paste files" }));
+		expect(createNode.mock.calls[0]![1]).toMatchObject({
+			kind: "copy",
+			sourceIds: ["alpha", "bravo"],
+			targetParentId: "delta",
+		});
+		await waitFor(() => expect(view.queryByRole("dialog")).not.toBeNull());
+	});
+
+	test.each([
+		["Cut", "row menu"],
+		["Copy", "row menu"],
+		["Cut", "selection menu"],
+		["Copy", "selection menu"],
+		["Cut", "keyboard"],
+		["Copy", "keyboard"],
+	] as const)("keeps only the selected parent for %s from the %s", async (mode, entrypoint) => {
+		treeState.nodes = treeState.nodes.map((node) =>
+			node._id === "bravo"
+				? {
+						...node,
+						parentId: "alpha" as app_convex_Id<"files_nodes">,
+						path: "/alpha/bravo",
+						treePath: "/alpha/bravo/",
+						pathDepth: 2,
+					}
+				: node,
+		);
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		createNode.mockResolvedValue({ _yay: { runId: "run" } });
+		const view = render(<CreateSidebar router={router} selectedNodeId="bravo" />);
+		const bravo = await view.findByRole("treeitem", { name: "bravo" });
+		await waitFor(() => expect(bravo.getAttribute("aria-selected")).toBe("true"));
+		const alpha = view.getByRole("treeitem", { name: "alpha" });
+		fireEvent.click(alpha.querySelector(".FilesSidebarTreeItemPrimaryAction")!, { ctrlKey: true });
+		expect(alpha.getAttribute("aria-selected")).toBe("true");
+		expect(bravo.getAttribute("aria-selected")).toBe("true");
+		if (entrypoint === "keyboard") {
+			const key = mode === "Cut" ? "x" : "c";
+			const code = mode === "Cut" ? "KeyX" : "KeyC";
+			fireEvent.keyDown(alpha, { key, code, ctrlKey: true });
+			fireEvent.keyUp(alpha, { key, code, ctrlKey: true });
+		} else {
+			fireEvent.click(
+				view.getByRole("button", { name: entrypoint === "row menu" ? "More actions for alpha" : "More options" }),
+			);
+			fireEvent.click(await view.findByRole("menuitem", { name: new RegExp(`^${mode}$`) }));
+		}
+		await view.findByText(mode === "Cut" ? "1 ready to move" : "1 ready to copy");
+		view.rerender(<CreateSidebar router={router} selectedNodeId="delta" />);
+		fireEvent.click(view.getByRole("button", { name: "Paste files" }));
+		expect(createNode.mock.calls[0]![1]).toMatchObject({
+			kind: mode === "Cut" ? "move" : "copy",
+			sourceIds: ["alpha"],
+			targetParentId: "delta",
+		});
+		await waitFor(() => expect(view.queryByRole("dialog")).not.toBeNull());
+	});
+
+	test("a menu on an unselected row copies only that row", async () => {
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		createNode.mockResolvedValue({ _yay: { runId: "run" } });
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		await view.findByRole("treeitem", { name: "bravo" });
+		fireEvent.click(view.getByRole("button", { name: "More actions for bravo" }));
+		fireEvent.click(await view.findByRole("menuitem", { name: /^Copy$/ }));
+		await view.findByText("1 ready to copy");
+		view.rerender(<CreateSidebar router={router} selectedNodeId={files_ROOT_ID} />);
+		fireEvent.click(view.getByRole("button", { name: "Paste files" }));
+		expect(createNode.mock.calls[0]![1]).toMatchObject({ sourceIds: ["bravo"], targetParentId: files_ROOT_ID });
+		await waitFor(() => expect(view.queryByRole("dialog")).not.toBeNull());
+	});
+
+	test.each([
+		["Cut", "keyboard"],
+		["Copy", "keyboard"],
+		["Cut", "selection menu"],
+		["Copy", "selection menu"],
+	] as const)("keeps collapsed selected children for %s from the %s", async (mode, entrypoint) => {
+		treeState.nodes = treeState.nodes.map((node) =>
+			node._id === "bravo" || node._id === "charlie"
+				? {
+						...node,
+						parentId: "alpha" as app_convex_Id<"files_nodes">,
+						path: `/alpha/${node.name}`,
+						treePath: `/alpha/${node.name}/`,
+						pathDepth: 2,
+					}
+				: node,
+		);
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		createNode.mockResolvedValue({ _yay: { runId: "run" } });
+		const view = render(<CreateSidebar router={router} selectedNodeId="bravo" />);
+		const bravo = await view.findByRole("treeitem", { name: "bravo" });
+		await waitFor(() => expect(bravo.getAttribute("aria-selected")).toBe("true"));
+		for (const name of ["charlie", "delta"]) {
+			fireEvent.click(view.getByRole("treeitem", { name }).querySelector(".FilesSidebarTreeItemPrimaryAction")!, {
+				ctrlKey: true,
+			});
+		}
+		fireEvent.click(view.getByRole("button", { name: "Collapse folder alpha" }));
+		await waitFor(() => expect(view.queryByRole("treeitem", { name: "bravo" })).toBeNull());
+		if (entrypoint === "keyboard") {
+			const key = mode === "Cut" ? "x" : "c";
+			const code = mode === "Cut" ? "KeyX" : "KeyC";
+			const delta = view.getByRole("treeitem", { name: "delta" });
+			fireEvent.keyDown(delta, { key, code, ctrlKey: true });
+			fireEvent.keyUp(delta, { key, code, ctrlKey: true });
+		} else {
+			fireEvent.click(view.getByRole("button", { name: "More options" }));
+			fireEvent.click(await view.findByRole("menuitem", { name: new RegExp(`^${mode}$`) }));
+		}
+		await view.findByText(mode === "Cut" ? "3 ready to move" : "3 ready to copy");
+		view.rerender(<CreateSidebar router={router} selectedNodeId={files_ROOT_ID} />);
+		fireEvent.click(view.getByRole("button", { name: "Paste files" }));
+		expect(createNode.mock.calls[0]![1]).toMatchObject({ sourceIds: ["bravo", "charlie", "delta"] });
+		await waitFor(() => expect(view.queryByRole("dialog")).not.toBeNull());
+	});
+
+	test.each(["archived", "missing"])("disables Paste when the open folder is %s", async (destination) => {
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="bravo" />);
+		fireEvent.click(await view.findByRole("button", { name: "More actions for bravo" }));
+		fireEvent.click(await view.findByRole("menuitem", { name: /^Copy$/ }));
+		await view.findByText("1 ready to copy");
+		act(() => {
+			treeState.nodes = treeState.nodes.map((node) =>
+				node._id === "alpha" ? { ...node, archiveOperationId: "qa-archive" } : node,
+			);
+			for (const listener of treeState.listeners) listener();
+		});
+		view.rerender(<CreateSidebar router={router} selectedNodeId={destination === "archived" ? "alpha" : "missing"} />);
+		const paste = view.getByRole("button", { name: "Paste files" });
+		expect(paste.matches(":disabled")).toBe(true);
+		expect(document.getElementById(paste.getAttribute("aria-describedby")!)?.textContent).not.toContain("root folder");
+		if (destination === "archived")
+			expect(document.getElementById(paste.getAttribute("aria-describedby")!)?.textContent).toContain("alpha");
+		fireEvent.click(paste);
+		expect(createNode).not.toHaveBeenCalled();
+	});
+
+	test("marks a cut row and clears it with Escape", async () => {
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const view = render(<CreateSidebar router={router} selectedNodeId="alpha" />);
+		const row = await view.findByRole("treeitem", { name: "alpha" });
+		await waitFor(() => expect(row.getAttribute("aria-selected")).toBe("true"));
+		fireEvent.keyDown(row, { key: "x", code: "KeyX", ctrlKey: true });
+		fireEvent.keyUp(row, { key: "x", code: "KeyX", ctrlKey: true });
+		expect(row.getAttribute("aria-label")).toBe("alpha, ready to move");
+		expect(row.classList.contains("FilesSidebarTreeItem-content-cut")).toBe(true);
+		fireEvent.keyDown(row, { key: "Escape", code: "Escape" });
+		fireEvent.keyUp(row, { key: "Escape", code: "Escape" });
+		expect(row.getAttribute("aria-label")).toBe("alpha");
+		expect(createNode).not.toHaveBeenCalled();
+	});
 
 	test.each([
 		["folder", "tree first"],
@@ -249,15 +427,20 @@ describe("FilesSidebar", () => {
 				const [searchQuery, setSearchQuery] = useState("");
 				return (
 					<RouterContextProvider router={router}>
-						<FilesSidebar
-							selectedNodeId={props.selectedNodeId}
-							view="rich_text_editor"
-							initialSearchQuery={searchQuery}
-							onClose={handleAction}
-							onArchive={handleAction}
-							onPrimaryAction={handleAction}
-							onSearchQueryChange={setSearchQuery}
-						/>
+						<FilesClipboardProvider
+							key={tenantState.membershipId}
+							membershipId={tenantState.membershipId as app_convex_Id<"organizations_workspaces_users">}
+						>
+							<FilesSidebar
+								selectedNodeId={props.selectedNodeId}
+								view="rich_text_editor"
+								initialSearchQuery={searchQuery}
+								onClose={handleAction}
+								onArchive={handleAction}
+								onPrimaryAction={handleAction}
+								onSearchQueryChange={setSearchQuery}
+							/>
+						</FilesClipboardProvider>
 					</RouterContextProvider>
 				);
 			}

@@ -98,6 +98,7 @@ export function test_convex(
 	workpool_test.register(t, "billing_workpool_usage_event");
 	workpool_test.register(t, "files_content_materialization_workpool");
 	workpool_test.register(t, "files_upload_conversion_workpool");
+	workpool_test.register(t, "files_transfer_workpool");
 	workpool_test.register(t, "data_deletion_workpool");
 	workpool_test.register(t, "github_mounts_workpool");
 	workpool_test.register(t, "plugins_runtime_workpool");

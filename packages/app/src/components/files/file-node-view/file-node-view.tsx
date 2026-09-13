@@ -18,6 +18,7 @@ import { FileHtmlPreview, type FileHtmlPreview_Source } from "./file-html-previe
 import { FilesSidebarToggle } from "../files-sidebar-toggle.tsx";
 import { FilesShareModal } from "../files-share-modal.tsx";
 import { FilesPropertiesModal } from "../files-properties-modal.tsx";
+import { FilesClipboardMenuItems, FilesClipboardProvider, FilesClipboardToolbar } from "../files-clipboard.tsx";
 import { MainAppHeaderBillingIndicator } from "@/components/main-app-header-billing-indicator.tsx";
 import { MainAppSidebarToggle } from "@/components/main-app-sidebar-toggle.tsx";
 import { CopyIconButton } from "@/components/copy-icon-button.tsx";
@@ -1784,6 +1785,7 @@ const FileNodeViewFolder = memo(function FileNodeViewFolder(props: FileNodeViewF
 				workspaceName={workspaceName}
 				pendingActionNodeIds={pendingActionNodeIds}
 				readOnlyAncestorIds={readOnlyAncestorIds}
+				canPasteIntoFolder={folderCanReceiveChildren}
 				canMoveFileNodeToParent={handleCanMoveFileNodeToParent}
 				onArchiveNode={handleArchiveNode}
 				onMoveFileNodesToParent={handleMoveFileNodesToParent}
@@ -1859,16 +1861,26 @@ type FileNodeViewToolbarFolderActions_ClassNames =
 
 type FileNodeViewToolbarFolderActions_Props = {
 	disabled: boolean;
+	isBusy: boolean;
+	folderItemId: app_convex_Doc<"files_nodes">["parentId"];
+	folderName: string;
 	onCreateNode: (kind: app_convex_Doc<"files_nodes">["kind"]) => void;
 };
 
 const FileNodeViewToolbarFolderActions = memo(function FileNodeViewToolbarFolderActions(
 	props: FileNodeViewToolbarFolderActions_Props,
 ) {
-	const { disabled, onCreateNode } = props;
+	const { disabled, isBusy, folderItemId, folderName, onCreateNode } = props;
+	const actionsRef = useRef<HTMLDivElement | null>(null);
+	FilesClipboardProvider.useHotkeys({
+		target: actionsRef,
+		getSourceIds: () => [],
+		getTargetParentId: () => (disabled ? null : folderItemId),
+	});
 
 	return (
 		<div
+			ref={actionsRef}
 			role="group"
 			aria-label="Create files and folders"
 			className={"FileNodeViewToolbarFolderActions" satisfies FileNodeViewToolbarFolderActions_ClassNames}
@@ -1903,6 +1915,12 @@ const FileNodeViewToolbarFolderActions = memo(function FileNodeViewToolbarFolder
 					<FolderPlus />
 				</MyIconButtonIcon>
 			</MyIconButton>
+			<FilesClipboardToolbar
+				targetParentId={folderItemId}
+				targetName={folderName}
+				canPaste={!disabled}
+				isBusy={isBusy}
+			/>
 		</div>
 	);
 });
@@ -2337,7 +2355,8 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 		folderItemId ? { membershipId, nodeId: folderItemId } : "skip",
 	);
 	const folderNode = fileNodesList?.find((node) => node._id === folderItemId);
-	const canReceiveChildren = canWrite === true;
+	const canReceiveChildren =
+		canWrite === true && (folderItemId === files_ROOT_ID || folderNode?.archiveOperationId === null);
 	const createUnavailableMessage =
 		canWrite === false
 			? folderNode?.writeBlockedReason === "read_only"
@@ -2418,6 +2437,9 @@ const FileNodeViewToolbarCreateNodeActions = memo(function FileNodeViewToolbarCr
 	const folderActionsSlot = folderItemId ? (
 		<FileNodeViewToolbarFolderActions
 			disabled={!canReceiveChildren || isCreatingNode}
+			isBusy={isCreatingNode}
+			folderItemId={folderItemId}
+			folderName={folderItemId === files_ROOT_ID ? "root folder" : (folderNode?.name ?? "selected folder")}
 			onCreateNode={handleCreateNodeModalOpen}
 		/>
 	) : null;
@@ -2475,6 +2497,7 @@ const FileNodeViewFolderBody = memo(function FileNodeViewFolderBody(props: FileN
 type FileNodeViewFolderExplorerRow_ClassNames =
 	| "FileNodeViewFolderExplorer-row"
 	| "FileNodeViewFolderExplorer-row-dragging"
+	| "FileNodeViewFolderExplorer-row-cut"
 	| "FileNodeViewFolderExplorer-row-drop-target"
 	| "FileNodeViewFolderExplorer-row-action"
 	| "FileNodeViewFolderExplorer-cell"
@@ -2490,6 +2513,7 @@ type FileNodeViewFolderExplorerRow_ClassNames =
 type FileNodeViewFolderExplorerRow_Props = {
 	child: files_VisibleTreeNode;
 	hasVisibleReadOnlyDescendant: boolean;
+	canPasteIntoFolder: boolean;
 	organizationName: string;
 	workspaceName: string;
 	isPendingAction: boolean;
@@ -2510,6 +2534,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 	const {
 		child,
 		hasVisibleReadOnlyDescendant,
+		canPasteIntoFolder,
 		organizationName,
 		workspaceName,
 		isPendingAction,
@@ -2533,6 +2558,21 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 	});
 
 	const rowRef = useRef<HTMLDivElement | null>(null);
+	const { clipboard } = FilesClipboardProvider.useContext();
+	const isCut = clipboard?.mode === "cut" && clipboard.sourceIds.includes(child._id);
+	FilesClipboardProvider.useHotkeys({
+		target: rowRef,
+		enabled: !isPendingAction,
+		getSourceIds: (_event, mode) => (mode === "cut" && !capabilities.canRelocateOrRename ? [] : [child._id]),
+		getTargetParentId: () =>
+			child.kind === "folder"
+				? capabilities.canReceiveChildren
+					? child._id
+					: null
+				: canPasteIntoFolder
+					? child.parentId
+					: null,
+	});
 	const [isDragging, setIsDragging] = useState(false);
 	const [isDropTarget, setIsDropTarget] = useState(false);
 
@@ -2644,10 +2684,12 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 			className={cn(
 				"FileNodeViewFolderExplorer-row" satisfies FileNodeViewFolderExplorerRow_ClassNames,
 				isDragging && ("FileNodeViewFolderExplorer-row-dragging" satisfies FileNodeViewFolderExplorerRow_ClassNames),
+				isCut && ("FileNodeViewFolderExplorer-row-cut" satisfies FileNodeViewFolderExplorerRow_ClassNames),
 				isDropTarget &&
 					("FileNodeViewFolderExplorer-row-drop-target" satisfies FileNodeViewFolderExplorerRow_ClassNames),
 			)}
 			data-file-node-id={child._id}
+			aria-label={isCut ? `${child.name}, ready to move` : undefined}
 		>
 			<MyGridTableCell
 				className={cn(
@@ -2659,7 +2701,7 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 				    may only own cells, and a link sitting directly under it is an invalid tree for a
 				    screen reader. The CSS still stretches it across the whole row. */}
 				<Link
-					aria-label={`Open ${child.name}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}`}
+					aria-label={`Open ${child.name}${readOnlyLabels ? `, ${readOnlyLabels.description}` : ""}${isCut ? ", ready to move" : ""}`}
 					className={"FileNodeViewFolderExplorer-row-action" satisfies FileNodeViewFolderExplorerRow_ClassNames}
 					to="/w/$organizationName/$workspaceName/files"
 					params={{ organizationName, workspaceName }}
@@ -2724,6 +2766,14 @@ const FileNodeViewFolderExplorerRow = memo(function FileNodeViewFolderExplorerRo
 					</MyMenuTrigger>
 					<MyMenuPopover unmountOnHide>
 						<MyMenuPopoverContent>
+							<FilesClipboardMenuItems
+								sourceIds={[child._id]}
+								canCut={capabilities.canRelocateOrRename && !isPendingAction}
+								canCopy={!isPendingAction}
+								targetParentId={child.kind === "folder" ? child._id : null}
+								targetName={child.kind === "folder" ? child.name : null}
+								canPaste={capabilities.canReceiveChildren && !isPendingAction}
+							/>
 							<MyMenuItem
 								variant="destructive"
 								disabled={!capabilities.canArchiveOrRestore || isPendingAction}
@@ -2761,6 +2811,7 @@ type FileNodeViewFolderExplorer_Props = {
 	workspaceName: string;
 	pendingActionNodeIds: ReadonlySet<string>;
 	readOnlyAncestorIds: ReadonlySet<app_convex_Id<"files_nodes">>;
+	canPasteIntoFolder: boolean;
 	canMoveFileNodeToParent: (args: {
 		fileNodeId: app_convex_Id<"files_nodes">;
 		targetParentId: app_convex_Doc<"files_nodes">["parentId"];
@@ -2783,6 +2834,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 		workspaceName,
 		pendingActionNodeIds,
 		readOnlyAncestorIds,
+		canPasteIntoFolder,
 		canMoveFileNodeToParent,
 		onArchiveNode,
 		onMoveFileNodesToParent,
@@ -2811,6 +2863,7 @@ const FileNodeViewFolderExplorer = memo(function FileNodeViewFolderExplorer(prop
 									key={child._id}
 									child={child}
 									hasVisibleReadOnlyDescendant={readOnlyAncestorIds.has(child._id)}
+									canPasteIntoFolder={canPasteIntoFolder}
 									organizationName={organizationName}
 									workspaceName={workspaceName}
 									isPendingAction={isPendingAction}

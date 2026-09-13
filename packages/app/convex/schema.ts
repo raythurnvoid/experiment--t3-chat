@@ -12,6 +12,16 @@ import { plugins_CAPABILITIES } from "../shared/plugins.ts";
 
 const plugins_capability_validator = v.union(...plugins_CAPABILITIES.map((capability) => v.literal(capability)));
 
+const files_transfer_phase_validator = v.union(
+	v.literal("checking"),
+	v.literal("awaiting_choice"),
+	v.literal("running"),
+	v.literal("stopping"),
+	v.literal("completed"),
+	v.literal("canceled"),
+	v.literal("failed"),
+);
+
 /**
  * The full list of permissions. Users build roles out of these, but can never add a new one.
  **/
@@ -1318,6 +1328,100 @@ const app_convex_schema = defineSchema({
 		pendingTreeSha: v.optional(v.string()),
 	}).index("by_name", ["name"]),
 	// #endregion files
+
+	// #region files transfer
+	/**
+	 * Saved Paste work. The idle clipboard stays in its browser tab.
+	 */
+	files_transfer_runs: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		userId: v.id("users"),
+		membershipId: v.id("organizations_workspaces_users"),
+		requestId: v.string(),
+		kind: v.union(v.literal("move"), v.literal("copy")),
+		targetParentId: v.union(v.id("files_nodes"), v.literal("root")),
+		targetPath: v.string(),
+		phase: files_transfer_phase_validator,
+		/**
+		 * One active run per user and workspace. Stays true until running workers finish.
+		 */
+		active: v.boolean(),
+		revision: v.number(),
+		total: v.number(),
+		completed: v.number(),
+		skipped: v.number(),
+		failed: v.number(),
+		inFlight: v.number(),
+		applyToRemaining: v.union(v.literal("keep_both"), v.literal("skip"), v.null()),
+		errorMessage: v.union(v.string(), v.null()),
+		expiresAt: v.number(),
+		finishedAt: v.union(v.number(), v.null()),
+		updatedAt: v.number(),
+	})
+		.index("by_user_workspace_request", ["userId", "workspaceId", "requestId"])
+		.index("by_user_workspace_active", ["userId", "workspaceId", "active"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"])
+		.index("by_user", ["userId"])
+		.index("by_expiresAt", ["expiresAt"]),
+
+	/**
+	 * One doc per source in a run. Tracks attempts, temporary assets, and the resulting node.
+	 */
+	files_transfer_items: defineTable({
+		organizationId: v.id("organizations"),
+		workspaceId: v.id("organizations_workspaces"),
+		runId: v.id("files_transfer_runs"),
+		sourceId: v.id("files_nodes"),
+		sourceParentId: v.union(v.id("files_nodes"), v.literal("root")),
+		sourceName: v.string(),
+		sourcePath: v.string(),
+		kind: v.union(v.literal("folder"), v.literal("file")),
+		parentItemId: v.union(v.id("files_transfer_items"), v.null()),
+		order: v.number(),
+		discoveryDone: v.boolean(),
+		discoveryCursor: v.union(v.string(), v.null()),
+		state: v.union(
+			v.literal("pending"),
+			v.literal("copying"),
+			v.literal("conflict"),
+			v.literal("completed"),
+			v.literal("skipped"),
+			v.literal("failed"),
+		),
+		conflictKind: v.union(
+			v.literal("name_conflict"),
+			v.literal("source_changed"),
+			v.literal("destination_changed"),
+			v.null(),
+		),
+		choice: v.union(v.literal("keep_both"), v.literal("skip"), v.null()),
+		attempt: v.number(),
+		workId: v.union(vWorkId, v.null()),
+		attemptExpiresAt: v.union(v.number(), v.null()),
+		/**
+		 * Unpublished assets for the current attempt, handed to the deletion ledger on discard.
+		 */
+		stagedAssetIds: v.array(v.id("files_r2_assets")),
+		/**
+		 * Payer pinned at the first successful billing check; retries keep it.
+		 */
+		billedUserId: v.union(v.id("users"), v.null()),
+		outputId: v.union(v.id("files_nodes"), v.null()),
+		outputName: v.union(v.string(), v.null()),
+		outputPath: v.union(v.string(), v.null()),
+		errorMessage: v.union(v.string(), v.null()),
+	})
+		.index("by_run_source", ["runId", "sourceId"])
+		.index("by_run_order", ["runId", "order"])
+		.index("by_run_state_order", ["runId", "state", "order"])
+		.index("by_run_work", ["runId", "workId"])
+		.index("by_attemptExpiresAt", ["attemptExpiresAt"])
+		.index("by_run_parentItem", ["runId", "parentItemId"])
+		.index("by_run_discoveryDone_order", ["runId", "discoveryDone", "order"])
+		.index("by_parentItem", ["parentItemId"])
+		.index("by_organization_workspace", ["organizationId", "workspaceId"]),
+	// #endregion files transfer
 
 	// #region plugins core
 	plugins_publisher_repositories: defineTable({
@@ -2691,22 +2795,42 @@ const app_convex_schema = defineSchema({
 		organizationId: v.id("organizations"),
 		workspaceId: v.id("organizations_workspaces"),
 		/**
-		 * Who triggered the work. Activities are workspace-shared, not a per-user inbox.
+		 * Who triggered the work. Plugin activities are shared; transfer runs are private to this user.
 		 */
 		userId: v.id("users"),
 		/**
 		 * "timeout" = the deadline cron closed it because the producer never finished it in time.
+		 * "canceled" = the owner stopped the work.
 		 */
-		status: v.union(v.literal("running"), v.literal("succeeded"), v.literal("failed"), v.literal("timeout")),
+		status: v.union(
+			v.literal("running"),
+			v.literal("succeeded"),
+			v.literal("failed"),
+			v.literal("timeout"),
+			v.literal("canceled"),
+		),
 		/**
-		 * What produced this activity. Wrap in v.union(...) when a second producer variant lands.
+		 * What produced this activity. The producer owns progress and completion in the same
+		 * transaction as its work.
 		 */
-		source: v.object({
-			type: v.literal("plugin_run"),
-			id: v.id("plugins_event_runs"),
-			installationId: v.id("plugins_workspace_installations"),
-			pluginName: v.string(),
-		}),
+		source: v.union(
+			v.object({
+				kind: v.literal("plugin_run"),
+				id: v.id("plugins_event_runs"),
+				installationId: v.id("plugins_workspace_installations"),
+				pluginName: v.string(),
+			}),
+			v.object({
+				kind: v.literal("files_transfer_run"),
+				id: v.id("files_transfer_runs"),
+				transferKind: v.union(v.literal("move"), v.literal("copy")),
+				phase: files_transfer_phase_validator,
+				total: v.number(),
+				completed: v.number(),
+				skipped: v.number(),
+				failed: v.number(),
+			}),
+		),
 		/**
 		 * Status-neutral display text, e.g. "Video plugin · speakers.mp4".
 		 */
@@ -2718,7 +2842,7 @@ const app_convex_schema = defineSchema({
 		 */
 		targets: v.array(
 			v.object({
-				type: v.literal("file_node"),
+				kind: v.literal("file_node"),
 				id: v.id("files_nodes"),
 				path: v.string(),
 				/**
@@ -2728,7 +2852,7 @@ const app_convex_schema = defineSchema({
 			}),
 		),
 		/**
-		 * Caller-set deadline (at most 5 minutes after start); past it, the cron closes the activity as "timeout".
+		 * Plugin deadline (at most 5 minutes after start). Transfer runs own their expiry and stop checks.
 		 */
 		timeoutAt: v.number(),
 		finishedAt: v.optional(v.number()),

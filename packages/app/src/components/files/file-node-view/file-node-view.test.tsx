@@ -6,10 +6,12 @@ import { toast } from "sonner";
 
 import type { FileEditor_Props, FileEditorPresenceSupplier_Props } from "../file-editor/file-editor.tsx";
 import type { FileHtmlPreview } from "./file-html-preview.tsx";
+import { FilesClipboardProvider } from "../files-clipboard.tsx";
 
 const {
 	tenantContextMock,
 	queryMock,
+	mutationMock,
 	queryPushListeners,
 	editorRenderMock,
 	editorMountMock,
@@ -18,6 +20,7 @@ const {
 } = vi.hoisted(() => ({
 	tenantContextMock: vi.fn(),
 	queryMock: vi.fn(),
+	mutationMock: vi.fn(),
 	queryPushListeners: new Set<() => void>(),
 	editorRenderMock: vi.fn<(props: FileEditor_Props) => void>(),
 	editorMountMock: vi.fn(),
@@ -29,7 +32,7 @@ const {
 vi.mock("convex/react", async () => {
 	const { useEffect, useState } = await import("react");
 	return {
-		useConvex: () => ({}),
+		useConvex: () => ({ mutation: mutationMock }),
 		useQueries: () => ({}),
 		useQuery: (...args: unknown[]) => {
 			const [, forceRender] = useState(0);
@@ -217,6 +220,10 @@ beforeEach(() => {
 				return nodeQueryStatus === "loading" ? undefined : nodeQueryStatus === "missing" ? null : node;
 			case "files_pending_updates:list_files_pending_updates":
 				return pendingUpdates;
+			case "files_transfer:list_current":
+				return [];
+			case "files_transfer:get":
+				return null;
 			case "plugins_ui:list_file_views":
 				return plugins;
 			case "r2:get_asset_by_file_node_id":
@@ -225,6 +232,8 @@ beforeEach(() => {
 				return true;
 		}
 	});
+	mutationMock.mockReset();
+	mutationMock.mockResolvedValue({ _yay: { runId: "clipboard_run" } });
 	editorMountMock.mockClear();
 	editorRenderMock.mockClear();
 	editorUnmountMock.mockClear();
@@ -244,7 +253,13 @@ afterEach(() => {
 function renderFileView(searchParams: FileNodeView_SearchParams = { nodeId: NODE._id }) {
 	const onNavigateSearch = vi.fn();
 	return {
-		...render(<FileNodeView searchParams={searchParams} onNavigateSearch={onNavigateSearch} />),
+		...render(<FileNodeView searchParams={searchParams} onNavigateSearch={onNavigateSearch} />, {
+			wrapper: ({ children }) => (
+				<FilesClipboardProvider key={tenantContextMock().membershipId} membershipId={tenantContextMock().membershipId}>
+					{children}
+				</FilesClipboardProvider>
+			),
+		}),
 		onNavigateSearch,
 	};
 }
@@ -386,6 +401,82 @@ describe("FileNodeView node loading", () => {
 		const { onNavigateSearch } = renderFileView({ nodeId: "root" });
 		expect(await screen.findByRole("heading", { name: "No README.md" })).toBeTruthy();
 		expect(onNavigateSearch).not.toHaveBeenCalled();
+	});
+});
+
+describe("FileNodeView folder clipboard", () => {
+	test("disables toolbar Paste when the open folder is archived", async () => {
+		node = { ...NODE, _id: "folder_1", name: "Docs", kind: "folder" };
+		const child = { ...NODE, parentId: node._id };
+		treeNodes = [node, child];
+		renderFileView({ nodeId: node._id });
+		fireEvent.click(await screen.findByRole("button", { name: "More actions for page.html" }));
+		fireEvent.click(await screen.findByRole("menuitem", { name: /^Copy$/ }));
+		await waitFor(() => expect(screen.queryByRole("menuitem", { name: /^Copy$/ })).toBeNull());
+		node = { ...node, archiveOperationId: "qa-archive" };
+		treeNodes = [node, { ...child, archiveOperationId: "qa-archive" }];
+		pushQueryChanges();
+		const paste = screen.getByRole("button", { name: "Paste files" });
+		expect(paste.matches(":disabled")).toBe(true);
+		fireEvent.click(paste);
+		expect(mutationMock).not.toHaveBeenCalled();
+	});
+
+	test("explains Paste is busy while a folder is being created", async () => {
+		node = { ...NODE, _id: "folder_1", name: "Docs", kind: "folder" };
+		treeNodes = [node, { ...NODE, parentId: node._id }];
+		renderFileView({ nodeId: node._id });
+		fireEvent.click(await screen.findByRole("button", { name: "More actions for page.html" }));
+		fireEvent.click(await screen.findByRole("menuitem", { name: /^Copy$/ }));
+		await waitFor(() => expect(screen.queryByRole("menuitem", { name: /^Copy$/ })).toBeNull());
+		const response = Promise.withResolvers<{ _yay: { nodeId: string } }>();
+		mutationMock.mockReturnValue(response.promise);
+		fireEvent.click(screen.getByRole("button", { name: "New folder" }));
+		fireEvent.change(await screen.findByRole("textbox", { name: "Name" }), { target: { value: "New folder" } });
+		fireEvent.click(screen.getByRole("button", { name: "Create folder" }));
+		const paste = screen.getByRole("button", { name: "Paste files", hidden: true });
+		expect(paste.matches(":disabled")).toBe(true);
+		expect(document.getElementById(paste.getAttribute("aria-describedby")!)?.textContent).toContain(
+			"Wait for the current file operation to finish.",
+		);
+		await act(async () => response.resolve({ _yay: { nodeId: "new-folder" } }));
+	});
+
+	test.each(["toolbar", "folder menu"])("copies a row and pastes into the %s destination", async (destination) => {
+		node = { ...NODE, _id: "folder_1", name: "Docs", kind: "folder" };
+		const child = { ...NODE, parentId: node._id };
+		const target = { ...node, _id: "folder_2", name: "Target", parentId: node._id };
+		treeNodes = [node, child, target];
+		renderFileView({ nodeId: node._id });
+		fireEvent.click(await screen.findByRole("button", { name: "More actions for page.html" }));
+		fireEvent.click(await screen.findByRole("menuitem", { name: /^Copy$/ }));
+		await waitFor(() => expect(screen.queryByRole("menuitem", { name: /^Copy$/ })).toBeNull());
+		expect(screen.getByText("1 ready to copy")).toBeTruthy();
+		if (destination === "toolbar") {
+			fireEvent.click(screen.getByRole("button", { name: "Paste files" }));
+		} else {
+			fireEvent.click(screen.getByRole("button", { name: "More actions for Target" }));
+			fireEvent.click(await screen.findByRole("menuitem", { name: /^Paste$/ }));
+		}
+		expect(getFunctionName(mutationMock.mock.calls[0]![0])).toBe("files_transfer:start");
+		expect(mutationMock.mock.calls[0]![1]).toMatchObject({
+			kind: "copy",
+			sourceIds: [child._id],
+			targetParentId: destination === "toolbar" ? node._id : target._id,
+		});
+		await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
+	});
+
+	test("marks a cut row ready to move and Clear removes the mark", async () => {
+		node = { ...NODE, _id: "folder_1", name: "Docs", kind: "folder" };
+		treeNodes = [node, { ...NODE, parentId: node._id }];
+		renderFileView({ nodeId: node._id });
+		fireEvent.click(await screen.findByRole("button", { name: "More actions for page.html" }));
+		fireEvent.click(await screen.findByRole("menuitem", { name: /^Cut$/ }));
+		expect(screen.getByRole("link", { name: "Open page.html, ready to move" })).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "Clear file clipboard" }));
+		expect(screen.getByRole("link", { name: /^Open page\.html$/ })).toBeTruthy();
+		expect(mutationMock).not.toHaveBeenCalled();
 	});
 });
 

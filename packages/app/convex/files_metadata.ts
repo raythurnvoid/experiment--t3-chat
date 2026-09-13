@@ -1391,7 +1391,7 @@ async function db_query_metadata_docs(
  * repeat a key that a value doc already returned, so both are filtered out here. `entryIndex`
  * restores the order the keys were written in, because the index sorts them by key.
  */
-async function db_read_metadata(
+export async function files_metadata_db_read_entries(
 	ctx: QueryCtx,
 	args: {
 		organizationId: Doc<"files_metadata_docs">["organizationId"];
@@ -1585,7 +1585,7 @@ export const get_entries = query({
 			return [];
 		}
 
-		return await db_read_metadata(ctx, {
+		return await files_metadata_db_read_entries(ctx, {
 			organizationId: fileNode.organizationId,
 			workspaceId: fileNode.workspaceId,
 			fileNodeId: fileNode._id,
@@ -1686,7 +1686,7 @@ export const update_entries_by_path = internalMutation({
 			return writable;
 		}
 
-		const currentEntries = await db_read_metadata(ctx, {
+		const currentEntries = await files_metadata_db_read_entries(ctx, {
 			organizationId: fileNode.organizationId,
 			workspaceId: fileNode.workspaceId,
 			fileNodeId: fileNode._id,

@@ -13,6 +13,8 @@ import {
 } from "../shared/files.ts";
 import { files_yjs_doc_get_text } from "../shared/files-tiptap.ts";
 import { access_control_db_ensure_role_assignment } from "./access_control.ts";
+import { files_nodes_db_hard_delete_node } from "./files_nodes.ts";
+import type { Id } from "./_generated/dataModel.js";
 
 const objects = new Map<string, BodyInit>();
 
@@ -49,7 +51,7 @@ beforeEach(() => {
 	);
 });
 
-async function create_file_fixture(rootKind: "plain_text" | "rich_text" = "plain_text") {
+async function create_file_fixture(rootKind: "plain_text" | "rich_text" = "plain_text", text = "Original text\n") {
 	const t = test_convex();
 	const db = await t.run(async (ctx) => test_mocks_fill_db_with.membership(ctx));
 	const asUser = t.withIdentity({ issuer: "https://clerk.test", external_id: db.userId });
@@ -57,7 +59,7 @@ async function create_file_fixture(rootKind: "plain_text" | "rich_text" = "plain
 	const created = await asUser.action(internal.files_nodes_content.create_file_by_path, {
 		...scope,
 		path: rootKind === "rich_text" ? "/restore.md" : "/restore.txt",
-		textContent: "Original text\n",
+		textContent: text,
 	});
 	if (created._nay) throw new Error(created._nay.message);
 	const nodeId = created._yay.nodeId;
@@ -68,6 +70,71 @@ async function create_file_fixture(rootKind: "plain_text" | "rich_text" = "plain
 		return snapshot._id;
 	});
 	return { t, db, asUser, scope, nodeId, pointers, snapshotId };
+}
+
+async function create_transfer_copy_item(
+	fixture: Awaited<ReturnType<typeof create_file_fixture>>,
+	sourceId: Id<"files_nodes"> = fixture.nodeId,
+) {
+	const { t, db, asUser } = fixture;
+	const folder = await asUser.mutation(api.files_nodes.create_folder_node, {
+		membershipId: db.membershipId,
+		parentId: files_ROOT_ID,
+		path: "/copies",
+	});
+	if (folder._nay) throw new Error(folder._nay.message);
+	return await t.run(async (ctx) => {
+		const source = await ctx.db.get("files_nodes", sourceId);
+		if (!source) throw new Error("Missing copy source");
+		const now = Date.now();
+		const runId = await ctx.db.insert("files_transfer_runs", {
+			...db,
+			requestId: "test-copy",
+			kind: "copy",
+			targetParentId: folder._yay.nodeId,
+			targetPath: "/copies",
+			phase: "running",
+			active: true,
+			revision: 0,
+			total: 1,
+			completed: 0,
+			skipped: 0,
+			failed: 0,
+			inFlight: 1,
+			applyToRemaining: null,
+			errorMessage: null,
+			expiresAt: now + 30 * 60 * 1000,
+			finishedAt: null,
+			updatedAt: now,
+		});
+		const itemId = await ctx.db.insert("files_transfer_items", {
+			organizationId: db.organizationId,
+			workspaceId: db.workspaceId,
+			runId,
+			sourceId,
+			sourceParentId: source.parentId,
+			sourceName: source.name,
+			sourcePath: source.path,
+			kind: "file",
+			parentItemId: null,
+			order: 0,
+			discoveryDone: true,
+			discoveryCursor: null,
+			state: "copying",
+			conflictKind: null,
+			choice: null,
+			billedUserId: null,
+			attempt: 1,
+			workId: "work_review" as never,
+			attemptExpiresAt: now + 10 * 60 * 1000,
+			stagedAssetIds: [],
+			outputId: null,
+			outputName: null,
+			outputPath: null,
+			errorMessage: null,
+		});
+		return { itemId, runId, folderId: folder._yay.nodeId };
+	});
 }
 
 async function create_pending_proposal(
@@ -184,6 +251,564 @@ describe("create_file_by_path", () => {
 			path: `/brief.${extension}`,
 		});
 		expect(read?.content).toBe(text);
+	});
+});
+
+describe("copy_transfer_file", () => {
+	test.each([
+		{ rootKind: "plain_text", collaborative: true },
+		{ rootKind: "plain_text", collaborative: false },
+		{ rootKind: "rich_text", collaborative: true },
+		{ rootKind: "rich_text", collaborative: false },
+	] as const)("copies saved content and metadata with %j", async ({ rootKind, collaborative }) => {
+		vi.useFakeTimers();
+		const sourceText =
+			rootKind === "rich_text"
+				? '---\nproject: copied\n---\n\nKeep **bold** and <span data-type="comment" data-lb-thread-id="old-thread">these words</span>.\n'
+				: '  exact text\n\tspaces, Unicode: 😀\n<span data-type="comment" data-lb-thread-id="literal">plain code</span>';
+		const fixture = await create_file_fixture(rootKind, sourceText);
+		const { t, db, asUser, scope, nodeId } = fixture;
+		if (!collaborative) {
+			expect(
+				(
+					await asUser.mutation(api.files_nodes_content.set_file_non_collaborative, {
+						membershipId: db.membershipId,
+						nodeId,
+						acknowledgeDropCollaborativeHistory: true,
+					})
+				)._nay,
+			).toBeUndefined();
+		}
+		expect(
+			(
+				await asUser.mutation(api.files_metadata.set_entries, {
+					membershipId: db.membershipId,
+					fileNodeId: nodeId,
+					metadataYaml: "owner: Ray\nchecked: true\ncount: 4",
+				})
+			)._nay,
+		).toBeUndefined();
+		const before = await t.run((ctx) => ctx.db.get("files_nodes", nodeId));
+		const meterBefore = await t.run((ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_user", (q) => q.eq("userId", db.userId))
+				.first(),
+		);
+		const copy = await create_transfer_copy_item(fixture);
+		await t.action(internal.files_nodes_content.copy_transfer_file, { itemId: copy.itemId, attempt: 1 });
+		const item = await t.run((ctx) => ctx.db.get("files_transfer_items", copy.itemId));
+		expect(item?.errorMessage).toBeNull();
+		expect(item?.state).toBe("completed");
+		if (!item?.outputId) throw new Error("Missing copied file");
+		const copiedId = item.outputId;
+		const copied = await t.run((ctx) => ctx.db.get("files_nodes", copiedId));
+		expect(copied).toMatchObject({
+			contentType: before?.contentType,
+			textKind: rootKind,
+			collaborationEnabled: collaborative,
+			writePolicy: null,
+		});
+		expect(copied?.assetId).not.toBe(before?.assetId);
+		expect(copied?.yjsLastSequenceId === null).toBe(!collaborative);
+		if (collaborative) expect(copied?.yjsLastSequenceId).not.toBe(before?.yjsLastSequenceId);
+		const read = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+			...scope,
+			path: item.outputPath!,
+		});
+		if (rootKind === "plain_text") {
+			expect(read?.content).toBe(sourceText);
+		} else {
+			expect(read?.content).toContain("Keep **bold** and these words.");
+			expect(read?.content).not.toContain("old-thread");
+			expect(read?.content).not.toContain('data-type="comment"');
+		}
+		await t.run(async (ctx) => {
+			const metadata = await ctx.db
+				.query("files_metadata_docs")
+				.withIndex("by_organization_workspace_fileNode_fieldPath", (q) =>
+					q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", copiedId),
+				)
+				.collect();
+			expect(metadata.filter((entry) => entry.docKind === "value").map((entry) => entry.fieldPath)).toEqual(
+				expect.arrayContaining(["metadata.owner", "metadata.checked", "metadata.count"]),
+			);
+			if (rootKind === "rich_text") expect(metadata.map((entry) => entry.fieldPath)).toContain("frontmatter.project");
+			expect(
+				await ctx.db
+					.query("files_snapshots")
+					.withIndex("by_organization_workspace_fileNode_archivedAt", (q) =>
+						q.eq("organizationId", db.organizationId).eq("workspaceId", db.workspaceId).eq("fileNodeId", copiedId),
+					)
+					.collect(),
+			).toHaveLength(1);
+			expect(
+				await ctx.db
+					.query("files_pending_updates")
+					.withIndex("by_fileNode", (q) => q.eq("fileNodeId", copiedId))
+					.collect(),
+			).toHaveLength(0);
+		});
+		// A lost action response can be retried without another node, version, or charge.
+		await t.action(internal.files_nodes_content.copy_transfer_file, { itemId: copy.itemId, attempt: 1 });
+		const meterAfter = await t.run((ctx) =>
+			ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_user", (q) => q.eq("userId", db.userId))
+				.first(),
+		);
+		expect(meterAfter?.meter?.consumedUnits).toBe((meterBefore?.meter?.consumedUnits ?? 0) + 1);
+		expect((await t.run((ctx) => ctx.db.get("files_transfer_runs", copy.runId)))?.completed).toBe(1);
+		expect(await t.run((ctx) => ctx.db.get("files_nodes", nodeId))).toEqual(before);
+	});
+
+	test("copies a read-only source into an editable independent document", async () => {
+		vi.useFakeTimers();
+		const fixture = await create_file_fixture();
+		const { t, db, asUser, scope, nodeId } = fixture;
+		expect(
+			(
+				await asUser.mutation(api.files_nodes.set_node_write_policy, {
+					membershipId: db.membershipId,
+					nodeId,
+					writePolicy: { mode: "read_only" },
+				})
+			)._nay,
+		).toBeUndefined();
+		const copy = await create_transfer_copy_item(fixture);
+		await t.action(internal.files_nodes_content.copy_transfer_file, { itemId: copy.itemId, attempt: 1 });
+		const item = await t.run((ctx) => ctx.db.get("files_transfer_items", copy.itemId));
+		if (!item?.outputId) throw new Error(item?.errorMessage ?? "Missing copied file");
+		const copiedId = item.outputId;
+		const copied = await t.run((ctx) => ctx.db.get("files_nodes", copiedId));
+		expect(copied?.writePolicy).toBeNull();
+		expect(copied?.writePolicyScopeNodeId).toBeNull();
+		const pointers = await test_get_file_yjs_pointers(t, copiedId);
+		const snapshotKey = await t.run(async (ctx) => {
+			const snapshot = await ctx.db.get("files_yjs_snapshots", pointers.yjsSnapshotId);
+			return (await ctx.db.get("files_r2_assets", snapshot!.assetId))!.r2Key!;
+		});
+		const editor = new YjsDoc();
+		applyUpdate(editor, new Uint8Array(await new Response(objects.get(snapshotKey)).arrayBuffer()));
+		const beforeEdit = encodeStateVector(editor);
+		editor.getText(files_YJS_DOC_KEYS.plainText).insert("Original text\n".length, "Copy edit\n");
+		expect(
+			(
+				await asUser.mutation(api.files_nodes.yjs_push_update, {
+					membershipId: db.membershipId,
+					nodeId: copiedId,
+					expectedYjsLastSequenceId: pointers.yjsLastSequenceId,
+					update: files_u8_to_array_buffer(encodeStateAsUpdate(editor, beforeEdit)),
+					sessionId: "clipboard-destination",
+				})
+			)._nay,
+		).toBeUndefined();
+		editor.destroy();
+		expect(
+			(
+				await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+					...scope,
+					path: "/copies/restore.txt",
+				})
+			)?.content,
+		).toBe("Original text\nCopy edit\n");
+		expect(
+			(
+				await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+					...scope,
+					path: "/restore.txt",
+				})
+			)?.content,
+		).toBe("Original text\n");
+	});
+
+	test("includes saved Yjs edits and leaves pending proposals behind", async () => {
+		vi.useFakeTimers();
+		const fixture = await create_file_fixture();
+		const { t, db, asUser, scope, nodeId, pointers } = fixture;
+		await create_pending_proposal(fixture);
+		const yjsKey = await t.run(async (ctx) => {
+			const snapshot = await ctx.db.get("files_yjs_snapshots", pointers.yjsSnapshotId);
+			return (await ctx.db.get("files_r2_assets", snapshot!.assetId))!.r2Key!;
+		});
+		const editor = new YjsDoc();
+		applyUpdate(editor, new Uint8Array(await new Response(objects.get(yjsKey)).arrayBuffer()));
+		const beforeEdit = encodeStateVector(editor);
+		editor.getText(files_YJS_DOC_KEYS.plainText).insert("Original text\n".length, "Saved latest edit\n");
+		expect(
+			(
+				await asUser.mutation(api.files_nodes.yjs_push_update, {
+					membershipId: db.membershipId,
+					nodeId,
+					expectedYjsLastSequenceId: pointers.yjsLastSequenceId,
+					update: files_u8_to_array_buffer(encodeStateAsUpdate(editor, beforeEdit)),
+					sessionId: "clipboard-source",
+				})
+			)._nay,
+		).toBeUndefined();
+		editor.destroy();
+		const copy = await create_transfer_copy_item(fixture);
+		await t.action(internal.files_nodes_content.copy_transfer_file, { itemId: copy.itemId, attempt: 1 });
+		const read = await t.action(internal.files_nodes_content.get_file_last_available_text_content_by_path, {
+			...scope,
+			path: "/copies/restore.txt",
+		});
+		expect(read?.content).toBe("Original text\nSaved latest edit\n");
+	});
+
+	test.each(["application/pdf", "image/png", "video/mp4", "text/html;charset=utf-8"])(
+		"copies stored %s bytes without conversion or shared assets",
+		async (contentType) => {
+			vi.useFakeTimers();
+			const fixture = await create_file_fixture();
+			const { t, db, asUser } = fixture;
+			const bytes = new Uint8Array([0, 255, 13, 10, 128, 70]);
+			const source = await asUser.mutation(api.files_nodes.create_upload_node, {
+				membershipId: db.membershipId,
+				parentId: files_ROOT_ID,
+				filename: "stored.html",
+				contentType,
+				size: bytes.byteLength,
+			});
+			if (source._nay) throw new Error(source._nay.message);
+			const sourceKey = "test/clipboard-stored";
+			objects.set(sourceKey, bytes);
+			await t.run((ctx) => ctx.db.patch("files_r2_assets", source._yay.assetId, { r2Key: sourceKey }));
+			vi.spyOn(r2_server_side_copy, "copy_object").mockImplementation(async (_ctx, args) => {
+				objects.set(args.destinationKey, bytes);
+				return { outcome: "copied", size: bytes.byteLength, etag: "copied" };
+			});
+			const copy = await create_transfer_copy_item(fixture, source._yay.nodeId);
+			await t.action(internal.files_nodes_content.copy_transfer_file, { itemId: copy.itemId, attempt: 1 });
+			const item = await t.run((ctx) => ctx.db.get("files_transfer_items", copy.itemId));
+			if (!item?.outputId) throw new Error(item?.errorMessage ?? "Missing stored copy");
+			const copiedId = item.outputId;
+			const copied = await t.run((ctx) => ctx.db.get("files_nodes", copiedId));
+			expect(copied).toMatchObject({ contentType, textKind: null, collaborationEnabled: null, yjsSnapshotId: null });
+			expect(copied?.assetId).not.toBe(source._yay.assetId);
+			await t.run((ctx) =>
+				files_nodes_db_hard_delete_node(ctx, {
+					organizationId: db.organizationId,
+					workspaceId: db.workspaceId,
+					nodeId: source._yay.nodeId,
+				}),
+			);
+			const asset = await t.run((ctx) => ctx.db.get("files_r2_assets", copied!.assetId!));
+			expect(asset?.r2Key).not.toBe(sourceKey);
+			expect(new Uint8Array(await new Response(objects.get(asset!.r2Key!)).arrayBuffer())).toEqual(bytes);
+			expect(await t.run((ctx) => ctx.db.query("plugins_event_runs").collect())).toHaveLength(0);
+		},
+	);
+
+	test.each(["stop", "permission"])(
+		"refuses publication after %s during upload and cleans staged assets",
+		async (change) => {
+			vi.useFakeTimers();
+			const fixture = await create_file_fixture();
+			const { t, db, asUser } = fixture;
+			const copy = await create_transfer_copy_item(fixture);
+			const savedFetch = globalThis.fetch;
+			let changed = false;
+			vi.stubGlobal(
+				"fetch",
+				vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+					const response = await savedFetch(input, init);
+					if (init?.method === "PUT" && !changed) {
+						changed = true;
+						if (change === "stop") {
+							await asUser.mutation(api.files_transfer.stop, { membershipId: db.membershipId, runId: copy.runId });
+						} else {
+							await t.run((ctx) => ctx.db.patch("organizations_workspaces_users", db.membershipId, { active: false }));
+						}
+					}
+					return response;
+				}),
+			);
+			await t.action(internal.files_nodes_content.copy_transfer_file, { itemId: copy.itemId, attempt: 1 });
+			const item = await t.run((ctx) => ctx.db.get("files_transfer_items", copy.itemId));
+			expect(item?.outputId).toBeNull();
+			expect(item?.stagedAssetIds).toEqual([]);
+			await expect_retired_uploads(t, 2);
+			await t.run(async (ctx) => {
+				const jobs = await ctx.db.query("files_r2_object_deletion_jobs").collect();
+				for (const job of jobs) expect(job.putMayArriveUntil).toBeGreaterThan(Date.now());
+			});
+		},
+	);
+
+	test("releases failed writes and lets a later attempt use fresh assets", async () => {
+		vi.useFakeTimers();
+		const fixture = await create_file_fixture();
+		const { t } = fixture;
+		const copy = await create_transfer_copy_item(fixture);
+		const savedFetch = globalThis.fetch;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+				const response = await savedFetch(input, init);
+				if (init?.method === "PUT") throw new Error("Storage failed after receiving bytes");
+				return response;
+			}),
+		);
+		await expect(
+			t.action(internal.files_nodes_content.copy_transfer_file, { itemId: copy.itemId, attempt: 1 }),
+		).rejects.toThrow("Storage failed");
+		await expect_retired_uploads(t, 2);
+		vi.stubGlobal("fetch", savedFetch);
+		await t.run((ctx) => ctx.db.patch("files_transfer_items", copy.itemId, { attempt: 2 }));
+		await t.action(internal.files_nodes_content.copy_transfer_file, { itemId: copy.itemId, attempt: 2 });
+		expect((await t.run((ctx) => ctx.db.get("files_transfer_items", copy.itemId)))?.state).toBe("completed");
+	});
+
+	test.each(["after preflight", "during upload", "between retries"])(
+		"keeps the original payer when ownership changes %s",
+		async (change) => {
+			vi.useFakeTimers();
+			const fixture = await create_file_fixture();
+			const { t, db, asUser } = fixture;
+			const newOwnerId = await t.run(async (ctx) => {
+				const newOwner = await test_mocks_fill_db_with.membership(ctx, {
+					organizationName: "personal",
+					workspaceName: "home",
+				});
+				const organization = await ctx.db.get("organizations", db.organizationId);
+				if (!organization?.defaultWorkspaceId) throw new Error("Missing default workspace");
+				await ctx.db.insert("organizations_workspaces_users", {
+					organizationId: db.organizationId,
+					workspaceId: organization.defaultWorkspaceId,
+					userId: newOwner.userId,
+					active: true,
+					updatedAt: Date.now(),
+				});
+				await ctx.db.patch("organizations", db.organizationId, { billingMode: "organization_owner" });
+				return newOwner.userId;
+			});
+			const copy = await create_transfer_copy_item(fixture);
+			const meterBefore = await t.run((ctx) =>
+				ctx.db
+					.query("billing_usage_snapshots")
+					.withIndex("by_user", (q) => q.eq("userId", db.userId))
+					.first(),
+			);
+			const transfer = async () => {
+				const result = await asUser.mutation(api.access_control.transfer_organization_ownership, {
+					organizationId: db.organizationId,
+					newOwnerUserId: newOwnerId,
+				});
+				expect(result._nay).toBeUndefined();
+			};
+			const savedFetch = globalThis.fetch;
+			let uploaded = false;
+			if (change === "after preflight") {
+				const prepared = await t.mutation(internal.files_nodes_content.get_transfer_file_copy_data, {
+					itemId: copy.itemId,
+					attempt: 1,
+				});
+				expect(prepared._yay).toBeTruthy();
+				await transfer();
+			} else {
+				vi.stubGlobal(
+					"fetch",
+					vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+						const response = await savedFetch(input, init);
+						if (init?.method === "PUT") {
+							if (change === "between retries") throw new Error("Storage failed after receiving bytes");
+							if (!uploaded) {
+								uploaded = true;
+								await transfer();
+							}
+						}
+						return response;
+					}),
+				);
+			}
+			if (change === "between retries") {
+				await expect(
+					t.action(internal.files_nodes_content.copy_transfer_file, { itemId: copy.itemId, attempt: 1 }),
+				).rejects.toThrow("Storage failed");
+				await transfer();
+				vi.stubGlobal("fetch", savedFetch);
+				await t.run((ctx) => ctx.db.patch("files_transfer_items", copy.itemId, { attempt: 2 }));
+			}
+			await t.action(internal.files_nodes_content.copy_transfer_file, {
+				itemId: copy.itemId,
+				attempt: change === "between retries" ? 2 : 1,
+			});
+			expect(await t.run((ctx) => ctx.db.get("files_transfer_items", copy.itemId))).toMatchObject({
+				state: "completed",
+				billedUserId: db.userId,
+			});
+			await t.run(async (ctx) => {
+				const oldOwnerMeter = await ctx.db
+					.query("billing_usage_snapshots")
+					.withIndex("by_user", (q) => q.eq("userId", db.userId))
+					.first();
+				const newOwnerMeter = await ctx.db
+					.query("billing_usage_snapshots")
+					.withIndex("by_user", (q) => q.eq("userId", newOwnerId))
+					.first();
+				expect(oldOwnerMeter?.meter?.consumedUnits).toBe((meterBefore?.meter?.consumedUnits ?? 0) + 1);
+				expect(newOwnerMeter?.meter?.consumedUnits).toBe(0);
+			});
+		},
+	);
+
+	test("pauses on a name conflict created during upload", async () => {
+		vi.useFakeTimers();
+		const fixture = await create_file_fixture();
+		const { t, db, asUser } = fixture;
+		const copy = await create_transfer_copy_item(fixture);
+		const savedFetch = globalThis.fetch;
+		let occupied = false;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+				const response = await savedFetch(input, init);
+				if (init?.method === "PUT" && !occupied) {
+					occupied = true;
+					const created = await asUser.mutation(api.files_nodes.create_folder_node, {
+						membershipId: db.membershipId,
+						parentId: copy.folderId,
+						path: "restore.txt",
+					});
+					expect(created._nay).toBeUndefined();
+				}
+				return response;
+			}),
+		);
+		await t.action(internal.files_nodes_content.copy_transfer_file, { itemId: copy.itemId, attempt: 1 });
+		expect(await t.run((ctx) => ctx.db.get("files_transfer_items", copy.itemId))).toMatchObject({
+			state: "conflict",
+			conflictKind: "name_conflict",
+			outputId: null,
+			stagedAssetIds: [],
+		});
+		expect((await t.run((ctx) => ctx.db.get("files_transfer_runs", copy.runId)))?.phase).toBe("awaiting_choice");
+		await expect_retired_uploads(t, 2);
+	});
+
+	test("keeps current staging when an old or duplicate attempt arrives", async () => {
+		vi.useFakeTimers();
+		const fixture = await create_file_fixture();
+		const { t } = fixture;
+		const copy = await create_transfer_copy_item(fixture);
+		const first = await t.mutation(internal.files_nodes_content.stage_transfer_file_copy_assets, {
+			itemId: copy.itemId,
+			attempt: 1,
+			textKind: "plain_text",
+			contentSize: 14,
+			yjsSnapshotSize: 24,
+		});
+		expect(first._yay).not.toBeNull();
+		expect(
+			await t.mutation(internal.files_nodes_content.stage_transfer_file_copy_assets, {
+				itemId: copy.itemId,
+				attempt: 1,
+				textKind: "plain_text",
+				contentSize: 14,
+				yjsSnapshotSize: 24,
+			}),
+		).toEqual({ _yay: null });
+		await t.action(internal.files_nodes_content.copy_transfer_file, { itemId: copy.itemId, attempt: 1 });
+		expect((await t.run((ctx) => ctx.db.get("files_transfer_items", copy.itemId)))?.stagedAssetIds).toHaveLength(2);
+		await t.mutation(internal.files_nodes_content.discard_transfer_file_attempt, { itemId: copy.itemId, attempt: 1 });
+		await t.run((ctx) => ctx.db.patch("files_transfer_items", copy.itemId, { attempt: 2 }));
+		const second = await t.mutation(internal.files_nodes_content.stage_transfer_file_copy_assets, {
+			itemId: copy.itemId,
+			attempt: 2,
+			textKind: "plain_text",
+			contentSize: 14,
+			yjsSnapshotSize: 24,
+		});
+		if (!second._yay) throw new Error("Missing fresh staging");
+		expect(second._yay.contentAssetId).not.toBe(first._yay?.contentAssetId);
+		await t.mutation(internal.files_nodes_content.discard_transfer_file_attempt, { itemId: copy.itemId, attempt: 1 });
+		expect(await t.run((ctx) => ctx.db.get("files_r2_assets", second._yay!.contentAssetId))).not.toBeNull();
+		expect((await t.run((ctx) => ctx.db.get("files_transfer_items", copy.itemId)))?.stagedAssetIds).toEqual([
+			second._yay.contentAssetId,
+			second._yay.yjsSnapshotAssetId,
+		]);
+	});
+
+	test("rechecks the credit gate after storage finishes", async () => {
+		vi.useFakeTimers();
+		const fixture = await create_file_fixture();
+		const { t, db } = fixture;
+		const copy = await create_transfer_copy_item(fixture);
+		const savedFetch = globalThis.fetch;
+		let changed = false;
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+				const response = await savedFetch(input, init);
+				if (init?.method === "PUT" && !changed) {
+					changed = true;
+					await t.run(async (ctx) => {
+						await test_mocks_fill_db_with.plan(ctx, { userId: db.userId, plan: "Free" });
+						const usage = await ctx.db
+							.query("billing_usage_snapshots")
+							.withIndex("by_user", (q) => q.eq("userId", db.userId))
+							.first();
+						await ctx.db.patch("billing_usage_snapshots", usage!._id, { meter: { ...usage!.meter!, balance: 0 } });
+					});
+				}
+				return response;
+			}),
+		);
+		await t.action(internal.files_nodes_content.copy_transfer_file, { itemId: copy.itemId, attempt: 1 });
+		expect(await t.run((ctx) => ctx.db.get("files_transfer_items", copy.itemId))).toMatchObject({
+			state: "failed",
+			errorMessage: "Insufficient funds",
+			outputId: null,
+			stagedAssetIds: [],
+		});
+		await expect_retired_uploads(t, 2);
+	});
+
+	test("requires a paid plan for stored bytes even with free credits", async () => {
+		vi.useFakeTimers();
+		const fixture = await create_file_fixture();
+		const { t, db, asUser } = fixture;
+		const source = await asUser.mutation(api.files_nodes.create_upload_node, {
+			membershipId: db.membershipId,
+			parentId: files_ROOT_ID,
+			filename: "stored.pdf",
+			contentType: "application/pdf",
+			size: 3,
+		});
+		if (source._nay) throw new Error(source._nay.message);
+		await t.run(async (ctx) => {
+			await ctx.db.patch("files_r2_assets", source._yay.assetId, { r2Key: "test/paid-copy" });
+			await test_mocks_fill_db_with.plan(ctx, { userId: db.userId, plan: "Free" });
+		});
+		const copy = await create_transfer_copy_item(fixture, source._yay.nodeId);
+		const storageCalls = vi.mocked(globalThis.fetch).mock.calls.length;
+		await t.action(internal.files_nodes_content.copy_transfer_file, { itemId: copy.itemId, attempt: 1 });
+		expect(vi.mocked(globalThis.fetch).mock.calls).toHaveLength(storageCalls);
+		expect((await t.run((ctx) => ctx.db.get("files_transfer_items", copy.itemId)))?.errorMessage).toBe(
+			"This workspace's plan does not include file uploads",
+		);
+	});
+
+	test("checks credits before reading or writing storage", async () => {
+		vi.useFakeTimers();
+		const fixture = await create_file_fixture();
+		const { t, db } = fixture;
+		const copy = await create_transfer_copy_item(fixture);
+		await t.run(async (ctx) => {
+			await test_mocks_fill_db_with.plan(ctx, { userId: db.userId, plan: "Free" });
+			const usage = await ctx.db
+				.query("billing_usage_snapshots")
+				.withIndex("by_user", (q) => q.eq("userId", db.userId))
+				.first();
+			await ctx.db.patch("billing_usage_snapshots", usage!._id, { meter: { ...usage!.meter!, balance: 0 } });
+		});
+		const storageCalls = vi.mocked(globalThis.fetch).mock.calls.length;
+		await t.action(internal.files_nodes_content.copy_transfer_file, { itemId: copy.itemId, attempt: 1 });
+		expect(vi.mocked(globalThis.fetch).mock.calls).toHaveLength(storageCalls);
+		expect((await t.run((ctx) => ctx.db.get("files_transfer_items", copy.itemId)))?.errorMessage).toBe(
+			"Insufficient funds",
+		);
 	});
 });
 
