@@ -2105,7 +2105,10 @@ const FilesSidebarTreeRow = memo(
 
 		const handleWrapperFocus = useFn(() => {
 			// Row controls also need their row kept mounted while they hold focus.
-			item.setFocused();
+			// Rename and keyboard navigation may have set tree focus before the DOM event.
+			if (item.getTree().getState().focusedItem !== itemId) {
+				item.setFocused();
+			}
 		});
 
 		const handleWrapperKeyDown = useFn<NonNullable<ComponentProps<"div">["onKeyDown"]>>((event) => {
@@ -5436,10 +5439,6 @@ export const FilesSidebar = memo(function FilesSidebar(props: FilesSidebar_Props
 					return;
 				}
 
-				// Mirror non-modifier tree clicks so programmatic create moves the visible selection too.
-				tree().setSelectedItems([result._yay.nodeId]);
-				tree().getDataRef<SelectionDataRef>().current.selectUpToAnchorId = result._yay.nodeId;
-
 				return navigate({
 					to: "/w/$organizationName/$workspaceName/files",
 					params: { organizationName, workspaceName },
@@ -6868,6 +6867,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 			const childIds = nodes.map((node) => node._id);
 			const treeRef = React.createRef<TreeInstance<files_TreeItem>>();
 			const virtualizerRef = React.createRef<Virtualizer<HTMLDivElement, HTMLDivElement>>();
+			const handleTreeStateChange = vi.fn();
 			const handleAction = vi.fn();
 			function TestTree(props: {
 				isSearchActive?: boolean;
@@ -6882,6 +6882,7 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 					rootItemId: files_ROOT_ID,
 					instanceBuilder: buildProxiedInstance,
 					initialState: { expandedItems: ["child-0"], focusedItem: "child-0" },
+					setState: handleTreeStateChange,
 					dataLoader: {
 						getItem: (id) => itemById.get(id)!,
 						getChildren: (id) => (id === files_ROOT_ID ? childIds : []),
@@ -6949,6 +6950,13 @@ if (process.env.NODE_ENV === "test" && import.meta.vitest) {
 				expect(firstRow.getAttribute("aria-setsize")).toBe("5000");
 				expect(firstRow.getAttribute("aria-posinset")).toBe("1");
 				expect(view.container.querySelectorAll(".FilesSidebarTreeItemPlaceholder")).toHaveLength(1);
+
+				// Native focus within the current row must not repeat its tree state update.
+				handleTreeStateChange.mockClear();
+				act(() => firstRow.focus());
+				act(() => view.getByRole("button", { name: "More actions for child-0" }).focus());
+				expect(handleTreeStateChange).not.toHaveBeenCalled();
+				expect(treeRef.current?.getState().focusedItem).toBe("child-0");
 
 				view.rerender(<TestTree isBusy />);
 				expect(firstRow.hasAttribute("aria-disabled")).toBe(false);

@@ -202,6 +202,8 @@ Tree-item components:
 - File primary action navigates to the file.
 - Folder primary action navigates to the folder screen.
 - The selection anchor drives active-track highlighting.
+- Create lets the route update selection and its anchor. Do not select the new id before navigation:
+  the tree query can refresh first and restore the previous route's selection.
 - The current route/navigated row uses a stable row-left accent rail instead of bold text. Keep row labels regular weight so selection does not change text metrics. The rail belongs only to navigated rows. The navigated row's fill is a neutral base gradient, not an accent tint: the rail alone carries the accent "current" signal. Internal Headless Tree focus and pointer hover are not selection and must not paint the selected row surface after pointer clicks; hover can brighten row text, while `:focus-visible` keeps the keyboard interaction surface. Idle non-selected rows use one quieter foreground shade and brighten to the navigated-row lightness on hover, selected, and navigated states. Keyboard focus must stay as the top visual layer: keep the focus ring continuous, keep the rail visible just inside it, and remove idle title input chrome so row names render as plain text outside rename mode. The disabled title input must inherit the row color; otherwise only icons dim while filenames remain too bright.
 - Rows are single-line: only the icon, the name, and the inline `Processing` badge. The tree never marks pending-change state — that lives in the Pending changes panel only. The updated-when/by info lives in the row tooltip, not in the row itself.
 
@@ -338,6 +340,9 @@ Do not call `parent.getChildren()` for this check in each row: it loads every si
   tree focus before clearing its pin so focus can return to the same DOM element.
 - Focusing any row control also sets Headless Tree focus to that row. This keeps the More and folder
   arrow buttons mounted while they hold focus, including menu focus return after scrolling.
+- Compare the live `focusedItem` id before setting it from a DOM focus event. Rename and keyboard
+  navigation often set it first; writing the same id again rerenders the tree. Do not use `isFocused()`
+  for this check: its first-row fallback can be true while the stored id is still null.
 - Live node updates keep the current keyboard focus when its row is still visible. A changed route
   focuses its node; a removed or filtered row falls back to the visible route node or first row.
   Never focus the synthetic root: it has no rendered row and its Headless Tree index is -1.

@@ -8,8 +8,9 @@ import { FilesSidebar } from "./files-sidebar.tsx";
 import { files_ROOT_ID, files_SYNTHETIC_ROOT_FOLDER, type files_VisibleTreeNode } from "@/lib/files.ts";
 import type { app_convex_Id } from "@/lib/app-convex-client.ts";
 
-const { treeState } = vi.hoisted(() => ({
+const { treeState, createNode } = vi.hoisted(() => ({
 	treeState: { nodes: [] as files_VisibleTreeNode[], listeners: new Set<() => void>() },
+	createNode: vi.fn(),
 }));
 
 vi.mock("convex/react", async (importOriginal) => {
@@ -18,7 +19,7 @@ vi.mock("convex/react", async (importOriginal) => {
 	const queryResults = {};
 	return {
 		...original,
-		useConvex: () => ({ query: async () => [] }),
+		useConvex: () => ({ query: async () => [], mutation: createNode }),
 		useQuery: (query: FunctionReference<"query">, args: unknown) => {
 			if (args === "skip") return undefined;
 			return getFunctionName(query) === "access_control:get_current_user_workspace_permission" ? true : [];
@@ -60,6 +61,7 @@ vi.mock("@/lib/files-tree-context.tsx", async () => {
 vi.mock("@/lib/activities.ts", () => ({ useFileNodeActivities: () => [] }));
 
 beforeEach(() => {
+	createNode.mockReset();
 	treeState.nodes = ["alpha", "bravo", "charlie", "delta"].map((name) => ({
 		...files_SYNTHETIC_ROOT_FOLDER,
 		_id: name as app_convex_Id<"files_nodes">,
@@ -87,6 +89,58 @@ afterEach(() => {
 });
 
 describe("FilesSidebar", () => {
+	test("keeps selection until create navigation arrives, then selects and renames the new folder", async () => {
+		const router = createRouter({ routeTree: createRootRoute(), history: createMemoryHistory() });
+		const navigation = Promise.withResolvers<void>();
+		const navigate = vi.spyOn(router, "navigate").mockReturnValue(navigation.promise);
+		createNode.mockResolvedValue({ _yay: { nodeId: "new-folder" } });
+		const handleAction = vi.fn();
+		function TestSidebar(props: { selectedNodeId: string }) {
+			return (
+				<RouterContextProvider router={router}>
+					<FilesSidebar
+						selectedNodeId={props.selectedNodeId}
+						view="rich_text_editor"
+						initialSearchQuery=""
+						onClose={handleAction}
+						onArchive={handleAction}
+						onPrimaryAction={handleAction}
+						onSearchQueryChange={handleAction}
+					/>
+				</RouterContextProvider>
+			);
+		}
+
+		const view = render(<TestSidebar selectedNodeId="alpha" />);
+		await waitFor(() =>
+			expect(view.getByRole("treeitem", { name: "alpha" }).getAttribute("aria-selected")).toBe("true"),
+		);
+		fireEvent.click(view.getByRole("button", { name: "New folder" }));
+		await waitFor(() => expect(navigate).toHaveBeenCalledOnce());
+		expect(view.getByRole("treeitem", { name: "alpha" }).getAttribute("aria-selected")).toBe("true");
+		expect(view.queryByRole("textbox")).toBeNull();
+
+		act(() => {
+			treeState.nodes = [
+				...treeState.nodes,
+				{
+					...treeState.nodes[0],
+					_id: "new-folder" as app_convex_Id<"files_nodes">,
+					name: "new-folder",
+					path: "/new-folder",
+					treePath: "/new-folder/",
+				},
+			];
+			for (const listener of treeState.listeners) listener();
+		});
+		expect(view.getByRole("treeitem", { name: "alpha" }).getAttribute("aria-selected")).toBe("true");
+		view.rerender(<TestSidebar selectedNodeId="new-folder" />);
+		await act(async () => navigation.resolve());
+		await waitFor(() => expect(document.activeElement).toBe(view.getByRole("textbox", { name: "Rename new-folder" })));
+		expect(view.getByRole("treeitem", { name: "new-folder" }).getAttribute("aria-selected")).toBe("true");
+		expect(view.getByRole("treeitem", { name: "alpha" }).getAttribute("aria-selected")).toBe("false");
+	});
+
 	test.each([
 		[files_ROOT_ID, "focus"],
 		[files_ROOT_ID, "ctrlKey"],
