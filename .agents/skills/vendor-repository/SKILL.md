@@ -226,6 +226,19 @@ git remote set-url origin "https://github.com/raythurnvoid/<repo>.git"
 4. Push the fork branch only when the user authorized the external write.
 5. Update the parent repository's gitlink to the verified commit and inspect the final parent and submodule diffs.
 
+The parent repo's local credential helper does not carry into its submodules. If a fork push uses
+the wrong saved GitHub account, check `gh auth status` and the parent and submodule credential
+settings. When the parent already selects the approved fork account, reuse that helper for the
+push command only. This keeps the global account unchanged:
+
+```powershell
+$vendorGitHelper = git config --local --get credential.https://github.com.helper
+git -C packages/app/vendor/polar -c credential.https://github.com.helper= -c "credential.https://github.com.helper=$vendorGitHelper" push origin rt0-updates
+```
+
+Run this from the parent repo and verify the helper, fork URL, and branch first. Publish the
+referenced vendor commits before pushing the parent. Do not disable the submodule push check.
+
 # Current Local Pattern
 
 Use `.gitmodules`, `pnpm-workspace.yaml`, and the nearest vendor with the same package shape as current evidence. `polar`, `rate-limiter`, and `r2` are useful fork/`rt0-updates` references; `remix` is already a vendored workspace dependency, not a future example. Existing metadata has some legacy inconsistencies, including duplicate or stale entries. Do not normalize unrelated submodules unless the user includes that cleanup in scope.
